@@ -249,6 +249,15 @@ describe("validateSocketTurnEvent", () => {
     expect(validateSocketTurnEvent(staged)).toEqual({ ok: true, value: staged });
     const typed: TurnEvent = { ...publication, review: { summary: "the onboarding flow", kind: "simulator", key: "onboarding" } };
     expect(validateSocketTurnEvent(typed)).toEqual({ ok: true, value: typed });
+    const inked: TurnEvent = {
+      ...publication,
+      review: {
+        summary: "ready",
+        link: "https://example.com",
+        scene: { v: 1, target: { kind: "link" }, marks: [{ id: "cta", kind: "box", frame: { selector: ".cta" } }] },
+      },
+    };
+    expect(validateSocketTurnEvent(inked)).toEqual({ ok: true, value: inked });
   });
 
   test("rejects unknown, incomplete, and wrong-shaped JSON before dispatch", () => {
@@ -276,6 +285,12 @@ describe("validateSocketTurnEvent", () => {
       { type: "review-published", sessionId: "session-a", label: "alpha", announce: "", review: { summary: "ready", key: "" } },
       { type: "review-published", sessionId: "session-a", label: "alpha", announce: "", review: { summary: "ready", key: "two\nlines" } },
       { type: "review-published", sessionId: "session-a", label: "alpha", announce: "", review: { summary: "ready", key: "k".repeat(201) } },
+      // …and its marks: a raw write must not file what the tool refuses, nor file marks off a publication,
+      // where nothing checks their images.
+      { type: "review-published", sessionId: "session-a", label: "alpha", announce: "", review: { summary: "ready", scene: { v: 1, target: { kind: "auto" }, marks: [{ id: "cta", kind: "box", frame: { selector: ".cta" } }] } } },
+      { type: "review-published", sessionId: "session-a", label: "alpha", announce: "", review: { summary: "ready", scene: { v: 1, target: { kind: "auto" }, marks: [{ id: "a", kind: "pin", frame: { canvas: "c" }, at: [0, 1.5] }] } } },
+      { type: "review-published", sessionId: "session-a", label: "alpha", announce: "", review: { summary: "ready", scene: { v: 1, target: { kind: "auto" }, marks: [{ id: "a", kind: "pin", frame: { canvas: "c" }, at: [0, 0], color: "red" }] } } },
+      { type: "turn-end", sessionId: "session-a", label: "alpha", announce: "", review: { summary: "ready", scene: { v: 1, target: { kind: "auto" }, marks: [{ id: "a", kind: "pin", frame: { image: "/etc/secret.png" }, at: [0, 0] }] } } },
     ];
 
     for (const value of invalid) expect(validateSocketTurnEvent(value).ok).toBeFalse();

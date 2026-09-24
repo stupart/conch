@@ -43,6 +43,7 @@ import {
   TurnEventOrder,
 } from "../src/daemon.ts";
 import type { TurnEvent } from "../src/hook.ts";
+import type { ReviewMark, ReviewScene } from "../src/snippet.ts";
 import type { RegistrySnapshot, SessionInfo } from "../src/sessions.ts";
 import { AmbiguousSessionError, findSessionByName, registrySnapshot } from "../src/sessions.ts";
 import { appServerNoTerminal } from "../src/codex-threads.ts";
@@ -623,7 +624,7 @@ describe("schemas state what the handlers enforce", () => {
 
   test("review_to_front describes publishing, not opening or finishing", () => {
     expect(MCP_TOOLS.find((tool) => tool.name === "review_to_front")!.description).toBe(
-      "Publish your session’s result for the user to inspect, with a concise summary, an optional artifact link and kind, and an optional conversation scene. Publishing the same artifact again (the same link, or the same key) adds its next version rather than a second entry: the user sees the newest, with earlier versions listed under it by summary and time. Returns the filing's id, its artifact, version and kind. The user's pill click stages it. Publishing does not open applications or finish the running turn.",
+      "Publish your session’s result for the user to inspect, with a concise summary, an optional artifact link and kind, and an optional scene: the conversation to bring forward, or marks drawn over the result at the one thing to check. Publishing the same artifact again (the same link, or the same key) adds its next version rather than a second entry: the user sees the newest, with earlier versions listed under it by summary and time. Returns the filing's id, its artifact, version and kind. The user's pill click stages it. Publishing does not open applications or finish the running turn.",
     );
   });
 });
@@ -1981,6 +1982,67 @@ describe("review_to_front's scene", () => {
     expect(scene.properties.inspect).toMatchObject({ type: "string", minLength: 1, maxLength: 200 });
     expect(scene.description).toContain("`target.ref` is reserved");
     expect(scene.description).toContain("not accepted");
+  });
+
+  // Agent ink: the rules themselves are agent-ink.test.ts; these prove the tool runs them.
+  const cta: ReviewMark = { id: "cta", kind: "box", frame: { selector: ".hero .cta" }, label: "Moved up from the footer" };
+
+  test("marks ride on the publication and come back in the result", async () => {
+    const scene: ReviewScene = { v: 1, target: { kind: "link" }, marks: [cta] };
+    const { h, response } = await publish({ link, scene });
+    expect(h.calls.daemon[0]?.event.review).toEqual({ summary: "the settings page", link, scene });
+    expect(JSON.parse(toolText(response))).toMatchObject({ outcome: "accepted", scene });
+  });
+
+  test("malformed marks are refused, say why, and publish nothing", async () => {
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ scene: { v: 1, target: { kind: "auto" }, marks: [cta] } }, "scene marks[0] frame.selector names something in the linked page"],
+      [{ link, scene: { v: 1, target: { kind: "auto" }, marks: [{ ...cta, color: "red" }] } }, 'scene marks[0] has unknown field "color"'],
+      [{ link, scene: { v: 1, target: { kind: "auto" }, marks: [{ id: "a", kind: "pin", frame: { canvas: "c" }, at: [0, 2] }] } }, "scene marks[0] at must be [x, y]"],
+    ];
+    for (const [args, reason] of cases) {
+      const { h, response } = await publish(args);
+      expect(toolText(response)).toStartWith(`refused: ${reason}`);
+      expect(h.calls.daemon).toEqual([]);
+    }
+  });
+
+  test("a mark's image must pass the link's own check: a temp image is sent, a hidden one refused", async () => {
+    const shown = mkdtempSync(join(tmpdir(), "conch-mcp-mark-"));
+    const hidden = mkdtempSync(join(tmpdir(), ".conch-mcp-mark-"));
+    try {
+      writeFileSync(join(shown, "still.png"), "png");
+      writeFileSync(join(hidden, "still.png"), "png");
+      const on = (image: string): ReviewScene => ({ v: 1, target: { kind: "auto" }, marks: [{ id: "m", kind: "pin", frame: { image }, at: [0.5, 0.5] }] });
+      const sent = await publish({ scene: on(join(shown, "still.png")) });
+      expect(sent.h.calls.daemon[0]?.event.review?.scene).toEqual(on(join(shown, "still.png")));
+      const refusedImage = await publish({ scene: on(join(hidden, "still.png")) });
+      expect(toolText(refusedImage.response)).toStartWith("refused: scene marks[0] frame.image ");
+      expect(toolText(refusedImage.response)).toContain("is a hidden file, in a hidden folder");
+      expect(refusedImage.h.calls.daemon).toEqual([]);
+    } finally {
+      rmSync(shown, { recursive: true, force: true });
+      rmSync(hidden, { recursive: true, force: true });
+    }
+  });
+
+  test("a refused link publishes no marks", async () => {
+    const { h, response } = await publish({ link: "/etc/hosts", scene: { v: 1, target: { kind: "link" }, marks: [cta] } });
+    expect(toolText(response)).toStartWith("refused: ");
+    expect(h.calls.daemon).toEqual([]);
+  });
+
+  test("the schema describes marks closed, with their caps", () => {
+    const tool = MCP_TOOLS.find((candidate) => candidate.name === "review_to_front")!;
+    const marks = (tool.inputSchema.properties as Record<string, any>).scene.properties.marks;
+    expect(marks).toMatchObject({ type: "array", minItems: 1, maxItems: 12 });
+    expect(marks.items).toMatchObject({ required: ["id", "kind", "frame"], additionalProperties: false });
+    expect(marks.items.properties.kind.enum).toEqual(["arrow", "box", "ellipse", "highlight", "text", "pin", "stroke"]);
+    expect(marks.items.properties.frame).toMatchObject({ additionalProperties: false });
+    expect(Object.keys(marks.items.properties.frame.properties)).toEqual(["canvas", "image", "selector", "quote"]);
+    expect(marks.items.properties.pts).toMatchObject({ minItems: 2, maxItems: 64 });
+    expect(marks.items.properties.label).toMatchObject({ maxLength: 80 });
+    expect(marks.description).toContain("conch colours marks itself");
   });
 });
 

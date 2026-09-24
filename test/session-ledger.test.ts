@@ -172,7 +172,12 @@ describe("saved deliverables", () => {
 
   test("a review's scene is saved and restored with it, and one this conch can't read is dropped", () => withFile((path) => {
     const ledger = new SessionLedger(path);
-    const scene = { v: 1 as const, target: { kind: "terminal" as const }, inspect: "the build log" };
+    const scene = {
+      v: 1 as const,
+      target: { kind: "terminal" as const },
+      inspect: "the build log",
+      marks: [{ id: "warn", kind: "box" as const, frame: { canvas: "c" }, rect: [0.1, 0.2, 0.3, 0.1] as [number, number, number, number] }],
+    };
     ledger.sessionStates.set("a", { label: "a", status: "waiting", at: 1_000, review: { summary: "a ready", scene, at: 1_000, id: "a-rev" } });
     ledger.saveReviews();
     expect(restored(path).sessionStates.get("a")?.review).toMatchObject({ summary: "a ready", scene, at: 1_000, id: "a-rev" });

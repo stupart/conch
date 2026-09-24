@@ -595,6 +595,8 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
     if (value.review.scene !== undefined) {
       const scene = checkReviewScene(value.review.scene, value.review.link !== undefined);
       if (!scene.ok) return { ok: false, err: `review ${scene.reason}` };
+      // Only a publication files marks, and only its filing checks their images (voice-loop `publishReview`).
+      if (scene.scene.marks && type !== "review-published") return { ok: false, err: "review scene marks are only for review-published" };
     }
     // The same rules `review_to_front` applies; the link itself is checked where it is filed,
     // which can reach the filesystem (voice-loop `vettedReviewLink`).
