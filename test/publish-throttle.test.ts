@@ -47,7 +47,7 @@ class FakeClock {
 function basePublishedState(): PublishedState {
   return {
     v: 1,
-    features: { deliverables: 3, viewedState: 1 },
+    features: { deliverables: 4, viewedState: 1 },
     ownerDeviceId: "test-device",
     ts: 0,
     mode: { muted: false, paused: false, holding: 0 },

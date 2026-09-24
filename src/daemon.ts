@@ -124,6 +124,7 @@ import { CONCH_VERSION } from "./version.ts";
 import { lastAssistantText, stripMarkdown, firstSentences, userRespondedSince, transcriptMark, setPromptCursorSink } from "./snippet.ts";
 import { promptCursorPublisher } from "./prompt-cursor.ts";
 import { PhoneUploads } from "./phone-uploads.ts";
+import { createPreviewRequester, previewFolder, PreviewLimiter, WindowPreviews, type PreviewRequest } from "./review-preview.ts";
 import { CONCH_DATA } from "./config.ts";
 import {
   publishedConversation,
@@ -229,6 +230,7 @@ import {
   buildPanelRows,
   buildPublishedState,
   markReviewViewed,
+  attachReviewPreview,
   panelReplyText,
   numberPanelSessionRows,
   previewForPanelSelection,
@@ -612,6 +614,8 @@ export function buildDaemonPublishedState(
   approvalForSessionId?: (sessionId: string, transcriptPath: string | undefined) => PendingApproval | null,
   /** What is on screen and whose it is (`screen-context.ts`). */
   showing?: PublishedShowing,
+  /** Window snapshots the Mac app is asked to take (`WindowPreviews`). */
+  previewRequests?: readonly PreviewRequest[],
 ): PublishedState {
   return buildPublishedState(
     ownerDeviceId,
@@ -630,6 +634,7 @@ export function buildDaemonPublishedState(
       ...(deliveries?.length ? { deliveries } : {}),
       ...(approvalForSessionId ? { approvalForSessionId } : {}),
       ...(showing ? { showing } : {}),
+      ...(previewRequests?.length ? { previewRequests } : {}),
     },
   );
 }
@@ -1233,6 +1238,21 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
    * last published rows — their folders and held deliverables — so it names only sessions the
    * apps can see. Patched onto the published state like a delivery: nothing else moved.
    */
+  /**
+   * An app window's snapshot for the phone, taken by the Mac app: named on the published state,
+   * patched onto the last snapshot like a delivery, and answered over the socket (`review-preview`).
+   */
+  const windowPreviews = new WindowPreviews({
+    publish: () => {
+      if (!lastPublishedPanelState) return;
+      const previewRequests = windowPreviews.requests();
+      const { previewRequests: _gone, ...rest } = lastPublishedPanelState;
+      lastPublishedPanelState = { ...rest, ts: Date.now(), ...(previewRequests.length ? { previewRequests } : {}) };
+      publishedStateWriter.request();
+    },
+    folder: () => previewFolder(),
+    now: Date.now,
+  });
   // One lookup, and one cache, for the screen context and the phone's dev pages.
   const portListeners = portListenerLookup();
   const screen = createScreenContext({
@@ -1441,6 +1461,31 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
           uploadsDirectory: phoneUploads.directory,
           portListeners,
           sessionPid: (sessionId) => panelSessions.get(sessionId)?.pid,
+          // A snapshot of a deliverable the phone can't draw, put on the held review like `viewedAt`.
+          requestPreview: createPreviewRequester({
+            held: (sessionId) => {
+              const state = ledger.sessionStates.get(sessionId);
+              if (!state) return undefined;
+              const row = lastPublishedPanelState?.rows.find((one) => one.id === sessionId);
+              return {
+                reviews: state.reviews ?? (state.review ? [state.review] : []),
+                roots: [row?.cwd, ...(row?.workDirs ?? [])].filter((root): root is string => Boolean(root)),
+              };
+            },
+            attach: (sessionId, reviewId, preview) => {
+              const state = ledger.sessionStates.get(sessionId);
+              const next = attachReviewPreview(state?.reviews ?? (state?.review ? [state.review] : undefined), reviewId, preview);
+              if (!state || !next) return false;
+              ledger.sessionStates.set(sessionId, { ...state, reviews: next, review: next.at(-1)! });
+              ledger.saveReviews();
+              void renderSessionPanel();
+              return true;
+            },
+            limiter: new PreviewLimiter(),
+            folder: () => previewFolder(),
+            now: Date.now,
+            window: (sessionId, reviewId) => windowPreviews.ask(sessionId, reviewId),
+          }),
           replyFor: async (sessionId) => {
             const path = findTranscript(cfg.claudeDir, sessionId);
             // The WHOLE turn in progress, the way the Mac dashboard shows it —
@@ -1862,6 +1907,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         recentDeliveries,
         (sessionId, path) => voice.pendingApprovalFor(sessionId, path),
         screen.showing(),
+        windowPreviews.requests(),
       );
       publishedStateWriter.request();
       if (theaterMode) theaterNavigation.commitFrame(nextActiveSessionId, navSelectedId);
@@ -2609,6 +2655,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     // Resolving can wait on a port lookup now; whatever goes wrong there is logged, never thrown at the daemon.
     onScreenObservation: (observation) => void screen.observe(observation).catch((error) => log(`screen: ${error}`)),
     narration,
+    onReviewPreview: (message) => windowPreviews.answer(message),
   });
 
   let shutdownStarted = false;

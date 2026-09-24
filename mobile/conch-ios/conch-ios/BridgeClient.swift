@@ -961,6 +961,23 @@ final class BridgeClient: ObservableObject {
         }
     }
 
+    /// Ask the Mac for a snapshot of a held deliverable the phone can't draw (`/preview`). Nil once
+    /// it is taken, when it arrives on the review with the next state; else why not, in the Mac's
+    /// words ("more than one Simulator is running…", "a snapshot was just taken…").
+    func requestPreview(sessionId: String, review: String) async -> String? {
+        guard let body = try? JSONSerialization.data(withJSONObject: ["session": sessionId, "review": review]) else {
+            return "The phone couldn't ask for that."
+        }
+        do {
+            let response = try await perform(authorizedRequest(method: "POST", path: "/preview", body: body), within: .seconds(30))
+            if response.status == 200 { return nil }
+            let said = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any]
+            return said?["error"] as? String ?? "The Mac returned HTTP \(response.status)."
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
     /// One read from a dev server a held review names, on the Mac's own localhost (`/dev`): `path`
     /// is the page's path and query as the page asked. Headers and all, since only the server can
     /// say what a route like `/src/main.tsx` is. Never cached: a dev page changes as it is worked on.

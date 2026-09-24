@@ -297,6 +297,8 @@ struct DeliverableSheet: View {
     @State private var markingUp = false
     /// Which deliverable a local page's `conch-page://` addresses name.
     @State private var pageHost = UUID().uuidString.lowercased()
+    /// A document the phone couldn't fetch or draw, a Keynote deck say: shown as a snapshot instead.
+    @State private var documentStandIn = false
     /// A link tapped in here that turned out to be a Mac file, opened the
     /// same way as any other deliverable (`openLink`'s `onFile`).
     @State private var openFile: FileLink?
@@ -307,10 +309,16 @@ struct DeliverableSheet: View {
         /// On the Mac's own loopback: said, not loaded (`MacLocalPage`).
         case macLocal(URL)
         case local(LocalKind)
+        /// Only on the Mac, with no file to send: a snapshot of it (`StandInView`).
+        case standIn
         case unavailable(String)
     }
 
+    /// Kinds with nothing behind them the phone could open: an app window, the Simulator, a design, a terminal.
+    static let standInKinds: Set<String> = ["app", "simulator", "design", "terminal"]
+
     private var kind: Kind {
+        if review.link == nil, let typed = review.kind, Self.standInKinds.contains(typed) { return .standIn }
         guard let link = review.link else { return .unavailable("No link on this review.") }
         if let url = URL(string: link),
            let scheme = url.scheme?.lowercased(),
@@ -351,12 +359,25 @@ struct DeliverableSheet: View {
         }
     }
 
-    /// Image and PDF: Quick Look's Markup draws on them.
+    /// Image and PDF: Quick Look's Markup draws on them. Not an image the agent marked, which shows its ink instead.
     private var marksUp: Bool {
         switch kind {
-        case .local(.image), .local(.pdf): localURL != nil && failure == nil
+        case .local(.image): localURL != nil && failure == nil && imageMarks.isEmpty
+        case .local(.pdf): localURL != nil && failure == nil
         default: false
         }
+    }
+
+    /// The agent's ink over this review's page (`PageInk`): its marks, its key and whose they are. Nil with no marks.
+    private var ink: InkSpec? {
+        guard !review.marks.isEmpty else { return nil }
+        let backend = bridge.state?.rows.first { $0.id == sessionId }?.backend
+        return InkSpec(marks: review.marks, key: review.id ?? review.link ?? "", agent: backend == "codex" ? "Codex" : "Claude")
+    }
+
+    /// Its marks on its own image, placed; empty when it has none that land there.
+    private var imageMarks: [CanvasMark] {
+        imageInk(review.marks, link: review.link, key: review.id ?? review.link ?? "")
     }
 
     var body: some View {
@@ -418,6 +439,7 @@ struct DeliverableSheet: View {
             // The bridge's own reason, read on the main actor straight after
             // the call that set it; "couldn't be fetched" alone said nothing.
             if downloaded == nil {
+                if review.kind == "document" { documentStandIn = true; return }
                 fail("Couldn't fetch this from your Mac: \(bridge.lastError ?? "it sent nothing back.")")
             }
         }
@@ -449,12 +471,23 @@ struct DeliverableSheet: View {
 
     @ViewBuilder
     private var content: some View {
+        if documentStandIn {
+            StandInView(bridge: bridge, review: review, sessionId: sessionId)
+        } else {
+            routed
+        }
+    }
+
+    @ViewBuilder
+    private var routed: some View {
         switch kind {
+        case .standIn:
+            StandInView(bridge: bridge, review: review, sessionId: sessionId)
         case let .web(url):
-            BridgedWebView(url: url, page: page, onFailure: fail)
+            BridgedWebView(url: url, page: page, onFailure: fail, ink: ink)
         case let .macLocal(url):
             if let lanPage {
-                BridgedWebView(url: lanPage, page: page, onFailure: fail)
+                BridgedWebView(url: lanPage, page: page, onFailure: fail, ink: ink)
             } else if let dev = devPage(url) {
                 // Through conch, over whichever link is live: the phone's own localhost is the phone.
                 LocalPageView(
@@ -463,7 +496,8 @@ struct DeliverableSheet: View {
                     devServer: url,
                     page: page,
                     onFailure: fail,
-                    onRefusedLink: { linkFailure = $0 }
+                    onRefusedLink: { linkFailure = $0 },
+                    ink: ink
                 )
             } else {
                 macLocalView(url)
@@ -487,8 +521,13 @@ struct DeliverableSheet: View {
         case .image, .video, .pdf:
             // Quick Look, as Files and Mail show them: pinch and double-tap
             // zoom on a screenshot, PDF pages, a real player. The fitted image
-            // could not be zoomed, so a UI detail could not be inspected.
-            QuickLookView(url: url, fullScreen: $markingUp, onFailure: fail)
+            // could not be zoomed, so a UI detail could not be inspected. An
+            // image the agent marked is its own zoomable view, the ink on it.
+            if kind == .image, !imageMarks.isEmpty {
+                MarkedImage(url: url, marks: imageMarks, agent: ink?.agent ?? "Claude", onFailure: fail)
+            } else {
+                QuickLookView(url: url, fullScreen: $markingUp, onFailure: fail)
+            }
         case .markdown:
             RemoteDocumentView(url: url, renderMarkdown: true, document: review.link, bridge: bridge, onFailure: fail)
         case .page:
@@ -498,12 +537,14 @@ struct DeliverableSheet: View {
             // alone, downloaded into an empty folder, so its styles, scripts
             // and pictures were silently missing; now each is read from the
             // Mac as the page asks for it.
-            LocalPageView(handler: .page(review.link ?? "", entry: url, bridge: bridge), url: url, page: page, onFailure: fail)
+            LocalPageView(handler: .page(review.link ?? "", entry: url, bridge: bridge), url: url, page: page, onFailure: fail, ink: ink)
         case .text:
             RemoteDocumentView(url: url, renderMarkdown: false, onFailure: fail)
         case .unsupported:
             if QLPreviewController.canPreview(url as NSURL) {
                 QuickLookView(url: url, fullScreen: $markingUp, onFailure: fail)
+            } else if review.kind == "document" {
+                StandInView(bridge: bridge, review: review, sessionId: sessionId)
             } else {
                 // What it is, why it isn't drawn, and what the phone can do
                 // with it: the file is here, so Share (top left) hands it on.
@@ -775,6 +816,8 @@ private struct BridgedWebView: UIViewRepresentable {
     let url: URL
     let page: PageLoadFailure
     let onFailure: (String) -> Void
+    /// The review's marks, found in the page and drawn over it.
+    var ink: InkSpec? = nil
 
     func makeCoordinator() -> PageLoadFailure { page }
 
@@ -786,11 +829,17 @@ private struct BridgedWebView: UIViewRepresentable {
         view.uiDelegate = context.coordinator
         context.coordinator.view = view
         context.coordinator.onFailure = onFailure
+        context.coordinator.ink = ink.flatMap { PageInk(page: view, marks: $0.marks, entry: url, key: $0.key, agent: $0.agent) }
         view.load(URLRequest(url: url))
         return view
     }
 
     func updateUIView(_ view: WKWebView, context: Context) {}
+
+    static func dismantleUIView(_ view: WKWebView, coordinator: PageLoadFailure) {
+        coordinator.ink?.stop()
+        coordinator.ink = nil
+    }
 }
 
 /// A page read from the Mac as it asks, each request through `handler`: a
@@ -803,6 +852,8 @@ private struct LocalPageView: UIViewRepresentable {
     let page: PageLoadFailure
     let onFailure: (String) -> Void
     var onRefusedLink: (String) -> Void = { _ in }
+    /// The review's marks, found in the page and drawn over it.
+    var ink: InkSpec? = nil
 
     func makeCoordinator() -> PageLoadFailure { page }
 
@@ -818,11 +869,17 @@ private struct LocalPageView: UIViewRepresentable {
         context.coordinator.onFailure = onFailure
         context.coordinator.devServer = devServer.map { ($0, url.host ?? "") }
         context.coordinator.onRefusedLink = onRefusedLink
+        context.coordinator.ink = ink.flatMap { PageInk(page: view, marks: $0.marks, entry: url, key: $0.key, agent: $0.agent) }
         view.load(URLRequest(url: url))
         return view
     }
 
     func updateUIView(_ view: WKWebView, context: Context) {}
+
+    static func dismantleUIView(_ view: WKWebView, coordinator: PageLoadFailure) {
+        coordinator.ink?.stop()
+        coordinator.ink = nil
+    }
 }
 
 /// A page that will not load says why instead of staying blank (A13); a link
@@ -842,6 +899,8 @@ private final class PageLoadFailure: NSObject, ObservableObject, WKNavigationDel
     /// A dev page's server on the Mac, and the page's host here: a link to that server comes back
     /// through conch rather than asking the phone's own localhost.
     var devServer: (origin: URL, host: String)?
+    /// The agent's marks over the page, while it shows (`PageInk`).
+    var ink: PageInk?
     var onRefusedLink: (String) -> Void = { _ in }
 
     /// The page links to `http://localhost:5173/next`: on a phone that is the phone. The review's
@@ -1180,6 +1239,108 @@ private struct MarkdownImage: View {
             } else {
                 failure = "iPhone can't draw this \(target.pathExtension.uppercased()) picture."
             }
+        } catch {
+            if !Task.isCancelled { failure = BridgeClient.fileFailure(error) }
+        }
+    }
+}
+
+/// A deliverable the phone has no way to draw (an app window, the Simulator, a Keynote deck), shown
+/// as a snapshot of it from the Mac: asked for when it is first opened here, and again on Refresh.
+/// Tyler (09-25): "it will also need other materials sent to it if there's not an equivalent on the
+/// phone". It says what it is and when it was taken; when the Mac can't take one, it says why.
+struct StandInView: View {
+    @ObservedObject var bridge: BridgeClient
+    let review: PublishedState.Row.Review
+    let sessionId: String
+    @State private var image: UIImage?
+    @State private var asking = false
+    /// The Mac's own words, when it didn't take one.
+    @State private var failure: String?
+
+    /// What it is, for the line under it: "Simulator", "App window", …
+    private var what: String {
+        switch review.kind {
+        case "simulator": "Simulator"
+        case "app": "App window"
+        case "design": "Design"
+        case "document": "Document"
+        case "terminal": "Terminal"
+        default: "Deliverable"
+        }
+    }
+
+    /// "Snapshot from your Mac, 14:02", in the phone's own clock format.
+    static func caption(capturedAt: Double) -> String {
+        "Snapshot from your Mac, \(Date(timeIntervalSince1970: capturedAt / 1000).formatted(date: .omitted, time: .shortened))"
+    }
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Group {
+                if let image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .accessibilityLabel("\(what), snapshot from your Mac")
+                } else if asking || (review.preview != nil && failure == nil) {
+                    ProgressView()
+                } else {
+                    VStack(spacing: 10) {
+                        Image(systemName: "macbook")
+                            .font(.system(size: 26))
+                            .foregroundStyle(Palette.textDim)
+                            .accessibilityHidden(true)
+                        Text("\(what) on your Mac. iPhone can't open it directly, so conch shows a snapshot of it.")
+                            .font(Type.summary)
+                            .foregroundStyle(Palette.textDim)
+                            .multilineTextAlignment(.center)
+                        if let failure {
+                            Text(failure)
+                                .font(Type.caption)
+                                .foregroundStyle(Palette.needs)
+                                .multilineTextAlignment(.center)
+                                .textSelection(.enabled)
+                        }
+                    }
+                    .padding(24)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            HStack(spacing: 6) {
+                Text(review.preview.map { Self.caption(capturedAt: $0.capturedAt) } ?? what)
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.textDim)
+                Text("·").font(Type.caption).foregroundStyle(Palette.textFaint)
+                Button(review.preview == nil ? "Take a snapshot" : "Refresh") { Task { await refresh() } }
+                    .font(Type.caption.weight(.semibold))
+                    .foregroundStyle(Palette.micOpen)
+                    .disabled(asking)
+            }
+            .padding(.bottom, 8)
+        }
+        .task(id: review.preview?.path) { await load() }
+        // The first look asks once; after that, only Refresh does.
+        .task(id: review.id) { if review.preview == nil { await refresh() } }
+    }
+
+    @MainActor
+    private func refresh() async {
+        guard let id = review.id, !asking else { return }
+        asking = true
+        failure = await bridge.requestPreview(sessionId: sessionId, review: id)
+        asking = false
+    }
+
+    @MainActor
+    private func load() async {
+        guard let path = review.preview?.path else { return }
+        do {
+            let file = try await bridge.fetchFile(path: path)
+            defer { try? FileManager.default.removeItem(at: file) }
+            let preview = await ImageDownsampler.filePreview(at: file, maxBytes: 32 * 1024 * 1024, maxPixelSize: 2732)
+            guard !Task.isCancelled else { return }
+            if case let .image(decoded) = preview { image = UIImage(cgImage: decoded) } else { failure = "iPhone couldn't read the snapshot." }
         } catch {
             if !Task.isCancelled { failure = BridgeClient.fileFailure(error) }
         }

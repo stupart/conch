@@ -712,6 +712,10 @@ test("a published file sits under the session's folder or a temp folder, and is 
     for (const path of [".ssh/id_ed25519", ".config/conch/phone-token", "proj/.env", "push.p12", "AuthKey.p8", "server.pem", "api.key"]) {
       expect(await checkReviewLink(file(path), tmp)).toMatchObject({ ok: false, reason: expect.stringMatching(secret) });
     }
+    // A Keynote deck is one zip named `.key`: a document, publishable. Any other `.key` is a key.
+    const deck = file("talk.key");
+    writeFileSync(deck, Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00]));
+    expect((await checkReviewLink(deck, tmp)).ok).toBe(true);
     symlinkSync(join(tmp, ".ssh/id_ed25519"), join(tmp, "notes.txt"));
     expect(await checkReviewLink(join(tmp, "notes.txt"), tmp)).toMatchObject({ ok: false, reason: expect.stringMatching(secret) });
 

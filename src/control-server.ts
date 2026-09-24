@@ -1108,6 +1108,8 @@ export interface ControlServerOptions {
   onScreenObservation?(observation: ScreenObservation): void;
   /** Show's narration (narration.ts): a `narration-start` that is taken keeps its connection open, as the lease. */
   narration?: Narration;
+  /** The Mac app's answer to a window snapshot the daemon asked for (`review-preview`, review-preview.ts). */
+  onReviewPreview?(message: { request?: unknown; path?: unknown; error?: unknown }): Promise<{ ok: true } | { ok: false; error: string }>;
   ownership?: SocketOwnership;
 }
 
@@ -1259,6 +1261,12 @@ export function createControlServer(options: ControlServerOptions): ControlServe
               : await options.narration.cancel(narration.canvasId);
           }
           sock.end(JSON.stringify(reply) + "\n");
+          return;
+        }
+        // The Mac app's window snapshot, answering the daemon's own request: checked by the broker.
+        if (socketRecord(body) && body.kind === "review-preview") {
+          const answered = options.onReviewPreview ? await options.onReviewPreview(body) : { ok: false, error: "no snapshot is waiting" };
+          sock.end(JSON.stringify(answered.ok ? { kind: "preview-ack" } : { kind: "preview-error", error: answered.error }) + "\n");
           return;
         }
         const value = await sessions.resolve(body);

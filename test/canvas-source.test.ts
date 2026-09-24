@@ -182,13 +182,15 @@ describe("Send", () => {
   });
 
   test("nothing is captured, or the grant asked for, except on an explicit Send with somewhere to send it", () => {
-    for (const capture of ["SCScreenshotManager", "CanvasCapture.still("]) {
-      expect(filesWith(capture), capture).toEqual(["CanvasSend.swift"]);
-    }
+    // The phone's window snapshot is the one other still (window-preview.test.ts): only on the daemon's request, of
+    // the app the session built, and only with a grant already given. It never asks for one.
+    expect(filesWith("SCScreenshotManager")).toEqual(["CanvasSend.swift", "WindowPreview.swift"]);
+    expect(filesWith("CanvasCapture.still(")).toEqual(["CanvasSend.swift"]);
     // Show is the other capture, on its own explicit press (canvas-show-source.test.ts).
-    for (const capture of ["SCShareableContent", "CGRequestScreenCaptureAccess", "CGPreflightScreenCaptureAccess"]) {
-      expect(filesWith(capture), capture).toEqual(["CanvasSend.swift", "CanvasShow.swift"]);
+    for (const capture of ["SCShareableContent", "CGPreflightScreenCaptureAccess"]) {
+      expect(filesWith(capture), capture).toEqual(["CanvasSend.swift", "CanvasShow.swift", "WindowPreview.swift"]);
     }
+    expect(filesWith("CGRequestScreenCaptureAccess")).toEqual(["CanvasSend.swift", "CanvasShow.swift"]);
     expect(send.match(/CanvasCapture\.still\(/g)?.length).toBe(1);
     const sendBody = member(send, "    func send() {");
     expect(sendBody).toContain("CanvasCapture.still(");
@@ -259,7 +261,9 @@ describe("Send", () => {
  */
 describe("agent ink", () => {
   test("the script that finds a selector or a quote only reads the page", () => {
-    const finder = agentInk.slice(agentInk.indexOf("static let finder = \"\"\""), agentInk.indexOf("\"\"\"\n", agentInk.indexOf("static let finder = \"\"\"") + 30));
+    // One script, in the shared package, for the Mac and the phone alike.
+    expect(agentInk).toContain("static let finder = AgentInk.finder");
+    const finder = placing.slice(placing.indexOf("public static let finder = \"\"\""), placing.indexOf("\"\"\"\n", placing.indexOf("public static let finder = \"\"\"") + 30));
     expect(finder.length).toBeGreaterThan(400);
     // Nothing that changes the DOM, styles, the selection, the scroll, or leaves anything behind.
     for (const writes of [

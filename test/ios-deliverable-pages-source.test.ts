@@ -158,7 +158,7 @@ describe("the page reads through the bridge, and never sees the token", () => {
     expect(sheet).toContain("guard case let .local(localKind) = kind, localKind != .page, let link = review.link else { return }");
     const page = between(sheet, "private struct LocalPageView", "private final class PageLoadFailure");
     expect(page).toContain("configuration.setURLSchemeHandler(handler, forURLScheme: url.scheme ?? ConchPagePath.scheme)");
-    expect(sheet).toContain('LocalPageView(handler: .page(review.link ?? "", entry: url, bridge: bridge), url: url, page: page, onFailure: fail)');
+    expect(sheet).toContain('LocalPageView(handler: .page(review.link ?? "", entry: url, bridge: bridge), url: url, page: page, onFailure: fail, ink: ink)');
     // A conch-page address is not something Safari or Share can use.
     expect(between(sheet, "private func webControls(_ url: URL) -> some View {", "/// What a Mac-local page is")).toContain(
       'if url.scheme == "http" || url.scheme == "https" {',
