@@ -422,7 +422,13 @@ final class FogTextTests: XCTestCase {
         // A Mac's debug build: first layout about 190 ms, frames about 7 ms. CI's shared virtual Macs ran the same work
         // up to ten times slower (a 2.2 s first layout, 44 ms typing), so there the budgets only catch a hang, like
         // the #210 freeze that took seconds per keystroke.
-        let slack = ProcessInfo.processInfo.environment["CI"] == nil ? 1.0 : 10.0
+        // A loaded Mac is the same case as CI. With several agents building at once the load average ran
+        // at 72–100 (2026-09-24/25), frames cost 17–23 ms, and this failed gates on changes that never
+        // touched the fog. Above the core count the budgets relax to catching a hang, which a
+        // seconds-per-keystroke freeze still fails by a mile.
+        var load = [0.0]
+        let overloaded = getloadavg(&load, 1) == 1 && load[0] > Double(ProcessInfo.processInfo.activeProcessorCount)
+        let slack = ProcessInfo.processInfo.environment["CI"] != nil ? 10.0 : overloaded ? 4.0 : 1.0
         XCTAssertLessThan(first, 2000 * slack)
         XCTAssertLessThan(replaced, 500 * slack)
         XCTAssertLessThan(typing.reduce(0, +) / Double(typing.count), 16 * slack)
