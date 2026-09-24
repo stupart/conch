@@ -14,7 +14,8 @@ import SwiftUI
 /// drawn from. States: off; armed (the pen is down: the glass takes the pointer and the keys and draws); up with ink
 /// left (the glass lets clicks through again, the ink and the tools stay); sending (`CanvasSend.swift`). Esc lifts the pen
 /// and keeps the ink; Esc again clears it. A new item in the panel — Next, the Ready pill, the switcher — starts a clear
-/// canvas.
+/// canvas. An agent's marks on the review in front (`AgentInkController.swift`) are in the same document, drawn under Tyler's; they
+/// never put the pen down.
 @MainActor
 final class CanvasController: ObservableObject {
     static let shared = CanvasController()
@@ -28,6 +29,10 @@ final class CanvasController: ObservableObject {
     @Published private(set) var document: CanvasDocument?
     /// Why Send didn't go, on the pill until the next thing happens.
     @Published var message: String?
+    /// Whose the agent's marks are, for their labels ("Claude · …").
+    private var agentName = "Claude"
+    /// The agent's marks, faded while what they are on moves under them (`AgentInkController`).
+    private var agentHidden = false
 
     /// In use: the pen is down, or ink is showing. The glass and the pill show only then.
     var inUse: Bool { armed || document?.isEmpty == false }
@@ -78,6 +83,8 @@ final class CanvasController: ObservableObject {
                 .store(in: &subscriptions)
         }
         CanvasHotKey.register()
+        // An agent's marks on what it published, in this same document.
+        AgentInkController.shared.install(store: store)
     }
 
     // MARK: The pen
@@ -163,12 +170,52 @@ final class CanvasController: ObservableObject {
         apply()
     }
 
-    /// A clear canvas: the ink lifts away. The pen stays as it was.
+    /// A clear canvas: the ink lifts away, the agent's with it, and its marks aren't put back. The pen stays as it was.
     func clear() {
+        AgentInkController.shared.stop()
         guard document != nil else { return }
         document = nil
         message = nil
         apply()
+    }
+
+    // MARK: An agent's marks
+
+    /// An agent's marks, placed (`AgentInkController`), in place of any it had drawn: merged by id, so one it still has keeps its
+    /// layer and moves rather than drawing on again. On a display with none of Tyler's ink, they start the canvas there;
+    /// with his ink on another display, they wait. The pen and the glass's click-through are left exactly as they are.
+    func showAgent(_ marks: [CanvasMark], on display: CGDirectDisplayID, frame: CGRect, by name: String) {
+        if document?.anchor.id != display {
+            guard document?.has(.you) != true else {
+                return NSLog("conch: an agent's marks are on another display than Tyler's ink; they wait until it clears")
+            }
+            document = CanvasDocument(anchor: CanvasAnchor(id: display, frame: frame))
+        }
+        agentName = name
+        agentHidden = false
+        document?.merge(agent: marks)
+        if document?.isEmpty == true, !armed { document = nil }
+        apply()
+    }
+
+    /// The agent's marks fade out while what they are on moves, and back once it is still.
+    func hideAgent(_ hidden: Bool) {
+        guard hidden != agentHidden, document?.has(.agent) == true else { return }
+        agentHidden = hidden
+        apply()
+    }
+
+    /// The agent's marks gone, Tyler's left.
+    func clearAgent() {
+        guard document?.has(.agent) == true else { return }
+        document?.merge(agent: [])
+        if document?.isEmpty == true, !armed { document = nil }
+        apply()
+    }
+
+    /// The glass on `display`, while it shows: agent ink judges what is visible by the windows below it.
+    func glassNumber(on display: CGDirectDisplayID) -> Int? {
+        glass.first { $0.ink.display == display && $0.panel.isVisible }?.panel.windowNumber
     }
 
     // MARK: On screen
@@ -211,7 +258,7 @@ final class CanvasController: ObservableObject {
             // underneath takes them back.
             panel.takesKeys = inUse
             panel.ignoresMouseEvents = !armed || sending
-            ink.show(document?.anchor.id == ink.display ? document : nil, armed: armed)
+            ink.show(document?.anchor.id == ink.display ? document : nil, armed: armed, agentHidden: agentHidden, agentName: agentName)
         }
         hiding?.cancel()
         if inUse {
@@ -264,7 +311,8 @@ private struct CanvasPillHost: View {
     let onSize: (CGSize) -> Void
 
     var body: some View {
-        let drawn = canvas.document?.isEmpty == false
+        // Only Tyler's marks are his to undo and to send; the agent's are what he is answering.
+        let drawn = canvas.document?.has(.you) == true
         CanvasToolPill(
             shown: canvas.inUse,
             tool: canvas.tool,
@@ -303,9 +351,16 @@ final class CanvasInkView: NSView {
     private let glow = CAShapeLayer()
     /// This canvas's finished marks, together, so a fresh canvas lifts them away as one.
     private var marks = CALayer()
+    /// Inside it, under Tyler's, the agent's: faded as one while what they are on moves.
+    private var agents = CALayer()
     private let live = CAShapeLayer()
     private var drawn: [CanvasMark.ID: CALayer] = [:]
     private var notes: [CanvasMark.ID: CanvasNoteView] = [:]
+    /// An agent's labels beside its marks.
+    private var labels: [CanvasMark.ID: CanvasNoteView] = [:]
+    /// Each mark as it was drawn, so one that moved is drawn again where it is now.
+    private var seen: [CanvasMark.ID: CanvasMark] = [:]
+    private var agentsHidden = false
     /// The canvas on show, by its id.
     private var shown: String?
     private var drawing: CanvasMark?
@@ -331,6 +386,7 @@ final class CanvasInkView: NSView {
         glow.shadowOffset = .zero
         edge.addSublayer(glow)
         edge.shouldRasterize = true
+        marks.addSublayer(agents)
         for each in [edge, marks, live] { layer?.addSublayer(each) }
     }
 
@@ -356,7 +412,7 @@ final class CanvasInkView: NSView {
     private func layOutLayers() {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        for each in [edge, marks, live] { each.frame = bounds }
+        for each in [edge, marks, agents, live] { each.frame = bounds }
         glow.frame = bounds
         let ring = CGMutablePath()
         ring.addRect(bounds.insetBy(dx: -80, dy: -80))
@@ -371,9 +427,10 @@ final class CanvasInkView: NSView {
 
     // MARK: Showing a canvas
 
-    /// `document` on this display, or nothing. Marks come and go as they are added and undone; a different canvas, or
+    /// `document` on this display, or nothing. Marks come and go by id as they are added, undone and merged: a new one is
+    /// drawn (an agent's drawn on), one that moved is drawn again where it is, without drawing on. A different canvas, or
     /// none, lifts the old one away.
-    func show(_ document: CanvasDocument?, armed: Bool) {
+    func show(_ document: CanvasDocument?, armed: Bool, agentHidden: Bool = false, agentName: String = "Claude") {
         light(armed)
         if document?.id != shown {
             liftAway()
@@ -382,19 +439,21 @@ final class CanvasInkView: NSView {
         guard let document else { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        let present = Set(document.marks.map(\.id))
-        for (id, layer) in drawn where !present.contains(id) {
-            layer.removeFromSuperlayer()
-            drawn[id] = nil
+        let present = Dictionary(document.marks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for id in Array(seen.keys) where !Self.drawnAlike(present[id], seen[id]) {
+            // An agent's mark that is gone rather than moved fades as it goes.
+            remove(id, fading: present[id] == nil && seen[id]?.author == .agent)
         }
-        for (id, note) in notes where !present.contains(id) {
-            note.removeFromSuperview()
-            notes[id] = nil
-            window?.makeFirstResponder(self)
-        }
-        for mark in document.marks where drawn[mark.id] == nil && notes[mark.id] == nil {
+        // An agent's new marks draw on one after another, 60 ms apart.
+        var order = 0
+        for mark in document.marks where seen[mark.id] == nil {
+            seen[mark.id] = mark
+            let fresh = mark.author == .agent && !(drawnBefore.contains(mark.id))
+            let delay = fresh ? Double(order) * 0.06 : 0
+            if fresh { order += 1 }
+            drawnBefore.insert(mark.id)
             if mark.kind == .note {
-                let note = CanvasNoteView(mark, number: document.number(of: mark) ?? 0, in: bounds.size)
+                let note = CanvasNoteView(mark, number: document.number(of: mark) ?? 0, in: bounds.size, by: agentName)
                 note.onText = { [weak controller] text in controller?.setText(text, of: mark.id) }
                 note.onDone = { [weak self] in
                     guard let self else { return }
@@ -402,14 +461,117 @@ final class CanvasInkView: NSView {
                 }
                 addSubview(note)
                 notes[mark.id] = note
-                note.pop()
+                if mark.author == .agent { note.alphaValue = agentsHidden ? 0 : 1 }
+                if fresh || mark.author == .you { note.pop(after: delay) }
             } else {
                 let layer = Self.layer(for: mark, in: bounds.size)
-                marks.addSublayer(layer)
+                (mark.author == .agent ? agents : marks).addSublayer(layer)
                 drawn[mark.id] = layer
+                if fresh { drawOn(layer, mark, after: delay) }
+                if mark.author == .agent, let words = mark.text, !words.isEmpty {
+                    let label = CanvasNoteView(mark, number: 0, in: bounds.size, by: agentName)
+                    addSubview(label)
+                    labels[mark.id] = label
+                    label.alphaValue = agentsHidden ? 0 : 1
+                    // The label pops as its mark is four fifths drawn.
+                    if fresh { label.pop(after: delay + (Self.reduceMotion ? 0 : Self.drawOnTime * 0.8)) }
+                }
             }
         }
         CATransaction.commit()
+        hideAgents(agentHidden)
+    }
+
+    /// Whether a mark still looks as drawn. Tyler's note's words are the typing in its own field, not a redraw.
+    static func drawnAlike(_ now: CanvasMark?, _ then: CanvasMark?) -> Bool {
+        guard let now, let then else { return now == nil && then == nil }
+        return now.kind == then.kind && now.points == then.points && (now.author == .you || now.text == then.text)
+    }
+
+    /// Ids already drawn on in this canvas: moved or faded back, a mark doesn't draw on twice.
+    private var drawnBefore: Set<CanvasMark.ID> = []
+
+    private func remove(_ id: CanvasMark.ID, fading: Bool = false) {
+        seen[id] = nil
+        let layer = drawn.removeValue(forKey: id)
+        let views = [labels.removeValue(forKey: id), notes.removeValue(forKey: id)].compactMap { $0 }
+        if views.contains(where: \.isEditing) { window?.makeFirstResponder(self) }
+        guard fading else {
+            layer?.removeFromSuperlayer()
+            return views.forEach { $0.removeFromSuperview() }
+        }
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 1
+        fade.toValue = 0
+        fade.duration = 0.16
+        CATransaction.begin()
+        CATransaction.setCompletionBlock {
+            layer?.removeFromSuperlayer()
+            views.forEach { $0.removeFromSuperview() }
+        }
+        layer?.opacity = 0
+        layer?.add(fade, forKey: "gone")
+        for view in views {
+            view.layer?.opacity = 0
+            view.layer?.add(fade, forKey: "gone")
+        }
+        CATransaction.commit()
+    }
+
+    static var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+    /// How long an agent's mark takes to draw on (the research's ~400 ms).
+    static let drawOnTime: CFTimeInterval = 0.4
+
+    /// An agent's mark drawn on as a pen would: its ink revealed along its own line (`CanvasInk.spine`) by a mask whose
+    /// stroke grows to its end. Reduce Motion: it fades in instead.
+    private func drawOn(_ layer: CALayer, _ mark: CanvasMark, after delay: CFTimeInterval) {
+        let start = CACurrentMediaTime() + delay
+        guard !Self.reduceMotion, let spine = CanvasInk.spine(of: mark, in: bounds.size) else {
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.fromValue = 0
+            fade.toValue = 1
+            fade.duration = 0.2
+            fade.beginTime = start
+            fade.fillMode = .backwards
+            return layer.add(fade, forKey: "appear")
+        }
+        let reveal = CAShapeLayer()
+        reveal.frame = layer.bounds
+        reveal.path = spine.path
+        reveal.lineWidth = spine.width
+        reveal.lineCap = .round
+        reveal.lineJoin = .round
+        reveal.fillColor = nil
+        reveal.strokeColor = NSColor.black.cgColor
+        layer.mask = reveal
+        let draw = CABasicAnimation(keyPath: "strokeEnd")
+        draw.fromValue = 0
+        draw.toValue = 1
+        draw.duration = Self.drawOnTime
+        draw.beginTime = start
+        draw.fillMode = .backwards
+        // panel-lab's agent ink: cubic-bezier(.3,.1,.2,1).
+        draw.timingFunction = CAMediaTimingFunction(controlPoints: 0.3, 0.1, 0.2, 1)
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak layer] in layer?.mask = nil }
+        reveal.add(draw, forKey: "draw")
+        CATransaction.commit()
+    }
+
+    /// The agent's marks and their labels faded out, or back (120 ms).
+    private func hideAgents(_ hidden: Bool) {
+        guard hidden != agentsHidden else { return }
+        agentsHidden = hidden
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = agents.presentation()?.opacity ?? agents.opacity
+        fade.duration = 0.12
+        agents.opacity = hidden ? 0 : 1
+        agents.add(fade, forKey: "hide")
+        let views = labels.values + notes.values.filter(\.isAgents)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.12
+            for view in views { view.animator().alphaValue = hidden ? 0 : 1 }
+        }
     }
 
     /// A note's words, focused for typing.
@@ -432,14 +594,22 @@ final class CanvasInkView: NSView {
     /// The old ink lifts away, fading and softening (panel-lab's `sweepInk`), rather than vanishing. Reduce Motion keeps
     /// only the fade.
     private func liftAway() {
-        let old = marks, leaving = Array(notes.values)
+        let old = marks, oldAgents = agents, leaving = Array(notes.values) + Array(labels.values)
         marks = CALayer()
         marks.frame = bounds
+        agents = CALayer()
+        agents.frame = bounds
+        marks.addSublayer(agents)
+        agentsHidden = false
         layer?.insertSublayer(marks, below: live)
         drawn = [:]
         notes = [:]
+        labels = [:]
+        seen = [:]
+        drawnBefore = []
         if leaving.contains(where: { $0.isEditing }) { window?.makeFirstResponder(self) }
-        guard old.sublayers?.isEmpty == false || !leaving.isEmpty else { return old.removeFromSuperlayer() }
+        let inked = (old.sublayers ?? []).contains { $0 !== oldAgents } || oldAgents.sublayers?.isEmpty == false
+        guard inked || !leaving.isEmpty else { return old.removeFromSuperlayer() }
         let fade = CASpringAnimation(perceptualDuration: 0.32, bounce: 0)
         fade.keyPath = "opacity"
         fade.fromValue = 1
@@ -486,12 +656,13 @@ final class CanvasInkView: NSView {
         return under
     }
 
-    /// Ink in its author's colour; a highlight in the marker's yellow, multiplied over any ink under it. Over another app
-    /// it can only be translucent: a window can't blend with what is behind it.
+    /// Ink in its author's colour; a highlight in the marker's yellow and an agent's area in a wash of its colour, both
+    /// multiplied over any ink under them. Over another app they can only be translucent: a window can't blend with what
+    /// is behind it.
     static func style(_ layer: CAShapeLayer, for mark: CanvasMark) {
-        layer.fillColor = mark.kind == .highlight ? CanvasInk.highlight.cgColor : CanvasInk.colour(mark.author).cgColor
+        layer.fillColor = CanvasInk.fill(of: mark).cgColor
         layer.strokeColor = nil
-        layer.compositingFilter = mark.kind == .highlight ? "multiplyBlendMode" : nil
+        layer.compositingFilter = CanvasInk.multiplies(mark) ? "multiplyBlendMode" : nil
     }
 
     // MARK: Drawing
@@ -581,20 +752,27 @@ final class CanvasInkView: NSView {
 }
 
 /// A note: its numbered badge on the spot, and beside it the words, typed straight in while the pen is down (panel-lab's
-/// `.pin`). The badge pops on the pop spring from the corner on the spot.
+/// `.pin`). The badge pops on the pop spring from the corner on the spot. An agent's is ✦, its words read-only and led by
+/// its name; and any other mark of an agent's with a label has the words alone, beside it (`CanvasInk.labelSpot`).
 final class CanvasNoteView: NSView, NSTextFieldDelegate {
     var onText: (String) -> Void = { _ in }
     var onDone: () -> Void = {}
+    /// An agent's, faded with its other marks.
+    let isAgents: Bool
     private let spot: CGPoint
     private let room: CGSize
+    /// A note has a badge; a label is the words alone.
+    private let pinned: Bool
     private let badge = CALayer()
     private let bubble = NSVisualEffectView()
     private let field = NSTextField()
     static let gap: CGFloat = 6
     static let widest: CGFloat = 240
 
-    init(_ mark: CanvasMark, number: Int, in size: CGSize) {
-        spot = mark.points.first?.point(in: size) ?? .zero
+    init(_ mark: CanvasMark, number: Int, in size: CGSize, by name: String = "Claude") {
+        pinned = mark.kind == .note
+        isAgents = mark.author == .agent
+        spot = (pinned ? mark.points.first?.point(in: size) : CanvasInk.labelSpot(of: mark, in: size)) ?? .zero
         room = size
         super.init(frame: .zero)
         wantsLayer = true
@@ -620,7 +798,7 @@ final class CanvasNoteView: NSView, NSTextFieldDelegate {
         badge.anchorPoint = CGPoint(x: 0, y: 1)
         badge.addSublayer(shape)
         badge.addSublayer(label)
-        layer?.addSublayer(badge)
+        if pinned { layer?.addSublayer(badge) }
 
         bubble.material = .popover
         bubble.blendingMode = .behindWindow
@@ -639,6 +817,12 @@ final class CanvasNoteView: NSView, NSTextFieldDelegate {
         field.textColor = .labelColor
         field.placeholderString = "Say what to change"
         field.stringValue = mark.text ?? ""
+        if isAgents {
+            // Its name in its colour, then its words (panel-lab's `.note[data-author]`).
+            let words = NSMutableAttributedString(string: "\(name) · ", attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold), .foregroundColor: NSColor(cgColor: CanvasInk.agent.cgColor) ?? .systemPurple])
+            words.append(NSAttributedString(string: mark.text ?? "", attributes: [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.labelColor]))
+            field.attributedStringValue = words
+        }
         field.usesSingleLineMode = false
         field.maximumNumberOfLines = 0
         field.lineBreakMode = .byWordWrapping
@@ -647,6 +831,8 @@ final class CanvasNoteView: NSView, NSTextFieldDelegate {
         field.delegate = self
         bubble.addSubview(field)
         addSubview(bubble)
+        // An agent's pin with nothing to say is its badge alone.
+        bubble.isHidden = isAgents && (mark.text ?? "").isEmpty
         layOut()
     }
 
@@ -665,12 +851,19 @@ final class CanvasNoteView: NSView, NSTextFieldDelegate {
     /// The badge on the spot, the words beside it as wide as they need up to 240 pt; near the screen's right edge, on the
     /// badge's left instead.
     private func layOut() {
-        let side = CanvasInk.pinSide
         let text = field.stringValue.isEmpty ? field.placeholderString ?? "" : field.stringValue
-        let measure = NSAttributedString(string: text, attributes: [.font: field.font ?? .systemFont(ofSize: 13)])
+        let measure = NSAttributedString(string: text, attributes: [.font: NSFont.systemFont(ofSize: 13, weight: isAgents ? .semibold : .regular)])
             .boundingRect(with: NSSize(width: Self.widest - 20, height: 400), options: [.usesLineFragmentOrigin, .usesFontLeading])
         let words = NSSize(width: max(40, ceil(measure.width) + 4), height: ceil(measure.height))
         let size = NSSize(width: words.width + 20, height: words.height + 14)
+        guard pinned else {
+            // A label: the words alone, kept on the screen.
+            frame = NSRect(x: min(max(spot.x, 8), room.width - size.width - 8), y: min(max(spot.y, 8), room.height - size.height - 8), width: size.width, height: size.height)
+            bubble.frame = NSRect(origin: .zero, size: size)
+            field.frame = NSRect(x: 10, y: 7, width: words.width, height: words.height)
+            return
+        }
+        let side = CanvasInk.pinSide
         let leftward = spot.x + side + Self.gap + size.width > room.width - 8
         let width = side + Self.gap + size.width
         frame = NSRect(x: leftward ? spot.x - Self.gap - size.width : spot.x, y: spot.y - side, width: width, height: max(side, size.height))
@@ -682,22 +875,29 @@ final class CanvasNoteView: NSView, NSTextFieldDelegate {
         CATransaction.commit()
     }
 
-    /// In on the pop spring: the badge from half size at its corner, the words fading up beside it. Reduce Motion: a fade.
-    func pop() {
+    /// In on the pop spring, `delay` from now: the badge from half size at its corner, the words fading up beside it (a
+    /// label's growing a little as they come). Reduce Motion: a fade.
+    func pop(after delay: CFTimeInterval = 0) {
         let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let start = CACurrentMediaTime() + delay
         let spring = ConchMotion.pop.resolved(reduceMotion: reduce)
         let grow = CASpringAnimation(perceptualDuration: spring.response, bounce: spring.bounce)
         grow.keyPath = "transform.scale"
-        grow.fromValue = reduce ? 1 : 0.5
+        grow.fromValue = reduce ? 1 : pinned ? 0.5 : 0.85
         grow.toValue = 1
         grow.duration = grow.settlingDuration
+        grow.beginTime = start
+        grow.fillMode = .backwards
         let appear = CABasicAnimation(keyPath: "opacity")
         appear.fromValue = 0
         appear.toValue = 1
         appear.duration = 0.18
+        appear.beginTime = start
+        appear.fillMode = .backwards
         badge.add(grow, forKey: "pop")
         badge.add(appear, forKey: "appear")
         bubble.layer?.add(appear, forKey: "appear")
+        if !pinned { bubble.layer?.add(grow, forKey: "pop") }
     }
 
     func controlTextDidChange(_ notification: Notification) {

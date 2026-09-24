@@ -43,6 +43,41 @@ final class CanvasTests: XCTestCase {
         XCTAssertTrue(document.isEmpty)
     }
 
+    /// An agent's marks aren't Tyler's to undo: undo passes over them to his own.
+    func testUndoLeavesAnAgentsMarks() {
+        var document = CanvasDocument(anchor: anchor)
+        document.add(mark(.pen, at(0, 0), at(5, 5)))
+        document.merge(agent: [mark(.box, at(0, 0), at(10, 10), author: .agent)])
+        XCTAssertEqual(document.undo()?.kind, .pen)
+        XCTAssertNil(document.undo())
+        XCTAssertEqual(document.marks.map(\.author), [.agent])
+    }
+
+    /// A new set of an agent's marks replaces its old ones, by id; Tyler's stay, and come first.
+    func testAnAgentsMarksMergeByIdAndReplaceItsOldOnes() {
+        var document = CanvasDocument(anchor: anchor)
+        let his = mark(.pen, at(0, 0), at(5, 5))
+        document.add(his)
+        let one = CanvasMark(kind: .box, author: .agent, points: [at(0, 0), at(10, 10)], id: "a/1")
+        let two = CanvasMark(kind: .arrow, author: .agent, points: [at(0, 0), at(10, 10)], id: "a/2")
+        document.merge(agent: [one, two])
+        XCTAssertEqual(document.marks.map(\.id), [his.id, "a/1", "a/2"])
+        // Scrolled: the same marks, moved. Still the same ids, so the glass moves them rather than drawing them again.
+        var moved = one
+        moved.points = [at(0, 20), at(10, 30)]
+        document.merge(agent: [moved, two])
+        XCTAssertEqual(document.marks.map(\.id), [his.id, "a/1", "a/2"])
+        XCTAssertEqual(document.marks[1], moved)
+        // A new version's marks: the old ones go.
+        document.merge(agent: [CanvasMark(kind: .pen, author: .agent, points: [at(1, 1), at(2, 2)], id: "b/1")])
+        XCTAssertEqual(document.marks.map(\.id), [his.id, "b/1"])
+        // Only an agent's marks are taken from `agent`; and none clears them.
+        document.merge(agent: [mark(.box, at(0, 0), at(1, 1))])
+        XCTAssertEqual(document.marks.map(\.id), [his.id])
+        XCTAssertFalse(document.has(.agent))
+        XCTAssertTrue(document.has(.you))
+    }
+
     func testNotesAreNumberedPerAuthorInTheOrderTheyWerePinned() {
         var document = CanvasDocument(anchor: anchor)
         let first = mark(.note, at(1, 1)), agent = mark(.note, at(2, 2), author: .agent), second = mark(.note, at(3, 3))
@@ -254,8 +289,17 @@ final class CanvasTests: XCTestCase {
             2. arrow (10%,80%)→(30%,60%): "move here"
             4. note (90%,4%): "and this"
             Clean screen + marks: /c/raw.png, /c/canvas.json
+            To mark your answer on this canvas, frame your marks {canvas: "\(document.id)"}.
             """
         )
+    }
+
+    /// A note Tyler pins on the agent's own mark names it as the agent's, so it knows which it is answering.
+    func testANoteOnAnAgentsMarkCallsItYours() {
+        var document = CanvasDocument(anchor: anchor, id: "c1", at: 0)
+        document.merge(agent: [CanvasMark(kind: .box, author: .agent, points: [at(520, 40), at(720, 140)], id: "a/1")])
+        document.add(mark(.note, at(600, 90), text: "bigger still"))
+        XCTAssertEqual(CanvasPrompt.notes(document), ["1. your box (62%,18%): \"bigger still\""])
     }
 
     func testWithoutAScreenThePromptSaysWhy() {
@@ -264,7 +308,8 @@ final class CanvasTests: XCTestCase {
         let text = CanvasPrompt.text(for: document, about: "Safari", picture: "/c/flat.png", clean: nil, marks: "/c/canvas.json")
         XCTAssertEqual(text.components(separatedBy: "\n").first, "/c/flat.png")
         XCTAssertTrue(text.contains("[canvas] Tyler marked up Safari.\n"))
-        XCTAssertTrue(text.hasSuffix("the picture is his marks alone. Marks: /c/canvas.json"))
+        XCTAssertTrue(text.contains("the picture is his marks alone. Marks: /c/canvas.json\n"))
+        XCTAssertTrue(text.hasSuffix("{canvas: \"\(document.id)\"}."), "the id to answer on, whatever else")
         XCTAssertFalse(text.contains("raw.png"))
     }
 
