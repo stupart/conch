@@ -428,7 +428,8 @@ describe("new work does not replace what you are reading", () => {
     // filling the conch window and sharing it; neither of those reaches the thing the
     // deliverable actually is. It no longer reads the stage at all — one thing, said once.
     expect(review).toContain('actionSymbol: "arrow.up.forward.app"');
-    expect(review).toContain('actionHelp: "Open where it lives (\u23183)"');
+    // One thing, said once — named for Figma when that is where it goes (`FigmaLink`).
+    expect(review).toContain('actionHelp: opensInFigma ? "Open in Figma (\u23183)" : "Open where it lives (\u23183)"');
     expect(review).toContain("action: item.link == nil ? nil : onOpenInPlace,");
     expect(review).not.toContain("stage == .deliverable");
     expect(review).not.toContain("let stage: StageMode");

@@ -72,8 +72,10 @@ struct InlineReviewView: View {
             // artifact 'in the wild'". It no longer depends on the stage at all, so it says one
             // thing and does one thing.
             actionSymbol: "arrow.up.forward.app",
-            actionHelp: "Open where it lives (⌘3)",
-            actionAccessibilityLabel: "Open the deliverable where it lives",
+            // Where a Figma file lives is Figma (`FigmaLink`; `openLink` hands it over), and a
+            // private one is often a sign-in wall in here — so the way out says where it goes.
+            actionHelp: opensInFigma ? "Open in Figma (⌘3)" : "Open where it lives (⌘3)",
+            actionAccessibilityLabel: opensInFigma ? "Open the design in Figma" : "Open the deliverable where it lives",
             // The page you are LOOKING AT, not the one that was filed. "Open in browser" sat
             // one row below doing exactly this while the arrow opened the original link, so the
             // two controls looked like duplicates and quietly disagreed. One control now.
@@ -81,6 +83,11 @@ struct InlineReviewView: View {
             isWebLoading: $isWebLoading,
             liveAddress: $liveAddress
         )
+    }
+
+    /// Read from where the pane IS, as the arrow opens.
+    private var opensInFigma: Bool {
+        URL(string: liveAddress ?? item.link ?? "").flatMap(FigmaLink.appURL(for:)) != nil
     }
 }
 
@@ -852,6 +859,8 @@ enum DeliverableSource: Equatable {
     // "conch can't show a zip".
     private static let unpreviewableExtensions = Set([
         "zip", "gz", "tar", "tgz", "dmg", "pkg", "app", "bin", "exe",
+        // A Figma file saved to disk: only Figma reads it, and the arrow opens it there.
+        "fig",
     ])
     // Types that are TEXT to a person even when they aren't .txt. Everything
     // else local still falls through to the web view, which handles .html and

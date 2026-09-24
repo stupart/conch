@@ -292,6 +292,37 @@ public enum DeliverableGroups {
     }
 }
 
+/// A Figma file, addressed to the Figma app rather than the browser.
+///
+/// Where a Figma design lives is Figma, where you are signed in. The review pane shows the web
+/// app, but it keeps its own cookies, apart from the browser and the app, so a private file there
+/// is Figma's "Want to check out this file?" sign-in until you sign in there too. The way out has
+/// to reach the app.
+///
+/// `figma://design/KEY/Name?node-id=…` is how: the desktop app swaps `figma://` for
+/// `https://www.figma.com/` and opens the file on the frame. Only the addresses that are a
+/// file — a design, the older `/file/`, a prototype, a FigJam board — since the app does
+/// nothing visible with Figma's other pages. The host rule is the daemon's own for `design`
+/// (`inferDeliverableKind`); keyed on the link, not the kind, because an agent may call a
+/// PNG mockup a design, and an older daemon sends no kind at all.
+public enum FigmaLink {
+    private static let fileKinds: Set<String> = ["design", "file", "proto", "board"]
+
+    public static func appURL(for url: URL) -> URL? {
+        guard let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http",
+              let host = url.host?.lowercased(), host == "figma.com" || host.hasSuffix(".figma.com"),
+              url.pathComponents.count > 2, fileKinds.contains(url.pathComponents[1]),
+              var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return nil
+        }
+        let kind = url.pathComponents[1]
+        parts.scheme = "figma"
+        parts.host = kind
+        parts.percentEncodedPath = String(parts.percentEncodedPath.dropFirst(kind.count + 1))
+        return parts.url
+    }
+}
+
 /// What the workspace writes down between launches: the session in view and how each one is
 /// presented. The model encodes it; the app keeps it (UserDefaults on the Mac) and hands it back.
 ///

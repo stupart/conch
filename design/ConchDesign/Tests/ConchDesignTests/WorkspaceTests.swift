@@ -399,4 +399,34 @@ extension WorkspaceTests {
         XCTAssertNil(model.viewing)
         XCTAssertEqual(model.presentation(for: "a"), SessionPresentation())
     }
+
+    // MARK: - A Figma file, handed to Figma
+
+    private func figmaApp(_ link: String) -> String? {
+        FigmaLink.appURL(for: URL(string: link)!)?.absoluteString
+    }
+
+    /// The desktop app swaps `figma://` for `https://www.figma.com/`, so the address must come
+    /// back whole: the file, its name as it was encoded, and the frame it was filed on.
+    func testAFigmaFileOpensInTheAppOnTheSameFrame() {
+        XCTAssertEqual(
+            figmaApp("https://www.figma.com/design/zTXhi1WgpM7IEty8nEPX7G/Asset-Generator?node-id=519-3"),
+            "figma://design/zTXhi1WgpM7IEty8nEPX7G/Asset-Generator?node-id=519-3"
+        )
+        XCTAssertEqual(figmaApp("https://figma.com/file/KEY/My%20File#frame"), "figma://file/KEY/My%20File#frame")
+        XCTAssertEqual(figmaApp("https://www.figma.com/proto/KEY/Flow?page-id=1"), "figma://proto/KEY/Flow?page-id=1")
+        XCTAssertEqual(figmaApp("https://www.figma.com/board/KEY"), "figma://board/KEY")
+        XCTAssertEqual(figmaApp("https://embed.figma.com/design/KEY/Name"), "figma://design/KEY/Name")
+    }
+
+    /// Only a file: the app does nothing visible with Figma's other pages, and a lookalike host
+    /// or a page that merely mentions Figma is not Figma.
+    func testOnlyAFigmaFileIsHandedToTheApp() {
+        XCTAssertNil(figmaApp("https://www.figma.com/pricing"))
+        XCTAssertNil(figmaApp("https://www.figma.com/design"))
+        XCTAssertNil(figmaApp("https://www.figma.com/community/file/123"))
+        XCTAssertNil(figmaApp("https://notfigma.com/design/KEY/Name"))
+        XCTAssertNil(figmaApp("https://example.com/design/KEY/figma.com"))
+        XCTAssertNil(figmaApp("file:///Users/me/Asset.fig"))
+    }
 }

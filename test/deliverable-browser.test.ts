@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 /**
  * The deliverable pane browses the web.
@@ -82,5 +84,144 @@ describe("the pane browses, and says where it is", () => {
   test("a typed destination wins over the filed link, without losing it", () => {
     expect(review).toContain("private var shownLink: String { destination ?? link }");
     expect(review).toContain("link: shownLink,");
+  });
+});
+
+/**
+ * A page's own frames (Tyler, 2026-09-25): a Figma design in the pane came up as
+ * "Link blocked · about:blank", the page behind the card gone. Figma's web app, and Google's
+ * sign-in page, build frames inside themselves at about:blank; the policy refused every scheme
+ * but http, https and the one file, and a refusal in ANY frame replaced the whole pane.
+ */
+describe("a page's own frames", () => {
+  const raw = source("mac-app/conch-mac/WebView.swift");
+  const swiftBin = Bun.which("swift");
+
+  /**
+   * The policy itself, run under `swift` rather than pinned by its spelling. It reads nothing
+   * but the URL, the frame and the one surfaced file, so it lifts out whole.
+   */
+  test.skipIf(!swiftBin)("what each frame may load", () => {
+    const start = raw.indexOf("private func navigationPolicy(for destination: URL, inSubframe: Bool) -> NavigationPolicy {");
+    const end = raw.indexOf("private func refuseNavigation(", start);
+    const enumStart = raw.indexOf("private enum NavigationPolicy {");
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    expect(enumStart).toBeGreaterThan(-1);
+    const policy = raw.slice(start, end).replace(/private /g, "");
+    const kinds = raw.slice(enumStart, raw.indexOf("}", enumStart) + 1).replace(/private /g, "");
+
+    const cases: [string, string, boolean][] = [
+      ["web", "https://www.figma.com/design/KEY/Name?node-id=519-3", false],
+      ["web", "https://www.figma.com/design/KEY/Name", true],
+      // The two about: pages a page builds frames from, in any frame.
+      ["web", "about:blank", true],
+      ["web", "about:srcdoc", true],
+      ["web", "about:blank", false],
+      // The rest of about: is the browser's own pages.
+      ["web", "about:settings", true],
+      ["web", "about:config", false],
+      // What a page made itself, in a frame — never as the page.
+      ["web", "blob:https://www.figma.com/0c1f5e2a", true],
+      ["web", "data:text/html,<p>hi</p>", true],
+      ["web", "blob:https://www.figma.com/0c1f5e2a", false],
+      ["web", "data:text/html,<p>hi</p>", false],
+      ["web", "javascript:alert(1)", true],
+      ["web", "figma://design/KEY/Name", true],
+      // The file rule, unchanged — and not loosened for a frame.
+      ["file", "file:///tmp/review/page.html", false],
+      ["file", "file:///tmp/review/page.html", true],
+      ["file", "file:///etc/passwd", false],
+      ["file", "file:///etc/passwd", true],
+      ["web", "file:///tmp/review/page.html", true],
+    ];
+    const dir = mkdtempSync(join(tmpdir(), "conch-pane-policy-"));
+    const file = join(dir, "main.swift");
+    writeFileSync(file, [
+      "import Foundation",
+      "struct Pane {",
+      "  var surfacedURL: URL?",
+      policy,
+      kinds,
+      "}",
+      'let panes = ["web": Pane(surfacedURL: URL(string: "https://www.figma.com/design/KEY/Name")), "file": Pane(surfacedURL: URL(fileURLWithPath: "/tmp/review/page.html"))]',
+      "func say(_ pane: String, _ link: String, _ inSubframe: Bool) {",
+      "  switch panes[pane]!.navigationPolicy(for: URL(string: link)!, inSubframe: inSubframe) {",
+      '  case .allow: print("allow")',
+      '  case let .refuse(message): print("refuse: " + message)',
+      "  }",
+      "}",
+      ...cases.map(([pane, link, inSubframe]) => `say(${JSON.stringify(pane)}, ${JSON.stringify(link)}, ${inSubframe})`),
+    ].join("\n"));
+    try {
+      const run = Bun.spawnSync([swiftBin!, file], { stdout: "pipe", stderr: "pipe" });
+      if (run.exitCode !== 0) throw new Error(`swift exited ${run.exitCode}: ${run.stderr.toString()}`);
+      expect(run.stdout.toString().trim().split("\n")).toEqual([
+        "allow",
+        "allow",
+        "allow",
+        "allow",
+        "allow",
+        "refuse: The about URL scheme is not allowed in the review.",
+        "refuse: The about URL scheme is not allowed in the review.",
+        "allow",
+        "allow",
+        "refuse: The blob URL scheme is not allowed in the review.",
+        "refuse: The data URL scheme is not allowed in the review.",
+        "refuse: The javascript URL scheme is not allowed in the review.",
+        "refuse: The figma URL scheme is not allowed in the review.",
+        "allow",
+        "allow",
+        "refuse: Local file navigation is limited to the exact file published for review.",
+        "refuse: Local file navigation is limited to the exact file published for review.",
+        "refuse: Local file navigation is limited to the exact file published for review.",
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  /** The card replaces the whole pane, so it is the PAGE's to raise, never one of its frames'. */
+  test("a refused frame is cancelled quietly, never the pane's error card", () => {
+    expect(web).toContain("let inSubframe = navigationAction.targetFrame?.isMainFrame == false");
+    expect(web).toContain("switch navigationPolicy(for: destination, inSubframe: inSubframe) {");
+    expect(web).toMatch(/refuseNavigation\(\s*to: nil,\s*message: "The page requested a destination with no valid URL\.",\s*inSubframe: inSubframe\s*\)/);
+    expect(web).toContain("refuseNavigation(to: destination, message: message, inSubframe: inSubframe)");
+    // The quiet return comes BEFORE anything that raises the card.
+    const refuse = web.slice(web.indexOf("private func refuseNavigation("));
+    expect(refuse).toMatch(/^private func refuseNavigation\(to destination: URL\?, message: String, inSubframe: Bool\) \{\s*guard !inSubframe else \{\s*NSLog\([^)]*\)\s*return\s*\}/);
+    expect(refuse.indexOf("return\n")).toBeLessThan(refuse.indexOf("parent.onNavigationFailure("));
+  });
+
+  /** A window opened blank is filled in by its opener, which this view never hands back. */
+  test("a popup opened at about:blank does not blank the page", () => {
+    expect(web).toMatch(/if navigationAction\.targetFrame == nil,\s*navigationAction\.request\.url\?\.absoluteString != "about:blank" \{\s*activeNavigation = webView\.load\(navigationAction\.request\)/);
+  });
+});
+
+/**
+ * Where a Figma design lives is Figma. In the pane it is the web app, which for a private file
+ * is a sign-in wall until you sign in there too (the pane keeps its own cookies) — so the way
+ * out reaches the desktop app, by `figma://` since the app does not claim figma.com links.
+ * `FigmaLink` itself is tested in ConchDesign's WorkspaceTests.
+ */
+describe("a Figma file opens in Figma", () => {
+  const store = swift("mac-app/conch-mac/StateStore.swift");
+  const door = store.slice(store.indexOf("func openLink("), store.indexOf("private var errorStateSnapshot"));
+
+  test("the one door hands a Figma file to the app when it is installed, before anything else reads the url", () => {
+    expect(door).toContain("var url = LinkTarget.url(for: link, cwd: cwd)");
+    expect(door).toMatch(/if let app = FigmaLink\.appURL\(for: url\), NSWorkspace\.shared\.urlForApplication\(toOpen: app\) != nil \{\s*url = app\s*\}/);
+    expect(door.indexOf("FigmaLink.appURL")).toBeLessThan(door.indexOf("let target ="));
+  });
+
+  test("the pane's way out says so, read from where the pane is", () => {
+    expect(review).toContain('actionHelp: opensInFigma ? "Open in Figma (⌘3)" : "Open where it lives (⌘3)"');
+    expect(review).toContain('URL(string: liveAddress ?? item.link ?? "").flatMap(FigmaLink.appURL(for:)) != nil');
+  });
+
+  test("a .fig on disk is named as something only Figma reads, not fed to WebKit", () => {
+    const unpreviewable = review.slice(review.indexOf("private static let unpreviewableExtensions"));
+    expect(unpreviewable.slice(0, unpreviewable.indexOf("])"))).toContain('"fig"');
   });
 });
