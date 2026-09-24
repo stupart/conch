@@ -231,6 +231,71 @@ final class ConchDesignTests: XCTestCase {
         XCTAssertNil(ReviewScene.next(after: "a@1", in: [], opened: []))
     }
 
+    /// Every deliverable a ready session holds is in the queue, not only its newest: the walk interleaves two sessions'
+    /// by when each was filed, reaches an older one still unopened, and comes round.
+    func testTheQueueWalksEveryHeldDeliverableAcrossSessions() {
+        // Session a holds two, b one; b's was filed between a's.
+        let held: [(key: String, at: Double)] = [("a#2", 30), ("a#1", 10), ("b#1", 20)]
+        XCTAssertEqual(ReviewScene.next(after: nil, in: held, opened: []), "a#1")
+        XCTAssertEqual(ReviewScene.next(after: "a#1", in: held, opened: ["a#1"]), "b#1")
+        XCTAssertEqual(ReviewScene.next(after: "b#1", in: held, opened: ["a#1", "b#1"]), "a#2")
+        // a's older one, opened on another device, is passed over for the one nobody has seen.
+        XCTAssertEqual(ReviewScene.next(after: nil, in: held, opened: ["a#1", "b#1"]), "a#2")
+        // All seen: round them all again, oldest first.
+        XCTAssertEqual(ReviewScene.next(after: "a#2", in: held, opened: ["a#1", "b#1", "a#2"]), "a#1")
+    }
+
+    /// Previous goes back through what was seen, in filing order, opened or not, round to the newest.
+    func testPreviousGoesBackThroughWhatWasSeen() {
+        let held: [(key: String, at: Double)] = [("c", 3), ("a", 1), ("b", 2)]
+        XCTAssertEqual(ReviewScene.previous(before: "b", in: held), "a")
+        XCTAssertEqual(ReviewScene.previous(before: "a", in: held), "c")
+        // Nothing yet, or a review no longer ready: the newest.
+        XCTAssertEqual(ReviewScene.previous(before: nil, in: held), "c")
+        XCTAssertEqual(ReviewScene.previous(before: "gone", in: held), "c")
+        XCTAssertNil(ReviewScene.previous(before: "a", in: []))
+        // Next after Previous goes on to the unopened, not back to the one just left.
+        XCTAssertEqual(ReviewScene.next(after: "a", in: held, opened: ["a", "b"]), "c")
+    }
+
+    /// Tyler: "maybe just shows fullscreen text transcript / writer convo if there is no content". A pick in the panel
+    /// with nothing to open is the session's words, full screen; a link that opens, or a scene asked for by name, is not.
+    func testAPanelPickWithNothingToOpenShowsTheWords() {
+        let page = URL(string: "https://example.com/pull/1")!
+        let file = URL(fileURLWithPath: "/tmp/guide.md")
+        let there: (String) -> Bool = { _ in true }
+        let gone: (String) -> Bool = { _ in false }
+        // No review at all, or one with no link: the words.
+        XCTAssertTrue(ReviewScene.panelShowsWords(hasReview: false, kind: .auto, link: nil, fileExists: there))
+        XCTAssertTrue(ReviewScene.panelShowsWords(hasReview: true, kind: .auto, link: nil, fileExists: there))
+        XCTAssertTrue(ReviewScene.panelShowsWords(hasReview: true, kind: .link, link: nil, fileExists: there))
+        // A file that has gone, or a link that is neither a page nor a file, has nothing to open either.
+        XCTAssertTrue(ReviewScene.panelShowsWords(hasReview: true, kind: .auto, link: file, fileExists: gone))
+        XCTAssertTrue(ReviewScene.panelShowsWords(hasReview: true, kind: .auto, link: URL(string: "mailto:a@b.c"), fileExists: there))
+        // Something to open: the pill's scene.
+        XCTAssertFalse(ReviewScene.panelShowsWords(hasReview: true, kind: .auto, link: page, fileExists: gone))
+        XCTAssertFalse(ReviewScene.panelShowsWords(hasReview: true, kind: .link, link: file, fileExists: there))
+        // The terminal, or conch's window, asked for by name, stays what was asked for, link or none.
+        XCTAssertFalse(ReviewScene.panelShowsWords(hasReview: true, kind: .terminal, link: nil, fileExists: there))
+        XCTAssertFalse(ReviewScene.panelShowsWords(hasReview: true, kind: .conversation, link: nil, fileExists: there))
+    }
+
+    /// The panel's switcher lists ready for you first, then working, then the rest, each group as the daemon sent it; and
+    /// an item that is only whitespace says nothing.
+    func testTheSwitcherListsReadyThenWorkingThenTheRest() {
+        let sessions = [
+            FogSession(id: "idle", label: "Idle", agent: "Claude", standing: .other),
+            FogSession(id: "w1", label: "Build", agent: "Codex", standing: .working),
+            FogSession(id: "r1", label: "Arch", agent: "Claude", item: "The invite page", standing: .ready),
+            FogSession(id: "w2", label: "Docs", agent: "Claude", standing: .working),
+            FogSession(id: "r2", label: "Dayloop", agent: "Claude", standing: .ready),
+        ]
+        XCTAssertEqual(FogSession.ordered(sessions).map(\.id), ["r1", "r2", "w1", "w2", "idle"])
+        XCTAssertEqual(sessions[2].item, "The invite page")
+        XCTAssertNil(FogSession(id: "x", label: "X", agent: "Claude", item: " \n ").item)
+        XCTAssertNil(FogSession(id: "x", label: "X", agent: "Claude").item)
+    }
+
     @MainActor
     func testOnlyAReadyPillTakesAClick() {
         XCTAssertTrue(ControlBar(state: .ready, detail: "2 sessions", mode: .constant(.talk), onTap: {}).taps)

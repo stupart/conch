@@ -174,6 +174,15 @@ final class FloatingPanels: ObservableObject {
     /// The session the Ready pill last brought forward. The conversation stays on it, whatever the voice does, until the
     /// pill is clicked again or another session is picked (`picked`).
     @Published var staged: SessionRow.ID?
+    /// Where the Ready pill and the panel's Previous and Next are in what is ready: one walk, so they agree.
+    let queue = ReviewQueue()
+    /// The panel's session switcher is open. Here rather than in the view, so a press anywhere else on the fog, which is
+    /// AppKit's (`pressed`), closes it.
+    @Published var switching = false
+    /// The reply line shows (`ConchStatusItem.showReplyLineKey`).
+    @Published private(set) var showsReply = true
+    /// Full screen and back on the morph spring: the frame it left, the frame it is going to, and how far along it is.
+    private var morphing: (from: NSRect, to: NSRect, progress: CGFloat, velocity: CGFloat)?
     /// Where the fog is, at what size, and how it is moving; kept through collapsing and full screen.
     private var motion = FogMotion(size: CGSize(width: 900, height: 640), corner: .bottomLeading, in: .zero)
     /// Where the fog's buttons and reply line are (`FogControls`): a press there is theirs.
@@ -213,7 +222,7 @@ final class FloatingPanels: ObservableObject {
             panel.hasShadow = false
         }
 
-        let bar = FirstClickHostingView(rootView: ControlBarHost(store: store, panels: self, onSize: { [weak self] size in self?.fitControlBar(to: size) }))
+        let bar = FirstClickHostingView(rootView: ControlBarHost(store: store, queue: queue, panels: self, onSize: { [weak self] size in self?.fitControlBar(to: size) }))
         controlBar.contentView = bar
         place(controlBar, name: Self.controlBarFrameName, size: bar.fittingSize) { screen, size in
             // Top centre, just under the menu bar.
@@ -247,7 +256,7 @@ final class FloatingPanels: ObservableObject {
         fog.acceptsMouseMovedEvents = true
         fog.contentView = container
         lookHost = LookHostingView(rootView: FogLookHost(store: store, panels: self))
-        words = FirstClickHostingView(rootView: ConversationFogHost(store: store, panels: self, history: store.overlayHistory))
+        words = FirstClickHostingView(rootView: ConversationFogHost(store: store, panels: self, queue: queue, history: store.overlayHistory))
         for view in [blur, lookHost, words] {
             view.frame = container.bounds
             view.autoresizingMask = [.width, .height]
@@ -324,6 +333,12 @@ final class FloatingPanels: ObservableObject {
     private func showWhatIsOn() {
         let defaults = UserDefaults.standard
         setCollapsed(defaults.bool(forKey: Self.conversationCollapsedKey))
+        let reply = defaults.bool(forKey: ConchStatusItem.showReplyLineKey)
+        if reply != showsReply {
+            showsReply = reply
+            // The look thickens where the reply line was, or where it is now.
+            container.run(true)
+        }
         show(controlBar, defaults.bool(forKey: ConchStatusItem.showControlBarKey))
         show(fog, defaults.bool(forKey: ConchStatusItem.showConversationKey))
     }
@@ -356,7 +371,7 @@ final class FloatingPanels: ObservableObject {
         let strength = min(max(defaults.double(forKey: Look.blurKey), 0), 1)
         if strength != blurStrength {
             blurStrength = strength
-            if !isCollapsed, !isFullScreen { blur.maskImage = blurMask() }
+            if !isCollapsed, !isFullScreen, !blur.isHidden { blur.maskImage = blurMask() }
         }
         let systemDark = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
         let dark: CGFloat = FogLook.isDark(defaults.string(forKey: Look.appearanceKey), systemDark: systemDark) ? 1 : 0
@@ -402,6 +417,9 @@ final class FloatingPanels: ObservableObject {
     private func setCollapsed(_ collapsed: Bool) {
         guard collapsed != isCollapsed else { return }
         if collapsed, isFullScreen { toggleFullScreen() }
+        // Its frame is set here, not by a morph still on its way.
+        morphing = nil
+        switching = false
         isCollapsed = collapsed
         guard let screen = screen() else { return }
         // Whatever it was doing ends in its corner, where it opens again.
@@ -415,26 +433,30 @@ final class FloatingPanels: ObservableObject {
         } else {
             fog.setFrameAutosaveName(Self.conversationFrameName)
             blur.isHidden = !Self.showsFog || (Self.usesGlass && !isFullScreen)
+            // Its mask waited while it was hidden (`setLook`).
+            if !blur.isHidden { blur.maskImage = blurMask() }
         }
     }
 
-    /// Command-Return or the fog's button: fill the screen, or dock back in its corner at the size it had.
+    /// Command-Return, the fog's button, or a pick in it with nothing to open (`showWords`): fill the screen, or dock back
+    /// in its corner at the size it had.
     func toggleFullScreen() {
         guard let screen = screen() else { return }
         dock(corner, on: screen)
-        let animate = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         if isFullScreen {
             isFullScreen = false
             let frame = FogDock.frame(size: motion.size, corner: corner, in: screen.frame)
-            fog.setFrame(frame, display: true, animate: animate)
-            // Saved again only once it is back, so the next launch never restores a full-screen frame.
-            fog.setFrameAutosaveName(Self.conversationFrameName)
+            morph(to: frame)
             updateInsets(frame, on: screen)
-            blur.maskImage = blurMask()
+            // Hidden again under the glass, as at launch; left showing, it stayed on behind the docked panel after the
+            // first full screen, its mask redrawn every frame of a drag.
+            blur.isHidden = !Self.showsFog || Self.usesGlass
+            if !blur.isHidden { blur.maskImage = blurMask() }
         } else {
             fog.setFrameAutosaveName("")
-            fog.setFrame(screen.frame, display: true, animate: animate)
+            // Full screen before the morph starts, so a morph that lands at once (Reduce Motion) never saves this frame.
             isFullScreen = true
+            morph(to: screen.frame)
             // The glass panel is a rounded rect in a corner; full screen is the whole screen, so `FogLookHost` leaves
             // it out and the behind-window blur comes back to soften the work under the words. Without it the only
             // thing painting was ConversationFog's wash — a gradient over an UNBLURRED desktop, which is why the text
@@ -444,6 +466,35 @@ final class FloatingPanels: ObservableObject {
             updateInsets(screen.frame, on: screen)
             blur.maskImage = nil
         }
+    }
+
+    /// A pick in the panel with nothing to open: that session's words, full screen (`ReviewScene.panelShowsWords`).
+    func showWords() {
+        if !isFullScreen { toggleFullScreen() }
+    }
+
+    /// A pick in the panel that opens something elsewhere: the fog docks first, so it isn't left over what comes forward.
+    func dockForScene() {
+        if isFullScreen { toggleFullScreen() }
+    }
+
+    /// The fog's frame to `target` on the morph spring (ConchMotion's for full screen), stepped on the display's frames
+    /// with the rest of its motion; at once under Reduce Motion. It was AppKit's own resize animation, which no spring
+    /// could tune.
+    private func morph(to target: NSRect) {
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            morphing = nil
+            fog.setFrame(target, display: true)
+            return landed()
+        }
+        morphing = (from: fog.frame, to: target, progress: 0, velocity: 0)
+        container.run(true)
+    }
+
+    /// Docked again, it is saved again: only once it is back, so the next launch never restores a frame from full screen
+    /// or from on the way.
+    private func landed() {
+        if !isFullScreen, !isCollapsed { fog.setFrameAutosaveName(Self.conversationFrameName) }
     }
 
     // MARK: Docking
@@ -460,7 +511,8 @@ final class FloatingPanels: ObservableObject {
     private func apply() {
         fog.alphaValue = 1 - (1 - ConchMotion.flightOpacity) * motion.flying
         if abs(motion.flying - throwMotion) > 0.01 || (motion.flying == 0 && throwMotion != 0) { throwMotion = motion.flying }
-        guard !isCollapsed, !isFullScreen else { return layOut(margin: EdgeInsets()) }
+        // Mid-morph the morph has the frame.
+        guard !isCollapsed, !isFullScreen, morphing == nil else { return layOut(margin: EdgeInsets()) }
         if motion.corner != corner { corner = motion.corner }
         if motion.isMoving != floating { floating = motion.isMoving }
         if let screen = NSScreen.screens.first(where: { $0.frame == motion.screen }) {
@@ -468,7 +520,8 @@ final class FloatingPanels: ObservableObject {
         }
         var next = FogLook(motion, insets: insets)
         (next.resizeHover, next.darkness, next.tint, next.colour, next.scrim) = (resizeHover, darkness, look.tint, look.colour, look.scrim)
-        next.replyHeight = text.replyHeight
+        // With no reply line, the look thickens behind the newest words themselves.
+        next.replyHeight = showsReply ? text.replyHeight : 0
         setLook(next)
         // The glass ends at its own rounded edge and the window's shadow is drawn from that shape, so the window is
         // exactly the fog: no margin to reach into, and nothing for the saved frame to grow by on the next launch.
@@ -488,12 +541,14 @@ final class FloatingPanels: ObservableObject {
         words.frame = CGRect(x: 0, y: 0, width: bounds.width - margin.leading - margin.trailing, height: bounds.height - margin.top - margin.bottom)
     }
 
-    /// A new look, and the blur's mask drawn again for it.
+    /// A new look, and the blur's mask drawn again for it: only while the blur shows. On Liquid Glass it is hidden but for
+    /// full screen, and drawing its mask on every frame of a drag drew an image nobody saw (`setCollapsed` draws it on the
+    /// way back).
     private func setLook(_ next: FogLook) {
         guard next != look else { return }
         look = next
         guard !isCollapsed, !isFullScreen else { return }
-        blur.maskImage = blurMask()
+        if !blur.isHidden { blur.maskImage = blurMask() }
         let appearance = NSAppearance(named: next.darkness > 0.5 ? .darkAqua : .aqua)
         if blur.appearance?.name != appearance?.name { blur.appearance = appearance }
     }
@@ -547,6 +602,8 @@ final class FloatingPanels: ObservableObject {
 
     /// Pressed near any edge, text included, the fog resizes from its docked corner; in the middle it moves.
     func pressed() {
+        // A press anywhere but the switcher closes it, as a click outside a menu does.
+        if switching { switching = false }
         motion.press(at: NSEvent.mouseLocation, time: ProcessInfo.processInfo.systemUptime)
         container.run(true)
     }
@@ -575,6 +632,11 @@ final class FloatingPanels: ObservableObject {
         NSCursor.frameResize(position: free, directions: .all).set()
     }
 
+    /// `t` of the way from one frame to another; past 1 it overshoots, as the spring does.
+    private static func frame(from a: NSRect, to b: NSRect, at t: CGFloat) -> NSRect {
+        NSRect(x: a.minX + (b.minX - a.minX) * t, y: a.minY + (b.minY - a.minY) * t, width: a.width + (b.width - a.width) * t, height: a.height + (b.height - a.height) * t)
+    }
+
     /// One display frame: the motion stepped, and the fog put where it is.
     func step(dt: Double) {
         // The button came up somewhere we never heard about (another app, a lost event): the gesture ends here.
@@ -590,8 +652,14 @@ final class FloatingPanels: ObservableObject {
             hoverVelocity = 0
         }
         let words = text.step(dt: dt, now: ProcessInfo.processInfo.systemUptime, reduceMotion: motion.reduceMotion)
+        if var morph = morphing {
+            let done = ConchMotion.morph.step(&morph.progress, velocity: &morph.velocity, to: 1, dt: dt)
+            morphing = done ? nil : morph
+            fog.setFrame(done ? morph.to : Self.frame(from: morph.from, to: morph.to, at: morph.progress), display: true)
+            if done { landed() }
+        }
         apply()
-        if motion.isSettled, darkness == darkTarget, resizeHover == hoverTarget, !words { container.run(false) }
+        if motion.isSettled, darkness == darkTarget, resizeHover == hoverTarget, morphing == nil, !words { container.run(false) }
     }
 }
 
@@ -599,19 +667,16 @@ final class FloatingPanels: ObservableObject {
 /// sends them. The conversation is the menu's to show and hide.
 private struct ControlBarHost: View {
     @ObservedObject var store: StateStore
+    /// The walk the pill takes through what is ready, shared with the panel's Previous and Next.
+    @ObservedObject var queue: ReviewQueue
     /// Not observed: the bar only tells it what it staged, and the fog's motion publishes every frame.
     let panels: FloatingPanels
     /// Its ideal size, for the panel to take.
     let onSize: (CGSize) -> Void
-    /// The review version the last click brought forward, and the versions handed off: for the next click to move on from.
-    @State private var lastStaged: ReviewItem.ID?
-    @State private var opened: Set<ReviewItem.ID> = []
-    /// The click being staged. Clicks run one at a time.
-    @State private var staging: Task<Void, Never>?
 
     var body: some View {
         let voice = ConchStatusItem.voiceState(store.state)
-        let ready = Self.ready(store.state)
+        let ready = ReviewQueue.ready(store.state)
         ControlBar(
             state: voice,
             detail: ConchStatusItem.detail(store.state, voice, message: store.daemonMessage),
@@ -619,9 +684,9 @@ private struct ControlBarHost: View {
                 get: { store.state?.mode.paused == true ? .quiet : .talk },
                 set: { store.send($0 == .talk ? .global(.resume) : .global(.pause)) }
             ),
-            onTap: stageNext,
+            onTap: { queue.walk(store: store, panels: panels) },
             // What the agent asked you to check, when it said; else how many are waiting.
-            help: next(in: ready).map { "Show \($0.label) · \($0.inspect ?? "\(ready.count) ready")" } ?? ""
+            help: queue.next(in: ready, state: store.state).map { "Show \($0.label) · \($0.inspect ?? "\(ready.count) ready")" } ?? ""
         )
         // A small gap under the menu bar, and room below for the glass's dropped shadow.
         .padding(.top, ConchSpace.x3)
@@ -632,48 +697,125 @@ private struct ControlBarHost: View {
         .background(GeometryReader { proxy in Color.clear.preference(key: ControlBarSize.self, value: proxy.size) })
         .onPreferenceChange(ControlBarSize.self, perform: onSize)
     }
+}
 
-    /// The reviews waiting on you, as the menu counts them.
-    private static func ready(_ state: PublishedState?) -> [ReviewItem] {
-        ConchStatusItem.readyRows(state).compactMap(ReviewItem.init(row:))
+/// What is ready, walked by the Ready pill and by the panel's Previous and Next (Tyler: "ability to click next or select
+/// different session form that"). One walk rather than one each, so the pill and the panel agree on where it is; and its
+/// own object, so the control bar can watch it without watching the fog, whose motion publishes every frame.
+@MainActor
+final class ReviewQueue: ObservableObject {
+    /// The review version the last click brought forward, and the versions handed off: for the next click to move on from.
+    @Published private(set) var lastStaged: ReviewItem.ID?
+    @Published private(set) var opened: Set<ReviewItem.ID> = []
+    /// The click being staged. Clicks run one at a time, the pill's and the panel's alike.
+    private var staging: Task<Void, Never>?
+
+    /// The reviews waiting on you: every deliverable a ready session still holds, not only its newest, so an older one
+    /// nobody has opened is walked to as well. Each by its exact version (`ReviewItem.id`: what the daemon minted when it
+    /// was filed), never by a place in the queue.
+    static func ready(_ state: PublishedState?) -> [ReviewItem] {
+        ConchStatusItem.readyRows(state).flatMap { row in row.held.map { ReviewItem(row: row, review: $0) } }
     }
 
-    /// The review the next click brings forward, by its exact version (`ReviewItem.id`: the session and when its review
-    /// was filed), never by a place in the queue.
     /// What has been looked at: whatever the daemon remembers, on any device, plus whatever
     /// this window has just handed off. The local half is optimistic — the pill moves on at
     /// the click and the daemon's answer catches up — and it is the whole story against a
     /// daemon too old to remember, which is what `features.viewedState` distinguishes.
-    private func seen(in ready: [ReviewItem]) -> Set<ReviewItem.ID> {
-        guard store.state?.features?.viewedState != nil else { return opened }
+    private func seen(in ready: [ReviewItem], state: PublishedState?) -> Set<ReviewItem.ID> {
+        guard state?.features?.viewedState != nil else { return opened }
         return opened.union(ready.filter { $0.viewedAt != nil }.map(\.id))
     }
 
-    private func next(in ready: [ReviewItem]) -> ReviewItem? {
-        let key = ReviewScene.next(after: lastStaged, in: ready.map { (key: $0.id, at: $0.reviewedAt ?? 0) }, opened: seen(in: ready))
+    /// The review the next click brings forward.
+    func next(in ready: [ReviewItem], state: PublishedState?) -> ReviewItem? {
+        let key = ReviewScene.next(after: lastStaged, in: ready.map { (key: $0.id, at: $0.reviewedAt ?? 0) }, opened: seen(in: ready, state: state))
         return ready.first { $0.id == key }
     }
 
-    /// A click on the Ready pill. The version is taken at the click. Clicks run one at a time, so an earlier one finishing
-    /// late can't retarget the conversation after a later one; each checks its review is still that version and still
-    /// ready, pins the conversation to its session, brings its scene forward (`ConchStatusItem.stage`), and counts it
-    /// opened only once handed off. Never the mic or speech.
-    private func stageNext() {
-        guard let key = next(in: Self.ready(store.state))?.id else { return }
+    /// A click on the Ready pill, or on the panel's Previous or Next (`inPanel`). The version is taken at the click, and
+    /// found again when its turn comes: still that version, and still ready.
+    func walk(backward: Bool = false, inPanel: Bool = false, store: StateStore, panels: FloatingPanels) {
+        let ready = Self.ready(store.state)
+        let key = backward
+            ? ReviewScene.previous(before: lastStaged, in: ready.map { (key: $0.id, at: $0.reviewedAt ?? 0) })
+            : next(in: ready, state: store.state)?.id
+        guard let key else { return }
         lastStaged = key
+        stage(inPanel: inPanel, store: store, panels: panels) { state in
+            for row in ConchStatusItem.readyRows(state) {
+                if let review = row.held.first(where: { ReviewItem(row: row, review: $0).id == key }) { return (row.holding(review), key) }
+            }
+            return nil
+        }
+    }
+
+    /// A session picked in the panel's switcher: pinned, and its newest deliverable brought forward as the pill brings
+    /// one, ready or not; with none, its words.
+    func pick(_ id: SessionRow.ID, store: StateStore, panels: FloatingPanels) {
+        panels.switching = false
+        stage(inPanel: true, store: store, panels: panels) { [self] state in
+            guard let row = state?.row(id) else { return nil }
+            let key = row.review.map { ReviewItem(row: row, review: $0).id }
+            if let key { lastStaged = key }
+            return (row, key)
+        }
+    }
+
+    /// Clicks run one at a time, so an earlier one finishing late can't retarget the conversation after a later one. Each
+    /// finds what it is showing (`find`), pins the conversation to its session, brings it forward, and counts its review
+    /// opened only once handed off. Never the mic or speech.
+    private func stage(
+        inPanel: Bool,
+        store: StateStore,
+        panels: FloatingPanels,
+        find: @escaping @MainActor (PublishedState?) -> (row: SessionRow, key: ReviewItem.ID?)?
+    ) {
         let previous = staging
         staging = Task { @MainActor in
             await previous?.value
-            guard let row = ConchStatusItem.readyRows(store.state).first(where: { ReviewItem(row: $0)?.id == key }) else { return }
-            panels.staged = row.id
-            if await ConchStatusItem.stage(row, store: store) {
-                opened.insert(key)
-                // So the phone, the terminal and the next launch agree with this window.
-                if store.state?.features?.viewedState != nil {
-                    store.markReviewViewed(sessionId: row.id, review: key)
-                }
+            guard let found = find(store.state) else { return }
+            panels.staged = found.row.id
+            guard await Self.show(found.row, inPanel: inPanel, store: store, panels: panels), let key = found.key else { return }
+            opened.insert(key)
+            // So the phone, the terminal and the next launch agree with this window.
+            if store.state?.features?.viewedState != nil {
+                store.markReviewViewed(sessionId: found.row.id, review: key)
             }
         }
+    }
+
+    /// What a click brings forward. The pill's is `ConchStatusItem.stage`'s scene, as it always was. The panel's goes
+    /// there too, the panel docking first so it isn't left over what comes forward, unless there is nothing to open: then
+    /// the panel itself goes full screen on the session's words (`ReviewScene.panelShowsWords`), not a terminal.
+    private static func show(_ row: SessionRow, inPanel: Bool, store: StateStore, panels: FloatingPanels) async -> Bool {
+        if inPanel {
+            // What `stage` reads to choose, read the same way.
+            let kind = ReviewScene.Kind(rawValue: row.review?.sceneKind ?? "") ?? .auto
+            let link = ReviewItem(row: row)?.link.map { LinkTarget.url(for: $0, cwd: row.cwd) }
+            if ReviewScene.panelShowsWords(hasReview: row.review != nil, kind: kind, link: link, fileExists: { FileManager.default.fileExists(atPath: $0) }) {
+                panels.showWords()
+                return true
+            }
+            panels.dockForScene()
+        }
+        return await ConchStatusItem.stage(row, store: store)
+    }
+}
+
+extension SessionRow {
+    /// Every deliverable the session still holds, oldest first; from a daemon too old to send them all, its newest. An
+    /// empty list is that too: a ready row must never drop out of the queue its `review` put it in.
+    var held: [ReviewInfo] {
+        if let reviews, !reviews.isEmpty { return reviews }
+        return review.map { [$0] } ?? []
+    }
+
+    /// This row with `review` as its newest, so `ConchStatusItem.stage`, which brings a row's `review` forward, brings
+    /// an older held one.
+    func holding(_ review: ReviewInfo) -> SessionRow {
+        var row = self
+        row.review = review
+        return row
     }
 }
 
@@ -703,6 +845,8 @@ private struct FogLookHost: View {
 private struct ConversationFogHost: View {
     @ObservedObject var store: StateStore
     @ObservedObject var panels: FloatingPanels
+    /// The walk through what is ready: the header names the review it brought forward, and Previous and Next take it.
+    @ObservedObject var queue: ReviewQueue
     /// The overlay's own reader: it follows the staged session, which is not necessarily
     /// the one the dashboard is showing.
     @ObservedObject var history: HistoryStore
@@ -712,6 +856,8 @@ private struct ConversationFogHost: View {
     var body: some View {
         let row = Self.session(store.state, staged: panels.staged)
         let turns = row.map { Self.turns(store.state, $0, whole: history.fullBodies) } ?? []
+        // Previous and Next only while something is ready: with nothing to walk they would do nothing.
+        let walks = !ConchStatusItem.readyRows(store.state).isEmpty
         Group {
             if panels.isCollapsed {
                 FogHandle(corner: panels.corner, hovering: panels.hovering) { panels.toggleCollapsed() }
@@ -730,6 +876,14 @@ private struct ConversationFogHost: View {
                     look: panels.look,
                     floating: panels.floating,
                     hovering: panels.hovering,
+                    session: row.map { Self.fogSession($0, item: Self.item(of: $0, staged: panels.staged, lastStaged: queue.lastStaged)) },
+                    // Built only while the switcher is open.
+                    sessions: panels.switching ? Self.sessions(store.state, staged: panels.staged, lastStaged: queue.lastStaged) : [],
+                    isSwitching: $panels.switching,
+                    showsReply: panels.showsReply,
+                    onPick: { queue.pick($0, store: store, panels: panels) },
+                    onPrevious: walks ? { queue.walk(backward: true, inPanel: true, store: store, panels: panels) } : nil,
+                    onNext: walks ? { queue.walk(inPanel: true, store: store, panels: panels) } : nil,
                     onMic: { if let row { mic(row) } },
                     onSend: { if let row { send(row) } },
                     onCollapse: { panels.toggleCollapsed() },
@@ -769,6 +923,34 @@ private struct ConversationFogHost: View {
     /// different session from the dashboard, but it must not resolve it by a different rule.
     static func session(_ state: PublishedState?, staged: SessionRow.ID? = nil) -> SessionRow? {
         state?.row(WorkspaceFocus.viewed(in: Workspace(state), pinned: staged))
+    }
+
+    /// Every session the switcher lists: ready for you and working as the menu bar menu groups them, then the rest
+    /// (`FogSession.ordered`). Never a subagent, which has nothing to reply to.
+    static func sessions(_ state: PublishedState?, staged: SessionRow.ID?, lastStaged: ReviewItem.ID?) -> [FogSession] {
+        let ready = Set(ConchStatusItem.readyRows(state).map(\.id)), working = Set(ConchStatusItem.workingRows(state).map(\.id))
+        return FogSession.ordered((state?.rows ?? []).filter { $0.parentSessionId == nil }.map { row in
+            fogSession(
+                row,
+                item: item(of: row, staged: staged, lastStaged: lastStaged),
+                standing: ready.contains(row.id) ? .ready : working.contains(row.id) ? .working : .other
+            )
+        })
+    }
+
+    static func fogSession(_ row: SessionRow, item: String?, standing: FogSession.Standing = .other) -> FogSession {
+        // ponytail: the session list's two marks (AgentBadge); a third backend gets Claude's until it has its own asset.
+        let codex = row.backend?.lowercased() == "codex"
+        return FogSession(id: row.id, label: row.label, agent: codex ? "Codex" : "Claude", mark: codex ? "AgentCodex" : "AgentClaude", item: item, standing: standing)
+    }
+
+    /// The item a session is on: the review the queue brought forward when this is the session it staged, else the
+    /// session's newest held one; with none, nothing.
+    static func item(of row: SessionRow, staged: SessionRow.ID?, lastStaged: ReviewItem.ID?) -> String? {
+        if row.id == staged, let review = row.held.first(where: { ReviewItem(row: row, review: $0).id == lastStaged }) {
+            return review.summary
+        }
+        return row.review?.summary
     }
 
     /// What was said, both ways. Tools, thinking and materials stay in the dashboard.

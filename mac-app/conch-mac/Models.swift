@@ -842,7 +842,9 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     let at: Double?
     let needsResponse: Bool
     let detail: String?
-    let review: ReviewInfo?
+    /// A var so the Ready queue can stage an older held deliverable through `ConchStatusItem.stage`, which brings
+    /// forward a row's `review` (`SessionRow.holding`).
+    var review: ReviewInfo?
     /// Every deliverable the session still holds, oldest first; `review` is the last of them.
     /// Empty from a daemon older than many-per-session, where `review` alone is the truth.
     let reviews: [ReviewInfo]?

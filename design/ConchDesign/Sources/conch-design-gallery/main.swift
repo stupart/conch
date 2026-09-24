@@ -411,6 +411,12 @@ struct FogScreen<Page: View, Blur: View>: View {
     var hovering = true
     /// The words as they move; a fresh, settled one unless a shot sets one up.
     var text: FogTextState?
+    /// The session named beside the buttons, the switcher's list and whether it is open, Previous and Next, and the reply line.
+    var session: FogSession?
+    var sessions: [FogSession] = []
+    var switching = false
+    var pager = false
+    var showsReply = true
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
@@ -419,7 +425,7 @@ struct FogScreen<Page: View, Blur: View>: View {
         look.darkness = scheme == .dark ? 1 : 0
         // The scrim follows the reply line as it grows.
         let words = ConversationFog.textFrame(in: motion.size, corner: motion.corner, insets: insets, fullScreen: fullScreen, magnet: motion.magnet)
-        look.replyHeight = state.replyTarget(for: draft, width: words.width - ConversationFog.micSpace, fontSize: ConversationFog.replyFontSize(fullScreen: fullScreen), in: words.height)
+        look.replyHeight = showsReply ? state.replyTarget(for: draft, width: words.width - ConversationFog.micSpace, fontSize: ConversationFog.replyFontSize(fullScreen: fullScreen), in: words.height) : 0
         // Top left, as SwiftUI lays out.
         let fog = CGRect(x: motion.frame.minX, y: screen.height - motion.frame.maxY, width: motion.size.width, height: motion.size.height)
         let panel = fullScreen ? CGRect(origin: .zero, size: screen) : fog
@@ -451,6 +457,12 @@ struct FogScreen<Page: View, Blur: View>: View {
                     look: fullScreen ? nil : look,
                     floating: motion.isMoving,
                     hovering: hovering,
+                    session: session,
+                    sessions: sessions,
+                    isSwitching: .constant(switching),
+                    showsReply: showsReply,
+                    onPrevious: pager ? {} : nil,
+                    onNext: pager ? {} : nil,
                     onMic: {},
                     onSend: {},
                     onCollapse: {},
@@ -475,10 +487,20 @@ func docked(_ corner: FogCorner, size: CGSize = CGSize(width: 760, height: 560),
     FogMotion(size: size, corner: corner, in: CGRect(origin: .zero, size: screen))
 }
 
-func m3Fog(_ corner: FogCorner, fullScreen: Bool = false, draft: String = "", voice: VoiceState = .talk) -> some View {
-    FogScreen(page: OtherApp(), blur: BlurredOtherApp(size: m3Screen), screen: m3Screen, motion: docked(corner), voice: voice, fullScreen: fullScreen, draft: draft)
+func m3Fog(_ corner: FogCorner, fullScreen: Bool = false, draft: String = "", voice: VoiceState = .talk, session: FogSession? = nil, switching: Bool = false, pager: Bool = false, showsReply: Bool = true, hovering: Bool = true) -> some View {
+    FogScreen(page: OtherApp(), blur: BlurredOtherApp(size: m3Screen), screen: m3Screen, motion: docked(corner), voice: voice, fullScreen: fullScreen, draft: draft, hovering: hovering, session: session, sessions: panelSessions, switching: switching, pager: pager, showsReply: showsReply)
         .clipShape(RoundedRectangle(cornerRadius: ConchRadius.large))
 }
+
+/// The sessions the panel names and switches between. The gallery has no agent marks (they are the Mac app's assets),
+/// so the agent's name stands in for them here.
+let panelSessions = FogSession.ordered([
+    FogSession(id: "docs", label: "conch docs", agent: "Claude", standing: .other),
+    FogSession(id: "arch", label: "Arch brand page", agent: "Claude", item: "The invite card: the button reads Join, and it still waits for the email check", standing: .ready),
+    FogSession(id: "tests", label: "invite tests", agent: "Codex", standing: .working),
+    FogSession(id: "dayloop", label: "Dayloop invite", agent: "Codex", item: "Screenshots at desktop and 390 px", standing: .ready),
+])
+let panelSession = panelSessions[0]
 
 let barDetails: [VoiceState: String] = [
     .talk: "Blueprint monorepo", .speaking: "Blueprint monorepo", .listening: "You turned on the mic",
@@ -520,6 +542,25 @@ try render("m3-fog-collapsed", width: 1280) {
     }
     .frame(width: m3Screen.width, height: m3Screen.height)
     .clipShape(RoundedRectangle(cornerRadius: ConchRadius.large))
+}
+
+try render("m3-panel-header", width: 1280) {
+    Heading(title: "Conversation panel, named", note: "The session, its agent and the item it is on, one line beside the buttons; Previous and Next walk what is ready. Pointer away: faint.")
+    m3Fog(.bottomLeading, session: panelSession, pager: true)
+    m3Fog(.bottomLeading, session: panelSession, pager: true, hovering: false)
+    // A short name with no item, and nothing ready: the name hugs the buttons in their corner.
+    m3Fog(.bottomTrailing, session: panelSessions[3])
+}
+
+try render("m3-panel-switcher", width: 1280) {
+    Heading(title: "Conversation panel, switching", note: "A click on the name lists every session: ready for you, working, the rest. It opens away from the docked edge.")
+    m3Fog(.bottomLeading, session: panelSession, switching: true, pager: true)
+    m3Fog(.topTrailing, session: panelSession, switching: true, pager: true)
+}
+
+try render("m3-panel-fullscreen", width: 1280) {
+    Heading(title: "Conversation panel, full screen on a pick", note: "A session with nothing to open: its words fill the screen, named at the top left. Reply line off.")
+    m3Fog(.bottomLeading, fullScreen: true, session: panelSession, pager: true, showsReply: false)
 }
 
 try render("m3-fog-top-right", width: 1280) {
