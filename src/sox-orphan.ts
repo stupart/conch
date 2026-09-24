@@ -67,12 +67,13 @@ export function forgetSox(pid: number, path = SOX_RECORD_PATH): void {
 }
 
 /**
- * Whether this argv is a conch capture: `soxCaptureArgs` in listen.ts, as
- * `ps -o command=` prints it. A pid that was reused by anything else — even
- * another sox — is not ours to kill.
+ * Whether this argv is a conch capture: `soxCaptureArgs` or `narrationSoxArgs`
+ * in listen.ts, as `ps -o command=` prints it. A pid that was reused by
+ * anything else — even another sox — is not ours to kill.
  */
 export function isConchSox(command: string): boolean {
-  return /(^|\/)sox -d -q -r 16000 -c 1 -b 16 -e signed-integer -t raw \/tmp\/conch-\S+ (gain \S+ )?silence -l 1 0\.15 /.test(command);
+  return /(^|\/)sox -d -q -r 16000 -c 1 -b 16 -e signed-integer -t raw \/tmp\/conch-\S+ (gain \S+ )?silence -l 1 0\.15 /.test(command)
+    || /(^|\/)sox -d -q -r 16000 -c 1 -b 16 -e signed-integer -t wav \/.*\/\.cache\/conch\/canvas\/[0-9A-Fa-f-]{36}\/narration\.wav (gain \S+ )?trim 0 \d+$/.test(command);
 }
 
 function psCommand(pid: number): string | null {

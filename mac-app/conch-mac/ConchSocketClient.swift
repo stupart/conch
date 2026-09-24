@@ -579,6 +579,26 @@ struct ConchSocketClient: Sendable {
         }.value
     }
 
+    /// A request whose connection is a lease: the reply, and the socket, held open until the caller closes it. Show's
+    /// narration (`CanvasNarration`) ends when the connection that started it goes away, so a crashed app never holds
+    /// the mic. Close-on-exec, so nothing this app launches can keep it open after the app is gone.
+    func open<Request: Encodable>(_ request: Request, timeout: TimeInterval) async -> (reply: Data, descriptor: Int32)? {
+        guard var payload = try? JSONEncoder().encode(request) else { return nil }
+        payload.append(0x0A)
+        let socketPath = socketPath
+        let deadline = Self.makeDeadline(after: Self.nanoseconds(for: timeout))
+        return await Task.detached(priority: .userInitiated) {
+            guard let descriptor = Self.connectedSocket(to: socketPath, deadline: deadline) else { return nil }
+            _ = Darwin.fcntl(descriptor, F_SETFD, FD_CLOEXEC)
+            guard Self.write(payload, to: descriptor, deadline: deadline) == .complete,
+                  case let .reply(line) = Self.readReplyLine(from: descriptor, deadline: deadline) else {
+                Darwin.close(descriptor)
+                return nil
+            }
+            return (line, descriptor)
+        }.value
+    }
+
     /// Reporting cannot itself become another user-visible failure. A daemon
     /// that is unreachable cannot record the incident, but the original action
     /// still returns its honest result to the caller.

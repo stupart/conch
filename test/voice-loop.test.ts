@@ -39,6 +39,7 @@ import {
   approvalDetail,
 } from "../src/approval.ts";
 import { createVoiceLoop, type VoiceLoop, type VoiceLoopDeps } from "../src/voice-loop.ts";
+import { EventQueue } from "../src/event-queue.ts";
 import type { RecordObservation } from "../src/records-receipts.ts";
 
 /**
@@ -224,6 +225,18 @@ function harness(options: Options = {}) {
   const hooks: ListenHooks[] = [];
   const heard = [...(options.heard ?? [])];
   let barges = 0;
+  // The daemon's queue, draining into this loop as the daemon's does; tests that submit through it see turns wait.
+  const queue = new EventQueue({
+    handle: (event) => voice.handle(event),
+    handoffOrder: () => "oldest",
+    prioritized: new Set(),
+    shuttingDown: () => false,
+    consumeStopKey: () => voice.consumeStop(),
+    onError: (event, error) => void errors.push(["queue", event.type, error]),
+    onIdle: () => {},
+    log: () => {},
+    trace: () => {},
+  });
   const deps: VoiceLoopDeps = {
     observeRecords: options.observeRecords,
     cfg,
@@ -231,7 +244,7 @@ function harness(options: Options = {}) {
     log: (message) => void logs.push(message),
     ledger,
     pause,
-    queue: { consumeCancellation: () => false },
+    queue,
     speech,
     audio: { lease, holder },
     quietOverrideBlocked: () => false,
@@ -296,7 +309,7 @@ function harness(options: Options = {}) {
   };
   voice = createVoiceLoop(deps);
   return {
-    voice, cfg, ledger, lease, holder, speech, said, playing, cues, cueExits, violations, order,
+    voice, cfg, ledger, lease, holder, speech, said, playing, cues, cueExits, violations, order, queue,
     logs, presented, latch, errors, texts, keys, keyPids, answered, commands, gone, sessions, hooks,
     barges: () => barges,
   };
@@ -831,6 +844,105 @@ describe("an inject says whether it landed", () => {
     expect(events.filter(({ kind }) => kind === "delivery").at(-1)?.code).toBe("system-dialog-blocking");
     // The daemon log names it too — it used to read "phone inject into … failed" and stop there.
     expect(h.logs).toContain('phone inject into "alpha" failed (system-dialog-blocking)');
+  });
+});
+
+describe("Show's narration holds the mic as an open dictation does", () => {
+  test("held, the mic counts open: speak holds its lines, turns wait in the queue, and release lets them through", async () => {
+    const h = harness();
+    const held = await h.voice.holdNarration(200);
+    if (!("release" in held)) throw new Error(held.refused);
+    expect(h.voice.capturing()).toBe(true);
+    expect(h.queue.busy()).toBe(true);
+    await h.voice.speak(h.cfg, "a failure line", "beta");
+    expect(h.logs).toContain('held "beta" — the mic is open');
+    // A turn behind a narration waits, as it waits behind a dictation: not dropped, not read over it.
+    void h.queue.submit(accepted(h, turnEnd()));
+    await Bun.sleep(30);
+    expect(h.said).toEqual([]);
+    held.release();
+    held.release(); // once is all a release does
+    expect(h.voice.capturing()).toBe(false);
+    await waitFor("the held turn", () => h.said.includes("alpha: the build is green."));
+    expect(h.violations).toEqual([]);
+    await h.voice.close();
+  });
+
+  test("refused, with why, when the ear is elsewhere or a mic is already open, and nothing is left held", async () => {
+    const phone = harness();
+    phone.lease.request("phone", 1);
+    expect(await phone.voice.holdNarration(50)).toEqual({ refused: "the phone has the audio" });
+    const otherMac = harness();
+    otherMac.holder.yield("mac-b-owner", 1, 60_000);
+    expect(await otherMac.voice.holdNarration(50)).toEqual({ refused: "another Mac has the audio" });
+    const narrating = harness();
+    expect("release" in await narrating.voice.holdNarration(50)).toBe(true);
+    expect(await narrating.voice.holdNarration(50)).toEqual({ refused: "the mic is already open" });
+    for (const h of [phone, otherMac]) {
+      expect(h.voice.capturing()).toBe(false);
+      expect(h.queue.busy()).toBe(false);
+    }
+    const dictating = harness();
+    void dictating.voice.handle(wake({ compose: true }));
+    await waitFor("the dictation", () => dictating.sessions[0]?.started === 1);
+    expect(await dictating.voice.holdNarration(50)).toEqual({ refused: "the mic is already open" });
+    expect(dictating.queue.busy()).toBe(false);
+    await dictating.voice.close();
+  });
+
+  test("while conch speaks it waits a moment, not a reply: refused past the bound with the reservation released", async () => {
+    const h = harness({ holdSpeech: true });
+    void h.voice.speak(h.cfg, "a long reply", "alpha", true);
+    await waitFor("the line", () => h.said.length === 1);
+    const waiting = h.voice.holdNarration(80);
+    await Bun.sleep(20);
+    // Reserved while it waits, as every capture is, so nothing new starts to play.
+    expect(h.voice.capturing()).toBe(true);
+    expect(await waiting).toEqual({ refused: "conch is speaking" });
+    expect(h.voice.capturing()).toBe(false);
+    expect(h.queue.busy()).toBe(false);
+    // A line that ends within the bound is waited for, and then the mic is the narration's.
+    const taken = h.voice.holdNarration(2_000);
+    await Bun.sleep(20);
+    h.playing.get("a long reply")!.finish();
+    expect("release" in await taken).toBe(true);
+    expect(h.violations).toEqual([]);
+  });
+
+  test("the phone taking the audio refuses at once, even mid-turn, and even while the narration waits for quiet", async () => {
+    const h = harness({ holdSpeech: true });
+    void h.queue.submit(accepted(h, turnEnd()));
+    await waitFor("the reading", () => h.said.length === 1);
+    h.lease.request("phone", 1);
+    // Not "conch is speaking" after waiting on the queue: the ear is elsewhere, and that is the answer.
+    expect(await h.voice.holdNarration(80)).toEqual({ refused: "the phone has the audio" });
+    h.lease.request("mac", 1);
+    h.playing.get("alpha: the build is green.")!.finish();
+    await h.voice.close();
+
+    // Claimed while the narration waited for a line to finish: re-checked after the wait, as every capture is.
+    const late = harness({ holdSpeech: true });
+    void late.voice.speak(late.cfg, "a line", "alpha", true);
+    await waitFor("the line", () => late.said.length === 1);
+    const waiting = late.voice.holdNarration(2_000);
+    await Bun.sleep(20);
+    late.lease.request("phone", 1);
+    late.playing.get("a line")!.finish();
+    expect(await waiting).toEqual({ refused: "the phone has the audio" });
+    expect(late.voice.capturing()).toBe(false);
+    expect(late.queue.busy()).toBe(false);
+  });
+
+  test("a turn being read holds the queue: refused past the bound, and the queue is the turn's again", async () => {
+    const h = harness({ holdSpeech: true });
+    void h.queue.submit(accepted(h, turnEnd()));
+    await waitFor("the reading", () => h.said.length === 1);
+    expect(await h.voice.holdNarration(80)).toEqual({ refused: "conch is speaking" });
+    expect(h.voice.capturing()).toBe(false);
+    expect(h.queue.busy()).toBe(true); // still the turn's
+    h.playing.get("alpha: the build is green.")!.finish();
+    expect(h.violations).toEqual([]);
+    await h.voice.close();
   });
 });
 

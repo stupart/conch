@@ -3,7 +3,8 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 // Show: the canvas recorded instead of stilled, and sent as a storyboard of frames. These pin what can't be run
-// headless — the recording API, what it leaves out, the mic — and the rules that keep it from ever recording on its own.
+// headless — the recording API, what it leaves out, the mic, narration asked of the daemon — and the rules that keep it
+// from ever recording on its own.
 
 const root = join(import.meta.dir, "..");
 const read = (path: string): string => readFileSync(join(root, path), "utf8");
@@ -70,7 +71,7 @@ describe("the recording", () => {
     inOrder(record, "ring.orderFrontRegardless()", "SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)");
   });
 
-  test("it never opens the mic: narration needs the daemon's mic reservation, which the app can't reach", () => {
+  test("it never opens the mic: narration is the daemon's, behind its one mic reservation", () => {
     expect(record).toContain("configuration.captureMicrophone = false");
     expect(record).toContain("configuration.capturesAudio = false");
     expect(filesWith("captureMicrophone")).toEqual(["CanvasShow.swift"]);
@@ -78,6 +79,76 @@ describe("the recording", () => {
     for (const mic of ["AVCaptureDevice", "AVAudioEngine", "AVAudioRecorder", "AVCaptureSession"]) {
       expect(filesWith(mic), mic).toEqual([]);
     }
+    // What narration the app has is three socket requests; the daemon records.
+    expect(filesWith('"narration-start"')).toEqual(["CanvasShow.swift"]);
+    expect(filesWith("sox")).toEqual([]);
+  });
+});
+
+describe("narration", () => {
+  const narration = show.slice(show.indexOf("final class CanvasNarration {"));
+
+  test("only with the pill's mic on, which is off until Tyler turns it on; the recording doesn't wait for it", () => {
+    expect(canvas).toContain("@Published var narrate = false");
+    expect(canvas).toContain("narrate: canvas.narrate,\n            onNarrate: { canvas.narrate.toggle() }");
+    expect(filesWith("narrate = true")).toEqual([]);
+    const toggle = member(show, "    func toggleShow() {");
+    expect(toggle).toContain("if narrate { Task { await startNarration(for: recorder) } }");
+    inOrder(toggle, "recorder = try await CanvasRecorder.start(on: display)", "if narrate {");
+    // Asked from that one place, and only there: its definition and that call.
+    expect(Object.values(macSources).join("\n").match(/startNarration\(/g)?.length).toBe(2);
+    expect(filesWith("CanvasNarration.start(")).toEqual(["CanvasShow.swift"]);
+    expect(show.match(/CanvasNarration\.start\(/g)?.length).toBe(1);
+    // The pill's mic can't change a Show already started.
+    expect(member(storyboard, "@ViewBuilder var showControl: some View {")).toContain(".disabled(recording != nil)");
+  });
+
+  test("refused, the pill says why and the Show goes on silent; one taken too late ends at once", () => {
+    const start = member(show, "private func startNarration(for recorder: CanvasRecorder) async {");
+    expect(start).toContain('message = "Recording without narration: \\(reason)."');
+    expect(start).toContain("guard recorder.isRecording, self.recorder === recorder else { return narration.cancel() }");
+    expect(start).not.toContain("stopShow");
+    expect(start).not.toContain("discard");
+  });
+
+  test("Esc cancels it — the daemon deletes the WAV — before the Show is stopped and its folder removed", () => {
+    const discard = member(show, "func discard() async {");
+    inOrder(discard, "narration?.cancel()", "await stop()");
+    expect(member(narration, "func cancel() {")).toContain('["kind": "narration-cancel", "canvasId": canvasId]');
+  });
+
+  test("the Show stopping stops it, and Send waits for the words before the folder moves", () => {
+    const stop = member(show, "func stop() async -> TimeInterval {");
+    inOrder(stop, "phase = .stopped(length)", "said = Task { await narration.stop(from: began) }");
+    const stopNarration = member(narration, "func stop(from began: Date) async -> [CanvasStoryboard.Said] {");
+    expect(stopNarration).toContain('["kind": "narration-stop", "canvasId": canvasId]');
+    // The daemon's times are from when its recorder started; the storyboard's from when the recording began.
+    expect(stopNarration).toContain("let offset = startedAt.timeIntervalSince(began)");
+    expect(stopNarration).toContain("CanvasStoryboard.Said(start: $0.start + offset, end: $0.end + offset, text: $0.text)");
+    const sendShow = member(show, "    func sendShow(_ recorder: CanvasRecorder) {");
+    inOrder(sendShow, "await recorder.stop()", "let said = await recorder.said?.value ?? []");
+    inOrder(sendShow, "let said = await recorder.said?.value ?? []", "try recorder.file(under: canvas.id)");
+    expect(sendShow).toContain("CanvasRecorder.storyboard(video, ends: ends, said: said, canvas: canvas, about: label)");
+    // The WAV moves with the MP4.
+    expect(member(show, "func file(under id: String) throws {")).toContain("try files.moveItem(at: voice, to: named.appendingPathComponent(CanvasNarration.file))");
+    // The words place frames, and are written beside them.
+    const pull = member(show, "nonisolated static func storyboard(");
+    expect(pull).toContain("CanvasStoryboard.moments(ends: ends, said: CanvasStoryboard.moments(of: said), length: length)");
+    expect(pull).toContain("said: said, about: label, length: length).utf8), \"storyboard.md\", in: folder)");
+  });
+
+  test("its connection is the lease: held open, closed when it ends, never inherited by what the app launches", () => {
+    const client = read("mac-app/conch-mac/ConchSocketClient.swift");
+    const open = member(client, "func open<Request: Encodable>(_ request: Request, timeout: TimeInterval) async -> (reply: Data, descriptor: Int32)? {");
+    inOrder(open, "Self.connectedSocket(to: socketPath, deadline: deadline)", "Darwin.fcntl(descriptor, F_SETFD, FD_CLOEXEC)");
+    inOrder(open, "Darwin.fcntl(descriptor, F_SETFD, FD_CLOEXEC)", "Self.write(payload, to: descriptor, deadline: deadline)");
+    expect(filesWith("ConchSocketClient().open(")).toEqual(["CanvasShow.swift"]);
+    const start = member(narration, "static func start(_ canvasId: String) async -> Started {");
+    // Refused: closed at once. Taken: kept, and let go after a stop or a cancel.
+    inOrder(start, 'guard answer?["kind"] as? String == "narration-started"', "Darwin.close(lease)");
+    inOrder(member(narration, "func stop(from began: Date) async -> [CanvasStoryboard.Said] {"), "ConchSocketClient().request(", "end()");
+    inOrder(member(narration, "func cancel() {"), "ConchSocketClient().request(", "end()");
+    expect(member(narration, "private func end() {")).toContain("Darwin.close(lease)");
   });
 });
 
@@ -135,14 +206,14 @@ describe("Esc and Send", () => {
     // Nowhere to send it: it keeps recording, and the pill says why.
     inOrder(sendShow, "guard let row = Self.route(state, panel: FloatingPanels.installed?.staged) else {", "await recorder.stop()");
     expect(sendShow).toContain("let delivery = store.send(.inject(sessionId: row.id, label: row.label, text: prompt))");
-    expect(sendShow).toContain("try await CanvasRecorder.storyboard(video, ends: ends, canvas: canvas, about: label)");
+    expect(sendShow).toContain("try await CanvasRecorder.storyboard(video, ends: ends, said: said, canvas: canvas, about: label)");
     inOrder(sendShow, "store.send(.inject(", "clear()");
   });
 
   test("the message: what was shown and how long, the storyboard, a line a frame, and the MP4 for people", () => {
     const prompt = member(storyboard, "public static func prompt(");
     expect(prompt).toContain('var lines = ["[canvas] Tyler showed \\(label) (\\(clock(length))).", "Storyboard: \\(storyboard)"]');
-    expect(prompt).toContain('"\\(stamp(frame.moment.at)) \\(frame.path) — \\(caption(frame.moment, first: index == 0))"');
+    expect(prompt).toContain('"\\(stamp(frame.moment.at)) \\(frame.path) — \\(happened(frame.moment, first: index == 0, words: words[index]))"');
     expect(prompt).toContain('lines.append("The recording, for people (agents can\'t watch video): \\(video)")');
     expect(prompt).toContain('return lines.joined(separator: "\\n")');
   });
@@ -152,7 +223,7 @@ describe("Esc and Send", () => {
     // The canvas is the document at Send, as the still's is; the recording moves under its id before anything is written.
     expect(sendShow).toContain("let document = document");
     inOrder(sendShow, "let canvas = recorder.canvas(document)", "try recorder.file(under: canvas.id)");
-    inOrder(sendShow, "try recorder.file(under: canvas.id)", "CanvasRecorder.storyboard(video, ends: ends, canvas: canvas, about: label)");
+    inOrder(sendShow, "try recorder.file(under: canvas.id)", "CanvasRecorder.storyboard(video, ends: ends, said: said, canvas: canvas, about: label)");
     const canvasOf = member(show, "func canvas(_ document: CanvasDocument?) -> CanvasDocument {");
     expect(canvasOf).toContain("if let document, document.anchor.id == display { return document }");
     // No ink on the recorded display: that display bare, named by the folder it is already in.

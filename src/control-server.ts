@@ -22,6 +22,7 @@ import {
 import type { ResumableSessionsRead } from "./resumable.ts";
 import { validateScreenObservation, type ScreenObservation } from "./screen-context.ts";
 import type { AgentCapabilitiesRead } from "./agent-capabilities.ts";
+import { decodeNarrationRequest, type Narration, type NarrationReply } from "./narration.ts";
 import type { AgentInstall } from "./agent-install.ts";
 import { applyPlan, planToggle, rollbackFile, type ConfigWriteHomes, type ConfigWriteIo } from "./config-write.ts";
 import {
@@ -1105,6 +1106,8 @@ export interface ControlServerOptions {
   onDelivery?(delivery: PublishedDelivery): void;
   /** Told what an observer saw on screen (`screen-observation`), once it has been validated. */
   onScreenObservation?(observation: ScreenObservation): void;
+  /** Show's narration (narration.ts): a `narration-start` that is taken keeps its connection open, as the lease. */
+  narration?: Narration;
   ownership?: SocketOwnership;
 }
 
@@ -1232,6 +1235,30 @@ export function createControlServer(options: ControlServerOptions): ControlServe
             answer = { kind: "screen-ack" };
           }
           sock.end(JSON.stringify(answer) + "\n");
+          return;
+        }
+        // Show's narration names a canvas, not a session. A start that is taken answers and stays open: the app holds
+        // this connection for as long as it narrates, and its going away — a crash, a quit — ends the narration.
+        const narration = decodeNarrationRequest(body);
+        if (narration) {
+          let reply: NarrationReply;
+          if ("error" in narration) reply = { kind: "narration-error", error: narration.error };
+          else if (!options.narration) reply = { kind: "narration-error", error: "narration is unavailable" };
+          else if (narration.kind === "narration-start") {
+            // `end`: the app's side is gone, however it went — a quit, a crash, its own half-close (measured: Bun
+            // emits it for each, and `close` only when the socket is torn down).
+            const closed = new Promise<void>((resolve) => sock.once("end", () => resolve()));
+            reply = await options.narration.start(narration.canvasId, { closed, end: () => void sock.end() });
+            if (reply.kind === "narration-started") {
+              sock.write(JSON.stringify(reply) + "\n");
+              return;
+            }
+          } else {
+            reply = narration.kind === "narration-stop"
+              ? await options.narration.stop(narration.canvasId)
+              : await options.narration.cancel(narration.canvasId);
+          }
+          sock.end(JSON.stringify(reply) + "\n");
           return;
         }
         const value = await sessions.resolve(body);

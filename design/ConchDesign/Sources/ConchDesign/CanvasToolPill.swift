@@ -30,6 +30,10 @@ public struct CanvasToolPill: View {
     let recording: Recording?
     /// Show's record button (`showControl`); nil where there is no Show, and the pill has no button.
     let onShow: (() -> Void)?
+    /// Show narrates: Tyler's voice recorded with it, by the daemon.
+    let narrate: Bool
+    /// The mic beside the record button; nil, and no mic, where there is no narration.
+    let onNarrate: (() -> Void)?
     @Namespace private var picked
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -46,7 +50,9 @@ public struct CanvasToolPill: View {
         onUndo: @escaping () -> Void,
         onSend: @escaping () -> Void,
         recording: Recording? = nil,
-        onShow: (() -> Void)? = nil
+        onShow: (() -> Void)? = nil,
+        narrate: Bool = false,
+        onNarrate: (() -> Void)? = nil
     ) {
         self.shown = shown
         self.tool = tool
@@ -61,6 +67,8 @@ public struct CanvasToolPill: View {
         self.onSend = onSend
         self.recording = recording
         self.onShow = onShow
+        self.narrate = narrate
+        self.onNarrate = onNarrate
     }
 
     static let buttonSize: CGFloat = 32

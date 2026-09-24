@@ -213,6 +213,26 @@ describe("control forwarding", () => {
     expect(await res.json()).toEqual(receipt);
   });
 
+  test("Show's narration is the Mac app's: a phone can't ask for it, even wrapped, and nothing reaches the daemon", async () => {
+    const forwarded: string[] = [];
+    const b = startBridge({ forwardControl: async (line) => { forwarded.push(line); return "{}"; } });
+    const canvasId = "5B3F0D2E-9C41-4E7A-8F10-2D6B7A1C9E44";
+    for (const body of [
+      { kind: "narration-start", canvasId },
+      { kind: "control-envelope", body: { kind: "narration-start", canvasId } },
+      { kind: "narration-stop", canvasId },
+      { kind: "narration-cancel", canvasId: "not a uuid" },
+    ]) {
+      const res = await fetch(`http://127.0.0.1:${b.port}/control`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}` },
+        body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(403);
+    }
+    expect(forwarded).toEqual([]);
+  });
+
   test("a dead daemon is a 502, not a hang or a crash", async () => {
     const b = startBridge({
       forwardControl: async () => { throw new Error("no socket"); },

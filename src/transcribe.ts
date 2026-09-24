@@ -324,6 +324,8 @@ export class WhisperServerClient {
     wav: Uint8Array,
     timeoutMs = 60_000,
     includeConfidence = true,
+    // Show's narration (`transcribeWavSegments`): each segment with when it was said.
+    timestamps = false,
   ): Promise<WarmTranscriptionResult> {
     if (!cfg.whisperPort || !this.healthy) return { status: "unavailable" };
     const request = new AbortController();
@@ -336,8 +338,10 @@ export class WhisperServerClient {
         try {
           const form = new FormData();
           form.append("file", new Blob([wav.buffer as ArrayBuffer], { type: "audio/wav" }), "audio.wav");
-          form.append("response_format", includeConfidence ? "verbose_json" : "json");
-          if (includeConfidence) {
+          form.append("response_format", includeConfidence || timestamps ? "verbose_json" : "json");
+          if (timestamps) {
+            form.append("no_timestamps", "false");
+          } else if (includeConfidence) {
             // verbose_json is the only whisper.cpp format that exposes segment
             // confidence. Skip timestamps/language probabilities to avoid their
             // otherwise unnecessary token and language-detection work.
@@ -484,7 +488,21 @@ async function transcribeWavCli(
   wavPath: string,
   options: TranscribePcmOptions,
 ): Promise<{ text: string; error?: string }> {
-  if (!existsSync(wavPath)) return { text: "", error: `File not found: ${wavPath}` };
+  const run = await runWhisperCli(cfg, wavPath, options);
+  if ("error" in run) return { text: "", error: run.error };
+  const text = cleanTranscript(run.raw);
+  if (run.code !== 0 && !text) return { text: "", error: "Transcription failed" };
+  return { text };
+}
+
+/** whisper-cli once, bounded: what it printed and how it exited. With `timestamps`, each line starts with its times. */
+async function runWhisperCli(
+  cfg: Config,
+  wavPath: string,
+  options: TranscribePcmOptions,
+  timestamps = false,
+): Promise<{ raw: string; code: number } | { error: string }> {
+  if (!existsSync(wavPath)) return { error: `File not found: ${wavPath}` };
 
   const command =
     [
@@ -496,7 +514,7 @@ async function transcribeWavCli(
       "-f", wavPath,
       "-l", "en",
       "-t", "6",
-      "-nt",
+      ...(timestamps ? [] : ["-nt"]),
       "-np",
       "-mc", "0",
     ];
@@ -525,15 +543,66 @@ async function transcribeWavCli(
     // Promise.all rejects as soon as either primitive fails. Dispose the child
     // because the other primitive may still be alive/wedged outside that race.
     abandon();
-    return { text: "", error: "Cold transcription failed" };
+    return { error: "Cold transcription failed" };
   }
-  if (completed.status === "timed-out") return { text: "", error: "Cold transcription timed out" };
-  if (completed.status === "cancelled") return { text: "", error: "Cold transcription cancelled" };
+  if (completed.status === "timed-out") return { error: "Cold transcription timed out" };
+  if (completed.status === "cancelled") return { error: "Cold transcription cancelled" };
   const [raw, code] = completed.value;
+  return { raw, code };
+}
 
-  const text = cleanTranscript(raw);
-  if (code !== 0 && !text) return { text: "", error: "Transcription failed" };
-  return { text };
+/** Something said, and when: seconds into the recording it was said over. */
+export interface TimedSegment {
+  start: number;
+  end: number;
+  text: string;
+}
+
+/** The warm server's `verbose_json` segments, timed: cleaned as a transcript is, the empty and the malformed dropped. */
+export function serverSegments(segments: unknown): TimedSegment[] {
+  if (!Array.isArray(segments)) return [];
+  return segments.flatMap((segment) => {
+    const { start, end, text } = (segment ?? {}) as Record<string, unknown>;
+    if (typeof start !== "number" || typeof end !== "number" || typeof text !== "string") return [];
+    return timed(start, end, text);
+  });
+}
+
+/** whisper-cli's lines without `-nt`: `[00:00:03.470 --> 00:00:04.750]   And this button should be blue.` */
+export function cliSegments(output: string): TimedSegment[] {
+  const seconds = (h: string, m: string, s: string): number => Number(h) * 3600 + Number(m) * 60 + Number(s);
+  return output.split("\n").flatMap((line) => {
+    const match = /^\[(\d+):(\d+):(\d+(?:\.\d+)?) --> (\d+):(\d+):(\d+(?:\.\d+)?)\]\s*(.*)$/.exec(line.trim());
+    return match ? timed(seconds(match[1]!, match[2]!, match[3]!), seconds(match[4]!, match[5]!, match[6]!), match[7]!) : [];
+  });
+}
+
+function timed(start: number, end: number, text: string): TimedSegment[] {
+  const words = cleanTranscript(text);
+  if (!words || !Number.isFinite(start) || !Number.isFinite(end) || start < 0) return [];
+  return [{ start, end: Math.max(start, end), text: words }];
+}
+
+/**
+ * A whole WAV, timed — Show's narration (narration.ts). The same two paths as
+ * `transcribePcm`: the warm server, then the cold CLI once; each segment with
+ * when it was said, which is what places the words against the recording.
+ */
+export async function transcribeWavSegments(
+  cfg: Config,
+  wavPath: string,
+  options: TranscribePcmOptions = {},
+): Promise<{ segments: TimedSegment[]; error?: string }> {
+  const client = options.client ?? whisperServerClient;
+  let wav: Uint8Array;
+  try { wav = await Bun.file(wavPath).bytes(); } catch { return { segments: [], error: `File not found: ${wavPath}` }; }
+  const warm = await client.transcribeWarm(cfg, wav, options.warmTimeoutMs ?? WARM_TRANSCRIPTION_TIMEOUT_MS, true, true);
+  if (warm.status === "ok") return { segments: serverSegments(warm.body.segments) };
+  if (options.coldFallback === false) return { segments: [] };
+  const run = await runWhisperCli(cfg, wavPath, options, true);
+  if ("error" in run) return { segments: [], error: run.error };
+  const segments = cliSegments(run.raw);
+  return run.code !== 0 && !segments.length ? { segments, error: "Transcription failed" } : { segments };
 }
 
 /**
