@@ -34,6 +34,16 @@ struct BridgeResponse: Equatable, Sendable {
     }
 }
 
+/// A downloaded file, with the headers it came with: its version (`etag`) and how it was encoded.
+struct BridgeDownload: Sendable {
+    let file: URL
+    let headers: [[String]]
+
+    func header(named name: String) -> String? {
+        headers.first { $0.count == 2 && $0[0].caseInsensitiveCompare(name) == .orderedSame }?[1]
+    }
+}
+
 protocol BridgeTransport: AnyObject, Sendable {
     var onStateData: ((Data) -> Void)? { get set }
     var onConnectionChange: ((Bool, String?) -> Void)? { get set }
@@ -42,7 +52,7 @@ protocol BridgeTransport: AnyObject, Sendable {
     func stop()
     func reconnectNow()
     func request(_ request: BridgeRequest) async throws -> BridgeResponse
-    func download(_ request: BridgeRequest) async throws -> URL
+    func download(_ request: BridgeRequest) async throws -> BridgeDownload
 }
 
 enum BridgeTransportError: Error, LocalizedError {
@@ -98,7 +108,7 @@ final class RelayTransport: BridgeTransport, @unchecked Sendable {
         try await engine.request(request)
     }
 
-    func download(_ request: BridgeRequest) async throws -> URL {
+    func download(_ request: BridgeRequest) async throws -> BridgeDownload {
         try await engine.download(request)
     }
 }
@@ -131,7 +141,7 @@ private final class RelayCallbackBox: @unchecked Sendable {
 
 private enum RelayPendingResult {
     case response(BridgeResponse)
-    case file(URL)
+    case file(BridgeDownload)
 }
 
 private final class RelayPendingRequest {
@@ -276,9 +286,27 @@ private actor RelayTransportEngine {
         connect()
     }
 
-    func stop() {
+    func stop() async {
         guard !stopped else { return }
         stopped = true
+        // Tell the Mac to stop sending what this phone was downloading. The
+        // socket just closes otherwise, which the Mac hears only when the
+        // session expires, and until then it waited on chunks nobody would
+        // acknowledge: "relay chunk acknowledgement timed out", 9/25 01:24,
+        // a page loading as the app went to the background.
+        for request in pending.values
+        where request.sentSessionGeneration == sessionGeneration
+            && (request.request.method == "GET" || request.request.method == "HEAD") {
+            try? await sendCancellation(
+                id: request.id,
+                method: request.request.method,
+                socketGeneration: socketGeneration,
+                sessionGeneration: sessionGeneration
+            )
+        }
+        // The sends above suspend this actor; a reconnect that came in
+        // meanwhile has undone the stop, and its new socket stays.
+        guard stopped else { return }
         retireSocket()
         reconnectTask?.cancel()
         reconnectTask = nil
@@ -322,8 +350,16 @@ private actor RelayTransportEngine {
         }
     }
 
-    func download(_ request: BridgeRequest) async throws -> URL {
+    func download(_ request: BridgeRequest) async throws -> BridgeDownload {
         try Task.checkCancellation()
+        // Text crosses gzipped when the Mac can (`fileResponse`): every byte here is base64 in a
+        // 64 KiB chunk, and a page's scripts and styles shrink to a third or less.
+        let request = BridgeRequest(
+            method: request.method,
+            path: request.path,
+            headers: request.headers + [["accept-encoding", "gzip"]],
+            body: request.body
+        )
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("conch-relay-downloads", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -348,7 +384,7 @@ private actor RelayTransportEngine {
                 Task { await self.cancelRequest(id) }
             }
             switch result {
-            case let .file(url): return url
+            case let .file(download): return download
             case .response: throw BridgeTransportError.invalidResponse
             }
         } catch {
@@ -918,8 +954,16 @@ private actor RelayTransportEngine {
                 return
             }
             do {
-                try FileManager.default.moveItem(at: temporary, to: final)
-                request.continuation.resume(returning: .file(final))
+                if request.headers.contains(where: { $0.count == 2 && $0[0].lowercased() == "content-encoding" && $0[1].lowercased() == "gzip" }) {
+                    guard let inflated = Gzip.inflate(try Data(contentsOf: temporary)) else {
+                        throw BridgeTransportError.invalidResponse
+                    }
+                    try inflated.write(to: final)
+                    try? FileManager.default.removeItem(at: temporary)
+                } else {
+                    try FileManager.default.moveItem(at: temporary, to: final)
+                }
+                request.continuation.resume(returning: .file(BridgeDownload(file: final, headers: request.headers)))
             } catch {
                 try? FileManager.default.removeItem(at: temporary)
                 request.continuation.resume(throwing: error)
@@ -1042,5 +1086,29 @@ private extension NSLock {
         lock()
         defer { unlock() }
         return try body()
+    }
+}
+
+/// A gzip member, as Bun writes one, back to its bytes. Foundation's zlib
+/// decoder reads raw DEFLATE, so the gzip header and trailer are stepped over
+/// here. Nil for anything that isn't gzip. Foundation only, so the bun test
+/// runs it under `swift`.
+enum Gzip {
+    static func inflate(_ data: Data) -> Data? {
+        let bytes = [UInt8](data)
+        guard bytes.count >= 18, bytes[0] == 0x1f, bytes[1] == 0x8b, bytes[2] == 8 else { return nil }
+        let flags = bytes[3]
+        var at = 10
+        if flags & 0x04 != 0 {
+            guard at + 2 <= bytes.count else { return nil }
+            at += 2 + Int(bytes[at]) + Int(bytes[at + 1]) << 8
+        }
+        for flag: UInt8 in [0x08, 0x10] where flags & flag != 0 {
+            while at < bytes.count, bytes[at] != 0 { at += 1 }
+            at += 1
+        }
+        if flags & 0x02 != 0 { at += 2 }
+        guard at <= bytes.count - 8 else { return nil }
+        return try? (Data(bytes[at..<(bytes.count - 8)]) as NSData).decompressed(using: .zlib) as Data
     }
 }

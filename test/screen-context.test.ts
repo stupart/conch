@@ -805,7 +805,9 @@ describe("the daemon's wiring (source guard)", () => {
   test("observations reach the service, `showing` is published, the log lives in the config dir and closes at shutdown", () => {
     expect(daemon).toContain("onScreenObservation: (observation) => void screen.observe(observation).catch((error) => log(`screen: ${error}`)),");
     // Who serves a localhost page, through the bounded, cached lookup.
-    expect(daemon).toContain("listeners: portListenerLookup(),");
+    // One lookup, shared with the phone's dev pages (`/dev`), so one cache.
+    expect(daemon).toContain("const portListeners = portListenerLookup();");
+    expect(daemon).toContain("listeners: portListeners,");
     expect(daemon).toContain('dir: join(dirname(daemonSettingsPath), "screen"),');
     expect(daemon).toContain("enabled: () => cfg.screenLog,");
     expect(daemon).toContain("screen.showing(),\n      );");

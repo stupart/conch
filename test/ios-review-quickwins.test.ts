@@ -126,8 +126,9 @@ describe("Next walks the ready reviews by the Mac pill's rule", () => {
     // Marked opened, then moved on — the order is the claim, not whether it is one line.
     expect(body).toMatch(/if let currentKey \{[\s\S]*?opened\.insert\(currentKey\)[\s\S]*?\}\s*sessionId = next/);
     expect(body).toContain("bridge.send(sessionCommand: .reviewViewed, sessionId: sessionId, review: currentKey)");
-    // A different review is a fresh viewer, not the last one's download.
-    expect(body).toContain(".id(currentKey)");
+    // A different review is a fresh viewer, not the last one's download, an earlier one picked
+    // from the menu included.
+    expect(body).toContain(".id(key(review))");
     expect(session).toContain("ReviewSheet(bridge: bridge, talk: talk, sessionId: sessionId)");
   });
 });
@@ -165,7 +166,7 @@ describe("a review's scene on the iPhone", () => {
   );
 
   test("the review screen and the ledger row show it on one line", () => {
-    expect(between(sheet, "if let inspect = row?.review?.inspect {", "if let next {")).toContain(".lineLimit(1)");
+    expect(between(sheet, "if let inspect = shown?.inspect {", "if let next {")).toContain(".lineLimit(1)");
     expect(between(ledger, "if let inspect = row.review?.inspect {", "Spacer(minLength: 8)")).toContain(".lineLimit(1)");
   });
 });
@@ -191,8 +192,10 @@ describe("a cold launch draws the last state the Mac sent", () => {
           "  func stop() {}",
           "  func reconnectNow() {}",
           "  func request(_ request: BridgeRequest) async throws -> BridgeResponse { BridgeResponse(status: 200, headers: [], body: Data()) }",
-          '  func download(_ request: BridgeRequest) async throws -> URL { URL(fileURLWithPath: "/") }',
+          '  func download(_ request: BridgeRequest) async throws -> BridgeDownload { BridgeDownload(file: URL(fileURLWithPath: "/"), headers: []) }',
           "}",
+          // The file cache is forgotten with the pairing too; it has its own test.
+          "enum FileCache { static func forget() {} }",
           "let file = URL(fileURLWithPath: CommandLine.arguments[1])",
           "func text(_ data: Data) -> String { String(decoding: data, as: UTF8.self) }",
           "var seen: [String] = []",

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Network
 import UIKit
@@ -500,6 +501,9 @@ final class BridgeClient: ObservableObject {
         case restore
         case attach
         case reviewViewed = "review-viewed"
+        /// Take a deliverable off its session, on the Mac too: by `artifact`, every version, as
+        /// the Mac's Remove does, else by `review`, the one filing.
+        case reviewRemove = "review-remove"
     }
 
     enum AgentBackend: String, CaseIterable, Identifiable {
@@ -748,13 +752,13 @@ final class BridgeClient: ObservableObject {
     /// command contract. The enum keeps arbitrary commands off this convenience
     /// path, and the echoed id/action prevents a mismatched response from being
     /// mistaken for confirmation.
-    func send(sessionCommand command: SessionCommand, sessionId: String, review: String? = nil) async -> Bool {
+    func send(sessionCommand command: SessionCommand, sessionId: String, review: String? = nil, artifact: String? = nil) async -> Bool {
         guard !sessionId.isEmpty,
               let reply = await postControlRaw([
                   "kind": "session-command",
                   "sessionId": sessionId,
                   "command": command.rawValue,
-              ].merging(review.map { ["review": $0] } ?? [:]) { current, _ in current }) else {
+              ].merging(review.map { ["review": $0] } ?? artifact.map { ["artifact": $0] } ?? [:]) { current, _ in current }) else {
             lastError = "Couldn't reach your Mac."
             _ = await reportAppError(
                 operation: "session-\(command.rawValue)",
@@ -940,22 +944,49 @@ final class BridgeClient: ObservableObject {
     /// rendered from these files (`ConchPageSchemeHandler`) only ever sees its
     /// own `conch-page://` addresses, so its JavaScript cannot read the token.
     func fetchFile(path: String) async throws -> URL {
-        var components = URLComponents()
-        components.path = "/file"
-        components.queryItems = [URLQueryItem(name: "path", value: path)]
-        // URLComponents leaves `+` alone and the Mac reads it as a space, so a
-        // file named "C++ notes.md" would be asked for as "C   notes.md".
-        components.percentEncodedQuery = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
-        guard let requestPath = components.string else { throw BridgeTransportError.invalidRequest }
+        let authorized = authorizedRequest(method: "GET", path: Self.route("/file", ["path": path]))
+        // The version this phone already holds, if any: unchanged, the Mac answers 304 and nothing
+        // crosses. A reload, a reopened review and every conversation picture scrolled back into
+        // view each read the whole file again.
+        let held = FileCache.version(of: path)
+        let request = held.map {
+            BridgeRequest(method: "GET", path: authorized.path, headers: authorized.headers + [["if-none-match", $0]])
+        } ?? authorized
+        do {
+            let download = try await gatedDownload(request)
+            if let version = download.header(named: "etag") { FileCache.keep(download.file, version: version, for: path) }
+            return download.file
+        } catch BridgeTransportError.httpStatus(304) where held != nil {
+            return try FileCache.copy(of: path)
+        }
+    }
+
+    /// One read from a dev server a held review names, on the Mac's own localhost (`/dev`): `path`
+    /// is the page's path and query as the page asked. Headers and all, since only the server can
+    /// say what a route like `/src/main.tsx` is. Never cached: a dev page changes as it is worked on.
+    func fetchDev(review: String, path: String) async throws -> BridgeDownload {
+        try await gatedDownload(authorizedRequest(method: "GET", path: Self.route("/dev", ["review": review, "path": path])))
+    }
+
+    private func gatedDownload(_ request: BridgeRequest) async throws -> BridgeDownload {
         await Self.fileReads.enter()
         do {
-            let file = try await transport.download(authorizedRequest(method: "GET", path: requestPath))
+            let download = try await transport.download(request)
             await Self.fileReads.leave()
-            return file
+            return download
         } catch {
             await Self.fileReads.leave()
             throw error
         }
+    }
+
+    /// A route with its query values encoded whole. URLComponents leaves `&`, `=`, `?` and `+`
+    /// alone in a value, and the Mac reads those as a separator, another item and a space: a file
+    /// named "Q&A.md" was asked for as "Q", and a dev page's "?tab=2&x=1" lost its second half.
+    nonisolated static func route(_ path: String, _ items: KeyValuePairs<String, String>) -> String {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~/")
+        return path + "?" + items.map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: allowed) ?? "")" }
+            .joined(separator: "&")
     }
 
     /// Six file reads at a time; the rest wait here, on the phone. A page with
@@ -963,6 +994,23 @@ final class BridgeClient: ObservableObject {
     /// most 128 requests before it refuses the next ("Too many relay requests
     /// are already waiting"), so the page came back with holes in it.
     private static let fileReads = FileReadGate(slots: 6)
+
+    /// What to say when a page on the Mac's own dev server won't come (`/dev`'s refusals).
+    nonisolated static func devFailure(_ error: Error) -> String {
+        switch error {
+        case BridgeTransportError.httpStatus(403):
+            "conch opens a Mac dev server here only while it belongs to the session that published it, "
+                + "and this one doesn't: another session or program is running it now."
+        case BridgeTransportError.httpStatus(503):
+            "Nothing is running on that port on your Mac any more. Ask the session to start its dev server again."
+        case BridgeTransportError.httpStatus(502):
+            "The dev server on your Mac didn't answer, or sent the page somewhere off your Mac."
+        case BridgeTransportError.httpStatus(404):
+            "The dev server has no page at that address."
+        default:
+            error.localizedDescription
+        }
+    }
 
     /// What to say when a Mac file won't come: what happened, and why.
     nonisolated static func fileFailure(_ error: Error) -> String {
@@ -984,6 +1032,56 @@ final class BridgeClient: ObservableObject {
             headers: ["authorization": "Bearer \(pairing.bearer)"],
             body: body
         )
+    }
+}
+
+/// Mac files this phone has read, by path, with the version the Mac gave each
+/// (its `etag`, from size and mtime). Foundation and CryptoKit only, so the bun
+/// test runs it under `swift`.
+enum FileCache {
+    static var folder = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("conch-files", isDirectory: true)
+    /// Past this a file is read again each time rather than kept: a video is
+    /// not worth the phone's disk.
+    static let maxBytes = 16 * 1024 * 1024
+
+    private static func entry(_ path: String) -> URL {
+        folder.appendingPathComponent(SHA256.hash(data: Data(path.utf8)).map { String(format: "%02x", $0) }.joined())
+    }
+
+    private static func versionFile(_ path: String) -> URL { entry(path).appendingPathExtension("etag") }
+
+    /// The version this phone holds of `path`, if it holds one.
+    static func version(of path: String) -> String? {
+        try? String(contentsOf: versionFile(path), encoding: .utf8)
+    }
+
+    /// Keep `file` as `path` at `version`. The version is written last, so a
+    /// copy that failed is never claimed.
+    static func keep(_ file: URL, version: String, for path: String) {
+        guard let size = try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= maxBytes else { return }
+        let kept = entry(path)
+        try? FileManager.default.removeItem(at: versionFile(path))
+        try? FileManager.default.removeItem(at: kept)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        guard (try? FileManager.default.copyItem(at: file, to: kept)) != nil else { return }
+        // Work from the Mac: readable only while the phone is unlocked, like the saved state.
+        try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: kept.path)
+        try? version.write(to: versionFile(path), atomically: true, encoding: .utf8)
+    }
+
+    /// A copy of what this phone holds, for a caller that deletes what it is handed.
+    static func copy(of path: String) throws -> URL {
+        let copy = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension((path as NSString).pathExtension)
+        try FileManager.default.copyItem(at: entry(path), to: copy)
+        return copy
+    }
+
+    /// With the pairing: another Mac's files are not this one's.
+    static func forget() {
+        try? FileManager.default.removeItem(at: folder)
     }
 }
 
@@ -1337,7 +1435,7 @@ final class FixtureTransport: BridgeTransport, @unchecked Sendable {
     }
 
     /// A COPY: the deliverable sheet deletes whatever file it is handed.
-    func download(_ request: BridgeRequest) async throws -> URL {
+    func download(_ request: BridgeRequest) async throws -> BridgeDownload {
         guard let path = URLComponents(string: "https://fixture.invalid\(request.path)")?
             .queryItems?.first(where: { $0.name == "path" })?.value else {
             throw BridgeTransportError.invalidRequest
@@ -1346,7 +1444,7 @@ final class FixtureTransport: BridgeTransport, @unchecked Sendable {
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension((path as NSString).pathExtension)
         try FileManager.default.copyItem(at: URL(fileURLWithPath: path), to: copy)
-        return copy
+        return BridgeDownload(file: copy, headers: [])
     }
 }
 #endif

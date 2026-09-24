@@ -163,6 +163,19 @@ const RELAY_KEEPALIVE_MS = 30_000;
 // be hammered.
 const RELAY_SETTLED_MS = 30_000;
 const RELAY_REORDER_WINDOW = 64;
+/**
+ * Response chunks the Mac keeps in flight before the phone acknowledges them: this many across
+ * every download, and at most `RELAY_CHUNKS_PER_RESPONSE` for any one, so downloads take turns.
+ *
+ * It was one chunk, total, waiting for each acknowledgement: 64 KiB per round trip, shared by a
+ * page's every picture and the state stream. And one chunk nobody acknowledged held that one slot,
+ * so everything else waited behind it for 30 s. On 9/25 at 01:24 a phone that went to the
+ * background mid-download did exactly that, and the log read "relay chunk acknowledgement timed
+ * out". 8 x 64 KiB in flight is more than a phone link carries in one round trip; the frame size
+ * limit is unchanged.
+ */
+const RELAY_CHUNKS_IN_FLIGHT = 8;
+const RELAY_CHUNKS_PER_RESPONSE = 4;
 // How long an inject that waits for its keystrokes keeps later mutations
 // behind it. Its line reaches the daemon's socket in milliseconds, so this
 // keeps the order things START in; what it no longer does is hold a Stop or an
@@ -380,7 +393,7 @@ export class MacRelayPeer {
   #stateSending = false;
   #stateDrainToken = 0;
   #chunkAcks = new Map<number, ChunkAckWaiter>();
-  #bulkAvailable = true;
+  #bulkFree = RELAY_CHUNKS_IN_FLIGHT;
   #bulkWaiters: Array<{
     generation: number;
     resolve: () => void;
@@ -762,11 +775,13 @@ export class MacRelayPeer {
           generation,
         );
         const hash = createHash("sha256");
+        const acknowledged = this.#chunkWindow(id, method, "high", generation);
         for (let offset = 0; offset < bytes.byteLength; offset += RELAY_CHUNK_BYTES) {
           const chunk = bytes.slice(offset, Math.min(bytes.byteLength, offset + RELAY_CHUNK_BYTES));
           hash.update(chunk);
-          await this.#sendAcknowledgedChunk(id, method, chunk, "high", generation);
+          await acknowledged.send(chunk);
         }
+        await acknowledged.drain();
         await this.#send(
           "response-end",
           id,
@@ -839,6 +854,7 @@ export class MacRelayPeer {
     );
     const hash = createHash("sha256");
     let total = 0;
+    const acknowledged = this.#chunkWindow(id, method, "bulk", generation);
     const reader = response.body?.getReader();
     if (reader) {
       this.#activeReaders.set(id, {
@@ -857,10 +873,11 @@ export class MacRelayPeer {
             const chunk = value.slice(offset, Math.min(value.byteLength, offset + RELAY_CHUNK_BYTES));
             total += chunk.byteLength;
             hash.update(chunk);
-            await this.#sendAcknowledgedChunk(id, method, chunk, "bulk", generation);
+            await acknowledged.send(chunk);
           }
         }
       }
+      await acknowledged.drain();
       await this.#send(
         "response-end",
         id,
@@ -874,6 +891,9 @@ export class MacRelayPeer {
       );
     } catch (error) {
       await reader?.cancel(error).catch(() => {});
+      // The phone asked for this to stop: it closed the page, or went to the background and
+      // said so first. That is the ending it wanted, not a frame to report as rejected.
+      if (this.#cancelledResponses.has(id)) return;
       throw error;
     } finally {
       const active = this.#activeReaders.get(id);
@@ -903,16 +923,48 @@ export class MacRelayPeer {
     });
   }
 
+  /**
+   * One response's chunks, pipelined: `send` returns once a chunk is on the wire (so a control
+   * that arrives meanwhile still goes out before the next chunk), and waits first only when this
+   * response already has `RELAY_CHUNKS_PER_RESPONSE` unacknowledged. `drain` waits for the rest.
+   * Bulk chunks also take one of the `RELAY_CHUNKS_IN_FLIGHT` slots, first come first served; the
+   * state stream does not queue behind downloads.
+   */
+  #chunkWindow(id: string, method: string, priority: "high" | "bulk", generation: number) {
+    const unacknowledged: Array<Promise<void>> = [];
+    return {
+      send: async (body: Uint8Array): Promise<void> => {
+        if (unacknowledged.length >= RELAY_CHUNKS_PER_RESPONSE) await unacknowledged.shift();
+        unacknowledged.push((await this.#sendAcknowledgedChunk(id, method, body, priority, generation)).acknowledged);
+      },
+      drain: async (): Promise<void> => {
+        while (unacknowledged.length) await unacknowledged.shift();
+      },
+    };
+  }
+
+  /**
+   * Send one chunk; resolves once it is sent, with its acknowledgement, which frees its slot. In
+   * an object, because awaiting a promise that resolves to a promise waits for the inner one too.
+   */
   async #sendAcknowledgedChunk(
     id: string,
     method: string,
     body: Uint8Array,
     priority: "high" | "bulk",
     generation: number,
-  ): Promise<void> {
-    await this.#acquireBulk(generation);
+  ): Promise<{ acknowledged: Promise<void> }> {
+    const windowed = priority === "bulk";
+    if (windowed) await this.#acquireBulk(generation);
     let sequence: number | null = null;
+    const settle = () => {
+      if (sequence !== null) this.#rejectChunkAck(sequence, new Error("relay chunk closed"));
+      if (windowed) this.#releaseBulk(generation);
+    };
     try {
+      // Cancelled while it waited for a slot: sent now, nobody would acknowledge it, and it would
+      // hold that slot for the full timeout.
+      if (this.#cancelledResponses.has(id)) throw new Error("relay response cancelled");
       const cipher = this.#cipher;
       if (!cipher || generation !== this.#generation) throw new Error("stale relay session");
       let acknowledgement: Promise<void> | null = null;
@@ -934,10 +986,14 @@ export class MacRelayPeer {
         }
       });
       if (!acknowledgement) throw new Error("relay chunk acknowledgement was not registered");
-      await acknowledgement;
-    } finally {
-      if (sequence !== null) this.#rejectChunkAck(sequence, new Error("relay chunk closed"));
-      this.#releaseBulk(generation);
+      const settled = (acknowledgement as Promise<void>).finally(settle);
+      // Handled here so a response that fails on one chunk leaves no unhandled rejection behind
+      // for the others; whoever awaits `settled` still sees the error.
+      settled.catch(() => {});
+      return { acknowledged: settled };
+    } catch (error) {
+      settle();
+      throw error;
     }
   }
 
@@ -996,8 +1052,8 @@ export class MacRelayPeer {
 
   #acquireBulk(generation: number): Promise<void> {
     if (generation !== this.#generation) return Promise.reject(new Error("stale relay session"));
-    if (this.#bulkAvailable) {
-      this.#bulkAvailable = false;
+    if (this.#bulkFree > 0) {
+      this.#bulkFree -= 1;
       return Promise.resolve();
     }
     return new Promise((resolve, reject) => {
@@ -1015,12 +1071,12 @@ export class MacRelayPeer {
       }
       next.reject(new Error("stale relay session"));
     }
-    this.#bulkAvailable = true;
+    this.#bulkFree += 1;
   }
 
   #resetBulkWaiters(error: Error): void {
     for (const waiter of this.#bulkWaiters.splice(0)) waiter.reject(error);
-    this.#bulkAvailable = true;
+    this.#bulkFree = RELAY_CHUNKS_IN_FLIGHT;
   }
 
   #cancelResponse(opened: OpenedRelayFrame): void {

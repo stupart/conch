@@ -1,5 +1,5 @@
 import { injectTimeoutFor } from "../src/daemon.ts";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -549,6 +549,37 @@ describe("file serving: held deliverables, their folders, and nothing else", () 
     expect(await status(application, q(repoImage))).toBe(200);
   });
 
+  test("the image a held deliverable's marks are drawn on is served, checked again when read", async () => {
+    const root = scratch();
+    const still = put(join(root, "stills/canvas.png"));
+    const beside = put(join(root, "stills/other.png"));
+    const hidden = put(join(root, ".private/still.png"));
+    const page = put(join(root, "site/index.html"));
+    const marked = (image: string) => ({ id: "r1", link: page, scene: { v: 1, target: { kind: "auto" }, marks: [
+      { id: "m1", kind: "box", frame: { image }, rect: [0.1, 0.1, 0.2, 0.2] },
+      { id: "m2", kind: "pin", frame: { canvas: "c1" }, at: [0.5, 0.5] },
+    ] } });
+    let held = [marked(still)];
+    const application = appFor(() => ({ rows: [{ id: "s", reviews: held }] }));
+    expect(await status(application, q(still))).toBe(200);
+    // Only the image a mark names, not its neighbours.
+    expect(await status(application, q(beside))).toBe(403);
+    // The newest (`review`) counts as much as the list.
+    const newestOnly = appFor(() => ({ rows: [{ id: "s", review: marked(still) }] }));
+    expect(await status(newestOnly, q(still))).toBe(200);
+    // A mark on a hidden file is refused at read time too, whatever was published.
+    held = [marked(hidden)];
+    expect(await status(application, q(hidden))).toBe(403);
+    // Swapped for a symlink out of reach after publishing.
+    held = [marked(still)];
+    unlinkSync(still);
+    symlinkSync(join(import.meta.dir, "..", "assets/conch-icon-1024.png"), still);
+    expect(await status(application, q(still))).toBe(403);
+    // No longer held: refused.
+    held = [];
+    expect(await status(application, q(still))).toBe(403);
+  });
+
   test("a picture the phone sent shows back from conch's own upload folder, and nothing else in a hidden folder does", async () => {
     const root = scratch();
     const uploads = join(root, ".cache/conch/uploads");
@@ -561,6 +592,67 @@ describe("file serving: held deliverables, their folders, and nothing else", () 
     expect(await status(appFor(state, uploads), q(sent))).toBe(200);
     expect(await status(appFor(state, uploads), q(deeper))).toBe(403);
     expect(await status(appFor(state), q(sent))).toBe(403);
+  });
+});
+
+// Every byte to a phone on the relay crosses as base64 in 64 KiB chunks, so a file read twice is
+// a 304 and text goes gzipped when the phone can take it.
+describe("file serving: versions and compression", () => {
+  const root = mkdtempSync(join(tmpdir(), "conch-file-version-"));
+  const style = join(root, "site/style.css");
+  const shot = join(root, "site/shot.png");
+  mkdirSync(join(root, "site"), { recursive: true });
+  const css = "body { color: red }\n".repeat(400);
+  writeFileSync(style, css);
+  writeFileSync(shot, Buffer.alloc(4096, 7));
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+  const application = makeApplication({
+    getState: () => ({ v: 1, rows: [{ id: "s", reviews: [{ link: style }, { link: shot }] }] }),
+  });
+  const read = async (path: string, headers: Record<string, string> = {}) => await application.handle(new Request(
+    `https://relay.invalid/file?path=${encodeURIComponent(path)}`,
+    { headers: { authorization: `Bearer ${TOKEN}`, ...headers } },
+  )) as Response;
+
+  test("an unchanged file answers 304 to the version the phone holds; a changed one comes again", async () => {
+    const first = await read(style);
+    const version = first.headers.get("etag");
+    expect(first.status).toBe(200);
+    expect(version).toMatch(/^W\/"[0-9a-z.]+-[0-9a-z.]+"$/);
+    const again = await read(style, { "if-none-match": version! });
+    expect(again.status).toBe(304);
+    expect(await again.text()).toBe("");
+    expect((await read(style, { "if-none-match": `W/"other", ${version}` })).status).toBe(304);
+    // Same size, new mtime: a re-render is a new version.
+    const later = new Date(Date.now() + 5_000);
+    Bun.spawnSync(["touch", "-m", "-d", later.toISOString().slice(0, 19), style]);
+    const changed = await read(style, { "if-none-match": version! });
+    expect(changed.status).toBe(200);
+    expect(changed.headers.get("etag")).not.toBe(version);
+    expect(await changed.text()).toBe(css);
+  });
+
+  test("text goes gzipped only when asked, whole, and never a picture or a byte range", async () => {
+    const zipped = await read(style, { "accept-encoding": "gzip, deflate" });
+    expect(zipped.headers.get("content-encoding")).toBe("gzip");
+    const bytes = new Uint8Array(await zipped.arrayBuffer());
+    expect(bytes.byteLength).toBeLessThan(css.length / 10);
+    expect(new TextDecoder().decode(Bun.gunzipSync(bytes))).toBe(css);
+    expect((await read(style)).headers.get("content-encoding")).toBeNull();
+    expect((await read(shot, { "accept-encoding": "gzip" })).headers.get("content-encoding")).toBeNull();
+    expect((await read(style, { "accept-encoding": "gzip", range: "bytes=0-9" })).headers.get("content-encoding")).toBeNull();
+  });
+
+  test("over the LAN a byte range still answers 206 with the version beside it", async () => {
+    const b = startBridge({
+      getState: () => ({ v: 1, rows: [{ id: "s", reviews: [{ link: style }] }] }),
+    });
+    const ranged = await fetch(`http://127.0.0.1:${b.port}/file?path=${encodeURIComponent(style)}`, {
+      headers: { authorization: `Bearer ${TOKEN}`, range: "bytes=0-9" },
+    });
+    expect(ranged.status).toBe(206);
+    expect(await ranged.text()).toBe(css.slice(0, 10));
+    expect(ranged.headers.get("etag")).toMatch(/^W\//);
   });
 });
 

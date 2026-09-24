@@ -15,10 +15,50 @@ struct ReviewSheet: View {
     /// Reviews already looked at here, by version, so Next brings the
     /// unopened first, as the Mac's Ready pill does.
     @State private var opened: Set<String> = []
+    /// An earlier deliverable of this session picked from the menu, by key; nil is the newest.
+    @State private var picked: String?
+    @State private var confirmingRemove = false
+    /// The daemon's own words when a Remove did nothing, so it never looks like one that worked.
+    @State private var removeFailure: String?
     @Environment(\.dismiss) private var dismiss
 
     private var row: PublishedState.Row? {
         bridge.state?.rows.first { $0.id == sessionId }
+    }
+
+    /// Everything this session holds, newest first. Only the newest could be seen here; the
+    /// earlier ones were served but nothing on the phone listed them.
+    private var held: [PublishedState.Row.Review] {
+        Array((row?.reviews ?? row?.review.map { [$0] } ?? []).reversed())
+    }
+
+    private func key(_ review: PublishedState.Row.Review) -> String {
+        ReviewQueue.key(sessionId: sessionId, filedAt: review.at, published: review.id)
+    }
+
+    /// On screen: the newest, or the earlier one picked, while the session still holds it.
+    private var shown: PublishedState.Row.Review? {
+        held.first { picked != nil && key($0) == picked } ?? row?.review
+    }
+
+    private func title(_ review: PublishedState.Row.Review) -> String {
+        let name = review.summary.isEmpty ? ((review.link ?? "Deliverable") as NSString).lastPathComponent : review.summary
+        return review.version.map { "\(name) · v\($0)" } ?? name
+    }
+
+    /// Off the session, on the Mac too, the way the Mac's Remove does it.
+    private func remove() {
+        guard let shown, shown.artifact != nil || shown.id != nil else { return }
+        let session = sessionId
+        Task {
+            let removed = await bridge.send(
+                sessionCommand: .reviewRemove,
+                sessionId: session,
+                review: shown.artifact == nil ? shown.id : nil,
+                artifact: shown.artifact
+            )
+            if removed { picked = nil } else { removeFailure = bridge.lastError ?? "Your Mac didn't say why." }
+        }
     }
 
     private var ready: [ReviewQueue.Entry] {
@@ -50,11 +90,11 @@ struct ReviewSheet: View {
         let more = ready.filter { $0.key != currentKey }.count
         NavigationStack {
             Group {
-                if let review = row?.review {
+                if let review = shown {
                     DeliverableSheet(bridge: bridge, review: review, sessionId: sessionId)
                         // A different review is a different viewer: nothing of
                         // the last one's download, page or failure carries over.
-                        .id(currentKey)
+                        .id(key(review))
                 } else {
                     Text("This work isn't waiting for you any more.")
                         .font(Type.summary)
@@ -65,7 +105,7 @@ struct ReviewSheet: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 6) {
                     // What the agent asked you to check, when it said (scene.inspect).
-                    if let inspect = row?.review?.inspect {
+                    if let inspect = shown?.inspect {
                         Label(inspect, systemImage: "eye")
                             .font(Type.caption)
                             .foregroundStyle(Palette.textDim)
@@ -87,6 +127,7 @@ struct ReviewSheet: View {
                                     }
                                 }
                                 sessionId = next
+                                picked = nil
                             } label: {
                                 HStack(spacing: 6) {
                                     Text("Next")
@@ -122,7 +163,7 @@ struct ReviewSheet: View {
                             .font(Type.sessionName)
                             .foregroundStyle(Palette.textPrimary)
                             .lineLimit(1)
-                        Text(row?.review?.summary ?? "")
+                        Text(shown?.summary ?? "")
                             .font(Type.caption)
                             .foregroundStyle(Palette.textDim)
                             .lineLimit(1)
@@ -130,8 +171,53 @@ struct ReviewSheet: View {
                     .accessibilityElement(children: .combine)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
+                    if let shown, held.count > 1 || shown.artifact != nil || shown.id != nil {
+                        Menu {
+                            if held.count > 1 {
+                                Section("Held by \(row?.label ?? "this session")") {
+                                    ForEach(held.indices, id: \.self) { index in
+                                        let one = held[index]
+                                        Button { picked = index == 0 ? nil : key(one) } label: {
+                                            if key(one) == key(shown) {
+                                                Label(title(one), systemImage: "checkmark")
+                                            } else {
+                                                Text(title(one))
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if shown.artifact != nil || shown.id != nil {
+                                Button(role: .destructive) { confirmingRemove = true } label: {
+                                    Label("Remove…", systemImage: "trash")
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                        }
+                        .accessibilityLabel("Deliverables")
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
                 }
+            }
+            .confirmationDialog(
+                "Remove \(shown.map(title) ?? "this") from \(row?.label ?? "the session")?",
+                isPresented: $confirmingRemove,
+                titleVisibility: .visible
+            ) {
+                Button("Remove", role: .destructive) { remove() }
+            } message: {
+                Text(shown?.artifact != nil ? "Every version of it goes, on your Mac too." : "It goes from your Mac too.")
+            }
+            .alert(
+                "Couldn't remove it",
+                isPresented: Binding(get: { removeFailure != nil }, set: { if !$0 { removeFailure = nil } })
+            ) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(removeFailure ?? "")
             }
         }
     }
@@ -259,7 +345,7 @@ struct DeliverableSheet: View {
     private var pageURL: URL? {
         switch kind {
         case let .web(url): url
-        case .macLocal: lanPage
+        case let .macLocal(url): lanPage ?? devPage(url)?.entry
         case .local(.page): review.link.flatMap { ConchPagePath.entry(host: pageHost, page: $0) }
         default: nil
         }
@@ -294,8 +380,8 @@ struct DeliverableSheet: View {
             }
             .background(Palette.bg)
             .toolbar {
-                // A `conch-page://` address means nothing outside this sheet.
-                if let shared = localURL ?? pageURL, shared.scheme != ConchPagePath.scheme, failure == nil {
+                // A `conch-page://` or `conch-dev://` address means nothing outside this sheet.
+                if let shared = localURL ?? pageURL, ["file", "http", "https"].contains(shared.scheme), failure == nil {
                     ToolbarItem(placement: .topBarLeading) {
                         ShareLink(item: shared) {
                             Image(systemName: "square.and.arrow.up")
@@ -369,6 +455,16 @@ struct DeliverableSheet: View {
         case let .macLocal(url):
             if let lanPage {
                 BridgedWebView(url: lanPage, page: page, onFailure: fail)
+            } else if let dev = devPage(url) {
+                // Through conch, over whichever link is live: the phone's own localhost is the phone.
+                LocalPageView(
+                    handler: .dev(review: dev.review, entry: dev.entry, bridge: bridge),
+                    url: dev.entry,
+                    devServer: url,
+                    page: page,
+                    onFailure: fail,
+                    onRefusedLink: { linkFailure = $0 }
+                )
             } else {
                 macLocalView(url)
             }
@@ -402,7 +498,7 @@ struct DeliverableSheet: View {
             // alone, downloaded into an empty folder, so its styles, scripts
             // and pictures were silently missing; now each is read from the
             // Mac as the page asks for it.
-            LocalPageView(bridge: bridge, macPath: review.link ?? "", url: url, page: page, onFailure: fail)
+            LocalPageView(handler: .page(review.link ?? "", entry: url, bridge: bridge), url: url, page: page, onFailure: fail)
         case .text:
             RemoteDocumentView(url: url, renderMarkdown: false, onFailure: fail)
         case .unsupported:
@@ -452,6 +548,24 @@ struct DeliverableSheet: View {
         .background(Palette.bg)
     }
 
+    /// A page on the Mac's own dev server, on the phone: when a review a session holds names that
+    /// server, by its id, which `/dev` needs. This review's own, or, for a link tapped in a
+    /// document, one held for the same server, this session's first.
+    private func devPage(_ url: URL) -> (review: String, entry: URL)? {
+        let held: String?
+        if let id = review.id, let link = review.link.flatMap(URL.init(string:)), DevPagePath.sameServer(link, url) {
+            held = id
+        } else {
+            let rows = (bridge.state?.rows ?? []).sorted { $0.id == sessionId && $1.id != sessionId }
+            held = rows.lazy
+                .flatMap { $0.reviews ?? $0.review.map { [$0] } ?? [] }
+                .first { one in one.id != nil && one.link.flatMap(URL.init(string:)).map { DevPagePath.sameServer($0, url) } == true }?
+                .id
+        }
+        guard let held, let entry = DevPagePath.entry(host: pageHost, for: url) else { return nil }
+        return (held, entry)
+    }
+
     /// What a Mac-local page is, and the one thing that can work from here.
     private func macLocalView(_ url: URL) -> some View {
         let lan = MacLocalPage.onLAN(url, pairedHost: bridge.pairedHost, isRelay: bridge.isRelayPaired)
@@ -464,7 +578,7 @@ struct DeliverableSheet: View {
                 Text("This page is running on your Mac")
                     .font(Type.label(17, weight: .semibold))
                     .foregroundStyle(Palette.textPrimary)
-                Text("\(url.host ?? "localhost") is how your Mac reaches its own dev server. On iPhone the same address means the iPhone, so the page can't load here.")
+                Text("\(url.host ?? "localhost") is how your Mac reaches its own dev server. On iPhone the same address means the iPhone. conch opens a dev server's page here when a session publishes it, and no session is holding this one.")
                 if let lan {
                     Text("On the same Wi-Fi, your Mac is at \(lan.host ?? ""). The page opens there if its dev server accepts other devices, for example `vite --host`.")
                     Button { lanPage = lan } label: {
@@ -476,7 +590,7 @@ struct DeliverableSheet: View {
                     .tint(Palette.micOpen)
                     .foregroundStyle(Palette.bg)
                 } else {
-                    Text("This phone reaches your Mac through the relay, so it doesn't know the Mac's address on your Wi-Fi, and conch doesn't carry a dev server's pages through the relay yet. Paired on the same Wi-Fi, the page can open here.")
+                    Text("This phone reaches your Mac through the relay. Ask the session to publish the page, and it opens here.")
                 }
                 Text(url.absoluteString)
                     .font(Type.mono)
@@ -679,24 +793,22 @@ private struct BridgedWebView: UIViewRepresentable {
     func updateUIView(_ view: WKWebView, context: Context) {}
 }
 
-/// A local HTML page, and everything it loads, read from the Mac as it asks
-/// (`ConchPageSchemeHandler`).
+/// A page read from the Mac as it asks, each request through `handler`: a
+/// local HTML deliverable and everything it loads, or a session's dev server.
 private struct LocalPageView: UIViewRepresentable {
-    let bridge: BridgeClient
-    /// The page's path on the Mac; its folder is what the page's addresses resolve against.
-    let macPath: String
+    let handler: ConchPageSchemeHandler
     let url: URL
+    /// For a dev page, the server's address on the Mac, whose links are kept here.
+    var devServer: URL? = nil
     let page: PageLoadFailure
     let onFailure: (String) -> Void
+    var onRefusedLink: (String) -> Void = { _ in }
 
     func makeCoordinator() -> PageLoadFailure { page }
 
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
-        configuration.setURLSchemeHandler(
-            ConchPageSchemeHandler(bridge: bridge, entry: url, page: macPath),
-            forURLScheme: ConchPagePath.scheme
-        )
+        configuration.setURLSchemeHandler(handler, forURLScheme: url.scheme ?? ConchPagePath.scheme)
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.isOpaque = false
         view.backgroundColor = UIColor(Palette.bg)
@@ -704,6 +816,8 @@ private struct LocalPageView: UIViewRepresentable {
         view.uiDelegate = context.coordinator
         context.coordinator.view = view
         context.coordinator.onFailure = onFailure
+        context.coordinator.devServer = devServer.map { ($0, url.host ?? "") }
+        context.coordinator.onRefusedLink = onRefusedLink
         view.load(URLRequest(url: url))
         return view
     }
@@ -722,6 +836,30 @@ private final class PageLoadFailure: NSObject, ObservableObject, WKNavigationDel
             backObservation = view?.observe(\.canGoBack, options: [.initial, .new]) { [weak self] view, _ in
                 DispatchQueue.main.async { self?.canGoBack = view.canGoBack }
             }
+        }
+    }
+
+    /// A dev page's server on the Mac, and the page's host here: a link to that server comes back
+    /// through conch rather than asking the phone's own localhost.
+    var devServer: (origin: URL, host: String)?
+    var onRefusedLink: (String) -> Void = { _ in }
+
+    /// The page links to `http://localhost:5173/next`: on a phone that is the phone. The review's
+    /// own server is kept here (`conch-dev://`); any other port on the Mac is one no review names.
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+    ) {
+        guard let devServer, let url = navigationAction.request.url, MacLocalPage.isLoopback(url) else {
+            decisionHandler(.allow)
+            return
+        }
+        decisionHandler(.cancel)
+        if DevPagePath.sameServer(url, devServer.origin), let kept = DevPagePath.entry(host: devServer.host, for: url) {
+            webView.load(URLRequest(url: kept))
+        } else {
+            onRefusedLink("\(url.host ?? "localhost"):\(url.port.map(String.init) ?? "80") is another server on your Mac, one no review names, so it doesn't open here.")
         }
     }
 
@@ -830,25 +968,83 @@ enum ConchPagePath {
     }
 }
 
-/// Serves a local page, and everything it loads, from the Mac: each
-/// `conch-page://` request is one `/file` read over whichever transport is
-/// live, LAN or relay, with the token attached by `fetchFile`, never in an
-/// address the page can see. Tyler: "a huge improvement would be having all
-/// content viewable and interative on phone app - currently it just says to go
-/// to desktop which kinda defeats a lot of the purpose of having it."
+/// Where a page on the Mac's own dev server lives on the phone:
+/// `conch-dev://<id>/<path>?<query>`, the same path and query as on the Mac,
+/// the id standing for the review that names the server. Foundation only, so
+/// the bun test runs it under `swift`.
+enum DevPagePath {
+    static let scheme = "conch-dev"
+
+    /// `url`, a page on the Mac's server, as the phone addresses it.
+    static func entry(host: String, for url: URL) -> URL? {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        components.scheme = scheme
+        components.host = host
+        components.port = nil
+        components.user = nil
+        components.password = nil
+        if components.percentEncodedPath.isEmpty { components.percentEncodedPath = "/" }
+        return components.url
+    }
+
+    /// What to ask the Mac's server for: the path and query exactly as the
+    /// page wrote them. Nil for another page's id.
+    static func request(for url: URL, host: String) -> String? {
+        guard url.scheme == scheme, url.host == host,
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        let path = components.percentEncodedPath.isEmpty ? "/" : components.percentEncodedPath
+        return components.percentEncodedQuery.map { "\(path)?\($0)" } ?? path
+    }
+
+    /// The same server: scheme, host and port, a missing port being the scheme's own.
+    static func sameServer(_ a: URL, _ b: URL) -> Bool {
+        func port(_ url: URL) -> Int? { url.port ?? (url.scheme == "https" ? 443 : url.scheme == "http" ? 80 : nil) }
+        return a.scheme?.lowercased() == b.scheme?.lowercased() && a.host?.lowercased() == b.host?.lowercased() && port(a) == port(b)
+    }
+}
+
+/// Serves a page, and everything it loads, from the Mac: each request is one
+/// read over whichever transport is live, LAN or relay, with the token
+/// attached by `BridgeClient`, never in an address the page can see. Tyler: "a
+/// huge improvement would be having all content viewable and interative on
+/// phone app - currently it just says to go to desktop which kinda defeats a
+/// lot of the purpose of having it."
 @MainActor
 final class ConchPageSchemeHandler: NSObject, WKURLSchemeHandler {
-    private let bridge: BridgeClient
+    /// One request's bytes, and their type when the Mac named one; nil for an
+    /// address that maps to nothing.
+    typealias Read = @MainActor (URL) async throws -> (file: URL, type: String?)?
+
     private let entry: URL
-    private let folder: String
+    private let describe: (Error) -> String
+    private let read: Read
     /// Reads in flight. Each read's Task holds its WKURLSchemeTask until it
     /// ends, so no other task can take the same identity while it is here.
     private var reads: [ObjectIdentifier: Task<Void, Never>] = [:]
 
-    init(bridge: BridgeClient, entry: URL, page: String) {
-        self.bridge = bridge
+    init(entry: URL, describe: @escaping (Error) -> String = BridgeClient.fileFailure, read: @escaping Read) {
         self.entry = entry
-        folder = (page as NSString).deletingLastPathComponent
+        self.describe = describe
+        self.read = read
+    }
+
+    /// A local HTML deliverable (`conch-page://`): `/file`, within its folder.
+    static func page(_ page: String, entry: URL, bridge: BridgeClient) -> ConchPageSchemeHandler {
+        let folder = (page as NSString).deletingLastPathComponent
+        return ConchPageSchemeHandler(entry: entry) { url in
+            guard let path = ConchPagePath.macPath(for: url, host: entry.host ?? "", folder: folder) else { return nil }
+            return (try await bridge.fetchFile(path: path), nil)
+        }
+    }
+
+    /// A session's dev server (`conch-dev://`): `/dev`, the same path on the
+    /// server the review names, typed by the server.
+    static func dev(review: String, entry: URL, bridge: BridgeClient) -> ConchPageSchemeHandler {
+        ConchPageSchemeHandler(entry: entry, describe: BridgeClient.devFailure) { url in
+            guard let path = DevPagePath.request(for: url, host: entry.host ?? "") else { return nil }
+            let download = try await bridge.fetchDev(review: review, path: path)
+            return (download.file, download.header(named: "content-type"))
+        }
     }
 
     func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
@@ -859,32 +1055,30 @@ final class ConchPageSchemeHandler: NSObject, WKURLSchemeHandler {
         // The page itself failing says why in the sheet; a missing picture
         // answers the page the way a web server would.
         let isPage = url == entry || task.request.mainDocumentURL == url
-        guard let path = ConchPagePath.macPath(for: url, host: entry.host ?? "", folder: folder) else {
-            answer(task, url: url, failure: BridgeTransportError.httpStatus(404), isPage: isPage)
-            return
-        }
         let key = ObjectIdentifier(task)
-        reads[key] = Task { @MainActor [weak self, bridge] in
-            let result: Result<URL, Error>
-            do { result = .success(try await bridge.fetchFile(path: path)) } catch { result = .failure(error) }
+        reads[key] = Task { @MainActor [weak self, read] in
+            let result: Result<(file: URL, type: String?)?, Error>
+            do { result = .success(try await read(url)) } catch { result = .failure(error) }
             // Stopped (the page moved on, or the sheet closed): WebKit raises
             // an exception if a stopped task is answered.
             guard let self, self.reads.removeValue(forKey: key) != nil else {
-                if case let .success(file) = result { try? FileManager.default.removeItem(at: file) }
+                if case let .success(read?) = result { try? FileManager.default.removeItem(at: read.file) }
                 return
             }
             switch result {
-            case let .success(file):
-                let data = (try? Data(contentsOf: file, options: .mappedIfSafe)) ?? Data()
-                try? FileManager.default.removeItem(at: file)
+            case let .success(read?):
+                let data = (try? Data(contentsOf: read.file, options: .mappedIfSafe)) ?? Data()
+                try? FileManager.default.removeItem(at: read.file)
                 task.didReceive(HTTPURLResponse(
                     url: url,
                     statusCode: 200,
                     httpVersion: "HTTP/1.1",
-                    headerFields: ["Content-Type": Self.contentType(url.pathExtension), "Content-Length": String(data.count)]
+                    headerFields: ["Content-Type": read.type ?? Self.contentType(url.pathExtension), "Content-Length": String(data.count)]
                 )!)
                 if !data.isEmpty { task.didReceive(data) }
                 task.didFinish()
+            case .success(nil):
+                self.answer(task, url: url, failure: BridgeTransportError.httpStatus(404), isPage: isPage)
             case let .failure(error):
                 self.answer(task, url: url, failure: error, isPage: isPage)
             }
@@ -903,7 +1097,7 @@ final class ConchPageSchemeHandler: NSObject, WKURLSchemeHandler {
             task.didFailWithError(NSError(
                 domain: "conch.page",
                 code: 1,
-                userInfo: [NSLocalizedDescriptionKey: BridgeClient.fileFailure(failure)]
+                userInfo: [NSLocalizedDescriptionKey: describe(failure)]
             ))
         }
     }

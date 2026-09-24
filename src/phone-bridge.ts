@@ -9,6 +9,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { conchHome } from "./home.ts";
 import { checkLocalFile } from "./snippet.ts";
+import { localhostPort, resolveScreen, SCREEN_RESOLVERS, screenContextFromPublished, type PortListener } from "./screen-context.ts";
 
 /**
  * The phone's transport into conch.
@@ -72,6 +73,10 @@ export interface PhoneBridgeDependencies {
   acceptUpload(chunk: UploadChunk): Promise<UploadResult | { error: string }>;
   /** Where `acceptUpload` writes, so `/file` can show the phone its own pictures back. */
   uploadsDirectory?: string;
+  /** Who listens on a localhost port (`portListenerLookup`), for `/dev`; without it no dev page is served. */
+  portListeners?(port: number): Promise<readonly PortListener[]>;
+  /** A session's process: a dev server it started descends from it. */
+  sessionPid?(sessionId: string): number | undefined;
   log(message: string): void;
 }
 
@@ -453,8 +458,13 @@ export class PhoneBridgeApplication {
       return (async () => {
         const served = await servableFile(requested, this.#dependencies.getState() as ServableState | null,
           this.#dependencies.uploadsDirectory);
-        return served.ok ? new Response(Bun.file(served.real)) : new Response(served.reason, { status: served.status });
+        return served.ok ? fileResponse(req, served.real) : new Response(served.reason, { status: served.status });
       })();
+    }
+
+    // A page a session is serving from this Mac's own localhost (`devResponse`).
+    if (url.pathname === "/dev") {
+      return devResponse(req, url, this.#dependencies.getState() as ServableState | null, this.#dependencies);
     }
 
     // Images arrive in pieces: a relay frame caps at 192 KiB and base64 adds a
@@ -550,14 +560,145 @@ export class PhoneBridgeApplication {
   }
 }
 
+/** Text worth compressing on the way to the phone: a page's code and data, a document. */
+const COMPRESSIBLE = /\.(css|js|mjs|json|html?|md|markdown|txt|svg|csv|xml|map)$/i;
+const COMPRESS_MAX_BYTES = 4 * 1024 * 1024;
+
+/**
+ * One file for the phone, cheaply the second time. The version is the file's size and mtime, so
+ * a reload, a reopened deliverable or a conversation picture scrolled back into view costs a 304
+ * instead of the file again. Over the relay every byte crosses as base64 in 64 KiB chunks, so text
+ * also goes gzipped when the phone says it can take that; a byte range (a video seeking) is left
+ * to Bun, whole and uncompressed.
+ */
+async function fileResponse(req: Request, real: string): Promise<Response> {
+  const file = Bun.file(real);
+  const info = await stat(real);
+  // Weak: the gzipped and the plain bytes are the same version of the file.
+  const etag = `W/"${info.size.toString(36)}-${info.mtimeMs.toString(36)}"`;
+  const asked = (req.headers.get("if-none-match") ?? "").split(",").map((tag) => tag.trim());
+  if (asked.includes(etag)) return new Response(null, { status: 304, headers: { etag } });
+  const gzip = /\bgzip\b/.test(req.headers.get("accept-encoding") ?? "")
+    && !req.headers.has("range") && COMPRESSIBLE.test(real) && info.size <= COMPRESS_MAX_BYTES;
+  if (!gzip) return new Response(file, { headers: { etag } });
+  return new Response(Bun.gzipSync(await file.bytes()), {
+    headers: { etag, "content-type": file.type, "content-encoding": "gzip", vary: "accept-encoding" },
+  });
+}
+
+/**
+ * How a dev server pushes changes to an open page (HMR): Vite's ping, webpack's and Next's event
+ * streams and sockets. The phone's copy of a page doesn't take live updates, and a stream that never
+ * ends would hold a relay download open for good, so these are refused and the page's client gives
+ * up. Any other `text/event-stream` answer is refused for the same reason.
+ */
+const DEV_LIVE_UPDATES = /^\/(?:__vite_ping|__webpack_hmr|_next\/webpack-hmr|sockjs-node)(?:\/|$)/;
+/** What of the phone's request reaches the dev server: never its token, never a cookie. */
+const DEV_REQUEST_HEADERS = ["accept", "range", "if-none-match", "if-modified-since"];
+/** What of the dev server's answer reaches the phone: never a cookie. */
+const DEV_RESPONSE_HEADERS = ["content-type", "cache-control", "etag", "last-modified", "expires", "content-range", "accept-ranges"];
+/** A first request can wait on a dev server's cold compile. */
+const DEV_TIMEOUT_MS = 60_000;
+const LOCALHOST_RESOLVER = SCREEN_RESOLVERS.filter((resolver) => resolver.id === "localhost-port");
+
+/**
+ * A page a session published at its Mac's own localhost (`http://localhost:5173`), read for the
+ * phone. Tyler, 09-25: "Phone will need viewing of dev server ones". On a phone, localhost is the
+ * phone.
+ *
+ * Only a server a held review names, by that review's id, and only while it belongs to that
+ * review's session: the session started it (its process is up the listener's parent chain) or it
+ * runs in the session's folder, which is the screen context's own answer (`localhost-port`,
+ * screen-context.ts), asked again on every request because a port can change hands. Only GET and
+ * HEAD. Only that server's origin: a path that would reach anywhere else is refused, and so is a
+ * redirect off it. The phone's token and cookies never reach the server, and the server's cookies
+ * never reach the phone. No websockets and no live updates (`DEV_LIVE_UPDATES`).
+ */
+async function devResponse(
+  req: Request,
+  url: URL,
+  state: ServableState | null,
+  deps: Pick<PhoneBridgeDependencies, "portListeners" | "sessionPid">,
+): Promise<Response> {
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    return new Response("a dev page is only read", { status: 405, headers: { allow: "GET, HEAD" } });
+  }
+  if (req.headers.has("upgrade")) return new Response("conch doesn't carry a dev server's websockets", { status: 403 });
+  const reviewId = url.searchParams.get("review") ?? "";
+  const rows = state?.rows ?? [];
+  let row: (typeof rows)[number] | undefined;
+  let link: string | undefined;
+  for (const candidate of rows) {
+    const held = [...(candidate.reviews ?? []), ...(candidate.review ? [candidate.review] : [])]
+      .find((review) => reviewId && review.id === reviewId && review.link);
+    if (held?.link && localhostPort({ kind: "url", url: held.link }) !== undefined) [row, link] = [candidate, held.link];
+  }
+  if (!row?.id || !link) return new Response("not a dev server a session published", { status: 403 });
+  const origin = new URL(link).origin;
+  const path = url.searchParams.get("path") ?? "/";
+  let target: URL;
+  try {
+    target = new URL(path, origin);
+  } catch {
+    return new Response("not a path", { status: 400 });
+  }
+  // `//elsewhere`, `/\elsewhere` and a full URL all parse to another origin.
+  if (!path.startsWith("/") || target.origin !== origin) return new Response("not on that server", { status: 400 });
+  if (DEV_LIVE_UPDATES.test(target.pathname)) return new Response("live updates stay on the Mac", { status: 404 });
+
+  const port = localhostPort({ kind: "url", url: link })!;
+  const listeners = await deps.portListeners?.(port) ?? [];
+  if (!listeners.length) return new Response(`nothing is listening on :${port}`, { status: 503 });
+  const context = { ...screenContextFromPublished(rows as Parameters<typeof screenContextFromPublished>[0], (id) => deps.sessionPid?.(id), conchHome()), listeners };
+  const owner = resolveScreen({ v: 1, source: "phone-dev", at: Date.now(), surface: { kind: "url", url: link } }, context, LOCALHOST_RESOLVER);
+  if (owner.sessionId !== row.id) return new Response(`the server on :${port} isn't this session's`, { status: 403 });
+
+  const headers = new Headers({ "accept-encoding": "identity" });
+  for (const name of DEV_REQUEST_HEADERS) {
+    const value = req.headers.get(name);
+    if (value) headers.set(name, value);
+  }
+  let response: Response;
+  try {
+    // Redirects are followed here, and only on this server.
+    for (let hops = 0; ; hops += 1) {
+      response = await fetch(target, { method: req.method, headers, redirect: "manual", signal: AbortSignal.timeout(DEV_TIMEOUT_MS) });
+      const location = response.headers.get("location");
+      if (response.status < 300 || response.status >= 400 || !location) break;
+      await response.body?.cancel();
+      target = new URL(location, target);
+      if (target.origin !== origin || hops >= 5) return new Response("the dev server sent the page somewhere else", { status: 502 });
+    }
+  } catch {
+    return new Response(`the server on :${port} didn't answer`, { status: 502 });
+  }
+  if (/^text\/event-stream/i.test(response.headers.get("content-type") ?? "")) {
+    await response.body?.cancel();
+    return new Response("live updates stay on the Mac", { status: 404 });
+  }
+  const passed = new Headers();
+  for (const name of DEV_RESPONSE_HEADERS) {
+    const value = response.headers.get(name);
+    if (value) passed.set(name, value);
+  }
+  return new Response(response.body, { status: response.status, headers: passed });
+}
+
+/** A published deliverable, as `/file` and `/dev` read it: its link, and the images its marks are drawn on. */
+interface HeldReview {
+  id?: string;
+  link?: string;
+  scene?: { marks?: Array<{ frame?: { image?: unknown } }> };
+}
+
 /** The parts of the published state `/file` decides by. */
 interface ServableState {
   rows?: Array<{
     id?: string;
     cwd?: string;
     workDirs?: string[];
-    review?: { link?: string };
-    reviews?: Array<{ link?: string }>;
+    review?: HeldReview;
+    reviews?: HeldReview[];
   }>;
   conversations?: Record<string, { items?: Array<{ material?: { path?: string } }> }>;
 }
@@ -602,6 +743,8 @@ async function ownUpload(requested: string, uploads: string): Promise<string | n
  * it is:
  * - a deliverable a session still holds: the newest, or any before it (`rows[].reviews`). Only the
  *   newest used to be served, so tapping an earlier one on the phone answered 403;
+ * - an image one of those deliverables' marks is drawn on (`scene.marks[].frame.image`, agent ink),
+ *   which an app has to show before it can draw the marks over it;
  * - a file on its own line in a conversation (`material.path`), which used to be served with no
  *   rule at all: any absolute image, PDF or text path an agent wrote became readable;
  * - a web asset under the folder of a held page or markdown document, which is what lets a page
@@ -623,6 +766,11 @@ async function servableFile(
     [...(row.reviews ?? []), ...(row.review ? [row.review] : [])]
       .map((held) => held.link)
       .filter((link): link is string => typeof link === "string" && link.startsWith("/"));
+  const markImages = (row: (typeof rows)[number]): string[] =>
+    [...(row.reviews ?? []), ...(row.review ? [row.review] : [])]
+      .flatMap((held) => held.scene?.marks ?? [])
+      .map((mark) => mark.frame?.image)
+      .filter((image): image is string => typeof image === "string" && image.startsWith("/"));
   const check = async (roots: string[]) => {
     const checked = await checkLocalFile(requested, roots);
     if (checked.ok) return checked;
@@ -633,7 +781,7 @@ async function servableFile(
   };
 
   for (const row of rows) {
-    if (heldLinks(row).includes(requested)) return check(rootsOf(row));
+    if (heldLinks(row).includes(requested) || markImages(row).includes(requested)) return check(rootsOf(row));
   }
   for (const [sessionId, conversation] of Object.entries(state?.conversations ?? {})) {
     if (!conversation.items?.some((item) => item.material?.path === requested)) continue;
