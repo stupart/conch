@@ -121,10 +121,12 @@ describe("the page reads through the bridge, and never sees the token", () => {
     expect(handler).toContain("try await bridge.fetchFile(path: path)");
     expect(handler).not.toMatch(/token|bearer/i);
     const fetch = between(bridge, "func fetchFile(path: String) async throws -> URL {", "\n    }\n");
-    expect(fetch).toContain('components.queryItems = [URLQueryItem(name: "path", value: path)]');
-    expect(fetch).toContain('let authorized = authorizedRequest(method: "GET", path: requestPath)');
-    expect(fetch).toContain("let download = try await transport.download(request)");
+    expect(fetch).toContain('let authorized = authorizedRequest(method: "GET", path: Self.route("/file", ["path": path]))');
+    expect(fetch).toContain("let download = try await gatedDownload(request)");
     expect(fetch).not.toMatch(/token/i);
+    const dev = between(bridge, "func fetchDev(review: String, path: String) async throws -> BridgeDownload {", "\n    }\n");
+    expect(dev).toContain('try await gatedDownload(authorizedRequest(method: "GET", path: Self.route("/dev", ["review": review, "path": path])))');
+    expect(dev).not.toMatch(/token/i);
     expect(between(bridge, "private func authorizedRequest(", "\n    }\n")).toContain(
       'headers: ["authorization": "Bearer \\(pairing.bearer)"]',
     );
@@ -136,7 +138,7 @@ describe("the page reads through the bridge, and never sees the token", () => {
       'URLQueryItem(name: "token", value: token)',
     );
     // What the page gets back is a response this handler built, never the Mac's headers.
-    expect(handler).toContain('headerFields: ["Content-Type": Self.contentType(url.pathExtension), "Content-Length": String(data.count)]');
+    expect(handler).toContain('headerFields: ["Content-Type": read.type ?? Self.contentType(url.pathExtension), "Content-Length": String(data.count)]');
   });
 
   test("a stopped request is never answered, and a failed page says why", () => {
@@ -146,7 +148,8 @@ describe("the page reads through the bridge, and never sees the token", () => {
       "reads.removeValue(forKey: ObjectIdentifier(task))?.cancel()",
     );
     expect(handler).toContain("let isPage = url == entry || task.request.mainDocumentURL == url");
-    expect(handler).toContain("userInfo: [NSLocalizedDescriptionKey: BridgeClient.fileFailure(failure)]");
+    expect(handler).toContain("userInfo: [NSLocalizedDescriptionKey: describe(failure)]");
+    expect(handler).toContain("init(entry: URL, describe: @escaping (Error) -> String = BridgeClient.fileFailure, read: @escaping Read)");
   });
 
   test("the page is served, not downloaded alone into an empty folder", () => {
@@ -154,14 +157,13 @@ describe("the page reads through the bridge, and never sees the token", () => {
     expect(sheet).not.toContain("allowingReadAccessTo");
     expect(sheet).toContain("guard case let .local(localKind) = kind, localKind != .page, let link = review.link else { return }");
     const page = between(sheet, "private struct LocalPageView", "private final class PageLoadFailure");
-    expect(page).toContain("configuration.setURLSchemeHandler(");
-    expect(page).toContain("ConchPageSchemeHandler(bridge: bridge, entry: url, page: macPath)");
-    expect(page).toContain("forURLScheme: ConchPagePath.scheme");
+    expect(page).toContain("configuration.setURLSchemeHandler(handler, forURLScheme: url.scheme ?? ConchPagePath.scheme)");
+    expect(sheet).toContain('LocalPageView(handler: .page(review.link ?? "", entry: url, bridge: bridge), url: url, page: page, onFailure: fail)');
     // A conch-page address is not something Safari or Share can use.
     expect(between(sheet, "private func webControls(_ url: URL) -> some View {", "/// What a Mac-local page is")).toContain(
       'if url.scheme == "http" || url.scheme == "https" {',
     );
-    expect(sheet).toContain("if let shared = localURL ?? pageURL, shared.scheme != ConchPagePath.scheme, failure == nil {");
+    expect(sheet).toContain('if let shared = localURL ?? pageURL, ["file", "http", "https"].contains(shared.scheme), failure == nil {');
   });
 
   test("a markdown document's pictures come through the same read", () => {
@@ -212,10 +214,11 @@ describe("a page with more pictures than the relay holds", () => {
 
   test("every /file read goes through the gate, and leaves it on failure too", () => {
     expect(bridge).toContain("private static let fileReads = FileReadGate(slots: 6)");
-    const fetch = between(bridge, "func fetchFile(path: String) async throws -> URL {", "\n    }\n");
-    expect(fetch).toContain("await Self.fileReads.enter()");
-    // Once for a read, once for a 304 answered from the phone's copy, once for a failure.
-    expect((fetch.match(/await Self\.fileReads\.leave\(\)/g) ?? []).length).toBe(3);
+    const gated = between(bridge, "private func gatedDownload(_ request: BridgeRequest) async throws -> BridgeDownload {", "\n    }\n");
+    expect(gated).toContain("await Self.fileReads.enter()");
+    // Once for a read, once for a failure.
+    expect((gated.match(/await Self\.fileReads\.leave\(\)/g) ?? []).length).toBe(2);
+    expect((bridge.match(/transport\.download\(/g) ?? []).length).toBe(1);
     expect(between(bridge, "func downloadFile(path: String) async -> URL? {", "\n    }\n")).toContain(
       "return try await fetchFile(path: path)",
     );

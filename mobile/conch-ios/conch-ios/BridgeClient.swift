@@ -941,34 +941,49 @@ final class BridgeClient: ObservableObject {
     /// rendered from these files (`ConchPageSchemeHandler`) only ever sees its
     /// own `conch-page://` addresses, so its JavaScript cannot read the token.
     func fetchFile(path: String) async throws -> URL {
-        var components = URLComponents()
-        components.path = "/file"
-        components.queryItems = [URLQueryItem(name: "path", value: path)]
-        // URLComponents leaves `+` alone and the Mac reads it as a space, so a
-        // file named "C++ notes.md" would be asked for as "C   notes.md".
-        components.percentEncodedQuery = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
-        guard let requestPath = components.string else { throw BridgeTransportError.invalidRequest }
-        let authorized = authorizedRequest(method: "GET", path: requestPath)
+        let authorized = authorizedRequest(method: "GET", path: Self.route("/file", ["path": path]))
         // The version this phone already holds, if any: unchanged, the Mac answers 304 and nothing
         // crosses. A reload, a reopened review and every conversation picture scrolled back into
         // view each read the whole file again.
         let held = FileCache.version(of: path)
         let request = held.map {
-            BridgeRequest(method: "GET", path: requestPath, headers: authorized.headers + [["if-none-match", $0]])
+            BridgeRequest(method: "GET", path: authorized.path, headers: authorized.headers + [["if-none-match", $0]])
         } ?? authorized
+        do {
+            let download = try await gatedDownload(request)
+            if let version = download.header(named: "etag") { FileCache.keep(download.file, version: version, for: path) }
+            return download.file
+        } catch BridgeTransportError.httpStatus(304) where held != nil {
+            return try FileCache.copy(of: path)
+        }
+    }
+
+    /// One read from a dev server a held review names, on the Mac's own localhost (`/dev`): `path`
+    /// is the page's path and query as the page asked. Headers and all, since only the server can
+    /// say what a route like `/src/main.tsx` is. Never cached: a dev page changes as it is worked on.
+    func fetchDev(review: String, path: String) async throws -> BridgeDownload {
+        try await gatedDownload(authorizedRequest(method: "GET", path: Self.route("/dev", ["review": review, "path": path])))
+    }
+
+    private func gatedDownload(_ request: BridgeRequest) async throws -> BridgeDownload {
         await Self.fileReads.enter()
         do {
             let download = try await transport.download(request)
             await Self.fileReads.leave()
-            if let version = download.header(named: "etag") { FileCache.keep(download.file, version: version, for: path) }
-            return download.file
-        } catch BridgeTransportError.httpStatus(304) where held != nil {
-            await Self.fileReads.leave()
-            return try FileCache.copy(of: path)
+            return download
         } catch {
             await Self.fileReads.leave()
             throw error
         }
+    }
+
+    /// A route with its query values encoded whole. URLComponents leaves `&`, `=`, `?` and `+`
+    /// alone in a value, and the Mac reads those as a separator, another item and a space: a file
+    /// named "Q&A.md" was asked for as "Q", and a dev page's "?tab=2&x=1" lost its second half.
+    nonisolated static func route(_ path: String, _ items: KeyValuePairs<String, String>) -> String {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~/")
+        return path + "?" + items.map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: allowed) ?? "")" }
+            .joined(separator: "&")
     }
 
     /// Six file reads at a time; the rest wait here, on the phone. A page with
@@ -976,6 +991,23 @@ final class BridgeClient: ObservableObject {
     /// most 128 requests before it refuses the next ("Too many relay requests
     /// are already waiting"), so the page came back with holes in it.
     private static let fileReads = FileReadGate(slots: 6)
+
+    /// What to say when a page on the Mac's own dev server won't come (`/dev`'s refusals).
+    nonisolated static func devFailure(_ error: Error) -> String {
+        switch error {
+        case BridgeTransportError.httpStatus(403):
+            "conch opens a Mac dev server here only while it belongs to the session that published it, "
+                + "and this one doesn't: another session or program is running it now."
+        case BridgeTransportError.httpStatus(503):
+            "Nothing is running on that port on your Mac any more. Ask the session to start its dev server again."
+        case BridgeTransportError.httpStatus(502):
+            "The dev server on your Mac didn't answer, or sent the page somewhere off your Mac."
+        case BridgeTransportError.httpStatus(404):
+            "The dev server has no page at that address."
+        default:
+            error.localizedDescription
+        }
+    }
 
     /// What to say when a Mac file won't come: what happened, and why.
     nonisolated static func fileFailure(_ error: Error) -> String {

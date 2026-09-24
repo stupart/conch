@@ -106,7 +106,7 @@ describe("a file read twice is a 304; text crosses gzipped", () => {
     expect(fetch).toContain('if let version = download.header(named: "etag") { FileCache.keep(download.file, version: version, for: path) }');
     expect(fetch).toContain("} catch BridgeTransportError.httpStatus(304) where held != nil {");
     expect(fetch).toContain("return try FileCache.copy(of: path)");
-    expect((fetch.match(/await Self\.fileReads\.leave\(\)/g) ?? []).length).toBe(3);
+    expect(fetch).toContain("let download = try await gatedDownload(request)");
     // Another Mac's files are never this one's.
     expect(between(ios("ConchApp.swift"), "static func forget(file: URL", "\n    }\n")).toContain("FileCache.forget()");
   });

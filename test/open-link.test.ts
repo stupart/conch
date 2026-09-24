@@ -546,7 +546,7 @@ describe("the phone: the same dead tap, said and recorded", () => {
       "QuickLookView(url: url, fullScreen: $markingUp, onFailure: fail)",
       "RemoteDocumentView(url: url, renderMarkdown: true, document: review.link, bridge: bridge, onFailure: fail)",
       "RemoteDocumentView(url: url, renderMarkdown: false, onFailure: fail)",
-      "LocalPageView(bridge: bridge, macPath: review.link ?? \"\", url: url, page: page, onFailure: fail)",
+      "LocalPageView(handler: .page(review.link ?? \"\", entry: url, bridge: bridge), url: url, page: page, onFailure: fail)",
     ]) expect(sheet).toContain(call);
     // Text and markdown: the read's own error, not a line that hid it.
     const document = slice(sheet, "private struct RemoteDocumentView", "private struct BridgedWebView");

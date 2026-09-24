@@ -1229,13 +1229,15 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
    * last published rows — their folders and held deliverables — so it names only sessions the
    * apps can see. Patched onto the published state like a delivery: nothing else moved.
    */
+  // One lookup, and one cache, for the screen context and the phone's dev pages.
+  const portListeners = portListenerLookup();
   const screen = createScreenContext({
     context: () => screenContextFromPublished(
       lastPublishedPanelState?.rows ?? [],
       (sessionId) => panelSessions.get(sessionId)?.pid,
       conchHome(),
     ),
-    listeners: portListenerLookup(),
+    listeners: portListeners,
     log: new ScreenLog({
       dir: join(dirname(daemonSettingsPath), "screen"),
       enabled: () => cfg.screenLog,
@@ -1433,6 +1435,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
           // read one long after it arrived, and /tmp is swept by the OS.
           acceptUpload: (chunk) => phoneUploads.accept(chunk),
           uploadsDirectory: phoneUploads.directory,
+          portListeners,
+          sessionPid: (sessionId) => panelSessions.get(sessionId)?.pid,
           replyFor: async (sessionId) => {
             const path = findTranscript(cfg.claudeDir, sessionId);
             // The WHOLE turn in progress, the way the Mac dashboard shows it —
