@@ -201,8 +201,13 @@ struct PublishedState: Decodable, Equatable {
             /// The one thing the agent asked you to check (`scene.inspect`). A build from before scenes never asks
             /// for the key, and a keyed container ignores keys it isn't asked for, so it decodes the review unchanged.
             var inspect: String?
+            /// Which artifact this filing is a version of, which version, and what kind of thing it
+            /// is (`features.deliverables` 2). Absent from an older daemon.
+            var artifact: String?
+            var version: Int?
+            var kind: String?
 
-            private enum CodingKeys: String, CodingKey { case summary, link, at, scene, id, viewedAt }
+            private enum CodingKeys: String, CodingKey { case summary, link, at, scene, id, viewedAt, artifact, version, kind }
             private struct Scene: Decodable { var inspect: String? }
 
             /// A synthetic review for a path the phone wants to open as a
@@ -223,6 +228,9 @@ struct PublishedState: Decodable, Equatable {
                 viewedAt = try? c.decodeIfPresent(Double.self, forKey: .viewedAt)
                 // A scene this build can't read is no scene, never a review that fails.
                 inspect = (try? c.decodeIfPresent(Scene.self, forKey: .scene))?.inspect
+                artifact = try? c.decodeIfPresent(String.self, forKey: .artifact)
+                version = try? c.decodeIfPresent(Int.self, forKey: .version)
+                kind = try? c.decodeIfPresent(String.self, forKey: .kind)
             }
         }
 

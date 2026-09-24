@@ -3,6 +3,8 @@ import type { PublishedConversation } from "./conversation.ts";
 import type { SessionContextUsage } from "./context-meter.ts";
 import type { AudioControl, AudioOutboxItem } from "./audio-holder.ts";
 import type { ReviewScene } from "./snippet.ts";
+import { deliverableFacts, type DeliverableKind, type DeliverableKindSource } from "./deliverables.ts";
+import { reviewIdentity } from "./records-receipts.ts";
 import type { PendingApproval } from "./approval.ts";
 import type { PublishedShowing } from "./screen-context.ts";
 
@@ -319,15 +321,20 @@ export interface PublishedSessionRow {
     id?: string;
     /** When it was looked at; absent means nobody has. */
     viewedAt?: number;
+    /** Which artifact, which version of it, and what kind of thing (`SessionReview`). Absent from an older daemon. */
+    artifact?: string;
+    version?: number;
+    kind?: DeliverableKind;
   };
   /**
    * Every deliverable the session is still holding, oldest first, the last of which is
    * `review`. Absent from an older daemon; an app that wants them all and finds none reads
    * `review` alone, which is exactly what it does today.
    */
-  reviews?: Array<
-    { summary: string; link?: string; scene?: ReviewScene; at?: number; id?: string; viewedAt?: number }
-  >;
+  reviews?: Array<{
+    summary: string; link?: string; scene?: ReviewScene; at?: number; id?: string; viewedAt?: number;
+    artifact?: string; version?: number; kind?: DeliverableKind;
+  }>;
 }
 
 /**
@@ -363,7 +370,7 @@ export interface PublishedState {
    * honest latest-deliverable-only view rather than presenting local guesses as shared truth.
    * Unknown means unknown.
    */
-  features: { deliverables: 1; viewedState: 1 };
+  features: { deliverables: 2; viewedState: 1 };
   /** Stable identity of the daemon installation that owns every local session key. */
   ownerDeviceId: string;
   ts: number;
@@ -520,6 +527,18 @@ export function panelReplyText(
   };
 }
 
+/**
+ * What a reader needs to tell deliverables apart: which artifact, which version, what kind.
+ * Older apps ignore all three. `kindSource` stays in the ledger: no surface acts on it.
+ */
+function publishedDeliverableFacts(review: SessionReview): Pick<SessionReview, "artifact" | "version" | "kind"> {
+  return {
+    ...(review.artifact ? { artifact: review.artifact } : {}),
+    ...(review.version !== undefined ? { version: review.version } : {}),
+    ...(review.kind ? { kind: review.kind } : {}),
+  };
+}
+
 /** Build the versioned, renderer-independent state exposed to external consumers. */
 export function buildPublishedState(
   ownerDeviceId: string,
@@ -545,7 +564,8 @@ export function buildPublishedState(
 ): PublishedState {
   return {
     v: 1,
-    features: { deliverables: 1, viewedState: 1 },
+    // 2: deliverables carry `artifact`, `version` and `kind`, and a session command removes them.
+    features: { deliverables: 2, viewedState: 1 },
     ownerDeviceId,
     ts: now,
     ...(options.audio ? { audioControl: options.audio.control, audioOutbox: options.audio.outbox } : {}),
@@ -618,6 +638,7 @@ export function buildPublishedState(
               // recomputing their own key; newer ones stop guessing.
               ...(row.review.id ? { id: row.review.id } : {}),
               ...(row.review.viewedAt !== undefined ? { viewedAt: row.review.viewedAt } : {}),
+              ...publishedDeliverableFacts(row.review),
             },
           }
           : {}),
@@ -632,6 +653,7 @@ export function buildPublishedState(
               ...(held.at !== undefined ? { at: held.at } : {}),
               ...(held.id ? { id: held.id } : {}),
               ...(held.viewedAt !== undefined ? { viewedAt: held.viewedAt } : {}),
+              ...publishedDeliverableFacts(held),
             })),
           }
           : {}),
@@ -970,6 +992,60 @@ export interface SessionReview {
    * reviewed cannot be built on that.
    */
   viewedAt?: number;
+  /** What kind of thing it is (`deliverables.ts`), and whether the agent said so or conch read it off the link. */
+  kind?: DeliverableKind;
+  kindSource?: DeliverableKindSource;
+  /**
+   * Which artifact this filing is a version of: the same across republishes, where `id` is
+   * this filing's own. Absent only on a record from before artifacts (`artifactOf`).
+   */
+  artifact?: string;
+  /** Which filing of its artifact this is, from 1; one past the highest held when it was filed. */
+  version?: number;
+}
+
+/**
+ * Which artifact a held filing is a version of. One filed before artifacts existed is its
+ * link's, else its own — the same fallback the apps group by (`DeliverableGroups`).
+ */
+export function artifactOf(review: Pick<SessionReview, "artifact" | "link" | "id">): string {
+  return review.artifact ?? review.link ?? review.id;
+}
+
+/**
+ * The version a new filing of `artifact` gets: one past the highest this session still holds
+ * of it, not a count, so a filing removed or dropped by the cap never has its number reused. A
+ * record from before versions counts as its place among its artifact's filings.
+ */
+export function nextVersion(held: readonly Pick<SessionReview, "artifact" | "link" | "id" | "version">[], artifact: string): number {
+  return 1 + held
+    .filter((one) => artifactOf(one) === artifact)
+    .reduce((top, one, index) => Math.max(top, one.version ?? index + 1), 0);
+}
+
+/**
+ * A deliverable as it is held: minted ONCE, at filing, with its identity, its kind, its
+ * artifact and its version (`nextVersion`). The same filing arriving again (a replayed event)
+ * keeps the version it has.
+ */
+export function fileReview(
+  sessionId: string,
+  review: { summary: string; link?: string; scene?: ReviewScene; kind?: DeliverableKind; key?: string },
+  at: number,
+  held: readonly SessionReview[] | undefined,
+): SessionReview {
+  const id = reviewIdentity(sessionId, { summary: review.summary, link: review.link, at });
+  const facts = deliverableFacts(review);
+  const version = held?.find((one) => one.id === id)?.version ?? nextVersion(held ?? [], facts.artifact);
+  return {
+    summary: review.summary,
+    ...(review.link ? { link: review.link } : {}),
+    ...(review.scene ? { scene: review.scene } : {}),
+    at,
+    id,
+    ...facts,
+    version,
+  };
 }
 
 /**
@@ -1030,8 +1106,23 @@ export function carriedReviews(
   const kept = prior ?? [];
   if (!incoming) return kept.length ? [...kept] : undefined;
   const others = kept.filter((review) => review.id !== incoming.id);
-  const next = [...others, incoming].sort((a, b) => a.at - b.at);
-  return next.slice(Math.max(0, next.length - MAX_SESSION_REVIEWS));
+  return capReviews([...others, incoming].sort((a, b) => a.at - b.at));
+}
+
+/**
+ * Down to `MAX_SESSION_REVIEWS`, oldest first. A superseded version of an artifact goes
+ * before anything else does: measured on 2026-09-20, one session's six held deliverables were
+ * six filings of ONE link, so dropping the oldest filing threw away other artifacts while
+ * keeping five stale copies of one.
+ */
+export function capReviews(held: readonly SessionReview[]): SessionReview[] {
+  const next = [...held];
+  while (next.length > MAX_SESSION_REVIEWS) {
+    const superseded = next.findIndex((one, index) =>
+      next.some((later, laterIndex) => laterIndex > index && artifactOf(later) === artifactOf(one)));
+    next.splice(Math.max(superseded, 0), 1);
+  }
+  return next;
 }
 
 /**
@@ -1053,6 +1144,23 @@ export function markReviewViewed(
   const index = held.findIndex((one) => one.id === review);
   if (index < 0 || held[index]!.viewedAt !== undefined) return undefined;
   return held.map((one, at) => at === index ? { ...one, viewedAt: now } : one);
+}
+
+/**
+ * Take deliverables off a session: one filing by its `review` id, or every filing of an
+ * `artifact`. Tyler once had one removed by hand-editing reviews.json, because nothing else
+ * could.
+ *
+ * Like `markReviewViewed`, `undefined` means nothing matched and nothing changed — an id this
+ * session does not hold removes nothing rather than whatever is nearest. An empty array means
+ * the session holds none now.
+ */
+export function removeReviews(
+  held: readonly SessionReview[] | undefined,
+  which: { review: string } | { artifact: string },
+): SessionReview[] | undefined {
+  const kept = (held ?? []).filter((one) => "review" in which ? one.id !== which.review : artifactOf(one) !== which.artifact);
+  return held?.length && kept.length < held.length ? kept : undefined;
 }
 
 export function carriedReview(

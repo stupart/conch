@@ -222,6 +222,54 @@ describe("settings control IPC", () => {
       .toMatchObject({ kind: "session-ack", command: "review-viewed", changed: false });
   });
 
+  test("review-remove reaches the controller with what to remove, and a refusal comes back in words", () => {
+    const asked: unknown[] = [];
+    const held = new Set(['["s",1,"abc"]', "artifact-a"]);
+    const controller: SessionActionsController = {
+      voiceCandidates: () => [],
+      effectiveVoice: () => "",
+      previewVoice: () => {},
+      setVoice: () => {},
+      resetVoice: () => {},
+      isPrioritized: () => false,
+      setPrioritized: () => {},
+      rename: () => {},
+      dismiss: () => {},
+      close: async () => {},
+      restore: () => {},
+      removeReview: (target, which) => {
+        asked.push({ sessionId: target.sessionId, ...which });
+        return held.has("review" in which ? which.review : which.artifact);
+      },
+    };
+    const options: SessionCommandDispatchOptions = {
+      controller,
+      pause: { open() {}, close() {} },
+      targetForSessionId: () => ({ sessionId: "session-a", label: "Alpha" }),
+    };
+    const remove = (which: object) =>
+      dispatchSessionControlMessage({ kind: "session-command", sessionId: "session-a", command: "review-remove", ...which }, options);
+
+    expect(remove({ review: '["s",1,"abc"]' }))
+      .toEqual({ kind: "session-ack", sessionId: "session-a", command: "review-remove", label: "Alpha", changed: true });
+    expect(remove({ artifact: "artifact-a" })).toMatchObject({ kind: "session-ack", changed: true });
+    // Something this session does not hold: the Mac shows this sentence, an agent reads it.
+    expect(remove({ review: "somebody-elses" })).toEqual({
+      kind: "session-error",
+      error: 'nothing removed: "Alpha" holds no deliverable with id somebody-elses',
+    });
+    expect(asked).toEqual([
+      { sessionId: "session-a", review: '["s",1,"abc"]' },
+      { sessionId: "session-a", artifact: "artifact-a" },
+      { sessionId: "session-a", review: "somebody-elses" },
+    ]);
+    // A controller without it — the overlay's — refuses rather than claiming a removal.
+    expect(dispatchSessionControlMessage(
+      { kind: "session-command", sessionId: "session-a", command: "review-remove", artifact: "artifact-a" },
+      { ...options, controller: { ...controller, removeReview: undefined } },
+    )).toMatchObject({ kind: "session-error" });
+  });
+
   test("hostile session-command frames within the transport limit receive session-error replies", async () => {
     const controller: SessionActionsController = {
       voiceCandidates: () => [],

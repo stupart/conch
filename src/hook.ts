@@ -13,6 +13,7 @@ import {
   type ReviewScene,
 } from "./snippet.ts";
 import { boundedMark } from "./prompt-cursor.ts";
+import type { DeliverableKind } from "./deliverables.ts";
 import { createHash } from "node:crypto";
 import { summarizeToolUse } from "./approval.ts";
 import { currentTurnText } from "./transcript-turn.ts";
@@ -60,8 +61,12 @@ export interface TurnEvent {
   opId?: string;
   /** This working state came from a Stop reclassified for live background work. */
   backgroundWork?: true;
-  /** Set when the final reply carried a conch:review marker, and always on `review-published`. */
-  review?: { summary: string; link?: string; scene?: ReviewScene };
+  /**
+   * Set when the final reply carried a conch:review marker, and always on `review-published`.
+   * `kind` and `key` travel only when the agent gave them; the daemon infers the rest
+   * (`deliverableFacts`).
+   */
+  review?: { summary: string; link?: string; scene?: ReviewScene; kind?: DeliverableKind; key?: string };
   /**
    * The tool a permission dialog is waiting on (B5). Attached by the daemon
    * at handle time from the transcript, never by the hook: the dialog may

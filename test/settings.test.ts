@@ -407,7 +407,7 @@ describe("control-message validation", () => {
     }
   });
 
-  test("recognizes and canonicalizes the ten closed session-command shapes", () => {
+  test("recognizes and canonicalizes the eleven closed session-command shapes", () => {
     expect(SESSION_COMMANDS).toEqual([
       "rename",
       "set-voice",
@@ -419,6 +419,7 @@ describe("control-message validation", () => {
       "set-model",
       "attach",
       "review-viewed",
+      "review-remove",
     ]);
 
     const cases: Array<{ input: unknown; output: SessionControlMessage }> = [
@@ -461,6 +462,14 @@ describe("control-message validation", () => {
       {
         input: { kind: "session-command", sessionId: " session-1 ", command: "review-viewed", review: '  ["s",1,"abc"]  ' },
         output: { kind: "session-command", sessionId: "session-1", command: "review-viewed", review: '["s",1,"abc"]' },
+      },
+      {
+        input: { kind: "session-command", sessionId: "session-1", command: "review-remove", review: ' ["s",1,"abc"] ' },
+        output: { kind: "session-command", sessionId: "session-1", command: "review-remove", review: '["s",1,"abc"]' },
+      },
+      {
+        input: { kind: "session-command", sessionId: "session-1", command: "review-remove", artifact: " 0123456789abcdef " },
+        output: { kind: "session-command", sessionId: "session-1", command: "review-remove", artifact: "0123456789abcdef" },
       },
     ];
 
@@ -505,6 +514,13 @@ describe("control-message validation", () => {
       { kind: "session-command", sessionId: "session-1", command: "review-viewed", review: "bad\u0000id" },
       { kind: "session-command", sessionId: "session-1", command: "review-viewed", review: "x".repeat(513) },
       { kind: "session-command", sessionId: "session-1", command: "review-viewed", review: 42 },
+      // Removing names exactly one thing: a filing or an artifact, never both, never neither.
+      { kind: "session-command", sessionId: "session-1", command: "review-remove" },
+      { kind: "session-command", sessionId: "session-1", command: "review-remove", review: "a", artifact: "b" },
+      { kind: "session-command", sessionId: "session-1", command: "review-remove", review: "  " },
+      { kind: "session-command", sessionId: "session-1", command: "review-remove", artifact: "bad\u0000id" },
+      { kind: "session-command", sessionId: "session-1", command: "review-remove", artifact: "x".repeat(513) },
+      { kind: "session-command", sessionId: "session-1", command: "review-remove", review: 42 },
     ];
 
     for (const input of hostile) {

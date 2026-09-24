@@ -42,7 +42,7 @@ describe("structured app errors", () => {
         sessionId: "s1",
         state: { connected: false, draftChars: 12 },
       },
-      { v: 1, features: { deliverables: 1, viewedState: 1 }, ownerDeviceId: "test-device", ts: 7, mode: { muted: false, paused: false, holding: 0 }, live: { state: "idle", label: "" }, rows: [], dismissed: [], dismissedRows: [] },
+      { v: 1, features: { deliverables: 2, viewedState: 1 }, ownerDeviceId: "test-device", ts: 7, mode: { muted: false, paused: false, holding: 0 }, live: { state: "idle", label: "" }, rows: [], dismissed: [], dismissedRows: [] },
       path,
       new Date("2026-08-16T12:00:00Z"),
     );
@@ -67,7 +67,7 @@ describe("structured app errors", () => {
       { source: "daemon", operation: "inject", message: "clipboard" },
       {
         v: 1,
-        features: { deliverables: 1, viewedState: 1 },
+        features: { deliverables: 2, viewedState: 1 },
         ownerDeviceId: "test-device",
         ts: 9,
         mode: { muted: false, paused: true, holding: 1 },

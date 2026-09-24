@@ -786,6 +786,11 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
     /// (`scene.inspect`). Absent from older daemons and from reviews that asked for nothing, which is `auto`.
     let sceneKind: String?
     let inspect: String?
+    /// Which artifact this filing is a version of, which version, and what kind of thing it is
+    /// (`features.deliverables` 2). All absent from an older daemon; the link groups then.
+    let artifact: String?
+    let version: Int?
+    let kind: String?
 
     private enum CodingKeys: String, CodingKey {
         case summary
@@ -794,6 +799,9 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
         case scene
         case id
         case viewedAt
+        case artifact
+        case version
+        case kind
     }
 
     private struct Scene: Decodable {
@@ -813,6 +821,9 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
         let scene = try? container.decodeIfPresent(Scene.self, forKey: .scene)
         sceneKind = scene?.target?.kind
         inspect = scene?.inspect
+        artifact = try? container.decodeIfPresent(String.self, forKey: .artifact)
+        version = try? container.decodeIfPresent(Int.self, forKey: .version)
+        kind = try? container.decodeIfPresent(String.self, forKey: .kind)
     }
 
     private static func decodeTimestamp(

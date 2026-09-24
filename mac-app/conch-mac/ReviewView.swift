@@ -19,6 +19,8 @@ struct ReviewItem: Identifiable, Equatable {
     /// When it was looked at, as the daemon remembers it — on any device. Nil means nobody
     /// has, or that this daemon is too old to know (`features.viewedState`).
     let viewedAt: Double?
+    /// The artifact this filing is a version of, as the daemon filed it; nil from an older one.
+    let artifact: String?
 
     init?(row: SessionRow) {
         guard let review = row.review else {
@@ -38,6 +40,7 @@ struct ReviewItem: Identifiable, Equatable {
         inspect = review.inspect
         isReady = row.status != .working
         viewedAt = review.viewedAt
+        artifact = review.artifact
         // The identity the daemon minted when it filed this deliverable, which it carries
         // unchanged through every later event — so this id moves only when a NEWER deliverable
         // replaces this one. Everything keyed on it (the pane, the row pulse, the

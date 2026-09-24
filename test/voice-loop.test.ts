@@ -1,5 +1,5 @@
 import type { AnswerKey } from "../src/agent-adapter.ts";
-import { describe, expect, test, setSystemTime } from "bun:test";
+import { afterAll, describe, expect, test, setSystemTime } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,10 +18,17 @@ import { collectContinuousResult, createDictationSession, type ListenHooks, type
 import { addressParkedWindow, registrySnapshot, type SessionInfo } from "../src/sessions.ts";
 import { buildPanelModel, buildPublishedState, reviewReady } from "../src/panel.ts";
 import { reviewIdentity } from "../src/records-receipts.ts";
+import { deliverableFacts } from "../src/deliverables.ts";
 
-/** A filed deliverable as the daemon stamps it: the same identity, from the same recipe. */
-const filedAs = <R extends { summary: string; link?: string; at: number }>(sessionId: string, review: R) =>
-  ({ ...review, id: reviewIdentity(sessionId, review) });
+/** A filed deliverable as the daemon stamps it: the same identity and facts, from the same recipe. */
+const filedAs = <R extends { summary: string; link?: string; at: number }>(sessionId: string, review: R, version = 1) =>
+  ({ ...review, id: reviewIdentity(sessionId, review), ...deliverableFacts(review), version });
+/** The same deliverable as a row publishes it: how its kind was decided stays in the ledger. */
+const onWire = <R extends { kindSource?: unknown }>({ kindSource: _decided, ...wire }: R) => wire;
+/** The daemon re-checks a deliverable's file, so the one these tests publish has to exist. */
+const HERO_V3 = join(mkdtempSync(join(tmpdir(), "conch-voice-loop-hero-")), "hero-v3.png");
+writeFileSync(HERO_V3, "png");
+afterAll(() => rmSync(join(HERO_V3, ".."), { recursive: true, force: true }));
 import { voiceFor } from "../src/speak.ts";
 import { getLiveState, setState } from "../src/status.ts";
 import {
@@ -1647,7 +1654,7 @@ describe("a deliverable keeps one identity from filing until a newer one", () =>
 
   test("routine events neither re-stamp it nor hide it while the session works", async () => {
     const h = harness({ paused: true });
-    const review = { summary: "hero v3", link: "/tmp/hero-v3.png" };
+    const review = { summary: "hero v3", link: HERO_V3 };
     await h.voice.handle(accepted(h, turnEnd({ eventAt: 1_000, review })));
     const filed = filedAs("s1", { ...review, at: 1_000 });
     expect(h.ledger.sessionStates.get("s1")?.review).toEqual(filed);
@@ -1658,27 +1665,28 @@ describe("a deliverable keeps one identity from filing until a newer one", () =>
     await h.voice.handle(accepted(h, { type: "working", sessionId: "s1", label: "alpha", announce: "", eventAt: 2_000 }));
     expect(rowFor(h).status).toBe("working");
     expect(rowFor(h).review).toEqual(filed);
-    expect(publishedReview(h)).toEqual(filed);
+    expect(publishedReview(h)).toEqual(onWire(filed));
     expect(reviewReady(rowFor(h))).toBe(false);
 
     await h.voice.handle(accepted(h, { type: "needs-you", ntype: "idle_prompt", sessionId: "s1", label: "alpha", announce: "", eventAt: 3_000 }));
     expect(rowFor(h).status).toBe("needs");
-    expect(publishedReview(h)).toEqual(filed);
+    expect(publishedReview(h)).toEqual(onWire(filed));
     expect(reviewReady(rowFor(h))).toBe(true);
 
     await h.voice.handle(accepted(h, turnEnd({ eventAt: 4_000 })));
     expect(rowFor(h)).toMatchObject({ status: "waiting", at: 4_000 });
-    expect(publishedReview(h)).toEqual(filed);
+    expect(publishedReview(h)).toEqual(onWire(filed));
     expect(reviewReady(rowFor(h))).toBe(true);
 
     // Sending it again, even unchanged, is a newer deliverable.
     await h.voice.handle(accepted(h, turnEnd({ eventAt: 5_000, review })));
-    expect(publishedReview(h)).toEqual(filedAs("s1", { ...review, at: 5_000 }));
+    // …and the next version of the same artifact.
+    expect(publishedReview(h)).toEqual(onWire(filedAs("s1", { ...review, at: 5_000 }, 2)));
   });
 
   test("its identity is minted once at filing, survives republishing, and moves only for a newer one", async () => {
     const h = harness({ paused: true });
-    const review = { summary: "hero v3", link: "/tmp/hero-v3.png" };
+    const review = { summary: "hero v3", link: HERO_V3 };
     await h.voice.handle(accepted(h, turnEnd({ eventAt: 1_000, review })));
     const first = rowFor(h).review?.id;
     expect(first).toBeTruthy();
@@ -1710,7 +1718,7 @@ describe("a deliverable keeps one identity from filing until a newer one", () =>
     const reviewsPath = join(dir, "reviews.json");
     try {
       const before = harness({ paused: true, ledger: new SessionLedger(reviewsPath) });
-      const review = { summary: "hero v3", link: "/tmp/hero-v3.png" };
+      const review = { summary: "hero v3", link: HERO_V3 };
       await before.voice.handle(accepted(before, turnEnd({ eventAt: 1_000, review })));
       const filed = filedAs("s1", { ...review, at: 1_000 });
 
@@ -1718,7 +1726,7 @@ describe("a deliverable keeps one identity from filing until a newer one", () =>
       const restarted = new SessionLedger(reviewsPath);
       restarted.restoreReviews();
       const after = harness({ paused: true, ledger: restarted });
-      expect(publishedReview(after)).toEqual(filed);
+      expect(publishedReview(after)).toEqual(onWire(filed));
 
       // The registry says busy, newer than nothing: the row works, the review stays.
       const registry = buildPanelModel({
@@ -1736,7 +1744,7 @@ describe("a deliverable keeps one identity from filing until a newer one", () =>
       // A hook after the restart sets status and carries the same record.
       await after.voice.handle(accepted(after, { type: "working", sessionId: "s1", label: "alpha", announce: "", eventAt: 2_000 }));
       expect(rowFor(after)).toMatchObject({ status: "working", at: 2_000 });
-      expect(publishedReview(after)).toEqual(filed);
+      expect(publishedReview(after)).toEqual(onWire(filed));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1758,7 +1766,7 @@ describe("a publication is not the end of a turn", () => {
     activeSessionId: null,
     navSelectedId: null,
   }).rows[0]!;
-  const review = { summary: "hero v3", link: "/tmp/hero-v3.png" };
+  const review = { summary: "hero v3", link: HERO_V3 };
   const announce = "alpha has work ready for your review: hero v3";
   const published = (over: Partial<TurnEvent> = {}): TurnEvent => ({
     type: "review-published", sessionId: "s1", label: "alpha", announce, eventAt: 2_000, review, ...over,
@@ -1796,7 +1804,7 @@ describe("a publication is not the end of a turn", () => {
       activeSessionId: null,
       navSelectedId: null,
     }), new Map(), new Set(), Date.now());
-    expect(state.rows[0]!.review).toEqual(filedAs("s1", { ...review, scene, at: 2_000 }));
+    expect(state.rows[0]!.review).toEqual(onWire(filedAs("s1", { ...review, scene, at: 2_000 })));
   });
 
   test("in manual it files silently and holds nothing for replay", async () => {
@@ -1818,6 +1826,62 @@ describe("a publication is not the end of a turn", () => {
     await h.voice.handle(accepted(h, published({ eventAt: 5_000, review: { summary: "hero v4" } })));
     await h.voice.handle(publication);
     expect(rowFor(h).review).toEqual(filedAs("s1", { summary: "hero v4", at: 5_000 }));
+  });
+});
+
+/**
+ * The socket checked a review's link was a string and nothing more, and the socket is not only
+ * the MCP server's: a raw write could file `/etc/hosts`, which the phone then fetches. The daemon
+ * runs the same `checkReviewLink` the MCP process does, against the folder IT knows the session
+ * by — the event's own `cwd` is part of what a raw write controls.
+ */
+describe("the daemon checks a deliverable's link itself", () => {
+  const withFolder = async (run: (folder: string) => Promise<void>): Promise<void> => {
+    const folder = mkdtempSync(join(tmpdir(), "conch-review-link-"));
+    try {
+      await run(folder);
+    } finally {
+      rmSync(folder, { recursive: true, force: true });
+    }
+  };
+  const published = (review: TurnEvent["review"], over: Partial<TurnEvent> = {}): TurnEvent => ({
+    type: "review-published", sessionId: "s1", label: "alpha", announce: "alpha has work ready", eventAt: 2_000, review, ...over,
+  });
+
+  test("a publication whose link fails the check is refused and recorded, not filed", async () => {
+    await withFolder(async (folder) => {
+      const h = harness({ paused: true, window: () => ({ sessionId: "s1", cwd: folder } as SessionInfo) });
+      // The event claims the whole disk as its folder; the daemon knows better.
+      await h.voice.handle(accepted(h, published({ summary: "hosts", link: "/etc/hosts" }, { cwd: "/" })));
+      await h.voice.handle(accepted(h, published({ summary: "missing", link: join(folder, "gone.png") })));
+      expect(h.ledger.sessionStates.get("s1")?.review).toBeUndefined();
+      expect(h.errors.map(([operation, , sessionId]) => [operation, sessionId])).toEqual([
+        ["review-link", "s1"],
+        ["review-link", "s1"],
+      ]);
+      expect(String(h.errors[0]![1])).toContain("outside this session's folder");
+    });
+  });
+
+  test("a link inside the session's folder is filed, made absolute against that folder", async () => {
+    await withFolder(async (folder) => {
+      writeFileSync(join(folder, "page.html"), "<h1>ok</h1>");
+      const h = harness({ paused: true, window: () => ({ sessionId: "s1", cwd: folder } as SessionInfo) });
+      await h.voice.handle(accepted(h, published({ summary: "the page", link: "page.html" })));
+      expect(h.ledger.sessionStates.get("s1")?.review).toMatchObject({ link: join(folder, "page.html"), kind: "page" });
+      expect(h.errors).toEqual([]);
+    });
+  });
+
+  test("a marker's refused link is dropped and its summary kept, as the hook's own check does", async () => {
+    await withFolder(async (folder) => {
+      const h = harness({ paused: true, window: () => ({ sessionId: "s1", cwd: folder } as SessionInfo) });
+      await h.voice.handle(accepted(h, turnEnd({ eventAt: 3_000, review: { summary: "done", link: "/etc/hosts" } })));
+      const review = h.ledger.sessionStates.get("s1")?.review;
+      expect(review).toMatchObject({ summary: "done" });
+      expect(review?.link).toBeUndefined();
+      expect(h.errors.map(([operation]) => operation)).toEqual(["review-link"]);
+    });
   });
 });
 

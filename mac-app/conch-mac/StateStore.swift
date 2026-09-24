@@ -444,6 +444,30 @@ final class StateStore: ObservableObject {
         Task { _ = await socketClient.request(report) }
     }
 
+    /// Take an artifact — every version of it — off a session. Tyler had one removed by
+    /// hand-editing reviews.json, because nothing else could. The daemon's own words go on the
+    /// row when it refuses, so a Remove that did nothing never looks like one that worked; the
+    /// tab itself goes when the next published state no longer holds it.
+    func removeDeliverable(sessionId: String, artifact: String) {
+        rowMessages[sessionId] = nil
+        let request = ConchSessionCommandRequest(sessionId: sessionId, command: .reviewRemove, artifact: artifact)
+        let socketClient = socketClient
+        Task { [weak self] in
+            let failure: String?
+            switch await socketClient.request(request) {
+            case let .reply(data):
+                switch try? JSONDecoder().decode(ConchSessionCommandReply.self, from: data) {
+                case .acknowledgement?: failure = nil
+                case let .error(error)?: failure = error.error
+                default: failure = "unexpected reply from daemon"
+                }
+            case .connectFailed: failure = "daemon not running"
+            case .timeout: failure = "daemon did not reply"
+            }
+            self?.rowMessages[sessionId] = failure
+        }
+    }
+
     func openInTerminal(_ row: SessionRow) {
         guard row.attachable else { return }
         let request = ConchSessionCommandRequest(sessionId: row.id, command: .attach)
@@ -950,7 +974,7 @@ final class StateStore: ObservableObject {
         transportErrorSessionIDs.remove(context.id)
 
         switch context.command {
-        case .reveal, .setModel, .attach, .reviewViewed:
+        case .reveal, .setModel, .attach, .reviewViewed, .reviewRemove:
             // A raise, a typed /model, or marking a deliverable read changes no row here;
             // there is nothing to reconcile.
             break
@@ -1017,7 +1041,7 @@ final class StateStore: ObservableObject {
         )
 
         switch context.command {
-        case .rename, .reveal, .setModel, .attach, .reviewViewed:
+        case .rename, .reveal, .setModel, .attach, .reviewViewed, .reviewRemove:
             break
         case .dismiss:
             if optimisticDismissals[context.id]?.generation == context.generation {

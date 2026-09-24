@@ -408,6 +408,7 @@ enum ConchSessionCommand: String, Encodable, Sendable {
     case setModel = "set-model"
     case attach
     case reviewViewed = "review-viewed"
+    case reviewRemove = "review-remove"
 }
 
 struct ConchSessionCommandRequest: Encodable, Sendable {
@@ -418,6 +419,8 @@ struct ConchSessionCommandRequest: Encodable, Sendable {
     let model: String?
     /// Which deliverable was looked at, by the identity the daemon minted when it filed it.
     let review: String?
+    /// Every filing of this artifact, for `review-remove`.
+    let artifact: String?
     /// For a command the daemon TYPES (`/model`, the `/rename` sync): after the
     /// ack, hold the socket and answer `session-delivered` once typing is done.
     let awaitDelivery: Bool?
@@ -428,6 +431,7 @@ struct ConchSessionCommandRequest: Encodable, Sendable {
         label: String? = nil,
         model: String? = nil,
         review: String? = nil,
+        artifact: String? = nil,
         awaitDelivery: Bool? = nil
     ) {
         self.sessionId = sessionId
@@ -435,6 +439,7 @@ struct ConchSessionCommandRequest: Encodable, Sendable {
         self.label = label
         self.model = model
         self.review = review
+        self.artifact = artifact
         self.awaitDelivery = awaitDelivery
     }
 }

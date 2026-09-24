@@ -221,11 +221,12 @@ describe("new work does not replace what you are reading", () => {
    * where `swift test` covers it; this pins that the strip asks it rather than keeping a rule.
    */
   test("a tab is an artifact: filings of one link are its versions, newest in front", () => {
-    // The rule lives with the other shared rules, keyed on the link and nothing else — the
-    // minted id folds in the filing time on purpose, so it can never say two filings are one.
+    // The rule lives with the other shared rules, keyed on the daemon's artifact, else the link —
+    // never the minted id, which folds in the filing time on purpose, so it can never say two
+    // filings are one.
     expect(rules).toContain("public static func grouped(_ held: [DeliverableVersion]) -> [DeliverableGroup] {");
-    expect(rules).toContain("let key = link.isEmpty ? version.id : link");
-    expect(pane).toContain("DeliverableGroups.grouped(deliverables.map { DeliverableVersion(id: $0.id, link: $0.link) })");
+    expect(rules).toContain("let key = version.artifact ?? (link.isEmpty ? version.id : link)");
+    expect(pane).toContain("DeliverableGroups.grouped(deliverables.map { DeliverableVersion(id: $0.id, link: $0.link, artifact: $0.artifact) })");
     const strip = pane.slice(
       pane.indexOf("private func deliverableTabs("),
       pane.indexOf("private func conversationBody("),
