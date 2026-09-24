@@ -660,16 +660,16 @@ test("the pill's scene: the link, else conch's window if open, else the terminal
   expect(stage).toContain("fileExists: { FileManager.default.fileExists(atPath: $0) },");
   expect(stage).toContain("appWindowOpen: window.map { $0.isVisible && !$0.isMiniaturized } ?? false,");
   // Each scene on its existing path, handed off only when it says so, else the next scene.
-  expect(stage).toContain("onOpened: { done.resume(returning: true) }) { _ in\n                        done.resume(returning: false)");
+  expect(stage).toContain("done.resume(returning: true)\n                    }) { _ in\n                        done.resume(returning: false)");
   expect(stage).toContain("if opened { return true }\n                link = nil");
   expect(stage).toContain("if await store.reveal(row).value {");
   expect(stage.indexOf("openApplication(at: terminal")).toBeLessThan(stage.indexOf("return true\n                }\n                revealable = false"));
-  expect(stage).toContain("case .app:\n                openSession(row.id)\n                return true");
+  expect(stage).toContain("case .app:\n                openSession(row.id)\n                store.reportShowing(.conch(sessionId: row.id, view: \"main\"), staged: staged)\n                return true");
   expect(stage).toContain('NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Terminal").first?.bundleURL');
   for (const later of ["asyncAfter", "Task.sleep", "Timer"]) expect(stage).not.toContain(later);
   // The door says it opened; reveal's value is the daemon's ack.
   const store = read("mac-app/conch-mac/StateStore.swift");
-  expect(member(store, "func openLink(")).toContain("guard let error else { Task { @MainActor in onOpened() }; return }");
+  expect(member(store, "func openLink(")).toContain("guard let error else { Task { @MainActor in onOpened(opener) }; return }");
   const reveal = member(store, "func reveal(_ row: SessionRow) -> Task<Bool, Never> {");
   expect(reveal).toContain("case let .acknowledgement(ack)? = try? JSONDecoder().decode(ConchSessionCommandReply.self, from: data) else { return false }");
   expect(reveal).toContain("return ack.changed");
@@ -747,7 +747,7 @@ test("the conversation stays on the pill's scene, whatever the voice does, until
   // Unpinned only by a pick in conch's window of another session; the pill's own .app scene picks the same one.
   expect(panels.match(/staged = nil/g)?.length).toBe(1);
   expect(member(panels, "static func picked(_ id: SessionRow.ID) {")).toContain("guard let panels = installed, panels.staged != nil, panels.staged != id else { return }");
-  expect(read("mac-app/conch-mac/ContentView.swift")).toContain(".onChange(of: workspace.viewing) { _, id in if let id { FloatingPanels.picked(id) } }");
+  expect(read("mac-app/conch-mac/ContentView.swift")).toContain(".onChange(of: workspace.viewing) { _, id in\n            guard let id else { return }\n            FloatingPanels.picked(id)");
   // Staging never starts the mic or stops speech.
   for (const body of [member(panels, "private func stageNext() {"), member(item, "static func stage(_ row: SessionRow, store: StateStore) async -> Bool {")]) {
     for (const voiceAction of [".dictate", ".stop(", ".wake", ".speak", "store.send("]) expect(body).not.toContain(voiceAction);

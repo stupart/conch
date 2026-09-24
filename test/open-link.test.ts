@@ -150,7 +150,7 @@ describe("every open site in the Mac app goes through the one door that reports 
     expect(door).not.toMatch(/contentsOf|Data\(|String\(contentsOf/);
     // The completion handler's error reaches the pane; it is not dropped.
     expect(door).toMatch(
-      /NSWorkspace\.shared\.open\(url, configuration: configuration\) \{ _, error in\s*guard let error else \{ Task \{ @MainActor in onOpened\(\) \}; return \}\s*Task \{ @MainActor in fail\(error\) \}/,
+      /NSWorkspace\.shared\.open\(url, configuration: configuration\) \{ app, error in[\s\S]*?guard let error else \{ Task \{ @MainActor in onOpened\(opener\) \}; return \}\s*Task \{ @MainActor in fail\(error\) \}/,
     );
     expect(store).toMatch(/state extra: \[String: String\] = \[:\][\s\S]*?errorStateSnapshot\.merging\(extra\)/);
   });

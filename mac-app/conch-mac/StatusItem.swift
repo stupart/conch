@@ -210,6 +210,9 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         let kind = ReviewScene.Kind(rawValue: row.review?.sceneKind ?? "") ?? .auto
         var link = ReviewItem(row: row)?.link.map { LinkTarget.url(for: $0, cwd: row.cwd) }
         var revealable = row.revealable
+        // What the screen context is told this click put on screen, and for whom (the conch-staged observer).
+        let review = ReviewItem(row: row)
+        let staged = ConchScreenStaged(sessionId: row.id, reviewId: review?.id, link: review?.link)
         while true {
             switch ReviewScene.choose(
                 kind: kind,
@@ -221,7 +224,10 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
             case let .open(url):
                 // Through the one door for links, which logs a failure; the pill has no pane to show it in.
                 let opened = await withCheckedContinuation { done in
-                    store.openLink(LinkTarget.text(of: url), cwd: nil, rowId: row.id, onOpened: { done.resume(returning: true) }) { _ in
+                    store.openLink(LinkTarget.text(of: url), cwd: nil, rowId: row.id, onOpened: { app in
+                        store.reportShowing(ConchScreenSurface(opened: url), app: app, staged: staged)
+                        done.resume(returning: true)
+                    }) { _ in
                         done.resume(returning: false)
                     }
                 }
@@ -235,11 +241,13 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
                     if let terminal = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Terminal").first?.bundleURL {
                         _ = try? await NSWorkspace.shared.openApplication(at: terminal, configuration: NSWorkspace.OpenConfiguration())
                     }
+                    store.reportShowing(.terminal, app: ConchScreenApp(bundleId: "com.apple.Terminal"), staged: staged)
                     return true
                 }
                 revealable = false
             case .app:
                 openSession(row.id)
+                store.reportShowing(.conch(sessionId: row.id, view: "main"), staged: staged)
                 return true
             }
         }

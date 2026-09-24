@@ -61,6 +61,7 @@ const TOOL_NAMES = [
   "conch_history",
   "conch_item",
   "conch_working_folders",
+  "conch_on_screen",
 ] as const satisfies readonly McpToolName[];
 
 const DEFERRED_TOOL_NAMES = [
@@ -351,6 +352,7 @@ function recordingHandlers(
     conch_history: handler("conch_history"),
     conch_item: handler("conch_item"),
     conch_working_folders: handler("conch_working_folders"),
+    conch_on_screen: handler("conch_on_screen"),
   };
 }
 
@@ -478,7 +480,7 @@ describe("recorded history MCP tools", () => {
 });
 
 describe("MCP tool discovery", () => {
-  test("tools/list returns exactly the eleven tools with valid closed schemas", async () => {
+  test("tools/list returns exactly the thirteen tools with valid closed schemas", async () => {
     const handlers = recordingHandlers([]);
     const response = await dispatchJsonRpc({
       jsonrpc: "2.0",
@@ -492,8 +494,8 @@ describe("MCP tool discovery", () => {
 
     expect(response?.id).toBe(11);
     expect(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).toEqual([...TOOL_NAMES]);
-    expect(result.tools).toHaveLength(12);
-    expect(new Set(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).size).toBe(12);
+    expect(result.tools).toHaveLength(13);
+    expect(new Set(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).size).toBe(13);
     for (const deferred of DEFERRED_TOOL_NAMES) {
       expect(result.tools.some((tool: unknown) => isRecord(tool) && tool.name === deferred)).toBe(false);
     }
@@ -511,6 +513,7 @@ describe("MCP tool discovery", () => {
       conch_history: ["session", "branch", "before", "limit"],
       conch_item: ["session", "item", "bodyCursor"],
       conch_working_folders: ["folders"],
+      conch_on_screen: [],
     };
     const expectedRequired: Record<McpToolName, string[]> = {
       conch_sessions: [],
@@ -526,6 +529,7 @@ describe("MCP tool discovery", () => {
       conch_history: ["session"],
       conch_item: ["session", "item"],
       conch_working_folders: ["folders"],
+      conch_on_screen: [],
     };
 
     for (const tool of result.tools) {

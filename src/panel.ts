@@ -4,6 +4,7 @@ import type { SessionContextUsage } from "./context-meter.ts";
 import type { AudioControl, AudioOutboxItem } from "./audio-holder.ts";
 import type { ReviewScene } from "./snippet.ts";
 import type { PendingApproval } from "./approval.ts";
+import type { PublishedShowing } from "./screen-context.ts";
 
 export type PanelConchState = "idle" | "muted" | "paused" | "speaking" | "listening" | "recording" | "transcribing";
 
@@ -406,6 +407,8 @@ export interface PublishedState {
   audioControl?: AudioControl;
   /** What a yielded daemon could not say itself; the holder's app carries it over. */
   audioOutbox?: AudioOutboxItem[];
+  /** What is on screen and whose it is (`screen-context.ts`). Absent until something was observed. */
+  showing?: PublishedShowing;
 }
 
 const MAX_PUBLISHED_CONVERSATION_CHARS = 4_000;
@@ -537,6 +540,7 @@ export function buildPublishedState(
     deliveries?: readonly PublishedDelivery[];
     /** The permission prompt a session is showing; asked only of rows that need you. */
     approvalForSessionId?(sessionId: string, transcriptPath: string | undefined): PendingApproval | null;
+    showing?: PublishedShowing;
   } = {},
 ): PublishedState {
   return {
@@ -638,6 +642,7 @@ export function buildPublishedState(
       id,
       label: options.labelForSessionId?.(id)?.trim() || id.slice(0, 8),
     })),
+    ...(options.showing ? { showing: options.showing } : {}),
   };
 }
 

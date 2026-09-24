@@ -428,6 +428,22 @@ final class StateStore: ObservableObject {
         Task { _ = await socketClient.request(request) }
     }
 
+    /// The last surface reported, so a repeat says nothing.
+    private var lastShowing: ConchScreenSurface?
+
+    /// The conch-staged observer (docs/screen-context.md): tell the daemon what conch just put on
+    /// screen and whose it is, so `showing` and `conch_on_screen` can say. Fire and forget, like
+    /// markReviewViewed. Without `staged` it is conch's window following a pick, which counts only
+    /// while conch is in front (a restore or a new session can move it behind another app), and not
+    /// at all when it repeats the last report — the pill's own pick of what it just staged would
+    /// otherwise replace the review it staged with nothing.
+    func reportShowing(_ surface: ConchScreenSurface, app: ConchScreenApp? = nil, staged: ConchScreenStaged? = nil) {
+        if staged == nil, !NSApp.isActive || surface == lastShowing { return }
+        lastShowing = surface
+        let report = ConchScreenObservationReport(surface: surface, app: app, staged: staged)
+        Task { _ = await socketClient.request(report) }
+    }
+
     func openInTerminal(_ row: SessionRow) {
         guard row.attachable else { return }
         let request = ConchSessionCommandRequest(sessionId: row.id, command: .attach)
@@ -737,7 +753,7 @@ final class StateStore: ObservableObject {
         cwd: String?,
         rowId: String?,
         reveal: Bool = false,
-        onOpened: @escaping @MainActor () -> Void = {},
+        onOpened: @escaping @MainActor (ConchScreenApp?) -> Void = { _ in },
         onFailure: @escaping @MainActor (String) -> Void
     ) {
         let url = LinkTarget.url(for: link, cwd: cwd)
@@ -760,8 +776,12 @@ final class StateStore: ObservableObject {
         let configuration = NSWorkspace.OpenConfiguration()
         // The alert is ours to show, in the pane — not Finder's "-50".
         configuration.promptsUserIfNeeded = false
-        NSWorkspace.shared.open(url, configuration: configuration) { _, error in
-            guard let error else { Task { @MainActor in onOpened() }; return }
+        NSWorkspace.shared.open(url, configuration: configuration) { app, error in
+            // Which app took it, for the screen context; read here, since only its strings cross to the main actor.
+            let opener = app.flatMap { app in
+                app.bundleIdentifier.map { ConchScreenApp(bundleId: $0, pid: app.processIdentifier, name: app.localizedName) }
+            }
+            guard let error else { Task { @MainActor in onOpened(opener) }; return }
             Task { @MainActor in fail(error) }
         }
     }

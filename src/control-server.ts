@@ -19,6 +19,7 @@ import {
   type SessionActionsTarget,
 } from "./session-actions-overlay.ts";
 import type { ResumableSessionsRead } from "./resumable.ts";
+import { validateScreenObservation, type ScreenObservation } from "./screen-context.ts";
 import type { AgentCapabilitiesRead } from "./agent-capabilities.ts";
 import type { AgentInstall } from "./agent-install.ts";
 import { applyPlan, planToggle, rollbackFile, type ConfigWriteHomes, type ConfigWriteIo } from "./config-write.ts";
@@ -1073,6 +1074,8 @@ export interface ControlServerOptions {
    * request was answered and closed. The daemon publishes it; nothing retries on its own.
    */
   onDelivery?(delivery: PublishedDelivery): void;
+  /** Told what an observer saw on screen (`screen-observation`), once it has been validated. */
+  onScreenObservation?(observation: ScreenObservation): void;
   ownership?: SocketOwnership;
 }
 
@@ -1186,6 +1189,20 @@ export function createControlServer(options: ControlServerOptions): ControlServe
             ? application.device(audio.value)
             : { kind: "audio-error", code: "invalid", error: audio.err };
           sock.end(JSON.stringify(response) + "\n");
+          return;
+        }
+        // Evidence of what is on screen, not a command to any session: validated here, before
+        // session resolution, and answered at once. An observer never waits on the resolvers.
+        if (socketRecord(body) && body.kind === "screen-observation") {
+          const observed = validateScreenObservation(body.observation);
+          let answer: { kind: "screen-ack" } | { kind: "screen-error"; error: string };
+          if (!observed.ok) answer = { kind: "screen-error", error: observed.err };
+          else if (!options.onScreenObservation) answer = { kind: "screen-error", error: "screen context is unavailable" };
+          else {
+            options.onScreenObservation(observed.value);
+            answer = { kind: "screen-ack" };
+          }
+          sock.end(JSON.stringify(answer) + "\n");
           return;
         }
         const value = await sessions.resolve(body);

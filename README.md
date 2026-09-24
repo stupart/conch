@@ -281,6 +281,7 @@ The full environment-variable surface remains available (put overrides in the ho
 | `CONCH_WHISPER_IDLE_UNLOAD_MINS` | `20` | unload the warm whisper-server (~628MB) after this many minutes without a transcription; it reloads the moment a mic is about to open; `0` keeps it loaded (`conch set whisper-idle-unload …`) |
 | `CONCH_AWAY_AFTER_SECS` | `0` (off) | opt-in: silence everything after N seconds of keyboard idle |
 | `CONCH_MEETING_AUTOPAUSE` | `0` (off) | silently pause while another app is using the default microphone |
+| `CONCH_SCREEN_LOG` | `1` | keep a local log of which session's work was on screen, and for how long, in `~/.config/conch/screen`; never sent anywhere (`conch set screen-log …`, [docs/screen-context.md](docs/screen-context.md)) |
 | `CONCH_TTS` | `worker` | `worker` (owned, no HTTP) / `server` (legacy rollback) / `say`; old `auto` aliases to `worker` |
 | `CONCH_TTS_PORT` | `8880` | legacy `server` mode only; `0` disables that backend |
 | `CONCH_TTS_SERVER` | `mlx_audio.server` | legacy server binary and launcher whose shebang locates the uv-tool Python |
