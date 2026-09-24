@@ -21,6 +21,8 @@ extension Notification.Name {
 final class ConchStatusItem: NSObject, NSMenuDelegate {
     static let showControlBarKey = "conch.showControlBar"
     static let showConversationKey = "conch.showConversation"
+    /// The conversation panel's reply line; off, the panel only shows the words.
+    static let showReplyLineKey = "conch.showReplyLine"
 
     private static var installed: ConchStatusItem?
 
@@ -45,6 +47,7 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         UserDefaults.standard.register(defaults: [
             Self.showControlBarKey: true,
             Self.showConversationKey: false,
+            Self.showReplyLineKey: true,
         ])
         item.autosaveName = "conch"
         let menu = NSMenu()
@@ -107,9 +110,10 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         stop.isEnabled = state?.live.isExchangeActive == true
         menu.addItem(stop)
         menu.addItem(.separator())
-        // FloatingPanels watches these two defaults and shows or hides its panels as they change.
+        // FloatingPanels watches these defaults and shows or hides its panels, and the conversation's reply line, as they change.
         menu.addItem(entry("Show control bar", #selector(toggleControlBar), checked: defaults.bool(forKey: Self.showControlBarKey)))
         menu.addItem(entry("Show conversation", #selector(toggleConversation), checked: defaults.bool(forKey: Self.showConversationKey)))
+        menu.addItem(entry("Show reply line", #selector(toggleReplyLine), checked: defaults.bool(forKey: Self.showReplyLineKey)))
 
         let ready = Self.readyRows(state)
         let working = Self.workingRows(state)
@@ -174,6 +178,7 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
     @objc private func stopSpeaking() { store.send(.stop()) }
 
     @objc private func toggleControlBar() { toggle(Self.showControlBarKey) }
+    @objc private func toggleReplyLine() { toggle(Self.showReplyLineKey) }
     @objc private func toggleConversation() {
         // Turned on from the menu, the conversation opens full size, not as its collapsed handle.
         if !UserDefaults.standard.bool(forKey: Self.showConversationKey) {

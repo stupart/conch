@@ -585,11 +585,86 @@ public enum ReviewScene: Equatable {
     /// filing time. Oldest filed first, ties by version so the order never shuffles; the unopened before any already
     /// opened; the next after `last`, round to the first again. A `last` no longer ready starts the queue over.
     public static func next<Key: Comparable & Hashable>(after last: Key?, in ready: [(key: Key, at: Double)], opened: Set<Key>) -> Key? {
-        let queue = ready.sorted { ($0.at, $0.key) < ($1.at, $1.key) }.map { $0.key }
+        let queue = order(ready)
         let unopened = queue.filter { !opened.contains($0) }
         let pool = unopened.isEmpty ? queue : unopened
         guard let lastIndex = last.flatMap(queue.firstIndex(of:)) else { return pool.first }
         return pool.first { queue.firstIndex(of: $0)! > lastIndex } ?? pool.first
+    }
+
+    /// The panel's Previous: the review filed before `last`, opened or not, round to the newest. Next goes on to what you
+    /// haven't seen; Previous goes back to what you have, which skipping the opened would never reach. None yet, the newest.
+    public static func previous<Key: Comparable & Hashable>(before last: Key?, in ready: [(key: Key, at: Double)]) -> Key? {
+        let queue = order(ready)
+        guard let index = last.flatMap(queue.firstIndex(of:)) else { return queue.last }
+        return queue[(index + queue.count - 1) % queue.count]
+    }
+
+    /// Oldest filed first, ties by version so the order never shuffles.
+    static func order<Key: Comparable>(_ ready: [(key: Key, at: Double)]) -> [Key] {
+        ready.sorted { ($0.at, $0.key) < ($1.at, $1.key) }.map { $0.key }
+    }
+
+    /// A pick in the conversation panel (its switcher, Previous and Next) that has nothing to open is the session's words,
+    /// full screen in the panel, rather than a terminal or conch's window (Tyler: "maybe just shows fullscreen text
+    /// transcript / writer convo if there is no content"). True for a session with no review, or one whose `auto` or
+    /// `link` scene has no link that opens. A scene the review asked for by name, `terminal` or `conversation`, is still
+    /// that scene.
+    public static func panelShowsWords(hasReview: Bool, kind: Kind, link: URL?, fileExists: (String) -> Bool) -> Bool {
+        guard hasReview else { return true }
+        switch kind {
+        case .terminal, .conversation: return false
+        case .auto, .link:
+            if case .open = choose(kind: kind, link: link, fileExists: fileExists, appWindowOpen: false, revealable: false) { return false }
+            return true
+        }
+    }
+}
+
+// MARK: - FogSession
+
+/// A session as the conversation panel names it and its switcher lists it (Tyler: "knows what content is on the screen
+/// and what session relates to that, ability to click next or select different session").
+public struct FogSession: Identifiable, Equatable, Sendable {
+    /// Where a session stands, which is where the switcher lists it: the menu bar menu's two groups, then the rest.
+    public enum Standing: Int, Sendable {
+        case ready, working, other
+
+        var title: String {
+            switch self {
+            case .ready: "Ready for you"
+            case .working: "Working"
+            case .other: "Other sessions"
+            }
+        }
+    }
+
+    public let id: String
+    public let label: String
+    /// Who does the work, by name: "Claude" or "Codex".
+    public let agent: String
+    /// The agent's mark, an image asset in the host's own bundle (the Mac app's AgentClaude and AgentCodex); nil draws
+    /// the name instead.
+    public let mark: String?
+    /// What the panel is on for this session, as one line; nil says nothing about an item.
+    public let item: String?
+    public let standing: Standing
+
+    public init(id: String, label: String, agent: String, mark: String? = nil, item: String? = nil, standing: Standing = .other) {
+        self.id = id
+        self.label = label
+        self.agent = agent
+        self.mark = mark
+        let item = item?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        self.item = item.isEmpty ? nil : item
+        self.standing = standing
+    }
+
+    /// Ready for you first, then working, then the rest, each group in the order the daemon sent it.
+    public static func ordered(_ sessions: [FogSession]) -> [FogSession] {
+        sessions.enumerated()
+            .sorted { ($0.element.standing.rawValue, $0.offset) < ($1.element.standing.rawValue, $1.offset) }
+            .map(\.element)
     }
 }
 
@@ -1000,6 +1075,18 @@ public struct ConversationFog: View {
     let floating: Bool
     /// The pointer is over the fog: the buttons show fully.
     let hovering: Bool
+    /// The session the words are from, named beside the buttons (`FogHeader`); nil names none.
+    let session: FogSession?
+    /// What the switcher lists, in its order (`FogSession.ordered`).
+    let sessions: [FogSession]
+    /// The switcher is open. The host's, so a press anywhere else on the fog can close it.
+    @Binding var isSwitching: Bool
+    /// The reply line; off, the transcript takes its room (the menu bar's Show Reply Line).
+    let showsReply: Bool
+    let onPick: (String) -> Void
+    /// Back and on through what is ready; nil leaves the button out.
+    let onPrevious: (() -> Void)?
+    let onNext: (() -> Void)?
     let onMic: () -> Void
     let onSend: () -> Void
     let onCollapse: () -> Void
@@ -1021,6 +1108,13 @@ public struct ConversationFog: View {
         showsButtons: Bool = true,
         floating: Bool = false,
         hovering: Bool = true,
+        session: FogSession? = nil,
+        sessions: [FogSession] = [],
+        isSwitching: Binding<Bool> = .constant(false),
+        showsReply: Bool = true,
+        onPick: @escaping (String) -> Void = { _ in },
+        onPrevious: (() -> Void)? = nil,
+        onNext: (() -> Void)? = nil,
         onMic: @escaping () -> Void,
         onSend: @escaping () -> Void,
         onCollapse: @escaping () -> Void,
@@ -1039,6 +1133,13 @@ public struct ConversationFog: View {
         self.showsButtons = showsButtons
         self.floating = floating
         self.hovering = hovering
+        self.session = session
+        self.sessions = sessions
+        _isSwitching = isSwitching
+        self.showsReply = showsReply
+        self.onPick = onPick
+        self.onPrevious = onPrevious
+        self.onNext = onNext
         self.onMic = onMic
         self.onSend = onSend
         self.onCollapse = onCollapse
@@ -1133,7 +1234,7 @@ public struct ConversationFog: View {
             let target = text.replyTarget(for: draft, width: max(0, frame.width - Self.micSpace), fontSize: fontSize, in: frame.height)
             let reply = rendersStatically ? target : text.replyHeight
             let overflows = CGFloat(text.replyLines) * FogReply.lineHeight(fontSize) + 2 * FogReply.padding(fontSize) > target + 0.5
-            let box = max(0, frame.height - FogReply.gap - reply)
+            let box = showsReply ? max(0, frame.height - FogReply.gap - reply) : frame.height
             ZStack(alignment: .topLeading) {
                 if showsFog, isFullScreen {
                     // panel.html's wash: light at the top so the blurred work still shows, deepening toward the words.
@@ -1146,11 +1247,11 @@ public struct ConversationFog: View {
                 }
                 VStack(alignment: .leading, spacing: FogReply.gap) {
                     if top {
-                        replyLine(fontSize: fontSize, height: reply, top: true, overflows: overflows)
-                        transcript(width: frame.width, height: box, top: true, fontSize: fontSize)
+                        if showsReply { replyLine(fontSize: fontSize, height: reply, top: true, overflows: overflows) }
+                        words(width: frame.width, height: box, top: true, fontSize: fontSize)
                     } else {
-                        transcript(width: frame.width, height: box, top: false, fontSize: fontSize)
-                        replyLine(fontSize: fontSize, height: reply, top: false, overflows: overflows)
+                        words(width: frame.width, height: box, top: false, fontSize: fontSize)
+                        if showsReply { replyLine(fontSize: fontSize, height: reply, top: false, overflows: overflows) }
                     }
                 }
                 .frame(width: frame.width, height: frame.height, alignment: .topLeading)
@@ -1168,21 +1269,23 @@ public struct ConversationFog: View {
                 .onChange(of: target, initial: true) { _, target in text.grow(to: target) }
                 if showsButtons {
                     let buttons = Self.buttonInsets(insets)
-                    FogPanelButtons(corner: corner, isFullScreen: isFullScreen, onCollapse: onCollapse, onFullScreen: onFullScreen)
-                        .fogControl()
-                        .frame(
-                            width: max(0, proxy.size.width - buttons.leading - buttons.trailing - 2 * Self.padding),
-                            alignment: Self.buttonsAlignment(corner: corner, fullScreen: isFullScreen)
-                        )
-                        .offset(
-                            x: buttons.leading + Self.padding,
-                            y: Self.buttonsY(in: proxy.size, corner: corner, insets: buttons, fullScreen: isFullScreen)
-                        )
-                        // Faint until the pointer is over the fog, and gone while it flies.
-                        .opacity(isFullScreen ? 1 : floating ? 0 : hovering ? 1 : 0.4)
-                        .allowsHitTesting(isFullScreen || !floating)
-                        .animation(ConchSpring(bounce: 0, response: 0.28).animation(reduceMotion: reduceMotion), value: hovering)
-                        .animation(ConchSpring(bounce: 0, response: 0.2).animation(reduceMotion: reduceMotion), value: floating)
+                    let alignment = Self.buttonsAlignment(corner: corner, fullScreen: isFullScreen)
+                    let y = Self.buttonsY(in: proxy.size, corner: corner, insets: buttons, fullScreen: isFullScreen)
+                    // The session is named beside the buttons, on their free side: the buttons keep the nook.
+                    HStack(spacing: ConchSpace.x3) {
+                        if alignment != .leading { header }
+                        FogPanelButtons(corner: corner, isFullScreen: isFullScreen, onCollapse: onCollapse, onFullScreen: onFullScreen, onPrevious: onPrevious, onNext: onNext)
+                            .fogControl()
+                        if alignment == .leading { header }
+                    }
+                    .frame(width: max(0, proxy.size.width - buttons.leading - buttons.trailing - 2 * Self.padding), alignment: alignment)
+                    .offset(x: buttons.leading + Self.padding, y: y)
+                    // Faint until the pointer is over the fog, and gone while it flies.
+                    .opacity(isFullScreen ? 1 : floating ? 0 : hovering ? 1 : 0.4)
+                    .allowsHitTesting(isFullScreen || !floating)
+                    .animation(ConchSpring(bounce: 0, response: 0.28).animation(reduceMotion: reduceMotion), value: hovering)
+                    .animation(ConchSpring(bounce: 0, response: 0.2).animation(reduceMotion: reduceMotion), value: floating)
+                    switcher(in: proxy.size, y: y, leading: alignment == .leading)
                 }
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
@@ -1206,6 +1309,49 @@ public struct ConversationFog: View {
                 }
             }
             .animation(ConchSpring(bounce: 0.25, response: 0.32).animation(reduceMotion: reduceMotion), value: text.scroll.pinned)
+    }
+
+    /// The transcript, crossfading to another session's rather than cutting to it. A dissolve is what Reduce Motion
+    /// keeps, so it stays under it.
+    private func words(width: CGFloat, height: CGFloat, top: Bool, fontSize: CGFloat) -> some View {
+        ZStack {
+            transcript(width: width, height: height, top: top, fontSize: fontSize)
+                .id(session?.id)
+                .transition(.opacity)
+        }
+        .animation(ConchMotion.appearance.animation(reduceMotion: reduceMotion), value: session?.id)
+    }
+
+    /// The session the words are from, crossfading with them. A click opens the switcher.
+    @ViewBuilder private var header: some View {
+        if let session {
+            ZStack {
+                FogHeader(session: session) { isSwitching.toggle() }
+                    .id(session.id)
+                    .transition(.opacity)
+            }
+            .animation(ConchMotion.appearance.animation(reduceMotion: reduceMotion), value: session.id)
+            .fogControl()
+        }
+    }
+
+    /// The switcher opens from the button row away from the edge the fog is docked on: up from a bottom corner, down from
+    /// a top one and full screen, on the button row's side.
+    private func switcher(in size: CGSize, y: CGFloat, leading: Bool) -> some View {
+        let up = Self.buttonsAtBottom(corner: corner, fullScreen: isFullScreen)
+        let top = up ? 0 : y + Self.buttonSize + ConchSpace.x2
+        let room = max(0, up ? y - ConchSpace.x2 : size.height - top - Self.padding)
+        let anchor: UnitPoint = up ? (leading ? .bottomLeading : .bottomTrailing) : (leading ? .topLeading : .topTrailing)
+        return ZStack {
+            if isSwitching {
+                FogSwitcher(sessions: sessions, current: session?.id, tallest: room, onPick: onPick)
+                    .fogControl()
+                    .transition(reduceMotion ? .opacity : .scale(scale: 0.96, anchor: anchor).combined(with: .opacity))
+            }
+        }
+        .frame(width: max(0, size.width - 2 * Self.padding), height: room, alignment: Alignment(horizontal: leading ? .leading : .trailing, vertical: up ? .bottom : .top))
+        .offset(x: Self.padding, y: top)
+        .animation(ConchMotion.pop.animation(reduceMotion: reduceMotion), value: isSwitching)
     }
 
     private func pill(top: Bool) -> some View {
@@ -1528,20 +1674,200 @@ private struct Thinking: View {
     }
 }
 
+// MARK: - FogHeader and FogSwitcher
+
+/// The agent's mark, as the session list draws it, else its name.
+private struct FogAgentMark: View {
+    let session: FogSession
+
+    var body: some View {
+        if let mark = session.mark {
+            Image(mark)
+                .renderingMode(.template)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 11, height: 11)
+                .foregroundStyle(ConchColor.overlayTextSecondary)
+                .accessibilityLabel("Agent: \(session.agent)")
+        } else {
+            Text(session.agent)
+                .font(ConchType.meta)
+                .foregroundStyle(ConchColor.overlayTextSecondary)
+        }
+    }
+}
+
+/// The session the fog's words are from, beside its buttons: the agent's mark, the session's name, and the item the
+/// panel is on, on one line that gives way from its end. Small and in the buttons' glass, so it never competes with the
+/// words. A click lists the other sessions.
+private struct FogHeader: View {
+    let session: FogSession
+    let onSwitch: () -> Void
+
+    var body: some View {
+        Button(action: onSwitch) {
+            HStack(spacing: 6) {
+                FogAgentMark(session: session)
+                Text(session.label)
+                    .font(ConchType.uiEmphasis)
+                    .foregroundStyle(ConchColor.overlayText)
+                    .lineLimit(1)
+                    // The name stays whole longest; the item gives way first.
+                    .layoutPriority(1)
+                if let item = session.item {
+                    Text(item)
+                        .font(ConchType.secondary)
+                        .foregroundStyle(ConchColor.overlayTextSecondary)
+                        .lineLimit(1)
+                }
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(ConchColor.overlayTextSecondary)
+            }
+            .padding(.horizontal, 14)
+            .frame(height: ConversationFog.buttonSize)
+            .background(Capsule().fill(ConchColor.overlayGlass))
+            .overlay(Capsule().strokeBorder(ConchColor.overlayLine, lineWidth: 0.5))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        // Past this a long summary only pushes the name further from the buttons.
+        .modifier(AtMost(width: 460))
+        .accessibilityLabel([session.label, session.agent, session.item].compactMap { $0 }.joined(separator: ", "))
+        .accessibilityHint("Lists the other sessions")
+    }
+}
+
+/// No wider than `width`, and no wider than it needs: `frame(maxWidth:)` would take all of `width` whenever it was offered,
+/// leaving a short name in a long empty control that swallowed the fog's drags.
+private struct AtMost: ViewModifier, Layout {
+    let width: CGFloat
+
+    func body(content: Content) -> some View { self { content } }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        subviews.first?.sizeThatFits(ProposedViewSize(width: min(proposal.width ?? width, width), height: proposal.height)) ?? .zero
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
+    }
+}
+
+/// The panel's switcher: every session, ready for you first, then working, then the rest, under the menu bar menu's own
+/// headings and marks, the one on screen marked. Its own height up to `tallest`, then it scrolls.
+private struct FogSwitcher: View {
+    static let width: CGFloat = 340
+    static let rowHeight: CGFloat = 30
+    static let headingHeight: CGFloat = 24
+
+    let sessions: [FogSession]
+    let current: String?
+    /// The room it has, from the button row to the fog's far edge.
+    let tallest: CGFloat
+    let onPick: (String) -> Void
+    @State private var hovered: String?
+
+    private func startsGroup(_ index: Int) -> Bool {
+        index == 0 || sessions[index - 1].standing != sessions[index].standing
+    }
+
+    var body: some View {
+        let headings = sessions.indices.filter(startsGroup).count
+        let content = CGFloat(sessions.count) * Self.rowHeight + CGFloat(headings) * Self.headingHeight + 2 * ConchSpace.x2
+        let shape = RoundedRectangle(cornerRadius: ConchRadius.medium, style: .continuous)
+        let height = min(content, 360, tallest)
+        let list = VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(sessions.enumerated()), id: \.element.id) { index, session in
+                if startsGroup(index) {
+                    // "You" in the transcript is set the same way.
+                    Text(session.standing.title)
+                        .font(ConchType.meta)
+                        .fontWeight(.semibold)
+                        .tracking(0.66)
+                        .textCase(.uppercase)
+                        .foregroundStyle(ConchColor.overlayTextSecondary)
+                        .padding(.horizontal, ConchSpace.x2)
+                        .frame(height: Self.headingHeight, alignment: .bottomLeading)
+                        .accessibilityAddTraits(.isHeader)
+                }
+                row(session)
+            }
+        }
+        .padding(ConchSpace.x2)
+        Group {
+            // A scroll view only when it doesn't fit.
+            if content <= height { list } else { ScrollView(.vertical) { list } }
+        }
+        .frame(width: Self.width, height: height, alignment: .top)
+        .background(shape.fill(ConchColor.overlayGlassStrong))
+        .overlay(shape.strokeBorder(ConchColor.overlayLine, lineWidth: 0.5))
+        .clipShape(shape)
+        .conchElevation(.floating)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Sessions")
+    }
+
+    private func row(_ session: FogSession) -> some View {
+        let here = session.id == current
+        return Button { onPick(session.id) } label: {
+            HStack(spacing: ConchSpace.x2) {
+                // The menu bar menu's marks: a dot for ready, a ring for working.
+                Image(systemName: session.standing == .ready ? "circle.fill" : "circle")
+                    .font(.system(size: 7))
+                    .foregroundStyle(session.standing == .ready ? ConchColor.ready : ConchColor.overlayTextSecondary)
+                    .opacity(session.standing == .other ? 0 : 1)
+                FogAgentMark(session: session)
+                Text(session.label)
+                    .font(ConchType.uiBody)
+                    .foregroundStyle(ConchColor.overlayText)
+                    .lineLimit(1)
+                    .layoutPriority(1)
+                if let item = session.item {
+                    Text(item)
+                        .font(ConchType.secondary)
+                        .foregroundStyle(ConchColor.overlayTextSecondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, ConchSpace.x2)
+            .frame(height: Self.rowHeight)
+            .background(
+                RoundedRectangle(cornerRadius: ConchRadius.small, style: .continuous)
+                    .fill(here ? ConchColor.overlayFillStrong : ConchColor.overlayFill)
+                    .opacity(here || hovered == session.id ? 1 : 0)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { inside in
+            if inside { hovered = session.id } else if hovered == session.id { hovered = nil }
+        }
+        .accessibilityLabel([session.label, session.agent, session.item].compactMap { $0 }.joined(separator: ", "))
+        .accessibilityAddTraits(here ? .isSelected : [])
+    }
+}
+
 // MARK: - FogPanelButtons
 
-/// The fog's collapse and full-screen buttons: in that order, as a Mac window's minimise and zoom come.
+/// The fog's collapse and full-screen buttons: in that order, as a Mac window's minimise and zoom come. Then, while
+/// something is ready, Previous and Next, which walk it as the Ready pill does.
 public struct FogPanelButtons: View {
     let corner: FogCorner
     let isFullScreen: Bool
     let onCollapse: () -> Void
     let onFullScreen: () -> Void
+    let onPrevious: (() -> Void)?
+    let onNext: (() -> Void)?
 
-    public init(corner: FogCorner, isFullScreen: Bool, onCollapse: @escaping () -> Void, onFullScreen: @escaping () -> Void) {
+    public init(corner: FogCorner, isFullScreen: Bool, onCollapse: @escaping () -> Void, onFullScreen: @escaping () -> Void, onPrevious: (() -> Void)? = nil, onNext: (() -> Void)? = nil) {
         self.corner = corner
         self.isFullScreen = isFullScreen
         self.onCollapse = onCollapse
         self.onFullScreen = onFullScreen
+        self.onPrevious = onPrevious
+        self.onNext = onNext
     }
 
     public var body: some View {
@@ -1561,6 +1887,14 @@ public struct FogPanelButtons: View {
                 action: onFullScreen
             )
             .keyboardShortcut(.return, modifiers: .command)
+            if let onPrevious {
+                IconButton("chevron.left", label: "Previous ready item", style: .glass, size: ConversationFog.buttonSize, action: onPrevious)
+                    // A pair of their own, a little apart from the window's two.
+                    .padding(.leading, ConchSpace.x1)
+            }
+            if let onNext {
+                IconButton("chevron.right", label: "Next ready item", style: .glass, size: ConversationFog.buttonSize, action: onNext)
+            }
         }
     }
 }

@@ -118,13 +118,28 @@ test("M3: both panels keep their frames, and the fog goes full screen on Command
   expect(button).toContain(".keyboardShortcut(.return, modifiers: .command)");
   expect(panels).toContain("onFullScreen: { panels.toggleFullScreen() }");
   const toggle = member(panels, "func toggleFullScreen() {");
-  expect(toggle).toContain("fog.setFrame(screen.frame, display: true, animate: animate)");
+  // Both ways on the morph spring, stepped with the fog's motion; at once under Reduce Motion.
+  expect(toggle).toContain("morph(to: screen.frame)");
   // Leaving docks it back in its corner at the size it had.
   expect(toggle).toContain("let frame = FogDock.frame(size: motion.size, corner: corner, in: screen.frame)");
-  expect(toggle).toContain("NSWorkspace.shared.accessibilityDisplayShouldReduceMotion");
-  // A full-screen frame is never the one saved.
+  expect(toggle).toContain("morph(to: frame)");
+  const morph = member(panels, "private func morph(to target: NSRect) {");
+  expect(morph).toContain("guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {");
+  expect(morph).toContain("morphing = (from: fog.frame, to: target, progress: 0, velocity: 0)");
+  const step = member(panels, "func step(dt: Double) {");
+  expect(step).toContain("let done = ConchMotion.morph.step(&morph.progress, velocity: &morph.velocity, to: 1, dt: dt)");
+  expect(step.indexOf("ConchMotion.morph.step(")).toBeLessThan(step.indexOf("apply()"));
+  // Mid-morph the morph has the frame: the docked frame never fights it.
+  expect(member(panels, "private func apply() {")).toContain("guard !isCollapsed, !isFullScreen, morphing == nil else { return layOut(margin: EdgeInsets()) }");
+  // Collapsing sets its own frame, so a morph on its way stops there.
+  expect(member(panels, "private func setCollapsed(_ collapsed: Bool) {")).toContain("morphing = nil");
+  // A full-screen frame is never the one saved: autosave is off before it grows, full screen is set before a morph that
+  // lands at once, and autosave comes back only once it has landed docked.
   expect(toggle.indexOf('fog.setFrameAutosaveName("")')).toBeGreaterThan(-1);
-  expect(toggle.indexOf('fog.setFrameAutosaveName("")')).toBeLessThan(toggle.indexOf("fog.setFrame(screen.frame"));
+  expect(toggle.indexOf('fog.setFrameAutosaveName("")')).toBeLessThan(toggle.indexOf("morph(to: screen.frame)"));
+  expect(toggle.indexOf("isFullScreen = true")).toBeLessThan(toggle.indexOf("morph(to: screen.frame)"));
+  expect(toggle).not.toContain("fog.setFrameAutosaveName(Self.conversationFrameName)");
+  expect(member(panels, "private func landed() {")).toContain("if !isFullScreen, !isCollapsed { fog.setFrameAutosaveName(Self.conversationFrameName) }");
 });
 
 test("M3: the fog replies through inject and dictates through the composer's dictate", () => {
@@ -220,7 +235,7 @@ test("M3: the fog moves the way the overlay lab does: thrown by its middle on on
   expect(panels).toContain(".onPreferenceChange(FogControls.self) { panels.controlFrames = $0 }");
   expect(components).toContain("overflows: overflows, onMic: onMic, onSend: onSend)\n            .frame(height: height, alignment: top ? .top : .bottom)\n            .fogControl()");
   expect(components).toContain(
-    "FogPanelButtons(corner: corner, isFullScreen: isFullScreen, onCollapse: onCollapse, onFullScreen: onFullScreen)\n                        .fogControl()",
+    "FogPanelButtons(corner: corner, isFullScreen: isFullScreen, onCollapse: onCollapse, onFullScreen: onFullScreen, onPrevious: onPrevious, onNext: onNext)\n                            .fogControl()",
   );
   // A gesture always ends: on mouse-up; on a frame that finds the button already up (let go over another app, or an event
   // lost); when another app comes forward; and when the screens change, it collapses or it goes full screen.
@@ -242,7 +257,7 @@ test("M3: the fog moves the way the overlay lab does: thrown by its middle on on
   expect(panels).toContain("displayLink(target: self, selector: #selector(step(_:)))");
   expect(panels).toContain("let dt = lastFrame > 0 ? min(link.timestamp - lastFrame, 0.05) : 1.0 / 120");
   expect(step).toContain("motion.step(dt: dt)");
-  expect(step).toContain("if motion.isSettled, darkness == darkTarget, resizeHover == hoverTarget, !words { container.run(false) }");
+  expect(step).toContain("if motion.isSettled, darkness == darkTarget, resizeHover == hoverTarget, morphing == nil, !words { container.run(false) }");
   expect(member(panels, "func pressed() {")).toContain("container.run(true)");
   expect(read("design/ConchDesign/Sources/ConchDesign/Tokens.swift")).toContain("let h = CGFloat(min(t, 1.0 / 240))");
   // Calm under Reduce Motion: the dock spring without its overshoot, and only the fade of the flight.
@@ -271,8 +286,9 @@ test("M3: the fog moves the way the overlay lab does: thrown by its middle on on
   expect(components).toContain("let top = insets.top + padding + (atBottom ? 0 : row)");
   // With no strips over them, the fog draws its own buttons, in its docked corner proper.
   expect(components).toContain("let buttons = Self.buttonInsets(insets)");
-  expect(components).toContain("alignment: Self.buttonsAlignment(corner: corner, fullScreen: isFullScreen)");
-  expect(components).toContain("y: Self.buttonsY(in: proxy.size, corner: corner, insets: buttons, fullScreen: isFullScreen)");
+  expect(components).toContain("let alignment = Self.buttonsAlignment(corner: corner, fullScreen: isFullScreen)");
+  expect(components).toContain("let y = Self.buttonsY(in: proxy.size, corner: corner, insets: buttons, fullScreen: isFullScreen)");
+  expect(components).toContain(".frame(width: max(0, proxy.size.width - buttons.leading - buttons.trailing - 2 * Self.padding), alignment: alignment)\n                    .offset(x: buttons.leading + Self.padding, y: y)");
   // The overlay's look is on (Tyler: "i don't see any overlay"), and the testing outline is gone.
   expect(panels).toContain("static let showsFog = true");
   expect(panels).not.toContain("strokeBorder(Color.black");
@@ -412,7 +428,7 @@ test("M3: the control bar fits what it shows, the reply scrolls past five lines,
   expect(fit).toContain(
     "controlBar.setFrame(NSRect(x: frame.midX - size.width / 2, y: frame.maxY - size.height, width: size.width, height: size.height), display: true)",
   );
-  expect(panels).toContain("ControlBarHost(store: store, panels: self, onSize: { [weak self] size in self?.fitControlBar(to: size) })");
+  expect(panels).toContain("ControlBarHost(store: store, queue: queue, panels: self, onSize: { [weak self] size in self?.fitControlBar(to: size) })");
   expect(panels).toContain(".onPreferenceChange(ControlBarSize.self, perform: onSize)");
   expect(components).toContain("Text(option.title)\n                        .font(ConchType.uiEmphasis)\n                        .fixedSize()");
   // The reply grows to five lines, fewer when that would leave under 90 pt of transcript, then scrolls inside itself.
@@ -505,7 +521,7 @@ test("M3: the look glows in the voice's colour, crossfades light and dark, thick
   // Light and dark crossfade, the look and the words' palette together.
   const step = member(panels, "func step(dt: Double) {");
   expect(step).toContain("ConchMotion.appearance.step(&darkness, velocity: &darkVelocity, to: darkTarget, dt: dt)");
-  expect(step).toContain("if motion.isSettled, darkness == darkTarget, resizeHover == hoverTarget, !words { container.run(false) }");
+  expect(step).toContain("if motion.isSettled, darkness == darkTarget, resizeHover == hoverTarget, morphing == nil, !words { container.run(false) }");
   expect(panels).toContain(".environment(\\.conchDarkness, panels.look.darkness)");
   expect(tokens).toContain("environment.conchDarkness.map { rgba(darkness: $0).color } ?? color(environment.colorScheme)");
   expect(look).toContain("let wash = ConchColor.fog.rgba(darkness: dark).color");
@@ -552,7 +568,7 @@ test("M3: the overlay's text is the lab's: pinned by the reader alone, words at 
   expect(step).toContain("let words = text.step(dt: dt, now: ProcessInfo.processInfo.systemUptime, reduceMotion: motion.reduceMotion)");
   expect(step.indexOf("text.step(")).toBeLessThan(step.indexOf("apply()"));
   expect(panels).toContain("text.wake = { [weak self] in MainActor.assumeIsolated { self?.container.run(true) } }");
-  expect(member(panels, "private func apply() {")).toContain("next.replyHeight = text.replyHeight");
+  expect(member(panels, "private func apply() {")).toContain("next.replyHeight = showsReply ? text.replyHeight : 0");
   expect(panels).toContain("isWorking: row?.status == .working,");
   expect(panels).toContain(".onChange(of: turns, initial: true) { _, turns in panels.text.update(turns: turns, now: ProcessInfo.processInfo.systemUptime) }");
   expect(panels).toContain(".onChange(of: row?.id) { _, _ in panels.text.session() }");
@@ -626,14 +642,14 @@ test("the Ready pill's label, and only it, is a button, and only while Ready, sa
   expect(bar.slice(button, otherwise)).toContain(".help(help)");
   expect(components).toContain(".animation(ConchMotion.pop.animation(reduceMotion: reduceMotion), value: configuration.isPressed)");
   // What to check there when the agent said (scene.inspect), else how many are ready.
-  expect(panels).toContain('help: next(in: ready).map { "Show \\($0.label) · \\($0.inspect ?? "\\(ready.count) ready")" } ?? ""');
+  expect(panels).toContain('help: queue.next(in: ready, state: store.state).map { "Show \\($0.label) · \\($0.inspect ?? "\\(ready.count) ready")" } ?? ""');
   expect(read("mac-app/conch-mac/ReviewView.swift")).toContain("inspect = review.inspect");
   // The panel feeds SwiftUI the pointer while conch is in the background, as the fog's own view does.
   expect(member(panels, "override func updateTrackingAreas() {\n        super.updateTrackingAreas()\n        guard !trackingAreas")).toContain(
     "options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect], owner: self",
   );
   // The host always offers the tap; ControlBar decides whether it is live.
-  expect(panels).toContain("onTap: stageNext,");
+  expect(panels).toContain("onTap: { queue.walk(store: store, panels: panels) },");
 });
 
 test("the pill's scene: the link, else conch's window if open, else the terminal, else conch, falling through on failure", () => {
@@ -684,42 +700,185 @@ test("the pill's scene: the link, else conch's window if open, else the terminal
 });
 
 /**
- * The daemon has no opened state for the app to set (`opened` is the terminal renderer's own), so the pill keeps its own,
+ * The daemon has no opened state for the app to set (`opened` is the terminal renderer's own), so the walk keeps its own,
  * by exact version, only after a handoff, and prefers the unopened. Clicks run in order so a late one can't retarget.
  */
-test("the pill takes the exact review version at the click, runs clicks in order, and counts it opened only once handed off", () => {
-  const stage = member(panels, "private func stageNext() {");
-  expect(stage).toContain("guard let key = next(in: Self.ready(store.state))?.id else { return }");
-  expect(member(panels, "private func next(in ready: [ReviewItem]) -> ReviewItem? {")).toContain(
-    "ReviewScene.next(after: lastStaged, in: ready.map { (key: $0.id, at: $0.reviewedAt ?? 0) }, opened: seen(in: ready))",
+test("a click takes the exact review version, runs in order, and counts it opened only once handed off", () => {
+  const walk = member(panels, "func walk(backward: Bool = false, inPanel: Bool = false, store: StateStore, panels: FloatingPanels) {");
+  expect(walk).toContain(": next(in: ready, state: store.state)?.id");
+  expect(member(panels, "func next(in ready: [ReviewItem], state: PublishedState?) -> ReviewItem? {")).toContain(
+    "ReviewScene.next(after: lastStaged, in: ready.map { (key: $0.id, at: $0.reviewedAt ?? 0) }, opened: seen(in: ready, state: state))",
   );
+  // Taken at the click, so the next click moves on before this one lands; found again, still that version and still ready.
+  expect(walk.indexOf("lastStaged = key")).toBeLessThan(walk.indexOf("stage(inPanel: inPanel"));
+  expect(walk).toContain("for row in ConchStatusItem.readyRows(state) {");
+  expect(walk).toContain("if let review = row.held.first(where: { ReviewItem(row: row, review: $0).id == key }) { return (row.holding(review), key) }");
   // What has been looked at is the daemon's record unioned with this window's optimistic set,
   // and against a daemon too old to remember it is that local set alone.
-  const seen = member(panels, "private func seen(in ready: [ReviewItem]) -> Set<ReviewItem.ID> {");
-  expect(seen).toContain("guard store.state?.features?.viewedState != nil else { return opened }");
+  const seen = member(panels, "private func seen(in ready: [ReviewItem], state: PublishedState?) -> Set<ReviewItem.ID> {");
+  expect(seen).toContain("guard state?.features?.viewedState != nil else { return opened }");
   expect(seen).toContain("opened.union(ready.filter { $0.viewedAt != nil }");
   // ReviewItem.id is the version: what the daemon minted at filing, or the key that stood
   // in for it before there was one.
   expect(read("mac-app/conch-mac/ReviewView.swift"))
     .toContain("id = ReviewIdentity.key(published: review.id, sessionId: row.id, filedAt: review.at)");
+  const stage = member(panels, "private func stage(\n        inPanel: Bool,");
   const steps = [
-    "lastStaged = key",
     "let previous = staging",
     "staging = Task { @MainActor in",
     "await previous?.value",
-    "guard let row = ConchStatusItem.readyRows(store.state).first(where: { ReviewItem(row: $0)?.id == key }) else { return }",
-    "panels.staged = row.id",
-    "if await ConchStatusItem.stage(row, store: store) {",
+    "guard let found = find(store.state) else { return }",
+    "panels.staged = found.row.id",
+    "guard await Self.show(found.row, inPanel: inPanel, store: store, panels: panels), let key = found.key else { return }",
     "opened.insert(key)",
     // Only once handed off, and only then told to the daemon, so every other surface agrees.
-    "store.markReviewViewed(sessionId: row.id, review: key)",
+    "store.markReviewViewed(sessionId: found.row.id, review: key)",
   ].map((line) => stage.indexOf(line));
   expect(steps.every((at) => at > -1)).toBe(true);
   expect([...steps].sort((a, b) => a - b)).toEqual(steps);
   expect(panels.match(/opened\.insert/g)?.length).toBe(1);
+  // The pill's scene is stage's, as it always was.
+  expect(member(panels, "private static func show(_ row: SessionRow, inPanel: Bool, store: StateStore, panels: FloatingPanels) async -> Bool {")).toContain(
+    "return await ConchStatusItem.stage(row, store: store)",
+  );
   // Nothing sent to the daemon for it, and no command invented.
   expect(member(item, "static func stage(_ row: SessionRow, store: StateStore) async -> Bool {")).not.toContain("store.send(");
   expect(read("mac-app/conch-mac/ConchSocketClient.swift")).not.toMatch(/case (open|opened|markOpened|seen)\b/);
+});
+
+/**
+ * Tyler: "ability to click next or select different session form that". The pill and the panel's Previous and Next walk
+ * ONE queue, so they agree where it is: the walk lives in FloatingPanels, not in the control bar's own state.
+ */
+test("the pill and the panel walk one queue: every deliverable a ready session holds, by version", () => {
+  // Out of the bar's @State, into one object both hosts watch; the bar still never watches the fog's per-frame motion.
+  expect(panels).not.toContain("@State private var lastStaged");
+  expect(panels).not.toContain("@State private var opened");
+  expect(panels).not.toContain("@State private var staging");
+  expect(panels).toContain("@Published private(set) var lastStaged: ReviewItem.ID?");
+  expect(panels).toContain("@Published private(set) var opened: Set<ReviewItem.ID> = []");
+  expect(panels).toContain("    let queue = ReviewQueue()\n");
+  expect(panels.match(/@ObservedObject var queue: ReviewQueue/g)?.length).toBe(2);
+  expect(panels).toContain("ControlBarHost(store: store, queue: queue, panels: self,");
+  expect(panels).toContain("ConversationFogHost(store: store, panels: self, queue: queue,");
+  expect(panels).toContain("onTap: { queue.walk(store: store, panels: panels) },");
+  // Every held deliverable, not only each session's newest (`review`), which is all ReviewItem(row:) reads.
+  expect(member(panels, "static func ready(_ state: PublishedState?) -> [ReviewItem] {")).toContain(
+    "ConchStatusItem.readyRows(state).flatMap { row in row.held.map { ReviewItem(row: row, review: $0) } }",
+  );
+  expect(panels).not.toContain("compactMap(ReviewItem.init(row:))");
+  const held = member(panels, "var held: [ReviewInfo] {");
+  expect(held).toContain("if let reviews, !reviews.isEmpty { return reviews }");
+  expect(held).toContain("return review.map { [$0] } ?? []");
+  // An older one is staged through stage, unchanged, as the row's review.
+  expect(member(panels, "func holding(_ review: ReviewInfo) -> SessionRow {")).toContain("row.review = review");
+  expect(read("mac-app/conch-mac/Models.swift")).toContain("    var review: ReviewInfo?\n");
+  // Previous goes back through what was seen; Next goes on to the unopened.
+  const walk = member(panels, "func walk(backward: Bool = false, inPanel: Bool = false, store: StateStore, panels: FloatingPanels) {");
+  expect(walk).toContain("? ReviewScene.previous(before: lastStaged, in: ready.map { (key: $0.id, at: $0.reviewedAt ?? 0) })");
+  expect(panels).toContain("onPrevious: walks ? { queue.walk(backward: true, inPanel: true, store: store, panels: panels) } : nil,");
+  expect(panels).toContain("onNext: walks ? { queue.walk(inPanel: true, store: store, panels: panels) } : nil,");
+  expect(panels).toContain("let walks = !ConchStatusItem.readyRows(store.state).isEmpty");
+  const buttons = components.slice(components.indexOf("public struct FogPanelButtons: View {"), components.indexOf("// MARK: - FogHandle"));
+  expect(buttons).toContain('IconButton("chevron.left", label: "Previous ready item", style: .glass, size: ConversationFog.buttonSize, action: onPrevious)');
+  expect(buttons).toContain('IconButton("chevron.right", label: "Next ready item", style: .glass, size: ConversationFog.buttonSize, action: onNext)');
+});
+
+/**
+ * Tyler (09-24): "knows what content is on the screen and what session relates to that, ability to click next or select
+ * different session form that and it goes to the fullscreen content for that agent (maybe just shows fullscreen text
+ * transcript / writer convo if there is no content)".
+ */
+test("the panel names its session, switches from it, and shows the words full screen when there is nothing to open", () => {
+  // The header: the session, its agent's mark (the session list's own assets), and the item it is on.
+  expect(panels).toContain("session: row.map { Self.fogSession($0, item: Self.item(of: $0, staged: panels.staged, lastStaged: queue.lastStaged)) },");
+  expect(panels).toContain('mark: codex ? "AgentCodex" : "AgentClaude"');
+  const item = member(panels, "static func item(of row: SessionRow, staged: SessionRow.ID?, lastStaged: ReviewItem.ID?) -> String? {");
+  expect(item).toContain("if row.id == staged, let review = row.held.first(where: { ReviewItem(row: row, review: $0).id == lastStaged }) {");
+  expect(item).toContain("return row.review?.summary");
+  // The switcher: the menu bar menu's groups, never a subagent, open state the panels' so a press elsewhere closes it.
+  const sessions = member(panels, "static func sessions(_ state: PublishedState?, staged: SessionRow.ID?, lastStaged: ReviewItem.ID?) -> [FogSession] {");
+  expect(sessions).toContain("ConchStatusItem.readyRows(state)");
+  expect(sessions).toContain("ConchStatusItem.workingRows(state)");
+  expect(sessions).toContain("FogSession.ordered(");
+  expect(sessions).toContain(".filter { $0.parentSessionId == nil }");
+  expect(panels).toContain("isSwitching: $panels.switching,");
+  expect(member(panels, "func pressed() {")).toContain("if switching { switching = false }");
+  expect(member(panels, "private func setCollapsed(_ collapsed: Bool) {")).toContain("switching = false");
+  // A pick pins and stages through the same path as the pill.
+  const pick = member(panels, "func pick(_ id: SessionRow.ID, store: StateStore, panels: FloatingPanels) {");
+  expect(pick).toContain("panels.switching = false");
+  expect(pick).toContain("stage(inPanel: true, store: store, panels: panels)");
+  expect(panels).toContain("onPick: { queue.pick($0, store: store, panels: panels) },");
+  // From the panel: nothing to open is the words full screen; anything else docks the panel, then stage's scene.
+  const show = member(panels, "private static func show(_ row: SessionRow, inPanel: Bool, store: StateStore, panels: FloatingPanels) async -> Bool {");
+  const order = [
+    "if inPanel {",
+    'let kind = ReviewScene.Kind(rawValue: row.review?.sceneKind ?? "") ?? .auto',
+    "let link = ReviewItem(row: row)?.link.map { LinkTarget.url(for: $0, cwd: row.cwd) }",
+    "if ReviewScene.panelShowsWords(hasReview: row.review != nil, kind: kind, link: link, fileExists: { FileManager.default.fileExists(atPath: $0) }) {",
+    "panels.showWords()",
+    "return true",
+    "panels.dockForScene()",
+    "return await ConchStatusItem.stage(row, store: store)",
+  ].map((line) => show.indexOf(line));
+  expect(order.every((at) => at > -1)).toBe(true);
+  expect([...order].sort((a, b) => a - b)).toEqual(order);
+  expect(member(panels, "func showWords() {")).toContain("if !isFullScreen { toggleFullScreen() }");
+  expect(member(panels, "func dockForScene() {")).toContain("if isFullScreen { toggleFullScreen() }");
+  // The terminal, or conch's window, asked for by name stays what was asked for.
+  expect(member(components, "public static func panelShowsWords(hasReview: Bool, kind: Kind, link: URL?, fileExists: (String) -> Bool) -> Bool {")).toContain(
+    "case .terminal, .conversation: return false",
+  );
+  // Every new control keeps its clicks: the fog's view takes a press anywhere that isn't one (FogTextTests pins it).
+  expect(components).toContain("FogHeader(session: session) { isSwitching.toggle() }");
+  expect(components).toContain(".animation(ConchMotion.appearance.animation(reduceMotion: reduceMotion), value: session.id)\n            .fogControl()");
+  expect(components).toContain("FogSwitcher(sessions: sessions, current: session?.id, tallest: room, onPick: onPick)\n                    .fogControl()");
+});
+
+test("the words and the header crossfade to another session; the switcher springs full screen", () => {
+  // A crossfade, not the hard cut; a dissolve is what Reduce Motion keeps.
+  expect(components).toContain(
+    "transcript(width: width, height: height, top: top, fontSize: fontSize)\n                .id(session?.id)\n                .transition(.opacity)",
+  );
+  expect(components).toContain(".animation(ConchMotion.appearance.animation(reduceMotion: reduceMotion), value: session?.id)");
+  expect(components).toContain("FogHeader(session: session) { isSwitching.toggle() }\n                    .id(session.id)\n                    .transition(.opacity)");
+  // The switcher pops on the existing pop spring; under Reduce Motion it only fades.
+  expect(components).toContain(".animation(ConchMotion.pop.animation(reduceMotion: reduceMotion), value: isSwitching)");
+  expect(components).toContain(".transition(reduceMotion ? .opacity : .scale(scale: 0.96, anchor: anchor).combined(with: .opacity))");
+  // No new spring: the morph is ConchMotion's own.
+  expect(panels).not.toMatch(/ConchSpring\(bounce: [0-9.]+, response: [0-9.]+\)\.step\(&morph/);
+});
+
+/** The reply line can be turned off from the menu bar, next to Show conversation, and it stays off. */
+test("Show reply line hides the panel's reply line, from the menu bar, remembered", () => {
+  expect(item).toContain('static let showReplyLineKey = "conch.showReplyLine"');
+  expect(item).toContain("Self.showReplyLineKey: true,");
+  const menu = member(item, "func menuNeedsUpdate(_ menu: NSMenu) {");
+  const conversation = menu.indexOf('entry("Show conversation", #selector(toggleConversation)');
+  const reply = menu.indexOf('entry("Show reply line", #selector(toggleReplyLine), checked: defaults.bool(forKey: Self.showReplyLineKey))');
+  expect(conversation).toBeGreaterThan(-1);
+  expect(reply).toBeGreaterThan(conversation);
+  expect(item).toContain("@objc private func toggleReplyLine() { toggle(Self.showReplyLineKey) }");
+  expect(member(panels, "private func showWhatIsOn() {")).toContain("let reply = defaults.bool(forKey: ConchStatusItem.showReplyLineKey)");
+  expect(panels).toContain("showsReply: panels.showsReply,");
+  // Off, the transcript takes the reply line's room, and the look thickens behind the newest words instead.
+  expect(components).toContain("let box = showsReply ? max(0, frame.height - FogReply.gap - reply) : frame.height");
+  expect(components.match(/if showsReply \{ replyLine\(/g)?.length).toBe(2);
+  expect(member(panels, "private func apply() {")).toContain("next.replyHeight = showsReply ? text.replyHeight : 0");
+});
+
+/** A hidden blur's mask is never drawn: on Liquid Glass the blur is hidden but for full screen, and a drag redrew it every frame. */
+test("the blur's mask is drawn only while the blur shows", () => {
+  const draws = panels.split("\n").filter((line) => line.includes("blur.maskImage = blurMask()"));
+  expect(draws.length).toBe(4);
+  for (const line of draws) expect(line).toContain("!blur.isHidden");
+  expect(member(panels, "private func setLook(_ next: FogLook) {")).toContain("if !blur.isHidden { blur.maskImage = blurMask() }");
+  // Shown again, it is drawn then: opened from collapsed, and back from full screen, where it hides again under the glass.
+  expect(member(panels, "private func setCollapsed(_ collapsed: Bool) {")).toContain("if !blur.isHidden { blur.maskImage = blurMask() }");
+  const toggle = member(panels, "func toggleFullScreen() {");
+  expect(toggle).toContain("blur.isHidden = !Self.showsFog || Self.usesGlass");
+  expect(toggle.indexOf("blur.isHidden = !Self.showsFog || Self.usesGlass")).toBeLessThan(toggle.indexOf("if !blur.isHidden { blur.maskImage = blurMask() }"));
 });
 
 test("the conversation stays on the pill's scene, whatever the voice does, until the pill again or another pick", () => {
@@ -748,8 +907,14 @@ test("the conversation stays on the pill's scene, whatever the voice does, until
   expect(panels.match(/staged = nil/g)?.length).toBe(1);
   expect(member(panels, "static func picked(_ id: SessionRow.ID) {")).toContain("guard let panels = installed, panels.staged != nil, panels.staged != id else { return }");
   expect(read("mac-app/conch-mac/ContentView.swift")).toContain(".onChange(of: workspace.viewing) { _, id in\n            guard let id else { return }\n            FloatingPanels.picked(id)");
-  // Staging never starts the mic or stops speech.
-  for (const body of [member(panels, "private func stageNext() {"), member(item, "static func stage(_ row: SessionRow, store: StateStore) async -> Bool {")]) {
+  // Staging never starts the mic or stops speech: not the pill's, the panel's, or the scene's.
+  for (const body of [
+    member(panels, "func walk(backward: Bool = false, inPanel: Bool = false, store: StateStore, panels: FloatingPanels) {"),
+    member(panels, "func pick(_ id: SessionRow.ID, store: StateStore, panels: FloatingPanels) {"),
+    member(panels, "private func stage(\n        inPanel: Bool,"),
+    member(panels, "private static func show(_ row: SessionRow, inPanel: Bool, store: StateStore, panels: FloatingPanels) async -> Bool {"),
+    member(item, "static func stage(_ row: SessionRow, store: StateStore) async -> Bool {"),
+  ]) {
     for (const voiceAction of [".dictate", ".stop(", ".wake", ".speak", "store.send("]) expect(body).not.toContain(voiceAction);
   }
   // The bar doesn't observe the panels, whose motion publishes every frame.

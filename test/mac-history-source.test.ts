@@ -191,7 +191,7 @@ describe("the Mac app reads recorded history", () => {
   });
 
   test("the full-screen overlay enlarges the message, not the cut", () => {
-    expect(panels).toContain("ConversationFogHost(store: store, panels: self, history: store.overlayHistory)");
+    expect(panels).toContain("ConversationFogHost(store: store, panels: self, queue: queue, history: store.overlayHistory)");
     const turns = sliceFrom(panels, "static func turns(", "/// Full screen is where");
     expect(turns).toContain("whole[HistorySnapshot.nativeId(forSnapshotItem: $0.id)] ?? $0.text");
     const whole = sliceFrom(panels, "private func readWhole(", "/// The live voice state");

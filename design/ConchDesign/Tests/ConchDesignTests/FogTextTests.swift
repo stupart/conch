@@ -259,6 +259,40 @@ final class FogTextTests: XCTestCase {
         XCTAssertFalse(frames.value.contains { $0.contains(CGPoint(x: text.midX, y: text.minY + 100)) }, "the transcript should drag")
     }
 
+    /// The header, Previous and Next, and the open switcher take their own clicks: each frame is one of the fog's controls,
+    /// or the fog's view would take the press as a drag. With the reply line off, its place is the transcript's, to drag.
+    @MainActor
+    func testTheHeaderPagerAndSwitcherKeepTheirClicks() throws {
+        final class Frames { var value: [CGRect] = [] }
+        let frames = Frames(), size = CGSize(width: 900, height: 640)
+        let here = FogSession(id: "a", label: "Arch brand page", agent: "Claude", item: "The invite card", standing: .ready)
+        let sessions = [here, FogSession(id: "b", label: "Dayloop", agent: "Codex", standing: .working)]
+        let fog = ConversationFog(turns: Self.turns(4), draft: .constant(""), text: FogTextState(), isListening: false, isFullScreen: false, insets: Self.dock, session: here, sessions: sessions, isSwitching: .constant(true), showsReply: false, onPrevious: {}, onNext: {}, onMic: {}, onSend: {}, onCollapse: {}, onFullScreen: {})
+            .frame(width: size.width, height: size.height)
+            .coordinateSpace(name: FogControls.space)
+            .onPreferenceChange(FogControls.self) { value in MainActor.assumeIsolated { frames.value = value } }
+        let host = NSHostingView(rootView: fog)
+        host.frame = CGRect(origin: .zero, size: size)
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        let row = ConversationFog.buttonsY(in: size, corner: .bottomLeading, insets: ConversationFog.buttonInsets(Self.dock), fullScreen: false)
+        let button = ConversationFog.buttonSize, gap = ConchSpace.x2
+        let pad = ConversationFog.padding
+        // Collapse, full screen, then Previous and Next; the header after them; the switcher above the row.
+        let points = [
+            "Previous": CGPoint(x: pad + 2 * (button + gap) + ConchSpace.x1 + button / 2, y: row + button / 2),
+            "Next": CGPoint(x: pad + 3 * (button + gap) + ConchSpace.x1 + button / 2, y: row + button / 2),
+            "the header": CGPoint(x: pad + 4 * button + 3 * gap + ConchSpace.x1 + ConchSpace.x3 + 40, y: row + button / 2),
+            "the switcher": CGPoint(x: pad + 40, y: row - gap - 20),
+        ]
+        for (name, point) in points {
+            XCTAssertTrue(frames.value.contains { $0.contains(point) }, "a press on \(name) at \(point) would drag the fog: \(frames.value)")
+        }
+        let text = ConversationFog.textFrame(in: size, corner: .bottomLeading, insets: Self.dock, fullScreen: false)
+        // Clear of the switcher, which opens over the reply line's corner.
+        XCTAssertFalse(frames.value.contains { $0.contains(CGPoint(x: text.maxX - 40, y: text.maxY - 20)) }, "with no reply line its place should drag: \(frames.value)")
+    }
+
     // MARK: Layout
 
     /// Hanging from a top corner the transcript runs top-down, newest nearest the top; otherwise and full screen, bottom-up.
