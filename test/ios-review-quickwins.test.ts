@@ -191,8 +191,10 @@ describe("a cold launch draws the last state the Mac sent", () => {
           "  func stop() {}",
           "  func reconnectNow() {}",
           "  func request(_ request: BridgeRequest) async throws -> BridgeResponse { BridgeResponse(status: 200, headers: [], body: Data()) }",
-          '  func download(_ request: BridgeRequest) async throws -> URL { URL(fileURLWithPath: "/") }',
+          '  func download(_ request: BridgeRequest) async throws -> BridgeDownload { BridgeDownload(file: URL(fileURLWithPath: "/"), headers: []) }',
           "}",
+          // The file cache is forgotten with the pairing too; it has its own test.
+          "enum FileCache { static func forget() {} }",
           "let file = URL(fileURLWithPath: CommandLine.arguments[1])",
           "func text(_ data: Data) -> String { String(decoding: data, as: UTF8.self) }",
           "var seen: [String] = []",

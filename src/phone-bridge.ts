@@ -453,7 +453,7 @@ export class PhoneBridgeApplication {
       return (async () => {
         const served = await servableFile(requested, this.#dependencies.getState() as ServableState | null,
           this.#dependencies.uploadsDirectory);
-        return served.ok ? new Response(Bun.file(served.real)) : new Response(served.reason, { status: served.status });
+        return served.ok ? fileResponse(req, served.real) : new Response(served.reason, { status: served.status });
       })();
     }
 
@@ -548,6 +548,32 @@ export class PhoneBridgeApplication {
 
     return new Response("not found", { status: 404 });
   }
+}
+
+/** Text worth compressing on the way to the phone: a page's code and data, a document. */
+const COMPRESSIBLE = /\.(css|js|mjs|json|html?|md|markdown|txt|svg|csv|xml|map)$/i;
+const COMPRESS_MAX_BYTES = 4 * 1024 * 1024;
+
+/**
+ * One file for the phone, cheaply the second time. The version is the file's size and mtime, so
+ * a reload, a reopened deliverable or a conversation picture scrolled back into view costs a 304
+ * instead of the file again. Over the relay every byte crosses as base64 in 64 KiB chunks, so text
+ * also goes gzipped when the phone says it can take that; a byte range (a video seeking) is left
+ * to Bun, whole and uncompressed.
+ */
+async function fileResponse(req: Request, real: string): Promise<Response> {
+  const file = Bun.file(real);
+  const info = await stat(real);
+  // Weak: the gzipped and the plain bytes are the same version of the file.
+  const etag = `W/"${info.size.toString(36)}-${info.mtimeMs.toString(36)}"`;
+  const asked = (req.headers.get("if-none-match") ?? "").split(",").map((tag) => tag.trim());
+  if (asked.includes(etag)) return new Response(null, { status: 304, headers: { etag } });
+  const gzip = /\bgzip\b/.test(req.headers.get("accept-encoding") ?? "")
+    && !req.headers.has("range") && COMPRESSIBLE.test(real) && info.size <= COMPRESS_MAX_BYTES;
+  if (!gzip) return new Response(file, { headers: { etag } });
+  return new Response(Bun.gzipSync(await file.bytes()), {
+    headers: { etag, "content-type": file.type, "content-encoding": "gzip", vary: "accept-encoding" },
+  });
 }
 
 /** The parts of the published state `/file` decides by. */

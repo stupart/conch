@@ -92,7 +92,7 @@ final class DirectHTTPTransport: BridgeTransport, @unchecked Sendable {
         )
     }
 
-    func download(_ request: BridgeRequest) async throws -> URL {
+    func download(_ request: BridgeRequest) async throws -> BridgeDownload {
         var urlRequest = try makeURLRequest(request, timeout: 120)
         urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let (temporary, response) = try await session.download(for: urlRequest)
@@ -109,7 +109,14 @@ final class DirectHTTPTransport: BridgeTransport, @unchecked Sendable {
         let stem = UUID().uuidString
         let final = directory.appendingPathComponent(ext.isEmpty ? stem : "\(stem).\(ext)")
         try FileManager.default.moveItem(at: temporary, to: final)
-        return final
+        // URLSession asked for gzip itself and has already undone it.
+        return BridgeDownload(
+            file: final,
+            headers: http.allHeaderFields.compactMap { key, value in
+                guard let key = key as? String else { return nil }
+                return [key.lowercased(), String(describing: value)]
+            }
+        )
     }
 
     private func connect() {

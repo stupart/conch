@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Network
 import UIKit
@@ -947,11 +948,23 @@ final class BridgeClient: ObservableObject {
         // file named "C++ notes.md" would be asked for as "C   notes.md".
         components.percentEncodedQuery = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
         guard let requestPath = components.string else { throw BridgeTransportError.invalidRequest }
+        let authorized = authorizedRequest(method: "GET", path: requestPath)
+        // The version this phone already holds, if any: unchanged, the Mac answers 304 and nothing
+        // crosses. A reload, a reopened review and every conversation picture scrolled back into
+        // view each read the whole file again.
+        let held = FileCache.version(of: path)
+        let request = held.map {
+            BridgeRequest(method: "GET", path: requestPath, headers: authorized.headers + [["if-none-match", $0]])
+        } ?? authorized
         await Self.fileReads.enter()
         do {
-            let file = try await transport.download(authorizedRequest(method: "GET", path: requestPath))
+            let download = try await transport.download(request)
             await Self.fileReads.leave()
-            return file
+            if let version = download.header(named: "etag") { FileCache.keep(download.file, version: version, for: path) }
+            return download.file
+        } catch BridgeTransportError.httpStatus(304) where held != nil {
+            await Self.fileReads.leave()
+            return try FileCache.copy(of: path)
         } catch {
             await Self.fileReads.leave()
             throw error
@@ -984,6 +997,56 @@ final class BridgeClient: ObservableObject {
             headers: ["authorization": "Bearer \(pairing.bearer)"],
             body: body
         )
+    }
+}
+
+/// Mac files this phone has read, by path, with the version the Mac gave each
+/// (its `etag`, from size and mtime). Foundation and CryptoKit only, so the bun
+/// test runs it under `swift`.
+enum FileCache {
+    static var folder = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("conch-files", isDirectory: true)
+    /// Past this a file is read again each time rather than kept: a video is
+    /// not worth the phone's disk.
+    static let maxBytes = 16 * 1024 * 1024
+
+    private static func entry(_ path: String) -> URL {
+        folder.appendingPathComponent(SHA256.hash(data: Data(path.utf8)).map { String(format: "%02x", $0) }.joined())
+    }
+
+    private static func versionFile(_ path: String) -> URL { entry(path).appendingPathExtension("etag") }
+
+    /// The version this phone holds of `path`, if it holds one.
+    static func version(of path: String) -> String? {
+        try? String(contentsOf: versionFile(path), encoding: .utf8)
+    }
+
+    /// Keep `file` as `path` at `version`. The version is written last, so a
+    /// copy that failed is never claimed.
+    static func keep(_ file: URL, version: String, for path: String) {
+        guard let size = try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= maxBytes else { return }
+        let kept = entry(path)
+        try? FileManager.default.removeItem(at: versionFile(path))
+        try? FileManager.default.removeItem(at: kept)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        guard (try? FileManager.default.copyItem(at: file, to: kept)) != nil else { return }
+        // Work from the Mac: readable only while the phone is unlocked, like the saved state.
+        try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: kept.path)
+        try? version.write(to: versionFile(path), atomically: true, encoding: .utf8)
+    }
+
+    /// A copy of what this phone holds, for a caller that deletes what it is handed.
+    static func copy(of path: String) throws -> URL {
+        let copy = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension((path as NSString).pathExtension)
+        try FileManager.default.copyItem(at: entry(path), to: copy)
+        return copy
+    }
+
+    /// With the pairing: another Mac's files are not this one's.
+    static func forget() {
+        try? FileManager.default.removeItem(at: folder)
     }
 }
 
@@ -1337,7 +1400,7 @@ final class FixtureTransport: BridgeTransport, @unchecked Sendable {
     }
 
     /// A COPY: the deliverable sheet deletes whatever file it is handed.
-    func download(_ request: BridgeRequest) async throws -> URL {
+    func download(_ request: BridgeRequest) async throws -> BridgeDownload {
         guard let path = URLComponents(string: "https://fixture.invalid\(request.path)")?
             .queryItems?.first(where: { $0.name == "path" })?.value else {
             throw BridgeTransportError.invalidRequest
@@ -1346,7 +1409,7 @@ final class FixtureTransport: BridgeTransport, @unchecked Sendable {
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension((path as NSString).pathExtension)
         try FileManager.default.copyItem(at: URL(fileURLWithPath: path), to: copy)
-        return copy
+        return BridgeDownload(file: copy, headers: [])
     }
 }
 #endif

@@ -278,7 +278,7 @@ final class LastStateTransport: BridgeTransport, @unchecked Sendable {
 
     func reconnectNow() { inner.reconnectNow() }
     func request(_ request: BridgeRequest) async throws -> BridgeResponse { try await inner.request(request) }
-    func download(_ request: BridgeRequest) async throws -> URL { try await inner.download(request) }
+    func download(_ request: BridgeRequest) async throws -> BridgeDownload { try await inner.download(request) }
 
     /// Coalesced: a working session republishes many times a second, and one
     /// write every two seconds keeps the newest.
@@ -304,6 +304,7 @@ final class LastStateTransport: BridgeTransport, @unchecked Sendable {
 
     /// With the pairing: another Mac's sessions must never be drawn as this one's.
     static func forget(file: URL = LastStateTransport.defaultFile) {
+        FileCache.forget()
         disk.async { try? FileManager.default.removeItem(at: file) }
     }
 }
@@ -317,6 +318,6 @@ final class SilentTransport: BridgeTransport, @unchecked Sendable {
     func stop() {}
     func reconnectNow() {}
     func request(_ request: BridgeRequest) async throws -> BridgeResponse { throw BridgeTransportError.stopped }
-    func download(_ request: BridgeRequest) async throws -> URL { throw BridgeTransportError.stopped }
+    func download(_ request: BridgeRequest) async throws -> BridgeDownload { throw BridgeTransportError.stopped }
 }
 #endif

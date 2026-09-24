@@ -73,6 +73,8 @@ async function connectedHarness(options: {
   cache?: RelayResponseCache;
   send?: (wire: string, sent: string[]) => Promise<void>;
   onProtocolFailure?: () => void;
+  /** Every frame the Mac sends, opened; a chunk is acknowledged at once unless this says not to. */
+  onFrame?: (opened: OpenedRelayFrame) => boolean | void;
 } = {}) {
   const relay = pairing();
   const sent: string[] = [];
@@ -105,6 +107,7 @@ async function connectedHarness(options: {
         // Not a root-key handshake frame; open it with the active session below.
       }
       const opened = await phoneInspector.open(value);
+      if (options.onFrame?.(opened) === false) return;
       if (opened.header.kind === "response-chunk") {
         const bytes = new Uint8Array(8);
         new DataView(bytes.buffer).setBigUint64(0, BigInt(opened.header.sequence), false);
@@ -148,9 +151,19 @@ async function connectedHarness(options: {
     phoneInspector = RelaySessionCipher.phone(nextKeys);
     return phoneOutbound;
   };
+  /** What the phone sends when it has a chunk, for a test that holds some back. */
+  const acknowledge = async (opened: OpenedRelayFrame) => {
+    const bytes = new Uint8Array(8);
+    new DataView(bytes.buffer).setBigUint64(0, BigInt(opened.header.sequence), false);
+    await peer.receive(JSON.stringify(await phoneOutbound!.seal(
+      { id: opened.header.id, method: opened.header.method, kind: "chunk-ack" },
+      bytes,
+    )));
+  };
   return {
     relay,
     peer,
+    acknowledge,
     phone: phoneOutbound,
     phoneHello,
     sent,
@@ -596,6 +609,161 @@ describe("Mac phone relay adapter", () => {
     expect(fileChunks.length).toBeGreaterThan(2);
     expect(controlHead).toBeGreaterThan(fileChunks[0]!.index);
     expect(controlHead).toBeLessThan(fileChunks[1]!.index);
+  });
+});
+
+// 9/25 01:24, the live log: "phone relay rejected a frame: Error: relay chunk acknowledgement timed
+// out". The phone had gone to the background mid-download, and the Mac's one chunk in flight, over
+// every response, waited 30 s on it while everything else queued behind. Chunks now pipeline, a few
+// per response and a few more overall, and a response the phone stops acknowledging holds only its own.
+describe("relay downloads pipeline and take turns", () => {
+  const CHUNK = 65_536;
+  async function files(count: number, chunks: number): Promise<string[]> {
+    const root = mkdtempSync(join(tmpdir(), "conch-relay-window-"));
+    temporary.push(root);
+    return Array.from({ length: count }, (_, index) => {
+      const path = join(root, `f${index}.bin`);
+      writeFileSync(path, Buffer.alloc(chunks * CHUNK, index + 1));
+      chmodSync(path, 0o600);
+      return path;
+    });
+  }
+  /** A harness whose phone acknowledges nothing until told, and the frames it has seen. */
+  async function holdingHarness(paths: string[]) {
+    const seen: OpenedRelayFrame[] = [];
+    const harness = await connectedHarness({
+      state: () => ({ rows: [{ id: "s", reviews: paths.map((link) => ({ link })) }] }),
+      onFrame: (opened) => {
+        seen.push(opened);
+        return false;
+      },
+    });
+    const get = async (id: string, path: string) => harness.peer.receive(JSON.stringify(await harness.phone.seal(
+      { id, method: "GET", kind: "request" },
+      requestBody(`/file?path=${encodeURIComponent(path)}`, harness.relay.secret),
+    )));
+    const chunksOf = (id: string) => seen.filter((f) => f.header.id === id && f.header.kind === "response-chunk");
+    const ended = (id: string) => seen.some((f) => f.header.id === id && f.header.kind === "response-end");
+    return { harness, seen, get, chunksOf, ended };
+  }
+
+  test("one download keeps four chunks in flight; three share eight, taking turns; a freed slot sends one more", async () => {
+    const [alone] = await files(1, 6);
+    const single = await holdingHarness([alone!]);
+    void single.get("alone-download", alone!).catch(() => {});
+    await settle(() => single.chunksOf("alone-download").length === 4, "one download's window");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(single.chunksOf("alone-download").length).toBe(4);
+
+    const paths = await files(4, 6);
+    const ids = ["download-a", "download-b", "download-c", "download-d"];
+    const { harness, seen, get, chunksOf, ended } = await holdingHarness(paths);
+    const inFlight = () => ids.map((id) => chunksOf(id).length);
+    // One at a time, so who waited longest is known: a fills its four, b its four, and c, then d,
+    // with every slot taken, wait.
+    const deliveries = [get(ids[0]!, paths[0]!)];
+    await settle(() => chunksOf("download-a").length === 4, "a's four");
+    deliveries.push(get(ids[1]!, paths[1]!));
+    await settle(() => chunksOf("download-b").length === 4, "b's four");
+    deliveries.push(get(ids[2]!, paths[2]!));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    deliveries.push(get(ids[3]!, paths[3]!));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(inFlight()).toEqual([4, 4, 0, 0]);
+
+    // a's acknowledgement frees a slot, and c has waited longest: c sends; d and a wait their turn.
+    await harness.acknowledge(chunksOf("download-a")[0]!);
+    await settle(() => inFlight().reduce((a, b) => a + b, 0) === 9, "one more chunk");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(inFlight()).toEqual([4, 4, 1, 0]);
+
+    // Acknowledge everything as it arrives: every download finishes, whole and in order.
+    const acknowledged = new Set<number>([chunksOf("download-a")[0]!.header.sequence]);
+    await settle(() => {
+      for (const frame of seen) {
+        if (frame.header.kind === "response-chunk" && !acknowledged.has(frame.header.sequence)) {
+          acknowledged.add(frame.header.sequence);
+          void harness.acknowledge(frame);
+        }
+      }
+      return ids.every(ended);
+    }, "every download to end");
+    await Promise.all(deliveries);
+    for (const [index, id] of ids.entries()) {
+      const body = Buffer.concat(chunksOf(id).map((frame) => frame.body));
+      expect(body.equals(readFileSync(paths[index]!))).toBe(true);
+    }
+  });
+
+  test("a download the phone stops acknowledging holds only its own chunks; the next one still finishes", async () => {
+    const [stuck, small] = await files(2, 6);
+    const { harness, get, chunksOf, ended } = await holdingHarness([stuck!, small!]);
+    const stuckDelivery = get("stuck-download", stuck!);
+    stuckDelivery.catch(() => {});
+    await settle(() => chunksOf("stuck-download").length === 4, "the stuck download's window");
+    const smallDelivery = get("small-download", small!);
+    const acknowledged = new Set<number>();
+    await settle(() => {
+      for (const frame of chunksOf("small-download")) {
+        if (!acknowledged.has(frame.header.sequence)) {
+          acknowledged.add(frame.header.sequence);
+          void harness.acknowledge(frame);
+        }
+      }
+      return ended("small-download");
+    }, "the second download to finish past the stuck one");
+    await smallDelivery;
+    expect(chunksOf("stuck-download").length).toBe(4);
+    expect(ended("stuck-download")).toBe(false);
+  });
+
+  test("the state stream never waits behind downloads, even ones filling every slot", async () => {
+    const stuck = await files(2, 6);
+    const { harness, seen, get, chunksOf } = await holdingHarness(stuck);
+    void get("stuck-one", stuck[0]!).catch(() => {});
+    void get("stuck-two", stuck[1]!).catch(() => {});
+    await settle(() => chunksOf("stuck-one").length + chunksOf("stuck-two").length === 8, "every slot taken");
+    const subscribed = harness.peer.receive(JSON.stringify(await harness.phone.seal(
+      { id: "state-subscription", method: "GET", kind: "request" },
+      requestBody("/ws", harness.relay.secret),
+    )));
+    await settle(() => chunksOf("state-subscription").length === 1, "the state's chunk");
+    await harness.acknowledge(chunksOf("state-subscription")[0]!);
+    await settle(() => seen.some((f) => f.header.id === "state-subscription" && f.header.kind === "response-end"), "the state to end");
+    await subscribed;
+  });
+
+  test("a download cancelled while it waits for a slot sends nothing more", async () => {
+    const paths = await files(3, 6);
+    const { harness, get, chunksOf, ended } = await holdingHarness(paths);
+    void get("stuck-one", paths[0]!).catch(() => {});
+    void get("stuck-two", paths[1]!).catch(() => {});
+    await settle(() => chunksOf("stuck-one").length + chunksOf("stuck-two").length === 8, "every slot taken");
+    const waiting = get("waits-download", paths[2]!);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(chunksOf("waits-download").length).toBe(0);
+    await harness.peer.receive(JSON.stringify(await harness.phone.seal(
+      { id: "waits-download", method: "GET", kind: "cancel" },
+      new Uint8Array(),
+    )));
+    for (const frame of chunksOf("stuck-one")) await harness.acknowledge(frame);
+    await settle(() => chunksOf("stuck-one").length === 6, "the first download to go on");
+    await waiting;
+    expect(chunksOf("waits-download").length).toBe(0);
+    expect(ended("waits-download")).toBe(false);
+  });
+
+  test("a download the phone cancels ends quietly, not as a rejected frame", async () => {
+    const [path] = await files(1, 6);
+    const { harness, get, chunksOf } = await holdingHarness([path!]);
+    const delivery = get("left-download", path!);
+    await settle(() => chunksOf("left-download").length === 4, "the window to fill");
+    await harness.peer.receive(JSON.stringify(await harness.phone.seal(
+      { id: "left-download", method: "GET", kind: "cancel" },
+      new Uint8Array(),
+    )));
+    await delivery;
+    expect(chunksOf("left-download").length).toBe(4);
   });
 });
 

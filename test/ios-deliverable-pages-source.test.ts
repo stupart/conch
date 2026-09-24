@@ -122,7 +122,8 @@ describe("the page reads through the bridge, and never sees the token", () => {
     expect(handler).not.toMatch(/token|bearer/i);
     const fetch = between(bridge, "func fetchFile(path: String) async throws -> URL {", "\n    }\n");
     expect(fetch).toContain('components.queryItems = [URLQueryItem(name: "path", value: path)]');
-    expect(fetch).toContain('transport.download(authorizedRequest(method: "GET", path: requestPath))');
+    expect(fetch).toContain('let authorized = authorizedRequest(method: "GET", path: requestPath)');
+    expect(fetch).toContain("let download = try await transport.download(request)");
     expect(fetch).not.toMatch(/token/i);
     expect(between(bridge, "private func authorizedRequest(", "\n    }\n")).toContain(
       'headers: ["authorization": "Bearer \\(pairing.bearer)"]',
@@ -213,7 +214,8 @@ describe("a page with more pictures than the relay holds", () => {
     expect(bridge).toContain("private static let fileReads = FileReadGate(slots: 6)");
     const fetch = between(bridge, "func fetchFile(path: String) async throws -> URL {", "\n    }\n");
     expect(fetch).toContain("await Self.fileReads.enter()");
-    expect((fetch.match(/await Self\.fileReads\.leave\(\)/g) ?? []).length).toBe(2);
+    // Once for a read, once for a 304 answered from the phone's copy, once for a failure.
+    expect((fetch.match(/await Self\.fileReads\.leave\(\)/g) ?? []).length).toBe(3);
     expect(between(bridge, "func downloadFile(path: String) async -> URL? {", "\n    }\n")).toContain(
       "return try await fetchFile(path: path)",
     );
