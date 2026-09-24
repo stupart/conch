@@ -39,11 +39,21 @@ describe("which marks land where", () => {
       'print(InkSurface.isReviewPage(URL(string: "conch-page://h/other.html"), entry: entry))',
       'print(InkSurface.isReviewPage(URL(string: "https://example.com/"), entry: entry))',
       "print(InkSurface.isReviewPage(nil, entry: entry))",
+      // WebKit reports the page it loaded in its own spelling: a path where the link had none, the host in lower case,
+      // no default port. Each is the same page as the link an agent wrote.
+      'print(InkSurface.isReviewPage(URL(string: "http://127.0.0.1:5173/"), entry: URL(string: "http://127.0.0.1:5173")!))',
+      'print(InkSurface.isReviewPage(URL(string: "http://localhost:5173/app?tab=2"), entry: URL(string: "http://LocalHost:5173/app?tab=2")!))',
+      'print(InkSurface.isReviewPage(URL(string: "https://example.com/a#b"), entry: URL(string: "https://example.com:443/a")!))',
+      'print(InkSurface.isReviewPage(URL(string: "http://example.com/"), entry: URL(string: "http://example.com:80")!))',
+      // Still another page: another port, path or query.
+      'print(InkSurface.isReviewPage(URL(string: "http://example.com:8080/"), entry: URL(string: "http://example.com/")!))',
+      'print(InkSurface.isReviewPage(URL(string: "http://example.com/b"), entry: URL(string: "http://example.com/a")!))',
+      'print(InkSurface.isReviewPage(URL(string: "http://example.com/a?x=2"), entry: URL(string: "http://example.com/a?x=1")!))',
     ].join("\n"));
     try {
       const run = Bun.spawnSync([swift!, file], { stdout: "pipe", stderr: "pipe" });
       if (run.exitCode !== 0) throw new Error(run.stderr.toString());
-      expect(run.stdout.toString().trim().split("\n")).toEqual(["true", "true", "false", "true", "false", "false", "false"]);
+      expect(run.stdout.toString().trim().split("\n")).toEqual(["true", "true", "false", "true", "false", "false", "false", "true", "true", "true", "true", "false", "false", "false"]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -104,6 +114,19 @@ describe("drawn as the Mac draws them", () => {
     expect(view).toContain("let delay = fresh ? Double(order) * 0.06 : 0");
     expect(view).toContain("delay + (Self.reduceMotion ? 0 : Self.drawOnTime * 0.8)");
     expect(view).toContain("let fresh = animating && !drawnBefore.contains(mark.id)");
+  });
+
+  test("the page is asked where its marks are only while it can be seen", () => {
+    // Five times a second, script in the page: not while the app is in the background (it keeps running there, for the
+    // audio), not while the page is out of its window, and not while a sheet covers it (a tapped file opened over it).
+    const look = between(ink, "private func look() async {", "\n    }\n");
+    expect(look.indexOf("guard PageInk.inSight(page) else { return }")).toBeGreaterThan(-1);
+    expect(look.indexOf("guard PageInk.inSight(page) else { return }")).toBeLessThan(look.indexOf("await place(on: page)"));
+    const sight = between(ink, "static func inSight(_ page: UIView) -> Bool {", "\n    }\n");
+    expect(sight).toContain("guard UIApplication.shared.applicationState == .active, let window = page.window else { return false }");
+    expect(sight).toContain("return window.hitTest(middle, with: nil)?.isDescendant(of: page) == true");
+    // The ink over the page never takes a touch, so what a hit test finds under it is the page or what covers it.
+    expect(ink).toContain("isUserInteractionEnabled = false");
   });
 
   test("a page's marks hide while it moves and come back once it is still, and stop with the page", () => {

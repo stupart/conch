@@ -24,7 +24,14 @@ struct SessionView: View {
     @State private var pickedPhoto: PhotosPickerItem?
     /// Prepared and waiting, NOT uploaded. Nothing leaves the phone until you
     /// press send — picking a picture is composing, not sending.
-    @State private var attachments: [PendingAttachment] = []
+    @State private var attachments: [PendingAttachment] = [] {
+        // A video's files go with it, however it leaves: the tile's x, the trash, a send that went.
+        didSet {
+            for gone in oldValue where !attachments.contains(where: { $0.id == gone.id }) {
+                if case let .video(video) = gone.content { video.discard() }
+            }
+        }
+    }
     /// Whether the end of the conversation is on screen. Set by the anchor's
     /// own visibility, which is how iOS answers what NSScrollView answers on
     /// the Mac.
@@ -1031,6 +1038,7 @@ struct SessionView: View {
         do {
             let video = try await VideoPrep.prepare(picked.url)
             guard attachments.count < Self.attachmentLimit else {
+                video.discard()
                 attachError = "You can attach up to 4 pictures at a time."
                 return
             }
@@ -1061,7 +1069,11 @@ struct SessionView: View {
                 session: sessionId,
                 body: { await uploadBody(pending) },
                 deliver: { body, opId in
-                    await bridge.inject(sessionId: sessionId, label: label, text: body, opId: opId)
+                    let delivered = await bridge.inject(sessionId: sessionId, label: label, text: body, opId: opId)
+                    // Gone to the Mac: off the composer, as a message with words does it (`deliver`). They stayed, so a
+                    // second Send sent them again and a video's files were never let go.
+                    if delivered.clearsAttachments { attachments.removeAll { sent in pending.contains { $0.id == sent.id } } }
+                    return delivered
                 },
                 onFinish: { sendingImagesOnly = false }
             )

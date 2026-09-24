@@ -27,8 +27,9 @@ struct PickedMovie: Transferable {
     }
 }
 
-/// A video made ready to send, and the ids its pieces upload under: kept across a Retry, so the Mac is asked only for
-/// what it hasn't got (`BridgeClient.upload`).
+/// A video made ready to send, and the ids its video and its sound upload under: kept across a Retry, so the Mac is
+/// asked only for what it hasn't got (`BridgeClient.upload`). Not its contact sheet's, which is drawn again each time
+/// (`VideoMessage.send`).
 struct PreparedVideo {
     let video: URL
     /// Its sound as whisper takes it; nil for a video with none.
@@ -38,7 +39,12 @@ struct PreparedVideo {
     let poster: UIImage?
     let videoId = ImageUpload.newUploadID()
     let recordingId = ImageUpload.newUploadID()
-    let sheetId = ImageUpload.newUploadID()
+
+    /// Its files, gone: the transcode (up to 46 MB) and its sound, in the phone's temp folder, once it leaves the
+    /// composer. Nothing else deletes them.
+    func discard() {
+        for file in [video, recording].compactMap({ $0 }) { try? FileManager.default.removeItem(at: file) }
+    }
 }
 
 enum VideoPrepError: LocalizedError {
@@ -275,7 +281,9 @@ enum VideoMessage {
             said = await bridge.transcript(of: path) ?? []
         }
         guard let sheet = await VideoPrep.sheet(of: video.video, said: said, length: video.length),
-              let sheetPath = await bridge.upload(data: sheet.jpeg, ext: "jpg", id: video.sheetId),
+              // A new id each time: the sheet is drawn again from the words this attempt has, which a Retry can have
+              // when the last one didn't. Under the last one's id the Mac joined the two, or handed back the old sheet.
+              let sheetPath = await bridge.upload(data: sheet.jpeg, ext: "jpg", id: ImageUpload.newUploadID()),
               let data = try? Data(contentsOf: video.video, options: .mappedIfSafe),
               let videoPath = await bridge.upload(data: data, ext: "mp4", id: video.videoId)
         else { return nil }

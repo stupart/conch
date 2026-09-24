@@ -203,8 +203,9 @@ what that app shows.
     panel's own `view: panel` report is what Tyler sees. The moment the panel
     docks or hides, the app in front is read again, so `showing` catches up
     (`ScreenReportGate.covered`, `StateStore.screenCovered`).
-  - A report counts as said only once the daemon answers `screen-ack`. One it
-    never heard is sent again at the next reading, and a published state with
+  - A report counts as said once the daemon answers it, `screen-ack` or
+    `screen-error` (a refusal said again is refused again, every reading). One
+    it never heard is sent again at the next reading, and a published state with
     no `showing` (a daemon that has just started) makes the gate forget what it
     said, so a restart doesn't leave `showing` empty until Tyler switches app.
 - **Titles.** A window title is never read, so it can't be sent or logged.

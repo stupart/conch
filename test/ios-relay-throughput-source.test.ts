@@ -99,13 +99,48 @@ describe("a file read twice is a 304; text crosses gzipped", () => {
     expect(out).toEqual(["none", 'W/"v1"', "css body{}", "true", "none", "none"]);
   }, 60_000);
 
+  test.skipIf(!swift)("FileCache stays under its total: the files kept or used longest ago go first, their versions with them", () => {
+    const cache = between(bridge, "enum FileCache {", "\n}\n") + "\n}\n";
+    const out = runSwift([
+      "import CryptoKit",
+      "import Foundation",
+      cache,
+      'FileCache.folder = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("cache")',
+      "FileCache.totalBytes = 10_000",
+      "func keep(_ name: String, _ bytes: Int) {",
+      '    let source = URL(fileURLWithPath: name)',
+      "    try! Data(count: bytes).write(to: source)",
+      '    FileCache.keep(source, version: "v-\\(name)", for: "/Mac/\\(name)")',
+      "    Thread.sleep(forTimeInterval: 0.02)",
+      "}",
+      'keep("a.png", 4_000); keep("b.png", 4_000)',
+      // Used again (a 304 answered from it): it is the newest now.
+      '_ = try! FileCache.copy(of: "/Mac/a.png")',
+      "Thread.sleep(forTimeInterval: 0.02)",
+      'keep("c.png", 4_000)',
+      'print(["a.png", "b.png", "c.png"].map { FileCache.version(of: "/Mac/\\($0)") ?? "gone" }.joined(separator: " "))',
+      'print((try? FileCache.copy(of: "/Mac/b.png")) == nil)',
+      'keep("d.png", 9_000)',
+      'print(["a.png", "c.png", "d.png"].map { FileCache.version(of: "/Mac/\\($0)") ?? "gone" }.joined(separator: " "))',
+      'let left = try! FileManager.default.contentsOfDirectory(atPath: FileCache.folder.path).filter { !$0.hasSuffix(".etag") }',
+      "print(left.count)",
+    ]);
+    expect(out).toEqual(["v-a.png gone v-c.png", "true", "gone gone v-d.png", "1"]);
+  }, 60_000);
+
+  test("a 304 for a file the cache let go of meanwhile reads the whole file again", () => {
+    const fetch = between(bridge, "func fetchFile(path: String) async throws -> URL {", "\n    }\n");
+    expect(fetch).toContain("if let copy = try? FileCache.copy(of: path) { return copy }");
+    expect(fetch).toContain("FileCache.drop(path)");
+    expect(fetch).toContain("return try await fetchFile(path: path)");
+  });
+
   test("fetchFile sends the version it holds, keeps what comes back, and answers a 304 from the copy", () => {
     const fetch = between(bridge, "func fetchFile(path: String) async throws -> URL {", "\n    }\n");
     expect(fetch).toContain("let held = FileCache.version(of: path)");
     expect(fetch).toContain('headers: authorized.headers + [["if-none-match", $0]]');
     expect(fetch).toContain('if let version = download.header(named: "etag") { FileCache.keep(download.file, version: version, for: path) }');
     expect(fetch).toContain("} catch BridgeTransportError.httpStatus(304) where held != nil {");
-    expect(fetch).toContain("return try FileCache.copy(of: path)");
     expect(fetch).toContain("let download = try await gatedDownload(request)");
     // Another Mac's files are never this one's.
     expect(between(ios("ConchApp.swift"), "static func forget(file: URL", "\n    }\n")).toContain("FileCache.forget()");

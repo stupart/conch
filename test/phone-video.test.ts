@@ -72,13 +72,92 @@ describe("/transcript", () => {
     expect((await throwing.ask(throwing.put("again1234567.wav"))).status).toBe(200);
   });
 
-  test("the answer starts before the words are ready, and keeps the link alive until they are", () => {
+  test("the answer starts before the words are ready, and keeps the link alive until they are", async () => {
+    const uploads = mkdtempSync(join(scratch, "uploads-"));
+    const recording = join(uploads, "abcdef123456.wav");
+    writeFileSync(recording, "RIFF");
+    const application = createPhoneBridgeApplication({
+      getState: () => ({ rows: [] }), forwardControl: async () => "{}", replyFor: async () => "",
+      acceptUpload: async () => ({ received: 1, total: 1 }), uploadsDirectory: uploads, log: () => {},
+      transcribe: () => new Promise((resolve) => setTimeout(() => resolve({ segments: [{ start: 1, end: 2, text: "here" }] }), 150)),
+    }, { token: TOKEN, transcriptKeepaliveMs: 20 });
+    const started = Date.now();
+    const response = await application.handle(new Request(`https://relay.invalid/transcript?path=${encodeURIComponent(recording)}`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    })) as Response;
+    // Answered at once, not when whisper is done.
+    expect(response.status).toBe(200);
+    expect(Date.now() - started).toBeLessThan(100);
+    const reader = response.body!.getReader();
+    const chunks: string[] = [];
+    for (let read = await reader.read(); !read.done; read = await reader.read()) chunks.push(new TextDecoder().decode(read.value));
+    // Spaces while it waits, then the words; JSON takes the spaces in front of its value.
+    expect(chunks.length).toBeGreaterThan(2);
+    expect(chunks[0]).toBe(" ");
+    expect(JSON.parse(chunks.join(""))).toEqual({ segments: [{ start: 1, end: 2, text: "here" }] });
+    // The default stays well inside the 30 s a relay request may go without progress before the phone calls it stalled.
     const route = readFileSync(join(import.meta.dir, "..", "src/phone-bridge.ts"), "utf8");
-    const body = route.slice(route.indexOf('if (url.pathname === "/transcript"'), route.indexOf("// Refresh on a deliverable"));
-    expect(body).toContain("const alive = setInterval(() => controller.enqueue(new TextEncoder().encode(\" \")), TRANSCRIPT_KEEPALIVE_MS);");
-    expect(body).toContain("clearInterval(alive);");
-    expect(route).toContain("const TRANSCRIPT_KEEPALIVE_MS = 10_000;");
+    expect(Number(/const TRANSCRIPT_KEEPALIVE_MS = ([\d_]+);/.exec(route)?.[1]?.replaceAll("_", ""))).toBeLessThanOrEqual(10_000);
   });
+
+  /**
+   * The phone can go before the words come: backgrounded (the relay sends a cancel, the LAN socket closes), its relay
+   * rekeyed, its own wait run out. The answer's stream is closed then, and writing to it threw, from a timer, which
+   * ended the daemon. Each case runs in its own process, since what is being checked is that the process lives.
+   */
+  const survives = (script: string) => {
+    const file = join(mkdtempSync(join(scratch, "survives-")), "run.ts");
+    writeFileSync(file, `import { createPhoneBridgeApplication, createPhoneBridgeServer } from ${JSON.stringify(join(import.meta.dir, "..", "src/phone-bridge.ts"))};
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const uploads = mkdtempSync(join(${JSON.stringify(scratch)}, "uploads-"));
+const recording = join(uploads, "abcdef123456.wav");
+writeFileSync(recording, "RIFF");
+const TOKEN = ${JSON.stringify(TOKEN)};
+const application = createPhoneBridgeApplication({
+  getState: () => ({ rows: [] }), forwardControl: async () => "{}", replyFor: async () => "",
+  acceptUpload: async () => ({ received: 1, total: 1 }), uploadsDirectory: uploads, log: () => {},
+  transcribe: () => new Promise((resolve) => setTimeout(() => resolve({ segments: [{ start: 0, end: 1, text: "words" }] }), 300)),
+}, { token: TOKEN, transcriptKeepaliveMs: 40 });
+${script}
+console.log("alive");
+process.exit(0);
+`);
+    const run = Bun.spawnSync([process.execPath, file], { stdout: "pipe", stderr: "pipe" });
+    return { code: run.exitCode, out: run.stdout.toString().trim(), err: run.stderr.toString() };
+  };
+
+  test("over the LAN: the phone hangs up while whisper works, and the daemon lives on", () => {
+    const run = survives(`
+const server = createPhoneBridgeServer(application, { log: () => {} }, { port: 0, hostname: "127.0.0.1" });
+const abort = new AbortController();
+const response = await fetch(\`http://127.0.0.1:\${server.port}/transcript?path=\${encodeURIComponent(recording)}\`, {
+  headers: { authorization: \`Bearer \${TOKEN}\` }, signal: abort.signal,
+});
+await response.body!.getReader().read();
+abort.abort();
+// Past several keepalives, and past the words.
+await Bun.sleep(700);
+server.stop();
+`);
+    expect(run.err).not.toContain("Controller is already closed");
+    expect(run).toMatchObject({ code: 0, out: "alive" });
+  }, 20_000);
+
+  test("over the relay: the phone cancels the answer while whisper works, the daemon lives on, and the next recording is taken", () => {
+    const run = survives(`
+const ask = () => application.handle(new Request(\`https://relay.invalid/transcript?path=\${encodeURIComponent(recording)}\`, {
+  headers: { authorization: \`Bearer \${TOKEN}\` },
+})) as Promise<Response>;
+// What MacRelayPeer does on the phone's cancel frame, a rekey or a closed socket.
+await (await ask()).body!.getReader().cancel();
+await Bun.sleep(700);
+const again = await ask();
+console.log(\`\${again.status} \${JSON.stringify(await again.json())}\`);
+`);
+    expect(run.err).not.toContain("Controller is already closed");
+    expect(run).toMatchObject({ code: 0, out: '200 {"segments":[{"start":0,"end":1,"text":"words"}]}\nalive' });
+  }, 20_000);
 
   test("the daemon hands the bridge whisper's timed transcription", () => {
     const daemon = readFileSync(join(import.meta.dir, "..", "src/daemon.ts"), "utf8");
