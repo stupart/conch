@@ -408,6 +408,15 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
         additionalProperties: false,
       },
     },
+    {
+      name: "conch_on_screen",
+      description: text.tools.conch_on_screen,
+      inputSchema: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+    },
   ] as const satisfies readonly McpToolDefinition[];
 }
 
@@ -1296,6 +1305,25 @@ export function createMcpToolHandlers(
           ? {}
           : { summaryTruncated: { from: truncatedFrom, to: REVIEW_SUMMARY_MAX } }),
       };
+    },
+
+    // Anyone may ask, verified or not: it names what is on screen, and changes nothing.
+    async conch_on_screen(argumentsValue) {
+      allowOnly(toolArguments(argumentsValue), []);
+      let published: unknown;
+      try {
+        const raw = await dependencies.readSessionsFile(sessionsPath);
+        published = raw === null ? null : JSON.parse(raw);
+      } catch {
+        // Unreadable is the same answer as absent: nothing is known.
+      }
+      const showing = isRecord(published) && isRecord(published.showing) ? published.showing : null;
+      if (!showing) {
+        return { showing: null, reason: "conch has seen nothing on screen since its daemon started, or the daemon is not running" };
+      }
+      const rows = isRecord(published) && Array.isArray(published.rows) ? published.rows : [];
+      const row = rows.find((candidate: unknown) => isRecord(candidate) && candidate.id === showing.sessionId);
+      return { showing, ...(isRecord(row) && typeof row.label === "string" ? { label: row.label } : {}) };
     },
   };
 }

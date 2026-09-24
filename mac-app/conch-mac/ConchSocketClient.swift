@@ -332,6 +332,74 @@ struct ConchAppErrorReport: Encodable, Sendable {
     let state: [String: String]
 }
 
+/// The app that took something conch opened, as `NSWorkspace.open`'s completion names it.
+struct ConchScreenApp: Encodable, Equatable, Sendable {
+    let bundleId: String
+    var pid: Int32? = nil
+    var name: String? = nil
+}
+
+/// Where on screen conch put something: the kinds this app can report. The daemon's union has
+/// more (`screen-context.ts`), for the observers still to come.
+enum ConchScreenSurface: Encodable, Equatable, Sendable {
+    case file(path: String)
+    case url(String)
+    case terminal
+    case conch(sessionId: String, view: String)
+
+    /// A link the pill opened: a file by its path, anything else by its address.
+    init(opened url: URL) {
+        self = url.isFileURL ? .file(path: url.path) : .url(url.absoluteString)
+    }
+
+    private enum Key: String, CodingKey { case kind, path, url, sessionId, view }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: Key.self)
+        switch self {
+        case let .file(path):
+            try container.encode("file", forKey: .kind)
+            try container.encode(path, forKey: .path)
+        case let .url(url):
+            try container.encode("url", forKey: .kind)
+            try container.encode(url, forKey: .url)
+        case .terminal:
+            try container.encode("terminal", forKey: .kind)
+        case let .conch(sessionId, view):
+            try container.encode("conch", forKey: .kind)
+            try container.encode(sessionId, forKey: .sessionId)
+            try container.encode(view, forKey: .view)
+        }
+    }
+}
+
+/// The session and deliverable a staging was for: exact, so the daemon need not infer them.
+struct ConchScreenStaged: Encodable, Equatable, Sendable {
+    let sessionId: String
+    let reviewId: String?
+    let link: String?
+}
+
+/// The conch-staged observer's report (docs/screen-context.md): what conch just put on screen,
+/// and whose it is. Evidence, not a command; the daemon validates it strictly and answers at once.
+struct ConchScreenObservationReport: Encodable, Sendable {
+    let kind = "screen-observation"
+    let observation: Observation
+
+    struct Observation: Encodable, Sendable {
+        let v = 1
+        let source = "conch-staged"
+        let at: Double
+        let app: ConchScreenApp?
+        let surface: ConchScreenSurface
+        let staged: ConchScreenStaged?
+    }
+
+    init(surface: ConchScreenSurface, app: ConchScreenApp?, staged: ConchScreenStaged?, at: Date = Date()) {
+        observation = Observation(at: (at.timeIntervalSince1970 * 1000).rounded(), app: app, surface: surface, staged: staged)
+    }
+}
+
 enum ConchSessionCommand: String, Encodable, Sendable {
     case rename
     case dismiss

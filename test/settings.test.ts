@@ -78,13 +78,15 @@ const expected = {
   // D2: the warm whisper-server (~628MB) is unloaded after this many idle
   // minutes and reloaded when a mic is about to open; 0 keeps it loaded.
   "whisper-idle-unload": ["whisperIdleUnloadMins", "CONCH_WHISPER_IDLE_UNLOAD_MINS", "live", 20],
+  // Ships ON, local only: which session's work was on screen, for conch now and time tracking later.
+  "screen-log": ["screenLog", "CONCH_SCREEN_LOG", "live", true],
 } as const;
 
 describe("settings registry", () => {
-  test("contains exactly the 29 curated, default-bearing knobs", () => {
+  test("contains exactly the 30 curated, default-bearing knobs", () => {
     const keys = [...SETTING_REGISTRY.keys()];
     expect(keys.sort()).toEqual(Object.keys(expected).sort());
-    expect(SETTING_DESCRIPTORS).toHaveLength(29);
+    expect(SETTING_DESCRIPTORS).toHaveLength(30);
     for (const [key, [field, env, apply, defaultValue]] of Object.entries(expected)) {
       const descriptor = SETTING_REGISTRY.get(key);
       expect(descriptor).toMatchObject({ field, env, apply, default: defaultValue });

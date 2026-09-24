@@ -57,6 +57,7 @@ export const SETTING_KEYS = [
   "announce-max-chars",
   "say-rate",
   "whisper-idle-unload",
+  "screen-log",
 ] as const;
 
 export type SettingKey = typeof SETTING_KEYS[number];
@@ -89,7 +90,8 @@ export type SettingField =
   | "speakSentences"
   | "speakMaxChars"
   | "sayRate"
-  | "whisperIdleUnloadMins";
+  | "whisperIdleUnloadMins"
+  | "screenLog";
 export type HandoffOrder = "newest" | "oldest" | "urgency";
 export type PhoneLanMode = "auto" | "on" | "off";
 export type SettingValue = number | boolean | string;
@@ -542,6 +544,19 @@ export const SETTING_DESCRIPTORS = [
     bounds: null,
     apply: "live",
     help: "index local agent history and journal observed outcomes; off by default, stops and drains when disabled",
+  },
+  {
+    key: "screen-log",
+    field: "screenLog",
+    env: "CONCH_SCREEN_LOG",
+    kind: "boolean",
+    // On: "would like that raw data live pumped into atlas in the future but can just use for
+    // conch for now" (Tyler, 09-25). It stays on this Mac; nothing reads it but conch.
+    default: true,
+    parse: parseBoolean,
+    bounds: null,
+    apply: "live",
+    help: "keep a local log of which session's work was on screen, and for how long (~/.config/conch/screen); never sent anywhere",
   },
 ] as const satisfies readonly SettingDescriptor[];
 

@@ -149,7 +149,12 @@ struct ContentView: View {
             selectSession(row)
         }
         // A session picked here takes the overlay's conversation off the Ready pill's scene, unless it is that one.
-        .onChange(of: workspace.viewing) { _, id in if let id { FloatingPanels.picked(id) } }
+        .onChange(of: workspace.viewing) { _, id in
+            guard let id else { return }
+            FloatingPanels.picked(id)
+            // conch's own window now shows this session: the screen context's conch-staged observer.
+            store.reportShowing(.conch(sessionId: id, view: "main"))
+        }
         .onChange(of: rowIDs) { _, currentIDs in
             // A pick for a session that has ended is no pick: the fallbacks take over rather
             // than the pane staying pinned to something that is gone.

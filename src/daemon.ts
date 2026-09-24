@@ -77,6 +77,7 @@ import {
   type AudioOutboxItem,
 } from "./audio-holder.ts";
 import { conchHome } from "./home.ts";
+import { createScreenContext, ScreenLog, screenContextFromPublished, type PublishedShowing } from "./screen-context.ts";
 import type { Config } from "./config.ts";
 import type { TurnEvent } from "./hook.ts";
 import {
@@ -605,6 +606,8 @@ export function buildDaemonPublishedState(
   deliveries?: readonly PublishedDelivery[],
   /** The permission prompt a session is showing (the voice loop's `pendingApprovalFor`). */
   approvalForSessionId?: (sessionId: string, transcriptPath: string | undefined) => PendingApproval | null,
+  /** What is on screen and whose it is (`screen-context.ts`). */
+  showing?: PublishedShowing,
 ): PublishedState {
   return buildPublishedState(
     ownerDeviceId,
@@ -622,6 +625,7 @@ export function buildDaemonPublishedState(
       ...(audio ? { audio } : {}),
       ...(deliveries?.length ? { deliveries } : {}),
       ...(approvalForSessionId ? { approvalForSessionId } : {}),
+      ...(showing ? { showing } : {}),
     },
   );
 }
@@ -1220,6 +1224,28 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   const transcriptWatch = watchChangingPaths(() => transcriptRender.request(), { debounceMs: 50 });
   let lastPublishedPanelState: PublishedState | null = null;
   let lastPanelModel: PanelModel | null = null;
+  /**
+   * What is on screen and which session owns it (docs/screen-context.md). Resolved against the
+   * last published rows — their folders and held deliverables — so it names only sessions the
+   * apps can see. Patched onto the published state like a delivery: nothing else moved.
+   */
+  const screen = createScreenContext({
+    context: () => screenContextFromPublished(
+      lastPublishedPanelState?.rows ?? [],
+      (sessionId) => panelSessions.get(sessionId)?.pid,
+      conchHome(),
+    ),
+    log: new ScreenLog({
+      dir: join(dirname(daemonSettingsPath), "screen"),
+      enabled: () => cfg.screenLog,
+      onError: (message) => log(`screen log: ${message}`),
+    }),
+    onShowing: (showing) => {
+      if (!lastPublishedPanelState) return; // the first render publishes it
+      lastPublishedPanelState = { ...lastPublishedPanelState, ts: Date.now(), showing };
+      publishedStateWriter.request();
+    },
+  });
   /**
    * Say once a day when the conch running is not the newest one published.
    *
@@ -1826,6 +1852,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         { control: audioHolder.record, outbox: audioOutbox.items },
         recentDeliveries,
         (sessionId, path) => voice.pendingApprovalFor(sessionId, path),
+        screen.showing(),
       );
       publishedStateWriter.request();
       if (theaterMode) theaterNavigation.commitFrame(nextActiveSessionId, navSelectedId);
@@ -2553,6 +2580,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       device: deviceCommand,
     },
     onDelivery: rememberDelivery,
+    onScreenObservation: (observation) => void screen.observe(observation),
   });
 
   let shutdownStarted = false;
@@ -2568,6 +2596,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     transcriptWatch.stop();
     onLiveDataChange(null);
     publishedStateWriter.flush();
+    screen.close(); // the log's open state ends now, not with the process
     meetingMic?.close();
     phoneRelay?.stop();
     phoneBridge?.stop();
