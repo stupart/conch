@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The canvas's tools (panel-lab's `#tools`): pen, highlight, arrow, box and note, then undo, then Send, in a small glass
+/// The canvas's tools (panel-lab's `#tools`): pen, highlight, arrow, box and note, then undo, Show and ×, then Send, in a small glass
 /// pill that rises out of the conversation panel's top edge while the canvas is in use. With the pen down (`armed`) the
 /// tool in hand is picked out; up, with ink still showing, none is, and picking one puts the pen down again.
 public struct CanvasToolPill: View {
@@ -34,6 +34,8 @@ public struct CanvasToolPill: View {
     let narrate: Bool
     /// The mic beside the record button; nil, and no mic, where there is no narration.
     let onNarrate: (() -> Void)?
+    /// The ×: a Show or the ink thrown away, nothing sent; nil, and no ×, with nothing to throw away.
+    let onDiscard: (() -> Void)?
     @Namespace private var picked
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -52,7 +54,8 @@ public struct CanvasToolPill: View {
         recording: Recording? = nil,
         onShow: (() -> Void)? = nil,
         narrate: Bool = false,
-        onNarrate: (() -> Void)? = nil
+        onNarrate: (() -> Void)? = nil,
+        onDiscard: (() -> Void)? = nil
     ) {
         self.shown = shown
         self.tool = tool
@@ -69,6 +72,7 @@ public struct CanvasToolPill: View {
         self.onShow = onShow
         self.narrate = narrate
         self.onNarrate = onNarrate
+        self.onDiscard = onDiscard
     }
 
     static let buttonSize: CGFloat = 32
@@ -119,6 +123,7 @@ public struct CanvasToolPill: View {
                 .help("Undo (⌘Z)")
                 .accessibilityLabel("Undo")
                 showControl
+                discard
                 separator
                 send
             }
@@ -142,6 +147,24 @@ public struct CanvasToolPill: View {
 
     private var separator: some View {
         Rectangle().fill(ConchColor.overlayLine).frame(width: 0.5, height: 20).padding(.horizontal, 4)
+    }
+
+    /// The ×, with something to throw away: the pen up, the one way to, since the keys are the app underneath's again.
+    @ViewBuilder private var discard: some View {
+        if let onDiscard {
+            Button(action: onDiscard) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(ConchColor.overlayGlassIcon)
+                    .frame(width: Self.buttonSize, height: Self.buttonSize)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .disabled(sending)
+            .opacity(sending ? 0.4 : 1)
+            .help(recording != nil ? "Throw the recording away: nothing is sent" : "Throw the ink away: nothing is sent")
+            .accessibilityLabel(recording != nil ? "Throw the recording away" : "Throw the ink away")
+        }
     }
 
     /// Send, in Tyler's ink colour, naming where it goes.

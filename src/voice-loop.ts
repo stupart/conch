@@ -430,9 +430,16 @@ export interface VoiceLoop {
   capturing(): boolean;
   /**
    * Show's narration (narration.ts): the mic held as an open dictation holds
-   * it, or why not. Released once its recorder is gone.
+   * it, or why not. Released once its recorder is gone; a Stop meanwhile calls
+   * `stopRecorder`.
    */
-  holdNarration(quietWithinMs: number): Promise<{ release(): void } | { refused: string }>;
+  holdNarration(quietWithinMs: number, stopRecorder: () => void): Promise<{ release(): void } | { refused: string }>;
+  /**
+   * Why a request is turned away at the door rather than queued, or null. A
+   * dictation asked for while Show's narration has the mic would wait behind it
+   * and open a second mic minutes later, long after it was wanted.
+   */
+  refusal(event: TurnEvent): string | null;
   /** The permission prompt this session is showing, for the published row. */
   pendingApprovalFor(sessionId: string, transcriptPath: string | undefined): PendingApproval | null;
   /** The questions a picker on screen is asking, from the hook, while it is open. */
@@ -522,6 +529,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
   let normalMicReserved = false;
   let bargeHandoffOpen = false;
   let narrating = false; // Show's narration holds the mic (holdNarration)
+  let stopNarration: (() => void) | null = null; // its recorder's stop: a Stop closes that mic too
   // The turn currently being handled, used by PauseController's scoped edge.
   let recitingEvent: TurnEvent | null = null;
   let handlingEvent: TurnEvent | null = null;
@@ -555,9 +563,10 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
    * and a stop sees a mic; and it reserves through the one reservation every
    * capture uses. Refused, with why, when the ear is elsewhere, a mic is
    * already open, or conch is still talking after `quietWithinMs` — a moment
-   * for a line to finish, not a whole reply.
+   * for a line to finish, not a whole reply. Held, it shows as a dictation's
+   * mic does ("recording"), and a Stop ends it through `stopRecorder`.
    */
-  const holdNarration = async (quietWithinMs: number): Promise<{ release(): void } | { refused: string }> => {
+  const holdNarration = async (quietWithinMs: number, stopRecorder: () => void): Promise<{ release(): void } | { refused: string }> => {
     const elsewhere = (): string => (audioLease.isPhone() ? "the phone has the audio" : "another Mac has the audio");
     if (audioLease.isPhone() || !audioHolder.isLocal()) return { refused: elsewhere() };
     const deadline = Date.now() + quietWithinMs;
@@ -587,12 +596,19 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     if (reserved && quiet) {
       narrating = true;
       normalMicReserved = false;
+      stopNarration = stopRecorder;
+      // An open mic, shown as a dictation's is: the menu bar and the phone say it is recording. The queue's idle
+      // puts the state back at rest once it is released.
+      setState("recording", "Show");
       let held = true;
       return {
         release: () => {
           if (!held) return;
           held = false;
           narrating = false;
+          stopNarration = null;
+          // A Stop while it held the mic was for it, never for the turn after it.
+          stopKey = false;
           releaseQueue();
         },
       };
@@ -3651,6 +3667,13 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
   // Space remains the guaranteed stop while reciting or mid-exchange. Unlike
   // mode controls, it intentionally drains/submits every already-captured tail.
   function stop(src: string): void {
+    // Show's narration is the mic open: a Stop closes it. Its recorder stops, which releases the mic, and the Show's
+    // own stop still reads what it caught. Nothing is armed for a turn that comes after.
+    if (stopNarration) {
+      stopNarration();
+      log(`⏹ ${src} — closing the narration's mic`);
+      return;
+    }
     stopKey = true;
     speech.cancelCurrent();
     speech.cancelPendingAudio();
@@ -3664,6 +3687,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     speakBlocker,
     capturing: normalMicOpen,
     holdNarration,
+    refusal: (event) => (event.type === "wake" && narrating ? "Show's narration has the mic" : null),
     pendingApprovalFor: (sessionId, transcriptPath) => approvalShowing(sessionId, transcriptPath),
     heldQuestionFor: (sessionId) => heldQuestionShowing(sessionId),
     stop,

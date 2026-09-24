@@ -36,9 +36,8 @@ extension CanvasController {
         sending = true
         apply()
         let label = Self.label(of: row, showing: state?.showing)
-        // conch's floating windows — the glass, the tools, the conversation panel, the control bar — are left out of the
-        // picture. conch's own window isn't: it may be what was marked up.
-        let conch = NSApp.windows.filter { $0 is FloatingPanel }.map(\.windowNumber)
+        // conch's floating windows are left out of the picture, the glass with them: its marks are drawn over it again.
+        let conch = Self.leftOut(keepingGlass: false)
         Task { @MainActor in
             let screen = await CanvasCapture.still(of: document.anchor.id, leavingOut: conch)
             let files: CanvasFolder.Files
@@ -50,8 +49,8 @@ extension CanvasController {
                 return apply()
             }
             let prompt = CanvasPrompt.text(for: document, about: label, picture: files.flat.path, clean: files.raw?.path, marks: files.json.path)
-            // While the glass still has the keys, so the store hands the front back to the app under it once delivered.
-            let delivery = store.send(.inject(sessionId: row.id, label: row.label, text: prompt))
+            // From over the app under the glass, pen down or up: the store hands it the front back once delivered.
+            let delivery = store.send(.inject(sessionId: row.id, label: row.label, text: prompt), overApp: true)
             sending = false
             clear()
             lift()
@@ -60,6 +59,16 @@ extension CanvasController {
             restore(document)
             message = "That didn't reach \(row.label). The picture is in \(files.flat.deletingLastPathComponent().path)."
         }
+    }
+
+    /// The windows a picture of the screen leaves out: conch's floating ones — the tools, the control bar, Show's ring, the
+    /// glass unless it is what is shown (`keepingGlass`, a Show's ink) — but never the conversation panel while it fills
+    /// the screen, when it is what was marked up (`FloatingPanels.coveringWindow`). Nor conch's own window, which may be.
+    static func leftOut(keepingGlass: Bool) -> [Int] {
+        let covering = FloatingPanels.installed?.coveringWindow
+        return NSApp.windows.filter { window in
+            window is FloatingPanel && window !== covering && !(keepingGlass && window.contentView is CanvasInkView)
+        }.map(\.windowNumber)
     }
 
     /// What was marked up, for the prompt's first line: the deliverable on screen when the screen context knows it for this

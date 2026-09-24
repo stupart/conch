@@ -12,9 +12,9 @@ import SwiftUI
 /// A clear glass panel on each display, over everything but menus and system alerts, that lets every click through until
 /// the pen is down; a small pill of tools beside the conversation panel; and one `CanvasDocument` whose marks both are
 /// drawn from. States: off; armed (the pen is down: the glass takes the pointer and the keys and draws); up with ink
-/// left (the glass lets clicks through again, the ink and the tools stay); sending (`CanvasSend.swift`). Esc lifts the pen
-/// and keeps the ink; Esc again clears it. A new item in the panel — Next, the Ready pill, the switcher — starts a clear
-/// canvas. An agent's marks on the review in front (`AgentInkController.swift`) are in the same document, drawn under Tyler's; they
+/// left (the glass lets clicks through again and gives the keys back, the ink and the tools stay); sending
+/// (`CanvasSend.swift`). Esc lifts the pen and keeps the ink; the pill's × throws the ink, or a Show, away. A new item in
+/// the panel — Next, the Ready pill, the switcher — starts a clear canvas. An agent's marks on the review in front (`AgentInkController.swift`) are in the same document, drawn under Tyler's; they
 /// never put the pen down.
 @MainActor
 final class CanvasController: ObservableObject {
@@ -33,7 +33,7 @@ final class CanvasController: ObservableObject {
     private var agentName = "Claude"
     /// The agent's marks, faded while what they are on moves under them (`AgentInkController`).
     private var agentHidden = false
-    /// Show: the screen being recorded, or stopped and waiting for Send or Esc (`CanvasShow.swift`).
+    /// Show: the screen being recorded, or stopped and waiting for Send or the × (`CanvasShow.swift`).
     @Published var recorder: CanvasRecorder?
     /// The pill's mic: a Show narrates, recorded by the daemon (`CanvasNarration`). Off until Tyler turns it on.
     @Published var narrate = false
@@ -104,24 +104,50 @@ final class CanvasController: ObservableObject {
         message = nil
         armed = true
         apply()
+        takeKeys()
+    }
+
+    /// The glass under the pointer takes the keys, without bringing conch forward: a non-activating panel is key while
+    /// the app in front stays in front.
+    private func takeKeys() {
         let pointer = NSEvent.mouseLocation
         guard let under = glass.first(where: { $0.panel.frame.contains(pointer) }) ?? glass.first else { return }
         under.panel.makeKey()
         under.panel.makeFirstResponder(under.ink)
     }
 
-    /// The pen up. The ink stays, and every click goes through to what is under it again.
+    /// The pen up. The ink stays, every click goes through to what is under it again, and so do the keys.
     func lift() {
         guard armed else { return }
         armed = false
         if document?.isEmpty == true { document = nil }
         apply()
+        giveKeysBack()
     }
 
-    /// Esc: the pen comes up and the ink stays; again, with the pen up, the ink goes. A Show is thrown away first.
+    /// The keys back to the app in front, which never stopped being in front. A non-activating panel gives up the
+    /// keyboard by leaving the screen: the key glass goes out, which hands the keys back to that app, and straight back
+    /// in, unable to be key again until the pen is down (`apply`). conch is never activated.
+    // ponytail: out and in within one turn, so the ink never leaves the screen; not yet watched on a real screen. If a
+    // frame of ink ever flickers, order it back in on the next turn instead.
+    private func giveKeysBack() {
+        for (panel, _) in glass where panel.isKeyWindow {
+            panel.orderOut(nil)
+            panel.orderFrontRegardless()
+        }
+    }
+
+    /// Esc, which reaches the glass only while the pen is down: a Show is thrown away first; else the pen comes up and
+    /// the ink stays.
     func escape() {
         if recorder != nil { return cancelShow() }
         armed ? lift() : clear()
+    }
+
+    /// The pill's ×: a Show thrown away, recording or stopped, and nothing sent; else the ink. The one way to throw
+    /// either away once the pen is up, since the keys went back with it.
+    func discard() {
+        recorder != nil ? cancelShow() : clear()
     }
 
     /// A tool from the pill: in hand, the pen down. The tool already in hand, picked again, lifts the pen — the pill is
@@ -252,6 +278,8 @@ final class CanvasController: ObservableObject {
         // A display that went takes its canvas with it.
         if let document, !glass.contains(where: { $0.ink.display == document.anchor.id }) { self.document = nil }
         apply()
+        // The key glass went with the old ones: with the pen down, the one under the pointer takes the keys again.
+        if armed { takeKeys() }
     }
 
     /// Everything on screen, from the state: the glass while the canvas is in use, taking the pointer only while the pen is
@@ -259,9 +287,9 @@ final class CanvasController: ObservableObject {
     func apply() {
         let inUse = inUse
         for (panel, ink) in glass {
-            // Keys while in use, so a second Esc after the pen comes up still reaches the canvas; a click into the app
-            // underneath takes them back.
-            panel.takesKeys = inUse
+            // Keys only while the pen is down: up, they are the app underneath's again (`giveKeysBack`), so nothing typed
+            // for it is swallowed here, and Return never sends.
+            panel.takesKeys = armed
             panel.ignoresMouseEvents = !armed || sending
             // The pen's edge light is on the glass, which a Show records: while it does, the red ring (its own window, left
             // out) says so instead.
@@ -335,7 +363,9 @@ private struct CanvasPillHost: View {
             recording: canvas.recorder?.phase,
             onShow: CanvasController.canShow ? { canvas.toggleShow() } : nil,
             narrate: canvas.narrate,
-            onNarrate: { canvas.narrate.toggle() }
+            onNarrate: { canvas.narrate.toggle() },
+            // Something to throw away: a Show, or ink.
+            onDiscard: canvas.recorder != nil || canvas.document?.isEmpty == false ? { canvas.discard() } : nil
         )
         .padding(Self.margin)
         .fixedSize()
@@ -741,7 +771,9 @@ final class CanvasInkView: NSView {
         case UInt16(kVK_Escape):
             controller?.escape()
         case UInt16(kVK_Return), UInt16(kVK_ANSI_KeypadEnter):
-            controller?.send()
+            // Only with the pen down: the glass has no keys otherwise, and a Return meant for another app never sends.
+            // (An `if`, not a `where`: a `where` binds to the last pattern alone.)
+            if controller?.armed == true { controller?.send() }
         case UInt16(kVK_ANSI_R) where controller?.armed == true:
             // R with the pen down: Show (panel-lab's R).
             controller?.toggleShow()
@@ -755,9 +787,10 @@ final class CanvasInkView: NSView {
         }
     }
 
-    /// ⌘Z takes the newest mark off; while a note is being typed, it is the note's own undo.
+    /// ⌘Z takes the newest mark off, with the pen down; while a note is being typed, it is the note's own undo.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+        guard controller?.armed == true,
+              event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
               event.charactersIgnoringModifiers == "z",
               window?.firstResponder === self else { return super.performKeyEquivalent(with: event) }
         controller?.undo()

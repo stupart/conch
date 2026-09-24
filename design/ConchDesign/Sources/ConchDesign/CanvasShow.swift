@@ -248,7 +248,7 @@ public enum CanvasStoryboard {
 // MARK: - On the pill
 
 extension CanvasToolPill {
-    /// Show on the pill: recording since a moment, or stopped at a length and waiting for Send or Esc.
+    /// Show on the pill: recording since a moment, or stopped at a length and waiting for Send or the ×.
     public enum Recording: Equatable {
         case since(Date)
         case stopped(TimeInterval)
@@ -285,7 +285,7 @@ extension CanvasToolPill {
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
-            // Stopped, it waits for Send or Esc.
+            // Stopped, it waits for Send or the ×.
             .disabled(sending || !(recording == nil || on))
             .opacity(sending || !(recording == nil || on) ? 0.4 : 1)
             .help(on ? "Stop recording: Send sends it, Esc throws it away" : "Show: record the screen, ink and all (R)")

@@ -786,7 +786,7 @@ struct CanvasInkPreview: View {
 }
 
 func canvasPill(tool: CanvasMark.Kind = .box, armed: Bool = true, drawn: Bool = true, sending: Bool = false, route: String? = "Arch brand page", message: String? = nil, recording: CanvasToolPill.Recording? = nil) -> some View {
-    CanvasToolPill(tool: tool, armed: armed, canUndo: drawn, canSend: (drawn || recording != nil) && route != nil, sending: sending, route: route, message: message, onTool: { _ in }, onUndo: {}, onSend: {}, recording: recording, onShow: {})
+    CanvasToolPill(tool: tool, armed: armed, canUndo: drawn, canSend: (drawn || recording != nil) && route != nil, sending: sending, route: route, message: message, onTool: { _ in }, onUndo: {}, onSend: {}, recording: recording, onShow: {}, onDiscard: drawn || recording != nil ? {} : nil)
 }
 
 try render("w2-canvas", width: 1280) {
@@ -808,10 +808,10 @@ try render("w2-canvas-tools") {
     canvasPill(armed: false, route: "Dayloop invite")
     canvasPill(tool: .note, sending: true)
     canvasPill(armed: false, route: nil, message: "Nothing to send this to: no session owns what is on screen, and the panel has none.")
-    // Show: recording, 23 seconds in; in its last fifteen; stopped at the cap, waiting for Send or Esc.
+    // Show: recording, 23 seconds in; in its last fifteen; stopped at the cap, waiting for Send or the ×.
     canvasPill(tool: .pen, recording: .since(Date().addingTimeInterval(-23)))
     canvasPill(armed: false, drawn: false, recording: .since(Date().addingTimeInterval(-108)))
-    canvasPill(armed: false, message: "Stopped at 2:00. Send it, or Esc to throw it away.", recording: .stopped(120))
+    canvasPill(armed: false, message: "Stopped at 2:00. Send it, or × to throw it away.", recording: .stopped(120))
 }
 
 // The picture Send makes, `flat.png`: the screen at 2x with the same marks drawn over it by the same builder, fitted to

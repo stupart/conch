@@ -52,9 +52,12 @@ function rig(options: { refuse?: string; leaseMs?: number; recordThrows?: boolea
   const transcribed: string[] = [];
   const logs: string[] = [];
   let exit = deferred<number>();
+  /** What the voice loop's Stop calls while the narration holds the mic. */
+  let stopFromLoop: (() => void) | undefined;
   const deps: NarrationDeps = {
-    hold: async () => {
+    hold: async (stopRecorder) => {
       counts.holds++;
+      stopFromLoop = stopRecorder;
       if (options.refuse) return { refused: options.refuse };
       return { release: () => void counts.releases++ };
     },
@@ -85,6 +88,8 @@ function rig(options: { refuse?: string; leaseMs?: number; recordThrows?: boolea
     narration, canvas, counts, recorded, transcribed, releasedAtTranscribe, logs, connection,
     /** The recorder dies on its own, as `killActiveRecorders` kills it when the phone claims the audio. */
     killRecorder: () => exit.resolve(137),
+    /** A Stop pressed while it narrates (`VoiceLoop.stop`). */
+    stopFromLoop: () => stopFromLoop!(),
   };
 }
 
@@ -207,6 +212,33 @@ describe("the lease", () => {
     expect((await r.narration.start(ID, c.value)).kind).toBe("narration-started");
     await waitFor("the cancel", () => r.counts.releases === 1);
     expect(existsSync(join(r.canvas, ID, "narration.wav"))).toBe(false);
+  });
+
+  test("a Stop closes its mic: the recorder stops, the mic goes, and the Show's own stop still reads what it caught", async () => {
+    const r = rig();
+    const c = r.connection();
+    await r.narration.start(ID, c.value);
+    r.stopFromLoop();
+    expect(r.counts.stops).toBe(1);
+    await waitFor("the release", () => r.counts.releases === 1);
+    const wav = join(r.canvas, ID, "narration.wav");
+    expect(existsSync(wav)).toBe(true);
+    expect(await r.narration.stop(ID)).toEqual({
+      kind: "narration-stopped", canvasId: ID, wav, segments: [{ start: 0.4, end: 1.9, text: "make this bigger" }],
+    });
+    expect(r.transcribed).toEqual([wav]);
+    expect(r.counts.releases).toBe(1);
+    expect(c.state.ended).toBe(1);
+  });
+
+  test("the daemon turns a dictation away while it narrates, and wires a Stop to the recorder", () => {
+    const daemon = readFileSync(join(import.meta.dir, "..", "src/daemon.ts"), "utf8");
+    expect(daemon).toContain("hold: (stopRecorder) => voice.holdNarration(NARRATION_QUIET_WITHIN_MS, stopRecorder),");
+    const enqueue = daemon.slice(daemon.indexOf("  function enqueue(incoming: TurnEvent): void | Promise<SocketTurnOutcome> {"));
+    expect(enqueue.indexOf("const refused = voice.refusal(event);")).toBeGreaterThan(-1);
+    // At the door: before anything else is done with it, and before the queue.
+    expect(enqueue.indexOf("const refused = voice.refusal(event);")).toBeLessThan(enqueue.indexOf("warmTranscript(event.transcriptPath);"));
+    expect(enqueue).toContain('if (refused) return log(`refused a dictation for "${event.label || "the last session"}" — ${refused}`);');
   });
 
   test("a recorder killed with the rest — a phone claim, a yield, shutdown — releases the mic at once; stop still reads what it got", async () => {

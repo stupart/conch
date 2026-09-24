@@ -139,7 +139,7 @@ describe("conch shot photographs what is actually on screen", () => {
     // could not photograph it AT ALL: the candidate list excluded every FloatingPanel.
     expect(snapshot).toContain("case key, overlay, controlbar, dashboard, geometry");
     expect(snapshot).toContain("case .overlay: window = panels.first(where: isOverlay)");
-    expect(snapshot).toContain("case .controlbar: window = panels.first { !isOverlay($0) }");
+    expect(snapshot).toContain("case .controlbar: window = panels.first(where: isControlBar)");
     // A one-line request is what every caller wrote before this existed. It still
     // resolves the key window among the NON-panels, exactly as it always did.
     expect(snapshot).toContain("let target = wanted.isEmpty ? Target.key : Target(rawValue: wanted) ?? Target.key");
@@ -147,11 +147,14 @@ describe("conch shot photographs what is actually on screen", () => {
     expect(snapshot).toContain("let candidates = onScreen.filter { !($0 is FloatingPanel) }");
   });
 
-  test("the overlay is found structurally, never by the autosave name it loses", () => {
-    // `takesKeys` is set once at construction, on the fog and on nothing else.
-    expect(snapshot).toContain("private static func isOverlay(_ panel: FloatingPanel) -> Bool { panel.takesKeys }");
+  test("the overlay is found by which window it is, never by the autosave name it loses or by takesKeys", () => {
+    // The canvas's glass takes keys too, while the pen is down: `takesKeys` would take a glass for the overlay.
+    expect(snapshot).toContain("private static func isOverlay(_ panel: FloatingPanel) -> Bool { panel === FloatingPanels.installed?.conversationWindow }");
+    expect(snapshot).toContain("private static func isControlBar(_ panel: FloatingPanel) -> Bool { panel === FloatingPanels.installed?.controlBarWindow }");
+    expect(snapshot).not.toContain("panel.takesKeys");
     const floating = read("mac-app/conch-mac/FloatingPanels.swift");
-    expect(floating.match(/takesKeys = true/g) ?? []).toHaveLength(1);
+    expect(floating).toContain("var conversationWindow: NSWindow { fog }");
+    expect(floating).toContain("var controlBarWindow: NSWindow { controlBar }");
     // And the reason a name lookup was rejected: FloatingPanels BLANKS the autosave
     // name while the fog is collapsed or full screen, so a name-matching lookup would
     // find the overlay in the dull states and silently miss it in the interesting ones.

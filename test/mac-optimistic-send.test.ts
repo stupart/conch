@@ -49,7 +49,7 @@ describe("a message sent from the Mac appears the moment it is sent", () => {
    * inject routes through `send`, so beginning the entry there is what makes the two agree.
    */
   test("every inject gets a bubble, because every sender routes through send()", () => {
-    const send = section(store, "func send(_ event: ConchDaemonEvent) -> Task<Bool, Never> {", "private static func awaitDelivery(");
+    const send = section(store, "func send(_ event: ConchDaemonEvent, overApp: Bool = false) -> Task<Bool, Never> {", "private static func awaitDelivery(");
     ordered(
       send,
       // Except an answer to a question: its card shows "Submitted", and its words never come back.
