@@ -21,6 +21,8 @@ struct ReviewItem: Identifiable, Equatable {
     let viewedAt: Double?
     /// The artifact this filing is a version of, as the daemon filed it; nil from an older one.
     let artifact: String?
+    /// What the agent drew over it (`scene.marks`), for the canvas to draw where it shows (`AgentInkController`).
+    let marks: [AgentMark]
 
     init?(row: SessionRow) {
         guard let review = row.review else {
@@ -41,6 +43,7 @@ struct ReviewItem: Identifiable, Equatable {
         isReady = row.status != .working
         viewedAt = review.viewedAt
         artifact = review.artifact
+        marks = review.marks
         // The identity the daemon minted when it filed this deliverable, which it carries
         // unchanged through every later event — so this id moves only when a NEWER deliverable
         // replaces this one. Everything keyed on it (the pane, the row pulse, the
@@ -83,6 +86,8 @@ struct InlineReviewView: View {
             isWebLoading: $isWebLoading,
             liveAddress: $liveAddress
         )
+        // The page or image below says it shows this review, for its marks to find (`AgentInkController`).
+        .environment(\.agentInkItem, item)
     }
 
     /// Read from where the pane IS, as the arrow opens.
@@ -1168,7 +1173,13 @@ private struct DeliverableImageView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> FitWidthImageScrollView {
-        FitWidthImageScrollView()
+        let view = FitWidthImageScrollView()
+        if let item = context.environment.agentInkItem { AgentInkController.shared.appeared(view.imageView, image: url.path, showing: item) }
+        return view
+    }
+
+    static func dismantleNSView(_ view: FitWidthImageScrollView, coordinator: Coordinator) {
+        AgentInkController.shared.gone(view.imageView)
     }
 
     func updateNSView(_ view: FitWidthImageScrollView, context: Context) {

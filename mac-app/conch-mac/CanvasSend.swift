@@ -22,8 +22,9 @@ extension CanvasController {
     }
 
     /// Send: capture, pack, deliver, and a clear canvas. With nowhere to send it, nothing is captured and the pill says why.
+    /// Only once Tyler has drawn: an agent's marks alone are what he is answering, not an answer.
     func send() {
-        guard let document, !document.isEmpty, !sending, let store else { return }
+        guard let document, document.has(.you), !sending, let store else { return }
         let state = store.state
         guard let row = Self.route(state, panel: FloatingPanels.installed?.staged) else {
             message = "Nothing to send this to: no session owns what is on screen, and the panel has none."
@@ -150,6 +151,15 @@ enum CanvasFolder {
             raw: try screen.map { try save(CanvasInk.png($0), "raw.png") },
             json: try save(try encoder.encode(document), "canvas.json")
         )
+    }
+
+    /// Where a canvas Tyler sent was drawn, for an agent's marks framed `{canvas: id}` to be drawn back on it. The id is the
+    /// agent's to pass back, so only a UUID conch minted names a folder: nothing it says can reach anywhere else.
+    static func anchor(of id: String) -> CanvasAnchor? {
+        guard let uuid = UUID(uuidString: id), uuid.uuidString == id.uppercased() else { return nil }
+        let file = root.appendingPathComponent(id, isDirectory: true).appendingPathComponent("canvas.json")
+        guard let data = try? Data(contentsOf: file) else { return nil }
+        return (try? JSONDecoder().decode(CanvasDocument.self, from: data))?.anchor
     }
 
     private static func prune(_ files: FileManager) {

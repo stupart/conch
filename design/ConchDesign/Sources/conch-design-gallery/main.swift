@@ -772,8 +772,8 @@ struct CanvasInkPreview: View {
                 let shape = CanvasInk.shape(of: mark, in: size)
                 if let wash = shape.wash { Path(wash).fill(CanvasInk.colour(mark.author).color.opacity(CanvasInk.washOpacity)) }
                 Path(shape.ink)
-                    .fill(mark.kind == .highlight ? CanvasInk.highlight.color : CanvasInk.colour(mark.author).color)
-                    .blendMode(mark.kind == .highlight ? .multiply : .normal)
+                    .fill(CanvasInk.fill(of: mark).color)
+                    .blendMode(CanvasInk.multiplies(mark) ? .multiply : .normal)
                 if mark.kind == .note, let spot = mark.points.first?.point(in: size) {
                     Text("1").font(.system(size: 12, weight: .bold)).foregroundStyle(.white)
                         .frame(width: CanvasInk.pinSide, height: CanvasInk.pinSide)
@@ -815,6 +815,17 @@ try render("w2-canvas-tools") {
 do {
     var document = CanvasDocument(anchor: CanvasAnchor(id: 1, frame: CGRect(origin: .zero, size: m3Screen)), id: "gallery", at: 0)
     canvasMarks.forEach { document.add($0) }
+    // The agent's answer, placed on what it named (`AgentInk`): a box round the Join button, an arrow at the email line,
+    // a highlight on the heading, and a pin.
+    func element(_ rect: CGRect) -> CGRect {
+        CGRect(x: rect.minX / m3Screen.width, y: rect.minY / m3Screen.height, width: rect.width / m3Screen.width, height: rect.height / m3Screen.height)
+    }
+    document.merge(agent: [
+        AgentInk.mark(id: "join", kind: .box, label: "Join, as you asked", on: element(CGRect(x: 432, y: 270, width: 364, height: 52)), size: m3Screen),
+        AgentInk.mark(id: "email", kind: .arrow, label: "Still waits for the email check", on: element(CGRect(x: 432, y: 336, width: 364, height: 52)), size: m3Screen),
+        AgentInk.mark(id: "title", kind: .highlight, label: nil, on: element(CGRect(x: 432, y: 176, width: 390, height: 44)), size: m3Screen),
+        AgentInk.mark(id: "pin", kind: .pin, label: "One line on phones", on: element(CGRect(x: 432, y: 176, width: 390, height: 44)), size: m3Screen),
+    ].compactMap { $0 })
     let screen = MainActor.assumeIsolated { () -> CGImage? in
         let renderer = ImageRenderer(content: m3Fog(.bottomLeading, session: panelSession, pager: true).environment(\.conchRendersStatically, true))
         renderer.scale = 2

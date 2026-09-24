@@ -19,6 +19,10 @@ function member(source: string, signature: string, indent = 4): string {
 }
 
 const canvas = read("mac-app/conch-mac/Canvas.swift");
+const agentInk = read("mac-app/conch-mac/AgentInkController.swift");
+const placing = read("design/ConchDesign/Sources/ConchDesign/AgentInk.swift");
+const review = read("mac-app/conch-mac/ReviewView.swift");
+const webView = read("mac-app/conch-mac/WebView.swift");
 const send = read("mac-app/conch-mac/CanvasSend.swift");
 const ink = read("design/ConchDesign/Sources/ConchDesign/Canvas.swift");
 const models = read("mac-app/conch-mac/Models.swift");
@@ -98,7 +102,7 @@ describe("the glass", () => {
     const install = member(canvas, "func install(store: StateStore) {");
     expect(install).toContain("panels.$staged.combineLatest(panels.queue.$lastStaged)");
     expect(install).toContain(".sink { [weak self] _ in MainActor.assumeIsolated { self?.clear() } }");
-    const show = member(canvas, "func show(_ document: CanvasDocument?, armed: Bool) {");
+    const show = member(canvas, "func show(_ document: CanvasDocument?, armed: Bool, agentHidden: Bool = false, agentName: String = \"Claude\") {");
     expect(show).toContain("if document?.id != shown {\n            liftAway()");
     // Reduce Motion keeps the fade and drops the blur.
     const lift = member(canvas, "private func liftAway() {");
@@ -242,5 +246,120 @@ describe("Send", () => {
     expect(ink).toContain("public static func render(_ document: CanvasDocument, over screen: CGImage?, longEdge: CGFloat = 1568) -> CGImage? {");
     expect(project).toContain("/* CanvasSend.swift in Sources */ = {isa = PBXBuildFile;");
     expect(project.match(/\/\* CanvasSend\.swift in Sources \*\/,/g)?.length).toBe(1);
+  });
+});
+
+/**
+ * Agent ink: the marks an agent published with a review, drawn over it where Tyler is looking, in the one canvas document.
+ * Tyler: "transparent canvas that both the ai and the user can write to over top of what they're looking at".
+ */
+describe("agent ink", () => {
+  test("the script that finds a selector or a quote only reads the page", () => {
+    const finder = agentInk.slice(agentInk.indexOf("static let finder = \"\"\""), agentInk.indexOf("\"\"\"\n", agentInk.indexOf("static let finder = \"\"\"") + 30));
+    expect(finder.length).toBeGreaterThan(400);
+    // Nothing that changes the DOM, styles, the selection, the scroll, or leaves anything behind.
+    for (const writes of [
+      "appendChild", "insertBefore", "removeChild", ".remove(", "replaceWith", "innerHTML", "outerHTML", "insertAdjacent",
+      "setAttribute", "removeAttribute", "classList", ".style", "textContent =", ".data =", "document.write",
+      "getSelection", "addRange", "window.find", "execCommand", "scrollTo", "scrollBy", "scrollIntoView", "focus(",
+      "click(", "dispatchEvent", "addEventListener", "localStorage", "fetch(",
+    ]) {
+      expect(finder, writes).not.toContain(writes);
+    }
+    // The one global it reads, and only these reads.
+    expect(finder.match(/window\.[a-zA-Z]+/g)?.sort()).toEqual(["window.innerWidth", "window.visualViewport"]);
+    expect(finder).toContain("document.querySelector(what)");
+    expect(finder).toContain("const range = document.createRange();");
+    // Nothing is spliced into the source: the strings go as arguments, and it runs in conch's own world, not the page's.
+    expect(finder).not.toContain("\\(");
+    expect(agentInk).toContain('page.callAsyncJavaScript(finder, arguments: ["marks": asked], in: nil, contentWorld: .defaultClient)');
+    expect(agentInk).not.toContain("evaluateJavaScript");
+    expect(agentInk).not.toContain("contentWorld: .page");
+    // Only on the review's own page, not one browsed to since.
+    expect(member(agentInk, "private static func find(_ marks: [AgentMark], in page: WKWebView, link: String?) async -> [String: Found] {")).toContain(
+      "guard let link, Self.showsReview(page.url, link: link), !page.isLoading else { return [:] }",
+    );
+  });
+
+  test("showing an agent's marks never puts the pen down or takes the pointer or the keys", () => {
+    for (const intrusion of ["arm(", "makeKey", "makeFirstResponder", "ignoresMouseEvents", "takesKeys", "NSApp.activate", "orderFront"]) {
+      expect(agentInk, intrusion).not.toContain(intrusion);
+    }
+    for (const signature of [
+      "func showAgent(_ marks: [CanvasMark], on display: CGDirectDisplayID, frame: CGRect, by name: String) {",
+      "func hideAgent(_ hidden: Bool) {",
+      "func clearAgent() {",
+    ]) {
+      const body = member(canvas, signature);
+      for (const intrusion of ["armed = ", "arm()", "makeKey", "ignoresMouseEvents", "takesKeys"]) expect(body, `${signature} ${intrusion}`).not.toContain(intrusion);
+      expect(body).toContain("apply()");
+    }
+    // Click-through is still the pen's alone.
+    expect(member(canvas, "func apply() {")).toContain("panel.ignoresMouseEvents = !armed || sending");
+    // Esc in conch clears them, seen by a local monitor that passes the key on; never a global one (Accessibility).
+    expect(agentInk).toContain("escape = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in");
+    expect(agentInk).not.toContain("addGlobalMonitorForEvents");
+    expect(agentInk).toContain("MainActor.assumeIsolated { AgentInkController.shared.dismiss() }\n            }\n            return event");
+  });
+
+  test("a mark is drawn only where conch found it: never at a guessed position", () => {
+    const place = member(agentInk, "private func place(_ item: ReviewItem) async -> Placement? {");
+    // A selector or a quote only in conch's own page of this review, where the script found it, and in sight.
+    expect(place).toContain("guard let page, let client = found[agent.id] else { continue }");
+    expect(place).toContain("Self.visible(NSPoint(x: display.frame.minX + rect.midX * display.frame.width, y: display.frame.maxY - rect.midY * display.frame.height), in: page)");
+    // An image only while conch shows it; a canvas only on its own display.
+    expect(place).toContain("guard let view = surfaces.first(where: { $0.item.id == item.id && $0.image.map(Self.same(path)) == true })?.view,");
+    expect(place).toContain("guard let anchor = anchor(of: canvas), let display = NSScreen.screens.first(where: { $0.displayID == anchor.id }) else {");
+    // A mark without the geometry its kind takes is skipped and said so.
+    expect(place).toContain('guard let mark else { return NSLog("conch: agent mark %@ has no geometry to draw; skipped", agent.id) }');
+    // And the pure placement refuses rather than guesses (`AgentInkTests`).
+    expect(placing).toContain("guard let at, let to else { return nil }");
+    expect(placing).toContain("guard size.width > 0, size.height > 0, element.width > 0, element.height > 0 else { return nil }");
+    // Visible means under nothing: the window there, below the glass, is the page's own.
+    expect(member(agentInk, "private static func visible(_ point: NSPoint, in view: NSView) -> Bool {")).toContain(
+      "return NSWindow.windowNumber(at: point, belowWindowWithWindowNumber: glass) == window.windowNumber",
+    );
+    // The agent's kinds are the daemon's, one for one.
+    const kinds = (source: string) => source.match(/case arrow, box, ellipse, highlight, text, pin, stroke\n/g)?.length;
+    expect(kinds(placing)).toBe(1);
+    expect(kinds(read("mac-app/conch-mac/Models.swift"))).toBe(1);
+  });
+
+  test("a canvas id is conch's own: the prompt gives it in the frame an agent passes back, and only a UUID names a folder", () => {
+    const text = member(ink, "public static func text(for document: CanvasDocument, about label: String, picture: String, clean: String?, marks: String) -> String {");
+    expect(text).toContain("lines.append(answer(document))");
+    expect(text.indexOf("lines.append(answer(document))")).toBeGreaterThan(text.indexOf("Clean screen + marks"));
+    expect(ink).toContain('"To mark your answer on this canvas, frame your marks {canvas: \\"\\(document.id)\\"}."');
+    // canvas.json is the document, id and all.
+    expect(ink).toContain("public let id: String");
+    const anchor = member(send, "static func anchor(of id: String) -> CanvasAnchor? {");
+    expect(anchor).toContain("guard let uuid = UUID(uuidString: id), uuid.uuidString == id.uppercased() else { return nil }");
+    expect(anchor.indexOf("UUID(uuidString: id)")).toBeLessThan(anchor.indexOf("appendingPathComponent(id"));
+  });
+
+  test("the item changing, Esc, or a Send clears them; a new review replaces them", () => {
+    expect(member(canvas, "    func clear() {")).toContain("AgentInkController.shared.stop()");
+    const watch = member(agentInk, "private func watch() {");
+    expect(watch).toContain("guard let item = shown, !item.marks.isEmpty else {");
+    expect(watch).toContain("return CanvasController.shared.clearAgent()");
+    // One document: merged by id, the agent's replacing only its own.
+    expect(member(canvas, "func showAgent(_ marks: [CanvasMark], on display: CGDirectDisplayID, frame: CGRect, by name: String) {")).toContain("document?.merge(agent: marks)");
+    expect(ink).toContain("marks = marks.filter { $0.author == .you } + agent.filter { $0.author == .agent }");
+    // Where the review shows in conch, its page and its image say so.
+    expect(review).toContain(".environment(\\.agentInkItem, item)");
+    expect(webView).toContain("if let item = context.environment.agentInkItem { AgentInkController.shared.appeared(webView, showing: item) }");
+    expect(webView).toContain("AgentInkController.shared.gone(webView)");
+    expect(review).toContain("AgentInkController.shared.gone(view.imageView)");
+    expect(project.match(/\/\* AgentInkController\.swift in Sources \*\/,/g)?.length).toBe(1);
+  });
+
+  test("they draw on as the lab's do, and only fade under Reduce Motion", () => {
+    const drawOn = member(canvas, "private func drawOn(_ layer: CALayer, _ mark: CanvasMark, after delay: CFTimeInterval) {");
+    expect(drawOn).toContain("guard !Self.reduceMotion, let spine = CanvasInk.spine(of: mark, in: bounds.size) else {");
+    expect(drawOn).toContain('let draw = CABasicAnimation(keyPath: "strokeEnd")');
+    expect(canvas).toContain("static let drawOnTime: CFTimeInterval = 0.4");
+    const show = member(canvas, "func show(_ document: CanvasDocument?, armed: Bool, agentHidden: Bool = false, agentName: String = \"Claude\") {");
+    expect(show).toContain("let delay = fresh ? Double(order) * 0.06 : 0");
+    expect(show).toContain("label.pop(after: delay + (Self.reduceMotion ? 0 : Self.drawOnTime * 0.8))");
   });
 });
