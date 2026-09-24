@@ -41,22 +41,33 @@ agent drive one, and the user able to reach in and interact — the way the Code
 Tyler: "I like the current Mac app - keep it - this is just the deconstructed ui stuff". This
 extends the conversation panel (the overlay, `Fog*` in code) and the pill; it is not a new mode.
 
-- **Wave 1** (in flight, four branches `w1-*`)
-  - Typed deliverables: `kind`, a stable `artifact` + `version`, `conch_deliverables`, remove
-    (`review-remove`, agent `review_remove`, Remove on the Mac tab), daemon-side link checks.
-  - Screen context, modular: observers → ordered resolvers → `showing`; `conch_on_screen`; a
-    local screen log. Tyler: "modular so we could potentially add a light local (or cloud) vision
+- **Wave 1**, shipped 2026-09-25
+  - Typed deliverables (#405): `kind`, a stable `artifact` + `version`, `conch_deliverables`,
+    remove (`review-remove`, agent `review_remove`, Remove on the Mac tab), daemon-side link
+    checks. Remove only appeared once #411 stopped the Mac dropping `features`.
+  - Screen context (#403): observers → ordered resolvers → `showing`; `conch_on_screen`; a local
+    screen log. Tyler: "modular so we could potentially add a light local (or cloud) vision
     model", and the raw log is for Atlas and time tracking later.
-  - The panel: header (session, agent, item), session switcher, Next/Prev, the queue walks every
-    held deliverable, no content → full-screen transcript, optional reply line.
-  - Phone: every held deliverable, HTML with its folder's assets, markdown images.
-- **Wave 2** (overlay lab first, then Swift): full screen shows the content in the panel with the
-  input over it (09-21 "BOTH"); a motion pass; the canvas — a clear window that takes clicks only
-  while the pen is on, drawn on by Tyler and by agents, fresh per item, sent to the owning agent
-  with a screenshot, plus a "show" mode that records video.
-- **Wave 3**: recognising content Tyler opened himself (Accessibility front window; localhost
-  port → the agent that started it; the Simulator), the phone's localhost proxy, and material
-  with no phone equivalent sent to the phone (and back).
+  - The panel (#404): header, session switcher, Previous/Next over every held deliverable, no
+    content → full-screen transcript, optional reply line.
+  - Phone (#402): every held deliverable, HTML with its folder's assets, markdown images.
+- **Wave 2**, shipped 2026-09-25 (lab: `conch-design/panel-lab.html`; research:
+  `conch-design/canvas-research-2026-09-25.md`)
+  - Full screen shows the deliverable in the panel with the reply floating over it (#406).
+  - The canvas (#410): clear glass over the screen, click-through unless the pen is down,
+    ⌃⌥⌘P; Send a still to whoever owns what's on screen.
+  - Agent ink: `scene.marks` on `review_to_front` (#408), drawn on the Mac (#412) and the phone
+    (#416), never where it wasn't found.
+  - Show (#413): a screen recording sent as keyframes and a storyboard; narration (#415) is
+    recorded and transcribed by the daemon, which holds the mic like a dictation.
+  - Figma in the review pane (#407).
+  - Still to do: the motion pass — Tyler tunes `panel-lab.html`, then its values are ported.
+- **Wave 3**, shipped 2026-09-25
+  - Recognising what Tyler opened himself (#409): the front window (Accessibility, never
+    prompted), and a localhost page → the session that started its server.
+  - The phone (#414, #416): relay throughput, dev servers through conch (`conch-dev://`), agent
+    marks, Remove, and Mac-only work (an app window, the Simulator, a document) as a snapshot.
+  - Still to do: phone → Mac video.
 - **Then** (Tyler, 2026-09-25): connect it to the Mac app "so its fluid back adn forth", and a
   clean onboarding — "download or connetc your agents, get a walking thorough of everything, make
   sure permissions are rrec and so on".
