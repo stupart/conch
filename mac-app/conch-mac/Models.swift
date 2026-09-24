@@ -38,6 +38,17 @@ struct PublishedState: Decodable, Equatable, Sendable {
     /// What is on screen and whose it is, as the screen context resolved it (docs/screen-context.md):
     /// where the canvas sends. Absent from an older daemon, and until something is staged.
     let showing: Showing?
+    /// Window snapshots the daemon is waiting on this app to take, for the phone (`WindowPreviewer`). Absent from an
+    /// older daemon, and whenever none is waiting.
+    let previewRequests: [PreviewRequest]
+
+    struct PreviewRequest: Decodable, Equatable, Sendable {
+        let id: String
+        let sessionId: String
+        let review: String
+        /// Where the daemon wants it written: its snapshot folder (`PreviewOwner.folder` checks it).
+        let folder: String
+    }
 
     struct Showing: Decodable, Equatable, Sendable {
         let sessionId: String?
@@ -83,6 +94,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         case audioControl
         case audioOutbox
         case showing
+        case previewRequests
     }
 
     init(
@@ -102,7 +114,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
         audioOutbox: [AudioOutboxItem] = [],
         deliveries: [DeliveryOutcome] = [],
         features: Features? = nil,
-        showing: Showing? = nil
+        showing: Showing? = nil,
+        previewRequests: [PreviewRequest] = []
     ) {
         self.v = v
         self.ownerDeviceId = ownerDeviceId
@@ -122,6 +135,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         self.deliveries = deliveries
         self.features = features
         self.showing = showing
+        self.previewRequests = previewRequests
     }
 
     init(from decoder: Decoder) throws {
@@ -162,6 +176,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         audioOutbox = Self.decodeLossyArray(AudioOutboxItem.self, from: container, forKey: .audioOutbox)
         deliveries = Self.decodeLossyArray(DeliveryOutcome.self, from: container, forKey: .deliveries)
         showing = try? container.decodeIfPresent(Showing.self, forKey: .showing)
+        previewRequests = Self.decodeLossyArray(PreviewRequest.self, from: container, forKey: .previewRequests)
     }
 
     private static func decodeLossyArray<Element: Decodable>(

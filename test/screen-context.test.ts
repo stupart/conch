@@ -810,7 +810,7 @@ describe("the daemon's wiring (source guard)", () => {
     expect(daemon).toContain("listeners: portListeners,");
     expect(daemon).toContain('dir: join(dirname(daemonSettingsPath), "screen"),');
     expect(daemon).toContain("enabled: () => cfg.screenLog,");
-    expect(daemon).toContain("screen.showing(),\n      );");
+    expect(daemon).toContain("        screen.showing(),\n");
     expect(daemon).toContain("lastPublishedPanelState = { ...lastPublishedPanelState, ts: Date.now(), showing };");
     expect(daemon.indexOf("screen.close();")).toBeGreaterThan(daemon.indexOf("const shutdown = async"));
   });

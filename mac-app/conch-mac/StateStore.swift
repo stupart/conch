@@ -438,6 +438,9 @@ final class StateStore: ObservableObject {
     /// The front-window observer, started with the store and living as long as it does.
     private var frontWindow: FrontWindowObserver?
 
+    /// Takes the window snapshots the daemon asks for, for the phone.
+    private lazy var windowPreviewer = WindowPreviewer(socket: socketClient)
+
     /// The conch-staged observer (docs/screen-context.md): tell the daemon what conch just put on
     /// screen and whose it is, so `showing` and `conch_on_screen` can say. Fire and forget, like
     /// markReviewViewed. Without `staged` it is conch's window showing a session, which counts only
@@ -1155,6 +1158,7 @@ final class StateStore: ObservableObject {
         let timestampAdvanced = previousTimestamp == nil || snapshot.ts > (previousTimestamp ?? 0)
         sourceState = snapshot
         applyDeliveryOutcomes(snapshot.deliveries)
+        windowPreviewer.handle(snapshot.previewRequests, rows: snapshot.rows)
         reconcileOutbox(with: snapshot)
         reconcilePresentationOverlays(with: snapshot)
         rebuildPresentedState()
@@ -1355,7 +1359,8 @@ final class StateStore: ObservableObject {
             audioOutbox: sourceState.audioOutbox,
             deliveries: sourceState.deliveries,
             features: sourceState.features,
-            showing: sourceState.showing
+            showing: sourceState.showing,
+            previewRequests: sourceState.previewRequests
         )
         if state?.hasSamePresentation(as: next) != true {
             state = next

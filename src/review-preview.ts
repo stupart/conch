@@ -1,6 +1,7 @@
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { realpath, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { probeCommand } from "./probe.ts";
 import { checkLocalFile } from "./snippet.ts";
 import type { DeliverableKind } from "./deliverables.ts";
@@ -118,6 +119,10 @@ export async function capturePreview(
   let error: string | null;
   if (review.kind === "simulator") error = await captureSimulator(out, options.probe);
   else if (review.kind === "document" && review.link?.startsWith("/")) error = await captureDocument(review.link, roots, out, options.probe);
+  // Nothing says which of their windows is this deliverable's: a design is one Figma file of any
+  // open, a terminal is the conversation the phone already shows.
+  else if (review.kind === "design") return { ok: false, error: "conch can't tell which Figma window is this design; ask the agent to export it as an image and publish that" };
+  else if (review.kind === "terminal") return { ok: false, error: "the terminal is this session's own conversation, on the phone already" };
   else return { ok: false, error: "conch takes a snapshot of this kind of deliverable in its Mac app" };
   if (error) {
     rmSync(out, { force: true });
@@ -140,6 +145,8 @@ export interface PreviewRequesterDependencies {
   folder(): string;
   now(): number;
   probe?: Probe;
+  /** An app window's snapshot, taken by the Mac app (`WindowPreviews.ask`). */
+  window?(sessionId: string, reviewId: string): Promise<PreviewOutcome>;
 }
 
 /** What the phone is told: 200, or why not, in words it can show. */
@@ -160,7 +167,9 @@ export function createPreviewRequester(deps: PreviewRequesterDependencies): (ses
     const wait = deps.limiter.take(`${sessionId}\u0000${reviewId}`, deps.now());
     if (wait !== null) return { status: 429, error: `a snapshot was just taken; another in ${wait} s` };
     const folder = deps.folder();
-    const taken = await capturePreview(review, holding.roots, { folder, now: deps.now(), probe: deps.probe });
+    const taken = review.kind === "app"
+      ? await (deps.window?.(sessionId, reviewId) ?? Promise.resolve<PreviewOutcome>({ ok: false, error: "conch's Mac app isn't connected" }))
+      : await capturePreview(review, holding.roots, { folder, now: deps.now(), probe: deps.probe });
     if (!taken.ok) return { status: 422, error: taken.error };
     if (!deps.attach(sessionId, reviewId, taken.preview)) {
       rmSync(taken.preview.path, { force: true });
@@ -171,4 +180,81 @@ export function createPreviewRequester(deps: PreviewRequesterDependencies): (ses
     if (old && old !== taken.preview.path && join(folder, basename(old)) === old) rmSync(old, { force: true });
     return { status: 200 };
   };
+}
+
+/** A window snapshot the daemon wants, named on the published state for the Mac app (`previewRequests`). */
+export interface PreviewRequest {
+  id: string;
+  sessionId: string;
+  review: string;
+  /** Where to write it: the daemon's snapshot folder, whose temp root may not be the app's own. */
+  folder: string;
+}
+
+/** How long the Mac app has to answer: it finds the window and takes it, which is quick when it is open at all. */
+export const WINDOW_PREVIEW_TIMEOUT_MS = 15_000;
+
+/**
+ * Snapshots of an app's window, which only the Mac app can take: it holds Screen Recording, and it
+ * takes one only while that is already granted, never asking because a phone did. The daemon has
+ * no way to call the app, so it names what it wants on the published state (`requests`) and the
+ * app answers over the socket with the file it wrote (`answer`).
+ *
+ * The app's file is trusted for nothing: it must answer a request that is waiting, and be 0600,
+ * in conch's own snapshot folder, passing the publish rule (`checkLocalFile`), or it is refused.
+ */
+export class WindowPreviews {
+  readonly #pending = new Map<string, Omit<PreviewRequest, "folder"> & { done(outcome: PreviewOutcome): void }>();
+  readonly #options: { publish(): void; folder(): string; now(): number; timeoutMs?: number };
+
+  constructor(options: { publish(): void; folder(): string; now(): number; timeoutMs?: number }) {
+    this.#options = options;
+  }
+
+  /** What the published state names while an answer is due. */
+  requests(): PreviewRequest[] {
+    const folder = this.#options.folder();
+    return [...this.#pending.values()].map(({ id, sessionId, review }) => ({ id, sessionId, review, folder }));
+  }
+
+  /** Ask the Mac app for one deliverable's window; its outcome, or why none came. */
+  ask(sessionId: string, review: string): Promise<PreviewOutcome> {
+    const id = `${this.#options.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => finish({
+        ok: false,
+        error: "conch's Mac app didn't take the snapshot: it may not be open",
+      }), this.#options.timeoutMs ?? WINDOW_PREVIEW_TIMEOUT_MS);
+      const finish = (outcome: PreviewOutcome) => {
+        if (!this.#pending.delete(id)) return;
+        clearTimeout(timer);
+        this.#options.publish();
+        resolve(outcome);
+      };
+      this.#pending.set(id, { id, sessionId, review, done: finish });
+      this.#options.publish();
+    });
+  }
+
+  /** The app's answer to one request: the file it wrote, or why it didn't. */
+  async answer(message: { request?: unknown; path?: unknown; error?: unknown }): Promise<{ ok: true } | { ok: false; error: string }> {
+    const waiting = typeof message.request === "string" ? this.#pending.get(message.request) : undefined;
+    if (!waiting) return { ok: false, error: "no snapshot is waiting on that request" };
+    if (typeof message.error === "string") {
+      waiting.done({ ok: false, error: message.error.slice(0, 300) });
+      return { ok: true };
+    }
+    const path = typeof message.path === "string" ? message.path : "";
+    const refused = (why: string) => {
+      waiting.done({ ok: false, error: "the Mac app's snapshot was refused" });
+      return { ok: false as const, error: why };
+    };
+    const [real, folder] = await Promise.all([realpath(path).catch(() => null), realpath(this.#options.folder()).catch(() => null)]);
+    if (!real || !folder || dirname(real) !== folder) return refused("not a file in conch's snapshot folder");
+    const checked = await checkLocalFile(real, []);
+    if (!checked.ok) return refused(checked.reason);
+    if (((await stat(real)).mode & 0o077) !== 0) return refused("a snapshot must be readable by its owner alone (0600)");
+    waiting.done({ ok: true, preview: { path: real, kind: "image", capturedAt: this.#options.now() } });
+    return { ok: true };
+  }
 }

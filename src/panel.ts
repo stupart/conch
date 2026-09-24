@@ -1,4 +1,4 @@
-import type { ReviewPreview } from "./review-preview.ts";
+import type { PreviewRequest, ReviewPreview } from "./review-preview.ts";
 import { sessionLabel, type SessionInfo } from "./sessions.ts";
 import type { PublishedConversation } from "./conversation.ts";
 import type { SessionContextUsage } from "./context-meter.ts";
@@ -367,6 +367,11 @@ export interface PublishedDelivery {
 export interface PublishedState {
   v: 1;
   /**
+   * Window snapshots the daemon is waiting on the Mac app to take, while it waits (`WindowPreviews`):
+   * the app answers each over the socket with the file it wrote. Older apps ignore it.
+   */
+  previewRequests?: PreviewRequest[];
+  /**
    * What this daemon can do, versioned per capability and separate from `v`.
    *
    * An app that finds no `features` is talking to a daemon from before them: it must show an
@@ -561,6 +566,8 @@ export function buildPublishedState(
     audio?: { control: AudioControl; outbox: AudioOutboxItem[] };
     /** Terminal delivery outcomes recent enough for a client to still be waiting on one. */
     deliveries?: readonly PublishedDelivery[];
+    /** Window snapshots the Mac app is asked to take (`WindowPreviews`). */
+    previewRequests?: readonly PreviewRequest[];
     /** The permission prompt a session is showing; asked only of rows that need you. */
     approvalForSessionId?(sessionId: string, transcriptPath: string | undefined): PendingApproval | null;
     showing?: PublishedShowing;
@@ -576,6 +583,7 @@ export function buildPublishedState(
     ts: now,
     ...(options.audio ? { audioControl: options.audio.control, audioOutbox: options.audio.outbox } : {}),
     ...(options.deliveries?.length ? { deliveries: [...options.deliveries] } : {}),
+    ...(options.previewRequests?.length ? { previewRequests: [...options.previewRequests] } : {}),
     mode: { ...model.mode },
     live: publishedLiveState(model.live),
     ...(model.reply ? { reply: publishedReply(model.reply) } : {}),
