@@ -8,6 +8,7 @@ import { realpath, stat } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { conchHome } from "./home.ts";
+import { decodeNarrationRequest } from "./narration.ts";
 import { checkLocalFile } from "./snippet.ts";
 import { localhostPort, resolveScreen, SCREEN_RESOLVERS, screenContextFromPublished, type PortListener } from "./screen-context.ts";
 
@@ -127,6 +128,14 @@ function historyRequest(pathname: string, value: unknown): ReturnType<typeof val
   const kind = pathname === "/history/page" ? "history-page" : "history-item";
   if (body.kind !== undefined && body.kind !== kind) return { ok: false, err: "history request kind does not match route" };
   return validateHistoryRequest({ ...body, kind });
+}
+
+function isNarrationRequest(body: string): boolean {
+  try {
+    let value = JSON.parse(body);
+    if (value?.kind === "control-envelope") value = value.body;
+    return decodeNarrationRequest(value) !== null;
+  } catch { return false; }
 }
 
 /** Only reads that the shared router will dispatch may skip mutation retry reservations. */
@@ -510,6 +519,10 @@ export class PhoneBridgeApplication {
           body = JSON.stringify(validated.value);
           try { encodeControlFrame(body); }
           catch { return Response.json({ kind: "history-error", code: "frame-too-large", error: "history request exceeds 64 KiB" }, { status: 413 }); }
+        }
+        // Show's narration is the Mac app's: its lease is a local connection held open, which a phone never holds.
+        if (!historyRoute && isNarrationRequest(body)) {
+          return Response.json({ error: "narration is the Mac app's" }, { status: 403 });
         }
         const historyRead = historyRoute || isPhoneHistoryRead(url.pathname, Buffer.from(body));
         try {

@@ -17,6 +17,7 @@ final class CanvasShowTests: XCTestCase {
             switch moment.kind {
             case let .marks(marks): return "\(at) marks×\(marks.count)"
             case .look: return "\(at) look"
+            case .said: return "\(at) said"
             case .end: return "\(at) end"
             }
         }
@@ -39,6 +40,33 @@ final class CanvasShowTests: XCTestCase {
 
     func testAMomentaryRecordingIsItsLastFrame() {
         XCTAssertEqual(summary(CanvasStoryboard.moments(ends: [], length: 0.6)), ["0.55 end"])
+    }
+
+    // MARK: Narration
+
+    private typealias Said = CanvasStoryboard.Said
+
+    func testNarrationIsLookedAtWhereEachThingSaidEndsAndInTheMiddleOfEachPause() {
+        let said = [
+            Said(start: 4.5, end: 6.0, text: "and this footer"),
+            Said(start: 0.4, end: 1.9, text: "okay so this page"),
+            // 0.3 s after the last: a breath, not a pause.
+            Said(start: 2.2, end: 3.0, text: "this one, bigger"),
+        ]
+        // 3.0 to 4.5 is a pause of 1.5 s, looked at in its middle.
+        XCTAssertEqual(CanvasStoryboard.moments(of: said), [1.9, 3.0, 3.75, 6.0])
+        XCTAssertEqual(CanvasStoryboard.moments(of: [Said(start: 1, end: 2, text: "a"), Said(start: 2.7, end: 3, text: "b")]), [2, 2.35, 3])
+        XCTAssertEqual(CanvasStoryboard.moments(of: []), [])
+    }
+
+    func testNarrationMomentsJoinTheMarksAndTheLooksAvoidThem() {
+        let ends = [(at: 7.0, mark: mark(.box, 0.5, 0.5))]
+        // 7.1 is the burst's (7.3) already; 30 is past the end. The looks at 3.1 and 6.1 give way to what was said there.
+        XCTAssertEqual(summary(CanvasStoryboard.moments(ends: ends, said: [1.9, 3.0, 3.75, 6.0, 7.1, 30], length: 12)), [
+            "0.10 look", "1.90 said", "3.00 said", "3.75 said", "6.00 said", "7.30 marks×1", "9.10 look", "11.95 end",
+        ])
+        // Without narration, as before.
+        XCTAssertEqual(summary(CanvasStoryboard.moments(ends: ends, length: 12)), summary(CanvasStoryboard.moments(ends: ends, said: [], length: 12)))
     }
 
     // MARK: Near-duplicates
@@ -115,6 +143,35 @@ final class CanvasShowTests: XCTestCase {
         XCTAssertEqual(kept.filter { $0.kind == .look }.map(\.at), [0, 14, 15, 16, 17, 18, 19])
     }
 
+    func testWhereHeSpokeIsKeptOnlyIfTheScreenChangedAndOverADozenOutlastsTheLooks() {
+        // A look, then alternately a look that changes much of the screen and where he spoke, changing a little; the end.
+        var moments: [Moment] = [], prints: [[UInt8]] = []
+        var cells = [UInt8](repeating: 0, count: 4096), filled = 0
+        func change(_ count: Int) {
+            for cell in filled..<filled + count { cells[cell] = 255 }
+            filled += count
+        }
+        for index in 0..<12 {
+            let spoke = index % 2 == 1
+            change(spoke ? 20 : 200)
+            moments.append(Moment(at: Double(index), kind: spoke ? .said : .look))
+            prints.append(cells)
+        }
+        // Where he spoke over a screen that didn't move is the frame before it, and is dropped.
+        moments.append(Moment(at: 12, kind: .said))
+        prints.append(cells)
+        change(20)
+        moments.append(Moment(at: 13, kind: .end))
+        prints.append(cells)
+        let kept = CanvasStoryboard.keep(moments, prints: prints)
+        XCTAssertFalse(kept.map(\.at).contains(12))
+        XCTAssertEqual(kept.count, CanvasStoryboard.most)
+        // Thirteen changed; the one to go is a look, though it changed ten times more than where he spoke.
+        XCTAssertEqual(kept.filter { $0.kind == .said }.count, 6)
+        XCTAssertEqual(kept.filter { $0.kind == .look }.map(\.at), [0, 4, 6, 8, 10])
+        XCTAssertEqual(kept.last?.kind, .end)
+    }
+
     // MARK: The words
 
     func testClockStampAndTheTimerCountingDownNearTheCap() {
@@ -154,6 +211,53 @@ final class CanvasShowTests: XCTestCase {
         The recording itself, for people: show.mp4
 
         """)
+    }
+
+    private let said = [
+        Said(start: 0.5, end: 1.2, text: "okay so this page"),
+        Said(start: 3.0, end: 4.1, text: "this one, bigger"),
+        Said(start: 16.0, end: 17.5, text: "and this\nfooter"),
+        Said(start: 22.0, end: 23.0, text: "that's it"),
+    ]
+
+    func testNarratedEachFrameHasTheWordsSaidNearestItAndTheWholeTranscriptFollows() {
+        let text = CanvasStoryboard.storyboard(frames.map { ($0.moment, $0.name) }, said: said, about: "Safari", length: 23.6)
+        XCTAssertEqual(text, """
+        # Tyler showed Safari (0:23)
+
+        A recording of his screen with his ink over it (his is orange), and what he said over it. Agents can't watch video, so these are its frames: one just after each thing he marked, where he finished saying something or paused, and wherever the screen changed; each with the words he said there.
+
+        [00:00] frame 01 — "okay so this page" · the start (frame-01.png)
+        [00:04] frame 02 — "this one, bigger" · box (55%,15%), note (60%,12%): "make this bigger" (frame-02.png)
+        [00:15] frame 03 — "and this footer" · the screen changed (frame-03.png)
+        [00:23] frame 04 — "that's it" · the end (frame-04.png)
+
+        ## What he said
+
+        [00:00] okay so this page
+        [00:03] this one, bigger
+        [00:16] and this footer
+        [00:22] that's it
+
+        The recording itself, for people: show.mp4
+
+        """)
+        // Every word on exactly one frame; two things said nearest one frame share its line, in order.
+        XCTAssertEqual(CanvasStoryboard.words(said, at: [0.1, 23.55]), ["okay so this page this one, bigger", "and this footer that's it"])
+        XCTAssertEqual(CanvasStoryboard.words([], at: [0.1, 4.3]), ["", ""])
+        // Where he FINISHED: a long thought begun at the start goes with the picture he ended it on.
+        XCTAssertEqual(CanvasStoryboard.words([Said(start: 1, end: 9, text: "a long thought")], at: [0.1, 10]), ["", "a long thought"])
+    }
+
+    func testANarratedPromptCarriesTheWordsOnEachFrameLine() {
+        let canvas = CanvasDocument(anchor: CanvasAnchor(id: 7, frame: CGRect(x: 0, y: 0, width: 1000, height: 500)), id: "5B3F0D2E-9C41-4E7A-8F10-2D6B7A1C9E44")
+        let lines = CanvasStoryboard.prompt(frames.map { ($0.moment, "/c/\($0.name)") }, said: said, about: "Safari", length: 23.6, storyboard: "/c/storyboard.md", video: "/c/show.mp4", canvas: canvas).split(separator: "\n").map(String.init)
+        XCTAssertEqual(lines[2...5], [
+            "[00:00] /c/frame-01.png — \"okay so this page\" · the start",
+            "[00:04] /c/frame-02.png — \"this one, bigger\" · box (55%,15%), note (60%,12%): \"make this bigger\"",
+            "[00:15] /c/frame-03.png — \"and this footer\" · the screen changed",
+            "[00:23] /c/frame-04.png — \"that's it\" · the end",
+        ])
     }
 
     func testThePromptSaysWhatWasShownThenTheStoryboardEachFrameTheVideoForPeopleAndHowToAnswerOnTheCanvas() {

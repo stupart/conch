@@ -1,9 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
+  cliSegments,
   filterWhisperTranscript,
   isLikelyWhisperHallucination,
+  serverSegments,
   transcribePcm,
+  transcribeWavSegments,
   WhisperServerClient,
 } from "../src/transcribe.ts";
 import type { Config } from "../src/config.ts";
@@ -148,6 +153,8 @@ describe("cold transcription recovery", () => {
     expect(engines).toEqual(["cold"]);
     expect(commands).toHaveLength(1);
     expect(commands[0]![0]).toBe("fake-whisper-cli");
+    // The text path keeps its timestamps off.
+    expect(commands[0]).toContain("-nt");
     const inputIndex = commands[0]!.indexOf("-f");
     expect(inputIndex).toBeGreaterThan(0);
     expect(existsSync(commands[0]![inputIndex + 1]!)).toBeFalse();
@@ -303,6 +310,102 @@ describe("cold transcription recovery", () => {
     expect(result).toEqual({ text: "" });
     expect(engines).toEqual(["warm"]);
     expect(coldSpawns).toBe(0);
+  });
+});
+
+/**
+ * Show's narration (narration.ts): a whole WAV, timed. Real output from both
+ * engines on a spoken file with a 2.5 s pause (2026-09-25, large-v3-turbo with
+ * VAD): the server's verbose_json segments and the CLI's lines, the same times.
+ */
+describe("timed transcription", () => {
+  test("the server's segments: seconds, cleaned, the empty and the malformed dropped", () => {
+    expect(serverSegments([
+      { id: 0, text: " Make this header bigger.", start: 0, end: 0.9, no_speech_prob: 0.01 },
+      { id: 1, text: " [BLANK_AUDIO]", start: 1, end: 3 },
+      { id: 2, text: " And this button should be blue.", start: 3.47, end: 4.75 },
+      { id: 3, text: "no times" },
+      { id: 4, text: "backwards", start: 5, end: 4 },
+      null,
+    ])).toEqual([
+      { start: 0, end: 0.9, text: "Make this header bigger." },
+      { start: 3.47, end: 4.75, text: "And this button should be blue." },
+      { start: 5, end: 5, text: "backwards" },
+    ]);
+    expect(serverSegments(undefined)).toEqual([]);
+    expect(serverSegments({ text: "not a list" })).toEqual([]);
+  });
+
+  test("the CLI's lines, as whisper-cli prints them without -nt", () => {
+    const printed = "\n[00:00:00.000 --> 00:00:00.880]   Make this header bigger.\n[00:00:03.470 --> 00:00:04.750]   And this button should be blue.\n[01:02:03.500 --> 01:02:04.000]   An hour in.\nwhisper_print_timings: total time = 1.0 ms\n";
+    expect(cliSegments(printed)).toEqual([
+      { start: 0, end: 0.88, text: "Make this header bigger." },
+      { start: 3.47, end: 4.75, text: "And this button should be blue." },
+      { start: 3723.5, end: 3724, text: "An hour in." },
+    ]);
+    expect(cliSegments("recovered tail\n")).toEqual([]);
+  });
+
+  function wavFile(): { path: string; done(): void } {
+    const root = mkdtempSync(join(tmpdir(), "conch-timed-"));
+    const path = join(root, "narration.wav");
+    writeFileSync(path, new Uint8Array(44));
+    return { path, done: () => rmSync(root, { recursive: true, force: true }) };
+  }
+
+  test("warm first, asking for timestamps; the text path's request is unchanged", async () => {
+    const wav = wavFile();
+    try {
+      const forms: FormData[] = [];
+      const responses = [
+        new Response("root", { status: 200 }),
+        Response.json({ text: "" }),
+        Response.json({ text: " Make this header bigger.", segments: [{ text: " Make this header bigger.", start: 0, end: 0.9 }] }),
+      ];
+      const client = new WhisperServerClient({
+        request: async (_url, init) => {
+          if (init?.body instanceof FormData) forms.push(init.body);
+          return responses.shift()!;
+        },
+      });
+      expect(await client.probeReadyUnlocked(transcriptionConfig(), 1_000)).toBeTrue();
+      const result = await transcribeWavSegments(transcriptionConfig(), wav.path, {
+        client,
+        spawnCold: () => { throw new Error("warm answered"); },
+      });
+      expect(result).toEqual({ segments: [{ start: 0, end: 0.9, text: "Make this header bigger." }] });
+      expect(forms[1]!.get("response_format")).toBe("verbose_json");
+      expect(forms[1]!.get("no_timestamps")).toBe("false");
+      expect(forms[1]!.get("no_language_probabilities")).toBeNull();
+    } finally { wav.done(); }
+  });
+
+  test("then the CLI once, without -nt, on the file itself", async () => {
+    const wav = wavFile();
+    try {
+      const client = await readyClient(new Response("warm down", { status: 503 }));
+      const commands: string[][] = [];
+      const result = await transcribeWavSegments(transcriptionConfig(), wav.path, {
+        client,
+        spawnCold: (command) => {
+          commands.push(command);
+          return { stdout: stream("[00:00:03.470 --> 00:00:04.750]   And this button should be blue.\n"), exited: Promise.resolve(0), kill() {} };
+        },
+      });
+      expect(result).toEqual({ segments: [{ start: 3.47, end: 4.75, text: "And this button should be blue." }] });
+      expect(commands).toHaveLength(1);
+      expect(commands[0]).not.toContain("-nt");
+      expect(commands[0]![commands[0]!.indexOf("-f") + 1]).toBe(wav.path);
+      // A CLI that failed with nothing to show says so.
+      const failed = await transcribeWavSegments(transcriptionConfig(), wav.path, {
+        client: await readyClient(new Response("warm down", { status: 503 })),
+        spawnCold: () => ({ stdout: stream(""), exited: Promise.resolve(1), kill() {} }),
+      });
+      expect(failed).toEqual({ segments: [], error: "Transcription failed" });
+    } finally { wav.done(); }
+    expect(await transcribeWavSegments(transcriptionConfig(), "/nonexistent/narration.wav")).toEqual({
+      segments: [], error: "File not found: /nonexistent/narration.wav",
+    });
   });
 });
 

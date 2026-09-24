@@ -4,9 +4,10 @@ import SwiftUI
 
 // Show: the canvas recorded instead of stilled. Tyler: "or we could also have like a 'show' and that's recording it via
 // video instead of only an image." Agents can't watch a video, so what one is sent is its storyboard: frames pulled just
-// after each thing Tyler marked and wherever the screen changed, near-duplicates dropped, a dozen at most, each with its
-// time and what was marked. This is the pure part — which moments, which frames, the words — and the pill's record
-// button; the recording itself is the Mac app's (`CanvasShow.swift` there). The research is §3 and §4 of
+// after each thing Tyler marked, where he finished saying something or paused, and wherever the screen changed,
+// near-duplicates dropped, a dozen at most, each with its time, what was marked and what he said there. This is the pure
+// part — which moments, which frames, the words — and the pill's record and mic buttons; the recording itself is the Mac
+// app's (`CanvasShow.swift` there), and his voice the daemon's (`src/narration.ts`). The research is §3 and §4 of
 // ~/Projects/conch-design/canvas-research-2026-09-25.md.
 
 public enum CanvasStoryboard {
@@ -27,6 +28,8 @@ public enum CanvasStoryboard {
             case marks([CanvasMark])
             /// A regular look, kept only if the screen changed since the last frame kept.
             case look
+            /// Where Tyler finished saying something, or paused: kept, as a look is, only if the screen changed.
+            case said
             /// The last frame.
             case end
         }
@@ -48,10 +51,34 @@ public enum CanvasStoryboard {
     /// A regular look, this often.
     static let every = 3.0
 
+    /// Something Tyler said over a Show, and when, in seconds into the recording: the daemon's transcript of his narration.
+    public struct Said: Equatable, Sendable {
+        public let start: Double
+        public let end: Double
+        public let text: String
+
+        public init(start: Double, end: Double, text: String) {
+            self.start = start
+            self.end = end
+            self.text = text
+        }
+    }
+
+    /// A gap this long between two things said is a pause, and worth a look.
+    static let pause = 0.7
+
+    /// Where narration is looked at: the end of each thing said, and the middle of each pause.
+    public static func moments(of said: [Said]) -> [Double] {
+        let said = said.sorted { $0.start < $1.start }
+        let pauses = zip(said, said.dropFirst()).filter { $1.start - $0.end >= pause }.map { ($0.end + $1.start) / 2 }
+        return (said.map(\.end) + pauses).sorted()
+    }
+
     /// Where a recording `length` seconds long is looked at: just after each burst of Tyler's marks (`ends`, each mark and
-    /// when it was finished, in seconds into the recording); every three seconds from the start, where no burst is near;
-    /// and the last frame. Oldest first, the last frame last.
-    public static func moments(ends: [(at: Double, mark: CanvasMark)], length: Double) -> [Moment] {
+    /// when it was finished, in seconds into the recording); where he finished saying something or paused (`said`, from
+    /// `moments(of:)`), where no burst is near; every three seconds from the start, where neither is; and the last frame.
+    /// Oldest first, the last frame last.
+    public static func moments(ends: [(at: Double, mark: CanvasMark)], said: [Double] = [], length: Double) -> [Moment] {
         let last = max(0, length - 0.05)
         var bursts: [(finished: Double, marks: [CanvasMark])] = []
         for end in ends.sorted(by: { $0.at < $1.at }) {
@@ -63,7 +90,11 @@ public enum CanvasStoryboard {
         }
         var moments = bursts.map { Moment(at: min($0.finished + settle, last), kind: .marks($0.marks)) }
         let marked = moments.map(\.at)
-        for at in stride(from: 0.1, to: last - Self.burst, by: every) where !marked.contains(where: { abs($0 - at) < Self.burst }) {
+        for at in said where at > 0 && at < last && !marked.contains(where: { abs($0 - at) < Self.burst }) {
+            moments.append(Moment(at: at, kind: .said))
+        }
+        let looked = moments.map(\.at)
+        for at in stride(from: 0.1, to: last - Self.burst, by: every) where !looked.contains(where: { abs($0 - at) < Self.burst }) {
             moments.append(Moment(at: at, kind: .look))
         }
         return moments.sorted { $0.at < $1.at } + [Moment(at: last, kind: .end)]
@@ -97,9 +128,9 @@ public enum CanvasStoryboard {
         return Double(zip(a, b).filter { abs(Int($0) - Int($1)) > cellMoved }.count) / Double(a.count)
     }
 
-    /// The frames to send, from each moment's thumbprint (`prints`, one each): every burst of marks; a look or the end only
-    /// if the screen changed since the last frame kept. Over `most`, the looks that changed least go first, then the
-    /// marks that did; the last frame kept always stays.
+    /// The frames to send, from each moment's thumbprint (`prints`, one each): every burst of marks; a look, a pause or
+    /// the end only if the screen changed since the last frame kept. Over `most`, the looks that changed least go first,
+    /// then where he spoke, then the marks; the last frame kept always stays.
     public static func keep(_ moments: [Moment], prints: [[UInt8]]) -> [Moment] {
         var kept: [(moment: Moment, change: Double)] = []
         var previous: [UInt8]?
@@ -110,8 +141,11 @@ public enum CanvasStoryboard {
             previous = print
         }
         func rank(_ each: (moment: Moment, change: Double)) -> (Int, Double) {
-            if case .marks = each.moment.kind { return (1, each.change) }
-            return (0, each.change)
+            switch each.moment.kind {
+            case .marks: return (2, each.change)
+            case .said: return (1, each.change)
+            case .look, .end: return (0, each.change)
+            }
         }
         while kept.count > most, let drop = kept.indices.dropLast().min(by: { rank(kept[$0]) < rank(kept[$1]) }) {
             kept.remove(at: drop)
@@ -148,35 +182,63 @@ public enum CanvasStoryboard {
                 let words = (mark.text ?? "").split(whereSeparator: \.isNewline).joined(separator: " ").trimmingCharacters(in: .whitespaces)
                 return words.isEmpty ? CanvasPrompt.place(mark) : "\(CanvasPrompt.place(mark)): \"\(words)\""
             }.joined(separator: ", ")
-        case .look:
+        case .look, .said:
             return first ? "the start" : "the screen changed"
         case .end:
             return first ? "the screen" : "the end"
         }
     }
 
-    /// `storyboard.md`, beside the frames: what the recording was, then a line a frame — its time, its number, what
-    /// happened, its file.
-    public static func storyboard(_ frames: [(moment: Moment, file: String)], about label: String, length: Double) -> String {
+    /// What Tyler said at each frame of `frames` (their times): each thing said goes to the frame nearest where he finished
+    /// saying it, so every word is on one line, with the picture of what he was looking at.
+    static func words(_ said: [Said], at frames: [Double]) -> [String] {
+        var words = [[String]](repeating: [], count: frames.count)
+        for each in said.sorted(by: { $0.start < $1.start }) {
+            guard let nearest = frames.indices.min(by: { abs(frames[$0] - each.end) < abs(frames[$1] - each.end) }) else { break }
+            words[nearest].append(flat(each.text))
+        }
+        return words.map { $0.filter { !$0.isEmpty }.joined(separator: " ") }
+    }
+
+    private static func flat(_ text: String) -> String {
+        text.split(whereSeparator: \.isNewline).joined(separator: " ").trimmingCharacters(in: .whitespaces)
+    }
+
+    /// A frame's line: what he said there, quoted, then what happened.
+    private static func happened(_ moment: Moment, first: Bool, words: String) -> String {
+        (words.isEmpty ? "" : "\"\(words)\" · ") + caption(moment, first: first)
+    }
+
+    /// `storyboard.md`, beside the frames: what the recording was, then a line a frame — its time, its number, what he said
+    /// there, what happened, its file — and, when he narrated, everything he said, as he said it.
+    public static func storyboard(_ frames: [(moment: Moment, file: String)], said: [Said] = [], about label: String, length: Double) -> String {
         var lines = [
             "# Tyler showed \(label) (\(clock(length)))",
             "",
-            "A recording of his screen with his ink over it (his is orange). Agents can't watch video, so these are its frames: one just after each thing he marked, and one wherever the screen changed.",
+            said.isEmpty
+                ? "A recording of his screen with his ink over it (his is orange). Agents can't watch video, so these are its frames: one just after each thing he marked, and one wherever the screen changed."
+                : "A recording of his screen with his ink over it (his is orange), and what he said over it. Agents can't watch video, so these are its frames: one just after each thing he marked, where he finished saying something or paused, and wherever the screen changed; each with the words he said there.",
             "",
         ]
+        let words = words(said, at: frames.map(\.moment.at))
         lines += frames.enumerated().map { index, frame in
-            "\(stamp(frame.moment.at)) frame \(String(format: "%02d", index + 1)) — \(caption(frame.moment, first: index == 0)) (\(frame.file))"
+            "\(stamp(frame.moment.at)) frame \(String(format: "%02d", index + 1)) — \(happened(frame.moment, first: index == 0, words: words[index])) (\(frame.file))"
+        }
+        if !said.isEmpty {
+            lines += ["", "## What he said", ""]
+            lines += said.sorted { $0.start < $1.start }.map { "\(stamp($0.start)) \(flat($0.text))" }
         }
         lines += ["", "The recording itself, for people: show.mp4"]
         return lines.joined(separator: "\n") + "\n"
     }
 
     /// The one message a Show sends, through the composer's path as the still's is: what was shown and how long, the
-    /// storyboard, each frame's path with its time and what happened, the recording, for people, and — as the still's
-    /// ends — how to mark an answer on `canvas`.
-    public static func prompt(_ frames: [(moment: Moment, path: String)], about label: String, length: Double, storyboard: String, video: String, canvas: CanvasDocument) -> String {
+    /// storyboard, each frame's path with its time, what he said there and what happened, the recording, for people, and
+    /// — as the still's ends — how to mark an answer on `canvas`.
+    public static func prompt(_ frames: [(moment: Moment, path: String)], said: [Said] = [], about label: String, length: Double, storyboard: String, video: String, canvas: CanvasDocument) -> String {
         var lines = ["[canvas] Tyler showed \(label) (\(clock(length))).", "Storyboard: \(storyboard)"]
-        lines += frames.enumerated().map { index, frame in "\(stamp(frame.moment.at)) \(frame.path) — \(caption(frame.moment, first: index == 0))" }
+        let words = words(said, at: frames.map(\.moment.at))
+        lines += frames.enumerated().map { index, frame in "\(stamp(frame.moment.at)) \(frame.path) — \(happened(frame.moment, first: index == 0, words: words[index]))" }
         lines.append("The recording, for people (agents can't watch video): \(video)")
         lines.append(CanvasPrompt.answer(canvas))
         return lines.joined(separator: "\n")
@@ -192,10 +254,28 @@ extension CanvasToolPill {
         case stopped(TimeInterval)
     }
 
-    /// The record button (panel-lab's `#bShow`), red while recording, and beside it the time; none where Show isn't.
+    /// The mic (narration: off unless Tyler turns it on, and fixed once a Show starts), the record button (panel-lab's
+    /// `#bShow`), red while recording, and beside it the time; none where Show isn't.
     @ViewBuilder var showControl: some View {
         if let onShow {
             let on = { if case .since = recording { return true } else { return false } }()
+            if let onNarrate {
+                Button(action: onNarrate) {
+                    Image(systemName: narrate ? "mic.fill" : "mic.slash")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(narrate ? ConchColor.onAccent : ConchColor.overlayGlassIcon)
+                        .frame(width: Self.buttonSize, height: Self.buttonSize)
+                        .background { if narrate { Circle().fill(ConchColor.accent) } }
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(recording != nil)
+                .opacity(recording != nil && !narrate ? 0.4 : 1)
+                .help(narrate ? "Narration on: Show records what you say too" : "Narration off: Show records the screen alone")
+                .accessibilityLabel("Narrate")
+                .accessibilityValue(narrate ? "On" : "Off")
+                .accessibilityAddTraits(narrate ? .isSelected : [])
+            }
             Button(action: onShow) {
                 Image(systemName: "record.circle")
                     .font(.system(size: 14, weight: .semibold))

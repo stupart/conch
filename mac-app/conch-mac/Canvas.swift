@@ -35,6 +35,8 @@ final class CanvasController: ObservableObject {
     private var agentHidden = false
     /// Show: the screen being recorded, or stopped and waiting for Send or Esc (`CanvasShow.swift`).
     @Published var recorder: CanvasRecorder?
+    /// The pill's mic: a Show narrates, recorded by the daemon (`CanvasNarration`). Off until Tyler turns it on.
+    @Published var narrate = false
 
     /// In use: the pen is down, ink is showing, or there is a Show. The glass and the pill show only then.
     var inUse: Bool { armed || document?.isEmpty == false || recorder != nil }
@@ -331,7 +333,9 @@ private struct CanvasPillHost: View {
             onUndo: { canvas.undo() },
             onSend: { canvas.send() },
             recording: canvas.recorder?.phase,
-            onShow: CanvasController.canShow ? { canvas.toggleShow() } : nil
+            onShow: CanvasController.canShow ? { canvas.toggleShow() } : nil,
+            narrate: canvas.narrate,
+            onNarrate: { canvas.narrate.toggle() }
         )
         .padding(Self.margin)
         .fixedSize()

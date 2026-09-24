@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import Combine
 import ConchDesign
+import Darwin
 import ScreenCaptureKit
 
 /// Show (the canvas's phase 3). Tyler: "or we could also have like a 'show' and that's recording it via video instead of
@@ -10,9 +11,11 @@ import ScreenCaptureKit
 /// (`CanvasStoryboard`), since agents can't watch video; Esc throws it away. Nothing is ever recorded but here, on an
 /// explicit Show: the pill's record button, or R with the pen down.
 ///
-/// Silent: a Show never opens the mic. The mic must not be open while conch speaks, and the reservation that keeps it so
-/// lives inside the daemon with no door to it from the app — it couldn't stop conch speaking over a narration — and
-/// the app has no door to its whisper either. Narration is a daemon request to hold the mic and one to transcribe a file.
+/// The app never opens the mic. The mic must not be open while conch speaks, and the reservation that keeps it so lives
+/// inside the daemon; so with the pill's mic on, a Show asks the DAEMON to narrate (`CanvasNarration`, `src/narration.ts`):
+/// it holds the mic as it holds a dictation's, records into the Show's folder, and at the end hands back what was said and
+/// when, which places frames and words in the storyboard. Refused — the phone has the audio, conch is speaking, the mic
+/// is open — the pill says why, and the Show goes on silent.
 extension CanvasController {
     /// Show records through `SCRecordingOutput`, macOS 15's; below it the pill has no record button.
     static var canShow: Bool {
@@ -47,9 +50,25 @@ extension CanvasController {
             recorder.watch($document, from: document)
             self.recorder = recorder
             apply()
+            // Narration only with the pill's mic on; the recording doesn't wait for it.
+            if narrate { Task { await startNarration(for: recorder) } }
             // Two minutes at most, the last fifteen seconds counted down on the pill; then it stops and waits.
             try? await Task.sleep(for: .seconds(CanvasStoryboard.longest))
             await stopShow(recorder)
+        }
+    }
+
+    /// Tyler's voice over this Show, asked of the daemon. Taken, it is the recorder's until the Show stops; refused, the
+    /// pill says why and the Show goes on silent.
+    private func startNarration(for recorder: CanvasRecorder) async {
+        switch await CanvasNarration.start(recorder.folder.lastPathComponent) {
+        case let .narrating(narration):
+            // Stopped or thrown away while it was asked for: it ends now.
+            guard recorder.isRecording, self.recorder === recorder else { return narration.cancel() }
+            recorder.narration = narration
+        case let .refused(reason):
+            guard self.recorder === recorder else { return }
+            message = "Recording without narration: \(reason)."
         }
     }
 
@@ -86,6 +105,8 @@ extension CanvasController {
         let document = document
         Task { @MainActor in
             await recorder.stop()
+            // What Tyler said over it, once the daemon has read it: before the folder moves, since it reads the WAV there.
+            let said = await recorder.said?.value ?? []
             // The canvas it is of names its folder, as a still's does, so an agent can answer it with marks framed
             // {canvas: id} (`CanvasFolder.anchor`).
             let canvas = recorder.canvas(document)
@@ -93,7 +114,7 @@ extension CanvasController {
             do {
                 try recorder.file(under: canvas.id)
                 let ends = recorder.ends, video = recorder.video
-                prompt = try await Task.detached(priority: .userInitiated) { try await CanvasRecorder.storyboard(video, ends: ends, canvas: canvas, about: label) }.value
+                prompt = try await Task.detached(priority: .userInitiated) { try await CanvasRecorder.storyboard(video, ends: ends, said: said, canvas: canvas, about: label) }.value
             } catch {
                 sending = false
                 self.recorder = nil
@@ -131,6 +152,10 @@ final class CanvasRecorder: NSObject {
     /// Each of Tyler's marks on the recorded display, and when it was finished, in seconds into the recording: a note
     /// when its last word was typed.
     private(set) var ends: [(at: Double, mark: CanvasMark)] = []
+    /// Tyler's narration while it records, when the pill's mic was on and the daemon took it.
+    var narration: CanvasNarration?
+    /// What he said, once it stopped, in seconds into the recording; nil without a narration.
+    private(set) var said: Task<[CanvasStoryboard.Said], Never>?
     private let display: CGDirectDisplayID
     /// The recorded display, as a canvas on it is anchored.
     private let anchor: CanvasAnchor
@@ -174,6 +199,12 @@ final class CanvasRecorder: NSObject {
         let files = FileManager.default
         try? files.removeItem(at: named.appendingPathComponent("show.mp4"))
         try files.moveItem(at: video, to: named.appendingPathComponent("show.mp4"))
+        // The narration the daemon recorded here goes with it.
+        let voice = folder.appendingPathComponent(CanvasNarration.file)
+        if files.fileExists(atPath: voice.path) {
+            try? files.removeItem(at: named.appendingPathComponent(CanvasNarration.file))
+            try files.moveItem(at: voice, to: named.appendingPathComponent(CanvasNarration.file))
+        }
         try? files.removeItem(at: folder)
         folder = named
     }
@@ -275,6 +306,12 @@ final class CanvasRecorder: NSObject {
         }
         let length = Date().timeIntervalSince(began)
         phase = .stopped(length)
+        // The mic closes with the recording, not at Send; the daemon starts on the words now.
+        if let narration {
+            self.narration = nil
+            let began = began
+            said = Task { await narration.stop(from: began) }
+        }
         // The pen's edge light, hidden while it recorded, back if the pen is down.
         CanvasController.shared.apply()
         watching = nil
@@ -291,8 +328,10 @@ final class CanvasRecorder: NSObject {
         return length
     }
 
-    /// Esc: stopped, and its folder gone.
+    /// Esc: stopped, and its folder gone. A narration is cancelled, not read, and the daemon deletes what it recorded.
     func discard() async {
+        narration?.cancel()
+        narration = nil
         await stop()
         try? FileManager.default.removeItem(at: folder)
     }
@@ -396,7 +435,7 @@ extension CanvasRecorder {
     /// A finished recording, as an agent can read it: its frames at the storyboard's moments (`CanvasStoryboard`), no
     /// longer than 1568 px, then `storyboard.md` and `canvas.json` (the canvas it is of, whose id the folder has), beside
     /// `show.mp4`. The message that points at them.
-    nonisolated static func storyboard(_ video: URL, ends: [(at: Double, mark: CanvasMark)], canvas: CanvasDocument, about label: String) async throws -> String {
+    nonisolated static func storyboard(_ video: URL, ends: [(at: Double, mark: CanvasMark)], said: [CanvasStoryboard.Said], canvas: CanvasDocument, about label: String) async throws -> String {
         let asset = AVURLAsset(url: video)
         let length = try await asset.load(.duration).seconds
         let folder = video.deletingLastPathComponent()
@@ -411,7 +450,7 @@ extension CanvasRecorder {
         // Small first, to tell the moments apart; then full size, for the frames kept alone.
         let small = frames(160), full = frames(CanvasStoryboard.longEdge)
         var moments: [CanvasStoryboard.Moment] = [], prints: [[UInt8]] = []
-        for moment in CanvasStoryboard.moments(ends: ends, length: length) {
+        for moment in CanvasStoryboard.moments(ends: ends, said: CanvasStoryboard.moments(of: said), length: length) {
             guard let image = try? await small.image(at: CMTime(seconds: moment.at, preferredTimescale: 600)).image else { continue }
             moments.append(moment)
             prints.append(CanvasStoryboard.thumbprint(image))
@@ -422,11 +461,91 @@ extension CanvasRecorder {
             kept.append((moment, try CanvasFolder.save(CanvasInk.png(image), String(format: "frame-%02d.png", kept.count + 1), in: folder)))
         }
         guard !kept.isEmpty else { throw CocoaError(.fileReadCorruptFile, userInfo: [NSFilePathErrorKey: video.path]) }
-        let storyboard = try CanvasFolder.save(Data(CanvasStoryboard.storyboard(kept.map { ($0.moment, $0.file.lastPathComponent) }, about: label, length: length).utf8), "storyboard.md", in: folder)
+        let storyboard = try CanvasFolder.save(Data(CanvasStoryboard.storyboard(kept.map { ($0.moment, $0.file.lastPathComponent) }, said: said, about: label, length: length).utf8), "storyboard.md", in: folder)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         _ = try CanvasFolder.save(try encoder.encode(canvas), "canvas.json", in: folder)
-        return CanvasStoryboard.prompt(kept.map { ($0.moment, $0.file.path) }, about: label, length: length, storyboard: storyboard.path, video: video.path, canvas: canvas)
+        return CanvasStoryboard.prompt(kept.map { ($0.moment, $0.file.path) }, said: said, about: label, length: length, storyboard: storyboard.path, video: video.path, canvas: canvas)
+    }
+}
+
+// MARK: - Narration
+
+/// Tyler's voice over a Show, as the daemon records it (`src/narration.ts`). The app never opens the mic: the daemon holds
+/// it as it holds a dictation's, so conch can't speak over it or hear itself, and the phone holding the audio keeps it
+/// shut. The connection that started it is its lease, held open here until it ends: an app that crashes or quits takes
+/// its narration with it, and the daemon ends one that outlives the Show's cap on its own.
+@MainActor
+final class CanvasNarration {
+    /// Beside `show.mp4` in the Show's folder: what the daemon records.
+    static let file = "narration.wav"
+    /// Reading two minutes of voice: the warm server, else the cold one once.
+    private static let reading: TimeInterval = 150
+
+    let canvasId: String
+    /// When the daemon's recorder started; what it says is timed from here.
+    let startedAt: Date
+    private var lease: Int32?
+
+    private init(canvasId: String, startedAt: Date, lease: Int32) {
+        self.canvasId = canvasId
+        self.startedAt = startedAt
+        self.lease = lease
+    }
+
+    enum Started {
+        case narrating(CanvasNarration)
+        case refused(String)
+    }
+
+    /// Asked of the daemon for the Show whose folder is `canvasId`: taken, or why not.
+    static func start(_ canvasId: String) async -> Started {
+        guard let opened = await ConchSocketClient().open(["kind": "narration-start", "canvasId": canvasId], timeout: 5) else {
+            return .refused("conch isn't answering")
+        }
+        let lease = opened.descriptor
+        let answer = (try? JSONSerialization.jsonObject(with: opened.reply)) as? [String: Any]
+        guard answer?["kind"] as? String == "narration-started", let at = answer?["startedAt"] as? Double else {
+            Darwin.close(lease)
+            return .refused(answer?["reason"] as? String ?? answer?["error"] as? String ?? "conch couldn't start it")
+        }
+        return .narrating(CanvasNarration(canvasId: canvasId, startedAt: Date(timeIntervalSince1970: at / 1000), lease: lease))
+    }
+
+    /// Stopped: the daemon closes the mic, then reads what it recorded. What was said, in seconds into the recording that
+    /// `began` then; nothing, if it couldn't be read.
+    func stop(from began: Date) async -> [CanvasStoryboard.Said] {
+        let outcome = await ConchSocketClient().request(["kind": "narration-stop", "canvasId": canvasId], timeout: Self.reading)
+        end()
+        guard case let .reply(data) = outcome, let stopped = try? JSONDecoder().decode(Stopped.self, from: data) else { return [] }
+        let offset = startedAt.timeIntervalSince(began)
+        return stopped.segments.map { CanvasStoryboard.Said(start: $0.start + offset, end: $0.end + offset, text: $0.text) }
+    }
+
+    /// Esc: the daemon closes the mic and deletes what it recorded.
+    func cancel() {
+        let canvasId = canvasId
+        Task {
+            _ = await ConchSocketClient().request(["kind": "narration-cancel", "canvasId": canvasId], timeout: 5)
+            end()
+        }
+    }
+
+    /// The lease let go. After a stop or a cancel the daemon has closed its end already.
+    private func end() {
+        guard let lease else { return }
+        self.lease = nil
+        Darwin.close(lease)
+    }
+
+    private struct Stopped: Decodable {
+        struct Segment: Decodable {
+            let start: Double
+            let end: Double
+            let text: String
+        }
+
+        let segments: [Segment]
     }
 }
 

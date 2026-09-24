@@ -243,6 +243,38 @@ function spawnCapture(
   return capture;
 }
 
+/**
+ * Show's narration (narration.ts): the same device, rate, format and gain as
+ * every capture, but kept whole as a WAV — no `silence` endpointing, since the
+ * pauses are what place the words against the recording — and `trim` ends it
+ * at `seconds` even if nothing is left alive to stop it.
+ */
+export function narrationSoxArgs(cfg: Pick<Config, "micGainDb">, wav: string, seconds: number): string[] {
+  return [
+    "sox", "-d", "-q",
+    "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "wav",
+    wav,
+    ...(cfg.micGainDb ? ["gain", String(cfg.micGainDb)] : []),
+    "trim", "0", String(seconds),
+  ];
+}
+
+/**
+ * A narration's recorder, owned like every other: shutdown, a phone claim and
+ * an audio yield stop it with the rest (`killActiveRecorders`), and the next
+ * daemon reaps it if this one dies hard.
+ */
+export function spawnNarrationRecorder(cfg: Config, wav: string, seconds: number): ReturnType<typeof Bun.spawn> {
+  const proc = Bun.spawn(narrationSoxArgs(cfg, wav, seconds), { stdout: "ignore", stderr: "ignore" });
+  activeRecorders.add(proc);
+  recordSpawnedSox(proc.pid);
+  void proc.exited.then(() => {
+    activeRecorders.delete(proc);
+    forgetSox(proc.pid);
+  });
+  return proc;
+}
+
 /** True for every Conch-owned SoX child, including pre-adoption barge capture. */
 export function hasActiveRecorders(): boolean {
   return activeRecorders.size > 0;

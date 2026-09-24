@@ -102,7 +102,10 @@ import {
   listenOnce,
   hasActiveRecorders,
   killActiveRecorders,
+  spawnNarrationRecorder,
+  stopSoxProcess,
 } from "./listen.ts";
+import { createNarration, NARRATION_QUIET_WITHIN_MS } from "./narration.ts";
 import { revealSessionWindow } from "./inject.ts";
 import { adapterFor, transcriptFormatFor } from "./agent-adapter.ts";
 import { injectProviderCommand, renameProviderSession } from "./provider-rename.ts";
@@ -175,6 +178,7 @@ import {
   type RelayPairing,
 } from "./phone-relay.ts";
 import {
+  transcribeWavSegments,
   whisperServerClient,
   type WhisperRecoveryReason,
 } from "./transcribe.ts";
@@ -2559,6 +2563,17 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     const exhaustive: never = message;
     return exhaustive;
   }
+  // Show's narration: recorded here, never by the app, so the mic keeps one owner and its one gate (narration.ts).
+  const narration = createNarration({
+    hold: () => voice.holdNarration(NARRATION_QUIET_WITHIN_MS),
+    record: (wav, seconds) => {
+      const proc = spawnNarrationRecorder(cfg, wav, seconds);
+      return { exited: proc.exited, stop: () => stopSoxProcess(proc) };
+    },
+    transcribe: (wav) => transcribeWavSegments(cfg, wav),
+    root: join(conchHome(), ".cache/conch/canvas"),
+    log,
+  });
   const controlServer = createControlServer({
     ownership,
     socketPath: cfg.socketPath,
@@ -2593,6 +2608,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     onDelivery: rememberDelivery,
     // Resolving can wait on a port lookup now; whatever goes wrong there is logged, never thrown at the daemon.
     onScreenObservation: (observation) => void screen.observe(observation).catch((error) => log(`screen: ${error}`)),
+    narration,
   });
 
   let shutdownStarted = false;
