@@ -64,8 +64,20 @@ describe("/transcript", () => {
     expect(await ask(put("second123456.wav"))).toMatchObject({ status: 429 });
     finish();
     expect((await first).status).toBe(200);
+    // Answered at once and kept alive while whisper works, so a failure comes in the body.
     const failing = bridge(async () => ({ segments: [], error: "Cold transcription timed out" }));
-    expect(await failing.ask(failing.put("abcdef123456.wav"))).toEqual({ status: 502, body: { error: "Cold transcription timed out" } });
+    expect(await failing.ask(failing.put("abcdef123456.wav"))).toEqual({ status: 200, body: { error: "Cold transcription timed out" } });
+    const throwing = bridge(async () => { throw new Error("whisper went away"); });
+    expect(await throwing.ask(throwing.put("abcdef123456.wav"))).toMatchObject({ status: 200, body: { error: expect.stringMatching(/whisper went away/) } });
+    expect((await throwing.ask(throwing.put("again1234567.wav"))).status).toBe(200);
+  });
+
+  test("the answer starts before the words are ready, and keeps the link alive until they are", () => {
+    const route = readFileSync(join(import.meta.dir, "..", "src/phone-bridge.ts"), "utf8");
+    const body = route.slice(route.indexOf('if (url.pathname === "/transcript"'), route.indexOf("// Refresh on a deliverable"));
+    expect(body).toContain("const alive = setInterval(() => controller.enqueue(new TextEncoder().encode(\" \")), TRANSCRIPT_KEEPALIVE_MS);");
+    expect(body).toContain("clearInterval(alive);");
+    expect(route).toContain("const TRANSCRIPT_KEEPALIVE_MS = 10_000;");
   });
 
   test("the daemon hands the bridge whisper's timed transcription", () => {

@@ -798,10 +798,11 @@ test("a transcription in progress never holds a control behind it", async () => 
   await settle(() => harness.sent.length > 0, "the control's reply");
   const early = await openSent(harness.phone, harness.sent);
   expect(early.some((frame) => frame.header.id === "control-meanwhile" && frame.header.kind === "response-head")).toBe(true);
-  expect(early.some((frame) => frame.header.id === "transcript-request")).toBe(false);
+  // Its answer has started (it keeps the link alive), but not finished.
+  expect(early.some((frame) => frame.header.id === "transcript-request" && frame.header.kind === "response-end")).toBe(false);
   finish();
   await transcript;
-  const late = await openSent(harness.phone, harness.sent);
+  const late = [...early, ...await openSent(harness.phone, harness.sent)];
   expect(JSON.parse(new TextDecoder().decode(responseBody(late, "transcript-request")))).toEqual({ segments: [{ start: 0, end: 1, text: "hello" }] });
 });
 

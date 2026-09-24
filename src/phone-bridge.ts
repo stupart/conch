@@ -495,14 +495,21 @@ export class PhoneBridgeApplication {
         // One at a time: whisper is the voice loop's too.
         if (this.#transcribing) return Response.json({ error: "another recording is being transcribed" }, { status: 429 });
         this.#transcribing = true;
-        try {
-          const { segments, error } = await transcribe(real);
-          return error && !segments.length
-            ? Response.json({ error }, { status: 502 })
-            : Response.json({ segments });
-        } finally {
-          this.#transcribing = false;
-        }
+        const words = transcribe(real).catch((error) => ({ segments: [], error: String(error) }));
+        // Answered at once, and kept alive: the phone's relay link calls a request that shows no
+        // progress for 30 s stalled and reconnects, and whisper cold can take longer. A space every
+        // ten seconds until the words come; JSON allows it before the value.
+        return new Response(new ReadableStream({
+          start: (controller) => {
+            const alive = setInterval(() => controller.enqueue(new TextEncoder().encode(" ")), TRANSCRIPT_KEEPALIVE_MS);
+            void words.then(({ segments, error }) => {
+              clearInterval(alive);
+              this.#transcribing = false;
+              controller.enqueue(new TextEncoder().encode(JSON.stringify(error && !segments.length ? { error } : { segments })));
+              controller.close();
+            });
+          },
+        }), { headers: { "content-type": "application/json" } });
       })();
     }
 
@@ -750,6 +757,9 @@ interface HeldReview {
   scene?: { marks?: Array<{ frame?: { image?: unknown } }> };
   preview?: { path?: unknown };
 }
+
+/** How often a transcript still being made says it is (`/transcript`). */
+const TRANSCRIPT_KEEPALIVE_MS = 10_000;
 
 /** The parts of the published state `/file` decides by. */
 interface ServableState {
