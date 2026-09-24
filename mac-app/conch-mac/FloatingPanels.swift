@@ -438,8 +438,8 @@ final class FloatingPanels: ObservableObject {
         }
     }
 
-    /// Command-Return, the fog's button, or a pick in it with nothing to open (`showWords`): fill the screen, or dock back
-    /// in its corner at the size it had.
+    /// Command-Return, the fog's button, or a pick the panel shows itself (`showInPanel`): fill the screen, or dock back in
+    /// its corner at the size it had.
     func toggleFullScreen() {
         guard let screen = screen() else { return }
         dock(corner, on: screen)
@@ -468,8 +468,10 @@ final class FloatingPanels: ObservableObject {
         }
     }
 
-    /// A pick in the panel with nothing to open: that session's words, full screen (`ReviewScene.panelShowsWords`).
-    func showWords() {
+    /// A pick the panel shows itself, full screen: the deliverable it is on when that is one the panel draws
+    /// (`ReviewScene.panelShowsContent`), else, with nothing to open, the session's words (`panelShowsWords`). Already full
+    /// screen, the deliverable crossfades in place.
+    func showInPanel() {
         if !isFullScreen { toggleFullScreen() }
     }
 
@@ -785,15 +787,21 @@ final class ReviewQueue: ObservableObject {
     }
 
     /// What a click brings forward. The pill's is `ConchStatusItem.stage`'s scene, as it always was. The panel's goes
-    /// there too, the panel docking first so it isn't left over what comes forward, unless there is nothing to open: then
-    /// the panel itself goes full screen on the session's words (`ReviewScene.panelShowsWords`), not a terminal.
+    /// there too, the panel docking first so it isn't left over what comes forward, unless the panel shows it itself, full
+    /// screen: a deliverable it draws (`SessionRow.panelContent`), or with nothing to open the session's words
+    /// (`ReviewScene.panelShowsWords`), not a terminal.
     private static func show(_ row: SessionRow, inPanel: Bool, store: StateStore, panels: FloatingPanels) async -> Bool {
         if inPanel {
             // What `stage` reads to choose, read the same way.
             let kind = ReviewScene.Kind(rawValue: row.review?.sceneKind ?? "") ?? .auto
             let link = ReviewItem(row: row)?.link.map { LinkTarget.url(for: $0, cwd: row.cwd) }
-            if ReviewScene.panelShowsWords(hasReview: row.review != nil, kind: kind, link: link, fileExists: { FileManager.default.fileExists(atPath: $0) }) {
-                panels.showWords()
+            let content = row.panelContent
+            if ReviewScene.panelShowsWords(hasReview: row.review != nil, kind: kind, link: link, fileExists: { FileManager.default.fileExists(atPath: $0) })
+                || content != nil {
+                panels.showInPanel()
+                // The screen context hears what the panel put on screen, as `stage` tells it what a scene did: the
+                // session, and the deliverable when that is what shows.
+                store.reportShowing(.conch(sessionId: row.id, view: "panel"), staged: ConchScreenStaged(sessionId: row.id, reviewId: content?.id, link: content?.link))
                 return true
             }
             panels.dockForScene()
@@ -816,6 +824,15 @@ extension SessionRow {
         var row = self
         row.review = review
         return row
+    }
+
+    /// Its newest deliverable, when the conversation panel draws it itself, full screen, in the side panel's renderers
+    /// (`ReviewScene.panelShowsContent`); read as `ConchStatusItem.stage` reads a scene.
+    var panelContent: ReviewItem? {
+        guard let review, let item = ReviewItem(row: self) else { return nil }
+        let kind = ReviewScene.Kind(rawValue: review.sceneKind ?? "") ?? .auto
+        let link = item.link.map { LinkTarget.url(for: $0, cwd: cwd) }
+        return ReviewScene.panelShowsContent(kind: kind, deliverable: review.kind, link: link, fileExists: { FileManager.default.fileExists(atPath: $0) }) ? item : nil
     }
 }
 
@@ -876,11 +893,12 @@ private struct ConversationFogHost: View {
                     look: panels.look,
                     floating: panels.floating,
                     hovering: panels.hovering,
-                    session: row.map { Self.fogSession($0, item: Self.item(of: $0, staged: panels.staged, lastStaged: queue.lastStaged)) },
+                    session: row.map { Self.fogSession($0, item: Self.review(of: $0, staged: panels.staged, lastStaged: queue.lastStaged)?.summary) },
                     // Built only while the switcher is open.
                     sessions: panels.switching ? Self.sessions(store.state, staged: panels.staged, lastStaged: queue.lastStaged) : [],
                     isSwitching: $panels.switching,
                     showsReply: panels.showsReply,
+                    content: panels.isFullScreen ? row.flatMap(content(of:)) : nil,
                     onPick: { queue.pick($0, store: store, panels: panels) },
                     onPrevious: walks ? { queue.walk(backward: true, inPanel: true, store: store, panels: panels) } : nil,
                     onNext: walks ? { queue.walk(inPanel: true, store: store, panels: panels) } : nil,
@@ -932,7 +950,7 @@ private struct ConversationFogHost: View {
         return FogSession.ordered((state?.rows ?? []).filter { $0.parentSessionId == nil }.map { row in
             fogSession(
                 row,
-                item: item(of: row, staged: staged, lastStaged: lastStaged),
+                item: review(of: row, staged: staged, lastStaged: lastStaged)?.summary,
                 standing: ready.contains(row.id) ? .ready : working.contains(row.id) ? .working : .other
             )
         })
@@ -945,12 +963,20 @@ private struct ConversationFogHost: View {
     }
 
     /// The item a session is on: the review the queue brought forward when this is the session it staged, else the
-    /// session's newest held one; with none, nothing.
-    static func item(of row: SessionRow, staged: SessionRow.ID?, lastStaged: ReviewItem.ID?) -> String? {
+    /// session's newest held one; with none, nothing. The header names it, and full screen shows it.
+    static func review(of row: SessionRow, staged: SessionRow.ID?, lastStaged: ReviewItem.ID?) -> ReviewInfo? {
         if row.id == staged, let review = row.held.first(where: { ReviewItem(row: row, review: $0).id == lastStaged }) {
-            return review.summary
+            return review
         }
-        return row.review?.summary
+        return row.review
+    }
+
+    /// Full screen, the item the header names, in the panel itself when it is one the panel draws
+    /// (`SessionRow.panelContent`); else nil, and the words.
+    private func content(of row: SessionRow) -> FogContent? {
+        guard let review = Self.review(of: row, staged: panels.staged, lastStaged: queue.lastStaged),
+              let item = row.holding(review).panelContent else { return nil }
+        return FogContent(id: item.id) { PanelContent(item: item, cwd: row.cwd, store: store, panels: panels) }
     }
 
     /// What was said, both ways. Tools, thinking and materials stay in the dashboard.
@@ -1024,5 +1050,29 @@ private struct ConversationFogHost: View {
             // A reply that didn't go comes back to the line, unless something new was typed meanwhile.
             if draft.wrappedValue.isEmpty { draft.wrappedValue = text }
         }
+    }
+}
+
+/// A deliverable inside the conversation panel, full screen, in the side panel's own renderer (`InlineReviewView`), so a
+/// local file goes through the same checks here as there. Its arrow opens it where it lives, the panel docking first so it
+/// isn't left over what comes forward.
+private struct PanelContent: View {
+    let item: ReviewItem
+    let cwd: String?
+    let store: StateStore
+    let panels: FloatingPanels
+    /// Where the pane has browsed to, for the arrow to open: each deliverable's own, since the panel keys it by version.
+    @State private var address: String?
+
+    var body: some View {
+        InlineReviewView(item: item, onOpenInPlace: openWhereItLives, liveAddress: $address)
+            .environmentObject(store)
+    }
+
+    private func openWhereItLives() {
+        guard let link = address ?? item.link else { return }
+        panels.dockForScene()
+        // The one door for links files a failure (A13); docked, the panel has no line left to show it on.
+        store.openLink(link, cwd: cwd, rowId: item.rowID) { _ in }
     }
 }

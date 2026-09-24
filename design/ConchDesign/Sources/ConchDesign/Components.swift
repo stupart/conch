@@ -619,6 +619,30 @@ public enum ReviewScene: Equatable {
             return true
         }
     }
+
+    /// The deliverable kinds (src/deliverables.ts) the panel shows inside itself, in the side panel's own renderers
+    /// (ReviewView.swift): a page, a document, a picture, a video, a sound, a live url.
+    static let panelKinds: Set<String> = ["page", "markdown", "text", "image", "pdf", "video", "audio", "url"]
+    /// The same kinds by a file's extension, src/deliverables.ts's table, for a deliverable filed without one.
+    static let panelExtensions: Set<String> = [
+        "html", "htm", "png", "jpg", "jpeg", "gif", "webp", "svg", "heic", "tiff", "mp4", "mov", "m4v", "webm",
+        "mp3", "m4a", "wav", "aac", "aiff", "flac", "ogg", "pdf", "md", "markdown",
+        "txt", "log", "json", "yaml", "yml", "toml", "csv", "diff", "patch",
+    ]
+
+    /// A pick in the conversation panel whose deliverable the panel shows itself, full screen, rather than bringing it
+    /// forward in its own app (09-21, "BOTH": full screen shows the content in the panel, the reply floating over it).
+    /// Only where the pill's scene would open the link, so a scene asked for by name, or a link with nothing behind it, is
+    /// as before; and only a kind the panel can draw, so an app window, the Simulator, a terminal, a design or an office
+    /// document still comes forward in its own app. `deliverable` is the kind it was filed as; with none, from a daemon
+    /// older than kinds, the link says: a web page but Figma's, or a file by its extension.
+    public static func panelShowsContent(kind: Kind, deliverable: String?, link: URL?, fileExists: (String) -> Bool) -> Bool {
+        guard case let .open(url) = choose(kind: kind, link: link, fileExists: fileExists, appWindowOpen: false, revealable: false) else { return false }
+        if let deliverable { return panelKinds.contains(deliverable) }
+        if url.isFileURL { return panelExtensions.contains(url.pathExtension.lowercased()) }
+        let host = url.host?.lowercased() ?? ""
+        return host != "figma.com" && !host.hasSuffix(".figma.com")
+    }
 }
 
 // MARK: - FogSession
@@ -665,6 +689,18 @@ public struct FogSession: Identifiable, Equatable, Sendable {
         sessions.enumerated()
             .sorted { ($0.element.standing.rawValue, $0.offset) < ($1.element.standing.rawValue, $1.offset) }
             .map(\.element)
+    }
+}
+
+/// A deliverable the conversation panel shows inside itself, full screen (`ReviewScene.panelShowsContent`): the host's own
+/// renderer, keyed by the deliverable's version so another one crossfades in rather than cutting.
+public struct FogContent {
+    public let id: String
+    let view: AnyView
+
+    public init<Content: View>(id: String, @ViewBuilder view: () -> Content) {
+        self.id = id
+        self.view = AnyView(view())
     }
 }
 
@@ -1083,6 +1119,9 @@ public struct ConversationFog: View {
     @Binding var isSwitching: Bool
     /// The reply line; off, the transcript takes its room (the menu bar's Show Reply Line).
     let showsReply: Bool
+    /// Full screen, the deliverable the panel is on, under the button row in place of the words; the reply line floats at
+    /// its foot. Docked, the words as ever.
+    let content: FogContent?
     let onPick: (String) -> Void
     /// Back and on through what is ready; nil leaves the button out.
     let onPrevious: (() -> Void)?
@@ -1112,6 +1151,7 @@ public struct ConversationFog: View {
         sessions: [FogSession] = [],
         isSwitching: Binding<Bool> = .constant(false),
         showsReply: Bool = true,
+        content: FogContent? = nil,
         onPick: @escaping (String) -> Void = { _ in },
         onPrevious: (() -> Void)? = nil,
         onNext: (() -> Void)? = nil,
@@ -1137,6 +1177,7 @@ public struct ConversationFog: View {
         self.sessions = sessions
         _isSwitching = isSwitching
         self.showsReply = showsReply
+        self.content = content
         self.onPick = onPick
         self.onPrevious = onPrevious
         self.onNext = onNext
@@ -1226,12 +1267,37 @@ public struct ConversationFog: View {
         fullScreen || corner.leading ? .leading : .trailing
     }
 
+    /// Full screen on a deliverable, the reply line is a capsule centred at the panel's foot, this wide (panel-lab's
+    /// `min(640px, 100% - 48px)`), its line this far inside its edge.
+    public static func floatingReplyWidth(in size: CGSize) -> CGFloat { min(640, max(0, size.width - 48)) }
+    static let floatingReplyPadding: CGFloat = ConchSpace.x2
+
+    /// Full screen on a deliverable, where it sits: under the button row, as wide as the row runs, down to a one-line
+    /// reply capsule and the gap above it, or with the reply line off to the foot. A reply that grows past one line floats
+    /// up over it.
+    public static func contentFrame(in size: CGSize, insets: EdgeInsets, showsReply: Bool) -> CGRect {
+        let top = buttonsY(in: size, corner: .topLeading, insets: buttonInsets(insets), fullScreen: true) + buttonSize + ConchSpace.x3
+        let fontSize = replyFontSize(fullScreen: false)
+        let reply = showsReply ? FogReply.lineHeight(fontSize) + 2 * FogReply.padding(fontSize) + 2 * floatingReplyPadding + FogReply.gap : 0
+        let leading = insets.leading + padding
+        return CGRect(
+            x: leading,
+            y: top,
+            width: max(0, size.width - leading - insets.trailing - padding),
+            height: max(0, size.height - insets.bottom - padding - reply - top)
+        )
+    }
+
     public var body: some View {
         GeometryReader { proxy in
             let frame = Self.textFrame(in: proxy.size, corner: corner, insets: insets, fullScreen: isFullScreen, magnet: look?.magnet)
             let top = Self.newestAtTop(corner: corner, fullScreen: isFullScreen)
-            let fontSize = Self.replyFontSize(fullScreen: isFullScreen)
-            let target = text.replyTarget(for: draft, width: max(0, frame.width - Self.micSpace), fontSize: fontSize, in: frame.height)
+            // Full screen on a deliverable the panel shows itself: it takes the words' room, and the reply line keeps the
+            // docked panel's size in a capsule at the foot.
+            let shown = isFullScreen ? content : nil
+            let fontSize = Self.replyFontSize(fullScreen: isFullScreen && shown == nil)
+            let lineWidth = shown == nil ? frame.width : Self.floatingReplyWidth(in: proxy.size) - 2 * Self.floatingReplyPadding
+            let target = text.replyTarget(for: draft, width: max(0, lineWidth - Self.micSpace), fontSize: fontSize, in: frame.height)
             let reply = rendersStatically ? target : text.replyHeight
             let overflows = CGFloat(text.replyLines) * FogReply.lineHeight(fontSize) + 2 * FogReply.padding(fontSize) > target + 0.5
             let box = showsReply ? max(0, frame.height - FogReply.gap - reply) : frame.height
@@ -1245,28 +1311,31 @@ public struct ConversationFog: View {
                     ))
                     .accessibilityHidden(true)
                 }
-                VStack(alignment: .leading, spacing: FogReply.gap) {
-                    if top {
-                        if showsReply { replyLine(fontSize: fontSize, height: reply, top: true, overflows: overflows) }
-                        words(width: frame.width, height: box, top: true, fontSize: fontSize)
-                    } else {
-                        words(width: frame.width, height: box, top: false, fontSize: fontSize)
-                        if showsReply { replyLine(fontSize: fontSize, height: reply, top: false, overflows: overflows) }
+                if shown == nil {
+                    VStack(alignment: .leading, spacing: FogReply.gap) {
+                        if top {
+                            if showsReply { replyLine(fontSize: fontSize, height: reply, top: true, overflows: overflows) }
+                            words(width: frame.width, height: box, top: true, fontSize: fontSize)
+                        } else {
+                            words(width: frame.width, height: box, top: false, fontSize: fontSize)
+                            if showsReply { replyLine(fontSize: fontSize, height: reply, top: false, overflows: overflows) }
+                        }
                     }
+                    .frame(width: frame.width, height: frame.height, alignment: .topLeading)
+                    // The oldest words fade out at the panel's far end rather than ending in a cut — panel.html's
+                    // `.body{-webkit-mask-image:linear-gradient(transparent 0,#000 26%)}`. The newest end never fades, so
+                    // the gradient runs from whichever end holds the oldest (`newestAtTop`).
+                    .mask(alignment: .topLeading) {
+                        LinearGradient(
+                            stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.26)],
+                            startPoint: top ? .bottom : .top,
+                            endPoint: top ? .top : .bottom
+                        )
+                    }
+                    .offset(x: frame.minX, y: frame.minY)
                 }
-                .frame(width: frame.width, height: frame.height, alignment: .topLeading)
-                // The oldest words fade out at the panel's far end rather than ending in a cut — panel.html's
-                // `.body{-webkit-mask-image:linear-gradient(transparent 0,#000 26%)}`. The newest end never fades, so
-                // the gradient runs from whichever end holds the oldest (`newestAtTop`).
-                .mask(alignment: .topLeading) {
-                    LinearGradient(
-                        stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.26)],
-                        startPoint: top ? .bottom : .top,
-                        endPoint: top ? .top : .bottom
-                    )
-                }
-                .offset(x: frame.minX, y: frame.minY)
-                .onChange(of: target, initial: true) { _, target in text.grow(to: target) }
+                deliverable(shown, frame: Self.contentFrame(in: proxy.size, insets: insets, showsReply: showsReply))
+                if shown != nil, showsReply { floatingReply(in: proxy.size, fontSize: fontSize, height: reply, overflows: overflows) }
                 if showsButtons {
                     let buttons = Self.buttonInsets(insets)
                     let alignment = Self.buttonsAlignment(corner: corner, fullScreen: isFullScreen)
@@ -1289,6 +1358,7 @@ public struct ConversationFog: View {
                 }
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
+            .onChange(of: target, initial: true) { _, target in text.grow(to: target) }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Conversation")
@@ -1309,6 +1379,51 @@ public struct ConversationFog: View {
                 }
             }
             .animation(ConchSpring(bounce: 0.25, response: 0.32).animation(reduceMotion: reduceMotion), value: text.scroll.pinned)
+    }
+
+    /// Full screen, the deliverable in a rounded card with a hairline under the button row. The next one crossfades in on
+    /// `swap`, the old out soft and a touch large, the new in from a touch small and soft; under Reduce Motion they only
+    /// fade. Presses and scrolls on it are its own (`fogControl`), never the transcript's.
+    private func deliverable(_ shown: FogContent?, frame: CGRect) -> some View {
+        let shape = RoundedRectangle(cornerRadius: ConchRadius.large, style: .continuous)
+        let swap: AnyTransition = reduceMotion ? .opacity : .asymmetric(
+            insertion: .modifier(active: Swap(scale: ConchMotion.swapScale, blur: ConchMotion.swapBlur, opacity: 0), identity: Swap()),
+            removal: .modifier(active: Swap(scale: 2 - ConchMotion.swapScale, blur: ConchMotion.swapBlur, opacity: 0), identity: Swap())
+        )
+        return ZStack(alignment: .topLeading) {
+            if let shown {
+                ZStack {
+                    shown.view
+                        .frame(width: frame.width, height: frame.height)
+                        .id(shown.id)
+                        .transition(swap)
+                }
+                .frame(width: frame.width, height: frame.height)
+                .background(ConchColor.surface)
+                .clipShape(shape)
+                .overlay(shape.strokeBorder(ConchColor.overlayLine, lineWidth: 0.5))
+                .fogControl()
+                .offset(x: frame.minX, y: frame.minY)
+                .transition(swap)
+            }
+        }
+        .animation(ConchMotion.swap.animation(reduceMotion: reduceMotion), value: shown?.id)
+    }
+
+    /// Full screen on a deliverable, the reply line in a capsule centred at the panel's foot (panel-lab's full-screen
+    /// `.reply`), in the switcher's glass and hairline. Past one line it grows up over the deliverable.
+    private func floatingReply(in size: CGSize, fontSize: CGFloat, height: CGFloat, overflows: Bool) -> some View {
+        let width = Self.floatingReplyWidth(in: size)
+        let shape = RoundedRectangle(cornerRadius: ConchRadius.panel, style: .continuous)
+        return InlineReplyLine(text: $draft, isListening: isListening, fontSize: fontSize, overflows: overflows, onMic: onMic, onSend: onSend)
+            .frame(height: height, alignment: .bottom)
+            .padding(Self.floatingReplyPadding)
+            .frame(width: width)
+            .background(shape.fill(ConchColor.overlayGlassStrong))
+            .overlay(shape.strokeBorder(ConchColor.overlayLine, lineWidth: 0.5))
+            .conchElevation(.floating)
+            .fogControl()
+            .offset(x: (size.width - width) / 2, y: size.height - insets.bottom - Self.padding - height - 2 * Self.floatingReplyPadding)
     }
 
     /// The transcript, crossfading to another session's rather than cutting to it. A dissolve is what Reduce Motion
@@ -1534,6 +1649,17 @@ public struct ConversationFog: View {
     /// The words as the fog shows them, markdown taken out.
     static func plain(_ text: String) -> String {
         String(inlineMarkdown(text).characters)
+    }
+}
+
+/// A deliverable part way through `ConchMotion.swap`.
+private struct Swap: ViewModifier {
+    var scale: CGFloat = 1
+    var blur: CGFloat = 0
+    var opacity: Double = 1
+
+    func body(content: Content) -> some View {
+        content.scaleEffect(scale).blur(radius: blur).opacity(opacity)
     }
 }
 

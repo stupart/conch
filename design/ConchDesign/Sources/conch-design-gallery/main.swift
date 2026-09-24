@@ -417,6 +417,8 @@ struct FogScreen<Page: View, Blur: View>: View {
     var switching = false
     var pager = false
     var showsReply = true
+    /// Full screen, a deliverable shown in the panel in place of the words.
+    var content: FogContent?
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
@@ -461,6 +463,7 @@ struct FogScreen<Page: View, Blur: View>: View {
                     sessions: sessions,
                     isSwitching: .constant(switching),
                     showsReply: showsReply,
+                    content: content,
                     onPrevious: pager ? {} : nil,
                     onNext: pager ? {} : nil,
                     onMic: {},
@@ -487,8 +490,8 @@ func docked(_ corner: FogCorner, size: CGSize = CGSize(width: 760, height: 560),
     FogMotion(size: size, corner: corner, in: CGRect(origin: .zero, size: screen))
 }
 
-func m3Fog(_ corner: FogCorner, fullScreen: Bool = false, draft: String = "", voice: VoiceState = .talk, session: FogSession? = nil, switching: Bool = false, pager: Bool = false, showsReply: Bool = true, hovering: Bool = true) -> some View {
-    FogScreen(page: OtherApp(), blur: BlurredOtherApp(size: m3Screen), screen: m3Screen, motion: docked(corner), voice: voice, fullScreen: fullScreen, draft: draft, hovering: hovering, session: session, sessions: panelSessions, switching: switching, pager: pager, showsReply: showsReply)
+func m3Fog(_ corner: FogCorner, fullScreen: Bool = false, draft: String = "", voice: VoiceState = .talk, session: FogSession? = nil, switching: Bool = false, pager: Bool = false, showsReply: Bool = true, hovering: Bool = true, content: FogContent? = nil) -> some View {
+    FogScreen(page: OtherApp(), blur: BlurredOtherApp(size: m3Screen), screen: m3Screen, motion: docked(corner), voice: voice, fullScreen: fullScreen, draft: draft, hovering: hovering, session: session, sessions: panelSessions, switching: switching, pager: pager, showsReply: showsReply, content: content)
         .clipShape(RoundedRectangle(cornerRadius: ConchRadius.large))
 }
 
@@ -561,6 +564,49 @@ try render("m3-panel-switcher", width: 1280) {
 try render("m3-panel-fullscreen", width: 1280) {
     Heading(title: "Conversation panel, full screen on a pick", note: "A session with nothing to open: its words fill the screen, named at the top left. Reply line off.")
     m3Fog(.bottomLeading, fullScreen: true, session: panelSession, pager: true, showsReply: false)
+}
+
+/// A page an agent staged, as the side panel's web renderer draws it: its origin above it, then the page.
+struct StagedPage: View {
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "globe").font(.system(size: 9.5))
+                Text(verbatim: "http://localhost:3111").font(.system(size: 11))
+            }
+            .foregroundStyle(ConchColor.textSecondary)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(ConchColor.surface)
+            Rectangle().fill(ConchColor.hairline).frame(height: 1)
+            // panel-lab's staged site: a light page whatever the panel's appearance, as a web page is.
+            ZStack(alignment: .leading) {
+                Color(red: 0.98, green: 0.97, blue: 0.96)
+                RadialGradient(colors: [Color(red: 0.96, green: 0.79, blue: 0.66), .clear], center: UnitPoint(x: 0.2, y: 0.4), startRadius: 0, endRadius: 420)
+                RadialGradient(colors: [Color(red: 0.73, green: 0.80, blue: 0.96), .clear], center: UnitPoint(x: 0.82, y: 0.3), startRadius: 0, endRadius: 420)
+                VStack(alignment: .leading, spacing: 18) {
+                    Text(verbatim: "Earn on your Bitcoin.").font(.system(size: 60, weight: .bold)).tracking(-2)
+                    Text(verbatim: "One account for your Bitcoin: hold it, put it to work, and sign every move yourself.")
+                        .font(.system(size: 18)).foregroundStyle(Color.black.opacity(0.6)).frame(width: 380, alignment: .leading)
+                    Text(verbatim: "Get early access").font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
+                        .padding(.horizontal, 22).padding(.vertical, 13)
+                        .background(RoundedRectangle(cornerRadius: 12).fill(Color(red: 1, green: 0.42, blue: 0.24)))
+                }
+                .foregroundStyle(Color(red: 0.08, green: 0.08, blue: 0.08))
+                .padding(.leading, 400)
+            }
+        }
+    }
+}
+
+let stagedPage = FogContent(id: "arch-invite-v3") { StagedPage() }
+
+try render("m3-panel-content", width: 1280) {
+    Heading(title: "Conversation panel, full screen on a deliverable", note: "A page, document, picture, video, sound or live url shows inside the panel under its header; the reply line floats at its foot, and the words step aside. Next crossfades it in place.")
+    m3Fog(.bottomLeading, fullScreen: true, draft: "Make the heading one line on phones", session: panelSessions[0], pager: true, content: stagedPage)
+    Caption("Reply line off: the deliverable takes the whole panel.")
+    m3Fog(.bottomLeading, fullScreen: true, session: panelSessions[0], pager: true, showsReply: false, content: stagedPage)
 }
 
 try render("m3-fog-top-right", width: 1280) {
