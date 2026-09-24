@@ -465,15 +465,13 @@ final class StateStore: ObservableObject {
         sendScreenReport(report, of: surface)
     }
 
-    /// A report counts as said only once the daemon acks it (`screen-ack`). One it never heard — it was restarting, or
-    /// didn't answer in time — is said again at the next reading, rather than dropped as a repeat of nothing.
+    /// A report counts as said once the daemon answers it. One it never heard — it was restarting, or didn't answer in
+    /// time — is said again at the next reading, rather than dropped as a repeat of nothing. A refusal (`screen-error`)
+    /// is an answer: said again, it would be refused again at every reading for as long as it showed.
     private func sendScreenReport(_ report: ConchScreenObservationReport, of surface: ConchScreenSurface) {
         let socketClient = socketClient
         Task { [weak self] in
-            if case let .reply(data) = await socketClient.request(report),
-               (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["kind"] as? String == "screen-ack" {
-                return
-            }
+            if case .reply = await socketClient.request(report) { return }
             self?.screenGate.unsaid(surface)
         }
     }

@@ -23,10 +23,20 @@ enum InkSurface {
     }
 
     /// Whether the page on screen is still the review's own: its address but for the fragment, not one browsed to since.
+    /// Read the way WebKit spells what it loaded: `http://127.0.0.1:5173` comes back with a `/`, a host in lower case and
+    /// no default port, and compared as written no mark on such a page was ever drawn.
     static func isReviewPage(_ url: URL?, entry: URL) -> Bool {
-        func key(_ url: URL) -> String { String(url.absoluteString.split(separator: "#", maxSplits: 1).first ?? "") }
-        guard let url else { return false }
-        return key(url) == key(entry)
+        func key(_ url: URL) -> String? {
+            guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+            parts.fragment = nil
+            parts.scheme = parts.scheme?.lowercased()
+            parts.percentEncodedHost = parts.percentEncodedHost?.lowercased()
+            if parts.port == ["http": 80, "https": 443][parts.scheme ?? ""] { parts.port = nil }
+            if parts.percentEncodedPath.isEmpty { parts.percentEncodedPath = "/" }
+            return parts.string
+        }
+        guard let url, let page = key(url) else { return false }
+        return page == key(entry)
     }
 }
 
@@ -305,6 +315,7 @@ final class PageInk {
 
     private func look() async {
         guard let page else { return stop() }
+        guard PageInk.inSight(page) else { return }
         let placed = await place(on: page)
         if placed != seen {
             // Moving: out of sight until it is still.
@@ -317,6 +328,16 @@ final class PageInk {
             ink.show(placed)
         }
         ink.hide(false)
+    }
+
+    /// Whether the page can be seen, which is the only time its marks are worth looking for: the app in front (it runs
+    /// on in the background, for the audio), the page in a window, and nothing over its middle (a tapped file's sheet).
+    /// The ink takes no touches, so a hit test there finds the page or what covers it. The Mac asks its window the same
+    /// (`occlusionState`).
+    static func inSight(_ page: UIView) -> Bool {
+        guard UIApplication.shared.applicationState == .active, let window = page.window else { return false }
+        let middle = page.convert(CGPoint(x: page.bounds.midX, y: page.bounds.midY), to: window)
+        return window.hitTest(middle, with: nil)?.isDescendant(of: page) == true
     }
 
     /// Every mark found in the page, in the web view's 0-1 space: `AgentInk.finder`'s client rects, through the page's

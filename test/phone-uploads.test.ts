@@ -185,6 +185,37 @@ describe("videos and their recordings, by the same pieces", () => {
     }
   });
 
+  test("an upload still arriving is never forgotten: the ten minutes count from its last piece", async () => {
+    // A 46 MB video is 736 pieces, one after another; over a slow uplink each takes most of a second, so the whole of
+    // it runs past ten minutes. Counted from its first piece, it was swept while still arriving, the Mac asked for
+    // piece 0 again, and the phone sent the video round and round for as long as it had signal.
+    const dir = scratch();
+    try {
+      let now = 1_000_000;
+      const uploads = new PhoneUploads(dir, () => now);
+      const total = 736;
+      let next: number | undefined = 0;
+      let sent = 0;
+      let path: string | undefined;
+      while (next !== undefined && sent < 2 * total) {
+        const reply = await uploads.accept(piece("slowvideo01", next, total, "mp4", next === 0 ? MP4 : "x"));
+        sent += 1;
+        now += 900;
+        if ("error" in reply) throw new Error(reply.error);
+        if (reply.path) { path = reply.path; break; }
+        next = reply.missing?.[0];
+      }
+      expect(sent).toBe(total);
+      expect(path).toBe(join(dir, "slowvideo01.mp4"));
+      // One left alone that long is still forgotten.
+      await uploads.accept(piece("idlevideo01", 0, 2, "mp4", MP4));
+      now += 10 * 60 * 1000 + 1;
+      expect(await uploads.accept(piece("idlevideo01", 1, 2, "mp4", "tail"))).toMatchObject({ received: 1, missing: [0] });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("written 0600 in a 0700 folder, and never through anything already at its name", async () => {
     const dir = scratch();
     try {

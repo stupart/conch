@@ -379,9 +379,12 @@ final class BridgeClient: ObservableObject {
     /// Resumable: the Mac answers every piece with the pieces still missing, and
     /// this sends those and nothing else. A piece that doesn't go is sent again,
     /// a few times; and a Retry of the whole message reuses `id`, so the Mac,
-    /// which keeps an unfinished upload for ten minutes, is asked only for what it
-    /// hasn't got. A 40 MB video over the relay is 700 pieces: starting again from
-    /// the first after a dropped link was the difference between sending and not.
+    /// which keeps an unfinished upload for ten minutes after its last piece, is
+    /// asked only for what it hasn't got. A 40 MB video over the relay is 700
+    /// pieces: starting again from the first after a dropped link was the
+    /// difference between sending and not. And it stops: past three sends a
+    /// piece, a Mac that keeps asking for pieces again won't finish this one,
+    /// and the phone would send it round and round on mobile data.
     func upload(data: Data, ext: String, id: String) async -> String? {
         let total = ImageUpload.chunks(data).count
         guard total > 0 else {
@@ -390,7 +393,13 @@ final class BridgeClient: ObservableObject {
         }
         var next: Int? = 0
         var tries = 0
+        var sends = 0
         while let index = next {
+            sends += 1
+            guard sends <= total * Self.uploadSendsPerPiece + Self.uploadTries else {
+                _ = await reportAppError(operation: "upload", message: "The Mac kept asking for chunks of \(ext) again; stopped after \(sends - 1) sends of \(total).")
+                return nil
+            }
             guard let part = ImageUpload.chunk(data, index), let body = try? JSONSerialization.data(withJSONObject: [
                 "uploadId": id,
                 "index": index,
@@ -433,6 +442,8 @@ final class BridgeClient: ObservableObject {
 
     /// How many times one piece is tried before the upload gives up.
     private static let uploadTries = 4
+    /// Sends an upload may make, a piece: past this it is going round, not getting there.
+    private static let uploadSendsPerPiece = 3
 
     /// A recording's words, each with when it was said (`/transcript`): what the model reads in
     /// place of watching the video. Nil when the Mac couldn't make them out; the video goes without.
@@ -974,7 +985,10 @@ final class BridgeClient: ObservableObject {
             if let version = download.header(named: "etag") { FileCache.keep(download.file, version: version, for: path) }
             return download.file
         } catch BridgeTransportError.httpStatus(304) where held != nil {
-            return try FileCache.copy(of: path)
+            if let copy = try? FileCache.copy(of: path) { return copy }
+            // Let go of while this read was out (`FileCache.trim`): the whole file again, asked for with no version.
+            FileCache.drop(path)
+            return try await fetchFile(path: path)
         }
     }
 
@@ -1078,6 +1092,9 @@ enum FileCache {
     /// Past this a file is read again each time rather than kept: a video is
     /// not worth the phone's disk.
     static let maxBytes = 16 * 1024 * 1024
+    /// All of them together. Every Mac file the phone read stayed until the
+    /// next pairing; past this, the ones kept or used longest ago go (`trim`).
+    static var totalBytes = 64 * 1024 * 1024
 
     private static func entry(_ path: String) -> URL {
         folder.appendingPathComponent(SHA256.hash(data: Data(path.utf8)).map { String(format: "%02x", $0) }.joined())
@@ -1101,7 +1118,10 @@ enum FileCache {
         guard (try? FileManager.default.copyItem(at: file, to: kept)) != nil else { return }
         // Work from the Mac: readable only while the phone is unlocked, like the saved state.
         try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: kept.path)
+        // When it was kept, not when the Mac wrote it, which a copy carries: what `trim` goes by.
+        try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: kept.path)
         try? version.write(to: versionFile(path), atomically: true, encoding: .utf8)
+        trim()
     }
 
     /// A copy of what this phone holds, for a caller that deletes what it is handed.
@@ -1110,7 +1130,34 @@ enum FileCache {
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension((path as NSString).pathExtension)
         try FileManager.default.copyItem(at: entry(path), to: copy)
+        // Used again: the last to go.
+        try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: entry(path).path)
         return copy
+    }
+
+    /// Let go of `path`: its version first, so a version is never held without its file.
+    static func drop(_ path: String) {
+        try? FileManager.default.removeItem(at: versionFile(path))
+        try? FileManager.default.removeItem(at: entry(path))
+    }
+
+    /// Down to `totalBytes`, the files kept or used longest ago first, each with its version.
+    static func trim() {
+        let keys: Set<URLResourceKey> = [.fileSizeKey, .contentModificationDateKey]
+        guard let files = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: Array(keys)) else { return }
+        let newestFirst = files.filter { $0.pathExtension != "etag" }
+            .compactMap { file -> (file: URL, bytes: Int, at: Date)? in
+                guard let values = try? file.resourceValues(forKeys: keys), let bytes = values.fileSize, let at = values.contentModificationDate else { return nil }
+                return (file, bytes, at)
+            }
+            .sorted { $0.at > $1.at }
+        var total = 0
+        for one in newestFirst {
+            total += one.bytes
+            guard total > totalBytes else { continue }
+            try? FileManager.default.removeItem(at: one.file.appendingPathExtension("etag"))
+            try? FileManager.default.removeItem(at: one.file)
+        }
     }
 
     /// With the pairing: another Mac's files are not this one's.

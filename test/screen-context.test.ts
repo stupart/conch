@@ -815,9 +815,12 @@ describe("the Mac app's front-window observer (source guards)", () => {
     expect(panels).toContain("self.store = store");
   });
 
-  test("a report counts as said only once the daemon acks it, and a daemon that has seen nothing is told again", () => {
+  test("a report counts as said once the daemon answers it, and a daemon that has seen nothing is told again", () => {
     const send = store.slice(store.indexOf("private func sendScreenReport("), store.indexOf("func screenCovered("));
-    expect(send).toContain('["kind"] as? String == "screen-ack" {\n                return\n            }\n            self?.screenGate.unsaid(surface)');
+    // Unsaid only when nothing came back (restarting, too slow). A refusal (`screen-error`: a URL past its limit, no
+    // screen context) is an answer: said again it is refused again, every three seconds, for as long as it shows.
+    expect(send).toContain("if case .reply = await socketClient.request(report) { return }\n            self?.screenGate.unsaid(surface)");
+    expect(send).not.toContain("screen-ack");
     expect(store.match(/sendScreenReport\(report, of: surface\)/g)?.length).toBe(2);
     // A restarted daemon publishes no `showing` until it hears something.
     expect(store).toContain("sourceState = snapshot\n        // A daemon that has seen nothing on screen is a new one (a restart): what the last one was told is news again.\n        if snapshot.showing == nil { screenGate.forget() }");

@@ -317,10 +317,13 @@ export class PhoneBridgeApplication {
   readonly #pairing = new PairingWindow();
   readonly #stateSinks = new Map<PhoneStateSink, "phone" | "observer">();
   #transcribing = false;
+  /** How often a transcript still being made says so (`/transcript`); shorter only in tests. */
+  readonly #keepaliveMs: number;
 
-  constructor(dependencies: PhoneBridgeDependencies, options: { token: string }) {
+  constructor(dependencies: PhoneBridgeDependencies, options: { token: string; transcriptKeepaliveMs?: number }) {
     this.#dependencies = dependencies;
     this.#token = options.token;
+    this.#keepaliveMs = options.transcriptKeepaliveMs ?? TRANSCRIPT_KEEPALIVE_MS;
   }
 
   offerPairingCode(code: PairingCode): void {
@@ -499,16 +502,28 @@ export class PhoneBridgeApplication {
         // Answered at once, and kept alive: the phone's relay link calls a request that shows no
         // progress for 30 s stalled and reconnects, and whisper cold can take longer. A space every
         // ten seconds until the words come; JSON allows it before the value.
+        let alive: ReturnType<typeof setInterval> | undefined;
         return new Response(new ReadableStream({
           start: (controller) => {
-            const alive = setInterval(() => controller.enqueue(new TextEncoder().encode(" ")), TRANSCRIPT_KEEPALIVE_MS);
+            // The phone can go before the words come: backgrounded, its relay rekeyed, its wait run out. Its answer is
+            // closed then, and writing to a closed answer throws, from a timer, which ended the daemon.
+            const send = (text: string): boolean => {
+              try {
+                controller.enqueue(new TextEncoder().encode(text));
+                return true;
+              } catch {
+                clearInterval(alive);
+                return false;
+              }
+            };
+            alive = setInterval(() => send(" "), this.#keepaliveMs);
             void words.then(({ segments, error }) => {
               clearInterval(alive);
               this.#transcribing = false;
-              controller.enqueue(new TextEncoder().encode(JSON.stringify(error && !segments.length ? { error } : { segments })));
-              controller.close();
+              if (send(JSON.stringify(error && !segments.length ? { error } : { segments }))) controller.close();
             });
           },
+          cancel: () => clearInterval(alive),
         }), { headers: { "content-type": "application/json" } });
       })();
     }
@@ -884,7 +899,7 @@ async function servableFile(
 
 export function createPhoneBridgeApplication(
   dependencies: PhoneBridgeDependencies,
-  options: { token: string },
+  options: { token: string; transcriptKeepaliveMs?: number },
 ): PhoneBridgeApplication {
   return new PhoneBridgeApplication(dependencies, options);
 }

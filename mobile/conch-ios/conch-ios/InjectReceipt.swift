@@ -18,6 +18,15 @@ enum InjectReceipt: Equatable {
     /// Acceptance means taken, not landed, so the words wait for the outcome that follows.
     var confirmed: Bool { self == .delivered }
 
+    /// Whether the pictures that went with it leave the composer: already on the Mac, they stay only for the Retry a
+    /// known failure or an unanswered send needs. The rule `SessionView.deliver` keeps for a message with words.
+    var clearsAttachments: Bool {
+        switch self {
+        case .failed, .unknown: false
+        case .delivered, .accepted, .staged: true
+        }
+    }
+
     /// How a conversation draws it: sent and waiting, confirmed, staged, or not delivered.
     var deliveryState: ConchDeliveryState {
         switch self {

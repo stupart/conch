@@ -63,13 +63,17 @@ export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 export const MAX_UPLOAD_CHUNKS = 1024;
 /**
  * Unfinished uploads are held in memory, so they are bounded: this many at once, this many bytes
- * over all of them, and each gone ten minutes after it began.
+ * over all of them, and each gone ten minutes after its last piece.
  */
 export const MAX_PENDING_UPLOADS = 4;
 export const MAX_PENDING_BYTES = 64 * 1024 * 1024;
 /** How many of the chunks still missing a reply lists: the phone sends those, and asks again. */
 const MISSING_LISTED = 64;
-/** An upload nobody finished is swept rather than kept forever. */
+/**
+ * An upload nobody is finishing is swept rather than kept forever: ten minutes after its last piece. Not after its
+ * first: a 46 MB video over a slow uplink takes longer than that to arrive, and swept while still arriving it began
+ * again from piece 0, round and round.
+ */
 const UPLOAD_TTL_MS = 10 * 60 * 1000;
 
 export interface UploadChunk {
@@ -86,7 +90,8 @@ interface PendingUpload {
   total: number;
   extension: string;
   bytes: number;
-  startedAt: number;
+  /** When its last piece arrived. */
+  lastAt: number;
 }
 
 export interface UploadResult {
@@ -175,7 +180,7 @@ export class PhoneUploads {
       total: chunk.total,
       extension,
       bytes: 0,
-      startedAt: this.#now(),
+      lastAt: this.#now(),
     };
     if (pending.total !== chunk.total || pending.extension !== extension) return { error: "upload changed mid-way" };
     const replaced = pending.chunks.get(chunk.index);
@@ -192,6 +197,7 @@ export class PhoneUploads {
       return { error: "too much is being uploaded at once; send again once one has finished" };
     }
     pending.chunks.set(chunk.index, bytes);
+    pending.lastAt = this.#now();
     this.#pending.set(id, pending);
 
     if (pending.chunks.size < pending.total) {
@@ -225,7 +231,7 @@ export class PhoneUploads {
   #sweep(): void {
     const cutoff = this.#now() - UPLOAD_TTL_MS;
     for (const [id, pending] of this.#pending) {
-      if (pending.startedAt < cutoff) this.#pending.delete(id);
+      if (pending.lastAt < cutoff) this.#pending.delete(id);
     }
     try {
       for (const name of readdirSync(this.#directory)) {
