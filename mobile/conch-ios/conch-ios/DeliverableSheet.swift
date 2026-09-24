@@ -351,12 +351,25 @@ struct DeliverableSheet: View {
         }
     }
 
-    /// Image and PDF: Quick Look's Markup draws on them.
+    /// Image and PDF: Quick Look's Markup draws on them. Not an image the agent marked, which shows its ink instead.
     private var marksUp: Bool {
         switch kind {
-        case .local(.image), .local(.pdf): localURL != nil && failure == nil
+        case .local(.image): localURL != nil && failure == nil && imageMarks.isEmpty
+        case .local(.pdf): localURL != nil && failure == nil
         default: false
         }
+    }
+
+    /// The agent's ink over this review's page (`PageInk`): its marks, its key and whose they are. Nil with no marks.
+    private var ink: InkSpec? {
+        guard !review.marks.isEmpty else { return nil }
+        let backend = bridge.state?.rows.first { $0.id == sessionId }?.backend
+        return InkSpec(marks: review.marks, key: review.id ?? review.link ?? "", agent: backend == "codex" ? "Codex" : "Claude")
+    }
+
+    /// Its marks on its own image, placed; empty when it has none that land there.
+    private var imageMarks: [CanvasMark] {
+        imageInk(review.marks, link: review.link, key: review.id ?? review.link ?? "")
     }
 
     var body: some View {
@@ -451,10 +464,10 @@ struct DeliverableSheet: View {
     private var content: some View {
         switch kind {
         case let .web(url):
-            BridgedWebView(url: url, page: page, onFailure: fail)
+            BridgedWebView(url: url, page: page, onFailure: fail, ink: ink)
         case let .macLocal(url):
             if let lanPage {
-                BridgedWebView(url: lanPage, page: page, onFailure: fail)
+                BridgedWebView(url: lanPage, page: page, onFailure: fail, ink: ink)
             } else if let dev = devPage(url) {
                 // Through conch, over whichever link is live: the phone's own localhost is the phone.
                 LocalPageView(
@@ -463,7 +476,8 @@ struct DeliverableSheet: View {
                     devServer: url,
                     page: page,
                     onFailure: fail,
-                    onRefusedLink: { linkFailure = $0 }
+                    onRefusedLink: { linkFailure = $0 },
+                    ink: ink
                 )
             } else {
                 macLocalView(url)
@@ -487,8 +501,13 @@ struct DeliverableSheet: View {
         case .image, .video, .pdf:
             // Quick Look, as Files and Mail show them: pinch and double-tap
             // zoom on a screenshot, PDF pages, a real player. The fitted image
-            // could not be zoomed, so a UI detail could not be inspected.
-            QuickLookView(url: url, fullScreen: $markingUp, onFailure: fail)
+            // could not be zoomed, so a UI detail could not be inspected. An
+            // image the agent marked is its own zoomable view, the ink on it.
+            if kind == .image, !imageMarks.isEmpty {
+                MarkedImage(url: url, marks: imageMarks, agent: ink?.agent ?? "Claude", onFailure: fail)
+            } else {
+                QuickLookView(url: url, fullScreen: $markingUp, onFailure: fail)
+            }
         case .markdown:
             RemoteDocumentView(url: url, renderMarkdown: true, document: review.link, bridge: bridge, onFailure: fail)
         case .page:
@@ -498,7 +517,7 @@ struct DeliverableSheet: View {
             // alone, downloaded into an empty folder, so its styles, scripts
             // and pictures were silently missing; now each is read from the
             // Mac as the page asks for it.
-            LocalPageView(handler: .page(review.link ?? "", entry: url, bridge: bridge), url: url, page: page, onFailure: fail)
+            LocalPageView(handler: .page(review.link ?? "", entry: url, bridge: bridge), url: url, page: page, onFailure: fail, ink: ink)
         case .text:
             RemoteDocumentView(url: url, renderMarkdown: false, onFailure: fail)
         case .unsupported:
@@ -775,6 +794,8 @@ private struct BridgedWebView: UIViewRepresentable {
     let url: URL
     let page: PageLoadFailure
     let onFailure: (String) -> Void
+    /// The review's marks, found in the page and drawn over it.
+    var ink: InkSpec? = nil
 
     func makeCoordinator() -> PageLoadFailure { page }
 
@@ -786,11 +807,17 @@ private struct BridgedWebView: UIViewRepresentable {
         view.uiDelegate = context.coordinator
         context.coordinator.view = view
         context.coordinator.onFailure = onFailure
+        context.coordinator.ink = ink.flatMap { PageInk(page: view, marks: $0.marks, entry: url, key: $0.key, agent: $0.agent) }
         view.load(URLRequest(url: url))
         return view
     }
 
     func updateUIView(_ view: WKWebView, context: Context) {}
+
+    static func dismantleUIView(_ view: WKWebView, coordinator: PageLoadFailure) {
+        coordinator.ink?.stop()
+        coordinator.ink = nil
+    }
 }
 
 /// A page read from the Mac as it asks, each request through `handler`: a
@@ -803,6 +830,8 @@ private struct LocalPageView: UIViewRepresentable {
     let page: PageLoadFailure
     let onFailure: (String) -> Void
     var onRefusedLink: (String) -> Void = { _ in }
+    /// The review's marks, found in the page and drawn over it.
+    var ink: InkSpec? = nil
 
     func makeCoordinator() -> PageLoadFailure { page }
 
@@ -818,11 +847,17 @@ private struct LocalPageView: UIViewRepresentable {
         context.coordinator.onFailure = onFailure
         context.coordinator.devServer = devServer.map { ($0, url.host ?? "") }
         context.coordinator.onRefusedLink = onRefusedLink
+        context.coordinator.ink = ink.flatMap { PageInk(page: view, marks: $0.marks, entry: url, key: $0.key, agent: $0.agent) }
         view.load(URLRequest(url: url))
         return view
     }
 
     func updateUIView(_ view: WKWebView, context: Context) {}
+
+    static func dismantleUIView(_ view: WKWebView, coordinator: PageLoadFailure) {
+        coordinator.ink?.stop()
+        coordinator.ink = nil
+    }
 }
 
 /// A page that will not load says why instead of staying blank (A13); a link
@@ -842,6 +877,8 @@ private final class PageLoadFailure: NSObject, ObservableObject, WKNavigationDel
     /// A dev page's server on the Mac, and the page's host here: a link to that server comes back
     /// through conch rather than asking the phone's own localhost.
     var devServer: (origin: URL, host: String)?
+    /// The agent's marks over the page, while it shows (`PageInk`).
+    var ink: PageInk?
     var onRefusedLink: (String) -> Void = { _ in }
 
     /// The page links to `http://localhost:5173/next`: on a phone that is the phone. The review's

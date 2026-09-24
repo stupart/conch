@@ -108,6 +108,48 @@ public enum AgentInk {
         }
     }
 
+    /// Where a selector's element or a quote's words are in a page, run by the Mac and the phone alike. It reads the page
+    /// and changes nothing: no element, attribute, style, selection or scroll is touched, and nothing is
+    /// left behind (it runs in conch's own content world, whose names the page never sees). A selector is
+    /// `querySelector`'s first match; a quote is the first place its words are visible, measured with a detached Range.
+    /// The strings are passed as arguments, never spliced into the source.
+    public static let finder = """
+        const vv = window.visualViewport;
+        const viewport = { left: vv ? vv.offsetLeft : 0, top: vv ? vv.offsetTop : 0, scale: vv ? vv.scale : 1, width: window.innerWidth };
+        const hidden = /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/;
+        function words(quote) {
+            const root = document.body || document.documentElement;
+            if (!root) return null;
+            const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+                acceptNode: (node) => hidden.test(node.parentNode ? node.parentNode.nodeName : "") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
+            });
+            const nodes = [];
+            let text = "";
+            for (let node = walker.nextNode(); node; node = walker.nextNode()) { nodes.push([node, text.length]); text += node.data; }
+            // Where an offset falls; an end on a boundary belongs to the node it ends, not the next one.
+            const at = (offset, end) => { let i = nodes.length - 1; while (i > 0 && (end ? nodes[i][1] >= offset : nodes[i][1] > offset)) i--; return [nodes[i][0], offset - nodes[i][1]]; };
+            for (let from = text.indexOf(quote), tries = 0; from >= 0 && tries < 20; from = text.indexOf(quote, from + 1), tries++) {
+                const range = document.createRange();
+                const [startNode, startOffset] = at(from, false), [endNode, endOffset] = at(from + quote.length, true);
+                range.setStart(startNode, startOffset);
+                range.setEnd(endNode, endOffset);
+                const rect = range.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0) return rect;
+            }
+            return null;
+        }
+        const found = {};
+        for (const [id, how, what] of marks) {
+            let rect = null;
+            try {
+                if (how === "selector") { const element = document.querySelector(what); if (element) rect = element.getBoundingClientRect(); }
+                else rect = words(what);
+            } catch (_) {}
+            if (rect && rect.width > 0 && rect.height > 0) found[id] = [rect.left, rect.top, rect.width, rect.height];
+        }
+        return { viewport, found };
+        """
+
     /// What a page says about its own viewport, for turning its client rects into the web view's points.
     public struct Viewport: Equatable, Sendable {
         /// `visualViewport`'s offset into the layout viewport, and its pinch scale.

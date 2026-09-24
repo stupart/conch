@@ -289,7 +289,7 @@ describe("a page on the Mac's localhost is said, not loaded", () => {
     expect(view).toContain("Button { lanPage = lan }");
     expect(view).toContain("through the relay");
     expect(between(sheet, "case let .macLocal(url):", "case let .local(localKind):")).toContain(
-      "BridgedWebView(url: lanPage, page: page, onFailure: fail)",
+      "BridgedWebView(url: lanPage, page: page, onFailure: fail, ink: ink)",
     );
   });
 });

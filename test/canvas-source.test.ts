@@ -259,7 +259,9 @@ describe("Send", () => {
  */
 describe("agent ink", () => {
   test("the script that finds a selector or a quote only reads the page", () => {
-    const finder = agentInk.slice(agentInk.indexOf("static let finder = \"\"\""), agentInk.indexOf("\"\"\"\n", agentInk.indexOf("static let finder = \"\"\"") + 30));
+    // One script, in the shared package, for the Mac and the phone alike.
+    expect(agentInk).toContain("static let finder = AgentInk.finder");
+    const finder = placing.slice(placing.indexOf("public static let finder = \"\"\""), placing.indexOf("\"\"\"\n", placing.indexOf("public static let finder = \"\"\"") + 30));
     expect(finder.length).toBeGreaterThan(400);
     // Nothing that changes the DOM, styles, the selection, the scroll, or leaves anything behind.
     for (const writes of [

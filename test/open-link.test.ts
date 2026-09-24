@@ -542,11 +542,11 @@ describe("the phone: the same dead tap, said and recorded", () => {
       'fail("Couldn\'t fetch this from your Mac: \\(bridge.lastError',
     );
     for (const call of [
-      "BridgedWebView(url: url, page: page, onFailure: fail)",
+      "BridgedWebView(url: url, page: page, onFailure: fail, ink: ink)",
       "QuickLookView(url: url, fullScreen: $markingUp, onFailure: fail)",
       "RemoteDocumentView(url: url, renderMarkdown: true, document: review.link, bridge: bridge, onFailure: fail)",
       "RemoteDocumentView(url: url, renderMarkdown: false, onFailure: fail)",
-      "LocalPageView(handler: .page(review.link ?? \"\", entry: url, bridge: bridge), url: url, page: page, onFailure: fail)",
+      "LocalPageView(handler: .page(review.link ?? \"\", entry: url, bridge: bridge), url: url, page: page, onFailure: fail, ink: ink)",
     ]) expect(sheet).toContain(call);
     // Text and markdown: the read's own error, not a line that hid it.
     const document = slice(sheet, "private struct RemoteDocumentView", "private struct BridgedWebView");
