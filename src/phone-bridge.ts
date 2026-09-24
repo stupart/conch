@@ -81,6 +81,8 @@ export interface PhoneBridgeDependencies {
   sessionPid?(sessionId: string): number | undefined;
   /** Take a snapshot of a held deliverable the phone can't draw (`createPreviewRequester`). */
   requestPreview?(sessionId: string, reviewId: string): Promise<PreviewAnswer>;
+  /** A recording's words, each with when it was said (`transcribeWavSegments`), for `/transcript`. */
+  transcribe?(wavPath: string): Promise<{ segments: Array<{ start: number; end: number; text: string }>; error?: string }>;
   log(message: string): void;
 }
 
@@ -314,6 +316,7 @@ export class PhoneBridgeApplication {
   readonly #token: string;
   readonly #pairing = new PairingWindow();
   readonly #stateSinks = new Map<PhoneStateSink, "phone" | "observer">();
+  #transcribing = false;
 
   constructor(dependencies: PhoneBridgeDependencies, options: { token: string }) {
     this.#dependencies = dependencies;
@@ -477,6 +480,36 @@ export class PhoneBridgeApplication {
         const served = await servableFile(requested, this.#dependencies.getState() as ServableState | null,
           this.#dependencies.uploadsDirectory);
         return served.ok ? fileResponse(req, served.real) : new Response(served.reason, { status: served.status });
+      })();
+    }
+
+    // The words of a video the phone is sending, from the recording of its sound it uploaded
+    // (`phone-uploads.ts`), timed, since the model can't watch the video. A GET: the relay runs
+    // POSTs one at a time, and a transcription's seconds would hold every control behind it.
+    if (url.pathname === "/transcript" && req.method === "GET") {
+      return (async () => {
+        const { transcribe, uploadsDirectory } = this.#dependencies;
+        if (!transcribe || !uploadsDirectory) return Response.json({ error: "this Mac can't transcribe" }, { status: 503 });
+        const real = await ownUpload(url.searchParams.get("path") ?? "", uploadsDirectory);
+        if (!real?.endsWith(".wav")) return Response.json({ error: "not a recording the phone sent" }, { status: 403 });
+        // One at a time: whisper is the voice loop's too.
+        if (this.#transcribing) return Response.json({ error: "another recording is being transcribed" }, { status: 429 });
+        this.#transcribing = true;
+        const words = transcribe(real).catch((error) => ({ segments: [], error: String(error) }));
+        // Answered at once, and kept alive: the phone's relay link calls a request that shows no
+        // progress for 30 s stalled and reconnects, and whisper cold can take longer. A space every
+        // ten seconds until the words come; JSON allows it before the value.
+        return new Response(new ReadableStream({
+          start: (controller) => {
+            const alive = setInterval(() => controller.enqueue(new TextEncoder().encode(" ")), TRANSCRIPT_KEEPALIVE_MS);
+            void words.then(({ segments, error }) => {
+              clearInterval(alive);
+              this.#transcribing = false;
+              controller.enqueue(new TextEncoder().encode(JSON.stringify(error && !segments.length ? { error } : { segments })));
+              controller.close();
+            });
+          },
+        }), { headers: { "content-type": "application/json" } });
       })();
     }
 
@@ -724,6 +757,9 @@ interface HeldReview {
   scene?: { marks?: Array<{ frame?: { image?: unknown } }> };
   preview?: { path?: unknown };
 }
+
+/** How often a transcript still being made says it is (`/transcript`). */
+const TRANSCRIPT_KEEPALIVE_MS = 10_000;
 
 /** The parts of the published state `/file` decides by. */
 interface ServableState {

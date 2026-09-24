@@ -75,6 +75,8 @@ async function connectedHarness(options: {
   onProtocolFailure?: () => void;
   /** Every frame the Mac sends, opened; a chunk is acknowledged at once unless this says not to. */
   onFrame?: (opened: OpenedRelayFrame) => boolean | void;
+  /** Anything else the bridge is handed (a transcriber, an uploads folder). */
+  bridge?: Partial<Parameters<typeof createPhoneBridgeApplication>[0]>;
 } = {}) {
   const relay = pairing();
   const sent: string[] = [];
@@ -88,6 +90,7 @@ async function connectedHarness(options: {
     replyFor: async () => "reply",
     acceptUpload: async () => ({ received: 1, total: 1 }),
     onClientsChanged: (count) => { clients = count; },
+    ...options.bridge,
     log() {},
   }, { token: "legacy-lan-token" });
   peer = new MacRelayPeer(
@@ -765,6 +768,42 @@ describe("relay downloads pipeline and take turns", () => {
     await delivery;
     expect(chunksOf("left-download").length).toBe(4);
   });
+});
+
+// A video's words take whisper seconds; over the relay, POSTs run one at a time, so the transcript is a GET and a
+// control sent meanwhile is never held behind it.
+test("a transcription in progress never holds a control behind it", async () => {
+  const root = mkdtempSync(join(tmpdir(), "conch-relay-transcript-"));
+  temporary.push(root);
+  const recording = join(root, "abcdef123456.wav");
+  writeFileSync(recording, "RIFF");
+  chmodSync(recording, 0o600);
+  let finish!: () => void;
+  const slow = new Promise<void>((resolve) => { finish = resolve; });
+  const harness = await connectedHarness({
+    forward: async () => "{\"accepted\":true}",
+    bridge: {
+      uploadsDirectory: root,
+      transcribe: async () => { await slow; return { segments: [{ start: 0, end: 1, text: "hello" }] }; },
+    },
+  });
+  const transcript = harness.peer.receive(JSON.stringify(await harness.phone.seal(
+    { id: "transcript-request", method: "GET", kind: "request" },
+    requestBody(`/transcript?path=${encodeURIComponent(recording)}`, harness.relay.secret),
+  )));
+  await harness.peer.receive(JSON.stringify(await harness.phone.seal(
+    { id: "control-meanwhile", method: "POST", kind: "request" },
+    requestBody("/control", harness.relay.secret, "{}"),
+  )));
+  await settle(() => harness.sent.length > 0, "the control's reply");
+  const early = await openSent(harness.phone, harness.sent);
+  expect(early.some((frame) => frame.header.id === "control-meanwhile" && frame.header.kind === "response-head")).toBe(true);
+  // Its answer has started (it keeps the link alive), but not finished.
+  expect(early.some((frame) => frame.header.id === "transcript-request" && frame.header.kind === "response-end")).toBe(false);
+  finish();
+  await transcript;
+  const late = [...early, ...await openSent(harness.phone, harness.sent)];
+  expect(JSON.parse(new TextDecoder().decode(responseBody(late, "transcript-request")))).toEqual({ segments: [{ start: 0, end: 1, text: "hello" }] });
 });
 
 // Review finding 18: the cache kept every POST reply for the daemon's lifetime,

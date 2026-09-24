@@ -77,7 +77,9 @@ final class DirectHTTPTransport: BridgeTransport, @unchecked Sendable {
         // A control can now wait for its keystrokes (an inject's `awaitDelivery`,
         // bounded at 20 s on the Mac), which a 10 s timeout would call a failure.
         // A snapshot (`/preview`) waits for the Mac to take it: a Simulator screenshot, a document's first page.
-        var urlRequest = try makeURLRequest(request, timeout: request.path == "/control" || request.path == "/preview" ? 30 : 10)
+        // A video's words (`/transcript`) wait on whisper, cold as long as a minute.
+        let timeout: TimeInterval = request.path.hasPrefix("/transcript?") ? 150 : request.path == "/control" || request.path == "/preview" ? 30 : 10
+        var urlRequest = try makeURLRequest(request, timeout: timeout)
         urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await session.data(for: urlRequest)
         guard let http = response as? HTTPURLResponse else {

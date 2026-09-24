@@ -673,6 +673,17 @@ struct SessionView: View {
                                 // ImageUpload retains only a 192 px first frame
                                 // for this 64 pt tile, never the agent-sized data.
                                 .frame(width: 64, height: 64)
+                                .overlay(alignment: .bottomLeading) {
+                                    if case let .video(video) = attachment.content {
+                                        Label(CanvasStoryboard.clock(video.length), systemImage: "video.fill")
+                                            .font(.system(size: 9, weight: .semibold))
+                                            .foregroundStyle(.white)
+                                            .padding(3)
+                                            .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 4))
+                                            .padding(3)
+                                            .accessibilityLabel("Video, \(CanvasStoryboard.clock(video.length))")
+                                    }
+                                }
 
                                 Button {
                                     attachments.removeAll { $0.id == attachment.id }
@@ -733,14 +744,15 @@ struct SessionView: View {
                 HStack(spacing: 14) {
                     // Plain glyphs on the left, weight reserved for the actions
                     // that send something.
-                    PhotosPicker(selection: $pickedPhoto, matching: .images, photoLibrary: .shared()) {
+                    // Videos too: Tyler (09-25): "vise versa if possible", the phone's own recordings, to the Mac.
+                    PhotosPicker(selection: $pickedPhoto, matching: .any(of: [.images, .videos]), photoLibrary: .shared()) {
                         Image(systemName: "plus")
                             .font(.system(size: 19, weight: .medium))
                             .frame(width: 30, height: 30)
                             .foregroundStyle(Palette.textPrimary)
                     }
                     .disabled(attaching)
-                    .accessibilityLabel("Attach a picture")
+                    .accessibilityLabel("Attach a picture or a video")
 
                     // A background job no window is attached to: open one on
                     // the Mac, beside the field that says why Send is off.
@@ -974,6 +986,9 @@ struct SessionView: View {
         attachError = nil
         defer { attaching = false; pickedPhoto = nil }
 
+        if item.supportedContentTypes.contains(where: { $0.conforms(to: .movie) }) {
+            return await attachVideo(item)
+        }
         guard let raw = try? await item.loadTransferable(type: Data.self) else {
             attachError = "Couldn't read that picture."
             return
@@ -995,10 +1010,35 @@ struct SessionView: View {
             return
         }
         attachments.append(PendingAttachment(
-            data: prepared.data,
-            ext: prepared.ext,
+            content: .image(prepared.data, ext: prepared.ext),
             thumbnail: prepared.previewData.flatMap(UIImage.init(data:))
         ))
+    }
+
+    /// A video, made ready now rather than at Send: transcoding takes seconds, and a video that
+    /// can't be sent should say so while it is still being composed. One at a time.
+    private func attachVideo(_ item: PhotosPickerItem) async {
+        guard !attachments.contains(where: { if case .video = $0.content { true } else { false } }) else {
+            attachError = "One video at a time."
+            return
+        }
+        attachError = "Preparing the video…"
+        guard let picked = try? await item.loadTransferable(type: PickedMovie.self) else {
+            attachError = "Couldn't read that video."
+            return
+        }
+        defer { try? FileManager.default.removeItem(at: picked.url) }
+        do {
+            let video = try await VideoPrep.prepare(picked.url)
+            guard attachments.count < Self.attachmentLimit else {
+                attachError = "You can attach up to 4 pictures at a time."
+                return
+            }
+            attachments.append(PendingAttachment(content: .video(video), thumbnail: video.poster))
+            attachError = nil
+        } catch {
+            attachError = error.localizedDescription
+        }
     }
 
     private func sendDraft() {
@@ -1053,17 +1093,25 @@ struct SessionView: View {
         return paths.joined(separator: "\n")
     }
 
+    /// Each attachment as the lines it adds to the message: a picture's path, or a video's whole
+    /// block (its contact sheet, its words, timed, and the video itself: `VideoMessage`).
     private func uploadPaths(_ pending: [PendingAttachment]) async -> [String]? {
         var paths: [String] = []
         for attachment in pending {
-            guard let path = await bridge.uploadImage(
-                data: attachment.data,
-                ext: attachment.ext
-            ) else {
-                attachError = "Couldn't send the picture — try again."
-                return nil
+            switch attachment.content {
+            case let .image(data, ext):
+                guard let path = await bridge.upload(data: data, ext: ext, id: attachment.uploadId) else {
+                    attachError = "Couldn't send the picture — try again."
+                    return nil
+                }
+                paths.append(path)
+            case let .video(video):
+                guard let block = await VideoMessage.send(video, bridge: bridge) else {
+                    attachError = "Couldn't send the video — try again; what already reached the Mac isn't sent twice."
+                    return nil
+                }
+                paths.append(block)
             }
-            paths.append(path)
         }
         return paths
     }
@@ -1310,13 +1358,20 @@ private struct ReviewCard: View {
     }
 }
 
-/// A picture chosen but not yet sent: already converted and sized for the agent
-/// that will read it, waiting for the send that carries it.
+/// A picture or a video chosen but not yet sent: already converted and sized for
+/// the agent that will read it, waiting for the send that carries it.
 private struct PendingAttachment: Identifiable {
+    enum Content {
+        case image(Data, ext: String)
+        case video(PreparedVideo)
+    }
+
     let id = UUID()
-    let data: Data
-    let ext: String
+    let content: Content
     let thumbnail: UIImage?
+    /// The id a picture uploads under, kept across a Retry, so the Mac is asked only
+    /// for what it hasn't got (`BridgeClient.upload`); a video keeps its own.
+    let uploadId = ImageUpload.newUploadID()
 }
 
 /// A reply to the session whose work is on the review screen, so looking at
