@@ -1476,8 +1476,9 @@ export function createMcpToolHandlers(
       const review = { summary, ...(link ? { link } : {}), ...(scene ? { scene } : {}), ...(kind ? { kind } : {}), ...(key ? { key } : {}) };
       const facts = deliverableFacts(review);
       // ponytail: the version is predicted from the published state by the daemon's own rule
-      // (`nextVersion`); a publication still queued behind speech isn't published yet, so it can
-      // read one low. conch_deliverables says what was filed. A reply from the daemon if it bites.
+      // (`nextVersion`); a publication still queued behind speech isn't published yet, and the
+      // numbers a Remove took (`PanelSessionState.versions`) aren't published at all, so either can
+      // read low. conch_deliverables says what was filed. A reply from the daemon if it bites.
       const version = nextVersion(await heldDeliverables(sessionsPath, session.sessionId, dependencies) ?? [], facts.artifact);
       const sent = await (async () => {
         const transcriptPath = dependencies.findTranscript(config.claudeDir, session.sessionId);

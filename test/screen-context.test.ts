@@ -716,7 +716,7 @@ describe("the Mac app's conch-staged observer (source guards)", () => {
     expect(report).toContain("if staged != nil {\n            screenGate.staged(surface, in: app?.bundleId, at: Date())");
     expect(report).toContain("} else if !NSApp.isActive || !screenGate.noticed(surface, in: nil, at: Date()) {\n            return");
     expect(report).toContain("let report = ConchScreenObservationReport(source: .conchStaged, surface: surface, app: app, staged: staged)");
-    expect(report).toContain("Task { _ = await socketClient.request(report) }");
+    expect(report).toContain("sendScreenReport(report, of: surface)");
     // conch's own window following a pick, and coming back to the front, are the other reports.
     const content = read("mac-app/conch-mac/ContentView.swift");
     expect(content).toContain('FloatingPanels.picked(id)\n            // conch\'s own window now shows this session: the screen context\'s conch-staged observer.\n            store.reportShowing(.conch(sessionId: id, view: "main"))');
@@ -797,6 +797,30 @@ describe("the Mac app's front-window observer (source guards)", () => {
     expect(front).toContain("guard screenGate.noticed(surface, in: app.bundleId, at: Date()) else { return }");
     expect(front).toContain("ConchScreenObservationReport(source: .frontWindow, surface: surface, app: app, staged: nil)");
     expect(store).toContain("frontWindow = FrontWindowObserver { [weak self] surface, app in");
+  });
+
+  test("while the panel fills the screen the app behind it is not said, and it is read again the moment it stops", () => {
+    // The gate holds every reading while covered (`ScreenReportGate.covered`, ScreenObservingTests); the store sets it
+    // from the panel, and uncovered reads the app in front at once rather than on the next poll.
+    const covered = store.slice(store.indexOf("func screenCovered(_ covered: Bool) {"), store.indexOf("/// Take an artifact"));
+    expect(covered).toContain("guard covered != screenGate.covered else { return }\n        screenGate.covered = covered\n        if !covered { frontWindow?.readNow() }");
+    expect(code).toContain("func readNow() {\n        read(after: .zero)\n    }");
+    const panels = read("mac-app/conch-mac/FloatingPanels.swift");
+    expect(panels).toContain("store?.screenCovered(isFullScreen && fog.isVisible)");
+    // Both ways it can stop covering: docking back (or collapsing, which docks first) and being hidden from the menu.
+    const toggle = panels.slice(panels.indexOf("func toggleFullScreen() {"), panels.indexOf("func showInPanel() {"));
+    expect(toggle).toMatch(/blur\.maskImage = nil\n        \}\n        coverChanged\(\)\n    \}/);
+    const shown = panels.slice(panels.indexOf("private func showWhatIsOn() {"), panels.indexOf("private func coverChanged() {"));
+    expect(shown).toContain("show(fog, defaults.bool(forKey: ConchStatusItem.showConversationKey))\n        coverChanged()");
+    expect(panels).toContain("self.store = store");
+  });
+
+  test("a report counts as said only once the daemon acks it, and a daemon that has seen nothing is told again", () => {
+    const send = store.slice(store.indexOf("private func sendScreenReport("), store.indexOf("func screenCovered("));
+    expect(send).toContain('["kind"] as? String == "screen-ack" {\n                return\n            }\n            self?.screenGate.unsaid(surface)');
+    expect(store.match(/sendScreenReport\(report, of: surface\)/g)?.length).toBe(2);
+    // A restarted daemon publishes no `showing` until it hears something.
+    expect(store).toContain("sourceState = snapshot\n        // A daemon that has seen nothing on screen is a new one (a restart): what the last one was told is news again.\n        if snapshot.showing == nil { screenGate.forget() }");
   });
 });
 

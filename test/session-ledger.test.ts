@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { TurnEvent } from "../src/hook.ts";
 import { MAX_REVIEWS_BYTES, SessionLedger } from "../src/session-ledger.ts";
+import { capReviews, fileReview, MAX_SESSION_REVIEWS, type SessionReview } from "../src/panel.ts";
+import { checkReviewScene } from "../src/snippet.ts";
 
 type SessionCollection = Map<string, unknown> | Set<string>;
 
@@ -159,7 +161,8 @@ describe("saved deliverables", () => {
 
   test("the file is capped, keeping the newest deliverables", () => withFile((path) => {
     const ledger = new SessionLedger(path);
-    const big = "x".repeat(40_000);
+    // Written twice a session (`review` and `reviews`): a quarter of the cap each, so two sessions fit and a third doesn't.
+    const big = "x".repeat(MAX_REVIEWS_BYTES / 4);
     for (let i = 0; i < 10; i++) file(ledger, `s${i}`, 1_000 + i, big);
     ledger.saveReviews();
     expect(statSync(path).size).toBeLessThanOrEqual(MAX_REVIEWS_BYTES);
@@ -168,6 +171,40 @@ describe("saved deliverables", () => {
     expect(kept.length).toBeLessThan(10);
     // Whatever made the cut is newer than everything that did not.
     expect(kept).toEqual(Array.from({ length: kept.length }, (_, i) => `s${10 - kept.length + i}`).sort());
+  }));
+
+  test("one session too big for the file is left out, not every session older than it", () => withFile((path) => {
+    const ledger = new SessionLedger(path);
+    for (let i = 0; i < 3; i++) file(ledger, `old${i}`, 1_000 + i);
+    // The newest, alone past the cap: it used to end the save there, and the three before it went with it.
+    file(ledger, "huge", 2_000, "x".repeat(MAX_REVIEWS_BYTES));
+    ledger.saveReviews();
+    expect([...restored(path).sessionStates.keys()].sort()).toEqual(["old0", "old1", "old2"]);
+  }));
+
+  test("eight sessions each holding six deliverables at the marks cap all come back after a restart", () => withFile((path) => {
+    // Measured 09-25: at 256 KB, two of these eight were saved, and a restart lost the other six sessions' deliverables.
+    const ledger = new SessionLedger(path);
+    const pts = Array.from({ length: 12 }, (_, i) => [Number((i / 13).toFixed(3)), Number((1 - i / 13).toFixed(3))]);
+    const marks = Array.from({ length: 12 }, (_, i) => ({ id: `m${i}`, kind: "stroke", frame: { canvas: "0F1E2D3C-0000-4000-8000-000000000000" }, pts, label: "x".repeat(40) }));
+    const checked = checkReviewScene({ v: 1, target: { kind: "auto" }, marks }, false);
+    if (!checked.ok) throw new Error(checked.reason);
+    expect(Buffer.byteLength(JSON.stringify(checked.scene.marks))).toBeGreaterThan(3_500);
+    for (let s = 0; s < 8; s++) {
+      let held: SessionReview[] = [];
+      for (let r = 0; r < MAX_SESSION_REVIEWS; r++) {
+        held = capReviews([...held, fileReview(`s${s}`, { summary: `work ${r}`, scene: checked.scene, key: `k${r}` }, 1_000 + s * 100 + r, held)]);
+      }
+      ledger.sessionStates.set(`s${s}`, { label: `s${s}`, status: "waiting", at: 1, review: held.at(-1)!, reviews: held });
+    }
+    ledger.saveReviews();
+    expect(statSync(path).size).toBeLessThanOrEqual(MAX_REVIEWS_BYTES);
+    const back = restored(path);
+    expect(back.sessionStates.size).toBe(8);
+    for (const [, state] of back.sessionStates) {
+      expect(state.reviews).toHaveLength(MAX_SESSION_REVIEWS);
+      expect(state.reviews!.every((one) => one.scene?.marks?.length === 12)).toBe(true);
+    }
   }));
 
   test("a review's scene is saved and restored with it, and one this conch can't read is dropped", () => withFile((path) => {

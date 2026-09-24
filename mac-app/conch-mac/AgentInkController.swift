@@ -56,14 +56,18 @@ final class AgentInkController {
     func install(store: StateStore) {
         guard self.store == nil else { return }
         self.store = store
-        // The Ready pill, Previous and Next, the switcher: the review brought forward. A turn later than the canvas's own
-        // fresh start on the same change (`CanvasController.install`), so the clear comes first and these marks after.
-        FloatingPanels.installed?.queue.$lastStaged
-            .dropFirst()
-            .removeDuplicates()
-            .receive(on: RunLoop.main)
-            .sink { [weak self] key in MainActor.assumeIsolated { self?.staged(key) } }
-            .store(in: &subscriptions)
+        // The Ready pill, Previous and Next, the switcher: the review brought forward, on the very pair the canvas starts a
+        // clear canvas on (`CanvasController.install`), a turn later, so every clear is followed by these marks. The pill
+        // sets the review at the click and pins the panel to its session a hop later: the pair changes twice, and on the
+        // review alone the second clear wiped the marks the first change had just drawn.
+        if let panels = FloatingPanels.installed {
+            panels.$staged.combineLatest(panels.queue.$lastStaged)
+                .dropFirst()
+                .removeDuplicates { $0.0 == $1.0 && $0.1 == $1.1 }
+                .receive(on: RunLoop.main)
+                .sink { [weak self] session, key in MainActor.assumeIsolated { self?.staged(key, in: session) } }
+                .store(in: &subscriptions)
+        }
         // Esc in conch — the side panel, the conversation panel — clears the agent's marks, and lets the Esc go on to
         // whatever else it does. Only conch's own keys: seeing Esc in other apps would need the Accessibility grant, and
         // taking the keys to get it would steal focus. On the glass itself its own Esc clears everything (`escape`).
@@ -77,14 +81,13 @@ final class AgentInkController {
 
     // MARK: What is shown
 
-    /// The review the queue brought forward, found by its key in what is published.
-    private func staged(_ key: ReviewItem.ID?) {
-        guard let key, let state = store?.state else { return }
-        for row in state.rows {
-            if let review = row.held.first(where: { ReviewItem(row: row, review: $0).id == key }) {
-                return show(ReviewItem(row: row, review: review))
-            }
-        }
+    /// The review the queue brought forward, found by its key in what is published, while the panel is on its session.
+    /// Between the pill's click and its staging the pair names the session the panel was on, and a pick in conch's window
+    /// (`FloatingPanels.picked`) names none: neither is where this review is.
+    private func staged(_ key: ReviewItem.ID?, in session: SessionRow.ID?) {
+        guard let key, let row = store?.state?.row(session),
+              let review = row.held.first(where: { ReviewItem(row: row, review: $0).id == key }) else { return }
+        show(ReviewItem(row: row, review: review))
     }
 
     /// `item`'s marks, in place of the last review's. One with none clears them.
@@ -173,7 +176,11 @@ final class AgentInkController {
         }
         let page = surfaces.first { $0.item.id == item.id && $0.image == nil }?.view as? WKWebView
         var found: [String: Found] = [:]
-        if let page { found = await Self.find(item.marks, in: page, link: item.link) }
+        // Only while its window is in sight: a page behind other windows or minimised places nothing anyway (`visible`),
+        // and asking it five times a second woke its web process for as long as it stayed open.
+        if let page, page.window?.occlusionState.contains(.visible) == true {
+            found = await Self.find(item.marks, in: page, link: item.link)
+        }
         for agent in item.marks {
             guard let kind = AgentInk.Kind(rawValue: agent.kind.rawValue) else { continue }
             let id = "\(item.id)/\(agent.id)"

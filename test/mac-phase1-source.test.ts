@@ -132,6 +132,18 @@ describe("the Mac conversation stays readable while it grows", () => {
       else expect(rebuild).toContain(`${field}: sourceState.${field}`);
     }
   });
+
+  test("a relabelled row carries every field the daemon published", () => {
+    // `replacingLabel` rebuilds the row through the same kind of init, whose newer fields default to nil: it dropped
+    // `reviews` and `workDirs`, so for the moment a rename was in flight a session held only its newest deliverable.
+    const struct = models.slice(models.indexOf("struct SessionRow: Decodable"), models.indexOf("private enum CodingKeys", models.indexOf("struct SessionRow: Decodable")));
+    const fields = [...struct.matchAll(/^    (?:let|var) (\w+): [^{\n]+$/gm)].map((match) => match[1]);
+    expect(fields).toContain("reviews");
+    expect(fields).toContain("workDirs");
+    expect(fields).not.toContain("workFolder"); // computed
+    const copy = models.slice(models.indexOf("func replacingLabel(with label: String) -> SessionRow {"), models.indexOf("\n    }\n", models.indexOf("func replacingLabel(with label: String) -> SessionRow {")));
+    for (const field of fields) expect(copy).toMatch(new RegExp(`\\b${field}: ${field}\\b`));
+  });
 });
 
 describe("the Mac composer belongs to one session", () => {

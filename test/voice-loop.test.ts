@@ -1939,6 +1939,24 @@ describe("a publication is not the end of a turn", () => {
     await h.voice.handle(publication);
     expect(rowFor(h).review).toEqual(filedAs("s1", { summary: "hero v4", at: 5_000 }));
   });
+
+  test("a version removed is not given again, through a publication or a turn's marker", async () => {
+    const h = harness({ paused: true });
+    for (const at of [2_000, 3_000, 4_000]) {
+      await h.voice.handle(accepted(h, published({ eventAt: at, review: { summary: `hero at ${at}`, key: "hero" } })));
+    }
+    const held = () => h.ledger.sessionStates.get("s1")!;
+    expect(held().reviews!.map((one) => one.version)).toEqual([1, 2, 3]);
+    expect(h.ledger.removeDeliverables("s1", { review: held().review!.id })).toBe(true);
+    // The turn ending goes through the latch, which rebuilds the session's state: the numbers go with it.
+    await h.voice.handle(accepted(h, turnEnd({ eventAt: 4_500 })));
+    await h.voice.handle(accepted(h, published({ eventAt: 5_000, review: { summary: "hero again", key: "hero" } })));
+    expect(held().review).toMatchObject({ summary: "hero again", version: 4 });
+    // A turn's own marker files through the latch, and counts on the same way.
+    expect(h.ledger.removeDeliverables("s1", { review: held().review!.id })).toBe(true);
+    await h.voice.handle(accepted(h, turnEnd({ eventAt: 6_000, review: { summary: "hero from the marker", key: "hero" } })));
+    expect(held().review).toMatchObject({ summary: "hero from the marker", version: 5 });
+  });
 });
 
 /**

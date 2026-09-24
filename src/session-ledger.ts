@@ -1,13 +1,21 @@
 import { existsSync, readFileSync } from "node:fs";
 import type { TurnEvent } from "./hook.ts";
-import { capReviews, removeReviews, type PanelSessionState, type SessionReview } from "./panel.ts";
+import { capReviews, filedVersions, removeReviews, type PanelSessionState, type SessionReview } from "./panel.ts";
 import { deliverableFacts, isDeliverableKind } from "./deliverables.ts";
 import { reviewIdentity } from "./records-receipts.ts";
 import { writeSettingsFileAtomic } from "./settings.ts";
 import { checkReviewScene } from "./snippet.ts";
+import { discardPreview, previewFolderPath } from "./review-preview.ts";
 
-/** The saved-deliverables file stops growing here: newest reviews first, older ones dropped. */
-export const MAX_REVIEWS_BYTES = 256_000;
+/**
+ * The saved-deliverables file stops growing here: newest reviews first, a session that doesn't fit
+ * left out. It bounds the file as written, pretty-printed, which is how it has been read and fixed
+ * by hand. 256 KB was set when a deliverable was a summary and a link; an agent's marks
+ * (`REVIEW_MARKS_MAX_BYTES`) grow about four times pretty-printed and are written seven times a
+ * session, so eight sessions each holding six at that cap came to about 1 MB, and all but two were
+ * lost at the next restart. Room for twice that; reading it back at start is a few milliseconds.
+ */
+export const MAX_REVIEWS_BYTES = 2_000_000;
 
 type OrderedTurnEvent = Pick<TurnEvent, "type" | "sessionId" | "eventAt">;
 
@@ -66,8 +74,12 @@ export class SessionLedger {
     readonly reviewsPath?: string,
     /** Where it lived before it moved home; read only while `reviewsPath` is absent. */
     readonly legacyReviewsPath?: string,
+    /** conch's snapshot folder (`previewFolder`): the one place a deliverable's snapshot is deleted from. */
+    readonly previewsFolder: string = previewFolderPath(),
   ) {}
   #savedReviews = "";
+  /** The snapshots (`preview`) held deliverables named at the last save. */
+  #savedPreviews = new Set<string>();
   // session -> last time conch drove it. Cleanup is still the TTL in markInjected.
   readonly injectedAt = new Map<string, number>();
   // Sessions that finished while paused; latest per session.
@@ -105,7 +117,8 @@ export class SessionLedger {
   }
 
   forget(sessionId: string): void {
-    const hadReview = this.sessionStates.get(sessionId)?.review !== undefined;
+    const saved = this.sessionStates.get(sessionId);
+    const hadReview = saved?.review !== undefined || saved?.versions !== undefined;
     this.sessionStates.delete(sessionId);
     this.eventOrder.forget(sessionId);
     this.pausedSessionIds.delete(sessionId);
@@ -140,10 +153,11 @@ export class SessionLedger {
     }
     if (!saved || typeof saved !== "object" || Array.isArray(saved)) return;
     for (const [sessionId, entry] of Object.entries(saved)) {
-      const { label, review, reviews } = (entry ?? {}) as {
+      const { label, review, reviews, versions: savedVersions } = (entry ?? {}) as {
         label?: unknown;
         review?: unknown;
         reviews?: unknown;
+        versions?: unknown;
       };
       if (!sessionId || this.sessionStates.has(sessionId) || typeof label !== "string") continue;
       // A file written before a session could hold more than one carries `review` alone. It
@@ -153,23 +167,34 @@ export class SessionLedger {
         .map((candidate) => this.#restoredReview(sessionId, candidate))
         .filter((restored): restored is SessionReview => restored !== undefined)
         .sort((a, b) => a.at - b.at);
+      // Named as saved, so one the cap drops below goes at the first save.
+      for (const one of sorted) if (one.preview) this.#savedPreviews.add(one.preview.path);
       // A file from before versions numbers each artifact's filings in the order they were filed.
       const highest = new Map<string, number>();
       for (const one of sorted) {
         one.version ??= (highest.get(one.artifact!) ?? 0) + 1;
         highest.set(one.artifact!, Math.max(highest.get(one.artifact!) ?? 0, one.version));
       }
+      // Counted before the cap, so a filing it drops here still holds its number.
+      const versions = filedVersions(this.#restoredVersions(savedVersions), sorted);
       const held = capReviews(sorted);
-      if (!held.length) continue;
+      if (!held.length && !versions) continue;
       // ponytail: `waiting` shows only on a row nothing gives a status (no registry status, no hook yet); persist status if that bites.
       this.sessionStates.set(sessionId, {
         label,
         status: "waiting",
         at: 0,
-        review: held[held.length - 1],
-        reviews: held,
+        ...(held.length ? { review: held[held.length - 1], reviews: held } : {}),
+        ...(versions ? { versions } : {}),
       });
     }
+  }
+
+  /** The saved `versions`, each a whole number above 0 by a non-empty artifact; anything else is dropped. */
+  #restoredVersions(saved: unknown): Record<string, number> | undefined {
+    if (!saved || typeof saved !== "object" || Array.isArray(saved)) return undefined;
+    const kept = Object.entries(saved).filter(([artifact, version]) => artifact && Number.isSafeInteger(version) && (version as number) > 0);
+    return kept.length ? Object.fromEntries(kept) as Record<string, number> : undefined;
   }
 
   /** One saved deliverable, or nothing if this conch can't read it. */
@@ -233,21 +258,30 @@ export class SessionLedger {
    */
   removeDeliverables(sessionId: string, which: { review: string } | { artifact: string }): boolean {
     const state = this.sessionStates.get(sessionId);
-    const left = removeReviews(state?.reviews ?? (state?.review ? [state.review] : undefined), which);
+    const held = state?.reviews ?? (state?.review ? [state.review] : undefined);
+    const left = removeReviews(held, which);
     if (!state || !left) return false;
     const { review: _removed, reviews: _held, ...rest } = state;
-    this.sessionStates.set(sessionId, { ...rest, ...(left.length ? { review: left.at(-1)!, reviews: left } : {}) });
+    // What it removes keeps its numbers: the next filing of that artifact counts on from them.
+    const versions = filedVersions(state.versions, held!);
+    this.sessionStates.set(sessionId, { ...rest, ...(versions ? { versions } : {}), ...(left.length ? { review: left.at(-1)!, reviews: left } : {}) });
     this.saveReviews();
     return true;
   }
 
-  /** Rewrite the saved deliverables (atomic rename), newest first up to `MAX_REVIEWS_BYTES`. */
+  /**
+   * Rewrite the saved deliverables (atomic rename), newest first up to `MAX_REVIEWS_BYTES`. Every
+   * change to what a session holds comes through here, so this is also where a snapshot goes with
+   * the deliverable it was of (`#discardDroppedPreviews`).
+   */
   saveReviews(): void {
+    this.#discardDroppedPreviews();
     if (!this.reviewsPath) return;
+    // A session holding nothing is saved for its `versions` alone, after every one that holds something.
     const newestFirst = [...this.sessionStates]
-      .filter((entry): entry is [string, PanelSessionState & { review: SessionReview }] => entry[1].review !== undefined)
-      .sort(([, a], [, b]) => b.review.at - a.review.at);
-    const kept: Record<string, { label: string; review: SessionReview; reviews: SessionReview[] }> = {};
+      .filter(([, state]) => state.review !== undefined || state.versions !== undefined)
+      .sort(([, a], [, b]) => (b.review?.at ?? 0) - (a.review?.at ?? 0));
+    const kept: Record<string, { label: string; review?: object; reviews?: object[]; versions?: Record<string, number> }> = {};
     let bytes = 5; // "{\n", "\n}" and the trailing newline
     for (const [sessionId, state] of newestFirst) {
       const { label, review } = state;
@@ -268,12 +302,14 @@ export class SessionLedger {
         label,
         // `review` stays the newest, so a daemon rolled back to before this reads the file
         // and finds exactly what it expects.
-        review: wire(review),
-        reviews: (state.reviews?.length ? state.reviews : [review]).map(wire),
+        ...(review ? { review: wire(review), reviews: (state.reviews?.length ? state.reviews : [review]).map(wire) } : {}),
+        ...(state.versions ? { versions: state.versions } : {}),
       };
-      // Its pretty-printed lines at depth one, plus the ",\n" joining it.
-      bytes += Buffer.byteLength(JSON.stringify({ [sessionId]: entry }, null, 2)) - 2;
-      if (bytes > MAX_REVIEWS_BYTES) break;
+      // Its pretty-printed lines at depth one, plus the ",\n" joining it. One that doesn't fit is left
+      // out, not everything older with it: a smaller one behind it may still fit.
+      const size = Buffer.byteLength(JSON.stringify({ [sessionId]: entry }, null, 2)) - 2;
+      if (bytes + size > MAX_REVIEWS_BYTES) continue;
+      bytes += size;
       kept[sessionId] = entry;
     }
     const body = JSON.stringify(kept);
@@ -284,6 +320,23 @@ export class SessionLedger {
     } catch {
       // Advisory, like the sessions file: an unwritable /tmp must not break a latch.
     }
+  }
+
+  /**
+   * A snapshot goes with its deliverable: removed, dropped by the cap, replaced by a newer one, or its
+   * session forgotten, each of which saves. One the last save named and no held deliverable names now
+   * is deleted, and only from the snapshot folder (`discardPreview`). A snapshot still being taken was
+   * never named, so it can't be deleted from under its capture.
+   */
+  #discardDroppedPreviews(): void {
+    const held = new Set<string>();
+    for (const state of this.sessionStates.values()) {
+      for (const one of [...(state.reviews ?? []), ...(state.review ? [state.review] : [])]) {
+        if (one.preview) held.add(one.preview.path);
+      }
+    }
+    for (const path of this.#savedPreviews) if (!held.has(path)) discardPreview(path, this.previewsFolder);
+    this.#savedPreviews = held;
   }
 
   forgetGone(liveIds: ReadonlySet<string>): void {

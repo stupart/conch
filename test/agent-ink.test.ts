@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkReviewScene, markImagesRefusal, REVIEW_MARKS_MAX_BYTES, type ReviewScene } from "../src/snippet.ts";
@@ -132,6 +132,28 @@ describe("a mark's image passes the rule a linked file does", () => {
       writeFileSync(join(hidden, "a.png"), "png");
       expect(await markImagesRefusal(on(join(hidden, "a.png")), hidden)).toContain("is a hidden file, in a hidden folder");
     } finally { rmSync(hidden, { recursive: true, force: true }); }
+  });
+
+  /**
+   * The contract used to offer "a still the user sent" as an image to mark: every one is in conch's own hidden cache
+   * (the phone's uploads, a canvas's folder), which the rule refuses, so an agent following it was always refused.
+   * It now says what works: a canvas by its id, a still copied out first.
+   */
+  test("what the contract tells an agent to mark is what the rule lets through", async () => {
+    const skill = readFileSync(join(root, "docs/conch-control-skill.md"), "utf8");
+    expect(skill).not.toContain("such as a\n      still the user sent");
+    expect(skill).toContain("Mark a canvas this way, never by its picture's path.");
+    expect(skill).toContain("copy it under your folder or /tmp first and mark the copy.");
+    expect(readFileSync(join(root, "src/snippet.ts"), "utf8")).not.toContain("such as a still the user sent");
+    await withFolder(async (folder) => {
+      const kept = join(folder, "home", ".cache", "conch", "uploads");
+      const project = join(folder, "project");
+      for (const dir of [kept, project]) mkdirSync(dir, { recursive: true });
+      writeFileSync(join(kept, "still.png"), "png");
+      expect(await markImagesRefusal(on(join(kept, "still.png")), project)).toContain("is a hidden file, in a hidden folder");
+      copyFileSync(join(kept, "still.png"), join(project, "still.png"));
+      expect(await markImagesRefusal(on(join(project, "still.png")), project)).toBeNull();
+    });
   });
 });
 

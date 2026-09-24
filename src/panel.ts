@@ -689,6 +689,15 @@ export interface PanelSessionState extends LatchedState {
   review?: SessionReview;
   /** Every deliverable this session is still holding, oldest first. */
   reviews?: SessionReview[];
+  /**
+   * The highest version this session has filed of each artifact, by artifact (`filedVersions`), so a
+   * number the apps showed ("v3") is never given to a different filing: past a Remove, the cap, or a
+   * restart, the next filing counts on from here. Saved with the deliverables.
+   *
+   * ponytail: one entry per artifact the session has ever filed, for as long as the session lives;
+   * sessions file tens. Keep the newest few hundred if one ever files thousands.
+   */
+  versions?: Record<string, number>;
 }
 
 export interface BuildPanelModelOptions {
@@ -1014,7 +1023,7 @@ export interface SessionReview {
    * this filing's own. Absent only on a record from before artifacts (`artifactOf`).
    */
   artifact?: string;
-  /** Which filing of its artifact this is, from 1; one past the highest held when it was filed. */
+  /** Which filing of its artifact this is, from 1; one past the highest filed before it (`nextVersion`). */
   version?: number;
   /** The newest snapshot of it from the Mac, for a phone that can't draw its kind (`review-preview.ts`). */
   preview?: ReviewPreview;
@@ -1029,30 +1038,51 @@ export function artifactOf(review: Pick<SessionReview, "artifact" | "link" | "id
 }
 
 /**
- * The version a new filing of `artifact` gets: one past the highest this session still holds
- * of it, not a count, so a filing removed or dropped by the cap never has its number reused. A
- * record from before versions counts as its place among its artifact's filings.
+ * The version a new filing of `artifact` gets: one past the highest this session has filed of it,
+ * what it still holds or what `filed` remembers (`PanelSessionState.versions`), not a count, so a
+ * filing removed or dropped by the cap never has its number reused. A record from before versions
+ * counts as its place among its artifact's filings.
  */
-export function nextVersion(held: readonly Pick<SessionReview, "artifact" | "link" | "id" | "version">[], artifact: string): number {
+export function nextVersion(
+  held: readonly Pick<SessionReview, "artifact" | "link" | "id" | "version">[],
+  artifact: string,
+  filed?: Readonly<Record<string, number>>,
+): number {
   return 1 + held
     .filter((one) => artifactOf(one) === artifact)
-    .reduce((top, one, index) => Math.max(top, one.version ?? index + 1), 0);
+    .reduce((top, one, index) => Math.max(top, one.version ?? index + 1), filed?.[artifact] ?? 0);
+}
+
+/**
+ * `versions` with `reviews` counted in: the highest version filed of each artifact
+ * (`PanelSessionState.versions`). Undefined only when there is nothing to remember.
+ */
+export function filedVersions(
+  versions: Readonly<Record<string, number>> | undefined,
+  reviews: readonly Pick<SessionReview, "artifact" | "link" | "id" | "version">[],
+): Record<string, number> | undefined {
+  const next = { ...versions };
+  for (const one of reviews) {
+    if (one.version !== undefined) next[artifactOf(one)] = Math.max(next[artifactOf(one)] ?? 0, one.version);
+  }
+  return Object.keys(next).length ? next : undefined;
 }
 
 /**
  * A deliverable as it is held: minted ONCE, at filing, with its identity, its kind, its
- * artifact and its version (`nextVersion`). The same filing arriving again (a replayed event)
- * keeps the version it has.
+ * artifact and its version (`nextVersion`, counting on from `versions`). The same filing arriving
+ * again (a replayed event) keeps the version it has.
  */
 export function fileReview(
   sessionId: string,
   review: { summary: string; link?: string; scene?: ReviewScene; kind?: DeliverableKind; key?: string },
   at: number,
   held: readonly SessionReview[] | undefined,
+  versions?: Readonly<Record<string, number>>,
 ): SessionReview {
   const id = reviewIdentity(sessionId, { summary: review.summary, link: review.link, at });
   const facts = deliverableFacts(review);
-  const version = held?.find((one) => one.id === id)?.version ?? nextVersion(held ?? [], facts.artifact);
+  const version = held?.find((one) => one.id === id)?.version ?? nextVersion(held ?? [], facts.artifact, versions);
   return {
     summary: review.summary,
     ...(review.link ? { link: review.link } : {}),

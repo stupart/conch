@@ -15,6 +15,7 @@ import {
   buildPublishedState,
   carriedReviews,
   fileReview,
+  filedVersions,
   MAX_SESSION_REVIEWS,
   removeReviews,
   type SessionReview,
@@ -146,6 +147,48 @@ describe("filing, versions and the cap", () => {
     expect(fileReview("s1", { summary: "v5", key: "k" }, 5, held).version).toBe(5);
   });
 
+  /**
+   * The phone titles a filing "hero · v3". Removing v3 used to hand the next filing of the artifact v3 again, a number
+   * Tyler had already seen on something else; and removing every filing started the count over at 1.
+   */
+  test("a removed version's number is never given again: past a Remove, the cap, or a restart", () => {
+    const dir = mkdtempSync(join(tmpdir(), "conch-deliverables-versions-"));
+    try {
+      const path = join(dir, "reviews.json");
+      const ledger = new SessionLedger(path);
+      let held: SessionReview[] | undefined;
+      for (let at = 1; at <= 3; at++) held = file(held, { summary: `v${at}`, key: "hero" }, at).held;
+      expect(held!.map((one) => one.version)).toEqual([1, 2, 3]);
+      ledger.sessionStates.set("s1", { label: "s1", status: "waiting", at: 3, review: held!.at(-1)!, reviews: held });
+      expect(ledger.removeDeliverables("s1", { review: held![2]!.id })).toBe(true);
+      const state = () => ledger.sessionStates.get("s1")!;
+      expect(fileReview("s1", { summary: "next", key: "hero" }, 4, state().reviews, state().versions).version).toBe(4);
+
+      // Every filing of it gone, and then a restart: still counting on.
+      expect(ledger.removeDeliverables("s1", { artifact: artifactIdentity("hero") })).toBe(true);
+      const after = new SessionLedger(path);
+      after.restoreReviews();
+      const back = after.sessionStates.get("s1");
+      expect(fileReview("s1", { summary: "again", key: "hero" }, 5, back?.reviews, back?.versions).version).toBe(4);
+
+      // Past the cap: another artifact's filings push the only one of it out, and its number stays taken.
+      let crowded: SessionReview[] | undefined;
+      let versions: Record<string, number> | undefined;
+      const fileCounted = (review: Parameters<typeof fileReview>[1], at: number) => {
+        const filed = fileReview("s2", review, at, crowded, versions);
+        crowded = carriedReviews(crowded, filed);
+        versions = filedVersions(versions, [filed]);
+        return filed;
+      };
+      fileCounted({ summary: "logo", key: "logo" }, 1);
+      for (let at = 2; at <= MAX_SESSION_REVIEWS + 1; at++) fileCounted({ summary: `other ${at}`, key: `other-${at}` }, at);
+      expect(crowded!.some((one) => one.artifact === artifactIdentity("logo"))).toBe(false);
+      expect(fileCounted({ summary: "logo again", key: "logo" }, 100).version).toBe(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("the cap drops superseded versions before it drops another artifact", () => {
     // Four artifacts, one republished three times: seven filings, one over the cap. The oldest
     // filing of all (b1) is the only version of its artifact.
@@ -216,9 +259,10 @@ describe("removing a deliverable", () => {
 
       expect(ledger.removeDeliverables("s1", { artifact: "a" })).toBe(true);
       expect(ledger.removeDeliverables("s1", { artifact: "b" })).toBe(true);
-      // None left: the row keeps its status and loses the deliverable, and a restart does not bring it back.
-      expect(ledger.sessionStates.get("s1")).toEqual({ label: "s1", status: "waiting", at: 3 });
-      expect(restored()).toBeUndefined();
+      // None left: the row keeps its status and loses the deliverable, and a restart does not bring it back; only the
+      // numbers they had are remembered (`versions`).
+      expect(ledger.sessionStates.get("s1")).toEqual({ label: "s1", status: "waiting", at: 3, versions: { a: 2, b: 1 } });
+      expect(restored()).toEqual({ label: "s1", status: "waiting", at: 0, versions: { a: 2, b: 1 } });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -57,8 +57,19 @@ public enum ScreenAppKind: Equatable, Sendable {
 /// held, since a pick there is Tyler's.
 ///
 /// A held report is not remembered as said, so the next reading after the grace says it.
+///
+/// And while conch's conversation panel fills the screen (`covered`), nothing noticed is said: the
+/// app in front is behind the panel, and the panel's own report of what it shows is the answer. The
+/// Mac re-reads the app in front the moment the panel stops covering it.
+///
+/// What was said is only what the daemon heard: a report it never acked is `unsaid`, and a daemon
+/// that has seen nothing (a restart) makes the gate `forget`, so the next reading is said again
+/// rather than dropped as a repeat of what a daemon that is gone was told.
 public struct ScreenReportGate<Surface: Equatable> {
     public static var grace: TimeInterval { 3 }
+
+    /// conch's conversation panel fills the screen: the app in front is behind it.
+    public var covered = false
 
     private var last: Surface?
     private var staging: (app: String, at: Date)?
@@ -73,9 +84,19 @@ public struct ScreenReportGate<Surface: Equatable> {
 
     /// Something noticed rather than done by conch: true when it should be said.
     public mutating func noticed(_ surface: Surface, in app: String?, at now: Date) -> Bool {
-        if surface == last { return false }
+        if covered || surface == last { return false }
         if let staging, staging.app == app, now.timeIntervalSince(staging.at) < Self.grace { return false }
         last = surface
         return true
+    }
+
+    /// The daemon never acked `surface`: unless something newer was said since, it wasn't said.
+    public mutating func unsaid(_ surface: Surface) {
+        if last == surface { last = nil }
+    }
+
+    /// The daemon has seen nothing (it restarted): whatever it was told before, the next reading is news.
+    public mutating func forget() {
+        last = nil
     }
 }

@@ -1057,7 +1057,8 @@ export interface ReviewScene {
  * wants checked. The frame says what the mark is drawn on, and so what its numbers mean:
  *
  * - `canvas`: the user's canvas the agent is answering; its numbers are 0-1 of that canvas.
- * - `image`: an image file, such as a still the user sent; its numbers are 0-1 of the image.
+ * - `image`: an image file under the session's folder or a temp folder; its numbers are 0-1 of the image. A still
+ *   the user sent sits in conch's own hidden cache, which the check refuses: an agent copies it out first.
  * - `selector`, `quote`: an element, or text, in the linked page. conch finds it wherever it is
  *   on screen and places the mark on it, so these take no numbers at all.
  *

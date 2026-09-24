@@ -1,8 +1,8 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { attachReviewPreview, type SessionReview } from "../src/panel.ts";
+import { attachReviewPreview, carriedReviews, MAX_SESSION_REVIEWS, type SessionReview } from "../src/panel.ts";
 import { createPhoneBridgeApplication } from "../src/phone-bridge.ts";
 import {
   captureDocument,
@@ -12,6 +12,9 @@ import {
   previewFolder,
   PreviewLimiter,
   PREVIEWS_PER_MINUTE,
+  PREVIEW_KEPT_MS,
+  prunePreviews,
+  WindowPreviews,
   type Probe,
   type ReviewPreview,
 } from "../src/review-preview.ts";
@@ -170,6 +173,140 @@ describe("the phone's request", () => {
     held[0]!.preview = undefined;
     expect(await fresh.ask("s", "sim-1")).toEqual({ status: 200 });
     expect(existsSync(elsewhere)).toBe(true);
+  });
+
+  /**
+   * An app window's snapshot comes back from the Mac app, and the daemon checked it by its real path. It stored that
+   * path too, `/private/var/…` for the folder's `/var/…`, so the check above never matched it: every Refresh of an app
+   * left the last one behind. The folder here is reached through a link, as the temp root is on every Mac.
+   */
+  test("an app window's snapshot it replaces is deleted too", async () => {
+    const real = mkdtempSync(join(scratch, "real-"));
+    const folder = join(scratch, `linked-${Date.now()}`);
+    symlinkSync(real, folder);
+    let now = 3_000_000;
+    const windows = new WindowPreviews({ publish() {}, folder: () => folder, now: () => now, timeoutMs: 1_000 });
+    let state: SessionReview[] = [{ summary: "the app", at: 1, id: "app-1", kind: "app" }];
+    const ask = createPreviewRequester({
+      held: () => ({ reviews: state, roots: [] }),
+      attach: (_sessionId, reviewId, preview) => {
+        state = attachReviewPreview(state, reviewId, preview)!;
+        return true;
+      },
+      limiter: new PreviewLimiter(),
+      folder: () => folder,
+      now: () => now,
+      // The Mac app's side: writes its file 0600 into the folder it was named, and says so.
+      window: async (sessionId, review) => {
+        const asked = windows.ask(sessionId, review);
+        const [request] = windows.requests();
+        const file = join(request!.folder, `${request!.id}.png`);
+        writeFileSync(file, "png");
+        chmodSync(file, 0o600);
+        expect(await windows.answer({ request: request!.id, path: file })).toEqual({ ok: true });
+        return asked;
+      },
+    });
+    expect(await ask("s", "app-1")).toEqual({ status: 200 });
+    const first = state[0]!.preview!.path;
+    expect(first.startsWith(`${folder}/`)).toBe(true);
+    now += PREVIEW_MIN_INTERVAL_MS;
+    expect(await ask("s", "app-1")).toEqual({ status: 200 });
+    expect(state[0]!.preview!.path).not.toBe(first);
+    expect(existsSync(first)).toBe(false);
+    expect(existsSync(state[0]!.preview!.path)).toBe(true);
+  });
+});
+
+describe("a snapshot goes with its deliverable", () => {
+  const snapshots = previewFolder(mkdtempSync(join(scratch, "owned-")));
+  const snapshot = (name: string): string => {
+    const path = join(snapshots, name);
+    writeFileSync(path, "png");
+    return path;
+  };
+  const withPreview = (review: SessionReview, path: string): SessionReview => ({ ...review, preview: { path, kind: "image", capturedAt: 1 } });
+  const filing = (id: string, at: number, artifact = id): SessionReview => ({ summary: id, at, id, kind: "simulator", artifact, version: 1 });
+
+  test("on Remove, past the cap, and with its session; never a file outside the snapshot folder", () => {
+    const ledger = new SessionLedger(join(mkdtempSync(join(scratch, "ledger-")), "reviews.json"), undefined, snapshots);
+    const removed = snapshot("removed.png");
+    const outside = join(scratch, "outside.png");
+    writeFileSync(outside, "keep me");
+    const kept = [withPreview(filing("a", 1), removed), withPreview(filing("b", 2), outside)];
+    ledger.sessionStates.set("s", { label: "s", status: "waiting", at: 2, review: kept[1]!, reviews: kept });
+    ledger.saveReviews();
+    expect(ledger.removeDeliverables("s", { review: "a" })).toBe(true);
+    expect(existsSync(removed)).toBe(false);
+    expect(ledger.removeDeliverables("s", { review: "b" })).toBe(true);
+    expect(existsSync(outside)).toBe(true);
+
+    // Past the cap: the oldest filing drops, and its snapshot with it.
+    const oldest = snapshot("oldest.png");
+    let held: SessionReview[] | undefined = [withPreview(filing("f0", 10), oldest)];
+    for (let index = 1; index <= MAX_SESSION_REVIEWS; index += 1) held = carriedReviews(held, filing(`f${index}`, 10 + index));
+    expect(held!.some((one) => one.id === "f0")).toBe(false);
+    ledger.sessionStates.set("t", { label: "t", status: "waiting", at: 1, review: withPreview(filing("f0", 10), oldest), reviews: [withPreview(filing("f0", 10), oldest)] });
+    ledger.saveReviews();
+    expect(existsSync(oldest)).toBe(true);
+    ledger.sessionStates.set("t", { label: "t", status: "waiting", at: 2, review: held!.at(-1)!, reviews: held });
+    ledger.saveReviews();
+    expect(existsSync(oldest)).toBe(false);
+
+    // A session that is gone takes its snapshot with it.
+    const gone = snapshot("gone.png");
+    ledger.sessionStates.set("u", { label: "u", status: "waiting", at: 3, review: withPreview(filing("g", 3), gone), reviews: [withPreview(filing("g", 3), gone)] });
+    ledger.saveReviews();
+    ledger.forget("u");
+    expect(existsSync(gone)).toBe(false);
+
+    // One being taken, not yet on any review, is never deleted from under its capture.
+    const taking = snapshot("taking.png");
+    ledger.saveReviews();
+    expect(existsSync(taking)).toBe(true);
+  });
+
+  test("a restart's cap deletes the snapshots it drops, at the first save", () => {
+    const path = join(mkdtempSync(join(scratch, "restart-")), "reviews.json");
+    const before = new SessionLedger(path, undefined, snapshots);
+    const dropped = snapshot("dropped.png");
+    const reviews = Array.from({ length: MAX_SESSION_REVIEWS + 1 }, (_, index) => filing(`r${index}`, index + 1));
+    reviews[0] = withPreview(reviews[0]!, dropped);
+    // Written by hand past the cap, as a file from a conch with a larger one would be.
+    before.sessionStates.set("s", { label: "s", status: "waiting", at: 1, review: reviews.at(-1)!, reviews });
+    before.saveReviews();
+    const after = new SessionLedger(path, undefined, snapshots);
+    after.restoreReviews();
+    expect(after.sessionStates.get("s")?.reviews?.some((one) => one.id === "r0")).toBe(false);
+    after.saveReviews();
+    expect(existsSync(dropped)).toBe(false);
+  });
+
+  test("the folder is pruned by age, whatever holds a snapshot", async () => {
+    const folder = previewFolder(mkdtempSync(join(scratch, "pruned-")));
+    const now = Date.now();
+    const old = join(folder, "old.png");
+    const recent = join(folder, "recent.png");
+    for (const path of [old, recent]) writeFileSync(path, "png");
+    utimesSync(old, (now - PREVIEW_KEPT_MS - 60_000) / 1000, (now - PREVIEW_KEPT_MS - 60_000) / 1000);
+    prunePreviews(folder, now);
+    expect(existsSync(old)).toBe(false);
+    expect(existsSync(recent)).toBe(true);
+
+    // Each capture prunes first.
+    writeFileSync(old, "png");
+    utimesSync(old, (now - PREVIEW_KEPT_MS - 60_000) / 1000, (now - PREVIEW_KEPT_MS - 60_000) / 1000);
+    const ask = createPreviewRequester({
+      held: () => ({ reviews: [{ summary: "the build", at: 1, id: "sim-1", kind: "simulator" }], roots: [] }),
+      attach: () => true,
+      limiter: new PreviewLimiter(),
+      folder: () => folder,
+      now: () => now,
+      probe: fakeProbe(["AAAA-1111"]).probe,
+    });
+    expect(await ask("s", "sim-1")).toEqual({ status: 200 });
+    expect(existsSync(old)).toBe(false);
+    expect(existsSync(recent)).toBe(true);
   });
 });
 
