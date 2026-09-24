@@ -1672,6 +1672,9 @@ private struct ConversationPane: View {
     /// session that had not filed one — even though its files were there the whole time.
     private var hasWorkPane: Bool { selectedReview != nil || workingFolder != nil }
 
+    /// The narrowest conversation column the composer card sits in rather than over the stage.
+    private static let composerColumnMinimum: CGFloat = 360
+
     /// How much of a side-by-side stage the CONVERSATION gets.
     ///
     /// This reverses "two equal claims on the width, rather than a measured fraction". Half
@@ -1904,24 +1907,40 @@ private struct ConversationPane: View {
                         // card, as it did. The card stays centred on the stage rather than on the
                         // conversation column: the split reaches 0, and a card that followed the
                         // column would leave with it on the very page a deliverable is answered from.
-                        ZStack(alignment: .bottom) {
-                            // A dragged fraction, not half each. The conversation is sized and the
-                            // work takes the rest, so the two cannot disagree about the total by a
-                            // rounding point and leave a seam.
-                            GeometryReader { split in
+                        //
+                        // Unless the conversation column has room for the card: then the card
+                        // sits over the conversation alone and the work half runs to the bottom
+                        // edge. Ending the work above a centred card left a blank band across
+                        // the deliverable — Tyler: "the prompt bar area cutting off the review
+                        // plane content bug resurfaced" (2026-09-24).
+                        //
+                        // A dragged fraction, not half each. The conversation is sized and the
+                        // work takes the rest, so the two cannot disagree about the total by a
+                        // rounding point and leave a seam.
+                        GeometryReader { split in
+                            let conversationWidth = max(0, split.size.width * splitFraction(in: split.size.width))
+                            let cardOverConversation = conversationWidth >= Self.composerColumnMinimum
+                            ZStack(alignment: .bottom) {
                                 HStack(spacing: 0) {
-                                    conversationBody(for: reviewRow)
-                                        .frame(width: max(0, split.size.width * splitFraction(in: split.size.width)))
+                                    ZStack(alignment: .bottom) {
+                                        conversationBody(for: reviewRow)
+                                        if cardOverConversation {
+                                            floatingComposer(for: reviewRow)
+                                        }
+                                    }
+                                    .frame(width: conversationWidth)
 
                                     splitResizer(in: split.size.width)
 
                                     workContent(for: reviewRow)
                                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                        .padding(.bottom, composerHeight)
+                                        .padding(.bottom, cardOverConversation ? 0 : composerHeight)
+                                }
+
+                                if !cardOverConversation {
+                                    floatingComposer(for: reviewRow)
                                 }
                             }
-
-                            floatingComposer(for: reviewRow)
                         }
                     } else {
                         workContent(for: reviewRow)

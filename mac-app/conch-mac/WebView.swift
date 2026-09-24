@@ -281,9 +281,12 @@ struct DeliverableWebView: NSViewRepresentable {
             return webView.load(URLRequest(url: url))
         }
 
+        // Every file it links to, as a browser opening the same page allows. Scoped to the page's
+        // own folder, a page with `../scenes/shore-hero.png` showed broken images here and full
+        // ones outside (Tyler, 2026-09-24: the brand session's characters page, 6 of 52 images).
         return webView.loadFileURL(
             url,
-            allowingReadAccessTo: url.deletingLastPathComponent()
+            allowingReadAccessTo: URL(fileURLWithPath: "/", isDirectory: true)
         )
     }
 }

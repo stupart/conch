@@ -290,7 +290,8 @@ describe("new work does not replace what you are reading", () => {
     expect(split.match(/\.frame\(maxWidth: \.infinity, maxHeight: \.infinity\)/g) ?? []).toHaveLength(1);
     expect(split).toContain("GeometryReader { split in");
     expect(split).toContain("splitResizer(in: split.size.width)");
-    expect(split).toContain(".frame(width: max(0, split.size.width * splitFraction(in: split.size.width)))");
+    expect(split).toContain("let conversationWidth = max(0, split.size.width * splitFraction(in: split.size.width))");
+    expect(split).toContain(".frame(width: conversationWidth)");
   });
 
   /**

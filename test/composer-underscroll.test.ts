@@ -70,13 +70,17 @@ describe("the composer floats over the transcript", () => {
     const at = pane.indexOf("if stage(for: reviewRow) == .sideBySide {");
     expect(at).toBeGreaterThan(-1);
     const split = pane.slice(at, pane.indexOf("} else {", at));
-    expect(split).toMatch(/ZStack\(alignment: \.bottom\) \{\s*GeometryReader \{ split in/);
-    // INSIDE the ZStack, on top: the card is its last child and its closing brace ends the
-    // branch. "After the ZStack opens" let a sibling placed under it in the same branch pass.
-    expect(split).toMatch(/floatingComposer\(for: reviewRow\)\s*\}\s*$/);
+    // With room, the card floats over the CONVERSATION column only, on top of it, and the work
+    // half runs to the bottom edge. A card centred on the stage left a blank band across the
+    // deliverable (Tyler, 2026-09-24: "cutting off the review plane content").
+    expect(split).toContain("let cardOverConversation = conversationWidth >= Self.composerColumnMinimum");
+    expect(split).toMatch(/ZStack\(alignment: \.bottom\) \{\s*conversationBody\(for: reviewRow\)\s*if cardOverConversation \{\s*floatingComposer\(for: reviewRow\)\s*\}\s*\}\s*\.frame\(width: conversationWidth\)/);
+    // Without room (the split dragged nearly shut), it floats over the stage and the work ends
+    // above it, as before: the card must not leave with a column that has gone.
     expect(split).toMatch(
-      /workContent\(for: reviewRow\)\s*\.frame\(maxWidth: \.infinity, maxHeight: \.infinity\)\s*\.padding\(\.bottom, composerHeight\)/,
+      /workContent\(for: reviewRow\)\s*\.frame\(maxWidth: \.infinity, maxHeight: \.infinity\)\s*\.padding\(\.bottom, cardOverConversation \? 0 : composerHeight\)/,
     );
+    expect(split).toMatch(/if !cardOverConversation \{\s*floatingComposer\(for: reviewRow\)\s*\}/);
   });
 
   /**
