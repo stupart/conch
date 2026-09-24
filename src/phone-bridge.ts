@@ -684,14 +684,21 @@ async function devResponse(
   return new Response(response.body, { status: response.status, headers: passed });
 }
 
+/** A published deliverable, as `/file` and `/dev` read it: its link, and the images its marks are drawn on. */
+interface HeldReview {
+  id?: string;
+  link?: string;
+  scene?: { marks?: Array<{ frame?: { image?: unknown } }> };
+}
+
 /** The parts of the published state `/file` decides by. */
 interface ServableState {
   rows?: Array<{
     id?: string;
     cwd?: string;
     workDirs?: string[];
-    review?: { id?: string; link?: string };
-    reviews?: Array<{ id?: string; link?: string }>;
+    review?: HeldReview;
+    reviews?: HeldReview[];
   }>;
   conversations?: Record<string, { items?: Array<{ material?: { path?: string } }> }>;
 }
@@ -736,6 +743,8 @@ async function ownUpload(requested: string, uploads: string): Promise<string | n
  * it is:
  * - a deliverable a session still holds: the newest, or any before it (`rows[].reviews`). Only the
  *   newest used to be served, so tapping an earlier one on the phone answered 403;
+ * - an image one of those deliverables' marks is drawn on (`scene.marks[].frame.image`, agent ink),
+ *   which an app has to show before it can draw the marks over it;
  * - a file on its own line in a conversation (`material.path`), which used to be served with no
  *   rule at all: any absolute image, PDF or text path an agent wrote became readable;
  * - a web asset under the folder of a held page or markdown document, which is what lets a page
@@ -757,6 +766,11 @@ async function servableFile(
     [...(row.reviews ?? []), ...(row.review ? [row.review] : [])]
       .map((held) => held.link)
       .filter((link): link is string => typeof link === "string" && link.startsWith("/"));
+  const markImages = (row: (typeof rows)[number]): string[] =>
+    [...(row.reviews ?? []), ...(row.review ? [row.review] : [])]
+      .flatMap((held) => held.scene?.marks ?? [])
+      .map((mark) => mark.frame?.image)
+      .filter((image): image is string => typeof image === "string" && image.startsWith("/"));
   const check = async (roots: string[]) => {
     const checked = await checkLocalFile(requested, roots);
     if (checked.ok) return checked;
@@ -767,7 +781,7 @@ async function servableFile(
   };
 
   for (const row of rows) {
-    if (heldLinks(row).includes(requested)) return check(rootsOf(row));
+    if (heldLinks(row).includes(requested) || markImages(row).includes(requested)) return check(rootsOf(row));
   }
   for (const [sessionId, conversation] of Object.entries(state?.conversations ?? {})) {
     if (!conversation.items?.some((item) => item.material?.path === requested)) continue;

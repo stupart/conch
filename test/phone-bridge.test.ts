@@ -549,6 +549,37 @@ describe("file serving: held deliverables, their folders, and nothing else", () 
     expect(await status(application, q(repoImage))).toBe(200);
   });
 
+  test("the image a held deliverable's marks are drawn on is served, checked again when read", async () => {
+    const root = scratch();
+    const still = put(join(root, "stills/canvas.png"));
+    const beside = put(join(root, "stills/other.png"));
+    const hidden = put(join(root, ".private/still.png"));
+    const page = put(join(root, "site/index.html"));
+    const marked = (image: string) => ({ id: "r1", link: page, scene: { v: 1, target: { kind: "auto" }, marks: [
+      { id: "m1", kind: "box", frame: { image }, rect: [0.1, 0.1, 0.2, 0.2] },
+      { id: "m2", kind: "pin", frame: { canvas: "c1" }, at: [0.5, 0.5] },
+    ] } });
+    let held = [marked(still)];
+    const application = appFor(() => ({ rows: [{ id: "s", reviews: held }] }));
+    expect(await status(application, q(still))).toBe(200);
+    // Only the image a mark names, not its neighbours.
+    expect(await status(application, q(beside))).toBe(403);
+    // The newest (`review`) counts as much as the list.
+    const newestOnly = appFor(() => ({ rows: [{ id: "s", review: marked(still) }] }));
+    expect(await status(newestOnly, q(still))).toBe(200);
+    // A mark on a hidden file is refused at read time too, whatever was published.
+    held = [marked(hidden)];
+    expect(await status(application, q(hidden))).toBe(403);
+    // Swapped for a symlink out of reach after publishing.
+    held = [marked(still)];
+    unlinkSync(still);
+    symlinkSync(join(import.meta.dir, "..", "assets/conch-icon-1024.png"), still);
+    expect(await status(application, q(still))).toBe(403);
+    // No longer held: refused.
+    held = [];
+    expect(await status(application, q(still))).toBe(403);
+  });
+
   test("a picture the phone sent shows back from conch's own upload folder, and nothing else in a hidden folder does", async () => {
     const root = scratch();
     const uploads = join(root, ".cache/conch/uploads");
