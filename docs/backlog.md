@@ -36,15 +36,40 @@ agent drive one, and the user able to reach in and interact — the way the Code
 
 ---
 
+## Plan — the deconstructed UI, approved 2026-09-25
+
+Tyler: "I like the current Mac app - keep it - this is just the deconstructed ui stuff". This
+extends the conversation panel (the overlay, `Fog*` in code) and the pill; it is not a new mode.
+
+- **Wave 1** (in flight, four branches `w1-*`)
+  - Typed deliverables: `kind`, a stable `artifact` + `version`, `conch_deliverables`, remove
+    (`review-remove`, agent `review_remove`, Remove on the Mac tab), daemon-side link checks.
+  - Screen context, modular: observers → ordered resolvers → `showing`; `conch_on_screen`; a
+    local screen log. Tyler: "modular so we could potentially add a light local (or cloud) vision
+    model", and the raw log is for Atlas and time tracking later.
+  - The panel: header (session, agent, item), session switcher, Next/Prev, the queue walks every
+    held deliverable, no content → full-screen transcript, optional reply line.
+  - Phone: every held deliverable, HTML with its folder's assets, markdown images.
+- **Wave 2** (overlay lab first, then Swift): full screen shows the content in the panel with the
+  input over it (09-21 "BOTH"); a motion pass; the canvas — a clear window that takes clicks only
+  while the pen is on, drawn on by Tyler and by agents, fresh per item, sent to the owning agent
+  with a screenshot, plus a "show" mode that records video.
+- **Wave 3**: recognising content Tyler opened himself (Accessibility front window; localhost
+  port → the agent that started it; the Simulator), the phone's localhost proxy, and material
+  with no phone equivalent sent to the phone (and back).
+- **Then** (Tyler, 2026-09-25): connect it to the Mac app "so its fluid back adn forth", and a
+  clean onboarding — "download or connetc your agents, get a walking thorough of everything, make
+  sure permissions are rrec and so on".
+
 ## Open
 
 ### UI / UX
-- **open** — A long message shows twice in the conversation (2026-09-23, the brand identity
+- **done** (#388) — A long message shows twice in the conversation (2026-09-23, the brand identity
   session). Tyler: "Im seeing messages twice in the conch ui". Claude Code records text that
   conch pasted (anything over `PASTE_OVER_CHARS`) as `\n\n<pasted_content id="6a36">…</pasted_content
-  id="6a36">`. So the transcript row shows the raw tags, and the app's own "Sent" bubble never
-  matches it and stays. Fix: strip the wrapper when reading Claude user records. Separately, the
-  first such message in that transcript (`35bc1e7b…`) is written as two user records; find out why.
+  id="6a36">`, so the row showed the raw tags and the app's own "Sent" bubble never matched it. The
+  wrapper is now stripped wherever conch reads a Claude user record. The first such message in that
+  transcript really was sent twice (two prompts nine minutes apart), so that part was not a bug.
 - **done** — Background agents as a small group under their session, each one selectable, the way
   Claude Code's own agent view is. Tyler (2026-09-23): "have the agents show under smaller as like
   a group and you can select on them as well just like is possible in the Claude Code ui". The
