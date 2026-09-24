@@ -33,9 +33,11 @@ final class CanvasController: ObservableObject {
     private var agentName = "Claude"
     /// The agent's marks, faded while what they are on moves under them (`AgentInkController`).
     private var agentHidden = false
+    /// Show: the screen being recorded, or stopped and waiting for Send or Esc (`CanvasShow.swift`).
+    @Published var recorder: CanvasRecorder?
 
-    /// In use: the pen is down, or ink is showing. The glass and the pill show only then.
-    var inUse: Bool { armed || document?.isEmpty == false }
+    /// In use: the pen is down, ink is showing, or there is a Show. The glass and the pill show only then.
+    var inUse: Bool { armed || document?.isEmpty == false || recorder != nil }
 
     private(set) weak var store: StateStore?
     /// Each display's glass.
@@ -114,8 +116,9 @@ final class CanvasController: ObservableObject {
         apply()
     }
 
-    /// Esc: the pen comes up and the ink stays; again, with the pen up, the ink goes.
+    /// Esc: the pen comes up and the ink stays; again, with the pen up, the ink goes. A Show is thrown away first.
     func escape() {
+        if recorder != nil { return cancelShow() }
         armed ? lift() : clear()
     }
 
@@ -258,7 +261,9 @@ final class CanvasController: ObservableObject {
             // underneath takes them back.
             panel.takesKeys = inUse
             panel.ignoresMouseEvents = !armed || sending
-            ink.show(document?.anchor.id == ink.display ? document : nil, armed: armed, agentHidden: agentHidden, agentName: agentName)
+            // The pen's edge light is on the glass, which a Show records: while it does, the red ring (its own window, left
+            // out) says so instead.
+            ink.show(document?.anchor.id == ink.display ? document : nil, armed: armed && recorder?.isRecording != true, agentHidden: agentHidden, agentName: agentName)
         }
         hiding?.cancel()
         if inUse {
@@ -318,13 +323,15 @@ private struct CanvasPillHost: View {
             tool: canvas.tool,
             armed: canvas.armed,
             canUndo: drawn,
-            canSend: drawn,
+            canSend: drawn || canvas.recorder != nil,
             sending: canvas.sending,
             route: CanvasController.route(store.state, panel: FloatingPanels.installed?.staged)?.label,
             message: canvas.message,
             onTool: { canvas.pick($0) },
             onUndo: { canvas.undo() },
-            onSend: { canvas.send() }
+            onSend: { canvas.send() },
+            recording: canvas.recorder?.phase,
+            onShow: CanvasController.canShow ? { canvas.toggleShow() } : nil
         )
         .padding(Self.margin)
         .fixedSize()
@@ -731,6 +738,9 @@ final class CanvasInkView: NSView {
             controller?.escape()
         case UInt16(kVK_Return), UInt16(kVK_ANSI_KeypadEnter):
             controller?.send()
+        case UInt16(kVK_ANSI_R) where controller?.armed == true:
+            // R with the pen down: Show (panel-lab's R).
+            controller?.toggleShow()
         default:
             // The number keys pick a tool (panel-lab's 1 to 5). Anything else is dropped: while the glass has the keys,
             // the app underneath can't have them.

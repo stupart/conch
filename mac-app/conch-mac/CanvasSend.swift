@@ -24,6 +24,7 @@ extension CanvasController {
     /// Send: capture, pack, deliver, and a clear canvas. With nowhere to send it, nothing is captured and the pill says why.
     /// Only once Tyler has drawn: an agent's marks alone are what he is answering, not an answer.
     func send() {
+        if let recorder { return sendShow(recorder) }
         guard let document, document.has(.you), !sending, let store else { return }
         let state = store.state
         guard let row = Self.route(state, panel: FloatingPanels.installed?.staged) else {
@@ -162,7 +163,7 @@ enum CanvasFolder {
         return (try? JSONDecoder().decode(CanvasDocument.self, from: data))?.anchor
     }
 
-    private static func prune(_ files: FileManager) {
+    static func prune(_ files: FileManager) {
         let old = Date().addingTimeInterval(-kept)
         for folder in (try? files.contentsOfDirectory(at: root, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [] {
             if let changed = try? folder.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, changed < old {

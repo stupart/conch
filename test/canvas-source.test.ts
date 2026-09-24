@@ -182,8 +182,12 @@ describe("Send", () => {
   });
 
   test("nothing is captured, or the grant asked for, except on an explicit Send with somewhere to send it", () => {
-    for (const capture of ["SCScreenshotManager", "SCShareableContent", "CGRequestScreenCaptureAccess", "CGPreflightScreenCaptureAccess", "CanvasCapture.still("]) {
+    for (const capture of ["SCScreenshotManager", "CanvasCapture.still("]) {
       expect(filesWith(capture), capture).toEqual(["CanvasSend.swift"]);
+    }
+    // Show is the other capture, on its own explicit press (canvas-show-source.test.ts).
+    for (const capture of ["SCShareableContent", "CGRequestScreenCaptureAccess", "CGPreflightScreenCaptureAccess"]) {
+      expect(filesWith(capture), capture).toEqual(["CanvasSend.swift", "CanvasShow.swift"]);
     }
     expect(send.match(/CanvasCapture\.still\(/g)?.length).toBe(1);
     const sendBody = member(send, "    func send() {");

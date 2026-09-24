@@ -26,6 +26,10 @@ public struct CanvasToolPill: View {
     let onTool: (CanvasMark.Kind) -> Void
     let onUndo: () -> Void
     let onSend: () -> Void
+    /// Show, while it records or waits for Send; nil otherwise.
+    let recording: Recording?
+    /// Show's record button (`showControl`); nil where there is no Show, and the pill has no button.
+    let onShow: (() -> Void)?
     @Namespace private var picked
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -40,7 +44,9 @@ public struct CanvasToolPill: View {
         message: String? = nil,
         onTool: @escaping (CanvasMark.Kind) -> Void,
         onUndo: @escaping () -> Void,
-        onSend: @escaping () -> Void
+        onSend: @escaping () -> Void,
+        recording: Recording? = nil,
+        onShow: (() -> Void)? = nil
     ) {
         self.shown = shown
         self.tool = tool
@@ -53,6 +59,8 @@ public struct CanvasToolPill: View {
         self.onTool = onTool
         self.onUndo = onUndo
         self.onSend = onSend
+        self.recording = recording
+        self.onShow = onShow
     }
 
     static let buttonSize: CGFloat = 32
@@ -102,6 +110,7 @@ public struct CanvasToolPill: View {
                 .opacity(canUndo ? 1 : 0.4)
                 .help("Undo (⌘Z)")
                 .accessibilityLabel("Undo")
+                showControl
                 separator
                 send
             }
