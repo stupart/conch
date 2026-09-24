@@ -791,11 +791,11 @@ test("the pill and the panel walk one queue: every deliverable a ready session h
  */
 test("the panel names its session, switches from it, and shows the words full screen when there is nothing to open", () => {
   // The header: the session, its agent's mark (the session list's own assets), and the item it is on.
-  expect(panels).toContain("session: row.map { Self.fogSession($0, item: Self.item(of: $0, staged: panels.staged, lastStaged: queue.lastStaged)) },");
+  expect(panels).toContain("session: row.map { Self.fogSession($0, item: Self.review(of: $0, staged: panels.staged, lastStaged: queue.lastStaged)?.summary) },");
   expect(panels).toContain('mark: codex ? "AgentCodex" : "AgentClaude"');
-  const item = member(panels, "static func item(of row: SessionRow, staged: SessionRow.ID?, lastStaged: ReviewItem.ID?) -> String? {");
+  const item = member(panels, "static func review(of row: SessionRow, staged: SessionRow.ID?, lastStaged: ReviewItem.ID?) -> ReviewInfo? {");
   expect(item).toContain("if row.id == staged, let review = row.held.first(where: { ReviewItem(row: row, review: $0).id == lastStaged }) {");
-  expect(item).toContain("return row.review?.summary");
+  expect(item.trimEnd().endsWith("return row.review")).toBe(true);
   // The switcher: the menu bar menu's groups, never a subagent, open state the panels' so a press elsewhere closes it.
   const sessions = member(panels, "static func sessions(_ state: PublishedState?, staged: SessionRow.ID?, lastStaged: ReviewItem.ID?) -> [FogSession] {");
   expect(sessions).toContain("ConchStatusItem.readyRows(state)");
@@ -810,21 +810,22 @@ test("the panel names its session, switches from it, and shows the words full sc
   expect(pick).toContain("panels.switching = false");
   expect(pick).toContain("stage(inPanel: true, store: store, panels: panels)");
   expect(panels).toContain("onPick: { queue.pick($0, store: store, panels: panels) },");
-  // From the panel: nothing to open is the words full screen; anything else docks the panel, then stage's scene.
+  // From the panel: nothing to open is the words full screen (or a deliverable the panel draws, below); anything else
+  // docks the panel, then stage's scene.
   const show = member(panels, "private static func show(_ row: SessionRow, inPanel: Bool, store: StateStore, panels: FloatingPanels) async -> Bool {");
   const order = [
     "if inPanel {",
     'let kind = ReviewScene.Kind(rawValue: row.review?.sceneKind ?? "") ?? .auto',
     "let link = ReviewItem(row: row)?.link.map { LinkTarget.url(for: $0, cwd: row.cwd) }",
-    "if ReviewScene.panelShowsWords(hasReview: row.review != nil, kind: kind, link: link, fileExists: { FileManager.default.fileExists(atPath: $0) }) {",
-    "panels.showWords()",
+    "if ReviewScene.panelShowsWords(hasReview: row.review != nil, kind: kind, link: link, fileExists: { FileManager.default.fileExists(atPath: $0) })",
+    "panels.showInPanel()",
     "return true",
     "panels.dockForScene()",
     "return await ConchStatusItem.stage(row, store: store)",
   ].map((line) => show.indexOf(line));
   expect(order.every((at) => at > -1)).toBe(true);
   expect([...order].sort((a, b) => a - b)).toEqual(order);
-  expect(member(panels, "func showWords() {")).toContain("if !isFullScreen { toggleFullScreen() }");
+  expect(member(panels, "func showInPanel() {")).toContain("if !isFullScreen { toggleFullScreen() }");
   expect(member(panels, "func dockForScene() {")).toContain("if isFullScreen { toggleFullScreen() }");
   // The terminal, or conch's window, asked for by name stays what was asked for.
   expect(member(components, "public static func panelShowsWords(hasReview: Bool, kind: Kind, link: URL?, fileExists: (String) -> Bool) -> Bool {")).toContain(
@@ -919,4 +920,97 @@ test("the conversation stays on the pill's scene, whatever the voice does, until
   }
   // The bar doesn't observe the panels, whose motion publishes every frame.
   expect(panels).toContain("    let panels: FloatingPanels\n    /// Its ideal size");
+});
+
+/**
+ * 09-21, "BOTH": full screen shows the deliverable IN the panel, the reply floating over it. A pick of a kind the panel
+ * draws stays in the panel, full screen; an app window, the Simulator, a terminal, a design or an office document still
+ * comes forward in its own app, the panel docking first, as before.
+ */
+test("a pick of a deliverable the panel draws shows it in the panel, full screen; any other still stages", () => {
+  // The rule is ConchDesign's (XCTests pin its cases): the kinds the side panel's renderers draw, by the filed kind.
+  const rule = member(components, "public static func panelShowsContent(kind: Kind, deliverable: String?, link: URL?, fileExists: (String) -> Bool) -> Bool {");
+  expect(components).toContain('static let panelKinds: Set<String> = ["page", "markdown", "text", "image", "pdf", "video", "audio", "url"]');
+  expect(rule).toContain("guard case let .open(url) = choose(kind: kind, link: link, fileExists: fileExists, appWindowOpen: false, revealable: false) else { return false }");
+  expect(rule).toContain("if let deliverable { return panelKinds.contains(deliverable) }");
+  // Read off the row as stage reads a scene, with the kind the daemon filed.
+  const content = member(panels, "var panelContent: ReviewItem? {");
+  expect(content).toContain('let kind = ReviewScene.Kind(rawValue: review.sceneKind ?? "") ?? .auto');
+  expect(content).toContain("let link = item.link.map { LinkTarget.url(for: $0, cwd: cwd) }");
+  expect(content).toContain("ReviewScene.panelShowsContent(kind: kind, deliverable: review.kind, link: link, fileExists: { FileManager.default.fileExists(atPath: $0) }) ? item : nil");
+  // In the panel's branch, beside the words: full screen, then handed off. Anything else docks and stages, as before.
+  const show = member(panels, "private static func show(_ row: SessionRow, inPanel: Bool, store: StateStore, panels: FloatingPanels) async -> Bool {");
+  const order = [
+    "let content = row.panelContent",
+    "|| content != nil {",
+    "panels.showInPanel()",
+    "return true",
+    "panels.dockForScene()",
+    "return await ConchStatusItem.stage(row, store: store)",
+  ].map((line) => show.indexOf(line));
+  expect(order.every((at) => at > -1)).toBe(true);
+  expect([...order].sort((a, b) => a - b)).toEqual(order);
+  // The screen context still hears what the panel's Next put on screen, now the panel itself, with the deliverable.
+  expect(show).toContain(
+    'store.reportShowing(.conch(sessionId: row.id, view: "panel"), staged: ConchScreenStaged(sessionId: row.id, reviewId: content?.id, link: content?.link))',
+  );
+  // The pill's own click is unchanged: stage's scene, never the panel.
+  expect(panels).toContain("onTap: { queue.walk(store: store, panels: panels) },");
+  expect(member(panels, "func walk(backward: Bool = false, inPanel: Bool = false, store: StateStore, panels: FloatingPanels) {")).toContain(
+    "stage(inPanel: inPanel, store: store, panels: panels)",
+  );
+  // Full screen shows the item the header names: one rule for both, read from the queue's walk.
+  expect(panels).toContain("content: panels.isFullScreen ? row.flatMap(content(of:)) : nil,");
+  const shown = member(panels, "private func content(of row: SessionRow) -> FogContent? {");
+  expect(shown).toContain("guard let review = Self.review(of: row, staged: panels.staged, lastStaged: queue.lastStaged),");
+  expect(shown).toContain("let item = row.holding(review).panelContent else { return nil }");
+  expect(shown).toContain("return FogContent(id: item.id) { PanelContent(item: item, cwd: row.cwd, store: store, panels: panels) }");
+  // The side panel's own renderer, so a local file gets its checks (the web view's file policy, the missing and the
+  // unpreviewable states); no second web view here.
+  expect(member(panels, "private struct PanelContent: View {")).toContain("InlineReviewView(item: item, onOpenInPlace: openWhereItLives, liveAddress: $address)");
+  expect(panels).not.toMatch(/WKWebView|DeliverableWebView\(|loadFileURL/);
+  // Its arrow opens it where it lives, the panel docking first so it isn't left over what comes forward.
+  const out = member(panels, "private func openWhereItLives() {");
+  expect(out.indexOf("panels.dockForScene()")).toBeGreaterThan(-1);
+  expect(out.indexOf("panels.dockForScene()")).toBeLessThan(out.indexOf("store.openLink(link, cwd: cwd, rowId: item.rowID)"));
+});
+
+/** Opening a deliverable in the panel counts it looked at, exactly as staging it elsewhere does: the one existing call. */
+test("a deliverable shown in the panel is marked viewed through stage, as a staged one is", () => {
+  // The panel's branch reports a handoff (true), so stage goes on to count it opened and tell the daemon.
+  const show = member(panels, "private static func show(_ row: SessionRow, inPanel: Bool, store: StateStore, panels: FloatingPanels) async -> Bool {");
+  const branch = show.slice(show.indexOf("|| content != nil {"), show.indexOf("panels.dockForScene()"));
+  expect(branch).toContain("panels.showInPanel()");
+  expect(branch).toContain("return true");
+  expect(branch).not.toContain("return false");
+  const stage = member(panels, "private func stage(\n        inPanel: Bool,");
+  expect(stage).toContain("guard await Self.show(found.row, inPanel: inPanel, store: store, panels: panels), let key = found.key else { return }");
+  expect(stage.indexOf("opened.insert(key)")).toBeGreaterThan(stage.indexOf("await Self.show("));
+  expect(stage.indexOf("store.markReviewViewed(sessionId: found.row.id, review: key)")).toBeGreaterThan(stage.indexOf("opened.insert(key)"));
+  // No second path that marks, or forgets to.
+  expect(panels.match(/opened\.insert/g)?.length).toBe(1);
+  expect(panels.match(/markReviewViewed\(/g)?.length).toBe(1);
+});
+
+/**
+ * Next and Previous in full screen swap the deliverable in place: the old out soft and a touch large, the new in from a
+ * touch small and soft, on ConchMotion's swap; under Reduce Motion a plain fade. The words step aside while it shows, and
+ * the reply line floats at its foot, still under Show reply line.
+ */
+test("the deliverable in the panel crossfades in place, the words step aside, and the reply floats at its foot", () => {
+  expect(tokens).toContain("public static let swap = ConchSpring(bounce: 0.08, response: 0.52)");
+  expect(tokens).toContain('("swap", swap)');
+  const card = member(components, "private func deliverable(_ shown: FogContent?, frame: CGRect) -> some View {");
+  expect(card).toContain("let swap: AnyTransition = reduceMotion ? .opacity : .asymmetric(");
+  expect(card).toContain("insertion: .modifier(active: Swap(scale: ConchMotion.swapScale, blur: ConchMotion.swapBlur, opacity: 0), identity: Swap()),");
+  expect(card).toContain("removal: .modifier(active: Swap(scale: 2 - ConchMotion.swapScale, blur: ConchMotion.swapBlur, opacity: 0), identity: Swap())");
+  expect(card).toContain("shown.view\n                        .frame(width: frame.width, height: frame.height)\n                        .id(shown.id)\n                        .transition(swap)");
+  expect(card).toContain(".animation(ConchMotion.swap.animation(reduceMotion: reduceMotion), value: shown?.id)");
+  // Rounded, with a hairline; its presses and scrolls its own (FogTextTests pins the frames).
+  expect(card).toContain(".clipShape(shape)\n                .overlay(shape.strokeBorder(ConchColor.overlayLine, lineWidth: 0.5))\n                .fogControl()");
+  // Only full screen; the words only while nothing shows; the capsule only with the reply line on.
+  expect(components).toContain("let shown = isFullScreen ? content : nil");
+  expect(components).toContain("if shown == nil {\n                    VStack(alignment: .leading, spacing: FogReply.gap) {");
+  expect(components).toContain("if shown != nil, showsReply { floatingReply(in: proxy.size, fontSize: fontSize, height: reply, overflows: overflows) }");
+  expect(member(components, "private func floatingReply(in size: CGSize, fontSize: CGFloat, height: CGFloat, overflows: Bool) -> some View {")).toContain(".fogControl()");
 });

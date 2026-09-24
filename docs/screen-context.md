@@ -117,6 +117,12 @@ screen:
   - **conch's window on the session.**
 
   Each of these reports carries the session, the review id and the link.
+- **The panel shows it itself.** A pick in the conversation panel (its
+  switcher, Previous and Next) of a deliverable the panel draws, or of a
+  session with nothing to open, goes full screen in the panel instead
+  (`ReviewQueue.show`, `FloatingPanels.swift`). It reports a `conch` surface
+  with `view: panel`, carrying the session, and the review id and link when a
+  deliverable is what shows.
 - **conch's own window shows a session.** This covers a pick in the dashboard
   or the menu (`ContentView`'s `workspace.viewing`). It counts only while conch
   is in front, and not when it repeats the last report. Otherwise the pill's

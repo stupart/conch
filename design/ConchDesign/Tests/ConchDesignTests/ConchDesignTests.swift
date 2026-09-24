@@ -125,6 +125,8 @@ final class ConchDesignTests: XCTestCase {
         XCTAssertEqual(ConchMotion.morph, ConchSpring(bounce: 0.12, response: 0.46))
         XCTAssertEqual(ConchMotion.pop, ConchSpring(bounce: 0.34, response: 0.36))
         XCTAssertEqual(ConchMotion.grow, ConchSpring(bounce: 0.12, response: 0.34))
+        // panel-lab's stage swoop, for one deliverable in the panel giving way to the next.
+        XCTAssertEqual(ConchMotion.swap, ConchSpring(bounce: 0.08, response: 0.52))
         // Stepped by hand, a spring follows the same curve SwiftUI animates.
         for (name, spring) in ConchMotion.springs {
             let swiftUI = Spring(duration: spring.response, bounce: spring.bounce)
@@ -278,6 +280,45 @@ final class ConchDesignTests: XCTestCase {
         // The terminal, or conch's window, asked for by name, stays what was asked for, link or none.
         XCTAssertFalse(ReviewScene.panelShowsWords(hasReview: true, kind: .terminal, link: nil, fileExists: there))
         XCTAssertFalse(ReviewScene.panelShowsWords(hasReview: true, kind: .conversation, link: nil, fileExists: there))
+    }
+
+    /// 09-21, "BOTH": a pick in the panel whose deliverable the panel can draw shows it there, full screen, with the reply
+    /// floating over it. An app window, the Simulator, a terminal, a design or an office document still comes forward in
+    /// its own app.
+    func testAPanelPickShowsAPageDocumentPictureOrLiveUrlInThePanel() {
+        let there: (String) -> Bool = { _ in true }
+        let gone: (String) -> Bool = { _ in false }
+        let live = URL(string: "http://localhost:3111/invite")!
+        let page = URL(fileURLWithPath: "/tmp/site/index.html")
+        func shows(_ deliverable: String?, _ link: URL?, kind: ReviewScene.Kind = .auto, fileExists: (String) -> Bool = { _ in true }) -> Bool {
+            ReviewScene.panelShowsContent(kind: kind, deliverable: deliverable, link: link, fileExists: fileExists)
+        }
+        for kind in ["page", "markdown", "text", "image", "pdf", "video", "audio", "url"] {
+            XCTAssertTrue(shows(kind, page), kind)
+            XCTAssertTrue(shows(kind, live), kind)
+        }
+        // By the kind it was filed as, whatever the link looks like; and a kind this build has never heard of is not.
+        for kind in ["app", "simulator", "terminal", "design", "document", "other", "slides"] {
+            XCTAssertFalse(shows(kind, live), kind)
+            XCTAssertFalse(shows(kind, page), kind)
+        }
+        // Only where the pill's scene would open the link: none, a file gone, or a scene asked for by name is as before.
+        XCTAssertFalse(shows("page", nil))
+        XCTAssertFalse(shows("page", page, fileExists: gone))
+        XCTAssertFalse(shows("url", URL(string: "mailto:a@b.c")))
+        XCTAssertFalse(shows("url", live, kind: .terminal))
+        XCTAssertFalse(shows("url", live, kind: .conversation))
+        XCTAssertTrue(shows("url", live, kind: .link))
+        // Filed without a kind, by a daemon older than kinds: the link says, as src/deliverables.ts reads it.
+        XCTAssertTrue(shows(nil, live))
+        XCTAssertFalse(shows(nil, URL(string: "https://www.figma.com/design/abc/Icons")))
+        XCTAssertFalse(shows(nil, URL(string: "https://figma.com/file/abc")))
+        XCTAssertTrue(shows(nil, URL(fileURLWithPath: "/tmp/hero-390.PNG")))
+        XCTAssertTrue(shows(nil, URL(fileURLWithPath: "/tmp/notes.md")))
+        XCTAssertFalse(shows(nil, URL(fileURLWithPath: "/tmp/brief.docx")))
+        XCTAssertFalse(shows(nil, URL(fileURLWithPath: "/tmp/build.zip")))
+        // Never both: what the panel draws has something to open, so it is not the words.
+        XCTAssertFalse(ReviewScene.panelShowsWords(hasReview: true, kind: .auto, link: page, fileExists: there))
     }
 
     /// The panel's switcher lists ready for you first, then working, then the rest, each group as the daemon sent it; and

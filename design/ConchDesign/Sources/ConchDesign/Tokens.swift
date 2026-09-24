@@ -351,9 +351,16 @@ public enum ConchMotion {
     public static let voiceColour = ConchSpring(bounce: 0, response: 0.4)
     /// Light and dark trading places.
     public static let appearance = ConchSpring(bounce: 0, response: 0.3)
+    /// One deliverable in the panel giving way to the next: the old one out soft and a touch large, the new one in from a
+    /// touch small and soft (panel-lab's stage swoop).
+    public static let swap = ConchSpring(bounce: 0.08, response: 0.52)
     public static let springs: [(name: String, spring: ConchSpring)] = [
-        ("dock", dock), ("morph", morph), ("pop", pop), ("grow", grow), ("voiceColour", voiceColour), ("appearance", appearance),
+        ("dock", dock), ("morph", morph), ("pop", pop), ("grow", grow), ("voiceColour", voiceColour), ("appearance", appearance), ("swap", swap),
     ]
+
+    /// How small and soft a deliverable comes in on `swap`; it leaves as much larger.
+    public static let swapScale: CGFloat = 0.965
+    public static let swapBlur: CGFloat = 6
 
     /// A thrown view mid-air: a little smaller, softer and fainter, whole again as it lands.
     public static let flightScale: CGFloat = 0.97

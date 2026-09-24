@@ -293,6 +293,35 @@ final class FogTextTests: XCTestCase {
         XCTAssertFalse(frames.value.contains { $0.contains(CGPoint(x: text.maxX - 40, y: text.maxY - 20)) }, "with no reply line its place should drag: \(frames.value)")
     }
 
+    /// Full screen on a deliverable, a press or a scroll on it is the deliverable's, so a page scrolls and its links click
+    /// rather than the fog taking them for its transcript; and the floating reply line keeps its clicks, at the foot.
+    @MainActor
+    func testADeliverableInThePanelKeepsItsPressesAndScrolls() throws {
+        final class Frames { var value: [CGRect] = [] }
+        let frames = Frames(), size = CGSize(width: 1440, height: 900)
+        let content = FogContent(id: "v1") { Color.white }
+        let fog = ConversationFog(turns: Self.turns(4), draft: .constant(""), text: FogTextState(), isListening: false, isFullScreen: true, showsButtons: false, content: content, onMic: {}, onSend: {}, onCollapse: {}, onFullScreen: {})
+            .frame(width: size.width, height: size.height)
+            .coordinateSpace(name: FogControls.space)
+            .onPreferenceChange(FogControls.self) { value in MainActor.assumeIsolated { frames.value = value } }
+        let host = NSHostingView(rootView: fog)
+        host.frame = CGRect(origin: .zero, size: size)
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        let frame = ConversationFog.contentFrame(in: size, insets: EdgeInsets(), showsReply: true)
+        let reply = CGPoint(x: size.width / 2, y: frame.maxY + 40)
+        for point in [CGPoint(x: frame.minX + 20, y: frame.minY + 20), CGPoint(x: frame.midX, y: frame.midY), CGPoint(x: frame.maxX - 20, y: frame.maxY - 20), reply] {
+            XCTAssertTrue(frames.value.contains { $0.contains(point) }, "a press or scroll at \(point) would be the fog's: \(frames.value)")
+        }
+        // Under the button row, the width of the panel's padding, and clear of the reply line at the foot.
+        XCTAssertEqual(frame.minX, ConversationFog.padding)
+        XCTAssertEqual(frame.maxX, size.width - ConversationFog.padding)
+        XCTAssertGreaterThan(frame.minY, ConversationFog.buttonsY(in: size, corner: .bottomLeading, insets: EdgeInsets(), fullScreen: true) + ConversationFog.buttonSize)
+        XCTAssertLessThan(frame.maxY, reply.y - 20)
+        // With the reply line off, it runs to the foot.
+        XCTAssertEqual(ConversationFog.contentFrame(in: size, insets: EdgeInsets(), showsReply: false).maxY, size.height - ConversationFog.padding)
+    }
+
     // MARK: Layout
 
     /// Hanging from a top corner the transcript runs top-down, newest nearest the top; otherwise and full screen, bottom-up.
