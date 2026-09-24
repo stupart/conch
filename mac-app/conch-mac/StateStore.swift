@@ -162,8 +162,10 @@ final class StateStore: ObservableObject {
         undoTask?.cancel()
     }
 
+    /// `overApp`: sent from over another app without conch coming forward, whatever window is key — the canvas's Send,
+    /// whose glass has given the keys back once the pen is up — so that app is handed the front back once delivered.
     @discardableResult
-    func send(_ event: ConchDaemonEvent) -> Task<Bool, Never> {
+    func send(_ event: ConchDaemonEvent, overApp: Bool = false) -> Task<Bool, Never> {
         controlSequence &+= 1
         let sequence = controlSequence
         let socketClient = socketClient
@@ -173,7 +175,7 @@ final class StateStore: ObservableObject {
         let refocus = event.awaitDelivery == true && NSApp.isActive
         // The conversation fog (FloatingPanels) types over another app without
         // activating conch, so that app is the front to hand back.
-        let underFog = event.awaitDelivery == true && !refocus && NSApp.keyWindow is FloatingPanel
+        let underFog = event.awaitDelivery == true && !refocus && (overApp || NSApp.keyWindow is FloatingPanel)
             ? NSWorkspace.shared.frontmostApplication?.processIdentifier
             : nil
         // if/else, not a ternary: `cond ? { closure } : nil` crashes the type

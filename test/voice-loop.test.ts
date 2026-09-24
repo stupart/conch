@@ -850,7 +850,7 @@ describe("an inject says whether it landed", () => {
 describe("Show's narration holds the mic as an open dictation does", () => {
   test("held, the mic counts open: speak holds its lines, turns wait in the queue, and release lets them through", async () => {
     const h = harness();
-    const held = await h.voice.holdNarration(200);
+    const held = await h.voice.holdNarration(200, () => {});
     if (!("release" in held)) throw new Error(held.refused);
     expect(h.voice.capturing()).toBe(true);
     expect(h.queue.busy()).toBe(true);
@@ -871,13 +871,13 @@ describe("Show's narration holds the mic as an open dictation does", () => {
   test("refused, with why, when the ear is elsewhere or a mic is already open, and nothing is left held", async () => {
     const phone = harness();
     phone.lease.request("phone", 1);
-    expect(await phone.voice.holdNarration(50)).toEqual({ refused: "the phone has the audio" });
+    expect(await phone.voice.holdNarration(50, () => {})).toEqual({ refused: "the phone has the audio" });
     const otherMac = harness();
     otherMac.holder.yield("mac-b-owner", 1, 60_000);
-    expect(await otherMac.voice.holdNarration(50)).toEqual({ refused: "another Mac has the audio" });
+    expect(await otherMac.voice.holdNarration(50, () => {})).toEqual({ refused: "another Mac has the audio" });
     const narrating = harness();
-    expect("release" in await narrating.voice.holdNarration(50)).toBe(true);
-    expect(await narrating.voice.holdNarration(50)).toEqual({ refused: "the mic is already open" });
+    expect("release" in await narrating.voice.holdNarration(50, () => {})).toBe(true);
+    expect(await narrating.voice.holdNarration(50, () => {})).toEqual({ refused: "the mic is already open" });
     for (const h of [phone, otherMac]) {
       expect(h.voice.capturing()).toBe(false);
       expect(h.queue.busy()).toBe(false);
@@ -885,7 +885,7 @@ describe("Show's narration holds the mic as an open dictation does", () => {
     const dictating = harness();
     void dictating.voice.handle(wake({ compose: true }));
     await waitFor("the dictation", () => dictating.sessions[0]?.started === 1);
-    expect(await dictating.voice.holdNarration(50)).toEqual({ refused: "the mic is already open" });
+    expect(await dictating.voice.holdNarration(50, () => {})).toEqual({ refused: "the mic is already open" });
     expect(dictating.queue.busy()).toBe(false);
     await dictating.voice.close();
   });
@@ -894,7 +894,7 @@ describe("Show's narration holds the mic as an open dictation does", () => {
     const h = harness({ holdSpeech: true });
     void h.voice.speak(h.cfg, "a long reply", "alpha", true);
     await waitFor("the line", () => h.said.length === 1);
-    const waiting = h.voice.holdNarration(80);
+    const waiting = h.voice.holdNarration(80, () => {});
     await Bun.sleep(20);
     // Reserved while it waits, as every capture is, so nothing new starts to play.
     expect(h.voice.capturing()).toBe(true);
@@ -902,7 +902,7 @@ describe("Show's narration holds the mic as an open dictation does", () => {
     expect(h.voice.capturing()).toBe(false);
     expect(h.queue.busy()).toBe(false);
     // A line that ends within the bound is waited for, and then the mic is the narration's.
-    const taken = h.voice.holdNarration(2_000);
+    const taken = h.voice.holdNarration(2_000, () => {});
     await Bun.sleep(20);
     h.playing.get("a long reply")!.finish();
     expect("release" in await taken).toBe(true);
@@ -915,7 +915,7 @@ describe("Show's narration holds the mic as an open dictation does", () => {
     await waitFor("the reading", () => h.said.length === 1);
     h.lease.request("phone", 1);
     // Not "conch is speaking" after waiting on the queue: the ear is elsewhere, and that is the answer.
-    expect(await h.voice.holdNarration(80)).toEqual({ refused: "the phone has the audio" });
+    expect(await h.voice.holdNarration(80, () => {})).toEqual({ refused: "the phone has the audio" });
     h.lease.request("mac", 1);
     h.playing.get("alpha: the build is green.")!.finish();
     await h.voice.close();
@@ -924,7 +924,7 @@ describe("Show's narration holds the mic as an open dictation does", () => {
     const late = harness({ holdSpeech: true });
     void late.voice.speak(late.cfg, "a line", "alpha", true);
     await waitFor("the line", () => late.said.length === 1);
-    const waiting = late.voice.holdNarration(2_000);
+    const waiting = late.voice.holdNarration(2_000, () => {});
     await Bun.sleep(20);
     late.lease.request("phone", 1);
     late.playing.get("a line")!.finish();
@@ -933,11 +933,70 @@ describe("Show's narration holds the mic as an open dictation does", () => {
     expect(late.queue.busy()).toBe(false);
   });
 
+  test("held, it shows as a dictation's open mic does: recording", async () => {
+    const h = harness();
+    setState("idle");
+    const held = await h.voice.holdNarration(200, () => {});
+    if (!("release" in held)) throw new Error(held.refused);
+    expect(getLiveState()).toMatchObject({ state: "recording", label: "Show" });
+    held.release();
+    await h.voice.close();
+  });
+
+  test("a Stop while it narrates closes its mic, and the turn waiting behind it is still read", async () => {
+    const h = harness();
+    let stopped = 0;
+    const held = await h.voice.holdNarration(200, () => void stopped++);
+    if (!("release" in held)) throw new Error(held.refused);
+    void h.queue.submit(accepted(h, turnEnd()));
+    // What the socket's stop does while the mic is open (control-server's stop contract): stopSpacebar, then stop.
+    h.voice.stop("spacebar");
+    expect(stopped).toBe(1);
+    expect(h.logs).toContain("⏹ spacebar — closing the narration's mic");
+    // The recorder exits and lets the mic go, as narration.ts's `ended` does.
+    held.release();
+    expect(h.voice.capturing()).toBe(false);
+    await waitFor("the turn behind it", () => h.said.includes("alpha: the build is green."));
+    expect(h.violations).toEqual([]);
+    await h.voice.close();
+  });
+
+  test("a Stop pressed while it waited for a line to finish is spent there, never on the turn after the Show", async () => {
+    const h = harness({ holdSpeech: true });
+    void h.voice.speak(h.cfg, "a line", "alpha", true);
+    await waitFor("the line", () => h.said.length === 1);
+    const waiting = h.voice.holdNarration(2_000, () => {});
+    await Bun.sleep(20);
+    // Cuts the line; the narration then has the mic.
+    h.voice.stop("spacebar");
+    const held = await waiting;
+    if (!("release" in held)) throw new Error(held.refused);
+    void h.queue.submit(accepted(h, turnEnd()));
+    await Bun.sleep(20);
+    held.release();
+    await waitFor("the turn after the Show", () => h.said.includes("alpha: the build is green."));
+    await h.voice.close();
+  });
+
+  test("a dictation asked for while it narrates is refused at the door, with why; other requests are not", async () => {
+    const h = harness();
+    expect(h.voice.refusal(wake())).toBeNull();
+    const held = await h.voice.holdNarration(200, () => {});
+    if (!("release" in held)) throw new Error(held.refused);
+    expect(h.voice.refusal(wake())).toBe("Show's narration has the mic");
+    expect(h.voice.refusal(wake({ compose: true }))).toBe("Show's narration has the mic");
+    expect(h.voice.refusal(turnEnd())).toBeNull();
+    expect(h.voice.refusal(inject("words"))).toBeNull();
+    held.release();
+    expect(h.voice.refusal(wake())).toBeNull();
+    await h.voice.close();
+  });
+
   test("a turn being read holds the queue: refused past the bound, and the queue is the turn's again", async () => {
     const h = harness({ holdSpeech: true });
     void h.queue.submit(accepted(h, turnEnd()));
     await waitFor("the reading", () => h.said.length === 1);
-    expect(await h.voice.holdNarration(80)).toEqual({ refused: "conch is speaking" });
+    expect(await h.voice.holdNarration(80, () => {})).toEqual({ refused: "conch is speaking" });
     expect(h.voice.capturing()).toBe(false);
     expect(h.queue.busy()).toBe(true); // still the turn's
     h.playing.get("alpha: the build is green.")!.finish();

@@ -58,15 +58,19 @@ enum DebugSnapshot {
         return wanted ?? ""
     }
 
-    /// The conversation overlay, identified by the one thing true of it in EVERY state.
+    /// The conversation overlay, identified by the one thing true of it in EVERY state: which window it is.
     ///
     /// Not by its frame autosave name: `FloatingPanels` blanks that while the fog is
     /// collapsed or full screen (so neither is ever saved as the restore frame), which
     /// are exactly two of the states worth photographing. A name-matching lookup would
     /// find the overlay in the easy states and silently miss it in the interesting ones.
-    /// `takesKeys` is set once, at construction, on the fog and on nothing else.
+    /// Nor by `takesKeys`: the canvas's glass takes keys too, while the pen is down.
     @MainActor
-    private static func isOverlay(_ panel: FloatingPanel) -> Bool { panel.takesKeys }
+    private static func isOverlay(_ panel: FloatingPanel) -> Bool { panel === FloatingPanels.installed?.conversationWindow }
+
+    /// The control bar, the same way: the canvas's glass, its tools and Show's ring are floating panels too.
+    @MainActor
+    private static func isControlBar(_ panel: FloatingPanel) -> Bool { panel === FloatingPanels.installed?.controlBarWindow }
 
     /// Everything conch has on screen, whichever window is being photographed.
     ///
@@ -126,7 +130,7 @@ enum DebugSnapshot {
             // anything without a title answers with its class instead.
             return window.title.isEmpty ? String(describing: type(of: window)) : "dashboard"
         }
-        return isOverlay(panel) ? "overlay" : "controlbar"
+        return isOverlay(panel) ? "overlay" : isControlBar(panel) ? "controlbar" : "canvas"
     }
 
     /// Honour a pending request, if there is one. Cheap enough to call per poll.
@@ -186,7 +190,7 @@ enum DebugSnapshot {
         case .key: window = key ?? largest
         case .dashboard: window = largest
         case .overlay: window = panels.first(where: isOverlay)
-        case .controlbar: window = panels.first { !isOverlay($0) }
+        case .controlbar: window = panels.first(where: isControlBar)
         case .geometry: window = nil
         }
 

@@ -149,6 +149,15 @@ final class FloatingPanels: ObservableObject {
         panels.staged = nil
     }
 
+    /// The conversation panel and the control bar themselves, for what must tell them apart by identity (`DebugSnapshot`).
+    var conversationWindow: NSWindow { fog }
+    var controlBarWindow: NSWindow { controlBar }
+
+    /// The conversation panel while it fills the screen: then it IS what is on screen, the deliverable it shows or the
+    /// words, and a canvas's still or Show keeps it in the picture (`CanvasController.leftOut`). Docked, it is conch's own
+    /// chrome over the work, and left out.
+    var coveringWindow: NSWindow? { isFullScreen && fog.isVisible ? fog : nil }
+
     /// Where the glass is on screen while the panel shows docked, for the canvas's tools to rise out of its top edge.
     var glassFrame: NSRect? {
         fog.isVisible && !isCollapsed && !isFullScreen ? fog.frame.insetBy(dx: Self.glassInset, dy: Self.glassInset) : nil

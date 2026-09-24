@@ -22,7 +22,7 @@ const store = readFileSync(
  * far longer than ordering needs and still imperceptible when it is spent.
  */
 test("a control waits for the previous delivery, but not forever", () => {
-  const send = store.slice(store.indexOf("func send(_ event: ConchDaemonEvent)"));
+  const send = store.slice(store.indexOf("func send(_ event: ConchDaemonEvent, overApp: Bool = false)"));
   const body = send.slice(0, send.indexOf("\n    }"));
 
   expect(body).toContain("await Self.awaitDelivery(previousDelivery, within: .milliseconds(250))");

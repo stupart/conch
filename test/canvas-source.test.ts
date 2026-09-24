@@ -40,6 +40,12 @@ const panels = read("mac-app/conch-mac/FloatingPanels.swift");
 const item = read("mac-app/conch-mac/StatusItem.swift");
 const components = read("design/ConchDesign/Sources/ConchDesign/Components.swift");
 const project = read("mac-app/conch-mac.xcodeproj/project.pbxproj");
+/** `first` and `then` are both in `source`, in that order. */
+function inOrder(source: string, first: string, then: string): void {
+  expect(source, `missing: ${first}`).toContain(first);
+  expect(source, `missing: ${then}`).toContain(then);
+  expect(source.indexOf(first)).toBeLessThan(source.indexOf(then));
+}
 
 describe("the glass", () => {
   test("one borderless, non-activating panel per display, at the status bar level, on every space and hidden by Mission Control", () => {
@@ -75,9 +81,10 @@ describe("the glass", () => {
 
   test("armed, it takes the keys without bringing conch forward", () => {
     const arm = member(canvas, "func arm() {");
-    expect(arm).toContain("under.panel.makeKey()");
-    expect(arm).toContain("under.panel.makeFirstResponder(under.ink)");
-    expect(member(canvas, "func apply() {")).toContain("panel.takesKeys = inUse");
+    inOrder(arm, "apply()", "takeKeys()");
+    const take = member(canvas, "private func takeKeys() {");
+    expect(take).toContain("under.panel.makeKey()");
+    expect(take).toContain("under.panel.makeFirstResponder(under.ink)");
     // `FloatingPanel` only becomes key while `takesKeys`; nothing here activates conch or makes a window main.
     expect(panels).toContain("override var canBecomeKey: Bool { takesKeys }");
     for (const intrusion of ["NSApp.activate", "makeKeyAndOrderFront", "makeMain", "activate(ignoringOtherApps"]) {
@@ -85,9 +92,37 @@ describe("the glass", () => {
     }
   });
 
-  test("Esc lifts the pen and keeps the ink; Esc again clears it", () => {
+  test("the keys are the glass's only while the pen is down: lifted, they go back to the app in front, and nothing typed for it acts here", () => {
+    // Keys only while armed: up, AppKit can't make the glass key again (FloatingPanel.canBecomeKey is `takesKeys`).
+    expect(member(canvas, "func apply() {")).toContain("panel.takesKeys = armed");
+    expect(canvas).not.toContain("panel.takesKeys = inUse");
+    // Lifting gives them back: the key glass leaves the screen, which hands the keyboard to the app in front, and comes
+    // straight back without it. Never by activating anything.
+    inOrder(member(canvas, "func lift() {"), "apply()", "giveKeysBack()");
+    const give = member(canvas, "private func giveKeysBack() {");
+    expect(give).toContain("for (panel, _) in glass where panel.isKeyWindow {");
+    inOrder(give, "panel.orderOut(nil)", "panel.orderFrontRegardless()");
+    // Every way the pen comes up is `lift`: Esc, the hotkey and the pill (`toggle`, `pick`), and Send.
+    expect(canvas.match(/^ +armed = false$/gm)?.length).toBe(1);
+    // And should the glass ever still have them: Return and ⌘Z act only with the pen down. An `if`, since a `where`
+    // after two patterns binds to the last alone (Return would have sent regardless).
+    const keys = member(canvas, "override func keyDown(with event: NSEvent) {");
+    expect(keys).toContain("case UInt16(kVK_Return), UInt16(kVK_ANSI_KeypadEnter):\n            // Only with the pen down");
+    expect(keys).toContain("if controller?.armed == true { controller?.send() }");
+    expect(keys).not.toMatch(/case UInt16\(kVK_Return\), UInt16\(kVK_ANSI_KeypadEnter\) where/);
+    expect(member(canvas, "override func performKeyEquivalent(with event: NSEvent) -> Bool {")).toContain("guard controller?.armed == true,");
+  });
+
+  test("a display change with the pen down: the glass under the pointer takes the keys again", () => {
+    inOrder(member(canvas, "private func buildGlass() {"), "apply()", "if armed { takeKeys() }");
+  });
+
+  test("Esc lifts the pen and keeps the ink; the pill's × throws the ink or a Show away", () => {
     expect(member(canvas, "override func keyDown(with event: NSEvent) {")).toContain("case UInt16(kVK_Escape):\n            controller?.escape()");
     expect(member(canvas, "func escape() {")).toContain("armed ? lift() : clear()");
+    // The keys go back with the pen, so the × is how the ink goes once it is up; a Show goes first, and nothing is sent.
+    expect(member(canvas, "func discard() {")).toContain("recorder != nil ? cancelShow() : clear()");
+    expect(canvas).toContain("onDiscard: canvas.recorder != nil || canvas.document?.isEmpty == false ? { canvas.discard() } : nil");
     const lift = member(canvas, "func lift() {");
     expect(lift).toContain("armed = false");
     expect(lift).not.toContain("document = nil\n        apply");
@@ -168,7 +203,7 @@ describe("turning it on", () => {
 describe("Send", () => {
   test("the still is ScreenCaptureKit's, of the display under the ink, with conch's floating windows left out", () => {
     const sendBody = member(send, "    func send() {");
-    expect(sendBody).toContain("let conch = NSApp.windows.filter { $0 is FloatingPanel }.map(\\.windowNumber)");
+    expect(sendBody).toContain("let conch = Self.leftOut(keepingGlass: false)");
     expect(sendBody).toContain("await CanvasCapture.still(of: document.anchor.id, leavingOut: conch)");
     const still = member(send, "static func still(of display: CGDirectDisplayID, leavingOut windows: [Int]) async -> CGImage? {");
     expect(still).toContain("guard let screen = content.displays.first(where: { $0.displayID == display }) else { return nil }");
@@ -180,6 +215,22 @@ describe("Send", () => {
     expect(still.match(/configuration\.showsCursor = false/g)?.length).toBe(2);
     // Deprecated in 14 and gone in 15.
     expect(filesWith("CGWindowListCreateImage")).toEqual([]);
+  });
+
+  test("a picture leaves out conch's floating windows, but never the conversation panel while it fills the screen", () => {
+    const leftOut = member(send, "static func leftOut(keepingGlass: Bool) -> [Int] {");
+    expect(leftOut).toContain("let covering = FloatingPanels.installed?.coveringWindow");
+    expect(leftOut).toContain("window is FloatingPanel && window !== covering && !(keepingGlass && window.contentView is CanvasInkView)");
+    // Full screen and showing, the panel IS the screen: the deliverable it shows, or the words. Docked, it is chrome.
+    expect(panels).toContain("var coveringWindow: NSWindow? { isFullScreen && fog.isVisible ? fog : nil }");
+    // The still and the Show both ask it, and nothing else decides what a picture leaves out.
+    expect(filesWith("leftOut(keepingGlass:")).toEqual(["CanvasSend.swift", "CanvasShow.swift"]);
+    expect(Object.values(macSources).join("\n").match(/\$0 is FloatingPanel \}/g) ?? []).toEqual([]);
+  });
+
+  test("a Send from over another app hands that app the front back once delivered, pen down or up", () => {
+    expect(store).toContain("func send(_ event: ConchDaemonEvent, overApp: Bool = false) -> Task<Bool, Never> {");
+    expect(store).toContain("let underFog = event.awaitDelivery == true && !refocus && (overApp || NSApp.keyWindow is FloatingPanel)");
   });
 
   test("nothing is captured, or the grant asked for, except on an explicit Send with somewhere to send it", () => {
@@ -202,7 +253,7 @@ describe("Send", () => {
     const callers = Object.entries(macSources).flatMap(([name, source]) => (source.match(/(?:canvas|controller\?|CanvasController\.shared)\.send\(\)/g) ?? []).map((call) => `${name}: ${call}`));
     expect(callers.sort()).toEqual(["Canvas.swift: canvas.send()", "Canvas.swift: controller?.send()"]);
     expect(canvas).toContain("onSend: { canvas.send() }");
-    expect(canvas).toContain("case UInt16(kVK_Return), UInt16(kVK_ANSI_KeypadEnter):\n            controller?.send()");
+    expect(canvas).toContain("if controller?.armed == true { controller?.send() }");
     // The grant: checked silently; asked for once, on a Send without it, and the Send still goes as the marks alone.
     const still = member(send, "static func still(of display: CGDirectDisplayID, leavingOut windows: [Int]) async -> CGImage? {");
     expect(still.indexOf("guard CGPreflightScreenCaptureAccess() else {")).toBeLessThan(still.indexOf("CGRequestScreenCaptureAccess()"));
@@ -238,7 +289,7 @@ describe("Send", () => {
     const sendBody = member(send, "    func send() {");
     expect(sendBody).toContain("CanvasPrompt.text(for: document, about: label, picture: files.flat.path, clean: files.raw?.path, marks: files.json.path)");
     // The composer's own delivery (DashboardView's onSend), then a clear canvas.
-    expect(sendBody).toContain("let delivery = store.send(.inject(sessionId: row.id, label: row.label, text: prompt))");
+    expect(sendBody).toContain("let delivery = store.send(.inject(sessionId: row.id, label: row.label, text: prompt), overApp: true)");
     expect(sendBody.indexOf("store.send(.inject(")).toBeLessThan(sendBody.indexOf("clear()"));
     expect(read("mac-app/conch-mac/DashboardView.swift")).toContain("store.send(.inject(sessionId: row.id, label: row.label, text: text))");
   });

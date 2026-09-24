@@ -1137,6 +1137,9 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   function enqueue(incoming: TurnEvent): void | Promise<SocketTurnOutcome> {
     if (shuttingDown) return;
     const event = incoming;
+    // Turned away rather than queued: a dictation while Show's narration has the mic (`VoiceLoop.refusal`).
+    const refused = voice.refusal(event);
+    if (refused) return log(`refused a dictation for "${event.label || "the last session"}" — ${refused}`);
     warmTranscript(event.transcriptPath);
     if (!panelRefresh.accept(eventOrder, event)) return;
     prioritizeRecords([...panelSessions.values()],
@@ -2613,7 +2616,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   }
   // Show's narration: recorded here, never by the app, so the mic keeps one owner and its one gate (narration.ts).
   const narration = createNarration({
-    hold: () => voice.holdNarration(NARRATION_QUIET_WITHIN_MS),
+    hold: (stopRecorder) => voice.holdNarration(NARRATION_QUIET_WITHIN_MS, stopRecorder),
     record: (wav, seconds) => {
       const proc = spawnNarrationRecorder(cfg, wav, seconds);
       return { exited: proc.exited, stop: () => stopSoxProcess(proc) };

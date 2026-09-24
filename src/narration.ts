@@ -57,8 +57,11 @@ export interface NarrationRecorder {
 }
 
 export interface NarrationDeps {
-  /** The mic, held as an open dictation holds it, or why not (`VoiceLoop.holdNarration`). */
-  hold(): Promise<{ release(): void } | { refused: string }>;
+  /**
+   * The mic, held as an open dictation holds it, or why not (`VoiceLoop.holdNarration`). A Stop while it is held
+   * calls `stopRecorder`: the recorder stops, the mic goes, and `stop` still reads what it caught.
+   */
+  hold(stopRecorder: () => void): Promise<{ release(): void } | { refused: string }>;
   /** Start recording `wav`, for `seconds` at most. */
   record(wav: string, seconds: number): NarrationRecorder;
   transcribe(wav: string): Promise<{ segments: TimedSegment[]; error?: string }>;
@@ -117,7 +120,8 @@ export function createNarration(deps: NarrationDeps): Narration {
       if (running || starting) return refused("a narration is already running");
       starting = true;
       try {
-        const held = await deps.hold();
+        let recording: NarrationRecorder | undefined;
+        const held = await deps.hold(() => recording?.stop());
         if ("refused" in held) return refused(held.refused);
         const folder = join(deps.root, canvasId);
         const wav = join(folder, "narration.wav");
@@ -130,6 +134,7 @@ export function createNarration(deps: NarrationDeps): Narration {
           writeFileSync(wav, "", { mode: 0o600 });
           chmodSync(wav, 0o600);
           recorder = deps.record(wav, Math.ceil(leaseMs / 1000));
+          recording = recorder;
         } catch (error) {
           held.release();
           rmSync(wav, { force: true });

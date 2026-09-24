@@ -24,7 +24,7 @@ extension CanvasController {
     }
 
     /// The record button, and R with the pen down: a Show starts on the display with the ink on it, else the one under the
-    /// pointer. While one records, it stops and waits for Send or Esc.
+    /// pointer. While one records, it stops and waits for Send or the ×.
     func toggleShow() {
         guard !sending else { return }
         if let recorder {
@@ -32,6 +32,9 @@ extension CanvasController {
             return
         }
         guard #available(macOS 15.0, *), !CanvasRecorder.starting else { return }
+        // The system asks for the grant in a prompt of its own, which the glass would cover with the pen down (R): the pen
+        // comes up first, as Send lets clicks through for the same prompt.
+        if !CGPreflightScreenCaptureAccess() { lift() }
         guard CanvasRecorder.granted() else {
             message = "Show needs Screen Recording: allow conch in System Settings › Privacy & Security, then quit and reopen it."
             return
@@ -72,12 +75,12 @@ extension CanvasController {
         }
     }
 
-    /// A Show stopped, by its button or at the cap, and kept for Send or Esc.
+    /// A Show stopped, by its button or at the cap, and kept for Send or the ×.
     private func stopShow(_ recorder: CanvasRecorder) async {
         guard case .since = recorder.phase else { return }
         let length = await recorder.stop()
         guard self.recorder === recorder, !sending else { return }
-        message = "Stopped at \(CanvasStoryboard.clock(length)). Send it, or Esc to throw it away."
+        message = "Stopped at \(CanvasStoryboard.clock(length)). Send it, or × to throw it away."
     }
 
     /// Esc while there is a Show: it stops and is thrown away, and nothing is sent. The ink and the pen stay as they were.
@@ -121,7 +124,7 @@ extension CanvasController {
                 message = "Couldn't read the recording: \(error.localizedDescription). It is in \(recorder.folder.path)."
                 return apply()
             }
-            let delivery = store.send(.inject(sessionId: row.id, label: row.label, text: prompt))
+            let delivery = store.send(.inject(sessionId: row.id, label: row.label, text: prompt), overApp: true)
             sending = false
             self.recorder = nil
             clear()
@@ -243,9 +246,9 @@ final class CanvasRecorder: NSObject {
         ring.orderFrontRegardless()
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
         guard let screen = content.displays.first(where: { $0.displayID == display }) else { throw CocoaError(.featureUnsupported) }
-        // conch's floating windows are left out — the tools, the conversation panel, the control bar, this ring — but
-        // not the glass: the ink is what is being shown. Nor conch's own window, which may be what is.
-        let hidden = NSApp.windows.filter { $0 is FloatingPanel && !($0.contentView is CanvasInkView) }.map(\.windowNumber)
+        // conch's floating windows are left out — the tools, the docked conversation panel, the control bar, this ring —
+        // but not the glass: the ink is what is being shown. Nor the panel filling the screen, nor conch's own window.
+        let hidden = CanvasController.leftOut(keepingGlass: true)
         let filter = SCContentFilter(display: screen, excludingWindows: content.windows.filter { hidden.contains(Int($0.windowID)) })
         let configuration = SCStreamConfiguration()
         let pixels = CGSize(width: filter.contentRect.width * CGFloat(filter.pointPixelScale), height: filter.contentRect.height * CGFloat(filter.pointPixelScale))
@@ -264,7 +267,8 @@ final class CanvasRecorder: NSObject {
         settings.outputFileType = .mp4
         settings.videoCodecType = .h264
         let output = SCRecordingOutput(configuration: settings, delegate: self)
-        let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
+        // Its delegate hears a stream that stops under it (`ended`).
+        let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
         try stream.addRecordingOutput(output)
         began = Date()
         try await stream.startCapture()
@@ -354,14 +358,16 @@ final class CanvasRecorder: NSObject {
         for each in waiting { each.resume() }
     }
 
-    /// The recording failed partway: it stops where it got to, and the pill says so.
-    fileprivate func failed(_ error: Error) {
-        NSLog("conch: Show's recording failed: %@", error.localizedDescription)
-        wrote()
+    /// The recording ended under the Show — it failed, the stream stopped (the system's own Stop, a display gone), or the
+    /// file finished without being asked — rather than by its button, the cap, Send or Esc, which stop it first: it stops
+    /// where it got to, the ring and the narration with it, and the pill says so.
+    fileprivate func ended(_ error: Error?) {
+        if let error { NSLog("conch: Show's recording failed: %@", error.localizedDescription) }
         guard case .since = phase else { return }
         Task { await stop() }
         if CanvasController.shared.recorder === self {
-            CanvasController.shared.message = "The recording stopped: \(error.localizedDescription). Send what there is, or Esc."
+            let why = error.map { ": \($0.localizedDescription)" } ?? " on its own"
+            CanvasController.shared.message = "The recording stopped\(why). Send what there is, or throw it away."
         }
     }
 
@@ -420,12 +426,26 @@ final class CanvasRecorder: NSObject {
 
 @available(macOS 15.0, *)
 extension CanvasRecorder: SCRecordingOutputDelegate {
+    /// The file is finished: a stop is waiting on it, or, still recording, it finished on its own and the Show ends.
     nonisolated func recordingOutputDidFinishRecording(_ recordingOutput: SCRecordingOutput) {
-        Task { @MainActor in wrote() }
+        Task { @MainActor in
+            wrote()
+            ended(nil)
+        }
     }
 
     nonisolated func recordingOutput(_ recordingOutput: SCRecordingOutput, didFailWithError error: Error) {
-        Task { @MainActor in failed(error) }
+        Task { @MainActor in
+            wrote()
+            ended(error)
+        }
+    }
+}
+
+extension CanvasRecorder: SCStreamDelegate {
+    /// The stream stopped under the Show. The file is the recording output's to finish: `stop` waits for it.
+    nonisolated func stream(_ stream: SCStream, didStopWithError error: Error) {
+        Task { @MainActor in ended(error) }
     }
 }
 
