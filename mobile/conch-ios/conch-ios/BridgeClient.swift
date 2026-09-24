@@ -733,7 +733,7 @@ final class BridgeClient: ObservableObject {
             fail("iPhone couldn't open \(url.absoluteString).")
         case let .file(path):
             guard let onFile else {
-                fail("conch doesn't open a Mac file from here.")
+                fail("That's a file on your Mac. Tap it in the conversation or a review to see it here.")
                 return
             }
             onFile(path)
@@ -919,24 +919,61 @@ final class BridgeClient: ObservableObject {
     /// Relay files are decrypted chunk-by-chunk to a temporary file; LAN files
     /// use URLSession's disk-backed download path. Neither is assembled in RAM.
     ///
-    /// A 403 means one thing on this route — the bridge's `/file` exact-set
-    /// check refused a path that is not currently published — so it gets its
-    /// own honest reason instead of "The Mac returned HTTP 403.", which reads
-    /// as a server bug rather than the deliberate refusal it is. Every other
-    /// status keeps the transport's own words.
+    /// A 403 means one thing on this route — the bridge's `/file` rule refused
+    /// a path conch isn't sending the phone — so it gets its own honest reason
+    /// (`fileFailure`) instead of "The Mac returned HTTP 403.", which reads as
+    /// a server bug rather than the deliberate refusal it is.
     func downloadFile(path: String) async -> URL? {
+        do {
+            return try await fetchFile(path: path)
+        } catch {
+            lastError = Self.fileFailure(error)
+            return nil
+        }
+    }
+
+    /// Every `/file` read, a page's hundredth image as much as the deliverable
+    /// itself. Throws instead of setting `lastError`: a page's missing favicon
+    /// is not an error for the whole app to show.
+    ///
+    /// The token goes in the Authorization header, attached here. A page
+    /// rendered from these files (`ConchPageSchemeHandler`) only ever sees its
+    /// own `conch-page://` addresses, so its JavaScript cannot read the token.
+    func fetchFile(path: String) async throws -> URL {
         var components = URLComponents()
         components.path = "/file"
         components.queryItems = [URLQueryItem(name: "path", value: path)]
-        guard let requestPath = components.string else { return nil }
+        // URLComponents leaves `+` alone and the Mac reads it as a space, so a
+        // file named "C++ notes.md" would be asked for as "C   notes.md".
+        components.percentEncodedQuery = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
+        guard let requestPath = components.string else { throw BridgeTransportError.invalidRequest }
+        await Self.fileReads.enter()
         do {
-            return try await transport.download(authorizedRequest(method: "GET", path: requestPath))
-        } catch BridgeTransportError.httpStatus(403) {
-            lastError = "conch isn't publishing that file."
-            return nil
+            let file = try await transport.download(authorizedRequest(method: "GET", path: requestPath))
+            await Self.fileReads.leave()
+            return file
         } catch {
-            lastError = error.localizedDescription
-            return nil
+            await Self.fileReads.leave()
+            throw error
+        }
+    }
+
+    /// Six file reads at a time; the rest wait here, on the phone. A page with
+    /// two hundred pictures asked for them all at once, and the relay holds at
+    /// most 128 requests before it refuses the next ("Too many relay requests
+    /// are already waiting"), so the page came back with holes in it.
+    private static let fileReads = FileReadGate(slots: 6)
+
+    /// What to say when a Mac file won't come: what happened, and why.
+    nonisolated static func fileFailure(_ error: Error) -> String {
+        switch error {
+        case BridgeTransportError.httpStatus(403):
+            "conch only sends your phone what a session published, from its own folder or a temp folder, "
+                + "and this file isn't one of those. Ask the session to publish it."
+        case BridgeTransportError.httpStatus(404):
+            "It isn't on your Mac any more."
+        default:
+            error.localizedDescription
         }
     }
 
@@ -947,6 +984,27 @@ final class BridgeClient: ObservableObject {
             headers: ["authorization": "Bearer \(pairing.bearer)"],
             body: body
         )
+    }
+}
+
+/// A counting gate: `enter` waits while every slot is taken, `leave` hands a
+/// slot to the longest waiter.
+actor FileReadGate {
+    private var free: Int
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+
+    init(slots: Int) { free = slots }
+
+    func enter() async {
+        if free > 0 {
+            free -= 1
+            return
+        }
+        await withCheckedContinuation { waiting.append($0) }
+    }
+
+    func leave() {
+        if waiting.isEmpty { free += 1 } else { waiting.removeFirst().resume() }
     }
 }
 

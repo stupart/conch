@@ -1,7 +1,9 @@
 import { injectTimeoutFor } from "../src/daemon.ts";
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { conchHome } from "../src/home.ts";
 import {
   createPhoneBridge,
   createPhoneBridgeApplication,
@@ -374,6 +376,191 @@ describe("file serving", () => {
     const stale = await application.handle(request(served));
     expect(stale).toBeInstanceOf(Response);
     expect((stale as Response).status).toBe(403);
+  });
+});
+
+// Tyler: "a huge improvement would be having all content viewable and interative on phone app".
+// `/file` now serves every deliverable a session holds and what a published page loads from its
+// own folder, so each rule that keeps it from serving anything else is pinned here, through the
+// one handler both transports call.
+describe("file serving: held deliverables, their folders, and nothing else", () => {
+  const made: string[] = [];
+  afterEach(() => {
+    for (const path of made.splice(0)) rmSync(path, { recursive: true, force: true });
+  });
+  /** Write `body` at `path`, folders and all, 0600 unless told otherwise. */
+  const put = (path: string, body = "x", mode = 0o600): string => {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, body);
+    chmodSync(path, mode);
+    return path;
+  };
+  const scratch = (): string => {
+    const root = mkdtempSync(join(tmpdir(), "conch-file-scope-"));
+    made.push(root);
+    return root;
+  };
+  type Row = { id: string; cwd?: string; review?: { link: string }; reviews?: Array<{ link: string }> };
+  const appFor = (state: () => { rows: Row[]; conversations?: Record<string, unknown> }, uploadsDirectory?: string) =>
+    makeApplication({ getState: state, ...(uploadsDirectory ? { uploadsDirectory } : {}) });
+  /** The status for `query`, sent exactly as written — so encoded traversal arrives as a phone could send it. */
+  const status = async (application: ReturnType<typeof makeApplication>, query: string): Promise<number> => {
+    const response = await application.handle(new Request(`https://relay.invalid/file?path=${query}`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    }));
+    return (response as Response).status;
+  };
+  const q = encodeURIComponent;
+
+  test("an older deliverable the session still holds is served, not only the newest", async () => {
+    const root = scratch();
+    const older = put(join(root, "v1.png"));
+    const newest = put(join(root, "v2.png"));
+    const unpublished = put(join(root, "v3.png"));
+    const application = appFor(() => ({
+      rows: [{ id: "s", review: { link: newest }, reviews: [{ link: older }, { link: newest }] }],
+    }));
+    expect(await status(application, q(older))).toBe(200);
+    expect(await status(application, q(newest))).toBe(200);
+    // Same folder, same extension, never published: refused.
+    expect(await status(application, q(unpublished))).toBe(403);
+  });
+
+  test("a published page brings its styles, scripts, data and pictures from its own folder", async () => {
+    const root = scratch();
+    const page = put(join(root, "site/index.html"), "<link rel=stylesheet href=style.css>");
+    const application = appFor(() => ({ rows: [{ id: "s", review: { link: page } }] }));
+    for (const asset of ["style.css", "app.js", "mod.mjs", "data.json", "img/hero.png", "fonts/inter.woff2", "logo.svg"]) {
+      put(join(root, "site", asset));
+      expect(await status(application, q(join(root, "site", asset)))).toBe(200);
+    }
+    // A markdown document's pictures, the same way.
+    const doc = put(join(root, "notes/review.md"), "![shot](shots/a.png)");
+    const shot = put(join(root, "notes/shots/a.png"));
+    expect(await status(appFor(() => ({ rows: [{ id: "s", review: { link: doc } }] })), q(shot))).toBe(200);
+    // A deliverable that is not a page or a document opens nothing beside it.
+    const image = put(join(root, "renders/hero.png"));
+    const beside = put(join(root, "renders/other.png"));
+    const imageOnly = appFor(() => ({ rows: [{ id: "s", review: { link: image } }] }));
+    expect(await status(imageOnly, q(image))).toBe(200);
+    expect(await status(imageOnly, q(beside))).toBe(403);
+  });
+
+  test("beside a page: a non-asset extension, a hidden file, an executable, and anything the session does not still hold are refused", async () => {
+    const root = scratch();
+    const page = put(join(root, "site/index.html"));
+    let held = true;
+    const application = appFor(() => ({ rows: held ? [{ id: "s", review: { link: page } }] : [{ id: "s" }] }));
+    for (const refused of ["notes.txt", "build.sh", "server.pem", "config.yaml", "other.html", "readme.md"]) {
+      expect(await status(application, q(put(join(root, "site", refused))))).toBe(403);
+    }
+    for (const hidden of [".env.json", ".git/config.json", ".cache/app.js"]) {
+      expect(await status(application, q(put(join(root, "site", hidden))))).toBe(403);
+    }
+    expect(await status(application, q(put(join(root, "site/tool.js"), "x", 0o755)))).toBe(403);
+    const style = put(join(root, "site/style.css"));
+    expect(await status(application, q(style))).toBe(200);
+    held = false;
+    expect(await status(application, q(style))).toBe(403);
+    expect(await status(application, q(page))).toBe(403);
+  });
+
+  test("traversal out of the page's folder is refused however it is spelled", async () => {
+    const root = scratch();
+    const site = join(root, "site");
+    const page = put(join(site, "index.html"));
+    // Under the same temp root, so only the folder rule stands between the page and it.
+    put(join(root, "outside.css"));
+    const application = appFor(() => ({ rows: [{ id: "s", review: { link: page } }] }));
+    expect(await status(application, q(`${site}/../outside.css`))).toBe(403);
+    expect(await status(application, `${q(site)}%2F%2e%2e%2Foutside.css`)).toBe(403);
+    expect(await status(application, `${q(site)}/%2e%2e/outside.css`)).toBe(403);
+    expect(await status(application, `${q(site)}/..%2Foutside.css`)).toBe(403);
+    expect(await status(application, `${q(site)}%2F..%252Foutside.css`)).toBe(403);
+    expect(await status(application, `${q(site)}/%252e%252e/outside.css`)).toBe(403);
+    expect(await status(application, q("site/style.css"))).toBe(403);
+    // Climbing out and back in is the same file, and fine.
+    put(join(site, "style.css"));
+    expect(await status(application, q(`${site}/../site/style.css`))).toBe(200);
+  });
+
+  test("a symlink out of the folder is refused, including one swapped in after publishing", async () => {
+    const root = scratch();
+    const site = join(root, "site");
+    const page = put(join(site, "index.html"));
+    const outside = put(join(root, "outside.css"));
+    const hidden = put(join(root, ".ssh/id_ed25519.json"));
+    const repoFile = join(import.meta.dir, "..", "package.json");
+    symlinkSync(outside, join(site, "linked.css"));
+    symlinkSync(hidden, join(site, "key.json"));
+    symlinkSync(repoFile, join(site, "package.json"));
+    const application = appFor(() => ({ rows: [{ id: "s", review: { link: page } }] }));
+    expect(await status(application, q(join(site, "linked.css")))).toBe(403);
+    expect(await status(application, q(join(site, "key.json")))).toBe(403);
+    expect(await status(application, q(join(site, "package.json")))).toBe(403);
+
+    // Published as a real file, then replaced by a link to somewhere it could never be published from.
+    const shot = put(join(root, "shot.png"));
+    const swapped = appFor(() => ({ rows: [{ id: "s", review: { link: shot } }] }));
+    expect(await status(swapped, q(shot))).toBe(200);
+    unlinkSync(shot);
+    symlinkSync(join(import.meta.dir, "..", "assets/conch-icon-1024.png"), shot);
+    expect(await status(swapped, q(shot))).toBe(403);
+    unlinkSync(shot);
+    expect(await status(swapped, q(shot))).toBe(404);
+  });
+
+  test("a page directly in /tmp, the temp folder or the home folder serves only itself", async () => {
+    const tag = `conch-file-scope-${process.pid}-${Date.now()}`;
+    for (const folder of ["/tmp", tmpdir(), conchHome()]) {
+      const page = put(join(folder, `${tag}.html`));
+      const style = put(join(folder, `${tag}.css`));
+      const nested = put(join(folder, `${tag}-dir/app.js`));
+      made.push(page, style, dirname(nested));
+      const application = appFor(() => ({ rows: [{ id: "s", review: { link: page } }] }));
+      expect(await status(application, q(page))).toBe(200);
+      expect(await status(application, q(style))).toBe(403);
+      expect(await status(application, q(nested))).toBe(403);
+    }
+    // One folder down from home is an ordinary folder, and opens.
+    const page = put(join(conchHome(), `${tag}-site/index.html`));
+    made.push(dirname(page));
+    const style = put(join(conchHome(), `${tag}-site/style.css`));
+    expect(await status(appFor(() => ({ rows: [{ id: "s", review: { link: page } }] })), q(style))).toBe(200);
+  });
+
+  test("a conversation's material passes the same rule, against its own session's folder", async () => {
+    const root = scratch();
+    const repoImage = join(import.meta.dir, "..", "assets/conch-icon-1024.png");
+    const hiddenImage = put(join(root, ".private/shot.png"));
+    const tmpImage = put(join(root, "shot.png"));
+    let cwd: string | undefined;
+    const application = appFor(() => ({
+      rows: [{ id: "s", ...(cwd ? { cwd } : {}) }],
+      conversations: {
+        s: { items: [repoImage, hiddenImage, tmpImage].map((path) => ({ material: { kind: "image", path } })) },
+      },
+    }));
+    expect(await status(application, q(tmpImage))).toBe(200);
+    // Any absolute image path an agent wrote on its own line used to be readable.
+    expect(await status(application, q(repoImage))).toBe(403);
+    expect(await status(application, q(hiddenImage))).toBe(403);
+    cwd = join(import.meta.dir, "..");
+    expect(await status(application, q(repoImage))).toBe(200);
+  });
+
+  test("a picture the phone sent shows back from conch's own upload folder, and nothing else in a hidden folder does", async () => {
+    const root = scratch();
+    const uploads = join(root, ".cache/conch/uploads");
+    const sent = put(join(uploads, "abc123.jpg"));
+    const deeper = put(join(uploads, "nested/abc.jpg"));
+    const state = () => ({
+      rows: [{ id: "s" }],
+      conversations: { s: { items: [sent, deeper].map((path) => ({ material: { kind: "image", path } })) } },
+    });
+    expect(await status(appFor(state, uploads), q(sent))).toBe(200);
+    expect(await status(appFor(state, uploads), q(deeper))).toBe(403);
+    expect(await status(appFor(state), q(sent))).toBe(403);
   });
 });
 

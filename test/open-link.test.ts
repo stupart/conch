@@ -427,7 +427,7 @@ describe("the phone: the same dead tap, said and recorded", () => {
       'fail("iPhone couldn\'t open \\(url.absoluteString).")',
       "case let .file(path):",
       "guard let onFile else {",
-      'fail("conch doesn\'t open a Mac file from here.")',
+      'fail("That\'s a file on your Mac. Tap it in the conversation or a review to see it here.")',
       "return",
       "onFile(path)",
       "case .open:",
@@ -483,19 +483,21 @@ describe("the phone: the same dead tap, said and recorded", () => {
   );
 
   test("downloadFile gives a 403 its own honest reason: unpublished, not a server error", () => {
-    // The bridge's /file exact-set check (phone-bridge.ts) 403s a path that
-    // isn't in the currently published state — the only way a file link can
-    // fail once `onFile` has tried it. "The Mac returned HTTP 403." reads as
-    // a bug; this says what actually happened, before every other status
-    // keeps the transport's own words.
+    // The bridge's /file rule (phone-bridge.ts `servableFile`) 403s a path
+    // conch isn't sending the phone — the only way a file link can fail once
+    // `onFile` has tried it. "The Mac returned HTTP 403." reads as a bug; this
+    // says what happened and why, before every other status keeps the
+    // transport's own words.
     const download = slice(bridge, "func downloadFile(path: String) async -> URL? {", "private func authorizedRequest");
+    ordered(download, "return try await fetchFile(path: path)", "} catch {", "lastError = Self.fileFailure(error)", "return nil");
     ordered(
-      download,
-      "} catch BridgeTransportError.httpStatus(403) {",
-      'lastError = "conch isn\'t publishing that file."',
-      "return nil",
-      "} catch {",
-      "lastError = error.localizedDescription",
+      slice(download, "static func fileFailure(_ error: Error) -> String {", "\n    }\n"),
+      "case BridgeTransportError.httpStatus(403):",
+      '"conch only sends your phone what a session published, from its own folder or a temp folder, "',
+      '"and this file isn\'t one of those. Ask the session to publish it."',
+      "case BridgeTransportError.httpStatus(404):",
+      "default:",
+      "error.localizedDescription",
     );
   });
 
@@ -542,9 +544,9 @@ describe("the phone: the same dead tap, said and recorded", () => {
     for (const call of [
       "BridgedWebView(url: url, page: page, onFailure: fail)",
       "QuickLookView(url: url, fullScreen: $markingUp, onFailure: fail)",
-      "RemoteDocumentView(url: url, renderMarkdown: true, onFailure: fail)",
+      "RemoteDocumentView(url: url, renderMarkdown: true, document: review.link, bridge: bridge, onFailure: fail)",
       "RemoteDocumentView(url: url, renderMarkdown: false, onFailure: fail)",
-      "LocalPageView(url: url, page: page, onFailure: fail)",
+      "LocalPageView(bridge: bridge, macPath: review.link ?? \"\", url: url, page: page, onFailure: fail)",
     ]) expect(sheet).toContain(call);
     // Text and markdown: the read's own error, not a line that hid it.
     const document = slice(sheet, "private struct RemoteDocumentView", "private struct BridgedWebView");

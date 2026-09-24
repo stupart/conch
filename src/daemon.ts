@@ -1405,6 +1405,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
           // Images land beside conch's own cache, not in /tmp: an agent may
           // read one long after it arrived, and /tmp is swept by the OS.
           acceptUpload: (chunk) => phoneUploads.accept(chunk),
+          uploadsDirectory: phoneUploads.directory,
           replyFor: async (sessionId) => {
             const path = findTranscript(cfg.claudeDir, sessionId);
             // The WHOLE turn in progress, the way the Mac dashboard shows it —

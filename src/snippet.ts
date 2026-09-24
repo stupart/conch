@@ -1093,29 +1093,41 @@ export const SAFE_REVIEW_LINK =
 const SECRET_FILE = /\.(pem|key|p8|p12|pfx|keychain|keychain-db)$/i;
 
 /**
- * Why a local file may not be published, or null when it may.
+ * Whether a local file may leave this Mac, and its real path when it may: the ONE check behind
+ * both ways one does. A session publishing it (`checkReviewLink`), and every phone read of it
+ * (`phone-bridge.ts` `/file`), which runs it again on the disk as it is NOW. Checked at publish
+ * alone, a published file swapped for a symlink afterwards was followed wherever it pointed.
  *
- * A published file is served to the phone (`phone-bridge.ts` `/file`), so it
- * has to be work, not whatever an agent can read. It must sit under the
- * publishing session's folder or a temp folder, where screenshots and renders
- * go. It must not be hidden or sit in a hidden folder (~/.ssh, ~/.config,
- * ~/.codex, ~/.claude, .env, .git), and it must not be a key or certificate.
- * `.worktrees` is the one hidden folder allowed: a repo's worktrees live there.
- * Checked on the real path, so a symlink can't launder its target.
+ * A file sent to the phone has to be work, not whatever an agent can read. It must be a regular,
+ * non-executable file under one of `roots` (the session's folder and the folders it works in) or
+ * a temp folder, where screenshots and renders go. It must not be hidden or sit in a hidden folder
+ * (~/.ssh, ~/.config, ~/.codex, ~/.claude, .env, .git), and it must not be a key or certificate.
+ * `.worktrees` is the one hidden folder allowed: a repo's worktrees live there. All of it is
+ * judged on the real path, so a symlink can't launder its target.
  */
-async function reviewFileRefusal(path: string, cwd: string): Promise<string | null> {
+export async function checkLocalFile(
+  path: string,
+  roots: readonly string[],
+): Promise<{ ok: true; real: string } | { ok: false; reason: string }> {
   const real = await realpath(path).catch(() => null);
-  if (!real) return SAFE_REVIEW_LINK;
-  const roots = await Promise.all([cwd, tmpdir(), "/tmp"].map((root) => realpath(root).catch(() => null)));
-  if (!roots.some((root) => root && real.startsWith(root.endsWith("/") ? root : `${root}/`))) {
-    return `link ${real} is outside this session's folder (${cwd}) and the temp folder, so it is not`
-      + " sent to the phone; publish a copy under your folder or /tmp";
+  const file = real ? await stat(real).catch(() => null) : null;
+  if (!real || !file?.isFile() || (file.mode & 0o111) !== 0) return { ok: false, reason: SAFE_REVIEW_LINK };
+  const allowed = await Promise.all([...roots, tmpdir(), "/tmp"].map((root) => realpath(root).catch(() => null)));
+  if (!allowed.some((root) => root && real.startsWith(root.endsWith("/") ? root : `${root}/`))) {
+    return {
+      ok: false,
+      reason: `link ${real} is outside this session's folder (${roots.join(", ") || "none known"}) and the temp folder,`
+        + " so it is not sent to the phone; publish a copy under your folder or /tmp",
+    };
   }
   if (real.split("/").some((part) => part.startsWith(".") && part !== ".worktrees") || SECRET_FILE.test(real)) {
-    return `link ${real} is a hidden file, in a hidden folder, or a key or certificate, so it is not`
-      + " sent to the phone";
+    return {
+      ok: false,
+      reason: `link ${real} is a hidden file, in a hidden folder, or a key or certificate, so it is not`
+        + " sent to the phone",
+    };
   }
-  return null;
+  return { ok: true, real };
 }
 
 /**
@@ -1140,10 +1152,8 @@ export async function checkReviewLink(
   }
   if (url) return (url.protocol === "http:" || url.protocol === "https:") && url.hostname ? { ok: true, link: trimmed } : refused;
   const path = resolve(cwd, trimmed);
-  const file = await stat(path).catch(() => null);
-  if (!file?.isFile() || (file.mode & 0o111) !== 0) return refused;
-  const where = await reviewFileRefusal(path, cwd);
-  return where ? { ok: false, reason: where } : { ok: true, link: path };
+  const checked = await checkLocalFile(path, [cwd]);
+  return checked.ok ? { ok: true, link: path } : checked;
 }
 
 /** `checkReviewLink` for a caller that can only drop an unsafe link: the link, or null. */

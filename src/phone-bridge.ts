@@ -4,8 +4,11 @@ import { validateHistoryRequest } from "./history.ts";
 import type { UploadChunk, UploadResult } from "./phone-uploads.ts";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { realpath, stat } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { conchHome } from "./home.ts";
+import { checkLocalFile } from "./snippet.ts";
 
 /**
  * The phone's transport into conch.
@@ -67,6 +70,8 @@ export interface PhoneBridgeDependencies {
   onClientsChanged?(count: number): void;
   /** Take one piece of an image; resolves a path once the last piece lands. */
   acceptUpload(chunk: UploadChunk): Promise<UploadResult | { error: string }>;
+  /** Where `acceptUpload` writes, so `/file` can show the phone its own pictures back. */
+  uploadsDirectory?: string;
   log(message: string): void;
 }
 
@@ -440,32 +445,16 @@ export class PhoneBridgeApplication {
     }
 
     if (url.pathname === "/file") {
-      // Serve a LOCAL deliverable or inline material to the phone — but only a
-      // path that is present in the current published state. That exact-set
-      // constraint is the whole security story: never arbitrary file access.
+      // Serve a LOCAL deliverable or inline material to the phone — only a path
+      // the current published state names, or a web asset beside a published
+      // page, and only what passes the publish rule on the disk as it is now
+      // (`servableFile`). Never arbitrary file access.
       const requested = url.searchParams.get("path") ?? "";
-      const state = this.#dependencies.getState() as
-        | {
-          rows?: Array<{ review?: { link?: string } }>;
-          conversations?: Record<string, {
-            items?: Array<{ material?: { path?: string } }>;
-          }>;
-        }
-        | null;
-      const reviewLinks = (state?.rows ?? [])
-        .map((row) => row.review?.link)
-        .filter((link): link is string => Boolean(link));
-      const materialPaths = Object.values(state?.conversations ?? {})
-        .flatMap((conversation) => conversation.items ?? [])
-        .map((item) => item.material?.path)
-        .filter((path): path is string => Boolean(path));
-      if (!requested || !reviewLinks.includes(requested) && !materialPaths.includes(requested)) {
-        return new Response("not a current published file", { status: 403 });
-      }
-      const file = Bun.file(requested);
-      return (async () => (await file.exists())
-        ? new Response(file)
-        : new Response("gone", { status: 404 }))();
+      return (async () => {
+        const served = await servableFile(requested, this.#dependencies.getState() as ServableState | null,
+          this.#dependencies.uploadsDirectory);
+        return served.ok ? new Response(Bun.file(served.real)) : new Response(served.reason, { status: served.status });
+      })();
     }
 
     // Images arrive in pieces: a relay frame caps at 192 KiB and base64 adds a
@@ -559,6 +548,112 @@ export class PhoneBridgeApplication {
 
     return new Response("not found", { status: 404 });
   }
+}
+
+/** The parts of the published state `/file` decides by. */
+interface ServableState {
+  rows?: Array<{
+    id?: string;
+    cwd?: string;
+    workDirs?: string[];
+    review?: { link?: string };
+    reviews?: Array<{ link?: string }>;
+  }>;
+  conversations?: Record<string, { items?: Array<{ material?: { path?: string } }> }>;
+}
+
+/**
+ * What a published page or document loads from its own folder: styles, scripts, data, pictures,
+ * fonts, media. Tyler: "a huge improvement would be having all content viewable and interative on
+ * phone app". A page that arrived without these rendered unstyled and imageless, or not at all.
+ */
+const WEB_ASSET = /\.(css|js|mjs|json|png|jpe?g|gif|webp|avif|svg|ico|bmp|woff2?|ttf|otf|mp4|webm|mov|m4v|mp3|m4a|wav|ogg|wasm)$/i;
+/** A deliverable whose folder is read with it: a page, or a document with pictures beside it. */
+const READS_ITS_FOLDER = /\.(html?|md|markdown)$/i;
+
+/**
+ * A folder too broad to open up because a deliverable happens to sit in it: the temp roots, which
+ * every process writes into, and the home folder or anything above it. There only the deliverable
+ * itself is served.
+ */
+async function neverWidened(folder: string): Promise<boolean> {
+  const [temps, homes] = await Promise.all([
+    Promise.all(["/tmp", tmpdir()].map((root) => realpath(root).catch(() => root))),
+    Promise.all([homedir(), conchHome()].map((root) => realpath(root).catch(() => root))),
+  ]);
+  return folder === "/" || temps.includes(folder) || homes.some((home) => home === folder || home.startsWith(`${folder}/`));
+}
+
+/**
+ * A picture the phone itself sent. conch named and wrote it (`phone-uploads.ts`) in its own cache,
+ * a hidden folder the publish rule refuses, so under that rule alone every picture Tyler sends from
+ * the phone would vanish from his own side of the conversation.
+ */
+async function ownUpload(requested: string, uploads: string): Promise<string | null> {
+  const [real, folder] = await Promise.all([realpath(requested).catch(() => null), realpath(uploads).catch(() => null)]);
+  if (!real || !folder || dirname(real) !== folder) return null;
+  const file = await stat(real).catch(() => null);
+  return file?.isFile() && (file.mode & 0o111) === 0 ? real : null;
+}
+
+/**
+ * Whether `/file` may serve `requested`, decided against the state and the disk as they are NOW, so
+ * a delayed relay frame or a file swapped for a symlink since publishing gains nothing. It may when
+ * it is:
+ * - a deliverable a session still holds: the newest, or any before it (`rows[].reviews`). Only the
+ *   newest used to be served, so tapping an earlier one on the phone answered 403;
+ * - a file on its own line in a conversation (`material.path`), which used to be served with no
+ *   rule at all: any absolute image, PDF or text path an agent wrote became readable;
+ * - a web asset under the folder of a held page or markdown document, which is what lets a page
+ *   bring its styles and pictures (`WEB_ASSET`, never at a `neverWidened` folder).
+ * Every one of them then passes `checkLocalFile`, the rule a session publishes under, against
+ * that session's own folders, and is served at the real path that rule checked.
+ */
+async function servableFile(
+  requested: string,
+  state: ServableState | null,
+  uploads?: string,
+): Promise<{ ok: true; real: string } | { ok: false; status: 403 | 404; reason: string }> {
+  const refused = { ok: false, status: 403, reason: "not a file conch is publishing" } as const;
+  if (!requested.startsWith("/") || requested.includes("\0")) return refused;
+  const rows = state?.rows ?? [];
+  const rootsOf = (row: (typeof rows)[number] | undefined): string[] =>
+    [row?.cwd, ...(row?.workDirs ?? [])].filter((root): root is string => typeof root === "string" && root.startsWith("/"));
+  const heldLinks = (row: (typeof rows)[number]): string[] =>
+    [...(row.reviews ?? []), ...(row.review ? [row.review] : [])]
+      .map((held) => held.link)
+      .filter((link): link is string => typeof link === "string" && link.startsWith("/"));
+  const check = async (roots: string[]) => {
+    const checked = await checkLocalFile(requested, roots);
+    if (checked.ok) return checked;
+    // Named by the state but not on the disk: gone, which the phone says differently from refused.
+    return await realpath(requested).catch(() => null)
+      ? { ok: false, status: 403, reason: checked.reason } as const
+      : { ok: false, status: 404, reason: "gone" } as const;
+  };
+
+  for (const row of rows) {
+    if (heldLinks(row).includes(requested)) return check(rootsOf(row));
+  }
+  for (const [sessionId, conversation] of Object.entries(state?.conversations ?? {})) {
+    if (!conversation.items?.some((item) => item.material?.path === requested)) continue;
+    const upload = uploads ? await ownUpload(requested, uploads) : null;
+    if (upload) return { ok: true, real: upload };
+    return check(rootsOf(rows.find((row) => row.id === sessionId)));
+  }
+  if (!WEB_ASSET.test(requested)) return refused;
+  for (const row of rows) {
+    const folders: string[] = [];
+    for (const link of heldLinks(row).filter((link) => READS_ITS_FOLDER.test(link))) {
+      // The folder the page is in as a browser sees it, symlinks resolved.
+      const folder = await realpath(dirname(link)).catch(() => null);
+      if (folder && !await neverWidened(folder)) folders.push(folder);
+    }
+    if (!folders.length) continue;
+    const checked = await checkLocalFile(requested, rootsOf(row));
+    if (checked.ok && folders.some((folder) => checked.real.startsWith(`${folder}/`))) return checked;
+  }
+  return refused;
 }
 
 export function createPhoneBridgeApplication(
