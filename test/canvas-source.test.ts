@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 // The canvas (wave 2): clear glass over whatever is on screen that Tyler draws on, and sends as one picture. These pin
@@ -19,6 +19,18 @@ function member(source: string, signature: string, indent = 4): string {
 }
 
 const canvas = read("mac-app/conch-mac/Canvas.swift");
+const send = read("mac-app/conch-mac/CanvasSend.swift");
+const ink = read("design/ConchDesign/Sources/ConchDesign/Canvas.swift");
+const models = read("mac-app/conch-mac/Models.swift");
+const store = read("mac-app/conch-mac/StateStore.swift");
+/** Every Swift file in the Mac app, by name. */
+const macSources = Object.fromEntries(
+  readdirSync(join(root, "mac-app/conch-mac"))
+    .filter((name) => name.endsWith(".swift"))
+    .map((name) => [name, read(`mac-app/conch-mac/${name}`)]),
+);
+/** The Mac files that mention `needle`. */
+const filesWith = (needle: string): string[] => Object.keys(macSources).filter((name) => macSources[name]!.includes(needle)).sort();
 const panels = read("mac-app/conch-mac/FloatingPanels.swift");
 const item = read("mac-app/conch-mac/StatusItem.swift");
 const components = read("design/ConchDesign/Sources/ConchDesign/Components.swift");
@@ -145,5 +157,90 @@ describe("turning it on", () => {
     expect(canvas).toContain(
       "private let pill = FloatingPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)",
     );
+  });
+});
+
+describe("Send", () => {
+  test("the still is ScreenCaptureKit's, of the display under the ink, with conch's floating windows left out", () => {
+    const sendBody = member(send, "    func send() {");
+    expect(sendBody).toContain("let conch = NSApp.windows.filter { $0 is FloatingPanel }.map(\\.windowNumber)");
+    expect(sendBody).toContain("await CanvasCapture.still(of: document.anchor.id, leavingOut: conch)");
+    const still = member(send, "static func still(of display: CGDirectDisplayID, leavingOut windows: [Int]) async -> CGImage? {");
+    expect(still).toContain("guard let screen = content.displays.first(where: { $0.displayID == display }) else { return nil }");
+    expect(still).toContain("let filter = SCContentFilter(display: screen, excludingWindows: content.windows.filter { windows.contains(Int($0.windowID)) })");
+    // macOS 26's screenshot API where it exists, the macOS 14 one below it; never the cursor.
+    expect(still).toContain("if #available(macOS 26.0, *) {");
+    expect(still).toContain("try await SCScreenshotManager.captureScreenshot(contentFilter: filter, configuration: configuration).sdrImage");
+    expect(still).toContain("try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)");
+    expect(still.match(/configuration\.showsCursor = false/g)?.length).toBe(2);
+    // Deprecated in 14 and gone in 15.
+    expect(filesWith("CGWindowListCreateImage")).toEqual([]);
+  });
+
+  test("nothing is captured, or the grant asked for, except on an explicit Send with somewhere to send it", () => {
+    for (const capture of ["SCScreenshotManager", "SCShareableContent", "CGRequestScreenCaptureAccess", "CGPreflightScreenCaptureAccess", "CanvasCapture.still("]) {
+      expect(filesWith(capture), capture).toEqual(["CanvasSend.swift"]);
+    }
+    expect(send.match(/CanvasCapture\.still\(/g)?.length).toBe(1);
+    const sendBody = member(send, "    func send() {");
+    expect(sendBody).toContain("CanvasCapture.still(");
+    // Nowhere to send it: nothing captured, and the pill says why.
+    expect(sendBody.indexOf("guard let row = Self.route(state, panel: FloatingPanels.installed?.staged) else {")).toBeLessThan(sendBody.indexOf("CanvasCapture.still("));
+    expect(sendBody).toContain('message = "Nothing to send this to: no session owns what is on screen, and the panel has none."\n            return\n        }');
+    // Send is the pill's button and Return on the glass: nothing else calls it.
+    const callers = Object.entries(macSources).flatMap(([name, source]) => (source.match(/(?:canvas|controller\?|CanvasController\.shared)\.send\(\)/g) ?? []).map((call) => `${name}: ${call}`));
+    expect(callers.sort()).toEqual(["Canvas.swift: canvas.send()", "Canvas.swift: controller?.send()"]);
+    expect(canvas).toContain("onSend: { canvas.send() }");
+    expect(canvas).toContain("case UInt16(kVK_Return), UInt16(kVK_ANSI_KeypadEnter):\n            controller?.send()");
+    // The grant: checked silently; asked for once, on a Send without it, and the Send still goes as the marks alone.
+    const still = member(send, "static func still(of display: CGDirectDisplayID, leavingOut windows: [Int]) async -> CGImage? {");
+    expect(still.indexOf("guard CGPreflightScreenCaptureAccess() else {")).toBeLessThan(still.indexOf("CGRequestScreenCaptureAccess()"));
+    expect(still).toContain("if !asked {\n                asked = true\n                CGRequestScreenCaptureAccess()");
+    expect(member(send, "static func write(_ document: CanvasDocument, screen: CGImage?) throws -> Files {")).toContain(
+      'raw: try screen.map { try save(CanvasInk.png($0), "raw.png") },',
+    );
+  });
+
+  test("it goes to the session that owns what is on screen when the screen context is sure, else the panel's", () => {
+    expect(send).toContain("static let sureEnough = 0.8");
+    const route = member(send, "static func route(_ state: PublishedState?, panel staged: SessionRow.ID?) -> SessionRow? {");
+    expect(route).toContain("if let showing = state?.showing, showing.confidence >= sureEnough, let owner = state?.row(showing.sessionId) {\n            return owner");
+    expect(route).toContain("return state?.row(WorkspaceFocus.viewed(in: Workspace(state), pinned: staged))");
+    expect(route.indexOf("showing.confidence")).toBeLessThan(route.indexOf("WorkspaceFocus.viewed"));
+    // `showing` reaches the app, and survives the store's rebuild.
+    expect(models).toContain("showing = try? container.decodeIfPresent(Showing.self, forKey: .showing)");
+    expect(models).toContain("&& showing == other.showing");
+    expect(store).toContain("showing: sourceState.showing");
+    // The canvas only reads the screen context; it never observes the screen itself.
+    for (const observing of ["reportShowing", "screen-observation", "ConchScreenObservationReport"]) {
+      expect(canvas + send).not.toContain(observing);
+    }
+  });
+
+  test("one message through the composer's path: the picture's path on its own line, what it is, the notes, the rest", () => {
+    const text = member(ink, "public static func text(for document: CanvasDocument, about label: String, picture: String, clean: String?, marks: String) -> String {");
+    expect(text).toContain('var lines = [picture, "[canvas] Tyler marked up \\(label)."]');
+    expect(text).toContain("lines += notes(document)");
+    expect(text).toContain('lines.append("Clean screen + marks: \\(clean), \\(marks)")');
+    expect(text).toContain('return lines.joined(separator: "\\n")');
+    expect(ink).toContain('return "\\(number). \\(place(document.target(of: note) ?? note)): \\"\\(words)\\""');
+    const sendBody = member(send, "    func send() {");
+    expect(sendBody).toContain("CanvasPrompt.text(for: document, about: label, picture: files.flat.path, clean: files.raw?.path, marks: files.json.path)");
+    // The composer's own delivery (DashboardView's onSend), then a clear canvas.
+    expect(sendBody).toContain("let delivery = store.send(.inject(sessionId: row.id, label: row.label, text: prompt))");
+    expect(sendBody.indexOf("store.send(.inject(")).toBeLessThan(sendBody.indexOf("clear()"));
+    expect(read("mac-app/conch-mac/DashboardView.swift")).toContain("store.send(.inject(sessionId: row.id, label: row.label, text: text))");
+  });
+
+  test("kept in conch's cache for Tyler alone, the flat picture no longer than 1568 px", () => {
+    expect(send).toContain('appendingPathComponent(".cache/conch/canvas", isDirectory: true)');
+    const write = member(send, "static func write(_ document: CanvasDocument, screen: CGImage?) throws -> Files {");
+    expect(write.match(/\.posixPermissions: 0o700/g)?.length).toBe(3);
+    expect(write).toContain("files.createFile(atPath: url.path, contents: data, attributes: [.posixPermissions: 0o600])");
+    expect(write).toContain('flat: try save(CanvasInk.render(document, over: screen).flatMap(CanvasInk.png), "flat.png"),');
+    expect(write).toContain('json: try save(try encoder.encode(document), "canvas.json")');
+    expect(ink).toContain("public static func render(_ document: CanvasDocument, over screen: CGImage?, longEdge: CGFloat = 1568) -> CGImage? {");
+    expect(project).toContain("/* CanvasSend.swift in Sources */ = {isa = PBXBuildFile;");
+    expect(project.match(/\/\* CanvasSend\.swift in Sources \*\/,/g)?.length).toBe(1);
   });
 });

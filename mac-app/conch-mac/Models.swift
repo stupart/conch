@@ -35,6 +35,23 @@ struct PublishedState: Decodable, Equatable, Sendable {
     /// What recently became of sends, against the ids they went out with. The only way an
     /// outcome reached after `inject-accepted` closed the request can still be shown.
     let deliveries: [DeliveryOutcome]
+    /// What is on screen and whose it is, as the screen context resolved it (docs/screen-context.md):
+    /// where the canvas sends. Absent from an older daemon, and until something is staged.
+    let showing: Showing?
+
+    struct Showing: Decodable, Equatable, Sendable {
+        let sessionId: String?
+        let reviewId: String?
+        let confidence: Double
+        let surface: Surface
+
+        /// Its path or address, published only when it resolved to a session.
+        struct Surface: Decodable, Equatable, Sendable {
+            let kind: String
+            let path: String?
+            let url: String?
+        }
+    }
 
     struct DeliveryOutcome: Decodable, Equatable, Sendable {
         let opId: String
@@ -65,6 +82,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         case dismissedRows
         case audioControl
         case audioOutbox
+        case showing
     }
 
     init(
@@ -83,7 +101,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
         audioControl: AudioControl = AudioControl(),
         audioOutbox: [AudioOutboxItem] = [],
         deliveries: [DeliveryOutcome] = [],
-        features: Features? = nil
+        features: Features? = nil,
+        showing: Showing? = nil
     ) {
         self.v = v
         self.ownerDeviceId = ownerDeviceId
@@ -102,6 +121,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         self.audioOutbox = audioOutbox
         self.deliveries = deliveries
         self.features = features
+        self.showing = showing
     }
 
     init(from decoder: Decoder) throws {
@@ -141,6 +161,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         audioControl = (try? container.decodeIfPresent(AudioControl.self, forKey: .audioControl)) ?? AudioControl()
         audioOutbox = Self.decodeLossyArray(AudioOutboxItem.self, from: container, forKey: .audioOutbox)
         deliveries = Self.decodeLossyArray(DeliveryOutcome.self, from: container, forKey: .deliveries)
+        showing = try? container.decodeIfPresent(Showing.self, forKey: .showing)
     }
 
     private static func decodeLossyArray<Element: Decodable>(
@@ -176,6 +197,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
             // remote path forwards every frame unconditionally, and drawing
             // nothing from it keeps the heartbeat rule above intact.
             && audioControl == other.audioControl
+            // Where the canvas sends: it changes only when something new is staged.
+            && showing == other.showing
     }
 }
 

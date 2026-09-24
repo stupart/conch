@@ -156,6 +156,13 @@ final class CanvasController: ObservableObject {
         apply()
     }
 
+    /// A canvas back after a Send that didn't get there, unless something new was drawn meanwhile.
+    func restore(_ document: CanvasDocument) {
+        guard self.document == nil else { return }
+        self.document = document
+        apply()
+    }
+
     /// A clear canvas: the ink lifts away. The pen stays as it was.
     func clear() {
         guard document != nil else { return }
@@ -263,13 +270,13 @@ private struct CanvasPillHost: View {
             tool: canvas.tool,
             armed: canvas.armed,
             canUndo: drawn,
-            canSend: false,
+            canSend: drawn,
             sending: canvas.sending,
-            route: nil,
+            route: CanvasController.route(store.state, panel: FloatingPanels.installed?.staged)?.label,
             message: canvas.message,
             onTool: { canvas.pick($0) },
             onUndo: { canvas.undo() },
-            onSend: {}
+            onSend: { canvas.send() }
         )
         .padding(Self.margin)
         .fixedSize()
@@ -551,6 +558,8 @@ final class CanvasInkView: NSView {
         switch event.keyCode {
         case UInt16(kVK_Escape):
             controller?.escape()
+        case UInt16(kVK_Return), UInt16(kVK_ANSI_KeypadEnter):
+            controller?.send()
         default:
             // The number keys pick a tool (panel-lab's 1 to 5). Anything else is dropped: while the glass has the keys,
             // the app underneath can't have them.

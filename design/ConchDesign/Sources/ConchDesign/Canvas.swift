@@ -1,5 +1,7 @@
 import CoreGraphics
+import CoreText
 import Foundation
+import ImageIO
 
 // The canvas (wave 2): a clear sheet over whatever is on screen that Tyler, and later an agent, draws on. Tyler: "transparent
 // canvas that both the ai and the user can write to over top of what they're looking at". This is its data and its one
@@ -312,6 +314,135 @@ public enum CanvasInk {
         path.addArc(tangent1End: CGPoint(x: rect.minX, y: rect.minY), tangent2End: CGPoint(x: rect.maxX, y: rect.minY), radius: round)
         path.closeSubpath()
         return path
+    }
+}
+
+// MARK: - The picture
+
+extension CanvasInk {
+    /// The picture an agent is sent: what was on screen (`screen`, the display's own pixels), the marks drawn over it by
+    /// the same builder as the glass, the whole no longer than `longEdge` pixels (the phone uploads' rule). With no
+    /// screen — no Screen Recording grant — the marks alone, on the ground colour, so they read in any viewer.
+    public static func render(_ document: CanvasDocument, over screen: CGImage?, longEdge: CGFloat = 1568) -> CGImage? {
+        let points = document.anchor.frame.size
+        guard points.width > 0, points.height > 0 else { return nil }
+        let source = screen.map { CGSize(width: $0.width, height: $0.height) } ?? CGSize(width: points.width * 2, height: points.height * 2)
+        let fit = min(1, longEdge / max(source.width, source.height))
+        let size = CGSize(width: (source.width * fit).rounded(), height: (source.height * fit).rounded())
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: nil, width: Int(size.width), height: Int(size.height), bitsPerComponent: 8, bytesPerRow: 0, space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return nil }
+        context.interpolationQuality = .high
+        let bounds = CGRect(origin: .zero, size: size)
+        if let screen {
+            context.draw(screen, in: bounds)
+        } else {
+            context.setFillColor(ConchColor.ground.light.cgColor)
+            context.fill(bounds)
+        }
+        // The marks are kept y down; a bitmap context is y up.
+        context.translateBy(x: 0, y: size.height)
+        context.scaleBy(x: 1, y: -1)
+        draw(document, in: context, size: size, scale: size.width / points.width)
+        return context.makeImage()
+    }
+
+    /// Every mark into `context`, y down, in a space of `size` at `scale` pixels a point: the ink, a box's wash under it,
+    /// a highlight multiplied over what is under it, a note's number on its badge.
+    public static func draw(_ document: CanvasDocument, in context: CGContext, size: CGSize, scale: CGFloat) {
+        for mark in document.marks {
+            let shape = shape(of: mark, in: size, scale: scale)
+            let colour = mark.kind == .highlight ? highlight : colour(mark.author)
+            context.saveGState()
+            if let wash = shape.wash {
+                context.addPath(wash)
+                context.setFillColor(colour.cgColor.copy(alpha: washOpacity) ?? colour.cgColor)
+                context.fillPath()
+            }
+            if mark.kind == .highlight { context.setBlendMode(.multiply) }
+            context.addPath(shape.ink)
+            context.setFillColor(colour.cgColor)
+            context.fillPath()
+            context.restoreGState()
+            if mark.kind == .note, let number = document.number(of: mark), let spot = mark.points.first?.point(in: size) {
+                let side = pinSide * scale
+                label(mark.author == .agent ? "✦" : "\(number)", centredIn: CGRect(x: spot.x, y: spot.y - side, width: side, height: side), size: 12 * scale, in: context)
+            }
+        }
+    }
+
+    /// White bold type, centred on its cap height in `rect`, in a y-down context.
+    private static func label(_ text: String, centredIn rect: CGRect, size: CGFloat, in context: CGContext) {
+        let font = CTFontCreateUIFontForLanguage(.emphasizedSystem, size, nil) ?? CTFontCreateWithName("Helvetica-Bold" as CFString, size, nil)
+        let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [
+            NSAttributedString.Key(kCTFontAttributeName as String): font,
+            NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1),
+        ]))
+        let width = CTLineGetTypographicBounds(line, nil, nil, nil)
+        context.saveGState()
+        // Type is drawn y up: flipped back for the glyphs alone.
+        context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
+        context.textPosition = CGPoint(x: rect.midX - width / 2, y: rect.midY + CTFontGetCapHeight(font) / 2)
+        CTLineDraw(line, context)
+        context.restoreGState()
+    }
+
+    /// A PNG of `image`.
+    public static func png(_ image: CGImage) -> Data? {
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(destination, image, nil)
+        return CGImageDestinationFinalize(destination) ? data as Data : nil
+    }
+}
+
+// MARK: - The prompt
+
+/// What a canvas says when it is sent: one message through the composer's own path. The picture's path comes first, on
+/// its own line — both agents read an image whose path is in the message, and a leading path isn't skimmed past — then
+/// what was marked up, each note by the number on its pin, and where the rest is.
+public enum CanvasPrompt {
+    /// `picture` is the flat PNG; `clean` the screen without the marks, nil when there was no screen to capture;
+    /// `marks` the document as JSON.
+    public static func text(for document: CanvasDocument, about label: String, picture: String, clean: String?, marks: String) -> String {
+        var lines = [picture, "[canvas] Tyler marked up \(label)."]
+        lines += notes(document)
+        if let clean {
+            lines.append("Clean screen + marks: \(clean), \(marks)")
+        } else {
+            lines.append("conch can't see the screen without the Screen Recording permission, so the picture is his marks alone. Marks: \(marks)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Tyler's notes with words in them, numbered as their pins are, each named by the mark it is pinned on:
+    /// `1. box (62%,18%): "make this bigger"`.
+    public static func notes(_ document: CanvasDocument) -> [String] {
+        document.marks.filter { $0.kind == .note && $0.author == .you }.compactMap { note in
+            let words = (note.text ?? "").split(whereSeparator: \.isNewline).joined(separator: " ").trimmingCharacters(in: .whitespaces)
+            guard !words.isEmpty, let number = document.number(of: note) else { return nil }
+            return "\(number). \(place(document.target(of: note) ?? note)): \"\(words)\""
+        }
+    }
+
+    /// A mark and where it is, in percent across and down the screen: a box by its middle, an arrow from tail to head.
+    static func place(_ mark: CanvasMark) -> String {
+        func percent(_ point: CGPoint) -> String { "(\(Int((point.x * 100).rounded()))%,\(Int((point.y * 100).rounded()))%)" }
+        let unit = CGSize(width: 1, height: 1)
+        let points = mark.points.map { $0.point(in: unit) }
+        switch mark.kind {
+        case .arrow:
+            return "arrow \(percent(points.first ?? .zero))→\(percent(points.last ?? .zero))"
+        case .note:
+            return "note \(percent(points.first ?? .zero))"
+        case .box:
+            let rect = mark.rect(in: unit)
+            return "box \(percent(CGPoint(x: rect.midX, y: rect.midY)))"
+        case .pen, .highlight:
+            let xs = points.map(\.x), ys = points.map(\.y)
+            let middle = CGPoint(x: ((xs.min() ?? 0) + (xs.max() ?? 0)) / 2, y: ((ys.min() ?? 0) + (ys.max() ?? 0)) / 2)
+            return "\(mark.kind.rawValue) \(percent(middle))"
+        }
     }
 }
 

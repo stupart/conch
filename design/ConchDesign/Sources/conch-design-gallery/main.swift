@@ -809,3 +809,17 @@ try render("w2-canvas-tools") {
     canvasPill(tool: .note, sending: true)
     canvasPill(armed: false, route: nil, message: "Nothing to send this to: no session owns what is on screen, and the panel has none.")
 }
+
+// The picture Send makes, `flat.png`: the screen at 2x with the same marks drawn over it by the same builder, fitted to
+// 1568 px; and without the Screen Recording grant, the marks alone.
+do {
+    var document = CanvasDocument(anchor: CanvasAnchor(id: 1, frame: CGRect(origin: .zero, size: m3Screen)), id: "gallery", at: 0)
+    canvasMarks.forEach { document.add($0) }
+    let screen = MainActor.assumeIsolated { () -> CGImage? in
+        let renderer = ImageRenderer(content: m3Fog(.bottomLeading, session: panelSession, pager: true).environment(\.conchRendersStatically, true))
+        renderer.scale = 2
+        return renderer.cgImage
+    }
+    if let flat = CanvasInk.render(document, over: screen) { try writePNG(flat, "w2-canvas-flat.png") }
+    if let alone = CanvasInk.render(document, over: nil) { try writePNG(alone, "w2-canvas-flat-no-screen.png") }
+}
