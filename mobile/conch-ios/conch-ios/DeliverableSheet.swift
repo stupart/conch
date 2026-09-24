@@ -15,10 +15,50 @@ struct ReviewSheet: View {
     /// Reviews already looked at here, by version, so Next brings the
     /// unopened first, as the Mac's Ready pill does.
     @State private var opened: Set<String> = []
+    /// An earlier deliverable of this session picked from the menu, by key; nil is the newest.
+    @State private var picked: String?
+    @State private var confirmingRemove = false
+    /// The daemon's own words when a Remove did nothing, so it never looks like one that worked.
+    @State private var removeFailure: String?
     @Environment(\.dismiss) private var dismiss
 
     private var row: PublishedState.Row? {
         bridge.state?.rows.first { $0.id == sessionId }
+    }
+
+    /// Everything this session holds, newest first. Only the newest could be seen here; the
+    /// earlier ones were served but nothing on the phone listed them.
+    private var held: [PublishedState.Row.Review] {
+        Array((row?.reviews ?? row?.review.map { [$0] } ?? []).reversed())
+    }
+
+    private func key(_ review: PublishedState.Row.Review) -> String {
+        ReviewQueue.key(sessionId: sessionId, filedAt: review.at, published: review.id)
+    }
+
+    /// On screen: the newest, or the earlier one picked, while the session still holds it.
+    private var shown: PublishedState.Row.Review? {
+        held.first { picked != nil && key($0) == picked } ?? row?.review
+    }
+
+    private func title(_ review: PublishedState.Row.Review) -> String {
+        let name = review.summary.isEmpty ? ((review.link ?? "Deliverable") as NSString).lastPathComponent : review.summary
+        return review.version.map { "\(name) · v\($0)" } ?? name
+    }
+
+    /// Off the session, on the Mac too, the way the Mac's Remove does it.
+    private func remove() {
+        guard let shown, shown.artifact != nil || shown.id != nil else { return }
+        let session = sessionId
+        Task {
+            let removed = await bridge.send(
+                sessionCommand: .reviewRemove,
+                sessionId: session,
+                review: shown.artifact == nil ? shown.id : nil,
+                artifact: shown.artifact
+            )
+            if removed { picked = nil } else { removeFailure = bridge.lastError ?? "Your Mac didn't say why." }
+        }
     }
 
     private var ready: [ReviewQueue.Entry] {
@@ -50,11 +90,11 @@ struct ReviewSheet: View {
         let more = ready.filter { $0.key != currentKey }.count
         NavigationStack {
             Group {
-                if let review = row?.review {
+                if let review = shown {
                     DeliverableSheet(bridge: bridge, review: review, sessionId: sessionId)
                         // A different review is a different viewer: nothing of
                         // the last one's download, page or failure carries over.
-                        .id(currentKey)
+                        .id(key(review))
                 } else {
                     Text("This work isn't waiting for you any more.")
                         .font(Type.summary)
@@ -65,7 +105,7 @@ struct ReviewSheet: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 6) {
                     // What the agent asked you to check, when it said (scene.inspect).
-                    if let inspect = row?.review?.inspect {
+                    if let inspect = shown?.inspect {
                         Label(inspect, systemImage: "eye")
                             .font(Type.caption)
                             .foregroundStyle(Palette.textDim)
@@ -87,6 +127,7 @@ struct ReviewSheet: View {
                                     }
                                 }
                                 sessionId = next
+                                picked = nil
                             } label: {
                                 HStack(spacing: 6) {
                                     Text("Next")
@@ -122,7 +163,7 @@ struct ReviewSheet: View {
                             .font(Type.sessionName)
                             .foregroundStyle(Palette.textPrimary)
                             .lineLimit(1)
-                        Text(row?.review?.summary ?? "")
+                        Text(shown?.summary ?? "")
                             .font(Type.caption)
                             .foregroundStyle(Palette.textDim)
                             .lineLimit(1)
@@ -130,8 +171,53 @@ struct ReviewSheet: View {
                     .accessibilityElement(children: .combine)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
+                    if let shown, held.count > 1 || shown.artifact != nil || shown.id != nil {
+                        Menu {
+                            if held.count > 1 {
+                                Section("Held by \(row?.label ?? "this session")") {
+                                    ForEach(held.indices, id: \.self) { index in
+                                        let one = held[index]
+                                        Button { picked = index == 0 ? nil : key(one) } label: {
+                                            if key(one) == key(shown) {
+                                                Label(title(one), systemImage: "checkmark")
+                                            } else {
+                                                Text(title(one))
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if shown.artifact != nil || shown.id != nil {
+                                Button(role: .destructive) { confirmingRemove = true } label: {
+                                    Label("Remove…", systemImage: "trash")
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                        }
+                        .accessibilityLabel("Deliverables")
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
                 }
+            }
+            .confirmationDialog(
+                "Remove \(shown.map(title) ?? "this") from \(row?.label ?? "the session")?",
+                isPresented: $confirmingRemove,
+                titleVisibility: .visible
+            ) {
+                Button("Remove", role: .destructive) { remove() }
+            } message: {
+                Text(shown?.artifact != nil ? "Every version of it goes, on your Mac too." : "It goes from your Mac too.")
+            }
+            .alert(
+                "Couldn't remove it",
+                isPresented: Binding(get: { removeFailure != nil }, set: { if !$0 { removeFailure = nil } })
+            ) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(removeFailure ?? "")
             }
         }
     }

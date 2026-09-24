@@ -501,6 +501,9 @@ final class BridgeClient: ObservableObject {
         case restore
         case attach
         case reviewViewed = "review-viewed"
+        /// Take a deliverable off its session, on the Mac too: by `artifact`, every version, as
+        /// the Mac's Remove does, else by `review`, the one filing.
+        case reviewRemove = "review-remove"
     }
 
     enum AgentBackend: String, CaseIterable, Identifiable {
@@ -749,13 +752,13 @@ final class BridgeClient: ObservableObject {
     /// command contract. The enum keeps arbitrary commands off this convenience
     /// path, and the echoed id/action prevents a mismatched response from being
     /// mistaken for confirmation.
-    func send(sessionCommand command: SessionCommand, sessionId: String, review: String? = nil) async -> Bool {
+    func send(sessionCommand command: SessionCommand, sessionId: String, review: String? = nil, artifact: String? = nil) async -> Bool {
         guard !sessionId.isEmpty,
               let reply = await postControlRaw([
                   "kind": "session-command",
                   "sessionId": sessionId,
                   "command": command.rawValue,
-              ].merging(review.map { ["review": $0] } ?? [:]) { current, _ in current }) else {
+              ].merging(review.map { ["review": $0] } ?? artifact.map { ["artifact": $0] } ?? [:]) { current, _ in current }) else {
             lastError = "Couldn't reach your Mac."
             _ = await reportAppError(
                 operation: "session-\(command.rawValue)",

@@ -121,3 +121,31 @@ describe("the sheet opens a published dev page through conch", () => {
     for (const status of [403, 503, 502, 404]) expect(failure).toContain(`case BridgeTransportError.httpStatus(${status}):`);
   });
 });
+
+// "If time allows" in the same wave: the phone lists what a session holds and can take one off it,
+// through the daemon's own `review-remove`, which the Mac's Remove sends too.
+describe("the review screen lists a session's deliverables and removes one", () => {
+  const body = between(sheet, "struct ReviewSheet: View {", "enum ReviewQueue {");
+
+  test("everything held, newest first; an earlier one picked stays until it goes or Next moves on", () => {
+    expect(body).toContain("Array((row?.reviews ?? row?.review.map { [$0] } ?? []).reversed())");
+    expect(body).toContain("held.first { picked != nil && key($0) == picked } ?? row?.review");
+    expect(body).toContain("if let review = shown {");
+    expect(body).toContain("Button { picked = index == 0 ? nil : key(one) } label: {");
+    expect(body).toMatch(/sessionId = next\s*picked = nil/);
+  });
+
+  test("Remove asks first, sends review-remove by artifact like the Mac, else by filing, and says why when refused", () => {
+    expect(bridge).toContain('case reviewRemove = "review-remove"');
+    expect(bridge).toContain('.merging(review.map { ["review": $0] } ?? artifact.map { ["artifact": $0] } ?? [:]) { current, _ in current }');
+    const remove = between(body, "    private func remove() {", "\n    }\n");
+    expect(remove).toContain("sessionCommand: .reviewRemove,");
+    expect(remove).toContain("review: shown.artifact == nil ? shown.id : nil,");
+    expect(remove).toContain("artifact: shown.artifact");
+    expect(remove).toContain('if removed { picked = nil } else { removeFailure = bridge.lastError ?? "Your Mac didn\'t say why." }');
+    // Only from the confirmation, never straight from the menu.
+    expect((body.match(/remove\(\)/g) ?? []).length).toBe(2);
+    expect(body).toContain('Button("Remove", role: .destructive) { remove() }');
+    expect(body).toContain("Button(role: .destructive) { confirmingRemove = true } label: {");
+  });
+});
