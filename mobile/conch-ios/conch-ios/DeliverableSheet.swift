@@ -1,6 +1,7 @@
 import ConchDesign
 import QuickLook
 import SwiftUI
+import UniformTypeIdentifiers
 import WebKit
 
 /// The review screen: one ready piece of work, a reply to the session that
@@ -189,7 +190,8 @@ enum MacLocalPage {
 
 /// Every deliverable type the Mac renders, rendered here too — same coverage
 /// promise. Web loads directly; local files arrive through the bridge's
-/// scoped /file endpoint, which serves only what the dashboard is showing.
+/// scoped /file endpoint, which serves only what sessions have published and
+/// what a published page or document loads from its own folder.
 struct DeliverableSheet: View {
     @ObservedObject var bridge: BridgeClient
     let review: PublishedState.Row.Review
@@ -207,6 +209,8 @@ struct DeliverableSheet: View {
     @State private var lanPage: URL?
     /// Quick Look full screen, where Share and Markup live.
     @State private var markingUp = false
+    /// Which deliverable a local page's `conch-page://` addresses name.
+    @State private var pageHost = UUID().uuidString.lowercased()
     /// A link tapped in here that turned out to be a Mac file, opened the
     /// same way as any other deliverable (`openLink`'s `onFile`).
     @State private var openFile: FileLink?
@@ -256,7 +260,7 @@ struct DeliverableSheet: View {
         switch kind {
         case let .web(url): url
         case .macLocal: lanPage
-        case .local(.page): localURL
+        case .local(.page): review.link.flatMap { ConchPagePath.entry(host: pageHost, page: $0) }
         default: nil
         }
     }
@@ -290,7 +294,8 @@ struct DeliverableSheet: View {
             }
             .background(Palette.bg)
             .toolbar {
-                if let shared = localURL ?? pageURL, failure == nil {
+                // A `conch-page://` address means nothing outside this sheet.
+                if let shared = localURL ?? pageURL, shared.scheme != ConchPagePath.scheme, failure == nil {
                     ToolbarItem(placement: .topBarLeading) {
                         ShareLink(item: shared) {
                             Image(systemName: "square.and.arrow.up")
@@ -314,7 +319,8 @@ struct DeliverableSheet: View {
             localURL = nil
             failure = nil
             linkFailure = nil
-            guard case .local = kind, let link = review.link else { return }
+            // A page is served, not downloaded: `LocalPageView` reads it and everything it loads.
+            guard case let .local(localKind) = kind, localKind != .page, let link = review.link else { return }
             let downloaded = await bridge.downloadFile(path: link)
             if Task.isCancelled {
                 if let downloaded { try? FileManager.default.removeItem(at: downloaded) }
@@ -367,7 +373,9 @@ struct DeliverableSheet: View {
                 macLocalView(url)
             }
         case let .local(localKind):
-            if let url = localURL {
+            if localKind == .page, let entry = pageURL {
+                localContent(.page, url: entry)
+            } else if let url = localURL {
                 localContent(localKind, url: url)
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -386,23 +394,26 @@ struct DeliverableSheet: View {
             // could not be zoomed, so a UI detail could not be inspected.
             QuickLookView(url: url, fullScreen: $markingUp, onFailure: fail)
         case .markdown:
-            RemoteDocumentView(url: url, renderMarkdown: true, onFailure: fail)
+            RemoteDocumentView(url: url, renderMarkdown: true, document: review.link, bridge: bridge, onFailure: fail)
         case .page:
             // A local .html is a PAGE. The Mac has always rendered it as one;
             // here it was raw markup, so the same deliverable looked finished
-            // on one surface and broken on the other.
-            // loadFileURL, not load(URLRequest:) — a file:// page needs read
-            // access granted to its own directory or its assets never load.
-            LocalPageView(url: url, page: page, onFailure: fail)
+            // on one surface and broken on the other. Then it was the HTML
+            // alone, downloaded into an empty folder, so its styles, scripts
+            // and pictures were silently missing; now each is read from the
+            // Mac as the page asks for it.
+            LocalPageView(bridge: bridge, macPath: review.link ?? "", url: url, page: page, onFailure: fail)
         case .text:
             RemoteDocumentView(url: url, renderMarkdown: false, onFailure: fail)
         case .unsupported:
             if QLPreviewController.canPreview(url as NSURL) {
                 QuickLookView(url: url, fullScreen: $markingUp, onFailure: fail)
             } else {
+                // What it is, why it isn't drawn, and what the phone can do
+                // with it: the file is here, so Share (top left) hands it on.
                 unavailableView(
-                    "conch can't preview a \(url.pathExtension.uppercased()) yet — "
-                    + "it's on the Mac at \(url.lastPathComponent)."
+                    "iPhone can't preview a \(url.pathExtension.uppercased()) file, so \(url.lastPathComponent) isn't shown here. "
+                    + "It's on this phone now: Share sends it to an app that opens it, or to Files."
                 )
             }
         }
@@ -425,7 +436,7 @@ struct DeliverableSheet: View {
             }
             .accessibilityLabel("Reload")
             Spacer(minLength: 0)
-            if !url.isFileURL {
+            if url.scheme == "http" || url.scheme == "https" {
                 Button {
                     linkFailure = nil
                     bridge.openLink(page.view?.url ?? url, sessionId: sessionId) { linkFailure = $0 }
@@ -465,7 +476,7 @@ struct DeliverableSheet: View {
                     .tint(Palette.micOpen)
                     .foregroundStyle(Palette.bg)
                 } else {
-                    Text("This phone reaches your Mac through the relay, so it doesn't know the Mac's address on your Wi-Fi. Open the page on the Mac, or pair over the same Wi-Fi to try it here.")
+                    Text("This phone reaches your Mac through the relay, so it doesn't know the Mac's address on your Wi-Fi, and conch doesn't carry a dev server's pages through the relay yet. Paired on the same Wi-Fi, the page can open here.")
                 }
                 Text(url.absoluteString)
                     .font(Type.mono)
@@ -590,8 +601,17 @@ private struct QuickLookView: UIViewControllerRepresentable {
 private struct RemoteDocumentView: View {
     let url: URL
     let renderMarkdown: Bool
+    /// The document's path on the Mac, which the pictures in it are relative to.
+    var document: String? = nil
+    var bridge: BridgeClient? = nil
     let onFailure: (String) -> Void
     @State private var content: String?
+
+    /// Pictures come from where the document sits on the Mac; without that they stay alt text.
+    private var images: MarkdownView.ImageView? {
+        guard let bridge, let document else { return nil }
+        return { source, alt in AnyView(MarkdownImage(bridge: bridge, source: source, alt: alt, document: document)) }
+    }
 
     var body: some View {
         Group {
@@ -599,7 +619,7 @@ private struct RemoteDocumentView: View {
                 ScrollView {
                     Group {
                         if renderMarkdown {
-                            MarkdownView(text: content)
+                            MarkdownView(text: content, image: images)
                         } else {
                             // Logs and tables keep their columns: wrap breaks
                             // "712 pass, 0 fail" across lines.
@@ -659,12 +679,12 @@ private struct BridgedWebView: UIViewRepresentable {
     func updateUIView(_ view: WKWebView, context: Context) {}
 }
 
-/// A local HTML page, with read access to its own folder.
-///
-/// WKWebView will not fetch a page's sibling assets — its CSS, its images —
-/// from a file:// URL unless it is granted the containing directory, so a page
-/// loaded the ordinary way renders unstyled and looks broken.
+/// A local HTML page, and everything it loads, read from the Mac as it asks
+/// (`ConchPageSchemeHandler`).
 private struct LocalPageView: UIViewRepresentable {
+    let bridge: BridgeClient
+    /// The page's path on the Mac; its folder is what the page's addresses resolve against.
+    let macPath: String
     let url: URL
     let page: PageLoadFailure
     let onFailure: (String) -> Void
@@ -672,14 +692,19 @@ private struct LocalPageView: UIViewRepresentable {
     func makeCoordinator() -> PageLoadFailure { page }
 
     func makeUIView(context: Context) -> WKWebView {
-        let view = WKWebView()
+        let configuration = WKWebViewConfiguration()
+        configuration.setURLSchemeHandler(
+            ConchPageSchemeHandler(bridge: bridge, entry: url, page: macPath),
+            forURLScheme: ConchPagePath.scheme
+        )
+        let view = WKWebView(frame: .zero, configuration: configuration)
         view.isOpaque = false
         view.backgroundColor = UIColor(Palette.bg)
         view.navigationDelegate = context.coordinator
         view.uiDelegate = context.coordinator
         context.coordinator.view = view
         context.coordinator.onFailure = onFailure
-        view.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+        view.load(URLRequest(url: url))
         return view
     }
 
@@ -759,6 +784,210 @@ struct LinkFailureLine: View {
             }
             .padding(12)
             .background(Palette.raised, in: RoundedRectangle(cornerRadius: 10))
+        }
+    }
+}
+
+/// Where a local page and what it loads live on the phone:
+/// `conch-page://<id>/<path>`, the id standing for the page's folder on the
+/// Mac. The id is the host, so a root-relative `/style.css` resolves against
+/// that folder, as it does for the page opened from disk. Foundation only, so
+/// the bun test runs it under `swift`.
+enum ConchPagePath {
+    static let scheme = "conch-page"
+
+    /// The page itself, at the root of its folder.
+    static func entry(host: String, page: String) -> URL? {
+        var components = URLComponents()
+        components.scheme = scheme
+        components.host = host
+        components.path = "/" + (page as NSString).lastPathComponent
+        return components.url
+    }
+
+    /// The Mac file a request names: `folder` plus the request's path. Nil for
+    /// another page's id, or for a path that climbs, `..` however it was
+    /// spelled, since the path is read decoded (`%2e%2e`, `..%2F`). The Mac
+    /// refuses those too (`servableFile`); this keeps them off the wire.
+    static func macPath(for url: URL, host: String, folder: String) -> String? {
+        guard url.scheme == scheme, url.host == host else { return nil }
+        let parts = url.path.split(separator: "/")
+        guard !parts.isEmpty, !parts.contains(where: { $0 == ".." || $0 == "." || $0.contains("\0") }) else { return nil }
+        return ([folder] + parts.map(String.init)).joined(separator: "/")
+    }
+
+    /// A markdown picture's source, resolved the way the document opened from
+    /// disk resolves it: a web address as it is, anything else a file against
+    /// the document's own folder on the Mac. Nil for what is neither.
+    static func markdownImage(_ source: String, document: String) -> URL? {
+        if let url = URL(string: source), let scheme = url.scheme?.lowercased() {
+            if scheme == "http" || scheme == "https" { return url }
+            return url.isFileURL ? url.standardizedFileURL : nil
+        }
+        let folder = URL(fileURLWithPath: (document as NSString).deletingLastPathComponent, isDirectory: true)
+        // Markdown spells a space %20; the file on the Mac has a space.
+        return URL(fileURLWithPath: source.removingPercentEncoding ?? source, relativeTo: folder).standardizedFileURL
+    }
+}
+
+/// Serves a local page, and everything it loads, from the Mac: each
+/// `conch-page://` request is one `/file` read over whichever transport is
+/// live, LAN or relay, with the token attached by `fetchFile`, never in an
+/// address the page can see. Tyler: "a huge improvement would be having all
+/// content viewable and interative on phone app - currently it just says to go
+/// to desktop which kinda defeats a lot of the purpose of having it."
+@MainActor
+final class ConchPageSchemeHandler: NSObject, WKURLSchemeHandler {
+    private let bridge: BridgeClient
+    private let entry: URL
+    private let folder: String
+    /// Reads in flight. Each read's Task holds its WKURLSchemeTask until it
+    /// ends, so no other task can take the same identity while it is here.
+    private var reads: [ObjectIdentifier: Task<Void, Never>] = [:]
+
+    init(bridge: BridgeClient, entry: URL, page: String) {
+        self.bridge = bridge
+        self.entry = entry
+        folder = (page as NSString).deletingLastPathComponent
+    }
+
+    func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
+        guard let url = task.request.url else {
+            task.didFailWithError(URLError(.badURL))
+            return
+        }
+        // The page itself failing says why in the sheet; a missing picture
+        // answers the page the way a web server would.
+        let isPage = url == entry || task.request.mainDocumentURL == url
+        guard let path = ConchPagePath.macPath(for: url, host: entry.host ?? "", folder: folder) else {
+            answer(task, url: url, failure: BridgeTransportError.httpStatus(404), isPage: isPage)
+            return
+        }
+        let key = ObjectIdentifier(task)
+        reads[key] = Task { @MainActor [weak self, bridge] in
+            let result: Result<URL, Error>
+            do { result = .success(try await bridge.fetchFile(path: path)) } catch { result = .failure(error) }
+            // Stopped (the page moved on, or the sheet closed): WebKit raises
+            // an exception if a stopped task is answered.
+            guard let self, self.reads.removeValue(forKey: key) != nil else {
+                if case let .success(file) = result { try? FileManager.default.removeItem(at: file) }
+                return
+            }
+            switch result {
+            case let .success(file):
+                let data = (try? Data(contentsOf: file, options: .mappedIfSafe)) ?? Data()
+                try? FileManager.default.removeItem(at: file)
+                task.didReceive(HTTPURLResponse(
+                    url: url,
+                    statusCode: 200,
+                    httpVersion: "HTTP/1.1",
+                    headerFields: ["Content-Type": Self.contentType(url.pathExtension), "Content-Length": String(data.count)]
+                )!)
+                if !data.isEmpty { task.didReceive(data) }
+                task.didFinish()
+            case let .failure(error):
+                self.answer(task, url: url, failure: error, isPage: isPage)
+            }
+        }
+    }
+
+    func webView(_ webView: WKWebView, stop task: WKURLSchemeTask) {
+        reads.removeValue(forKey: ObjectIdentifier(task))?.cancel()
+    }
+
+    private func answer(_ task: WKURLSchemeTask, url: URL, failure: Error, isPage: Bool) {
+        if !isPage, case let BridgeTransportError.httpStatus(status) = failure {
+            task.didReceive(HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: nil)!)
+            task.didFinish()
+        } else {
+            task.didFailWithError(NSError(
+                domain: "conch.page",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: BridgeClient.fileFailure(failure)]
+            ))
+        }
+    }
+
+    /// Scripts and wasm by the names a browser requires, since a module script
+    /// with the wrong type does not run; text as UTF-8, which is what an agent
+    /// writes, where WebKit would otherwise guess Latin-1 and mangle every dash.
+    static func contentType(_ ext: String) -> String {
+        let type: String = switch ext.lowercased() {
+        case "js", "mjs": "text/javascript"
+        case "wasm": "application/wasm"
+        default: UTType(filenameExtension: ext)?.preferredMIMEType ?? "application/octet-stream"
+        }
+        return type.hasPrefix("text/") ? "\(type); charset=utf-8" : type
+    }
+}
+
+/// One picture in a rendered markdown document: a web address loaded
+/// directly, a file on the Mac read through `/file`, which serves it when it
+/// sits under the document's own folder. One that can't come says what it is
+/// and why, where it would have been.
+private struct MarkdownImage: View {
+    let bridge: BridgeClient
+    let source: String
+    let alt: String
+    let document: String
+    @State private var image: UIImage?
+    @State private var failure: String?
+
+    private var target: URL? { ConchPagePath.markdownImage(source, document: document) }
+
+    var body: some View {
+        Group {
+            if let web = target, !web.isFileURL {
+                AsyncImage(url: web) { phase in
+                    if let loaded = phase.image {
+                        loaded.resizable().scaledToFit()
+                    } else if phase.error != nil {
+                        caption("iPhone couldn't load this picture from \(web.host ?? "the web").")
+                    } else {
+                        ProgressView()
+                    }
+                }
+            } else if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: image.size.width)
+            } else if let failure {
+                caption(failure)
+            } else {
+                ProgressView().frame(maxWidth: .infinity, minHeight: 60)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityLabel(alt.isEmpty ? "Picture" : alt)
+        .task(id: source) { await load() }
+    }
+
+    private func caption(_ why: String) -> some View {
+        Label(alt.isEmpty ? why : "\(alt): \(why)", systemImage: "photo")
+            .font(Type.caption)
+            .foregroundStyle(Palette.textDim)
+    }
+
+    @MainActor
+    private func load() async {
+        guard let target else {
+            failure = "conch can't show a picture from \(source)."
+            return
+        }
+        guard target.isFileURL else { return }
+        do {
+            let file = try await bridge.fetchFile(path: target.path)
+            defer { try? FileManager.default.removeItem(at: file) }
+            let preview = await ImageDownsampler.filePreview(at: file, maxBytes: 32 * 1024 * 1024, maxPixelSize: 2048)
+            guard !Task.isCancelled else { return }
+            if case let .image(decoded) = preview {
+                image = UIImage(cgImage: decoded)
+            } else {
+                failure = "iPhone can't draw this \(target.pathExtension.uppercased()) picture."
+            }
+        } catch {
+            if !Task.isCancelled { failure = BridgeClient.fileFailure(error) }
         }
     }
 }

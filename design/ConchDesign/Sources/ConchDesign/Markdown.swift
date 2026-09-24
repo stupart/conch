@@ -31,6 +31,8 @@ enum MarkdownBlock: Equatable {
     /// Rows, the header first; every row has the header's column count.
     case table([[String]])
     case rule
+    /// `![alt](source)` alone on its line: a document's screenshot. One inside a sentence stays in its prose.
+    case image(alt: String, source: String)
 }
 
 enum MarkdownDocument {
@@ -114,6 +116,9 @@ enum MarkdownDocument {
             } else if let (depth, ordinal, text) = ordered(line) {
                 flushParagraph()
                 result.append(.ordered(depth: depth, ordinal: ordinal, text))
+            } else if let (alt, source) = image(trimmed) {
+                flushParagraph()
+                result.append(.image(alt: alt, source: source))
             } else {
                 paragraph.append(trimmed)
             }
@@ -140,6 +145,20 @@ enum MarkdownDocument {
         guard rest.first == " " else { return nil }
         let text = rest.trimmingCharacters(in: .whitespaces)
         return text.isEmpty ? nil : (hashes.count, text)
+    }
+
+    private static let imageLine = try! NSRegularExpression(
+        pattern: #"^!\[([^\]]*)\]\(\s*(?:<([^>]+)>|([^\s)]+))(?:\s+"[^"]*")?\s*\)$"#
+    )
+
+    /// `![alt](source)`, `![alt](<a path with spaces>)` or `![alt](source "title")`, as the whole line.
+    static func image(_ line: String) -> (String, String)? {
+        let whole = NSRange(line.startIndex..., in: line)
+        guard let match = imageLine.firstMatch(in: line, range: whole),
+              let alt = Range(match.range(at: 1), in: line),
+              let source = Range(match.range(at: 2), in: line) ?? Range(match.range(at: 3), in: line)
+        else { return nil }
+        return (String(line[alt]), String(line[source]))
     }
 
     static func isRule(_ line: String) -> Bool {
@@ -226,18 +245,25 @@ public struct MarkdownView: View {
         case code(String)
         case table([[String]])
         case rule
+        case image(alt: String, source: String)
     }
+
+    /// Draws one picture from its source as written and its alt text. What a source is relative to, and how its bytes
+    /// arrive, is the caller's to know: the phone reads a Mac file through the bridge.
+    public typealias ImageView = (_ source: String, _ alt: String) -> AnyView
 
     private let blocks: [MarkdownBlock]
     private let size: CGFloat
+    private let image: ImageView?
     @ScaledMetric(relativeTo: .body) private var scale: CGFloat = 1
 
-    public init(text: String, size: CGFloat = ConchType.readingBodySize) {
+    public init(text: String, size: CGFloat = ConchType.readingBodySize, image: ImageView? = nil) {
         blocks = MarkdownDocument.blocks(text)
         self.size = size
+        self.image = image
     }
 
-    static func pieces(_ blocks: [MarkdownBlock], size: CGFloat) -> [Piece] {
+    static func pieces(_ blocks: [MarkdownBlock], size: CGFloat, images: Bool = false) -> [Piece] {
         var result: [Piece] = []
         var flow = AttributedString()
         func styled(_ text: String, font: Font) -> AttributedString {
@@ -276,6 +302,10 @@ public struct MarkdownView: View {
                 flush(); result.append(.table(rows))
             case .rule:
                 flush(); result.append(.rule)
+            case let .image(alt, source):
+                // With nothing to draw it, the line reads as it always has: its alt text, in the prose.
+                if images { flush(); result.append(.image(alt: alt, source: source)) }
+                else { add(styled("![\(alt)](\(source))", font: .system(size: size)), gap: size * 0.55) }
             }
         }
         flush()
@@ -283,7 +313,7 @@ public struct MarkdownView: View {
     }
 
     public var body: some View {
-        let pieces = Self.pieces(blocks, size: size * scale)
+        let pieces = Self.pieces(blocks, size: size * scale, images: image != nil)
         Group {
             if pieces.count == 1, case let .flow(text) = pieces[0] {
                 // Most replies: one text, the one responder a reply always was.
@@ -337,6 +367,8 @@ public struct MarkdownView: View {
             table(rows)
         case .rule:
             Rectangle().fill(ConchColor.hairlineStrong).frame(height: 1).padding(.vertical, size * 0.3).allowsHitTesting(false)
+        case let .image(alt, source):
+            if let image { image(source, alt) }
         }
     }
 
@@ -555,6 +587,8 @@ public enum MarkdownTypesetter {
                 block.setWidth(1, type: .absoluteValueType, for: .border, edge: .minY)
                 style.textBlocks = [block]
                 append("\u{00A0}", font: NSFont.systemFont(ofSize: 2), style: style)
+            case let .image(alt, source):
+                append("![\(alt)](\(source))", font: font, style: paragraph())
             }
         }
         // The last newline would draw one empty line under the document.

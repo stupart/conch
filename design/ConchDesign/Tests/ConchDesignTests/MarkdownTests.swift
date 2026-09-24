@@ -90,6 +90,29 @@ final class MarkdownTests: XCTestCase {
         ])
     }
 
+    func testAPictureOnItsOwnLineIsAPicture() {
+        // Tyler: "a huge improvement would be having all content viewable and interative on phone app". A document's
+        // screenshots are content, so the phone draws one where it sits.
+        XCTAssertEqual(
+            MarkdownDocument.blocks("Before.\n![the hero](shots/hero.png)\n![](<shots/with space.png> \"Title\")\n  ![x](/abs/a.png)  \nAfter."),
+            [
+                .paragraph("Before."),
+                .image(alt: "the hero", source: "shots/hero.png"),
+                .image(alt: "", source: "shots/with space.png"),
+                .image(alt: "x", source: "/abs/a.png"),
+                .paragraph("After."),
+            ]
+        )
+        // Inside a sentence, two to a line, or not really an image: prose, as before.
+        XCTAssertEqual(MarkdownDocument.blocks("See ![x](a.png) here"), [.paragraph("See ![x](a.png) here")])
+        XCTAssertEqual(MarkdownDocument.blocks("![a](a.png) ![b](b.png)"), [.paragraph("![a](a.png) ![b](b.png)")])
+        XCTAssertEqual(MarkdownDocument.blocks("[not](a.png)"), [.paragraph("[not](a.png)")])
+        // With nothing to draw it (the Mac, a conversation), the line is still its alt text in the prose.
+        XCTAssertEqual(MarkdownView.pieces([.image(alt: "x", source: "a.png")], size: 14).count, 1)
+        if case .flow = MarkdownView.pieces([.image(alt: "x", source: "a.png")], size: 14)[0] {} else { XCTFail("not prose") }
+        if case .image = MarkdownView.pieces([.image(alt: "x", source: "a.png")], size: 14, images: true)[0] {} else { XCTFail("not a picture") }
+    }
+
     func testBlockMarkersNeedTheirSpace() {
         XCTAssertEqual(MarkdownDocument.blocks("#hashtag and 2.5 things"), [.paragraph("#hashtag and 2.5 things")])
         XCTAssertEqual(MarkdownDocument.blocks("### Three"), [.heading(3, "Three")])
