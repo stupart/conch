@@ -132,7 +132,8 @@ describe("a message shows what became of it", () => {
     const within = /within: \.seconds\((\d+)\)/.exec(between(bridge, "private func deliveryOutcome(", "\n    }\n"));
     expect(within).not.toBeNull();
     expect(Number(within![1]) * 1000).toBeGreaterThan(INJECT_DELIVERY_WAIT_MS + 10_000);
-    const lanTimeout = /request\.path == "\/control" \? (\d+) : 10/.exec(lan);
+    // A snapshot (`/preview`) shares the long wait.
+    const lanTimeout = /request\.path == "\/control"(?: \|\| request\.path == "\/preview")? \? (\d+) : 10/.exec(lan);
     expect(lanTimeout).not.toBeNull();
     expect(Number(lanTimeout![1]) * 1000).toBeGreaterThan(INJECT_DELIVERY_WAIT_MS);
   });

@@ -76,7 +76,8 @@ final class DirectHTTPTransport: BridgeTransport, @unchecked Sendable {
     func request(_ request: BridgeRequest) async throws -> BridgeResponse {
         // A control can now wait for its keystrokes (an inject's `awaitDelivery`,
         // bounded at 20 s on the Mac), which a 10 s timeout would call a failure.
-        var urlRequest = try makeURLRequest(request, timeout: request.path == "/control" ? 30 : 10)
+        // A snapshot (`/preview`) waits for the Mac to take it: a Simulator screenshot, a document's first page.
+        var urlRequest = try makeURLRequest(request, timeout: request.path == "/control" || request.path == "/preview" ? 30 : 10)
         urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await session.data(for: urlRequest)
         guard let http = response as? HTTPURLResponse else {

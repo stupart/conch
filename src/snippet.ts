@@ -1264,6 +1264,24 @@ export const SAFE_REVIEW_LINK =
 const SECRET_FILE = /\.(pem|key|p8|p12|pfx|keychain|keychain-db)$/i;
 
 /**
+ * A `.key` is a private key, unless it is a Keynote deck: Keynote saves a deck as one zip, and a
+ * PEM or DER key never begins `PK\x03\x04`. Only that signature lets a `.key` through; anything
+ * else named `.key` stays refused.
+ */
+async function isKeynoteDeck(real: string): Promise<boolean> {
+  if (!/\.key$/i.test(real)) return false;
+  const file = await openFile(real, "r").catch(() => null);
+  if (!file) return false;
+  try {
+    const head = Buffer.alloc(4);
+    const { bytesRead } = await file.read(head, 0, 4, 0);
+    return bytesRead === 4 && head.equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]));
+  } finally {
+    await file.close();
+  }
+}
+
+/**
  * Whether a local file may leave this Mac, and its real path when it may: the ONE check behind
  * both ways one does. A session publishing it (`checkReviewLink`), and every phone read of it
  * (`phone-bridge.ts` `/file`), which runs it again on the disk as it is NOW. Checked at publish
@@ -1291,7 +1309,7 @@ export async function checkLocalFile(
         + " so it is not sent to the phone; publish a copy under your folder or /tmp",
     };
   }
-  if (real.split("/").some((part) => part.startsWith(".") && part !== ".worktrees") || SECRET_FILE.test(real)) {
+  if (real.split("/").some((part) => part.startsWith(".") && part !== ".worktrees") || (SECRET_FILE.test(real) && !await isKeynoteDeck(real))) {
     return {
       ok: false,
       reason: `link ${real} is a hidden file, in a hidden folder, or a key or certificate, so it is not`

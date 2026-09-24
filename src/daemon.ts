@@ -124,6 +124,7 @@ import { CONCH_VERSION } from "./version.ts";
 import { lastAssistantText, stripMarkdown, firstSentences, userRespondedSince, transcriptMark, setPromptCursorSink } from "./snippet.ts";
 import { promptCursorPublisher } from "./prompt-cursor.ts";
 import { PhoneUploads } from "./phone-uploads.ts";
+import { createPreviewRequester, previewFolder, PreviewLimiter } from "./review-preview.ts";
 import { CONCH_DATA } from "./config.ts";
 import {
   publishedConversation,
@@ -229,6 +230,7 @@ import {
   buildPanelRows,
   buildPublishedState,
   markReviewViewed,
+  attachReviewPreview,
   panelReplyText,
   numberPanelSessionRows,
   previewForPanelSelection,
@@ -1441,6 +1443,30 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
           uploadsDirectory: phoneUploads.directory,
           portListeners,
           sessionPid: (sessionId) => panelSessions.get(sessionId)?.pid,
+          // A snapshot of a deliverable the phone can't draw, put on the held review like `viewedAt`.
+          requestPreview: createPreviewRequester({
+            held: (sessionId) => {
+              const state = ledger.sessionStates.get(sessionId);
+              if (!state) return undefined;
+              const row = lastPublishedPanelState?.rows.find((one) => one.id === sessionId);
+              return {
+                reviews: state.reviews ?? (state.review ? [state.review] : []),
+                roots: [row?.cwd, ...(row?.workDirs ?? [])].filter((root): root is string => Boolean(root)),
+              };
+            },
+            attach: (sessionId, reviewId, preview) => {
+              const state = ledger.sessionStates.get(sessionId);
+              const next = attachReviewPreview(state?.reviews ?? (state?.review ? [state.review] : undefined), reviewId, preview);
+              if (!state || !next) return false;
+              ledger.sessionStates.set(sessionId, { ...state, reviews: next, review: next.at(-1)! });
+              ledger.saveReviews();
+              void renderSessionPanel();
+              return true;
+            },
+            limiter: new PreviewLimiter(),
+            folder: () => previewFolder(),
+            now: Date.now,
+          }),
           replyFor: async (sessionId) => {
             const path = findTranscript(cfg.claudeDir, sessionId);
             // The WHOLE turn in progress, the way the Mac dashboard shows it —

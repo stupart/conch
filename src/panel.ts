@@ -1,3 +1,4 @@
+import type { ReviewPreview } from "./review-preview.ts";
 import { sessionLabel, type SessionInfo } from "./sessions.ts";
 import type { PublishedConversation } from "./conversation.ts";
 import type { SessionContextUsage } from "./context-meter.ts";
@@ -325,6 +326,8 @@ export interface PublishedSessionRow {
     artifact?: string;
     version?: number;
     kind?: DeliverableKind;
+    /** A snapshot of it from the Mac, for an app that can't draw its kind (`features.deliverables` 4). */
+    preview?: ReviewPreview;
   };
   /**
    * Every deliverable the session is still holding, oldest first, the last of which is
@@ -333,7 +336,7 @@ export interface PublishedSessionRow {
    */
   reviews?: Array<{
     summary: string; link?: string; scene?: ReviewScene; at?: number; id?: string; viewedAt?: number;
-    artifact?: string; version?: number; kind?: DeliverableKind;
+    artifact?: string; version?: number; kind?: DeliverableKind; preview?: ReviewPreview;
   }>;
 }
 
@@ -370,7 +373,7 @@ export interface PublishedState {
    * honest latest-deliverable-only view rather than presenting local guesses as shared truth.
    * Unknown means unknown.
    */
-  features: { deliverables: 3; viewedState: 1 };
+  features: { deliverables: 4; viewedState: 1 };
   /** Stable identity of the daemon installation that owns every local session key. */
   ownerDeviceId: string;
   ts: number;
@@ -531,11 +534,12 @@ export function panelReplyText(
  * What a reader needs to tell deliverables apart: which artifact, which version, what kind.
  * Older apps ignore all three. `kindSource` stays in the ledger: no surface acts on it.
  */
-function publishedDeliverableFacts(review: SessionReview): Pick<SessionReview, "artifact" | "version" | "kind"> {
+function publishedDeliverableFacts(review: SessionReview): Pick<SessionReview, "artifact" | "version" | "kind" | "preview"> {
   return {
     ...(review.artifact ? { artifact: review.artifact } : {}),
     ...(review.version !== undefined ? { version: review.version } : {}),
     ...(review.kind ? { kind: review.kind } : {}),
+    ...(review.preview ? { preview: { ...review.preview } } : {}),
   };
 }
 
@@ -566,7 +570,8 @@ export function buildPublishedState(
     v: 1,
     // 2: deliverables carry `artifact`, `version` and `kind`, and a session command removes them.
     // 3: a deliverable's scene carries the agent's `marks` (agent ink).
-    features: { deliverables: 3, viewedState: 1 },
+    // 4: a deliverable the phone can't draw carries a snapshot of it from the Mac (`preview`).
+    features: { deliverables: 4, viewedState: 1 },
     ownerDeviceId,
     ts: now,
     ...(options.audio ? { audioControl: options.audio.control, audioOutbox: options.audio.outbox } : {}),
@@ -1003,6 +1008,8 @@ export interface SessionReview {
   artifact?: string;
   /** Which filing of its artifact this is, from 1; one past the highest held when it was filed. */
   version?: number;
+  /** The newest snapshot of it from the Mac, for a phone that can't draw its kind (`review-preview.ts`). */
+  preview?: ReviewPreview;
 }
 
 /**
@@ -1145,6 +1152,19 @@ export function markReviewViewed(
   const index = held.findIndex((one) => one.id === review);
   if (index < 0 || held[index]!.viewedAt !== undefined) return undefined;
   return held.map((one, at) => at === index ? { ...one, viewedAt: now } : one);
+}
+
+/**
+ * Put a snapshot on one held deliverable, in place of any before it. Like `markReviewViewed`, an
+ * identity this session does not hold changes nothing (`undefined`), rather than the nearest.
+ */
+export function attachReviewPreview(
+  held: readonly SessionReview[] | undefined,
+  review: string,
+  preview: ReviewPreview,
+): SessionReview[] | undefined {
+  if (!held?.some((one) => one.id === review)) return undefined;
+  return held.map((one) => one.id === review ? { ...one, preview: { ...preview } } : one);
 }
 
 /**

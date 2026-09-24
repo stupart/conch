@@ -185,6 +185,7 @@ export class SessionLedger {
       kindSource?: unknown;
       artifact?: unknown;
       version?: unknown;
+      preview?: { path?: unknown; kind?: unknown; capturedAt?: unknown };
     };
     if (
       typeof review.summary !== "string" || typeof review.at !== "number" || !Number.isFinite(review.at)
@@ -216,6 +217,11 @@ export class SessionLedger {
       kindSource: saved ? review.kindSource as SessionReview["kindSource"] : derived.kindSource,
       artifact: typeof review.artifact === "string" && review.artifact ? review.artifact : derived.artifact,
       ...(Number.isSafeInteger(review.version) && (review.version as number) > 0 ? { version: review.version as number } : {}),
+      // Its snapshot, while it names one; `/file` checks the file itself when the phone asks.
+      ...(typeof review.preview?.path === "string" && review.preview.path.startsWith("/") && review.preview.kind === "image"
+        && typeof review.preview.capturedAt === "number" && Number.isFinite(review.preview.capturedAt)
+        ? { preview: { path: review.preview.path, kind: "image" as const, capturedAt: review.preview.capturedAt } }
+        : {}),
     };
   }
 
@@ -256,6 +262,7 @@ export class SessionLedger {
         ...(held.kindSource ? { kindSource: held.kindSource } : {}),
         ...(held.artifact ? { artifact: held.artifact } : {}),
         ...(held.version !== undefined ? { version: held.version } : {}),
+        ...(held.preview ? { preview: held.preview } : {}),
       });
       const entry = {
         label,

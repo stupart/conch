@@ -10,6 +10,7 @@ import { dirname, join } from "node:path";
 import { conchHome } from "./home.ts";
 import { decodeNarrationRequest } from "./narration.ts";
 import { checkLocalFile } from "./snippet.ts";
+import type { PreviewAnswer } from "./review-preview.ts";
 import { localhostPort, resolveScreen, SCREEN_RESOLVERS, screenContextFromPublished, type PortListener } from "./screen-context.ts";
 
 /**
@@ -78,6 +79,8 @@ export interface PhoneBridgeDependencies {
   portListeners?(port: number): Promise<readonly PortListener[]>;
   /** A session's process: a dev server it started descends from it. */
   sessionPid?(sessionId: string): number | undefined;
+  /** Take a snapshot of a held deliverable the phone can't draw (`createPreviewRequester`). */
+  requestPreview?(sessionId: string, reviewId: string): Promise<PreviewAnswer>;
   log(message: string): void;
 }
 
@@ -471,6 +474,18 @@ export class PhoneBridgeApplication {
       })();
     }
 
+    // Refresh on a deliverable the phone can't draw: a snapshot of it from the Mac.
+    if (url.pathname === "/preview" && req.method === "POST") {
+      return (async () => {
+        let asked: { session?: unknown; review?: unknown };
+        try { asked = JSON.parse(await readControlBody(req)); } catch { return Response.json({ error: "bad request" }, { status: 400 }); }
+        const request = this.#dependencies.requestPreview;
+        if (!request) return Response.json({ error: "this Mac can't take snapshots" }, { status: 503 });
+        const answer = await request(String(asked?.session ?? ""), String(asked?.review ?? ""));
+        return Response.json(answer.status === 200 ? { ok: true } : { error: answer.error }, { status: answer.status });
+      })();
+    }
+
     // A page a session is serving from this Mac's own localhost (`devResponse`).
     if (url.pathname === "/dev") {
       return devResponse(req, url, this.#dependencies.getState() as ServableState | null, this.#dependencies);
@@ -702,6 +717,7 @@ interface HeldReview {
   id?: string;
   link?: string;
   scene?: { marks?: Array<{ frame?: { image?: unknown } }> };
+  preview?: { path?: unknown };
 }
 
 /** The parts of the published state `/file` decides by. */
@@ -758,6 +774,8 @@ async function ownUpload(requested: string, uploads: string): Promise<string | n
  *   newest used to be served, so tapping an earlier one on the phone answered 403;
  * - an image one of those deliverables' marks is drawn on (`scene.marks[].frame.image`, agent ink),
  *   which an app has to show before it can draw the marks over it;
+ * - a snapshot of one of them from the Mac (`preview`, review-preview.ts), for a kind the phone
+ *   can't draw;
  * - a file on its own line in a conversation (`material.path`), which used to be served with no
  *   rule at all: any absolute image, PDF or text path an agent wrote became readable;
  * - a web asset under the folder of a held page or markdown document, which is what lets a page
@@ -784,6 +802,10 @@ async function servableFile(
       .flatMap((held) => held.scene?.marks ?? [])
       .map((mark) => mark.frame?.image)
       .filter((image): image is string => typeof image === "string" && image.startsWith("/"));
+  const previews = (row: (typeof rows)[number]): string[] =>
+    [...(row.reviews ?? []), ...(row.review ? [row.review] : [])]
+      .map((held) => held.preview?.path)
+      .filter((path): path is string => typeof path === "string" && path.startsWith("/"));
   const check = async (roots: string[]) => {
     const checked = await checkLocalFile(requested, roots);
     if (checked.ok) return checked;
@@ -794,7 +816,9 @@ async function servableFile(
   };
 
   for (const row of rows) {
-    if (heldLinks(row).includes(requested) || markImages(row).includes(requested)) return check(rootsOf(row));
+    if (heldLinks(row).includes(requested) || markImages(row).includes(requested) || previews(row).includes(requested)) {
+      return check(rootsOf(row));
+    }
   }
   for (const [sessionId, conversation] of Object.entries(state?.conversations ?? {})) {
     if (!conversation.items?.some((item) => item.material?.path === requested)) continue;

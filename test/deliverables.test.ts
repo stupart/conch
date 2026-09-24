@@ -309,6 +309,6 @@ describe("a deliverable's type, artifact and version reach every surface", () =>
     // Only what a reader needs goes on the wire; how the kind was decided stays in the ledger.
     expect(row.review).not.toHaveProperty("kindSource");
     // An app can tell a daemon that types its deliverables from one that does not.
-    expect(published.features).toEqual({ deliverables: 3, viewedState: 1 });
+    expect(published.features).toEqual({ deliverables: 4, viewedState: 1 });
   });
 });
