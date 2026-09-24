@@ -24,7 +24,7 @@ import {
 import { adapterForTranscript, inputBoxHoldsWords, transcriptFormatFor } from "./agent-adapter.ts";
 import { injectProviderCommand as providerCommand, isProviderCommandLine } from "./provider-rename.ts";
 import { classifyReadingGap, parseNameAddress, wordOverlapRatio } from "./commands.ts";
-import { checkReviewLink, lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince, transcriptMark, promptSince } from "./snippet.ts";
+import { checkReviewLink, markImagesRefusal, lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince, transcriptMark, promptSince } from "./snippet.ts";
 import {
   lastAssistantReply,
   latestAnswerableQuestion,
@@ -796,6 +796,15 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     return null;
   }
 
+  /** The same check for the images a publication's marks are drawn on (`markImagesRefusal`); false when refused. */
+  async function vettedMarkImages(event: TurnEvent): Promise<boolean> {
+    const refusal = await markImagesRefusal(event.review?.scene, deps.window(event.sessionId)?.cwd ?? event.cwd ?? tmpdir());
+    if (!refusal) return true;
+    log(`refused a deliverable's marks from "${event.label}": ${refusal}`);
+    recordDaemonError("review-marks", `Refused a deliverable's marks: ${refusal}`, event.sessionId);
+    return false;
+  }
+
   /**
    * An agent published a result (`review_to_front`). That is not the end of
    * its turn.
@@ -813,7 +822,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     const { sessionId, label } = event;
     if (!sessionId || !event.review) return;
     const link = await vettedReviewLink(event);
-    if (link === null) return;
+    if (link === null || !(await vettedMarkImages(event))) return;
     const at = eventTimestamp(event.eventAt);
     const prior = sessionStates.get(sessionId);
     // A replayed or reordered older publication never displaces a newer one.

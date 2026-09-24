@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 struct PublishedState: Decodable, Equatable, Sendable {
@@ -786,6 +787,9 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
     /// (`scene.inspect`). Absent from older daemons and from reviews that asked for nothing, which is `auto`.
     let sceneKind: String?
     let inspect: String?
+    /// What the agent drew over it, in order (`scene.marks`, `features.deliverables` 3). Empty from an
+    /// older daemon and from a review with none.
+    let marks: [AgentMark]
     /// Which artifact this filing is a version of, which version, and what kind of thing it is
     /// (`features.deliverables` 2). All absent from an older daemon; the link groups then.
     let artifact: String?
@@ -808,6 +812,7 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
         struct Target: Decodable { let kind: String? }
         let target: Target?
         let inspect: String?
+        let marks: AgentMark.List?
     }
 
     init(from decoder: Decoder) throws {
@@ -821,6 +826,7 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
         let scene = try? container.decodeIfPresent(Scene.self, forKey: .scene)
         sceneKind = scene?.target?.kind
         inspect = scene?.inspect
+        marks = scene?.marks?.all ?? []
         artifact = try? container.decodeIfPresent(String.self, forKey: .artifact)
         version = try? container.decodeIfPresent(Int.self, forKey: .version)
         kind = try? container.decodeIfPresent(String.self, forKey: .kind)
@@ -838,6 +844,92 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
             return number?.isFinite == true ? number : nil
         }
         return nil
+    }
+}
+
+/// A mark an agent drew over what it published (`scene.marks`): agent ink. The daemon checked it
+/// (`checkReviewScene`); this only reads it. `frame` is what it is drawn on, and so what its
+/// numbers mean: on a canvas or an image they are 0-1 of it from the top left, and a selector or a
+/// quote names something in the linked page, which the renderer finds and marks itself, with no
+/// numbers at all. There is no colour: every mark is drawn in the agent's own.
+struct AgentMark: Decodable, Equatable, Sendable {
+    enum Kind: String, Decodable, Sendable {
+        case arrow, box, ellipse, highlight, text, pin, stroke
+    }
+
+    enum Frame: Equatable, Sendable {
+        case canvas(String)
+        case image(String)
+        case selector(String)
+        case quote(String)
+    }
+
+    let id: String
+    let kind: Kind
+    let frame: Frame
+    /// An arrow's tail, or where a pin or text sits.
+    let at: CGPoint?
+    /// An arrow's head.
+    let to: CGPoint?
+    /// A box, ellipse or highlight: x, y, width, height.
+    let rect: CGRect?
+    /// A stroke's points; empty for every other kind.
+    let pts: [CGPoint]
+    /// The note beside the mark; for `text`, the text.
+    let label: String?
+
+    private enum CodingKeys: String, CodingKey { case id, kind, frame, at, to, rect, pts, label }
+    private enum FrameKeys: String, CodingKey { case canvas, image, selector, quote }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        // A kind or a frame this build has no drawing for throws here, and `List` skips the mark.
+        kind = try container.decode(Kind.self, forKey: .kind)
+        let frames = try container.nestedContainer(keyedBy: FrameKeys.self, forKey: .frame)
+        if let canvas = try frames.decodeIfPresent(String.self, forKey: .canvas) {
+            frame = .canvas(canvas)
+        } else if let image = try frames.decodeIfPresent(String.self, forKey: .image) {
+            frame = .image(image)
+        } else if let selector = try frames.decodeIfPresent(String.self, forKey: .selector) {
+            frame = .selector(selector)
+        } else if let quote = try frames.decodeIfPresent(String.self, forKey: .quote) {
+            frame = .quote(quote)
+        } else {
+            throw DecodingError.dataCorruptedError(forKey: .frame, in: container, debugDescription: "no frame this build can draw on")
+        }
+        at = try Self.point(container.decodeIfPresent([Double].self, forKey: .at))
+        to = try Self.point(container.decodeIfPresent([Double].self, forKey: .to))
+        rect = try container.decodeIfPresent([Double].self, forKey: .rect).map { xywh in
+            guard xywh.count == 4 else { throw DecodingError.dataCorruptedError(forKey: .rect, in: container, debugDescription: "rect is [x, y, width, height]") }
+            return CGRect(x: xywh[0], y: xywh[1], width: xywh[2], height: xywh[3])
+        }
+        pts = try (container.decodeIfPresent([[Double]].self, forKey: .pts) ?? []).compactMap(Self.point)
+        label = try container.decodeIfPresent(String.self, forKey: .label)
+    }
+
+    private static func point(_ xy: [Double]?) throws -> CGPoint? {
+        guard let xy else { return nil }
+        guard xy.count == 2 else { throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "a point is [x, y]")) }
+        return CGPoint(x: xy[0], y: xy[1])
+    }
+
+    /// Every mark this build can read, in order. One it can't, such as a kind from a newer daemon,
+    /// is skipped: never the review, and never the marks beside it.
+    struct List: Decodable, Equatable, Sendable {
+        let all: [AgentMark]
+
+        init(from decoder: Decoder) throws {
+            all = ((try? [Lossy](from: decoder)) ?? []).compactMap(\.mark)
+        }
+    }
+
+    private struct Lossy: Decodable {
+        let mark: AgentMark?
+
+        init(from decoder: Decoder) throws {
+            mark = try? AgentMark(from: decoder)
+        }
     }
 }
 

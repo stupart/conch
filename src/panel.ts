@@ -370,7 +370,7 @@ export interface PublishedState {
    * honest latest-deliverable-only view rather than presenting local guesses as shared truth.
    * Unknown means unknown.
    */
-  features: { deliverables: 2; viewedState: 1 };
+  features: { deliverables: 3; viewedState: 1 };
   /** Stable identity of the daemon installation that owns every local session key. */
   ownerDeviceId: string;
   ts: number;
@@ -565,7 +565,8 @@ export function buildPublishedState(
   return {
     v: 1,
     // 2: deliverables carry `artifact`, `version` and `kind`, and a session command removes them.
-    features: { deliverables: 2, viewedState: 1 },
+    // 3: a deliverable's scene carries the agent's `marks` (agent ink).
+    features: { deliverables: 3, viewedState: 1 },
     ownerDeviceId,
     ts: now,
     ...(options.audio ? { audioControl: options.audio.control, audioOutbox: options.audio.outbox } : {}),

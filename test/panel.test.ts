@@ -238,7 +238,7 @@ describe("buildPublishedState — external session snapshot", () => {
     expect(row.review?.viewedAt).toBeUndefined();
     // An app that finds no `features` is talking to a daemon from before this, and must not
     // present its own guesses as shared truth.
-    expect(published.features).toEqual({ deliverables: 2, viewedState: 1 });
+    expect(published.features).toEqual({ deliverables: 3, viewedState: 1 });
   });
 
   test("a session holding several deliverables publishes them all, with the newest as `review`", () => {
@@ -322,7 +322,7 @@ describe("buildPublishedState — external session snapshot", () => {
 
     expect(published).toEqual({
       v: 1,
-      features: { deliverables: 2, viewedState: 1 },
+      features: { deliverables: 3, viewedState: 1 },
       ownerDeviceId: "test-device",
       ts: 1_234_567,
       mode: { muted: false, paused: true, holding: 2 },

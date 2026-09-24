@@ -64,7 +64,7 @@ If publication is unavailable, leave the result in your reply. Where supported, 
     conch_transcript_tail:
       "Read the last sentences of a live session’s latest assistant reply. Does not retrieve full history or verify tool results.",
     review_to_front:
-      "Publish your session’s result for the user to inspect, with a concise summary, an optional artifact link and kind, and an optional conversation scene. Publishing the same artifact again (the same link, or the same key) adds its next version rather than a second entry: the user sees the newest, with earlier versions listed under it by summary and time. Returns the filing's id, its artifact, version and kind. The user's pill click stages it. Publishing does not open applications or finish the running turn.",
+      "Publish your session’s result for the user to inspect, with a concise summary, an optional artifact link and kind, and an optional scene: the conversation to bring forward, or marks drawn over the result at the one thing to check. Publishing the same artifact again (the same link, or the same key) adds its next version rather than a second entry: the user sees the newest, with earlier versions listed under it by summary and time. Returns the filing's id, its artifact, version and kind. The user's pill click stages it. Publishing does not open applications or finish the running turn.",
     conch_history:
       "Read a page of recorded session history, including coverage and continuation cursors.",
     conch_item:

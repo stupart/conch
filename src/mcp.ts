@@ -38,7 +38,14 @@ const WORKING_FOLDERS_MAX = 8;
 import {
   checkReviewLink,
   checkReviewScene,
+  markImagesRefusal,
   REVIEW_INSPECT_MAX,
+  REVIEW_MARK_FRAME_MAX,
+  REVIEW_MARK_KINDS,
+  REVIEW_MARK_LABEL_MAX,
+  REVIEW_MARK_POINTS_MAX,
+  REVIEW_MARKS_MAX,
+  REVIEW_MARKS_MAX_BYTES,
   REVIEW_SCENE_KINDS,
   type ReviewScene,
   REVIEW_SUMMARY_MAX,
@@ -364,6 +371,42 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
                 minLength: 1,
                 maxLength: REVIEW_INSPECT_MAX,
                 description: "One short line naming what to check, e.g. \"Check that Save stays reachable at phone width\".",
+              },
+              marks: {
+                type: "array",
+                minItems: 1,
+                maxItems: REVIEW_MARKS_MAX,
+                description: `Optional agent ink: marks conch draws over what you published, where the user is looking, each pointing at one thing you changed or want checked. frame is what a mark is drawn on: selector or quote, an element or text in the linked page, which conch finds and marks itself (no at, to, rect or pts); canvas, the user's canvas you are answering, by the id conch gave you with it; image, an absolute path to an image file (it passes the same check as link). On a canvas or an image, numbers are 0-1 of it from the top left: arrow takes at (its tail) and to (its head), box, ellipse and highlight take rect [x, y, width, height], pin and text take at, stroke takes 2-${REVIEW_MARK_POINTS_MAX} pts. text needs a label; any mark may have one, the note beside it. conch colours marks itself. At most ${REVIEW_MARKS_MAX_BYTES} bytes in all.`,
+                items: {
+                  type: "object",
+                  properties: {
+                    id: { type: "string", minLength: 1, maxLength: 32, description: "Letters, digits, - or _; unique among these marks." },
+                    kind: { type: "string", enum: REVIEW_MARK_KINDS },
+                    frame: {
+                      type: "object",
+                      description: "Exactly one of canvas, image, selector or quote.",
+                      properties: {
+                        canvas: { type: "string", minLength: 1, maxLength: REVIEW_MARK_FRAME_MAX.canvas },
+                        image: { type: "string", minLength: 1, maxLength: REVIEW_MARK_FRAME_MAX.image },
+                        selector: { type: "string", minLength: 1, maxLength: REVIEW_MARK_FRAME_MAX.selector },
+                        quote: { type: "string", minLength: 1, maxLength: REVIEW_MARK_FRAME_MAX.quote },
+                      },
+                      additionalProperties: false,
+                    },
+                    at: { type: "array", items: { type: "number", minimum: 0, maximum: 1 }, minItems: 2, maxItems: 2 },
+                    to: { type: "array", items: { type: "number", minimum: 0, maximum: 1 }, minItems: 2, maxItems: 2 },
+                    rect: { type: "array", items: { type: "number", minimum: 0, maximum: 1 }, minItems: 4, maxItems: 4 },
+                    pts: {
+                      type: "array",
+                      items: { type: "array", items: { type: "number", minimum: 0, maximum: 1 }, minItems: 2, maxItems: 2 },
+                      minItems: 2,
+                      maxItems: REVIEW_MARK_POINTS_MAX,
+                    },
+                    label: { type: "string", minLength: 1, maxLength: REVIEW_MARK_LABEL_MAX },
+                  },
+                  required: ["id", "kind", "frame"],
+                  additionalProperties: false,
+                },
               },
             },
             required: ["v", "target"],
@@ -1412,6 +1455,8 @@ export function createMcpToolHandlers(
         // which resolved it against its own cwd and previewed a missing file.
         const checked = rawLink === undefined ? undefined : await checkReviewLink(rawLink, process.cwd());
         if (checked && !checked.ok) throw new ToolInputError(checked.reason);
+        const images = await markImagesRefusal(scene?.ok ? scene.scene : undefined, process.cwd());
+        if (images) throw new ToolInputError(images);
         return {
           summary: cleaned.slice(0, REVIEW_SUMMARY_MAX),
           truncatedFrom: cleaned.length > REVIEW_SUMMARY_MAX ? cleaned.length : undefined,

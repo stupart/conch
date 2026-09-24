@@ -89,7 +89,7 @@ https://brew.sh rather than trying to install Homebrew yourself.
   not be looked at: a wrong result, or one filed by mistake. Both act on your
   own session only.
 
-  **The scene.** Optional: `scene: {v: 1, target: {kind}, inspect?}`.
+  **The scene.** Optional: `scene: {v: 1, target: {kind}, inspect?, marks?}`.
 
   - `kind: "auto"`, the same as no scene: the link, else conch's window on your
     session if it is open, else your terminal, else conch's window.
@@ -104,6 +104,37 @@ https://brew.sh rather than trying to install Homebrew yourself.
     the iPhone show it.
   - `target.ref` is reserved for surface references conch will issue later and
     is not accepted yet.
+
+  **Marks.** Optional `scene.marks`, agent ink: conch draws them over your
+  result where the user is looking. Mark the one thing that decides whether the
+  result is right (the button you moved, the heading that still wraps, the frame
+  that blurs) and say why in its `label`. Don't mark the whole page, or what the
+  summary already says. Up to 12, each `{id, kind, frame, at?, to?, rect?,
+  pts?, label?}`:
+
+  - `id`: 1 to 32 letters, digits, `-` or `_`, unique among your marks.
+  - `kind`: `arrow`, `box`, `ellipse`, `highlight`, `text`, `pin` or `stroke`.
+  - `frame`, exactly one of:
+    - `{selector: ".hero .cta"}` or `{quote: "Start free trial"}`: an element,
+      or text, in the page your `link` opens, at most 120 characters. conch
+      finds it wherever it is on screen and places the mark on it, so these
+      take no numbers. Prefer them for a page you wrote.
+    - `{canvas: id}`: the user's canvas you are answering, by the id conch gave
+      you with it.
+    - `{image: "/tmp/still.png"}`: an absolute path to an image file, such as a
+      still the user sent. It must pass the same check as `link`.
+  - On a canvas or an image, numbers are fractions of it, 0 to 1 from the top
+    left. `arrow` takes `at` (its tail) and `to` (its head) as `[x, y]`; `box`,
+    `ellipse` and `highlight` take `rect: [x, y, width, height]`; `pin` and
+    `text` take `at`; `stroke` takes 2 to 64 `pts`, and only on a canvas or an
+    image.
+  - `label`: at most 80 characters, the note beside the mark. `text` needs one:
+    it is the text.
+  - No colour: conch draws your marks in your colour. 4096 bytes in all.
+
+  For example: `scene: {v: 1, target: {kind: "link"}, inspect: "The button
+  sits above the fold now", marks: [{id: "cta", kind: "box", frame: {selector:
+  ".hero .cta"}, label: "Moved up from the footer"}]}`.
 
   `session` is optional and defaults to you. A session may only surface its own
   work; naming a different session is refused, because the dashboard attributes
@@ -151,6 +182,7 @@ Do not retry the same call; do the alternative, or tell the user in one line.
   "nothing removed"; list yours with `conch_deliverables`. It takes exactly
   one of the two.
 - `review_to_front` with a **scene** that is not `v: 1`, has an unknown kind or field, asks for `kind: "link"` with no link, has an `inspect` that is empty or over 200 characters, or carries `target.ref` — the refusal says which; fix the scene or omit it.
+- `review_to_front` with **marks** that don't fit *Marks* above: an unknown kind or field (a colour is one), numbers outside 0 to 1, geometry the kind doesn't take, a `selector` or `quote` with no link, an image that fails the link check, more than 12, or over 4096 bytes. The refusal names the mark (`marks[2]`) and what to fix.
 - A `session` name that **matches several sessions** — the refusal lists them by id and label; pass the id.
 - `conch_wake` / `conch_recite` **without `session`** when your caller is unverified — pass the session's id.
 - `conch_config` setting or unsetting a key that is **not on the list** above — the refusal names the `conch set <key> <value>` (or `conch unset <key>`) command the user can run themselves.

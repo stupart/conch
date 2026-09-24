@@ -4,6 +4,7 @@ import { open as openFile, realpath, stat, type FileHandle } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { basename, resolve } from "node:path";
 import { selectWindowBranch, type WindowIdentity } from "./conversation.ts";
+import { inferDeliverableKind } from "./deliverables.ts";
 
 const BARE_URL = /(?:<)?\bhttps?:\/\/[^\s<>"'`]+(?:>)?/gi;
 const FILESYSTEM_PATH = /(^|[\s([{'":=])((?:(?:~?|\.\.?)\/|[A-Za-z0-9_.-]+\/)[^\s)\]}>,"'`]+)/g;
@@ -1047,6 +1048,168 @@ export interface ReviewScene {
   v: 1;
   target: { kind: ReviewSceneKind };
   inspect?: string;
+  /** Agent ink: what the agent drew over it, for the apps to draw where the user is looking. */
+  marks?: ReviewMark[];
+}
+
+/**
+ * Agent ink: one mark an agent draws over what it published, pointing at the thing it changed or
+ * wants checked. The frame says what the mark is drawn on, and so what its numbers mean:
+ *
+ * - `canvas`: the user's canvas the agent is answering; its numbers are 0-1 of that canvas.
+ * - `image`: an image file, such as a still the user sent; its numbers are 0-1 of the image.
+ * - `selector`, `quote`: an element, or text, in the linked page. conch finds it wherever it is
+ *   on screen and places the mark on it, so these take no numbers at all.
+ *
+ * (0, 0) is the top left. No colour: conch draws every mark in the agent's own.
+ */
+export interface ReviewMark {
+  id: string;
+  kind: ReviewMarkKind;
+  frame: { canvas: string } | { image: string } | { selector: string } | { quote: string };
+  at?: [number, number];
+  to?: [number, number];
+  rect?: [number, number, number, number];
+  pts?: Array<[number, number]>;
+  /** The note that pops beside the mark; for `text`, the text. */
+  label?: string;
+}
+
+export const REVIEW_MARK_KINDS = ["arrow", "box", "ellipse", "highlight", "text", "pin", "stroke"] as const;
+export type ReviewMarkKind = (typeof REVIEW_MARK_KINDS)[number];
+export const REVIEW_MARKS_MAX = 12;
+export const REVIEW_MARK_POINTS_MAX = 64;
+export const REVIEW_MARK_LABEL_MAX = 80;
+/** How long each frame may be. A selector or a quote names one thing; past 120 it is a paragraph, not a name. */
+export const REVIEW_MARK_FRAME_MAX = { canvas: 200, image: 1024, selector: 120, quote: 120 } as const;
+/**
+ * Every held deliverable is published on every state change, and the newest twice (`review` and
+ * the last of `reviews`), so a scene's marks are bounded as a whole as well as field by field.
+ * Eight sessions each holding six, every one at this cap, publish about 230 KB more.
+ */
+export const REVIEW_MARKS_MAX_BYTES = 4096;
+
+/** The geometry each kind takes on a canvas or an image; every field listed is required. */
+const MARK_GEOMETRY: Readonly<Record<ReviewMarkKind, readonly ("at" | "to" | "rect" | "pts")[]>> = {
+  arrow: ["at", "to"], // from at, pointing at to
+  box: ["rect"],
+  ellipse: ["rect"],
+  highlight: ["rect"],
+  text: ["at"],
+  pin: ["at"],
+  stroke: ["pts"],
+};
+const MARK_FIELDS = ["id", "kind", "frame", "at", "to", "rect", "pts", "label"];
+
+/** One line of printable text, 1 to `max` characters, or null. */
+function markText(value: unknown, max: number): string | null {
+  return typeof value === "string" && value.trim() && value.length <= max && !/[\u0000-\u001f\u007f-\u009f]/.test(value)
+    ? value
+    : null;
+}
+
+/** From 0 to 1, and so finite: NaN and the infinities fail the comparison. */
+const unit = (value: unknown): value is number => typeof value === "number" && value >= 0 && value <= 1;
+const point = (value: unknown): value is [number, number] => Array.isArray(value) && value.length === 2 && value.every(unit);
+
+function checkReviewMark(value: unknown, hasLink: boolean): { ok: true; mark: ReviewMark } | { ok: false; reason: string } {
+  const no = (reason: string) => ({ ok: false, reason }) as const;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return no("must be an object");
+  const mark = value as Record<string, unknown>;
+  const extra = Object.keys(mark).find((key) => !MARK_FIELDS.includes(key));
+  if (extra) return no(`has unknown field "${extra}"`);
+  if (typeof mark.id !== "string" || !/^[\w-]{1,32}$/.test(mark.id)) return no("id must be 1 to 32 letters, digits, - or _");
+  const kind = REVIEW_MARK_KINDS.find((known) => known === mark.kind);
+  if (!kind) return no(`kind must be one of ${REVIEW_MARK_KINDS.join(", ")}`);
+
+  const frame = mark.frame;
+  const where = typeof frame === "object" && frame !== null && !Array.isArray(frame) && Object.keys(frame).length === 1
+    ? (Object.keys(REVIEW_MARK_FRAME_MAX) as (keyof typeof REVIEW_MARK_FRAME_MAX)[]).find((known) => Object.hasOwn(frame, known))
+    : undefined;
+  if (!where) return no("frame must be exactly one of {canvas}, {image}, {selector} or {quote}");
+  const anchor = markText((frame as Record<string, unknown>)[where], REVIEW_MARK_FRAME_MAX[where]);
+  if (!anchor) return no(`frame.${where} must be one line of 1 to ${REVIEW_MARK_FRAME_MAX[where]} characters`);
+  if (where === "image" && (!anchor.startsWith("/") || inferDeliverableKind(anchor) !== "image")) {
+    return no("frame.image must be the absolute path of an image file");
+  }
+  const onElement = where === "selector" || where === "quote";
+  if (onElement && !hasLink) return no(`frame.${where} names something in the linked page; pass link, or draw on a canvas or an image`);
+  if (onElement && kind === "stroke") return no(`a stroke is its pts, so it is drawn on a canvas or an image, not a ${where}`);
+
+  const takes = onElement ? [] : MARK_GEOMETRY[kind];
+  for (const field of ["at", "to", "rect", "pts"] as const) {
+    if (Object.hasOwn(mark, field) && !takes.includes(field)) {
+      return no(onElement
+        ? `takes no ${field}: conch places it on what the ${where} names`
+        : `(${kind}) takes ${takes.join(" and ")}, not ${field}`);
+    }
+    if (!Object.hasOwn(mark, field) && takes.includes(field)) return no(`(${kind}) needs ${takes.join(" and ")}`);
+  }
+  for (const field of ["at", "to"] as const) {
+    if (Object.hasOwn(mark, field) && !point(mark[field])) return no(`${field} must be [x, y], each from 0 to 1 of the ${where}`);
+  }
+  const rect = mark.rect;
+  if (rect !== undefined && !(Array.isArray(rect) && rect.length === 4 && rect.every(unit) && rect[2] > 0 && rect[3] > 0)) {
+    return no(`rect must be [x, y, width, height], each from 0 to 1 of the ${where}, with a width and height above 0`);
+  }
+  const pts = mark.pts;
+  if (pts !== undefined && !(Array.isArray(pts) && pts.length >= 2 && pts.length <= REVIEW_MARK_POINTS_MAX && pts.every(point))) {
+    return no(`pts must be 2 to ${REVIEW_MARK_POINTS_MAX} points [x, y], each from 0 to 1 of the ${where}`);
+  }
+  const label = Object.hasOwn(mark, "label") ? markText(mark.label, REVIEW_MARK_LABEL_MAX) : undefined;
+  if (label === null) return no(`label must be one line of 1 to ${REVIEW_MARK_LABEL_MAX} characters`);
+  if (kind === "text" && label === undefined) return no("(text) needs a label: it is the text");
+  return {
+    ok: true,
+    mark: {
+      id: mark.id,
+      kind,
+      frame: { [where]: anchor } as ReviewMark["frame"],
+      ...(mark.at !== undefined ? { at: mark.at as [number, number] } : {}),
+      ...(mark.to !== undefined ? { to: mark.to as [number, number] } : {}),
+      ...(rect !== undefined ? { rect: rect as [number, number, number, number] } : {}),
+      ...(pts !== undefined ? { pts: pts as Array<[number, number]> } : {}),
+      ...(label !== undefined ? { label } : {}),
+    },
+  };
+}
+
+function checkReviewMarks(value: unknown, hasLink: boolean): { ok: true; marks: ReviewMark[] } | { ok: false; reason: string } {
+  const no = (reason: string) => ({ ok: false, reason }) as const;
+  if (!Array.isArray(value) || value.length < 1 || value.length > REVIEW_MARKS_MAX) {
+    return no(`marks must be a list of 1 to ${REVIEW_MARKS_MAX} marks`);
+  }
+  const marks: ReviewMark[] = [];
+  for (const [index, candidate] of value.entries()) {
+    const checked = checkReviewMark(candidate, hasLink);
+    if (!checked.ok) return no(`marks[${index}] ${checked.reason}`);
+    if (marks.some((mark) => mark.id === checked.mark.id)) return no(`marks[${index}] id "${checked.mark.id}" is taken; each mark needs its own`);
+    marks.push(checked.mark);
+  }
+  const bytes = Buffer.byteLength(JSON.stringify(marks));
+  if (bytes > REVIEW_MARKS_MAX_BYTES) {
+    return no(`marks are ${bytes} bytes; at most ${REVIEW_MARKS_MAX_BYTES}: fewer marks or points, shorter labels, or three decimals`);
+  }
+  return { ok: true, marks };
+}
+
+/**
+ * The images a scene's marks are drawn on, through `checkLocalFile`: an app draws on the image
+ * itself, and the phone fetches it, so each passes the rule a linked file does. Async, so it runs
+ * where the link is checked (`review_to_front`, and the daemon filing a publication). Null when
+ * every one passes, else why not.
+ */
+export async function markImagesRefusal(scene: ReviewScene | undefined, cwd: string): Promise<string | null> {
+  for (const [index, mark] of (scene?.marks ?? []).entries()) {
+    if (!("image" in mark.frame)) continue;
+    const checked = await checkLocalFile(mark.frame.image, [cwd]);
+    if (!checked.ok) {
+      return `scene marks[${index}] frame.image ${checked.reason === SAFE_REVIEW_LINK
+        ? "must be an existing, non-executable file"
+        : checked.reason.replace(/^link /, "")}`;
+    }
+  }
+  return null;
 }
 
 /**
@@ -1054,7 +1217,8 @@ export interface ReviewScene {
  * daemon's socket, and the saved reviews. Returns the scene as published, or
  * why not. `target.ref` is reserved until conch issues verified surface
  * references, so it is refused rather than silently dropped, and `link` needs
- * a link to open.
+ * a link to open. Its marks are checked here too, all but their images, which
+ * need the disk (`markImagesRefusal`).
  */
 export function checkReviewScene(
   value: unknown,
@@ -1063,7 +1227,7 @@ export function checkReviewScene(
   const record = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
   const refuse = (reason: string) => ({ ok: false, reason: `scene ${reason}` }) as const;
   if (!record(value)) return refuse("must be an object");
-  const extra = Object.keys(value).find((key) => key !== "v" && key !== "target" && key !== "inspect");
+  const extra = Object.keys(value).find((key) => key !== "v" && key !== "target" && key !== "inspect" && key !== "marks");
   if (extra) return refuse(`has unknown field "${extra}"`);
   if (value.v !== 1) return refuse("v must be 1");
   const target = value.target;
@@ -1076,14 +1240,21 @@ export function checkReviewScene(
   const kind = REVIEW_SCENE_KINDS.find((known) => known === target.kind);
   if (!kind) return refuse(`target.kind must be one of ${REVIEW_SCENE_KINDS.join(", ")}`);
   if (kind === "link" && !hasLink) return refuse('target.kind "link" needs a link to open; pass link, or use "auto"');
-  if (!Object.hasOwn(value, "inspect")) return { ok: true, scene: { v: 1, target: { kind } } };
-  if (typeof value.inspect !== "string") return refuse("inspect must be a string");
-  const inspect = sanitizeReviewSummary(value.inspect, Infinity);
-  if (!inspect) return refuse("inspect must be a non-empty string");
-  if (inspect.length > REVIEW_INSPECT_MAX) {
-    return refuse(`inspect is ${inspect.length} characters; at most ${REVIEW_INSPECT_MAX}, one short thing to check`);
+  let inspect: string | undefined;
+  if (Object.hasOwn(value, "inspect")) {
+    if (typeof value.inspect !== "string") return refuse("inspect must be a string");
+    inspect = sanitizeReviewSummary(value.inspect, Infinity);
+    if (!inspect) return refuse("inspect must be a non-empty string");
+    if (inspect.length > REVIEW_INSPECT_MAX) {
+      return refuse(`inspect is ${inspect.length} characters; at most ${REVIEW_INSPECT_MAX}, one short thing to check`);
+    }
   }
-  return { ok: true, scene: { v: 1, target: { kind }, inspect } };
+  const marks = Object.hasOwn(value, "marks") ? checkReviewMarks(value.marks, hasLink) : undefined;
+  if (marks && !marks.ok) return refuse(marks.reason);
+  return {
+    ok: true,
+    scene: { v: 1, target: { kind }, ...(inspect !== undefined ? { inspect } : {}), ...(marks ? { marks: marks.marks } : {}) },
+  };
 }
 
 export const SAFE_REVIEW_LINK =

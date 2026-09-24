@@ -1873,6 +1873,60 @@ describe("the daemon checks a deliverable's link itself", () => {
     });
   });
 
+  // Agent ink: the marks ride the scene into the published state, and the daemon runs the tool's image check itself.
+  const box = { id: "cta", kind: "box" as const, frame: { selector: ".cta" }, label: "Moved up" };
+  const inked = (link: string, marks: NonNullable<NonNullable<TurnEvent["review"]>["scene"]>["marks"]) =>
+    ({ summary: "the page", link, scene: { v: 1 as const, target: { kind: "link" as const }, marks } });
+  const publishedRow = (h: ReturnType<typeof harness>) => buildPublishedState("device", buildPanelModel({
+    sessions: [{ sessionId: "s1", name: "alpha" } as SessionInfo],
+    sessionStates: h.ledger.sessionStates,
+    pausedSessionIds: new Set(),
+    live: { state: "idle", label: "", partial: "" },
+    mode: { muted: false, paused: false, holding: 0 },
+    activeSessionId: null,
+    navSelectedId: null,
+  }), new Map(), new Set(), Date.now()).rows[0]!;
+
+  test("a publication's marks are published on the row, on review and on every held filing", async () => {
+    await withFolder(async (folder) => {
+      writeFileSync(join(folder, "page.html"), "<h1>ok</h1>");
+      writeFileSync(join(folder, "still.png"), "png");
+      const h = harness({ paused: true, window: () => ({ sessionId: "s1", cwd: folder } as SessionInfo) });
+      const marks = [box, { id: "pin", kind: "pin" as const, frame: { image: join(folder, "still.png") }, at: [0.5, 0.5] as [number, number] }];
+      await h.voice.handle(accepted(h, published(inked("page.html", marks))));
+      const row = publishedRow(h);
+      expect(row.review?.scene?.marks).toEqual(marks);
+      expect(row.reviews?.at(-1)?.scene?.marks).toEqual(marks);
+      expect(h.errors).toEqual([]);
+    });
+  });
+
+  test("a refused link files nothing, so no marks are published", async () => {
+    await withFolder(async (folder) => {
+      const h = harness({ paused: true, window: () => ({ sessionId: "s1", cwd: folder } as SessionInfo) });
+      await h.voice.handle(accepted(h, published(inked("/etc/hosts", [box]))));
+      expect(h.ledger.sessionStates.get("s1")?.review).toBeUndefined();
+      expect(publishedRow(h).review).toBeUndefined();
+      expect(h.errors.map(([operation]) => operation)).toEqual(["review-link"]);
+    });
+  });
+
+  test("a mark's image that fails the check refuses the publication, against the folder the daemon knows", async () => {
+    await withFolder(async (folder) => {
+      writeFileSync(join(folder, "page.html"), "<h1>ok</h1>");
+      const h = harness({ paused: true, window: () => ({ sessionId: "s1", cwd: folder } as SessionInfo) });
+      const elsewhere = join(import.meta.dir, "..", "assets", "conch-icon-1024.png");
+      // The event claims the image's folder as its own; the daemon knows better.
+      await h.voice.handle(accepted(h, published(
+        inked("https://example.com", [{ id: "pin", kind: "pin", frame: { image: elsewhere }, at: [0, 0] }]),
+        { cwd: join(import.meta.dir, "..") },
+      )));
+      expect(h.ledger.sessionStates.get("s1")?.review).toBeUndefined();
+      expect(h.errors.map(([operation, , sessionId]) => [operation, sessionId])).toEqual([["review-marks", "s1"]]);
+      expect(String(h.errors[0]![1])).toContain("scene marks[0] frame.image ");
+    });
+  });
+
   test("a marker's refused link is dropped and its summary kept, as the hook's own check does", async () => {
     await withFolder(async (folder) => {
       const h = harness({ paused: true, window: () => ({ sessionId: "s1", cwd: folder } as SessionInfo) });

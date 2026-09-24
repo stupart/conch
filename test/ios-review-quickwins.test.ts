@@ -134,24 +134,32 @@ describe("Next walks the ready reviews by the Mac pill's rule", () => {
 
 describe("a review's scene on the iPhone", () => {
   test.skipIf(!swift)(
-    "inspect decodes when sent, and a missing or unreadable scene never fails the review",
+    "inspect and marks decode when sent, and a missing or unreadable scene or mark never fails the review",
     () => {
       const models = ios("Models.swift");
       const start = models.indexOf("        struct Review: Decodable, Equatable {");
       expect(start).toBeGreaterThan(-1);
       const review = models.slice(start, models.indexOf("\n        }\n", start) + 10);
       const out = runSwift([
+        "import CoreGraphics",
         review,
+        declaration(models, "struct AgentMark: Decodable"),
         "func show(_ json: String) {",
         "  let r = try! JSONDecoder().decode(Review.self, from: Data(json.utf8))",
-        '  print("\\(r.summary)|\\(r.link ?? "-")|\\(r.inspect ?? "-")")',
+        '  print("\\(r.summary)|\\(r.link ?? "-")|\\(r.inspect ?? "-")|\\(r.marks.map(\\.id))")',
         "}",
         'show(#"{"summary":"page","link":"https://x.test","scene":{"v":1,"target":{"kind":"conversation"},"inspect":"Check Save"}}"#)',
         'show(#"{"summary":"page"}"#)',
         'show(#"{"summary":"page","scene":{"inspect":42}}"#)',
         'show(#"{"summary":"page","scene":"conversation"}"#)',
+        // A mark from a newer daemon is skipped, and marks that are not a list are none: the inspect beside them stays.
+        'show(#"{"summary":"page","scene":{"inspect":"Check","marks":[{"id":"a","kind":"box","frame":{"selector":".x"}},{"id":"b","kind":"lasso","frame":{"canvas":"c"}}]}}"#)',
+        'show(#"{"summary":"page","scene":{"inspect":"Check","marks":"box"}}"#)',
       ]);
-      expect(out).toEqual(["page|https://x.test|Check Save", "page|-|-", "page|-|-", "page|-|-"]);
+      expect(out).toEqual([
+        "page|https://x.test|Check Save|[]", "page|-|-|[]", "page|-|-|[]", "page|-|-|[]",
+        'page|-|Check|["a"]', "page|-|Check|[]",
+      ]);
     },
     60_000,
   );
