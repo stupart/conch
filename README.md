@@ -69,6 +69,15 @@ conch setup                        # models, hooks, service, and app plugins
 
 `brew install` pulls the system dependencies (`sox`, `tmux`, `whisper-cpp`) automatically. `conch setup` then downloads the two speech models into `~/.cache/conch/models` (whisper large-v3-turbo q5_0 ~574 MB, silero VAD ~900 KB), wires the Claude Code hooks, verifies the chain, starts the launchd service, and installs the conch plugin. It's idempotent — re-run it any time; it skips or safely refreshes managed pieces. Already have a whisper.cpp build and models (e.g. a [seashell](https://github.com/stupart/seashell) checkout)? Point `CONCH_WHISPER_CLI` / `CONCH_WHISPER_MODEL` / `CONCH_VAD_MODEL` (or `CONCH_SEASHELL_ROOT`) at them and setup leaves them untouched.
 
+Prefer to install the Claude Code plugin yourself, straight from this repo? `conch setup` does this for you locally; the public catalog is:
+
+```
+/plugin marketplace add stupart/conch
+/plugin install conch@conch-plugins
+```
+
+The plugin still needs the CLI above. If `conch setup` already installed `conch@conch`, keep that local installation; do not also install the public-catalog copy. If you previously installed `conch@blueprint-studio-marketplace`, install the new one first, confirm it works, then `/plugin uninstall conch@blueprint-studio-marketplace` — the two would otherwise register the conch tools twice. `conch setup`'s own local plugin (`conch@conch`) is separate and unaffected.
+
 <details>
 <summary><b>From source</b> (for hacking on conch)</summary>
 

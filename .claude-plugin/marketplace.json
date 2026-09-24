@@ -1,0 +1,15 @@
+{
+  "name": "conch-plugins",
+  "owner": {
+    "name": "Tyler Stupart"
+  },
+  "metadata": {
+    "description": "Install catalog for the conch voice loop for Claude Code."
+  },
+  "plugins": [
+    {
+      "name": "conch",
+      "source": "./plugin/plugins/conch"
+    }
+  ]
+}
