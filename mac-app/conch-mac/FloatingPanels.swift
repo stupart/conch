@@ -181,6 +181,8 @@ final class FloatingPanels: ObservableObject {
     @Published var staged: SessionRow.ID?
     /// Where the Ready pill and the panel's Previous and Next are in what is ready: one walk, so they agree.
     let queue = ReviewQueue()
+    /// Told when the fog starts or stops covering the screen (`coverChanged`).
+    private weak var store: StateStore?
     /// The panel's session switcher is open. Here rather than in the view, so a press anywhere else on the fog, which is
     /// AppKit's (`pressed`), closes it.
     @Published var switching = false
@@ -214,6 +216,7 @@ final class FloatingPanels: ObservableObject {
     }
 
     private init(store: StateStore) {
+        self.store = store
         for panel in [controlBar, fog] {
             panel.level = .floating
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
@@ -346,6 +349,13 @@ final class FloatingPanels: ObservableObject {
         }
         show(controlBar, defaults.bool(forKey: ConchStatusItem.showControlBarKey))
         show(fog, defaults.bool(forKey: ConchStatusItem.showConversationKey))
+        coverChanged()
+    }
+
+    /// Full screen and showing, the fog covers whatever app is in front: the store stops taking that app for what Tyler
+    /// sees, and reads it again the moment the fog stops covering it (`StateStore.screenCovered`).
+    private func coverChanged() {
+        store?.screenCovered(isFullScreen && fog.isVisible)
     }
 
     /// `orderFrontRegardless` shows a panel without activating conch.
@@ -471,6 +481,7 @@ final class FloatingPanels: ObservableObject {
             updateInsets(screen.frame, on: screen)
             blur.maskImage = nil
         }
+        coverChanged()
     }
 
     /// A pick the panel shows itself, full screen: the deliverable it is on when that is one the panel draws

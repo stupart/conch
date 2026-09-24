@@ -454,7 +454,7 @@ final class StateStore: ObservableObject {
             return
         }
         let report = ConchScreenObservationReport(source: .conchStaged, surface: surface, app: app, staged: staged)
-        Task { _ = await socketClient.request(report) }
+        sendScreenReport(report, of: surface)
     }
 
     /// The front-window observer's reading of the app in front: said when it is new, and not while
@@ -462,7 +462,30 @@ final class StateStore: ObservableObject {
     private func reportFrontWindow(_ surface: ConchScreenSurface, app: ConchScreenApp) {
         guard screenGate.noticed(surface, in: app.bundleId, at: Date()) else { return }
         let report = ConchScreenObservationReport(source: .frontWindow, surface: surface, app: app, staged: nil)
-        Task { _ = await socketClient.request(report) }
+        sendScreenReport(report, of: surface)
+    }
+
+    /// A report counts as said only once the daemon acks it (`screen-ack`). One it never heard — it was restarting, or
+    /// didn't answer in time — is said again at the next reading, rather than dropped as a repeat of nothing.
+    private func sendScreenReport(_ report: ConchScreenObservationReport, of surface: ConchScreenSurface) {
+        let socketClient = socketClient
+        Task { [weak self] in
+            if case let .reply(data) = await socketClient.request(report),
+               (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["kind"] as? String == "screen-ack" {
+                return
+            }
+            self?.screenGate.unsaid(surface)
+        }
+    }
+
+    /// The conversation panel started or stopped filling the screen (`FloatingPanels`). While it does, the app in front
+    /// is behind it and nothing read from it is said (`ScreenReportGate.covered`): the panel's own report of what it
+    /// shows stands, and the canvas routes by it. Once it stops, the app in front is read again at once, so `showing`
+    /// catches up without waiting for the next poll or an app switch.
+    func screenCovered(_ covered: Bool) {
+        guard covered != screenGate.covered else { return }
+        screenGate.covered = covered
+        if !covered { frontWindow?.readNow() }
     }
 
     /// Take an artifact — every version of it — off a session. Tyler had one removed by
@@ -1157,6 +1180,8 @@ final class StateStore: ObservableObject {
         let previousTimestamp = sourceState?.ts
         let timestampAdvanced = previousTimestamp == nil || snapshot.ts > (previousTimestamp ?? 0)
         sourceState = snapshot
+        // A daemon that has seen nothing on screen is a new one (a restart): what the last one was told is news again.
+        if snapshot.showing == nil { screenGate.forget() }
         applyDeliveryOutcomes(snapshot.deliveries)
         windowPreviewer.handle(snapshot.previewRequests, rows: snapshot.rows)
         reconcileOutbox(with: snapshot)

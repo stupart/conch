@@ -198,6 +198,15 @@ what that app shows.
     old tab, then the page conch opened. A held report isn't counted as said,
     so the first reading after the grace is sent if it still differs.
   - conch's own window is never held, since a pick there is Tyler's.
+  - While the conversation panel fills the screen, nothing the front-window
+    observer reads is sent: the app in front is behind the panel, and the
+    panel's own `view: panel` report is what Tyler sees. The moment the panel
+    docks or hides, the app in front is read again, so `showing` catches up
+    (`ScreenReportGate.covered`, `StateStore.screenCovered`).
+  - A report counts as said only once the daemon answers `screen-ack`. One it
+    never heard is sent again at the next reading, and a published state with
+    no `showing` (a daemon that has just started) makes the gate forget what it
+    said, so a restart doesn't leave `showing` empty until Tyler switches app.
 - **Titles.** A window title is never read, so it can't be sent or logged.
 
 ### Not built yet

@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -36,12 +36,37 @@ export const PREVIEWS_PER_MINUTE = 6;
 
 export type Probe = (argv: string[], ok: readonly number[], timeoutMs: number) => Promise<string | null>;
 
-/** Where every snapshot is written: a folder of conch's own in the temp root, 0700. */
+/** Where every snapshot is written, as a path: a folder of conch's own in the temp root. */
+export function previewFolderPath(root: string = tmpdir()): string {
+  return join(root, "conch-previews");
+}
+
+/** Where every snapshot is written, made if it isn't there: `previewFolderPath`, 0700. */
 export function previewFolder(root: string = tmpdir()): string {
-  const folder = join(root, "conch-previews");
+  const folder = previewFolderPath(root);
   mkdirSync(folder, { recursive: true, mode: 0o700 });
   chmodSync(folder, 0o700);
   return folder;
+}
+
+/**
+ * Delete a snapshot of conch's own: a file directly in `folder`, by the path it was stored under
+ * (`folder` joined with its name, as every snapshot is stored). Anything else a record names is
+ * never touched.
+ */
+export function discardPreview(path: string | undefined, folder: string): void {
+  if (path && join(folder, basename(path)) === path) rmSync(path, { force: true });
+}
+
+/** Snapshots older than this go, held or not: the backstop for one nothing else deleted. Refresh takes another. */
+export const PREVIEW_KEPT_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Delete the snapshot folder's files older than `PREVIEW_KEPT_MS`. */
+export function prunePreviews(folder: string, now: number): void {
+  for (const name of readdirSync(folder)) {
+    const file = statSync(join(folder, name), { throwIfNoEntry: false });
+    if (file?.isFile() && now - file.mtimeMs > PREVIEW_KEPT_MS) rmSync(join(folder, name), { force: true });
+  }
 }
 
 /**
@@ -167,6 +192,7 @@ export function createPreviewRequester(deps: PreviewRequesterDependencies): (ses
     const wait = deps.limiter.take(`${sessionId}\u0000${reviewId}`, deps.now());
     if (wait !== null) return { status: 429, error: `a snapshot was just taken; another in ${wait} s` };
     const folder = deps.folder();
+    prunePreviews(folder, deps.now());
     const taken = review.kind === "app"
       ? await (deps.window?.(sessionId, reviewId) ?? Promise.resolve<PreviewOutcome>({ ok: false, error: "conch's Mac app isn't connected" }))
       : await capturePreview(review, holding.roots, { folder, now: deps.now(), probe: deps.probe });
@@ -177,7 +203,7 @@ export function createPreviewRequester(deps: PreviewRequesterDependencies): (ses
     }
     // Only a snapshot of conch's own, in its own folder, is ever deleted.
     const old = review.preview?.path;
-    if (old && old !== taken.preview.path && join(folder, basename(old)) === old) rmSync(old, { force: true });
+    if (old !== taken.preview.path) discardPreview(old, folder);
     return { status: 200 };
   };
 }
@@ -254,7 +280,9 @@ export class WindowPreviews {
     const checked = await checkLocalFile(real, []);
     if (!checked.ok) return refused(checked.reason);
     if (((await stat(real)).mode & 0o077) !== 0) return refused("a snapshot must be readable by its owner alone (0600)");
-    waiting.done({ ok: true, preview: { path: real, kind: "image", capturedAt: this.#options.now() } });
+    // Stored as the folder names it, as the daemon's own snapshots are: its real path (`/private/var/…` for `/var/…`)
+    // never matched, so the next Refresh left this one behind (`discardPreview`).
+    waiting.done({ ok: true, preview: { path: join(this.#options.folder(), basename(real)), kind: "image", capturedAt: this.#options.now() } });
     return { ok: true };
   }
 }

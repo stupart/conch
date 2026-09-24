@@ -84,4 +84,41 @@ final class ScreenObservingTests: XCTestCase {
         gate.staged("conch:a", in: nil, at: at(1.5))
         XCTAssertTrue(gate.noticed("url:old-tab", in: "com.google.Chrome", at: at(2)))
     }
+
+    /// The panel shows A full screen; Chrome, behind it, still shows B's page, and the poll reads it
+    /// every 3 s. That reading used to be said, and B at 0.9 took the canvas's Send from A.
+    func testNothingIsSaidWhileThePanelCoversTheScreen() {
+        var gate = ScreenReportGate<String>()
+        XCTAssertTrue(gate.noticed("url:b", in: "com.google.Chrome", at: at(0)))
+        gate.staged("conch:a:panel", in: nil, at: at(5))
+        gate.covered = true
+        XCTAssertFalse(gate.noticed("url:b", in: "com.google.Chrome", at: at(8)))
+        XCTAssertFalse(gate.noticed("url:b", in: "com.google.Chrome", at: at(60)))
+        // Not remembered as said: docked again, the page in front is news.
+        gate.covered = false
+        XCTAssertTrue(gate.noticed("url:b", in: "com.google.Chrome", at: at(61)))
+    }
+
+    /// A daemon that restarts forgets `showing`; the poll's unchanged reading was dropped as a repeat
+    /// until Tyler switched app or tab.
+    func testAForgottenGateSaysTheSameReadingAgain() {
+        var gate = ScreenReportGate<String>()
+        XCTAssertTrue(gate.noticed("url:b", in: "com.google.Chrome", at: at(0)))
+        XCTAssertFalse(gate.noticed("url:b", in: "com.google.Chrome", at: at(3)))
+        gate.forget()
+        XCTAssertTrue(gate.noticed("url:b", in: "com.google.Chrome", at: at(6)))
+        XCTAssertFalse(gate.noticed("url:b", in: "com.google.Chrome", at: at(9)))
+    }
+
+    /// A report the daemon never acked is said again at the next reading, but never over a newer one.
+    func testAnUnackedReportIsUnsaid() {
+        var gate = ScreenReportGate<String>()
+        XCTAssertTrue(gate.noticed("url:b", in: "com.google.Chrome", at: at(0)))
+        gate.unsaid("url:b")
+        XCTAssertTrue(gate.noticed("url:b", in: "com.google.Chrome", at: at(3)))
+        XCTAssertTrue(gate.noticed("url:c", in: "com.google.Chrome", at: at(6)))
+        // The late failure of b's report is no reason to say c again.
+        gate.unsaid("url:b")
+        XCTAssertFalse(gate.noticed("url:c", in: "com.google.Chrome", at: at(9)))
+    }
 }

@@ -50,6 +50,11 @@ final class FrontWindowObserver {
         read(after: .zero)
     }
 
+    /// Read the app in front now, as an activation does: conch's panel stopped covering it (`StateStore.screenCovered`).
+    func readNow() {
+        read(after: .zero)
+    }
+
     /// Read the app in front once `delay` has passed. A newer request replaces one still waiting.
     private func read(after delay: Duration) {
         reading?.cancel()

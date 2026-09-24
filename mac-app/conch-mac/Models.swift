@@ -1181,6 +1181,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             needsResponse: needsResponse,
             detail: detail,
             review: review,
+            reviews: reviews,
             paused: paused,
             pauseExempt: pauseExempt,
             live: live,
@@ -1197,7 +1198,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             approval: approval,
             parentSessionId: parentSessionId,
             startedBySessionId: startedBySessionId,
-            cwd: cwd
+            cwd: cwd,
+            workDirs: workDirs
         )
     }
 }

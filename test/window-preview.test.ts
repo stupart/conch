@@ -41,7 +41,8 @@ describe("the daemon trusts the app's answer for nothing", () => {
     expect(published()).toBe(1);
     const path = write(`${request!.id}.png`);
     expect(await previews.answer({ request: request!.id, path })).toEqual({ ok: true });
-    expect(await asked).toEqual({ ok: true, preview: { path: require("node:fs").realpathSync(path), kind: "image", capturedAt: 42 } });
+    // As the folder names it, not its real path, so the next Refresh finds and deletes it (`discardPreview`).
+    expect(await asked).toEqual({ ok: true, preview: { path, kind: "image", capturedAt: 42 } });
     expect(previews.requests()).toEqual([]);
     expect(published()).toBe(2);
   });

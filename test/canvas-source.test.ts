@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // The canvas (wave 2): clear glass over whatever is on screen that Tyler draws on, and sends as one picture. These pin
@@ -369,5 +370,90 @@ describe("agent ink", () => {
     const show = member(canvas, "func show(_ document: CanvasDocument?, armed: Bool, agentHidden: Bool = false, agentName: String = \"Claude\") {");
     expect(show).toContain("let delay = fresh ? Double(order) * 0.06 : 0");
     expect(show).toContain("label.pop(after: delay + (Self.reduceMotion ? 0 : Self.drawOnTime * 0.8))");
+  });
+});
+
+describe("agent ink follows the item the panel is on", () => {
+  const swift = Bun.which("swift");
+
+  /**
+   * The canvas's clear and the ink's redraw, run as they are wired: each chain spliced from its source into a harness,
+   * then the Ready pill's walk to another session's review — the review set at the click (`ReviewQueue.walk`), the
+   * panel pinned to its session a hop later, in the staging Task.
+   */
+  test.skipIf(!swift)("a clear is always followed by the marks of the review brought forward, and only that session's", () => {
+    const start = canvas.indexOf("panels.$staged.combineLatest(panels.queue.$lastStaged)");
+    const clearChain = canvas.slice(start, canvas.indexOf(".store(in: &subscriptions)", start) + ".store(in: &subscriptions)".length);
+    const installed = agentInk.indexOf("self.store = store\n") + "self.store = store\n".length;
+    const inkChain = agentInk.slice(installed, agentInk.indexOf("        // Esc in conch", installed));
+    expect(clearChain).toContain("self?.clear()");
+    expect(inkChain).toContain("subscriptions");
+    // The harness's `staged(_:in:)` is the source's rule: only a review the panel's own session holds.
+    expect(member(agentInk, "private func staged(_ key: ReviewItem.ID?, in session: SessionRow.ID?) {")).toContain(
+      "guard let key, let row = store?.state?.row(session),\n              let review = row.held.first(where: { ReviewItem(row: row, review: $0).id == key }) else { return }",
+    );
+    const dir = mkdtempSync(join(tmpdir(), "conch-ink-order-"));
+    try {
+      const file = join(dir, "main.swift");
+      writeFileSync(file, `import Combine
+import Foundation
+@MainActor final class Queue: ObservableObject { @Published var lastStaged: String? = "A/r1" }
+@MainActor final class Panels: ObservableObject { @Published var staged: String? = "A"; let queue = Queue() }
+@MainActor enum FloatingPanels { static var installed: Panels? }
+/** Which session holds each review, as the published state says. */
+let holder = ["A/r1": "A", "B/r7": "B"]
+@MainActor final class Ink {
+    var subscriptions = Set<AnyCancellable>()
+    var shown: String?
+    func stop() { shown = nil }
+    func staged(_ key: String?) { if let key, holder[key] != nil { shown = key } }
+    func staged(_ key: String?, in session: String?) { if let key, let session, holder[key] == session { shown = key } }
+    func install() {
+${inkChain}
+    }
+}
+@MainActor final class Canvas {
+    var subscriptions = Set<AnyCancellable>()
+    let ink: Ink
+    init(ink: Ink) { self.ink = ink }
+    func clear() { ink.stop() }
+    func install(_ panels: Panels) {
+        ${clearChain}
+    }
+}
+@MainActor func run() {
+    let panels = Panels()
+    FloatingPanels.installed = panels
+    let ink = Ink()
+    // The canvas subscribes first, then installs the ink (CanvasController.install).
+    let canvas = Canvas(ink: ink)
+    canvas.install(panels)
+    ink.install()
+    func settle() { RunLoop.main.run(until: Date().addingTimeInterval(0.2)) }
+    panels.queue.lastStaged = "B/r7"
+    Task { @MainActor in panels.staged = "B" }
+    settle(); print(ink.shown ?? "none")
+    // A pick in conch's window takes the panel off it (FloatingPanels.picked): the marks go and stay gone.
+    panels.staged = nil
+    settle(); print(ink.shown ?? "none")
+    // The switcher onto a session that holds nothing: the queue's review is another session's.
+    panels.staged = "C"
+    settle(); print(ink.shown ?? "none")
+    withExtendedLifetime((ink, canvas)) {}
+}
+MainActor.assumeIsolated { run() }
+`);
+      const run = Bun.spawnSync([swift!, file], { stdout: "pipe", stderr: "pipe" });
+      if (run.exitCode !== 0) throw new Error(run.stderr.toString());
+      expect(run.stdout.toString().trim().split("\n")).toEqual(["B/r7", "none", "none"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  test("the page is asked where the marks are only while its window is in sight", () => {
+    const place = member(agentInk, "private func place(_ item: ReviewItem) async -> Placement? {");
+    expect(place).toContain("if let page, page.window?.occlusionState.contains(.visible) == true {\n            found = await Self.find(item.marks, in: page, link: item.link)");
+    expect(place).not.toContain("if let page { found = await Self.find(");
   });
 });

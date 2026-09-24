@@ -55,7 +55,7 @@ import { findSessionBySpokenName, findTranscript, sessionLabel, type SessionInfo
 import { eventTimestamp, type SessionLedger } from "./session-ledger.ts";
 import type { EventQueue } from "./event-queue.ts";
 import { sessionHasLiveBackgroundWork } from "./agent-activity.ts";
-import { carriedReview, carriedReviews, fileReview, latestLatchedState, type SessionStatus } from "./panel.ts";
+import { carriedReview, carriedReviews, fileReview, filedVersions, latestLatchedState, type SessionStatus } from "./panel.ts";
 import { gateTurnForControls } from "./instant-controls.ts";
 import {
   emitRecorderTrace,
@@ -823,9 +823,10 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     // A review is stamped with the time it was FILED, here, once. Later latches
     // carry that exact record forward, so its identity never moves until a
     // newer review replaces it.
-    const minted = review ? fileReview(sessionId, review, at, prior?.reviews) : undefined;
+    const minted = review ? fileReview(sessionId, review, at, prior?.reviews, prior?.versions) : undefined;
     const carried = carriedReview(prior, status, minted);
     const held = carriedReviews(prior?.reviews, minted);
+    const versions = minted ? filedVersions(prior?.versions, [minted]) : prior?.versions;
     const incoming = {
       label,
       status,
@@ -833,6 +834,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       at,
       ...(carried ? { review: carried } : {}),
       ...(held?.length ? { reviews: held } : {}),
+      ...(versions ? { versions } : {}),
       ...(backgroundWork ? { backgroundWork: true as const } : {}),
     };
     if (latestLatchedState(prior, incoming) !== incoming) return false;
@@ -892,15 +894,16 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     const prior = sessionStates.get(sessionId);
     // A replayed or reordered older publication never displaces a newer one.
     if (prior?.review && prior.review.at > at) return;
-    const review = fileReview(sessionId, { ...event.review, ...(link ? { link } : {}) }, at, prior?.reviews);
+    const review = fileReview(sessionId, { ...event.review, ...(link ? { link } : {}) }, at, prior?.reviews, prior?.versions);
     // No latch yet: the oldest-truth latch a restored review gets
     // (`restoreReviews`), so the registry or the next hook decides status.
     const held = carriedReviews(prior?.reviews, review);
+    const versions = filedVersions(prior?.versions, [review])!;
     sessionStates.set(
       sessionId,
       prior
-        ? { ...prior, review, ...(held?.length ? { reviews: held } : {}) }
-        : { label, status: "waiting", at: 0, review, ...(held?.length ? { reviews: held } : {}) },
+        ? { ...prior, review, ...(held?.length ? { reviews: held } : {}), versions }
+        : { label, status: "waiting", at: 0, review, ...(held?.length ? { reviews: held } : {}), versions },
     );
     ledger.saveReviews();
     emitRecordObservation(deps.observeRecords, reviewPublicationObservation(recordScope(sessionId, event.transcriptPath), review));

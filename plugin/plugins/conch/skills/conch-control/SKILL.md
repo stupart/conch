@@ -137,9 +137,11 @@ https://brew.sh rather than trying to install Homebrew yourself.
       finds it wherever it is on screen and places the mark on it, so these
       take no numbers. Prefer them for a page you wrote.
     - `{canvas: id}`: the user's canvas you are answering, by the id conch gave
-      you with it.
-    - `{image: "/tmp/still.png"}`: an absolute path to an image file, such as a
-      still the user sent. It must pass the same check as `link`.
+      you with it. Mark a canvas this way, never by its picture's path.
+    - `{image: "/tmp/still.png"}`: an absolute path to an image file. It must
+      pass the same check as `link`, which refuses conch's own hidden folders,
+      where a still sent from the phone or a canvas's frames are kept: to mark
+      one, copy it under your folder or /tmp first and mark the copy.
   - On a canvas or an image, numbers are fractions of it, 0 to 1 from the top
     left. `arrow` takes `at` (its tail) and `to` (its head) as `[x, y]`; `box`,
     `ellipse` and `highlight` take `rect: [x, y, width, height]`; `pin` and
