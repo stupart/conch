@@ -117,20 +117,24 @@ struct DeliverableWebView: NSViewRepresentable {
             decidePolicyFor navigationAction: WKNavigationAction,
             decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
         ) {
+            // A frame INSIDE the page, not the page. Nil is a new window, which is folded into
+            // this view below, so it is held to the page's rules.
+            let inSubframe = navigationAction.targetFrame?.isMainFrame == false
             guard let destination = navigationAction.request.url else {
                 refuseNavigation(
                     to: nil,
-                    message: "The page requested a destination with no valid URL."
+                    message: "The page requested a destination with no valid URL.",
+                    inSubframe: inSubframe
                 )
                 decisionHandler(.cancel)
                 return
             }
 
-            switch navigationPolicy(for: destination) {
+            switch navigationPolicy(for: destination, inSubframe: inSubframe) {
             case .allow:
                 decisionHandler(.allow)
             case let .refuse(message):
-                refuseNavigation(to: destination, message: message)
+                refuseNavigation(to: destination, message: message, inSubframe: inSubframe)
                 decisionHandler(.cancel)
             }
         }
@@ -141,7 +145,11 @@ struct DeliverableWebView: NSViewRepresentable {
             for navigationAction: WKNavigationAction,
             windowFeatures: WKWindowFeatures
         ) -> WKWebView? {
-            if navigationAction.targetFrame == nil {
+            // A window opened at about:blank has nothing in it yet: its opener means to write
+            // into it, and gets nil back here, so loading it would only swap the page for a
+            // blank one.
+            if navigationAction.targetFrame == nil,
+               navigationAction.request.url?.absoluteString != "about:blank" {
                 activeNavigation = webView.load(navigationAction.request)
             }
             return nil
@@ -182,7 +190,7 @@ struct DeliverableWebView: NSViewRepresentable {
             )
         }
 
-        private func navigationPolicy(for destination: URL) -> NavigationPolicy {
+        private func navigationPolicy(for destination: URL, inSubframe: Bool) -> NavigationPolicy {
             guard let scheme = destination.scheme?.lowercased() else {
                 return .refuse("Only HTTP, HTTPS, and the surfaced local file can be opened in the review.")
             }
@@ -207,12 +215,33 @@ struct DeliverableWebView: NSViewRepresentable {
                     return .refuse("Local file navigation is limited to the exact file published for review.")
                 }
                 return .allow
+            // A web app builds frames inside itself at about:blank and about:srcdoc: an empty
+            // document, or markup the page wrote. Neither loads anything from anywhere. Refusing
+            // them put "Link blocked · about:blank" over a Figma design and blanked the pane
+            // (Tyler, 2026-09-25). Only those two: the rest of about: is the browser's own
+            // pages, which nobody asked for.
+            case "about" where ["about:blank", "about:srcdoc"].contains(destination.absoluteString.lowercased()):
+                return .allow
+            // The same thing spelled differently: a blob is bytes the page made, under the
+            // page's own origin, and a data: frame gets an origin that can reach nothing. So in
+            // a frame they add no power the page lacks, and Safari shows them there. NOT as the
+            // page itself: the pane would then be showing a document no link ever named.
+            // (A `where` binds to one pattern only, hence twice.)
+            case "blob" where inSubframe, "data" where inSubframe:
+                return .allow
             default:
                 return .refuse("The \(scheme) URL scheme is not allowed in the review.")
             }
         }
 
-        private func refuseNavigation(to destination: URL?, message: String) {
+        private func refuseNavigation(to destination: URL?, message: String, inSubframe: Bool) {
+            // A frame inside the page is cancelled and nothing more. The card replaces the WHOLE
+            // pane, so one refused frame took down a page that was otherwise fine — a page's
+            // embedded frame must never do that. Logged, since nothing on screen says it.
+            guard !inSubframe else {
+                NSLog("conch: the review pane refused a frame inside the page: %@", message)
+                return
+            }
             parent.isLoading = false
             let link = destination?.absoluteString ?? parent.link
             parent.onNavigationFailure(

@@ -780,7 +780,12 @@ final class StateStore: ObservableObject {
         onOpened: @escaping @MainActor (ConchScreenApp?) -> Void = { _ in },
         onFailure: @escaping @MainActor (String) -> Void
     ) {
-        let url = LinkTarget.url(for: link, cwd: cwd)
+        var url = LinkTarget.url(for: link, cwd: cwd)
+        // A Figma file opens in Figma when it is on this Mac, not in a browser tab that then
+        // offers to open Figma: the app does not claim figma.com links, only `figma://`.
+        if let app = FigmaLink.appURL(for: url), NSWorkspace.shared.urlForApplication(toOpen: app) != nil {
+            url = app
+        }
         let target = url.isFileURL ? url.path : url.absoluteString
         func fail(_ error: Error) {
             onFailure("\(error.localizedDescription) — \(target)")
