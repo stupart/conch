@@ -1,3 +1,4 @@
+import ConchDesign
 import CryptoKit
 import Foundation
 import Network
@@ -368,71 +369,87 @@ final class BridgeClient: ObservableObject {
         return InjectOutcome.decode(status: response.status, body: response.body)
     }
 
-    /// Send one image, in pieces, and get back the path it landed at.
+    /// Send one file (a picture, a video, its recording, a contact sheet), in pieces, and get
+    /// back the path it landed at.
     ///
     /// Chunked because a relay frame caps at 192 KiB. The path comes back rather
     /// than the bytes staying on the phone because Claude Code reads images by
     /// PATH — the agent needs a file on the Mac, not an attachment.
-    func uploadImage(data: Data, ext: String) async -> String? {
-        let id = ImageUpload.newUploadID()
-        let chunks = ImageUpload.chunks(data)
-        let total = chunks.count
+    ///
+    /// Resumable: the Mac answers every piece with the pieces still missing, and
+    /// this sends those and nothing else. A piece that doesn't go is sent again,
+    /// a few times; and a Retry of the whole message reuses `id`, so the Mac,
+    /// which keeps an unfinished upload for ten minutes, is asked only for what it
+    /// hasn't got. A 40 MB video over the relay is 700 pieces: starting again from
+    /// the first after a dropped link was the difference between sending and not.
+    func upload(data: Data, ext: String, id: String) async -> String? {
+        let total = ImageUpload.chunks(data).count
         guard total > 0 else {
-            _ = await reportAppError(
-                operation: "image-upload",
-                message: "The prepared image had no upload chunks."
-            )
+            _ = await reportAppError(operation: "upload", message: "The prepared \(ext) had no upload chunks.")
             return nil
         }
-        // Chunks is a sequence, not an array: each base64 string is created
-        // immediately before its request and released before the next one.
-        for (index, part) in chunks.enumerated() {
-            guard let body = try? JSONSerialization.data(withJSONObject: [
+        var next: Int? = 0
+        var tries = 0
+        while let index = next {
+            guard let part = ImageUpload.chunk(data, index), let body = try? JSONSerialization.data(withJSONObject: [
                 "uploadId": id,
                 "index": index,
                 "total": total,
                 "extension": ext,
                 "data": part,
             ]) else {
-                _ = await reportAppError(
-                    operation: "image-upload",
-                    message: "The phone couldn't encode image chunk \(index + 1) of \(total)."
-                )
+                _ = await reportAppError(operation: "upload", message: "The phone couldn't encode chunk \(index + 1) of \(total).")
                 return nil
             }
             let response: BridgeResponse
             do {
-                response = try await perform(authorizedRequest(
-                    method: "POST",
-                    path: "/image",
-                    body: body
-                ))
+                response = try await perform(authorizedRequest(method: "POST", path: "/image", body: body))
             } catch {
-                _ = await reportAppError(
-                    operation: "image-upload",
-                    message: error.localizedDescription
-                )
-                return nil
+                // The same piece again, after a moment: the link may be coming back.
+                tries += 1
+                guard tries < Self.uploadTries else {
+                    _ = await reportAppError(operation: "upload", message: error.localizedDescription)
+                    return nil
+                }
+                try? await Task.sleep(for: .seconds(tries))
+                continue
             }
+            let decoded = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any]
             guard response.status == 200 else {
                 _ = await reportAppError(
-                    operation: "image-upload",
-                    message: "The Mac returned HTTP \(response.status) for chunk \(index + 1) of \(total)."
+                    operation: "upload",
+                    message: decoded?["error"] as? String ?? "The Mac returned HTTP \(response.status) for chunk \(index + 1) of \(total)."
                 )
                 return nil
             }
-            // The last chunk answers with the path; the others report progress.
-            if index == total - 1,
-               let decoded = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any],
-               let path = decoded["path"] as? String {
-                return path
-            }
+            if let path = decoded?["path"] as? String { return path }
+            tries = 0
+            // What the Mac still lacks, lowest first; from an older Mac with no list, the next piece.
+            next = (decoded?["missing"] as? [Int])?.first ?? (index + 1 < total ? index + 1 : nil)
         }
-        _ = await reportAppError(
-            operation: "image-upload",
-            message: "The Mac accepted every image chunk but returned no file path."
-        )
+        _ = await reportAppError(operation: "upload", message: "The Mac accepted every chunk but returned no file path.")
         return nil
+    }
+
+    /// How many times one piece is tried before the upload gives up.
+    private static let uploadTries = 4
+
+    /// A recording's words, each with when it was said (`/transcript`): what the model reads in
+    /// place of watching the video. Nil when the Mac couldn't make them out; the video goes without.
+    func transcript(of path: String) async -> [CanvasStoryboard.Said]? {
+        do {
+            // Whisper takes seconds, more when it has to start: the Mac keeps the answer alive meanwhile.
+            let response = try await perform(authorizedRequest(method: "GET", path: Self.route("/transcript", ["path": path])), within: .seconds(150))
+            guard response.status == 200,
+                  let decoded = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any],
+                  let segments = decoded["segments"] as? [[String: Any]] else { return nil }
+            return segments.compactMap { segment in
+                guard let start = segment["start"] as? Double, let end = segment["end"] as? Double, let text = segment["text"] as? String else { return nil }
+                return CanvasStoryboard.Said(start: start, end: end, text: text)
+            }
+        } catch {
+            return nil
+        }
     }
 
     /// Claim (or hand back) the voice. While the phone holds it the Mac stays

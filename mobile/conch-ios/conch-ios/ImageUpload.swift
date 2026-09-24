@@ -314,6 +314,13 @@ enum ImageUpload {
         Chunks(data: data)
     }
 
+    /// One piece, by its number: an upload resumes by sending the pieces the Mac lists as missing.
+    static func chunk(_ data: Data, _ index: Int) -> String? {
+        let start = index * chunkBytes
+        guard index >= 0, start < data.count else { return nil }
+        return data[start..<Swift.min(start + chunkBytes, data.count)].base64EncodedString()
+    }
+
     static func newUploadID() -> String {
         UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(24).lowercased()
     }
