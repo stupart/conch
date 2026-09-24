@@ -77,7 +77,7 @@ import {
   type AudioOutboxItem,
 } from "./audio-holder.ts";
 import { conchHome } from "./home.ts";
-import { createScreenContext, ScreenLog, screenContextFromPublished, type PublishedShowing } from "./screen-context.ts";
+import { createScreenContext, portListenerLookup, ScreenLog, screenContextFromPublished, type PublishedShowing } from "./screen-context.ts";
 import type { Config } from "./config.ts";
 import type { TurnEvent } from "./hook.ts";
 import {
@@ -1235,6 +1235,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       (sessionId) => panelSessions.get(sessionId)?.pid,
       conchHome(),
     ),
+    listeners: portListenerLookup(),
     log: new ScreenLog({
       dir: join(dirname(daemonSettingsPath), "screen"),
       enabled: () => cfg.screenLog,
@@ -2586,7 +2587,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       device: deviceCommand,
     },
     onDelivery: rememberDelivery,
-    onScreenObservation: (observation) => void screen.observe(observation),
+    // Resolving can wait on a port lookup now; whatever goes wrong there is logged, never thrown at the daemon.
+    onScreenObservation: (observation) => void screen.observe(observation).catch((error) => log(`screen: ${error}`)),
   });
 
   let shutdownStarted = false;

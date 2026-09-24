@@ -1,5 +1,6 @@
 import { appendFileSync, mkdirSync, readdirSync, realpathSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { probeCommand } from "./probe.ts";
 import type { ParseResult } from "./settings.ts";
 
 /**
@@ -28,6 +29,8 @@ export type ScreenSurface =
   | { kind: "simulator"; udid?: string; bundleId?: string }
   /** Figma, Preview, a media player: an app, and the document it has open when it says. */
   | { kind: "app"; bundleId: string; document?: string }
+  /** A design tool's canvas (Figma). */
+  | { kind: "design" }
   | { kind: "conch"; sessionId: string; view: "panel" | "overlay" | "main" }
   | { kind: "unknown" };
 
@@ -60,12 +63,11 @@ export const SCREEN_OBSERVERS: readonly ScreenObserver[] = [
   // The Mac app, when the Ready pill or the menu stages something (`ConchStatusItem.stage`), or
   // conch's own window shows a session. It knows only what conch itself put on screen.
   { id: "conch-staged" },
+  // The Mac app, whenever another app comes to the front and every few seconds after: that app,
+  // and with the Accessibility grant the file or page its front window shows (`FrontWindowObserver`).
+  // What it sees on its own, so `showing` follows Tyler when he moves on from what conch staged.
+  { id: "front-window" },
   // Not built yet, in the order they are likely to earn their place (docs/screen-context.md):
-  // - "ax-front-window": the Accessibility front window. kAXDocumentAttribute gives the file or
-  //   URL for Xcode, Preview, TextEdit and Chrome; Terminal gives the cwd. Needs the app's AX grant.
-  // - "browser-tab": Safari and Arc's front tab over AppleScript.
-  // - "localhost-port": a localhost URL's port → the listening pid → its parent chain → the
-  //   session that started it. Verified to beat folder matching.
   // - "simulator": the booted Simulator's front app bundle id → DerivedData's WorkspacePath → session.
   // - "vision": a local or cloud model (OCR or a VLM) matching a screenshot to known deliverables.
 ];
@@ -161,8 +163,9 @@ function validateSurface(value: unknown): ParseResult<ScreenSurface> {
           ? { ok: true, value: v }
           : { ok: false, err: `surface.view must be ${CONCH_VIEWS.join(", ")}` },
       }));
+    case "design":
     case "unknown":
-      return { ok: true, value: { kind: "unknown" } };
+      return { ok: true, value: { kind: value.kind } };
     default:
       return { ok: false, err: `unknown surface kind "${String(value.kind)}"` };
   }
@@ -246,10 +249,19 @@ export interface HeldDeliverable {
   artifact?: string;
 }
 
+/** A process listening on a localhost port: where it runs, and who started it. */
+export interface PortListener {
+  pid: number;
+  /** Its working folder, when `lsof` could say. */
+  cwd?: string;
+  /** Its parent, that one's parent, and so on up to launchd (not included): nearest first. */
+  parents: number[];
+}
+
 /**
  * Everything a resolver may consult. Resolvers are pure over this: whatever touches the world
- * is reached through it (`realpath`) or gathered into it first (a port's listening pid, when
- * that resolver lands), so a test can hand a resolver any world it likes.
+ * is reached through it (`realpath`) or gathered into it first (`listeners`), so a test can hand
+ * a resolver any world it likes.
  */
 export interface ScreenResolveContext {
   sessions: readonly ScreenSession[];
@@ -257,6 +269,8 @@ export interface ScreenResolveContext {
   now: number;
   home: string;
   realpath(path: string): string;
+  /** Who listens on the localhost port the observation's page is on, looked up before resolving. */
+  listeners?: readonly PortListener[];
 }
 
 export interface ScreenResolution {
@@ -311,6 +325,43 @@ function linkKey(link: string, context: ScreenResolveContext): string | undefine
 
 function within(path: string, root: string): boolean {
   return path === root || path.startsWith(root.endsWith("/") ? root : `${root}/`);
+}
+
+/**
+ * The sessions whose folder holds `path`, the most specific folder winning. The home folder is
+ * skipped: a session started there (the help session, a new one) holds everything, so it would
+ * claim every file on the Mac.
+ */
+function folderOwners(path: string, context: ScreenResolveContext): string[] {
+  const real = context.realpath(path);
+  const home = context.realpath(context.home);
+  let best = -1;
+  let owners: string[] = [];
+  for (const session of context.sessions) {
+    for (const folder of [session.cwd, ...(session.workDirs ?? [])]) {
+      if (!folder) continue;
+      // Trailing slashes off, or `/p/` would out-rank `/p` for the same folder.
+      const root = context.realpath(folder).replace(/(.)\/+$/, "$1");
+      if (root === home || root === "/" || !within(real, root)) continue;
+      if (root.length > best) [best, owners] = [root.length, [session.sessionId]];
+      else if (root.length === best) owners.push(session.sessionId);
+    }
+  }
+  return owners;
+}
+
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/** The port of a page served from this Mac, when the surface is one. */
+export function localhostPort(surface: ScreenSurface): number | undefined {
+  if (surface.kind !== "url") return undefined;
+  try {
+    const url = new URL(surface.url);
+    if (!LOOPBACK_HOSTS.has(url.hostname)) return undefined;
+    return url.port ? Number(url.port) : url.protocol === "https:" ? 443 : 80;
+  } catch {
+    return undefined;
+  }
 }
 
 /** 1. conch put it there itself — the pill, the menu, its own window. Exact. */
@@ -372,46 +423,47 @@ const terminalTtyResolver: ScreenResolver = {
 };
 
 /**
- * 4. A file inside a session's folder, the most specific folder winning. The home folder is
- * skipped: a session started there (the help session, a new one) holds everything, so it
- * would claim every file on the Mac.
+ * 4. A page served from this Mac, by who serves it. A session whose process is up the listener's
+ * parent chain started that server, which is the stronger evidence: the nearest such session
+ * wins, since one started inside another's tree is the more specific. Failing that, the
+ * listener's working folder inside a session's folder, which only says where the server runs,
+ * and two sessions in one repo share that.
  */
+const localhostPortResolver: ScreenResolver = {
+  id: "localhost-port",
+  resolve(observation, context) {
+    const port = localhostPort(observation.surface);
+    if (port === undefined || !context.listeners?.length) return null;
+    const sessionByPid = new Map(context.sessions.flatMap((session) => (session.pid ? [[session.pid, session.sessionId] as const] : [])));
+    const starters = context.listeners.flatMap((listener) => {
+      const owner = [listener.pid, ...listener.parents].find((pid) => sessionByPid.has(pid));
+      return owner === undefined ? [] : [sessionByPid.get(owner)!];
+    });
+    if (starters.length) return oneOf(starters, 0.7, `the session that started the server on :${port}`);
+    const runsIn = context.listeners.flatMap((listener) => (listener.cwd ? folderOwners(listener.cwd, context) : []));
+    return oneOf(runsIn, 0.6, `the server on :${port} runs in the session's folder`);
+  },
+};
+
+/** 5. A file inside a session's folder (`folderOwners`). */
 const folderResolver: ScreenResolver = {
   id: "folder",
   resolve(observation, context) {
     const path = observedPath(observation.surface);
-    if (!path) return null;
-    const real = context.realpath(path);
-    const home = context.realpath(context.home);
-    let best = -1;
-    let owners: string[] = [];
-    for (const session of context.sessions) {
-      for (const folder of [session.cwd, ...(session.workDirs ?? [])]) {
-        if (!folder) continue;
-        // Trailing slashes off, or `/p/` would out-rank `/p` for the same folder.
-        const root = context.realpath(folder).replace(/(.)\/+$/, "$1");
-        if (root === home || root === "/" || !within(real, root)) continue;
-        if (root.length > best) [best, owners] = [root.length, [session.sessionId]];
-        else if (root.length === best) owners.push(session.sessionId);
-      }
-    }
-    return oneOf(owners, 0.5, "inside the session's folder");
+    return path ? oneOf(folderOwners(path, context), 0.5, "inside the session's folder") : null;
   },
 };
 
 /**
- * In order; the first to answer wins, so a stronger kind of evidence goes first. Two slots wait:
- *
- * - "port", before folder: a localhost URL's port → its listening pid → the parent chain → the
- *   session whose pid is an ancestor. Verified to beat folder matching. The context grows the
- *   port→pid and pid→parent maps; the resolver stays pure.
- * - "vision", last: a model's match of a screenshot to a held deliverable, carried on the
- *   observation by its observer and trusted at the confidence the model gave.
+ * In order; the first to answer wins, so a stronger kind of evidence goes first. One slot waits:
+ * "vision", last: a model's match of a screenshot to a held deliverable, carried on the
+ * observation by its observer and trusted at the confidence the model gave.
  */
 export const SCREEN_RESOLVERS: readonly ScreenResolver[] = [
   stagedResolver,
   deliverableLinkResolver,
   terminalTtyResolver,
+  localhostPortResolver,
   folderResolver,
 ];
 
@@ -448,6 +500,58 @@ function safeRealpath(path: string): string {
   }
 }
 
+/** `probeCommand`'s shape: stdout, or null when the command failed or ran out of time. */
+export type Probe = (argv: string[], ok: readonly number[], timeoutMs: number) => Promise<string | null>;
+
+/**
+ * Who listens on a localhost port: `lsof` for the listening pids, then, side by side, their
+ * working folders and the process table for their parents. It is the one slow part of resolving,
+ * so it happens before the resolvers run, not inside one.
+ *
+ * Cached per port for `ttlMs`: the front-window observer re-reports a page every few seconds, and
+ * a server rarely changes hands faster than that. Each probe is on a `timeoutMs` leash; a slow or
+ * failed one leaves its part unknown, and no listener at all names no one.
+ */
+export function portListenerLookup(options: { probe?: Probe; ttlMs?: number; timeoutMs?: number; now?: () => number } = {}): (port: number) => Promise<PortListener[]> {
+  const { probe = probeCommand, ttlMs = 5_000, timeoutMs = 1_000, now = Date.now } = options;
+  const cache = new Map<number, { at: number; listeners: Promise<PortListener[]> }>();
+  const lookup = async (port: number): Promise<PortListener[]> => {
+    // lsof exits 1 for "nothing matched", an answer rather than a failure.
+    const listening = await probe(["lsof", "-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-Fp"], [0, 1], timeoutMs);
+    const pids = [...new Set((listening ?? "").split("\n").flatMap((line) => (/^p\d+$/.test(line) ? [Number(line.slice(1))] : [])))];
+    if (!pids.length) return [];
+    const [folders, table] = await Promise.all([
+      probe(["lsof", "-a", "-p", pids.join(","), "-d", "cwd", "-Fn"], [0, 1], timeoutMs),
+      probe(["ps", "-Ao", "pid=,ppid="], [0], timeoutMs),
+    ]);
+    const cwds = new Map<number, string>();
+    let pid = 0;
+    for (const line of (folders ?? "").split("\n")) {
+      if (line.startsWith("p")) pid = Number(line.slice(1));
+      else if (line.startsWith("n/")) cwds.set(pid, line.slice(1));
+    }
+    const parentOf = new Map<number, number>();
+    for (const line of (table ?? "").split("\n")) {
+      const [child, parent] = line.trim().split(/\s+/).map(Number);
+      if (child && parent) parentOf.set(child, parent);
+    }
+    return pids.map((listener) => {
+      const parents: number[] = [];
+      // Bounded, so a table read mid-fork can never walk in a circle.
+      for (let up = parentOf.get(listener); up && up > 1 && parents.length < 64; up = parentOf.get(up)) parents.push(up);
+      const cwd = cwds.get(listener);
+      return { pid: listener, ...(cwd ? { cwd } : {}), parents };
+    });
+  };
+  return (port) => {
+    const cached = cache.get(port);
+    if (cached && now() - cached.at < ttlMs) return cached.listeners;
+    const listeners = lookup(port).catch(() => []);
+    cache.set(port, { at: now(), listeners });
+    return listeners;
+  };
+}
+
 /** The published rows this module reads: the published state's, whatever else they carry. */
 interface PublishedRowLike {
   id: string;
@@ -466,8 +570,9 @@ export function screenContextFromPublished(
   realpath: (path: string) => string = safeRealpath,
 ): ScreenResolveContext {
   return {
-    // ponytail: no tty yet — nothing emits a terminal tty until the AX observer does; it fills
-    // this with one `ps -o pid=,tty=` over these pids when it lands.
+    // ponytail: no tty yet — nothing emits a terminal tty: the front-window observer sees Terminal
+    // but not which tab, since only Terminal's AppleScript says. Fill this with one
+    // `ps -o pid=,tty=` over these pids when an observer can.
     sessions: rows.map((row) => {
       const pid = pidFor(row.id);
       return { sessionId: row.id, ...(row.cwd ? { cwd: row.cwd } : {}), ...(row.workDirs ? { workDirs: row.workDirs } : {}), ...(pid ? { pid } : {}) };
@@ -616,8 +721,11 @@ export class ScreenLog {
 }
 
 export interface ScreenContext {
-  /** Resolve one observation, keep it as what is showing, log it, publish it. */
-  observe(observation: ScreenObservation): Showing;
+  /**
+   * Resolve one observation, keep it as what is showing, log it, publish it. A page on a localhost
+   * port first waits for who listens there; anything observed meanwhile is newer, and wins.
+   */
+  observe(observation: ScreenObservation): Promise<Showing>;
   /** The latest, in its published form; undefined until something has been observed. */
   showing(): PublishedShowing | undefined;
   /** Stop the daemon's own observers and close the log's open state. */
@@ -626,15 +734,25 @@ export interface ScreenContext {
 
 export function createScreenContext(options: {
   context(): ScreenResolveContext;
+  /** Who listens on a localhost port (`portListenerLookup`); without it a port names no one. */
+  listeners?(port: number): Promise<readonly PortListener[]>;
   onShowing?(showing: PublishedShowing): void;
   log?: ScreenLog;
   resolvers?: readonly ScreenResolver[];
   observers?: readonly ScreenObserver[];
 }): ScreenContext {
   let latest: PublishedShowing | undefined;
-  const observe = (observation: ScreenObservation): Showing => {
-    const context = options.context();
+  let observed = 0;
+  const observe = async (observation: ScreenObservation): Promise<Showing> => {
+    const turn = ++observed;
+    // conch's own staging already says whose it is: no port to look up.
+    const port = observation.staged ? undefined : localhostPort(observation.surface);
+    // Only a page on a port waits; everything else resolves before this returns.
+    const listeners = port !== undefined && options.listeners ? await options.listeners(port) : undefined;
+    const context = listeners ? { ...options.context(), listeners } : options.context();
     const resolved = resolveScreen(observation, context, options.resolvers);
+    // Something newer was observed while this waited on its port: that is what is showing.
+    if (turn !== observed) return resolved;
     latest = publishedShowing(resolved);
     options.log?.record(screenLogEntry(resolved, observation, context), context.now);
     options.onShowing?.(latest);

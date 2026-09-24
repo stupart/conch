@@ -72,7 +72,7 @@ If publication is unavailable, leave the result in your reply. Where supported, 
     conch_working_folders:
       "Tell conch the folder(s) this session is actually working in, when they differ from where it started; conch’s file tree, file viewer and sidebar grouping follow them. Absolute or relative to your cwd; each must exist. Your own session only.",
     conch_on_screen:
-      "Read what conch last saw on the user’s screen and which session owns it: the surface (a file, page, terminal, app or conch’s own window), the session and deliverable it resolved to, a confidence and the reason. Today conch only knows what it put on screen itself, so this can be stale once the user moves on.",
+      "Read what is on the user’s screen and which session owns it: the surface (a file, page, terminal, simulator, design tool, app or conch’s own window), the session and deliverable it resolved to, a confidence and the reason. It follows the front app as the user moves between apps; without the Accessibility permission it knows the app but not the file or page in it.",
     conch_deliverables:
       "List the deliverables your session holds, newest first: each filing's id, artifact, version, kind, summary, link, when it was filed and looked at, and whether a newer version supersedes it. Your own session only.",
     review_remove:

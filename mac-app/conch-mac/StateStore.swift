@@ -148,6 +148,9 @@ final class StateStore: ObservableObject {
                 }
             }
         }
+        frontWindow = FrontWindowObserver { [weak self] surface, app in
+            self?.reportFrontWindow(surface, app: app)
+        }
     }
 
     deinit {
@@ -428,19 +431,34 @@ final class StateStore: ObservableObject {
         Task { _ = await socketClient.request(request) }
     }
 
-    /// The last surface reported, so a repeat says nothing.
-    private var lastShowing: ConchScreenSurface?
+    /// What both observers last said, and where conch last staged something: a repeat says nothing,
+    /// and the app conch staged into does not undo the staging while it gets there (ScreenReportGate).
+    private var screenGate = ScreenReportGate<ConchScreenSurface>()
+
+    /// The front-window observer, started with the store and living as long as it does.
+    private var frontWindow: FrontWindowObserver?
 
     /// The conch-staged observer (docs/screen-context.md): tell the daemon what conch just put on
     /// screen and whose it is, so `showing` and `conch_on_screen` can say. Fire and forget, like
-    /// markReviewViewed. Without `staged` it is conch's window following a pick, which counts only
+    /// markReviewViewed. Without `staged` it is conch's window showing a session, which counts only
     /// while conch is in front (a restore or a new session can move it behind another app), and not
     /// at all when it repeats the last report — the pill's own pick of what it just staged would
     /// otherwise replace the review it staged with nothing.
     func reportShowing(_ surface: ConchScreenSurface, app: ConchScreenApp? = nil, staged: ConchScreenStaged? = nil) {
-        if staged == nil, !NSApp.isActive || surface == lastShowing { return }
-        lastShowing = surface
-        let report = ConchScreenObservationReport(surface: surface, app: app, staged: staged)
+        if staged != nil {
+            screenGate.staged(surface, in: app?.bundleId, at: Date())
+        } else if !NSApp.isActive || !screenGate.noticed(surface, in: nil, at: Date()) {
+            return
+        }
+        let report = ConchScreenObservationReport(source: .conchStaged, surface: surface, app: app, staged: staged)
+        Task { _ = await socketClient.request(report) }
+    }
+
+    /// The front-window observer's reading of the app in front: said when it is new, and not while
+    /// the app conch just staged something into is still getting there.
+    private func reportFrontWindow(_ surface: ConchScreenSurface, app: ConchScreenApp) {
+        guard screenGate.noticed(surface, in: app.bundleId, at: Date()) else { return }
+        let report = ConchScreenObservationReport(source: .frontWindow, surface: surface, app: app, staged: nil)
         Task { _ = await socketClient.request(report) }
     }
 

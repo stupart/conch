@@ -332,19 +332,24 @@ struct ConchAppErrorReport: Encodable, Sendable {
     let state: [String: String]
 }
 
-/// The app that took something conch opened, as `NSWorkspace.open`'s completion names it.
+/// The app showing it: the one that took something conch opened, as `NSWorkspace.open`'s
+/// completion names it, or the one in front.
 struct ConchScreenApp: Encodable, Equatable, Sendable {
     let bundleId: String
     var pid: Int32? = nil
     var name: String? = nil
 }
 
-/// Where on screen conch put something: the kinds this app can report. The daemon's union has
-/// more (`screen-context.ts`), for the observers still to come.
+/// What is on screen: the kinds this app can report. The daemon's union (`screen-context.ts`)
+/// is the contract.
 enum ConchScreenSurface: Encodable, Equatable, Sendable {
     case file(path: String)
     case url(String)
     case terminal
+    case simulator
+    case design
+    /// An app, when nothing more about what it shows can be read.
+    case app(bundleId: String)
     case conch(sessionId: String, view: String)
 
     /// A link the pill opened: a file by its path, anything else by its address.
@@ -352,7 +357,7 @@ enum ConchScreenSurface: Encodable, Equatable, Sendable {
         self = url.isFileURL ? .file(path: url.path) : .url(url.absoluteString)
     }
 
-    private enum Key: String, CodingKey { case kind, path, url, sessionId, view }
+    private enum Key: String, CodingKey { case kind, path, url, bundleId, sessionId, view }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: Key.self)
@@ -365,6 +370,13 @@ enum ConchScreenSurface: Encodable, Equatable, Sendable {
             try container.encode(url, forKey: .url)
         case .terminal:
             try container.encode("terminal", forKey: .kind)
+        case .simulator:
+            try container.encode("simulator", forKey: .kind)
+        case .design:
+            try container.encode("design", forKey: .kind)
+        case let .app(bundleId):
+            try container.encode("app", forKey: .kind)
+            try container.encode(bundleId, forKey: .bundleId)
         case let .conch(sessionId, view):
             try container.encode("conch", forKey: .kind)
             try container.encode(sessionId, forKey: .sessionId)
@@ -380,23 +392,31 @@ struct ConchScreenStaged: Encodable, Equatable, Sendable {
     let link: String?
 }
 
-/// The conch-staged observer's report (docs/screen-context.md): what conch just put on screen,
-/// and whose it is. Evidence, not a command; the daemon validates it strictly and answers at once.
+/// An observer's report (docs/screen-context.md): what is on screen, and whose it is when the
+/// observer knows. Evidence, not a command; the daemon validates it strictly and answers at once.
+/// There is no window title in it, on purpose: a title says what Tyler is doing in any app.
 struct ConchScreenObservationReport: Encodable, Sendable {
     let kind = "screen-observation"
     let observation: Observation
 
+    /// The daemon's `SCREEN_OBSERVERS`: conch-staged, what conch put on screen itself; front-window,
+    /// the app in front (FrontWindowObserver).
+    enum Source: String, Encodable, Sendable {
+        case conchStaged = "conch-staged"
+        case frontWindow = "front-window"
+    }
+
     struct Observation: Encodable, Sendable {
         let v = 1
-        let source = "conch-staged"
+        let source: Source
         let at: Double
         let app: ConchScreenApp?
         let surface: ConchScreenSurface
         let staged: ConchScreenStaged?
     }
 
-    init(surface: ConchScreenSurface, app: ConchScreenApp?, staged: ConchScreenStaged?, at: Date = Date()) {
-        observation = Observation(at: (at.timeIntervalSince1970 * 1000).rounded(), app: app, surface: surface, staged: staged)
+    init(source: Source, surface: ConchScreenSurface, app: ConchScreenApp?, staged: ConchScreenStaged?, at: Date = Date()) {
+        observation = Observation(source: source, at: (at.timeIntervalSince1970 * 1000).rounded(), app: app, surface: surface, staged: staged)
     }
 }
 

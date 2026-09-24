@@ -46,7 +46,8 @@ observers ──observation──▶ resolvers (in order) ──▶ showing ─�
 | `url` | `url` (http/https) | a localhost preview, a live site |
 | `terminal` | `tty?` | a session's own terminal |
 | `simulator` | `udid?`, `bundleId?` | the iPhone Simulator running a build |
-| `app` | `bundleId`, `document?` | Figma, Preview, a media player |
+| `app` | `bundleId`, `document?` | an app, when nothing more can be read |
+| `design` | none | Figma |
 | `conch` | `sessionId`, `view: panel \| overlay \| main` | conch's own window or overlay |
 | `unknown` | none | an observer saw something it can't name |
 
@@ -66,8 +67,10 @@ resolve(observation, context) → { sessionId?, reviewId?, artifact?, confidence
 
 `context` holds the live sessions (`cwd`, `workDirs`, `pid`, `tty`), the
 deliverables they still hold (`reviewId`, `link`, `artifact`), the time, `$HOME`,
-and `realpath`. Anything slow or impure, such as a real path or a port's pid, is
-gathered into the context first, so the resolvers themselves stay pure.
+`realpath`, and, for a page on a localhost port, who listens there
+(`listeners`). Anything slow or impure, such as a real path or a port's
+listeners, is gathered into the context first, so the resolvers themselves stay
+pure.
 
 `SCREEN_RESOLVERS` runs in order and **the first to answer wins**. Put stronger
 evidence first. When the evidence fits two sessions equally, a resolver returns
@@ -79,9 +82,22 @@ never guesses.
 | 1 | `staged` | conch put it there (`staged`), or conch's own window names the session | 1.0 |
 | 2 | `deliverable-link` | a file's real path, or a URL's origin and path, equal to a held deliverable's link; the newest version wins | 0.9 |
 | 3 | `terminal-tty` | a terminal's tty is a session's tty | 0.8 |
-| — | *port* (slot) | a localhost port → listening pid → parent chain → session | |
-| 4 | `folder` | a file inside the most specific session `cwd`/`workDirs`. `$HOME` is skipped, because a session started there would own every file | 0.5 |
+| 4 | `localhost-port` | a page on `localhost`, `127.0.0.1` or `[::1]`: a session whose process is up the listening process's parent chain (it started the server; the nearest wins) | 0.7 |
+| | | else the listener's working folder inside a session's folder, as `folder` matches | 0.6 |
+| 5 | `folder` | a file inside the most specific session `cwd`/`workDirs`. `$HOME` is skipped, because a session started there would own every file | 0.5 |
 | — | *vision* (slot) | a model's match of a screenshot to a held deliverable | the model's |
+
+**Who listens on a port** (`portListenerLookup`) is gathered before the
+resolvers run, because it takes subprocesses: `lsof -nP -iTCP:<port>
+-sTCP:LISTEN -Fp` for the listening pids, then, side by side, `lsof -a -p
+<pids> -d cwd -Fn` for their folders and `ps -Ao pid=,ppid=` for their parents.
+Each probe has a 1 s leash (`probe.ts`); one that fails or runs out of time
+leaves its part unknown, and no listener names no one. It is cached per port for
+5 s, since the front-window observer re-reports a page every few seconds. A
+staged observation skips it, because it already says whose it is. While a lookup
+is out, the observation waits; anything observed meanwhile is newer, and wins.
+The parent chain outranks the folder: a folder only says where a server runs,
+and two sessions in one repo share it.
 
 `artifact` comes from the held deliverable's own published record when it has
 one, and otherwise from the link. Deliverables are matched only by their
@@ -127,27 +143,70 @@ screen:
   or the menu (`ContentView`'s `workspace.viewing`). It counts only while conch
   is in front, and not when it repeats the last report. Otherwise the pill's
   own pick would overwrite the review it just staged.
+- **conch comes back to the front.** Its window shows its session again
+  (`ContentView`, on `didBecomeActiveNotification`), so whatever app was in
+  front before stops counting.
 
-It sends through `StateStore.reportShowing` and doesn't wait for an answer. It
-can't know when Tyler moves on. Its `showing` means "last staged", not "looking
-at now". The observers below are what close that gap.
+It sends through `StateStore.reportShowing` and doesn't wait for an answer. On
+its own it can't know when Tyler moves on; `front-window` is what does.
+
+### Built: `front-window`
+
+This observer also runs in the Mac app (`FrontWindowObserver.swift`). It
+reports the app in front and, where it can be read without asking for anything,
+what that app shows.
+
+- **When.** It reads half a second after
+  `NSWorkspace.didActivateApplicationNotification`, so a burst of switches is one
+  reading. With the Accessibility grant it also reads every 3 s, because a new
+  tab or document changes what is shown without activating anything. A newer
+  reading replaces one still waiting, and an answer that arrives after the front
+  app changed is dropped. conch itself is skipped: its window reports through
+  `reportShowing`, which knows the session.
+- **What, by app** (`ScreenAppKind` in ConchDesign):
+
+  | app | surface | needs Accessibility |
+  |---|---|---|
+  | Terminal, iTerm2, Ghostty | `terminal`, no tty | no |
+  | Simulator | `simulator` | no |
+  | Figma | `design` | no |
+  | any app whose front window has a document (Preview, QuickTime, TextEdit, Xcode) | `file` from `AXDocument`, or `url` when that is a web address | yes |
+  | Safari | `url` from `AXURL` on the page's web area | yes |
+  | Chrome, Brave, Edge | `url` from the address field's text | yes |
+  | anything else, or any of the above without the grant | `app` with the bundle id | no |
+
+  Chrome hides the scheme of what its address field shows, so a bare address
+  gets `http://` back for localhost, `127.0.0.1` and `[::1]`, and `https://`
+  for anything else (`ScreenAppKind.addressFieldURL`). A browser window is
+  searched breadth first, through at most 300 elements, never into the page
+  itself. Each Accessibility call runs off the main thread with a 0.25 s
+  timeout.
+- **What it can't see.** Which Terminal tab is in front: only Terminal's
+  AppleScript says, and that would need the Automation grant. The booted
+  Simulator device: no resolver would use it yet.
+- **The permission.** It only checks `AXIsProcessTrusted()`, which never
+  prompts. It never calls `AXIsProcessTrustedWithOptions` with the prompt
+  option and never uses AppleScript, so it can't raise the Accessibility or the
+  Automation dialog. Without the grant every report is app-level. Onboarding
+  will ask for the grant; granting it later takes effect on the next reading,
+  with no relaunch.
+- **Staging still wins** (`ScreenReportGate` in ConchDesign, which both
+  observers go through in `StateStore`):
+  - A report that repeats the last one said, from either observer, isn't sent.
+  - For 3 s after conch stages something into an app, that app's front-window
+    reports are held, because the app is still getting there. Chrome shows the
+    old tab, then the page conch opened. A held report isn't counted as said,
+    so the first reading after the grace is sent if it still differs.
+  - conch's own window is never held, since a pick there is Tyler's.
+- **Titles.** A window title is never read, so it can't be sent or logged.
 
 ### Not built yet
 
 These are listed roughly in the order they are likely to be worth building:
 
-- **Accessibility front window** (`ax-front-window`). `kAXDocumentAttribute`
-  gives the file or URL for Xcode, Preview, TextEdit and Chrome. For Terminal
-  it gives the cwd, and the tty through the window's process. It needs the
-  app's Accessibility grant, so it runs in the Mac app and reports over the
-  socket, as conch-staged does.
-- **Safari and Arc** (`browser-tab`). Their front tab's URL, read over
-  AppleScript. It needs the Automation grant per browser.
-- **localhost port** (`localhost-port`). A `url` surface on localhost gives a
-  port. From there: the listening pid (`lsof -iTCP:<port> -sTCP:LISTEN`), then
-  its parent chain, then the session whose pid is an ancestor. This was
-  verified to beat folder matching, so its resolver goes in the *port* slot,
-  ahead of `folder`.
+- **Terminal's tab** (`terminal-tab`). The front tab's tty, read over Terminal's
+  AppleScript, so `terminal-tty` can name the session. It needs the Automation
+  grant for Terminal, asked for by onboarding.
 - **Simulator** (`simulator`). Take the booted device's front app bundle id,
   find the DerivedData folder whose `info.plist` has that `WorkspacePath`, and
   map it to a session by folder.
@@ -174,6 +233,8 @@ These are listed roughly in the order they are likely to be worth building:
 1. Write `{ id, resolve(observation, context) }`. It must be pure. If it needs
    something from outside, add a field to `ScreenResolveContext` and fill it in
    `screenContextFromPublished` (or wherever the daemon builds the context).
+   Something slow that depends on the observation is looked up in `observe`
+   before the resolvers run, the way `listeners` is.
 2. Put it in `SCREEN_RESOLVERS` at the position its evidence deserves.
 3. Use `oneOf` for ties, so that an ambiguous match returns `candidates` rather
    than a guess.
@@ -237,13 +298,14 @@ writes it.
 2. **The published `showing` reaches the paired phone.** Because of that, a
    surface keeps its path or URL only when it resolved to a session, i.e.
    something an agent put there. Anything else goes out as `{kind}` alone
-   (`publishedShowing`). A future observer that sees arbitrary windows gets
-   this rule for free. It must not bypass it.
+   (`publishedShowing`). `front-window`, which sees whatever Tyler opens, gets
+   this rule for free, as will any observer after it. None may bypass it.
 3. **Nothing is sent to a model by default.** A cloud vision observer needs its
    own opt-in, separate from `screen-log`.
-4. **Grants are asked for when they are used.** Accessibility, Automation and
-   Screen Recording are requested by the observer that needs one, when that
-   observer is turned on, and never up front.
+4. **No observer asks for a grant.** Accessibility, Automation and Screen
+   Recording are for onboarding to ask for, saying what each one is for. An
+   observer only checks, silently, and does what it can without one:
+   `front-window` reports the app alone until Accessibility is granted.
 
 ## Future work (out of scope)
 
