@@ -155,6 +155,12 @@ struct ContentView: View {
             // conch's own window now shows this session: the screen context's conch-staged observer.
             store.reportShowing(.conch(sessionId: id, view: "main"))
         }
+        // Back to conch from another app: its window shows its session again. The front-window
+        // observer leaves conch's own windows to this, so what was in front before stops counting.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            guard let id = workspace.viewing else { return }
+            store.reportShowing(.conch(sessionId: id, view: "main"))
+        }
         .onChange(of: rowIDs) { _, currentIDs in
             // A pick for a session that has ended is no pick: the fallbacks take over rather
             // than the pane staying pinned to something that is gone.

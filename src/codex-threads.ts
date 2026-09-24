@@ -25,6 +25,7 @@
 import { Database } from "bun:sqlite";
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { conchHome } from "./home.ts";
+import { probeCommand } from "./probe.ts";
 import { join } from "node:path";
 import type { CodexSessionEntry, CodexSessionRegistryRead } from "./codex-sessions.ts";
 import { pendingApproval, type PendingApproval } from "./approval.ts";
@@ -290,47 +291,6 @@ export async function readCodexOpenThreadIds(
       .filter((name) => held.includes(join(dir, name)))
       .map((name) => [idOf(name), holders.get(join(dir, name)) ?? 0]),
   );
-}
-
-/** How long a discovery probe may run before discovery gives up on it. */
-const PROBE_TIMEOUT_MS = 2_000;
-
-/**
- * One external probe, off the thread and on a leash.
- *
- * These ran through `Bun.spawnSync`, and Bun runs the daemon on ONE thread: for
- * as long as `lsof` or `ps` took, voice, injection and publication were frozen —
- * not waiting their turn, unable to run at all. Awaiting the child hands the
- * loop back instead.
- *
- * The timeout is the other half. A probe blocked on a wedged mount would
- * otherwise hold the discovery pass open forever, and every caller here already
- * knows how to read "no answer": a null lock probe falls back to presence, a
- * null process table leaves holders unnamed. Slow is reported as unknown, which
- * is true, rather than waited on.
- *
- * `ok` lists the exit codes that are answers rather than failures — `lsof`
- * exits 1 for "none of these are open", which is a result.
- */
-async function probeCommand(argv: string[], ok: readonly number[]): Promise<string | null> {
-  try {
-    const child = Bun.spawn(argv, { stdout: "pipe", stderr: "ignore" });
-    const timer = setTimeout(() => {
-      try {
-        child.kill("SIGKILL");
-      } catch { /* already gone; the exit observation below still settles */ }
-    }, PROBE_TIMEOUT_MS);
-    try {
-      const text = await new Response(child.stdout).text();
-      // A killed child exits on a signal, so its code is never in `ok`: a
-      // timed-out probe reports unknown by the same path a failed one does.
-      return ok.includes(await child.exited) ? text : null;
-    } finally {
-      clearTimeout(timer);
-    }
-  } catch {
-    return null;
-  }
 }
 
 /** `lsof -F pn` over the lock paths some process currently holds open, or null if unknown. */

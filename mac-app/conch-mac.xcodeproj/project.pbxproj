@@ -30,6 +30,7 @@
 		A10000000000000000000006 /* ReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* ReviewView.swift */; };
 		A10000000000000000000007 /* WebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* WebView.swift */; };
 		A10000000000000000000964 /* Terminal.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000964 /* Terminal.swift */; };
+		A10000000000000000000965 /* FrontWindowObserver.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000965 /* FrontWindowObserver.swift */; };
 		A10000000000000000000009 /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000A /* WebKit.framework */; };
 		A1000000000000000000000A /* ConchSocketClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000C /* ConchSocketClient.swift */; };
 		A1000000000000000000000B /* DashboardInputMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000D /* DashboardInputMonitor.swift */; };
@@ -62,6 +63,7 @@
 		A20000000000000000000006 /* ReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewView.swift; sourceTree = "<group>"; };
 		A20000000000000000000007 /* WebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebView.swift; sourceTree = "<group>"; };
 		A20000000000000000000964 /* Terminal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Terminal.swift; sourceTree = "<group>"; };
+		A20000000000000000000965 /* FrontWindowObserver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FrontWindowObserver.swift; sourceTree = "<group>"; };
 		A20000000000000000000901 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A20000000000000000000902 /* ConversationStackView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationStackView.swift; sourceTree = "<group>"; };
 		A20000000000000000000931 /* DaemonHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonHost.swift; sourceTree = "<group>"; };
@@ -135,6 +137,7 @@
 				A20000000000000000000006 /* ReviewView.swift */,
 				A20000000000000000000007 /* WebView.swift */,
 				A20000000000000000000964 /* Terminal.swift */,
+				A20000000000000000000965 /* FrontWindowObserver.swift */,
 				A2000000000000000000000C /* ConchSocketClient.swift */,
 				A2000000000000000000000D /* DashboardInputMonitor.swift */,
 				A2000000000000000000009B /* PluginPresence.swift */,
@@ -275,6 +278,7 @@
 				A10000000000000000000006 /* ReviewView.swift in Sources */,
 				A10000000000000000000007 /* WebView.swift in Sources */,
 				A10000000000000000000964 /* Terminal.swift in Sources */,
+				A10000000000000000000965 /* FrontWindowObserver.swift in Sources */,
 				A1000000000000000000000A /* ConchSocketClient.swift in Sources */,
 				A1000000000000000000000B /* DashboardInputMonitor.swift in Sources */,
 				A1000000000000000000009A /* PluginPresence.swift in Sources */,
