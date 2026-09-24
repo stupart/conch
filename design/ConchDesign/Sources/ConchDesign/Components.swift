@@ -1130,6 +1130,9 @@ public struct ConversationFog: View {
     let onSend: () -> Void
     let onCollapse: () -> Void
     let onFullScreen: () -> Void
+    /// The canvas's pen; nil leaves the button out.
+    let onCanvas: (() -> Void)?
+    let isCanvasOn: Bool
     @Environment(\.conchRendersStatically) private var rendersStatically
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -1158,7 +1161,9 @@ public struct ConversationFog: View {
         onMic: @escaping () -> Void,
         onSend: @escaping () -> Void,
         onCollapse: @escaping () -> Void,
-        onFullScreen: @escaping () -> Void
+        onFullScreen: @escaping () -> Void,
+        onCanvas: (() -> Void)? = nil,
+        isCanvasOn: Bool = false
     ) {
         self.turns = turns
         _draft = draft
@@ -1185,6 +1190,8 @@ public struct ConversationFog: View {
         self.onSend = onSend
         self.onCollapse = onCollapse
         self.onFullScreen = onFullScreen
+        self.onCanvas = onCanvas
+        self.isCanvasOn = isCanvasOn
     }
 
     /// Inside the fog, before the screen's own insets.
@@ -1343,7 +1350,7 @@ public struct ConversationFog: View {
                     // The session is named beside the buttons, on their free side: the buttons keep the nook.
                     HStack(spacing: ConchSpace.x3) {
                         if alignment != .leading { header }
-                        FogPanelButtons(corner: corner, isFullScreen: isFullScreen, onCollapse: onCollapse, onFullScreen: onFullScreen, onPrevious: onPrevious, onNext: onNext)
+                        FogPanelButtons(corner: corner, isFullScreen: isFullScreen, onCollapse: onCollapse, onFullScreen: onFullScreen, onPrevious: onPrevious, onNext: onNext, onCanvas: onCanvas, isCanvasOn: isCanvasOn)
                             .fogControl()
                         if alignment == .leading { header }
                     }
@@ -1978,7 +1985,8 @@ private struct FogSwitcher: View {
 // MARK: - FogPanelButtons
 
 /// The fog's collapse and full-screen buttons: in that order, as a Mac window's minimise and zoom come. Then, while
-/// something is ready, Previous and Next, which walk it as the Ready pill does.
+/// something is ready, Previous and Next, which walk it as the Ready pill does. Then, when it is given one, the canvas's
+/// pen, dark while the pen is down (panel-lab's `#bPen`).
 public struct FogPanelButtons: View {
     let corner: FogCorner
     let isFullScreen: Bool
@@ -1986,14 +1994,18 @@ public struct FogPanelButtons: View {
     let onFullScreen: () -> Void
     let onPrevious: (() -> Void)?
     let onNext: (() -> Void)?
+    let onCanvas: (() -> Void)?
+    let isCanvasOn: Bool
 
-    public init(corner: FogCorner, isFullScreen: Bool, onCollapse: @escaping () -> Void, onFullScreen: @escaping () -> Void, onPrevious: (() -> Void)? = nil, onNext: (() -> Void)? = nil) {
+    public init(corner: FogCorner, isFullScreen: Bool, onCollapse: @escaping () -> Void, onFullScreen: @escaping () -> Void, onPrevious: (() -> Void)? = nil, onNext: (() -> Void)? = nil, onCanvas: (() -> Void)? = nil, isCanvasOn: Bool = false) {
         self.corner = corner
         self.isFullScreen = isFullScreen
         self.onCollapse = onCollapse
         self.onFullScreen = onFullScreen
         self.onPrevious = onPrevious
         self.onNext = onNext
+        self.onCanvas = onCanvas
+        self.isCanvasOn = isCanvasOn
     }
 
     public var body: some View {
@@ -2020,6 +2032,10 @@ public struct FogPanelButtons: View {
             }
             if let onNext {
                 IconButton("chevron.right", label: "Next ready item", style: .glass, size: ConversationFog.buttonSize, action: onNext)
+            }
+            if let onCanvas {
+                IconButton("pencil", label: isCanvasOn ? "Stop drawing" : "Draw on the screen", style: isCanvasOn ? .primary : .glass, size: ConversationFog.buttonSize, action: onCanvas)
+                    .padding(.leading, ConchSpace.x1)
             }
         }
     }

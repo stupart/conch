@@ -14,7 +14,7 @@ final class FloatingPanel: NSPanel {
 /// The first click on a control acts. conch never comes forward, so there is no click to focus it first. For the same
 /// reason SwiftUI's hover can't be relied on (`FogView`), so an always-active tracking area feeds it the pointer: the
 /// Ready pill's pointing hand.
-private final class FirstClickHostingView<Content: View>: NSHostingView<Content> {
+final class FirstClickHostingView<Content: View>: NSHostingView<Content> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func updateTrackingAreas() {
@@ -136,7 +136,7 @@ final class FloatingPanels: ObservableObject {
         ]
     }
 
-    private static var installed: FloatingPanels?
+    private(set) static var installed: FloatingPanels?
 
     static func install(store: StateStore) {
         guard installed == nil else { return }
@@ -147,6 +147,11 @@ final class FloatingPanels: ObservableObject {
     static func picked(_ id: SessionRow.ID) {
         guard let panels = installed, panels.staged != nil, panels.staged != id else { return }
         panels.staged = nil
+    }
+
+    /// Where the glass is on screen while the panel shows docked, for the canvas's tools to rise out of its top edge.
+    var glassFrame: NSRect? {
+        fog.isVisible && !isCollapsed && !isFullScreen ? fog.frame.insetBy(dx: Self.glassInset, dy: Self.glassInset) : nil
     }
 
     /// The fog fills its screen; leaving docks it back in its corner.
@@ -868,6 +873,7 @@ private struct ConversationFogHost: View {
     /// the one the dashboard is showing.
     @ObservedObject var history: HistoryStore
     @ObservedObject private var drafts = ComposerDraftStore.shared
+    @ObservedObject private var canvas = CanvasController.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -905,7 +911,9 @@ private struct ConversationFogHost: View {
                     onMic: { if let row { mic(row) } },
                     onSend: { if let row { send(row) } },
                     onCollapse: { panels.toggleCollapsed() },
-                    onFullScreen: { panels.toggleFullScreen() }
+                    onFullScreen: { panels.toggleFullScreen() },
+                    onCanvas: { canvas.toggle() },
+                    isCanvasOn: canvas.armed
                 )
                 // The glass is inset inside the window, so the words and the buttons come in with it — the buttons are
                 // placed from the edge they are given, and left at the window's they sat out on the desktop beside the
