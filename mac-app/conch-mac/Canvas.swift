@@ -11,11 +11,12 @@ import SwiftUI
 ///
 /// A clear glass panel on each display, over everything but menus and system alerts, that lets every click through until
 /// the pen is down; a small pill of tools beside the conversation panel; and one `CanvasDocument` whose marks both are
-/// drawn from. States: off; armed (the pen is down: the glass takes the pointer and the keys and draws); up with ink
-/// left (the glass lets clicks through again and gives the keys back, the ink and the tools stay); sending
-/// (`CanvasSend.swift`). Esc lifts the pen and keeps the ink; the pill's × throws the ink, or a Show, away. A new item in
-/// the panel — Next, the Ready pill, the switcher — starts a clear canvas. An agent's marks on the review in front (`AgentInkController.swift`) are in the same document, drawn under Tyler's; they
-/// never put the pen down.
+/// drawn from. States: off; armed (the pen is down: the glass takes the pointer and the keys and draws, and the docked
+/// panel rises over it so its own controls still work); up with ink left (the glass lets clicks through again and gives
+/// the keys back, the ink and the tools stay); sending (`CanvasSend.swift`). Esc, or the pill's Done, lifts the pen and
+/// keeps the ink; the pill's × throws the ink, or a Show, away. A new item in the panel — Next, the Ready pill, the
+/// switcher — starts a clear canvas. An agent's marks on the review in front (`AgentInkController.swift`) are in the same
+/// document, drawn under Tyler's; they never put the pen down, and alone they raise only a chip to clear them.
 @MainActor
 final class CanvasController: ObservableObject {
     static let shared = CanvasController()
@@ -27,19 +28,37 @@ final class CanvasController: ObservableObject {
     @Published private(set) var tool: CanvasMark.Kind = .pen
     /// The marks and what they are over; nil with nothing drawn.
     @Published private(set) var document: CanvasDocument?
-    /// Why Send didn't go, on the pill until the next thing happens.
-    @Published var message: String?
-    /// Whose the agent's marks are, for their labels ("Claude · …").
-    private var agentName = "Claude"
+    /// What the pill says (`say`): what became of a Send, what Screen Recording needs, until the next thing happens.
+    @Published var notice: CanvasToolPill.Notice?
+    /// What the notice's Show in Finder shows: the folder a canvas or a Show was kept in.
+    var revealing: URL?
+    /// Where Tyler said Send goes, from its menu; nil until he does, and cleared with the canvas.
+    @Published var picked: SessionRow.ID?
+    /// Send's menu, while it is open.
+    @Published var routeMenu: CanvasToolPill.RouteMenu?
+    /// Whose the agent's marks are, for their labels ("Claude · …") and the chip.
+    @Published private(set) var agentName = "Claude"
+    /// The agent's marks conch couldn't place, said on the chip (`AgentInkController.place`).
+    @Published private(set) var agentMissed: AgentInk.Missed?
     /// The agent's marks, faded while what they are on moves under them (`AgentInkController`).
     private var agentHidden = false
+    /// Which agent marks have drawn on already this launch: back on a review, its marks are there as they were.
+    private var agentMemory = AgentInkMemory()
+    /// System Settings was opened for the Screen Recording grant (`CanvasCapture`).
+    var settingsOpened = false
     /// Show: the screen being recorded, or stopped and waiting for Send or the × (`CanvasShow.swift`).
     @Published var recorder: CanvasRecorder?
     /// The pill's mic: a Show narrates, recorded by the daemon (`CanvasNarration`). Off until Tyler turns it on.
     @Published var narrate = false
 
-    /// In use: the pen is down, ink is showing, or there is a Show. The glass and the pill show only then.
+    /// In use: the pen is down, ink is showing, or there is a Show. The glass shows only then.
     var inUse: Bool { armed || document?.isEmpty == false || recorder != nil }
+
+    /// What the pill is: the tools while the pen is down, Tyler's ink is up or there is a Show; with only an agent's
+    /// marks, the chip that clears them; else whatever it has to say, for as long as it says it.
+    var pillMode: CanvasToolPill.Mode {
+        CanvasToolPill.mode(armed: armed, yourInk: document?.has(.you) == true, agentInk: document?.has(.agent) == true, show: recorder != nil, notice: notice != nil)
+    }
 
     private(set) weak var store: StateStore?
     /// Each display's glass.
@@ -63,7 +82,11 @@ final class CanvasController: ObservableObject {
         pill.backgroundColor = .clear
         pill.isOpaque = false
         pill.hasShadow = false
-        pill.contentView = FirstClickHostingView(rootView: CanvasPillHost(canvas: self, store: store) { [weak self] size in self?.placePill(size: size) })
+        let host = FirstClickHostingView(rootView: CanvasPillHost(canvas: self, store: store) { [weak self] size in self?.placePill(size: size) })
+        // Only `placePill` sizes and places the pill: left to size its window itself, the hosting view grew it from
+        // wherever the window stood, which before its first placing is the screen's bottom left, over the Dock.
+        host.sizingOptions = []
+        pill.contentView = host
         buildGlass()
 
         observers.append(NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
@@ -80,10 +103,17 @@ final class CanvasController: ObservableObject {
                 .removeDuplicates { $0.0 == $1.0 && $0.1 == $1.1 }
                 .sink { [weak self] _ in MainActor.assumeIsolated { self?.clear() } }
                 .store(in: &subscriptions)
-            // The tools ride on the panel's top edge, wherever it goes.
+            // The tools ride on the panel's top edge, wherever it goes; and with the pen down the docked panel stays over
+            // the glass, full screen or not.
             panels.objectWillChange
                 .receive(on: RunLoop.main)
-                .sink { [weak self] _ in MainActor.assumeIsolated { if self?.inUse == true { self?.placePill() } } }
+                .sink { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        panels.overGlass(self.armed)
+                        if self.pillMode != .hidden { self.placePill() }
+                    }
+                }
                 .store(in: &subscriptions)
         }
         CanvasHotKey.register()
@@ -101,7 +131,7 @@ final class CanvasController: ObservableObject {
     /// The pen down: the glass takes the pointer, and the one under the pointer the keys, without bringing conch forward.
     func arm() {
         guard !armed, !sending, store != nil else { return }
-        message = nil
+        notice = nil
         armed = true
         apply()
         takeKeys()
@@ -137,15 +167,15 @@ final class CanvasController: ObservableObject {
         }
     }
 
-    /// Esc, which reaches the glass only while the pen is down: a Show is thrown away first; else the pen comes up and
-    /// the ink stays.
+    /// Esc, which reaches the glass only while the pen is down: a Show recording stops, and waits for Send or the ×; else
+    /// the pen comes up and the ink stays. Esc never throws anything away: it used to delete a Show, with no undo.
     func escape() {
-        if recorder != nil { return cancelShow() }
-        armed ? lift() : clear()
+        if let recorder, recorder.isRecording { return stopRecording(recorder) }
+        lift()
     }
 
     /// The pill's ×: a Show thrown away, recording or stopped, and nothing sent; else the ink. The one way to throw
-    /// either away once the pen is up, since the keys went back with it.
+    /// either away.
     func discard() {
         recorder != nil ? cancelShow() : clear()
     }
@@ -173,7 +203,7 @@ final class CanvasController: ObservableObject {
             document = CanvasDocument(anchor: CanvasAnchor(id: ink.display, frame: ink.window?.frame ?? ink.bounds))
         }
         document?.add(mark)
-        message = nil
+        notice = nil
         apply()
     }
 
@@ -194,20 +224,49 @@ final class CanvasController: ObservableObject {
         apply()
     }
 
-    /// A canvas back after a Send that didn't get there, unless something new was drawn meanwhile.
-    func restore(_ document: CanvasDocument) {
-        guard self.document == nil else { return }
+    /// A canvas back after a Send that didn't get there, unless something new was drawn meanwhile. Whether it came back.
+    @discardableResult
+    func restore(_ document: CanvasDocument) -> Bool {
+        guard self.document == nil else { return false }
         self.document = document
+        apply()
+        return true
+    }
+
+    /// A clear canvas: the ink lifts away, the agent's with it, and its marks aren't put back; where Send was pointed
+    /// goes with it. The pen stays as it was.
+    func clear() {
+        AgentInkController.shared.stop()
+        picked = nil
+        routeMenu = nil
+        agentMissed = nil
+        guard document != nil else { return }
+        document = nil
+        notice = nil
         apply()
     }
 
-    /// A clear canvas: the ink lifts away, the agent's with it, and its marks aren't put back. The pen stays as it was.
-    func clear() {
-        AgentInkController.shared.stop()
-        guard document != nil else { return }
-        document = nil
-        message = nil
+    /// Something for the pill to say, or nothing; with `lasting`, only for that long, and then the pill sinks if it has
+    /// nothing else to show. It stays up for as long as it says anything (`pillMode`).
+    func say(_ notice: CanvasToolPill.Notice?, lasting: Duration? = nil) {
+        self.notice = notice
         apply()
+        guard let notice, let lasting else { return }
+        Task { [weak self] in
+            try? await Task.sleep(for: lasting)
+            guard let self, self.notice == notice else { return }
+            self.notice = nil
+            apply()
+        }
+    }
+
+    /// Send's menu, picked from: where Send goes now; from "Send to…", sent there at once. Tyler's pick is sure, so it
+    /// never asks again for this canvas. The ink stays either way.
+    func choose(_ id: SessionRow.ID) {
+        let sends = routeMenu == .sendTo
+        picked = id
+        routeMenu = nil
+        if sends { send() }
     }
 
     // MARK: An agent's marks
@@ -222,7 +281,7 @@ final class CanvasController: ObservableObject {
             }
             document = CanvasDocument(anchor: CanvasAnchor(id: display, frame: frame))
         }
-        agentName = name
+        if agentName != name { agentName = name }
         agentHidden = false
         document?.merge(agent: marks)
         if document?.isEmpty == true, !armed { document = nil }
@@ -238,10 +297,21 @@ final class CanvasController: ObservableObject {
 
     /// The agent's marks gone, Tyler's left.
     func clearAgent() {
+        if agentMissed != nil { agentMissed = nil }
         guard document?.has(.agent) == true else { return }
         document?.merge(agent: [])
         if document?.isEmpty == true, !armed { document = nil }
         apply()
+    }
+
+    /// The agent's marks conch couldn't place, for the chip; nil when all of them were.
+    func setAgentMissed(_ missed: AgentInk.Missed?) {
+        if agentMissed != missed { agentMissed = missed }
+    }
+
+    /// Whether an agent's mark draws on now: the first time this launch it is shown, and not on coming back to it.
+    func drawsOn(_ id: CanvasMark.ID) -> Bool {
+        agentMemory.drawsOn(id)
     }
 
     /// The glass on `display`, while it shows: agent ink judges what is visible by the windows below it.
@@ -283,7 +353,8 @@ final class CanvasController: ObservableObject {
     }
 
     /// Everything on screen, from the state: the glass while the canvas is in use, taking the pointer only while the pen is
-    /// down and nothing is sending; each display's ink; and the tools.
+    /// down and nothing is sending; each display's ink; the docked panel over the glass while the pen is down; and the
+    /// pill, for as long as it has anything to show.
     func apply() {
         let inUse = inUse
         for (panel, ink) in glass {
@@ -295,44 +366,79 @@ final class CanvasController: ObservableObject {
             // out) says so instead.
             ink.show(document?.anchor.id == ink.display ? document : nil, armed: armed && recorder?.isRecording != true, agentHidden: agentHidden, agentName: agentName)
         }
+        // The glass takes every click while the pen is down; the docked panel's own — its pen, Previous and Next, the
+        // reply line — would land on it (`FloatingPanels.overGlass`).
+        FloatingPanels.installed?.overGlass(armed)
         hiding?.cancel()
-        if inUse {
-            for (panel, _) in glass { panel.orderFrontRegardless() }
+        if inUse { for (panel, _) in glass { panel.orderFrontRegardless() } }
+        let showsPill = pillMode != .hidden
+        if showsPill {
+            // Placed before it shows: never shown where it last was, or at the screen's corner before it ever was.
             placePill()
             pill.orderFrontRegardless()
-        } else {
-            // After the ink has lifted away and the pill has sunk.
-            hiding = Task { [weak self] in
-                try? await Task.sleep(for: .milliseconds(450))
-                guard !Task.isCancelled, let self, !self.inUse else { return }
-                for (panel, _) in glass { panel.orderOut(nil) }
-                pill.orderOut(nil)
-            }
+        }
+        guard !inUse || !showsPill else { return }
+        // After the ink has lifted away and the pill has sunk.
+        hiding = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(450))
+            guard !Task.isCancelled, let self else { return }
+            if !self.inUse { for (panel, _) in glass { panel.orderOut(nil) } }
+            if pillMode == .hidden { pill.orderOut(nil) }
         }
     }
 
-    /// The tools rise out of the conversation panel's top edge, centred on it; hanging from the top of the screen, they
-    /// sit under it instead. With the panel hidden, collapsed or full screen, at the top of the screen, under the menu bar.
+    /// Where the pill goes (`CanvasPillPlacement`): out of the docked panel's top edge, or beside it; under the full-screen
+    /// panel's header row; below the control bar, or the menu bar, with the panel hidden or collapsed. Always inside the
+    /// screen's visible frame, clear of the Dock and the menu bar, and never over the control bar. The window is wider than
+    /// the pill, centred on it, so a change in the pill's width springs from its middle (`CanvasToolPill.Width`).
     private func placePill(size: CGSize? = nil) {
         if let size { pillSize = size }
-        guard pillSize.width > 0 else { return }
-        // The pill's own margin, for its shadow and its rise (`CanvasPillHost`).
-        let margin = CanvasPillHost.margin
-        let anchor = FloatingPanels.installed?.glassFrame
-        let pointer = NSEvent.mouseLocation
-        guard let screen = anchor.flatMap({ frame in NSScreen.screens.first { $0.frame.intersects(frame) } })
-            ?? NSScreen.screens.first(where: { $0.frame.contains(pointer) }) ?? NSScreen.main else { return }
-        let visible = screen.visibleFrame
-        var origin: NSPoint
-        if let anchor {
-            origin = NSPoint(x: anchor.midX - pillSize.width / 2, y: anchor.maxY + ConchSpace.x2 - margin)
-            if origin.y + pillSize.height - margin > visible.maxY { origin.y = anchor.minY - ConchSpace.x2 - pillSize.height + margin }
-        } else {
-            origin = NSPoint(x: visible.midX - pillSize.width / 2, y: visible.maxY - ConchSpace.x3 - pillSize.height + margin)
+        if pillSize.width <= 0, let fitting = pill.contentView?.fittingSize {
+            let margin = CanvasPillHost.margin
+            pillSize = CGSize(width: fitting.width - 2 * margin, height: fitting.height - 2 * margin)
         }
-        origin.x = min(max(origin.x, visible.minX - margin), visible.maxX - pillSize.width + margin)
-        let frame = NSRect(origin: origin, size: pillSize)
+        guard pillSize.width > 0, pillSize.height > 0 else { return }
+        let panels = FloatingPanels.installed
+        let docked = panels?.glassFrame
+        let pointer = NSEvent.mouseLocation
+        // Full screen and showing, the panel is what is on screen.
+        let covering = panels?.coveringWindow
+        let on = (docked ?? covering?.frame).flatMap { frame in NSScreen.screens.first { $0.frame.intersects(frame) } }
+        guard let screen = on ?? NSScreen.screens.first(where: { $0.frame.contains(pointer) }) ?? NSScreen.main else { return }
+        let panel: CanvasPillPlacement.Panel
+        if let docked {
+            panel = .docked(docked)
+        } else if let panels, let covering {
+            panel = .fullScreen(headerBottom: Self.headerBottom(of: covering.frame, panels: panels))
+        } else {
+            panel = .hidden
+        }
+        let spot = CanvasPillPlacement.spot(size: pillSize, visible: screen.visibleFrame, panel: panel, controlBar: Self.controlBar(panels))
+        if hangs != spot.hangs { hangs = spot.hangs }
+        let margin = CanvasPillHost.margin
+        let width = max(CanvasPillHost.slot, pillSize.width)
+        let frame = NSRect(x: spot.frame.midX - width / 2 - margin, y: spot.frame.minY - margin, width: width + 2 * margin, height: pillSize.height + 2 * margin)
         if pill.frame != frame { pill.setFrame(frame, display: true) }
+    }
+
+    /// The pill hangs from what is above it, and says things under itself (`CanvasPillPlacement.Spot`).
+    @Published private(set) var hangs = true
+
+    /// Where the full-screen panel's header row ends: under its buttons and the session's name, where its deliverable
+    /// begins (`ConversationFog.contentFrame`, in the panel's glass inset).
+    private static func headerBottom(of frame: NSRect, panels: FloatingPanels) -> CGFloat {
+        let inset = FloatingPanels.glassInset
+        let inner = CGSize(width: frame.width - 2 * inset, height: frame.height - 2 * inset)
+        let content = ConversationFog.contentFrame(in: inner, insets: panels.insets.less(inset), showsReply: panels.showsReply)
+        return frame.maxY - inset - content.minY + ConchSpace.x3
+    }
+
+    /// The control bar's glass while it shows: its window less the room `ControlBarHost` pads it with, for the shadow
+    /// (x3 over it, x6 each side, x10 under).
+    private static func controlBar(_ panels: FloatingPanels?) -> CGRect? {
+        guard let bar = panels?.controlBarWindow, bar.isVisible else { return nil }
+        let frame = bar.frame
+        return CGRect(x: frame.minX + ConchSpace.x6, y: frame.minY + ConchSpace.x10, width: frame.width - 2 * ConchSpace.x6, height: frame.height - ConchSpace.x3 - ConchSpace.x10)
     }
 }
 
@@ -340,37 +446,54 @@ final class CanvasController: ObservableObject {
 private struct CanvasPillHost: View {
     /// Room around the pill for its shadow and its rise.
     static let margin: CGFloat = ConchSpace.x6
+    /// The window's width, wider than the widest pill: it stays put while the pill's own width springs inside it.
+    static let slot: CGFloat = 760
 
     @ObservedObject var canvas: CanvasController
     @ObservedObject var store: StateStore
+    /// The pill's own size, without the margin, for `placePill`.
     let onSize: (CGSize) -> Void
 
     var body: some View {
         // Only Tyler's marks are his to undo and to send; the agent's are what he is answering.
         let drawn = canvas.document?.has(.you) == true
+        let route = CanvasController.route(store.state, panel: FloatingPanels.installed?.staged, picked: canvas.picked)
         CanvasToolPill(
-            shown: canvas.inUse,
+            mode: canvas.pillMode,
+            hangs: canvas.hangs,
             tool: canvas.tool,
             armed: canvas.armed,
             canUndo: drawn,
             canSend: drawn || canvas.recorder != nil,
             sending: canvas.sending,
-            route: CanvasController.route(store.state, panel: FloatingPanels.installed?.staged)?.label,
-            message: canvas.message,
+            route: route.map { CanvasToolPill.Route(id: $0.row.id, label: $0.row.label, sure: $0.sure) },
+            // Built only while the menu is open.
+            destinations: canvas.routeMenu == nil ? [] : CanvasController.destinations(store.state, panel: FloatingPanels.installed?.staged, picked: canvas.picked),
+            routeMenu: canvas.routeMenu,
+            notice: canvas.notice,
             onTool: { canvas.pick($0) },
             onUndo: { canvas.undo() },
             onSend: { canvas.send() },
+            onRouteMenu: { canvas.routeMenu = $0 },
+            onPick: { canvas.choose($0) },
+            onNotice: { canvas.act($0) },
             recording: canvas.recorder?.phase,
             onShow: CanvasController.canShow ? { canvas.toggleShow() } : nil,
             narrate: canvas.narrate,
             onNarrate: { canvas.narrate.toggle() },
             // Something to throw away: a Show, or ink.
-            onDiscard: canvas.recorder != nil || canvas.document?.isEmpty == false ? { canvas.discard() } : nil
+            onDiscard: canvas.recorder != nil || canvas.document?.isEmpty == false ? { canvas.discard() } : nil,
+            onDone: canvas.armed ? { canvas.lift() } : nil,
+            agent: canvas.agentName,
+            missed: canvas.agentMissed,
+            onClearAgent: { AgentInkController.shared.dismiss() }
         )
-        .padding(Self.margin)
         .fixedSize()
         .background(GeometryReader { proxy in Color.clear.preference(key: CanvasPillSize.self, value: proxy.size) })
         .onPreferenceChange(CanvasPillSize.self, perform: onSize)
+        // Centred in a window wider than itself (`placePill`), so it grows and shrinks from its middle.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(Self.margin)
     }
 }
 
@@ -485,14 +608,14 @@ final class CanvasInkView: NSView {
             // An agent's mark that is gone rather than moved fades as it goes.
             remove(id, fading: present[id] == nil && seen[id]?.author == .agent)
         }
-        // An agent's new marks draw on one after another, 60 ms apart.
+        // An agent's new marks draw on one after another, 60 ms apart; ones it drew before, on this canvas or on a visit to
+        // this review before (`CanvasController.drawsOn`), are simply there.
         var order = 0
         for mark in document.marks where seen[mark.id] == nil {
             seen[mark.id] = mark
-            let fresh = mark.author == .agent && !(drawnBefore.contains(mark.id))
+            let fresh = mark.author == .agent && controller?.drawsOn(mark.id) == true
             let delay = fresh ? Double(order) * 0.06 : 0
             if fresh { order += 1 }
-            drawnBefore.insert(mark.id)
             if mark.kind == .note {
                 let note = CanvasNoteView(mark, number: document.number(of: mark) ?? 0, in: bounds.size, by: agentName)
                 note.onText = { [weak controller] text in controller?.setText(text, of: mark.id) }
@@ -529,9 +652,6 @@ final class CanvasInkView: NSView {
         return now.kind == then.kind && now.points == then.points && (now.author == .you || now.text == then.text)
     }
 
-    /// Ids already drawn on in this canvas: moved or faded back, a mark doesn't draw on twice.
-    private var drawnBefore: Set<CanvasMark.ID> = []
-
     private func remove(_ id: CanvasMark.ID, fading: Bool = false) {
         seen[id] = nil
         let layer = drawn.removeValue(forKey: id)
@@ -544,7 +664,7 @@ final class CanvasInkView: NSView {
         let fade = CABasicAnimation(keyPath: "opacity")
         fade.fromValue = 1
         fade.toValue = 0
-        fade.duration = 0.16
+        fade.duration = ConchMotion.quick
         CATransaction.begin()
         CATransaction.setCompletionBlock {
             layer?.removeFromSuperlayer()
@@ -561,7 +681,7 @@ final class CanvasInkView: NSView {
 
     static var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
     /// How long an agent's mark takes to draw on (the research's ~400 ms).
-    static let drawOnTime: CFTimeInterval = 0.4
+    static let drawOnTime: CFTimeInterval = ConchMotion.gentle
 
     /// An agent's mark drawn on as a pen would: its ink revealed along its own line (`CanvasInk.spine`) by a mask whose
     /// stroke grows to its end. Reduce Motion: it fades in instead.
@@ -571,7 +691,7 @@ final class CanvasInkView: NSView {
             let fade = CABasicAnimation(keyPath: "opacity")
             fade.fromValue = 0
             fade.toValue = 1
-            fade.duration = 0.2
+            fade.duration = ConchMotion.quick
             fade.beginTime = start
             fade.fillMode = .backwards
             return layer.add(fade, forKey: "appear")
@@ -599,18 +719,18 @@ final class CanvasInkView: NSView {
         CATransaction.commit()
     }
 
-    /// The agent's marks and their labels faded out, or back (120 ms).
+    /// The agent's marks and their labels faded out, or back (`ConchMotion.quick`).
     private func hideAgents(_ hidden: Bool) {
         guard hidden != agentsHidden else { return }
         agentsHidden = hidden
         let fade = CABasicAnimation(keyPath: "opacity")
         fade.fromValue = agents.presentation()?.opacity ?? agents.opacity
-        fade.duration = 0.12
+        fade.duration = ConchMotion.quick
         agents.opacity = hidden ? 0 : 1
         agents.add(fade, forKey: "hide")
         let views = labels.values + notes.values.filter(\.isAgents)
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.12
+            context.duration = ConchMotion.quick
             for view in views { view.animator().alphaValue = hidden ? 0 : 1 }
         }
     }
@@ -620,13 +740,13 @@ final class CanvasInkView: NSView {
         notes[id]?.edit()
     }
 
-    /// The edge light fades in as the pen goes down and out as it comes up (160 ms, the research's).
+    /// The edge light fades in as the pen goes down and out as it comes up (the research's 160 ms, `ConchMotion.quick`).
     private func light(_ on: Bool) {
         guard on != edgeOn else { return }
         edgeOn = on
         let fade = CABasicAnimation(keyPath: "opacity")
         fade.fromValue = edge.presentation()?.opacity ?? edge.opacity
-        fade.duration = 0.16
+        fade.duration = ConchMotion.quick
         fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
         edge.opacity = on ? 1 : 0
         edge.add(fade, forKey: "light")
@@ -647,11 +767,11 @@ final class CanvasInkView: NSView {
         notes = [:]
         labels = [:]
         seen = [:]
-        drawnBefore = []
         if leaving.contains(where: { $0.isEditing }) { window?.makeFirstResponder(self) }
         let inked = (old.sublayers ?? []).contains { $0 !== oldAgents } || oldAgents.sublayers?.isEmpty == false
         guard inked || !leaving.isEmpty else { return old.removeFromSuperlayer() }
-        let fade = CASpringAnimation(perceptualDuration: 0.32, bounce: 0)
+        // Light and dark's own spring, which never overshoots: a fade that bounced would come back.
+        let fade = CASpringAnimation(perceptualDuration: ConchMotion.appearance.response, bounce: ConchMotion.appearance.bounce)
         fade.keyPath = "opacity"
         fade.fromValue = 1
         fade.toValue = 0
@@ -737,8 +857,8 @@ final class CanvasInkView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         live.path = nil
-        // A click with the arrow or the box drew nothing.
-        if mark.kind == .pen || mark.kind == .highlight || mark.extent(in: bounds.size) >= 4 { controller?.commit(mark, on: self) }
+        // A click drew nothing, with any tool: aimed at a control the glass covered, it left a dot there.
+        if mark.drew(in: bounds.size) { controller?.commit(mark, on: self) }
         CATransaction.commit()
     }
 
@@ -774,8 +894,8 @@ final class CanvasInkView: NSView {
             // Only with the pen down: the glass has no keys otherwise, and a Return meant for another app never sends.
             // (An `if`, not a `where`: a `where` binds to the last pattern alone.)
             if controller?.armed == true { controller?.send() }
-        case UInt16(kVK_ANSI_R) where controller?.armed == true:
-            // R with the pen down: Show (panel-lab's R).
+        case UInt16(kVK_ANSI_R) where controller?.armed == true && event.modifierFlags.contains(.shift):
+            // ⇧R with the pen down: Show (panel-lab's R). A bare R, easily hit, started recording by accident.
             controller?.toggleShow()
         default:
             // The number keys pick a tool (panel-lab's 1 to 5). Anything else is dropped: while the glass has the keys,
@@ -836,7 +956,8 @@ final class CanvasNoteView: NSView, NSTextFieldDelegate {
         label.string = mark.author == .agent ? "✦" : "\(number)"
         label.font = NSFont.systemFont(ofSize: 12, weight: .bold)
         label.fontSize = 12
-        label.foregroundColor = NSColor.white.cgColor
+        // Off-black on Tyler's orange (white measured 2.85:1), white on the agent's violet: `CanvasInk.on`.
+        label.foregroundColor = CanvasInk.on(mark.author).cgColor
         label.alignmentMode = .center
         label.frame = CGRect(x: 0, y: (side - 15) / 2, width: side, height: 15)
         label.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
@@ -854,7 +975,8 @@ final class CanvasNoteView: NSView, NSTextFieldDelegate {
         bubble.layer?.cornerRadius = 12
         bubble.layer?.masksToBounds = true
         bubble.layer?.borderWidth = 0.5
-        bubble.layer?.borderColor = NSColor.black.withAlphaComponent(0.14).cgColor
+        // The overlay's hairline, by appearance: a fixed black at 14% vanished in dark (`viewDidChangeEffectiveAppearance`).
+        bubble.layer?.borderColor = Self.line(for: effectiveAppearance)
         field.isEditable = mark.author == .you
         field.isSelectable = true
         field.isBordered = false
@@ -866,7 +988,7 @@ final class CanvasNoteView: NSView, NSTextFieldDelegate {
         field.stringValue = mark.text ?? ""
         if isAgents {
             // Its name in its colour, then its words (panel-lab's `.note[data-author]`).
-            let words = NSMutableAttributedString(string: "\(name) · ", attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold), .foregroundColor: NSColor(cgColor: CanvasInk.agent.cgColor) ?? .systemPurple])
+            let words = NSMutableAttributedString(string: "\(name) · ", attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold), .foregroundColor: Self.agentText])
             words.append(NSAttributedString(string: mark.text ?? "", attributes: [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.labelColor]))
             field.attributedStringValue = words
         }
@@ -888,6 +1010,26 @@ final class CanvasNoteView: NSView, NSTextFieldDelegate {
 
     override var isFlipped: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        bubble.layer?.borderColor = Self.line(for: effectiveAppearance)
+    }
+
+    /// Whether `appearance` is dark.
+    private nonisolated static func dark(_ appearance: NSAppearance) -> Bool {
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+    }
+
+    /// The overlay's hairline (`ConchColor.overlayLine`) for `appearance`.
+    private static func line(for appearance: NSAppearance) -> CGColor {
+        ConchColor.overlayLine.rgba(dark(appearance) ? .dark : .light).cgColor
+    }
+
+    /// An agent's name in words (`CanvasInk.agentText`), resolved as the text is drawn, light or dark.
+    private static let agentText = NSColor(name: "conch.agentText") { appearance in
+        NSColor(cgColor: CanvasInk.agentText.rgba(CanvasNoteView.dark(appearance) ? .dark : .light).cgColor) ?? .systemPurple
+    }
 
     var isEditing: Bool { field.currentEditor() != nil }
 
@@ -938,7 +1080,7 @@ final class CanvasNoteView: NSView, NSTextFieldDelegate {
         let appear = CABasicAnimation(keyPath: "opacity")
         appear.fromValue = 0
         appear.toValue = 1
-        appear.duration = 0.18
+        appear.duration = ConchMotion.quick
         appear.beginTime = start
         appear.fillMode = .backwards
         badge.add(grow, forKey: "pop")

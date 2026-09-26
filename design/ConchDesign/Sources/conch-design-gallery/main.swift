@@ -785,8 +785,26 @@ struct CanvasInkPreview: View {
     }
 }
 
-func canvasPill(tool: CanvasMark.Kind = .box, armed: Bool = true, drawn: Bool = true, sending: Bool = false, route: String? = "Arch brand page", message: String? = nil, recording: CanvasToolPill.Recording? = nil) -> some View {
-    CanvasToolPill(tool: tool, armed: armed, canUndo: drawn, canSend: (drawn || recording != nil) && route != nil, sending: sending, route: route, message: message, onTool: { _ in }, onUndo: {}, onSend: {}, recording: recording, onShow: {}, onDiscard: drawn || recording != nil ? {} : nil)
+/// The sessions Send's menu lists in these renders, most likely first.
+let canvasDestinations = [
+    CanvasToolPill.Destination(id: "dev", label: "Dayloop invite", why: "on screen"),
+    CanvasToolPill.Destination(id: "arch", label: "Arch brand page", why: "in the panel"),
+    CanvasToolPill.Destination(id: "api", label: "API refactor"),
+    CanvasToolPill.Destination(id: "docs", label: "Docs site"),
+]
+
+func canvasPill(
+    mode: CanvasToolPill.Mode = .tools, hangs: Bool = false, tool: CanvasMark.Kind = .box, armed: Bool = true, drawn: Bool = true,
+    sending: Bool = false, route: String? = "Arch brand page", sure: Bool = true, routeMenu: CanvasToolPill.RouteMenu? = nil,
+    notice: CanvasToolPill.Notice? = nil, recording: CanvasToolPill.Recording? = nil, narrate: Bool = false, missed: AgentInk.Missed? = nil
+) -> some View {
+    CanvasToolPill(
+        mode: mode, hangs: hangs, tool: tool, armed: armed, canUndo: drawn, canSend: (drawn || recording != nil) && route != nil, sending: sending,
+        route: route.map { CanvasToolPill.Route(id: $0 == "Dayloop invite" ? "dev" : "arch", label: $0, sure: sure) },
+        destinations: canvasDestinations, routeMenu: routeMenu, notice: notice,
+        onTool: { _ in }, onUndo: {}, onSend: {}, recording: recording, onShow: {}, narrate: narrate, onNarrate: {},
+        onDiscard: drawn || recording != nil ? {} : nil, onDone: armed ? {} : nil, missed: missed
+    )
 }
 
 try render("w2-canvas", width: 1280) {
@@ -807,11 +825,39 @@ try render("w2-canvas-tools") {
     canvasPill()
     canvasPill(armed: false, route: "Dayloop invite")
     canvasPill(tool: .note, sending: true)
-    canvasPill(armed: false, route: nil, message: "Nothing to send this to: no session owns what is on screen, and the panel has none.")
+    canvasPill(armed: false, route: nil, notice: .nowhere)
     // Show: recording, 23 seconds in; in its last fifteen; stopped at the cap, waiting for Send or the ×.
     canvasPill(tool: .pen, recording: .since(Date().addingTimeInterval(-23)))
     canvasPill(armed: false, drawn: false, recording: .since(Date().addingTimeInterval(-108)))
-    canvasPill(armed: false, message: "Stopped at 2:00. Send it, or × to throw it away.", recording: .stopped(120))
+    canvasPill(armed: false, notice: .stopped(at: 120), recording: .stopped(120))
+}
+
+// The quality pass's pill states: what it says when Screen Recording is missing, after a Send, when conch is only guessing
+// where Send goes, while a Show records, and with an agent's marks alone.
+try render("qp-canvas-pill-states", width: 1000) {
+    Heading(title: "Canvas pill states", note: "Never sent, or recorded, without saying so; where it went; where it would go when conch is guessing; and an agent's marks alone.")
+    Caption("Send without Screen Recording: nothing goes until Tyler picks")
+    canvasPill(armed: false, notice: .noScreen(marks: true))
+    Caption("After Open Settings: a grant reaches conch only once it reopens")
+    canvasPill(armed: false, notice: .reopen(marks: true))
+    Caption("Show without Screen Recording, no ink: the notice alone, hanging under the control bar")
+    canvasPill(mode: .notice, hangs: true, armed: false, drawn: false, notice: .noScreen(marks: false))
+    Caption("Sent: the ink cleared, this for 1.5 s, then it sinks")
+    canvasPill(mode: .notice, armed: false, drawn: false, notice: .sent(to: "Arch brand page"))
+    Caption("Not sent: the daemon's reason (#426's resume it), the marks back")
+    canvasPill(armed: false, notice: .notSent(to: "Arch brand page", sentence: ConchSendFailure.sentence(reason: "session-stopped")))
+    Caption("A guess (a localhost page at 0.7): Send reads Send to… and asks")
+    canvasPill(armed: false, route: "Arch brand page", sure: false)
+    canvasPill(armed: false, route: "Arch brand page", sure: false, routeMenu: .sendTo)
+    Caption("Sure: the route's name is a menu that only changes where; hanging, the menu opens under it")
+    canvasPill(hangs: true, tool: .pen, route: "Dayloop invite", routeMenu: .change)
+    Caption("Show recording, the pen up (clicks reach the app), voice off; then stopped by macOS")
+    canvasPill(armed: false, drawn: false, recording: .since(Date().addingTimeInterval(-31)))
+    canvasPill(armed: false, drawn: false, notice: .stoppedByMacOS(at: 31), recording: .stopped(31))
+    canvasPill(armed: false, drawn: false, notice: .noFrames, recording: .stopped(31))
+    Caption("An agent's marks alone: a chip, never the tools; and what couldn't be shown here")
+    canvasPill(mode: .agentChip, armed: false, drawn: false)
+    canvasPill(mode: .agentChip, armed: false, drawn: false, missed: AgentInk.Missed([(kind: "box", label: "Join, as you asked"), (kind: "arrow", label: nil)]))
 }
 
 // The picture Send makes, `flat.png`: the screen at 2x with the same marks drawn over it by the same builder, fitted to

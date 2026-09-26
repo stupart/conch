@@ -163,6 +163,13 @@ final class FloatingPanels: ObservableObject {
         fog.isVisible && !isCollapsed && !isFullScreen ? fog.frame.insetBy(dx: Self.glassInset, dy: Self.glassInset) : nil
     }
 
+    /// While the canvas's pen is down its glass takes every click, so docked the panel rises over it, and its own controls
+    /// still work; full screen it stays under, since it is what is being marked up (`CanvasController.apply`).
+    func overGlass(_ over: Bool) {
+        let level: NSWindow.Level = over && !isFullScreen ? NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1) : .floating
+        if fog.level != level { fog.level = level }
+    }
+
     /// The fog fills its screen; leaving docks it back in its corner.
     @Published private(set) var isFullScreen = false
     @Published private(set) var isCollapsed = false

@@ -105,14 +105,15 @@ describe("a recording that ends under the Show", () => {
 });
 
 describe("a stopped Show is thrown away without a key", () => {
-  test("the pill's × discards it, and says nothing was sent", () => {
+  test("the pill's × deletes it, and says nothing was sent", () => {
     expect(pill).toContain("let onDiscard: (() -> Void)?");
     expect(pill).toContain("if let onDiscard {\n            Button(action: onDiscard) {");
     expect(pill).toContain('Image(systemName: "xmark")');
     expect(member(canvas, "func discard() {")).toContain("recorder != nil ? cancelShow() : clear()");
     // With a Show, recording or stopped, the × is there.
     expect(canvas).toContain("onDiscard: canvas.recorder != nil || canvas.document?.isEmpty == false ? { canvas.discard() } : nil");
-    expect(member(show, "    func cancelShow() {")).toContain('message = "Recording thrown away. Nothing was sent."');
+    expect(member(show, "    func cancelShow() {")).toContain("say(.deleted)");
+    expect(storyboard + pill).toContain('public static let deleted = Self("Recording deleted. Nothing was sent.")');
   });
 });
 
@@ -136,7 +137,8 @@ describe("narration", () => {
 
   test("refused, the pill says why and the Show goes on silent; one taken too late ends at once", () => {
     const start = member(show, "private func startNarration(for recorder: CanvasRecorder) async {");
-    expect(start).toContain('message = "Recording without narration: \\(reason)."');
+    expect(start).toContain("say(.silent(reason))");
+    expect(pill).toContain('Self("Recording without your voice: \\(reason).")');
     expect(start).toContain("guard recorder.isRecording, self.recorder === recorder else { return narration.cancel() }");
     expect(start).not.toContain("stopShow");
     expect(start).not.toContain("discard");
@@ -184,7 +186,7 @@ describe("narration", () => {
 });
 
 describe("only on an explicit Show", () => {
-  test("recording starts only from toggleShow, which is the pill's record button and R with the pen down", () => {
+  test("recording starts only from toggleShow, which is the pill's record button and ⇧R with the pen down", () => {
     expect(filesWith("CanvasRecorder.start(")).toEqual(["CanvasShow.swift"]);
     expect(show.match(/CanvasRecorder\.start\(/g)?.length).toBe(1);
     expect(member(show, "    func toggleShow() {")).toContain("recorder = try await CanvasRecorder.start(on: display)");
@@ -196,26 +198,34 @@ describe("only on an explicit Show", () => {
     );
     expect(calls.sort()).toEqual(["Canvas.swift: canvas.toggleShow()", "Canvas.swift: controller?.toggleShow()", "CanvasShow.swift: toggleShow()"]);
     expect(show).toContain("    func toggleShow() {");
-    expect(canvas).toContain("case UInt16(kVK_ANSI_R) where controller?.armed == true:\n            // R with the pen down: Show (panel-lab's R).\n            controller?.toggleShow()");
+    // ⇧R, not a bare R, which was easily hit with the pen down and started a recording by accident.
+    expect(canvas).toContain("case UInt16(kVK_ANSI_R) where controller?.armed == true && event.modifierFlags.contains(.shift):");
+    expect(canvas).toContain("// ⇧R with the pen down: Show (panel-lab's R). A bare R, easily hit, started recording by accident.\n            controller?.toggleShow()");
+    expect(canvas).not.toContain("case UInt16(kVK_ANSI_R) where controller?.armed == true:");
   });
 
-  test("the Screen Recording grant is checked silently, and asked for once, on a Show", () => {
-    const granted = member(show, "static func granted() -> Bool {");
+  test("the Screen Recording grant is checked silently, and asked for once, on a Show — the one check a Send makes too", () => {
+    const granted = member(send, "static func granted() -> Bool {");
     inOrder(granted, "if CGPreflightScreenCaptureAccess() { return true }", "CGRequestScreenCaptureAccess()");
     expect(granted).toContain("if !asked {\n            asked = true\n            CGRequestScreenCaptureAccess()");
     const toggle = member(show, "    func toggleShow() {");
-    inOrder(toggle, "guard CanvasRecorder.granted() else {", "CanvasRecorder.start(");
+    inOrder(toggle, "guard CanvasCapture.granted() else {", "CanvasRecorder.start(");
+    // Without it, the pill says so and stays up: the pen coming up used to hide the pill, and the word with it.
+    expect(toggle).toContain("guard CanvasCapture.granted() else {\n            return say(settingsOpened ? .reopen(marks: false) : .noScreen(marks: false))\n        }");
+    expect(canvas).toContain("CanvasToolPill.mode(armed: armed, yourInk: document?.has(.you) == true, agentInk: document?.has(.agent) == true, show: recorder != nil, notice: notice != nil)");
   });
 
-  test("R with the pen down: the pen comes up before the system asks for the grant, so its prompt isn't under the glass", () => {
+  test("a Show starts with the pen up, so clicks reach the app being shown, and the grant's prompt isn't under the glass", () => {
     const toggle = member(show, "    func toggleShow() {");
-    inOrder(toggle, "if !CGPreflightScreenCaptureAccess() { lift() }", "guard CanvasRecorder.granted() else {");
+    inOrder(toggle, "lift()", "guard CanvasCapture.granted() else {");
+    inOrder(toggle, "lift()", "CanvasRecorder.start(on: display)");
+    expect(toggle).not.toContain("if !CGPreflightScreenCaptureAccess() { lift() }");
   });
 
   test("two minutes at most, then it stops and waits: the cap never sends", () => {
     expect(storyboard).toContain("public static let longest: TimeInterval = 120");
     expect(member(show, "    func toggleShow() {")).toContain("try? await Task.sleep(for: .seconds(CanvasStoryboard.longest))\n            await stopShow(recorder)");
-    const stop = member(show, "private func stopShow(_ recorder: CanvasRecorder) async {");
+    const stop = member(show, "func stopShow(_ recorder: CanvasRecorder) async {");
     expect(stop).toContain("guard case .since = recorder.phase else { return }");
     expect(stop).not.toContain("store.send");
     expect(stop).not.toContain("sendShow");
@@ -223,12 +233,17 @@ describe("only on an explicit Show", () => {
 });
 
 describe("Esc and Send", () => {
-  test("Esc throws a Show away and says nothing was sent, before it would lift the pen or clear the ink", () => {
+  test("Esc stops a recording and keeps it; only the × deletes one, and says nothing was sent", () => {
     const escape = member(canvas, "func escape() {");
-    inOrder(escape, "if recorder != nil { return cancelShow() }", "armed ? lift() : clear()");
+    inOrder(escape, "if let recorder, recorder.isRecording { return stopRecording(recorder) }", "lift()");
+    expect(escape).not.toContain("cancelShow");
+    expect(member(show, "func stopRecording(_ recorder: CanvasRecorder) {")).toContain("Task { await stopShow(recorder) }");
+    // The × is the one caller.
+    expect(Object.values(macSources).join("\n").match(/cancelShow\(\)/g)?.length).toBe(2);
+    expect(member(canvas, "func discard() {")).toContain("recorder != nil ? cancelShow() : clear()");
     const cancel = member(show, "    func cancelShow() {");
     expect(cancel).toContain("self.recorder = nil");
-    expect(cancel).toContain('message = "Recording thrown away. Nothing was sent."');
+    expect(cancel).toContain("say(.deleted)");
     expect(cancel).toContain("Task { await recorder.discard() }");
     expect(cancel).not.toContain("store.send");
     expect(cancel).not.toContain("sendShow");
@@ -236,14 +251,17 @@ describe("Esc and Send", () => {
   });
 
   test("Send with a Show goes where a still would, as one message through the composer's path", () => {
-    expect(member(send, "    func send() {")).toContain("    func send() {\n        if let recorder { return sendShow(recorder) }\n");
+    expect(member(send, "    func send(marksOnly: Bool = false) {")).toContain("    func send(marksOnly: Bool = false) {\n        if let recorder { return sendShow(recorder) }\n");
     expect(canvas).toContain("canSend: drawn || canvas.recorder != nil,");
     const sendShow = member(show, "    func sendShow(_ recorder: CanvasRecorder) {");
     // Nowhere to send it: it keeps recording, and the pill says why.
-    inOrder(sendShow, "guard let row = Self.route(state, panel: FloatingPanels.installed?.staged) else {", "await recorder.stop()");
-    expect(sendShow).toContain("let delivery = store.send(.inject(sessionId: row.id, label: row.label, text: prompt), overApp: true)");
+    inOrder(sendShow, "guard let route = Self.route(state, panel: FloatingPanels.installed?.staged, picked: picked) else {", "await recorder.stop()");
+    // A guess asks where before anything stops.
+    inOrder(sendShow, "guard route.sure else {\n            routeMenu = .sendTo\n            return\n        }", "await recorder.stop()");
+    expect(sendShow).toContain("let event = ConchDaemonEvent.inject(sessionId: row.id, label: row.label, text: prompt)");
+    expect(sendShow).toContain("let delivery = store.send(event, overApp: true)");
     expect(sendShow).toContain("try await CanvasRecorder.storyboard(video, ends: ends, said: said, canvas: canvas, about: label)");
-    inOrder(sendShow, "store.send(.inject(", "clear()");
+    inOrder(sendShow, "store.send(event", "clear()");
   });
 
   test("the message: what was shown and how long, the storyboard, a line a frame, and the MP4 for people", () => {
@@ -313,7 +331,7 @@ describe("on screen", () => {
     inOrder(ring, "if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {", 'edge.add(breathe, forKey: "breathe")');
     expect(ring).toContain("breathe.duration = ConchMotion.breathPeriod / 2");
     // The record button and its timer ride in the pill, beside undo.
-    expect(pill).toContain('.accessibilityLabel("Undo")\n                showControl\n                discard\n                separator\n                send');
+    expect(pill).toContain('.accessibilityLabel("Undo")\n            showControl\n            discard\n            separator\n            send\n            done');
     expect(storyboard).toContain("TimelineView(.periodic(from: start, by: 1)) { context in");
   });
 });

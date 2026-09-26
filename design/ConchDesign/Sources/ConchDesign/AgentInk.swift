@@ -96,6 +96,30 @@ public enum AgentInk {
         )
     }
 
+    /// An agent's marks conch couldn't place where Tyler is looking — no geometry, a selector or a quote on a page conch
+    /// isn't showing or can't find, a canvas on another Mac's display — said on the pill's chip rather than only logged.
+    /// Marks merely scrolled out of sight or covered aren't these: they come back where they are.
+    public struct Missed: Equatable, Sendable {
+        /// Each one as the chip's tooltip names it: its label, else its kind.
+        public let names: [String]
+
+        /// Each mark by its kind (`Kind`'s raw value) and label; nil with none.
+        public init?(_ marks: [(kind: String, label: String?)]) {
+            guard !marks.isEmpty else { return nil }
+            names = marks.map { mark in
+                let label = mark.label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                return label.isEmpty ? "a \(mark.kind) with no label" : "“\(label)”"
+            }
+        }
+
+        public var text: String {
+            names.count == 1 ? "1 mark couldn't be shown here" : "\(names.count) marks couldn't be shown here"
+        }
+
+        /// Their labels, one a line.
+        public var help: String { names.joined(separator: "\n") }
+    }
+
     static func canvasKind(_ kind: Kind) -> CanvasMark.Kind {
         switch kind {
         case .arrow: .arrow
@@ -185,5 +209,20 @@ public enum AgentInk {
             width: screen.width / display.width,
             height: screen.height / display.height
         )
+    }
+}
+
+/// Which of an agent's marks have drawn on already, this launch, by id: the review's and the agent's own
+/// (`AgentInkController`), so another review's are new and this one's keep theirs. Every staged change clears the canvas,
+/// so Next and Previous back to a review drew each of its marks on again from nothing, every visit; now a mark draws on
+/// once, and coming back shows it as it was left.
+public struct AgentInkMemory: Sendable {
+    private var drawn: Set<String> = []
+
+    public init() {}
+
+    /// Whether the mark `id` draws on now: the first time it is shown, and never again.
+    public mutating func drawsOn(_ id: String) -> Bool {
+        drawn.insert(id).inserted
     }
 }
