@@ -1,3 +1,4 @@
+import ConchDesign
 import CoreGraphics
 import Foundation
 
@@ -672,6 +673,9 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
     /// Every question in the call when it asks more than one; `question` is the first.
     let questions: [AgentQuestion]?
     let material: Material?
+    /// Something Tyler sent through conch itself — a canvas, a Show, a phone video — summed up by the daemon, and
+    /// drawn as one quiet row instead of its message. Nil from an older daemon, which keeps today's rows.
+    let receipt: ConchSentReceipt?
 
     /// What a question card shows: every question, or the one.
     var allQuestions: [AgentQuestion] { questions ?? question.map { [$0] } ?? [] }
@@ -689,7 +693,8 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
         change: FileChange? = nil,
         question: AgentQuestion? = nil,
         questions: [AgentQuestion]? = nil,
-        material: Material? = nil
+        material: Material? = nil,
+        receipt: ConchSentReceipt? = nil
     ) {
         self.id = id
         self.rev = rev
@@ -702,10 +707,11 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
         self.question = question
         self.questions = questions
         self.material = material
+        self.receipt = receipt
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, rev, kind, text, at, tool, plan, change, question, questions, material
+        case id, rev, kind, text, at, tool, plan, change, question, questions, material, receipt
     }
 
     init(from decoder: Decoder) throws {
@@ -721,6 +727,7 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
         question = try? c.decodeIfPresent(AgentQuestion.self, forKey: .question)
         questions = try? c.decodeIfPresent([AgentQuestion].self, forKey: .questions)
         material = try? c.decodeIfPresent(Material.self, forKey: .material)
+        receipt = try? c.decodeIfPresent(ConchSentReceipt.self, forKey: .receipt)
     }
 }
 

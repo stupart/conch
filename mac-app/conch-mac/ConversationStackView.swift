@@ -1,5 +1,7 @@
 import AppKit
 import ConchDesign
+import ImageIO
+import QuickLook
 import SwiftUI
 
 /// The conversation as a stack of messages, rather than one replaced string.
@@ -616,22 +618,28 @@ struct ConversationStackView: View {
     private func row(for item: ConversationItem) -> some View {
         switch item.kind {
         case .user:
-            // The one kind that is right-aligned and filled. Everything else in
-            // the stack is the machine talking; this is you, and it should be
-            // findable while scrolling past without reading a word.
-            HStack {
-                Spacer(minLength: 48)
-                Text(AttributedString.conchMarkdown(item.text))
-                    // workspace-v1 §3: the transcript reads at 15/23, not at the 13 the tool
-                    // rows and captions around it use. This is the one thing on screen that is
-                    // actually READ rather than scanned.
-                    .font(ConchType.readingBody)
-                    .lineSpacing(ConchType.readingLineSpacing)
-                    .foregroundStyle(ConchPalette.textPrimary)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(ConchPalette.fill, in: RoundedRectangle(cornerRadius: ConchRadius.large))
+            if let receipt = item.receipt {
+                // A canvas, a Show or a video he sent: one quiet row in his bubble, never the picture of the screen he
+                // is looking at, nor the lines written for the agent.
+                SentReceiptBubble(receipt: receipt)
+            } else {
+                // The one kind that is right-aligned and filled. Everything else in
+                // the stack is the machine talking; this is you, and it should be
+                // findable while scrolling past without reading a word.
+                HStack {
+                    Spacer(minLength: 48)
+                    Text(AttributedString.conchMarkdown(item.text))
+                        // workspace-v1 §3: the transcript reads at 15/23, not at the 13 the tool
+                        // rows and captions around it use. This is the one thing on screen that is
+                        // actually READ rather than scanned.
+                        .font(ConchType.readingBody)
+                        .lineSpacing(ConchType.readingLineSpacing)
+                        .foregroundStyle(ConchPalette.textPrimary)
+                        .textSelection(.enabled)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(ConchPalette.fill, in: RoundedRectangle(cornerRadius: ConchRadius.large))
+                }
             }
         case .assistant:
             VStack(alignment: .leading, spacing: 4) {
@@ -1473,6 +1481,50 @@ private struct ConversationScrollObserver: NSViewRepresentable {
 extension AttributedString {
     static func conchMarkdown(_ source: String) -> AttributedString {
         ConversationFog.inlineMarkdown(source)
+    }
+}
+
+/// Something Tyler sent through conch, as his own row: `SentReceiptRow`, right-aligned in the bubble his words use, its
+/// picture a thumbnail read small off the main thread. A click opens it whole in Quick Look — the picture, or a Show's
+/// or a video's recording — and Esc puts it away; nothing here is ever drawn big.
+private struct SentReceiptBubble: View {
+    let receipt: ConchSentReceipt
+    @State private var thumbnail: NSImage?
+    /// What Quick Look is showing; nil when it is closed.
+    @State private var preview: URL?
+
+    var body: some View {
+        HStack {
+            Spacer(minLength: 48)
+            SentReceiptRow(receipt: receipt, thumbnail: thumbnail.map { Image(nsImage: $0) }) { preview = opens }
+                .help(opens?.path ?? receipt.title)
+        }
+        .task(id: receipt.thumb) {
+            guard let path = receipt.thumb else { return }
+            thumbnail = await Task.detached(priority: .utility) { Self.thumbnail(of: path) }.value
+        }
+        .quickLookPreview($preview)
+    }
+
+    /// The recording when it is still on this Mac, else the picture; nil once both are gone (a canvas is kept two
+    /// weeks, a phone upload a day).
+    private var opens: URL? {
+        [receipt.open, receipt.thumb].compactMap { $0 }
+            .first { FileManager.default.fileExists(atPath: $0) }
+            .map { URL(fileURLWithPath: $0) }
+    }
+
+    /// The picture decoded as small as a Retina thumbnail cropped to fill needs, never whole: a flat.png is 1568 px.
+    nonisolated private static func thumbnail(of path: String) -> NSImage? {
+        let side = 4 * max(SentReceiptRow.thumbnailSize.width, SentReceiptRow.thumbnailSize.height)
+        guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                  kCGImageSourceCreateThumbnailFromImageAlways: true,
+                  kCGImageSourceCreateThumbnailWithTransform: true,
+                  kCGImageSourceThumbnailMaxPixelSize: side,
+              ] as CFDictionary)
+        else { return nil }
+        return NSImage(cgImage: image, size: .zero)
     }
 }
 

@@ -336,16 +336,24 @@ struct ConversationStack: View {
     private func row(_ item: ConversationItem) -> some View {
         switch item.kind {
         case "user":
-            // Right-aligned and filled, matching the draft bubble below, so your
-            // own words read the same whether they are sent or still being said.
-            HStack {
-                Spacer(minLength: 40)
-                Text(inlineMarkdown(item.text))
-                    .font(Type.body)
-                    .foregroundStyle(Palette.textPrimary)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Palette.raised, in: RoundedRectangle(cornerRadius: 14))
+            if let receipt = item.receipt {
+                // A canvas, a Show or a video he sent: one quiet row in his bubble, never the whole picture nor the
+                // lines written for the agent. A tap opens the picture full screen, as any Mac file opens here.
+                SentReceiptBubble(bridge: bridge, receipt: receipt, sessionId: conversation.sessionId) {
+                    openFile = FileLink(id: $0)
+                }
+            } else {
+                // Right-aligned and filled, matching the draft bubble below, so your
+                // own words read the same whether they are sent or still being said.
+                HStack {
+                    Spacer(minLength: 40)
+                    Text(inlineMarkdown(item.text))
+                        .font(Type.body)
+                        .foregroundStyle(Palette.textPrimary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Palette.raised, in: RoundedRectangle(cornerRadius: 14))
+                }
             }
         case "thinking":
             Text(item.text)
@@ -927,6 +935,50 @@ struct ConversationStack: View {
             markdown: text,
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         )) ?? AttributedString(text)
+    }
+}
+
+/// Something Tyler sent through conch, as his own row: `SentReceiptRow` in the bubble his words use here, its picture
+/// fetched from the Mac and decoded thumbnail-small. A tap hands the picture's path to the sheet any Mac file opens in.
+private struct SentReceiptBubble: View {
+    @ObservedObject var bridge: BridgeClient
+    let receipt: ConchSentReceipt
+    /// The session it belongs to; what a failed load is filed under.
+    let sessionId: String
+    let onOpen: (String) -> Void
+    @State private var thumbnail: UIImage?
+
+    var body: some View {
+        HStack {
+            Spacer(minLength: 40)
+            SentReceiptRow(
+                receipt: receipt,
+                thumbnail: thumbnail.map { Image(uiImage: $0) },
+                fill: ConchColor.surfaceRaised,
+                radius: 14
+            ) {
+                if let thumb = receipt.thumb { onOpen(thumb) }
+            }
+        }
+        .task(id: receipt.thumb) { await loadThumbnail() }
+    }
+
+    /// Fetched, read small, and the download let go: the row keeps only the thumbnail. A picture that won't come says
+    /// so in the Mac's error log (A13) and the row keeps its glyph.
+    @MainActor
+    private func loadThumbnail() async {
+        thumbnail = nil
+        guard let path = receipt.thumb else { return }
+        guard let url = await bridge.downloadFile(path: path) else {
+            let message = "Couldn't load the picture from your Mac: \(bridge.lastError ?? "it sent nothing back.") — \(path)"
+            await bridge.reportAppError(operation: "load-image", message: message, sessionId: sessionId)
+            return
+        }
+        defer { try? FileManager.default.removeItem(at: url) }
+        let side = Int(4 * max(SentReceiptRow.thumbnailSize.width, SentReceiptRow.thumbnailSize.height))
+        let preview = await ImageDownsampler.filePreview(at: url, maxBytes: 32 * 1024 * 1024, maxPixelSize: side)
+        guard !Task.isCancelled else { return }
+        if case let .image(decoded) = preview { thumbnail = UIImage(cgImage: decoded) }
     }
 }
 

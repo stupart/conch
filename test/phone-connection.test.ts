@@ -203,7 +203,9 @@ describe("a message shows what became of it", () => {
     const reconcile = between(talk, "func reconcile(session: String, items: [ConversationItem]) {", "\n    }\n");
     inOrder(reconcile, [
       "seenUserItems[session] = Set(users.map(\\.id))",
-      "!message.earlierUserItems.contains($0.id) && Self.sameMessage($0.text, message.text)",
+      "!message.earlierUserItems.contains($0.id)",
+      // The same words, or — a video sent alone, which comes back as a receipt with none of them — the same file.
+      "&& (Self.sameMessage($0.text, message.text) || $0.receipt?.stands(for: message.text) == true)",
       "outbox.remove(message.id)",
     ]);
     const begin = between(talk, "private func beginOutgoing(", "\n    }\n");

@@ -101,7 +101,9 @@ describe("a message sent from the Mac appears the moment it is sent", () => {
     ordered(
       reconcile,
       "seenUserItems[session] = Set(users.map(\\.id))",
-      "!message.earlierUserItems.contains($0.id) && Self.sameMessage($0.text, message.text)",
+      "!message.earlierUserItems.contains($0.id)",
+      // The same words, or — a canvas or a Show, which comes back as a receipt with none of them — the same file.
+      "&& (Self.sameMessage($0.text, message.text) || $0.receipt?.stands(for: message.text) == true)",
       "reconciled.remove(message.id)",
       "reconciled.prune(confirmedBefore:",
     );

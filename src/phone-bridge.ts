@@ -785,7 +785,7 @@ interface ServableState {
     review?: HeldReview;
     reviews?: HeldReview[];
   }>;
-  conversations?: Record<string, { items?: Array<{ material?: { path?: string } }> }>;
+  conversations?: Record<string, { items?: Array<{ material?: { path?: string }; receipt?: { thumb?: string } }> }>;
 }
 
 /**
@@ -823,6 +823,25 @@ async function ownUpload(requested: string, uploads: string): Promise<string | n
 }
 
 /**
+ * The picture on a receipt of something Tyler sent (`SentReceipt.thumb`): a canvas's flat.png or a Show's first frame,
+ * in the canvas folder conch keeps beside the phone's uploads (`CanvasFolder`, `~/.cache/conch/canvas/<uuid>/`), or a
+ * video's contact sheet, which is one of those uploads. Hidden folders both, so the publish rule alone would refuse
+ * the phone the one picture its receipt row shows.
+ */
+async function ownReceiptPicture(requested: string, uploads: string): Promise<string | null> {
+  const upload = await ownUpload(requested, uploads);
+  if (upload) return upload;
+  const [real, canvas] = await Promise.all([
+    realpath(requested).catch(() => null),
+    realpath(join(dirname(uploads), "canvas")).catch(() => null),
+  ]);
+  const folder = real ? dirname(real) : "";
+  if (!real || !canvas || dirname(folder) !== canvas || !/^[0-9A-F-]{36}$/i.test(folder.slice(canvas.length + 1))) return null;
+  const file = await stat(real).catch(() => null);
+  return file?.isFile() && (file.mode & 0o111) === 0 ? real : null;
+}
+
+/**
  * Whether `/file` may serve `requested`, decided against the state and the disk as they are NOW, so
  * a delayed relay frame or a file swapped for a symlink since publishing gains nothing. It may when
  * it is:
@@ -834,6 +853,8 @@ async function ownUpload(requested: string, uploads: string): Promise<string | n
  *   can't draw;
  * - a file on its own line in a conversation (`material.path`), which used to be served with no
  *   rule at all: any absolute image, PDF or text path an agent wrote became readable;
+ * - the picture on a receipt of something Tyler sent (`receipt.thumb`), from conch's own folders
+ *   alone (`ownReceiptPicture`);
  * - a web asset under the folder of a held page or markdown document, which is what lets a page
  *   bring its styles and pictures (`WEB_ASSET`, never at a `neverWidened` folder).
  * Every one of them then passes `checkLocalFile`, the rule a session publishes under, against
@@ -875,6 +896,11 @@ async function servableFile(
     if (heldLinks(row).includes(requested) || markImages(row).includes(requested) || previews(row).includes(requested)) {
       return check(rootsOf(row));
     }
+  }
+  for (const conversation of Object.values(state?.conversations ?? {})) {
+    if (!conversation.items?.some((item) => item.receipt?.thumb === requested)) continue;
+    const picture = uploads ? await ownReceiptPicture(requested, uploads) : null;
+    return picture ? { ok: true, real: picture } : refused;
   }
   for (const [sessionId, conversation] of Object.entries(state?.conversations ?? {})) {
     if (!conversation.items?.some((item) => item.material?.path === requested)) continue;
