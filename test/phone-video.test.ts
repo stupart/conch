@@ -57,10 +57,14 @@ describe("/transcript", () => {
   });
 
   test("one at a time, and a failure says so", async () => {
-    let finish!: () => void;
+    let finish!: () => void, began!: () => void;
     const slow = new Promise<void>((resolve) => { finish = resolve; });
-    const { ask, put } = bridge(async () => { await slow; return { segments: [] }; });
+    const running = new Promise<void>((resolve) => { began = resolve; });
+    const { ask, put } = bridge(async () => { began(); await slow; return { segments: [] }; });
     const first = ask(put("first1234567.wav"));
+    // Only once the first holds the lock: each request checks the file on disk before taking it, so under load
+    // the second could otherwise get there first and wait forever on a transcription this test never finishes.
+    await running;
     expect(await ask(put("second123456.wav"))).toMatchObject({ status: 429 });
     finish();
     expect((await first).status).toBe(200);
