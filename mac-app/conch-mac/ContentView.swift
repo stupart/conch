@@ -121,7 +121,7 @@ struct ContentView: View {
             KeyboardShortcutsSheet()
         }
         .sheet(isPresented: $isShowingSessionStart) {
-            StartSessionSheet()
+            StartSessionSheet(onStarted: showStarted)
         }
         // ⌘K (B4): scoped to the selected session, or the one conch is
         // speaking for — the same fallback Recite uses.
@@ -179,6 +179,15 @@ struct ContentView: View {
 
     private func selectSession(_ row: SessionRow) {
         workspace.viewing = row.id
+    }
+
+    /// A session started from here has checked in: show it. Tyler: "When a session starts successfully it should then
+    /// show the session back in the conch app." Starting one raised Terminal, so conch takes the front back, but only
+    /// from Terminal, the rule `refocusAfterDelivery` keeps: anywhere else Tyler went meanwhile, he stays.
+    private func showStarted(_ id: SessionRow.ID) {
+        workspace.viewing = id
+        guard !NSApp.isActive, NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.Terminal" else { return }
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func beginRename(_ row: SessionRow) {
@@ -424,6 +433,8 @@ private struct StartSessionSheet: View {
 
     @EnvironmentObject private var store: StateStore
     @Environment(\.dismiss) private var dismiss
+    /// The session this sheet started, once it has checked in.
+    let onStarted: (SessionRow.ID) -> Void
 
     @State private var backend = ConchAgentBackend.claude
     @State private var mode = StartMode.new
@@ -806,7 +817,8 @@ private struct StartSessionSheet: View {
             // and saying so beats a sheet that closed on a promise.
             let appeared = await waitForSession()
             isStarting = false
-            if appeared {
+            if let appeared {
+                onStarted(appeared)
                 dismiss()
                 return
             }
@@ -816,7 +828,10 @@ private struct StartSessionSheet: View {
             // And keep watching: answered in Terminal, it checks in a minute later, and the
             // sheet sat on this notice for a session that was already running. Tyler: "conch
             // app is still in creation model even tho sessions has been made".
-            if await waitForSession(rounds: 225), error == notice { dismiss() }
+            if let id = await waitForSession(rounds: 225), error == notice {
+                onStarted(id)
+                dismiss()
+            }
         }
     }
 
@@ -827,7 +842,7 @@ private struct StartSessionSheet: View {
     /// same question: did anything actually start?
     /// `rounds` of 0.8 s: 25 is long enough for a cold agent on a busy machine and short
     /// enough that a stuck one is noticed while you still remember starting it.
-    private func waitForSession(rounds: Int = 25) async -> Bool {
+    private func waitForSession(rounds: Int = 25) async -> SessionRow.ID? {
         let expected = mode == .resume ? resumeSelection?.sessionId : nil
         // Sessions only: a session's agents are rows too, and one appearing elsewhere is
         // not the session you just started.
@@ -837,12 +852,12 @@ private struct StartSessionSheet: View {
             try? await Task.sleep(nanoseconds: 800_000_000)
             guard let rows = store.state?.rows else { continue }
             if let expected {
-                if rows.contains(where: { $0.id == expected }) { return true }
-            } else if sessions(rows).contains(where: { !before.contains($0.id) }) {
-                return true
+                if rows.contains(where: { $0.id == expected }) { return expected }
+            } else if let fresh = sessions(rows).first(where: { !before.contains($0.id) }) {
+                return fresh.id
             }
         }
-        return false
+        return nil
     }
 }
 

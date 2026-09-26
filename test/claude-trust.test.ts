@@ -126,7 +126,7 @@ describe("the start sheet, as source (conch-mac has no XCTest target)", () => {
   const view = readFileSync(`${import.meta.dir}/../mac-app/conch-mac/ContentView.swift`, "utf8");
 
   test("keeps watching after its notice, and closes itself when the session checks in", () => {
-    expect(view).toContain("if await waitForSession(rounds: 225), error == notice { dismiss() }");
+    expect(view).toContain("if let id = await waitForSession(rounds: 225), error == notice {\n                onStarted(id)\n                dismiss()");
     // A session's agents are rows too; one appearing elsewhere is not this session.
     expect(view).toContain("rows.filter { $0.parentSessionId == nil }");
   });
