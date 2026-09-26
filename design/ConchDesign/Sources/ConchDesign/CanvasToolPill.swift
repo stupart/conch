@@ -317,9 +317,10 @@ public struct CanvasToolPill: View {
     /// where; from "Send to…" it sends there.
     private func routes(_ menu: RouteMenu) -> some View {
         VStack(alignment: .leading, spacing: 0) {
+            // The overlay's secondary text measures 4.32:1 on this glass in dark: its words are the primary colour, smaller.
             Text(menu == .sendTo ? "Send to" : "Send goes to")
                 .font(ConchType.meta)
-                .foregroundStyle(ConchColor.overlayTextSecondary)
+                .foregroundStyle(ConchColor.overlayText)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
             ForEach(destinations) { each in
@@ -331,7 +332,7 @@ public struct CanvasToolPill: View {
                         Text(each.label).font(ConchType.uiBody).lineLimit(1).truncationMode(.tail)
                         Spacer(minLength: ConchSpace.x3)
                         if let why = each.why {
-                            Text(why).font(ConchType.secondary).foregroundStyle(ConchColor.overlayTextSecondary)
+                            Text(why).font(ConchType.meta).foregroundStyle(ConchColor.overlayText)
                         }
                     }
                     .foregroundStyle(ConchColor.overlayText)
