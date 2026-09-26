@@ -1383,8 +1383,9 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
 
     init(row: SessionRow) {
         // The deliverable stays on a working row, but the mark means "waiting
-        // for you to look", which a working session is not.
-        if (row.review != nil && row.status != .working) || row.status == .review {
+        // for you to look", which a working session is not, and nor is one whose
+        // work you have looked at (`ReadyForYou`): that row reads as its status.
+        if ReadyForYou.isReady(working: row.status == .working, viewedAt: row.held.map(\.viewedAt)) || row.status == .review {
             self = .review
             return
         }
@@ -1534,12 +1535,13 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
             return "Working"
         case .waitingOnAgents:
             return "Waiting on its agents — you can talk to it"
+        // Ready for you, as the legend, the menu and the pill name it; the check says which kind.
         case .waiting:
-            return "Waiting for you"
+            return "Ready for you — its turn is over"
         case .needs:
             return "Needs a response"
         case .review:
-            return "Needs review"
+            return "Ready for you — work to look at"
         case .manual:
             return "Manual"
         case .speaking:

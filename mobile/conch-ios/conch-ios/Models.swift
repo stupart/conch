@@ -387,8 +387,10 @@ enum StatusMark {
 
     init(row: PublishedState.Row) {
         let wantsUser = row.status == "waiting" || row.status == "needs"
-        // The deliverable stays on a working row; the mark means it is waiting for you.
-        if row.review != nil, row.status != "working" { self = .review; return }
+        // The deliverable stays on a working row; the mark means it is waiting for you, and one you have looked at,
+        // here or on the Mac, isn't (`ReadyForYou`, the Mac's rule): that row reads as its status.
+        let held = row.reviews.flatMap { $0.isEmpty ? nil : $0 } ?? row.review.map { [$0] } ?? []
+        if ReadyForYou.isReady(working: row.status == "working", viewedAt: held.map(\.viewedAt)) { self = .review; return }
         // A sub-agent is working or it is paused, as on the Mac. Nobody replies to one, so a
         // Codex helper between turns is not "waiting for you", and waiting's colour was wrong on
         // it. Only a question it is blocked on still asks something of you.
@@ -458,17 +460,22 @@ enum StatusMark {
 
     /// The meaning, short enough for the one line beside a glyph. Only this state's full
     /// sentence runs past that line, and it cut off at "you…" — the half that says why it matters.
+    /// Ready for you is one state with one name, on the Mac and here; the glyph says which kind.
     var caption: String {
-        self == .waitingOnAgents ? "Agents working — talk to it" : meaning
+        switch self {
+        case .waitingOnAgents: "Agents working — talk to it"
+        case .waiting, .review: "Ready for you"
+        default: meaning
+        }
     }
 
     var meaning: String {
         switch self {
         case .working: "Working"
         case .waitingOnAgents: "Waiting on its agents — you can talk to it"
-        case .waiting: "Waiting for you"
+        case .waiting: "Ready for you — its turn is over"
         case .needs: "Needs an answer"
-        case .review: "Has work to look at"
+        case .review: "Ready for you — work to look at"
         case .paused: "Manual"
         case .micOpen: "Mic open"
         case .speaking: "Reading aloud"

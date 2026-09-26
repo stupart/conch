@@ -871,8 +871,9 @@ private struct KeyboardShortcutsSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     private let keyRows = [
-        ShortcutHelpRow(command: "Space", result: "Talk / stop"),
-        ShortcutHelpRow(command: "P", result: "Auto / manual"),
+        // Space stops and never starts (`talkOrStop`); P is Talk and Quiet, as the menu bar and the control bar name them.
+        ShortcutHelpRow(command: "Space", result: "Stop speaking or listening"),
+        ShortcutHelpRow(command: "P", result: "Talk / Quiet"),
         ShortcutHelpRow(command: "R", result: "Recite"),
         ShortcutHelpRow(command: "↑ / ↓", result: "Select"),
         ShortcutHelpRow(command: "Esc", result: "Release selection / close"),
@@ -880,6 +881,25 @@ private struct KeyboardShortcutsSheet: View {
         ShortcutHelpRow(command: "⌘K", result: "Command palette"),
         ShortcutHelpRow(command: "⌘,", result: "Settings"),
         ShortcutHelpRow(command: "?", result: "This list"),
+    ]
+
+    /// The keys of what floats over other apps: the pen (Canvas.swift's glass, panel-lab's keys) and the conversation
+    /// panel. Here, in the one list, rather than as hints on the surfaces themselves.
+    private let drawRows = [
+        ShortcutHelpRow(command: "⌃⌥⌘P", result: "Draw on screen"),
+        ShortcutHelpRow(command: "1 – 5", result: "Pick a pen tool"),
+        ShortcutHelpRow(command: "R", result: "Show: record the screen"),
+        ShortcutHelpRow(command: "Return", result: "Send"),
+        ShortcutHelpRow(command: "⌘Z", result: "Undo the last mark"),
+        ShortcutHelpRow(command: "Esc", result: "Put the pen down"),
+    ]
+
+    private let panelRows = [
+        ShortcutHelpRow(command: "⌥⌘← / ⌥⌘→", result: "Previous / next item"),
+        ShortcutHelpRow(command: "⌘Return", result: "Full screen"),
+        ShortcutHelpRow(command: "⌘.", result: "Collapse"),
+        ShortcutHelpRow(command: "Esc", result: "Leave full screen"),
+        ShortcutHelpRow(command: "Return", result: "Send the reply"),
     ]
 
     private let spokenRows = [
@@ -926,6 +946,10 @@ private struct KeyboardShortcutsSheet: View {
 
             ShortcutHelpSection(title: "Keys", rows: keyRows)
 
+            ShortcutHelpSection(title: "Drawing on screen", rows: drawRows)
+
+            ShortcutHelpSection(title: "Conversation panel", rows: panelRows)
+
             ShortcutHelpSection(title: "Spoken commands", rows: spokenRows)
 
             // The entire ledger language is coloured glyphs, and this was the
@@ -964,9 +988,10 @@ private struct LedgerLegendSection: View {
         Entry(symbol: "circle.fill", color: ConchPalette.statusActive, meaning: "Working — an agent is running, nothing needed from you"),
         Entry(symbol: "person.2.fill", color: ConchPalette.statusWaiting, meaning: "Its agents are working — you can talk to it"),
         Entry(symbol: "mic.fill", color: ConchPalette.statusMicOpen, meaning: "Mic open — it is hearing you"),
-        Entry(symbol: "circle.inset.filled", color: ConchPalette.statusWaiting, meaning: "Finished — waiting on you"),
+        // Ready for you is one state with one name, in the menu, on the pill and here; the check says which kind.
+        Entry(symbol: "circle.inset.filled", color: ConchPalette.statusWaiting, meaning: "Ready for you — its turn is over"),
         Entry(symbol: "exclamationmark.circle.fill", color: ConchPalette.statusNeeds, meaning: "Blocked — needs an answer"),
-        Entry(symbol: "checkmark.circle.fill", color: ConchPalette.statusReview, meaning: "Has work for you to look at"),
+        Entry(symbol: "checkmark.circle.fill", color: ConchPalette.statusReview, meaning: "Ready for you — work to look at"),
         Entry(symbol: "pause.fill", color: ConchPalette.textDim, meaning: "Manual — turns held for later"),
         Entry(symbol: "record.circle.fill", color: ConchPalette.statusMicOpen, meaning: "Recording your reply"),
         Entry(symbol: "play.fill", color: ConchPalette.statusQuiet, meaning: "Reading a reply aloud"),
@@ -1003,7 +1028,8 @@ private struct ShortcutHelpRow: Identifiable {
     let command: String
     let result: String
 
-    var id: String { command }
+    /// Both: one key can mean two things in one list (Esc, Return).
+    var id: String { command + "\u{1F}" + result }
 }
 
 private struct ShortcutHelpSection: View {

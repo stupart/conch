@@ -337,12 +337,15 @@ final class ConchDesignTests: XCTestCase {
         XCTAssertNil(FogSession(id: "x", label: "X", agent: "Claude").item)
     }
 
+    /// The label is the Ready pill while anything is ready, whatever the voice is doing: it stopped taking clicks the
+    /// moment conch spoke or listened. With nothing ready, no state makes it a button.
     @MainActor
-    func testOnlyAReadyPillTakesAClick() {
-        XCTAssertTrue(ControlBar(state: .ready, detail: "2 sessions", mode: .constant(.talk), onTap: {}).taps)
-        XCTAssertFalse(ControlBar(state: .ready, detail: "2 sessions", mode: .constant(.talk)).taps)
-        for state in VoiceState.allCases where state != .ready {
+    func testThePillTakesAClickWhileAnythingIsReadyWhateverTheVoiceDoes() {
+        let ready = ControlBar.Ready(label: "Prime page wireframe", position: 1, count: 3)
+        for state in VoiceState.allCases {
+            XCTAssertTrue(ControlBar(state: state, detail: "", mode: .constant(.talk), ready: ready, onTap: {}).taps, "\(state)")
             XCTAssertFalse(ControlBar(state: state, detail: "", mode: .constant(.talk), onTap: {}).taps, "\(state)")
+            XCTAssertFalse(ControlBar(state: state, detail: "", mode: .constant(.talk), ready: ready).taps, "\(state)")
         }
     }
 }

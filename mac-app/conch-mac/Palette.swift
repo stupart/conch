@@ -109,19 +109,16 @@ enum ConchPalette {
     // "maybe do same green circle just with no check?". The glyph already does that work
     // (`circle.inset.filled` against review's `checkmark.circle.fill`), so only the colour moved.
     //
-    // NOT review's own #30B35A. A mark needs 3:1 and that green measures 2.41-2.72 on the light
-    // grounds — the same failure the note below records for the review gold at 1.3:1. #279B4C is
-    // the nearest green that clears it everywhere: 3.16 at worst, across bg, surface, raised and
-    // fog, in both schemes. The orange it replaces failed too (2.11-2.22 on light), so this is a
-    // fix in both directions rather than a trade.
+    // It was NOT review's own #30B35A then: a mark needs 3:1 and that green measured 2.41-2.72 on
+    // the light grounds — the same failure the note below records for the review gold at 1.3:1.
+    // #279B4C is the nearest green that clears it everywhere, 3.16 at worst, and ConchDesign's
+    // `ready` has since taken it as its light value for the same reason, so waiting IS ready's token
+    // now: one green for "come and look", the phone's too. Dark keeps ready's #30B35A, which clears
+    // 3:1 by more than #279B4C did. The orange it replaced failed too (2.11-2.22 on light).
     //
     // This reverses the earlier decision that put waiting at the orange end. That was to separate
     // it from review when the two were 20/255 apart in one channel; the glyph separates them now.
-    static let statusWaiting = Color(
-        red: 0.153,
-        green: 0.608,
-        blue: 0.298
-    )
+    static let statusWaiting = ConchColor.ready.dynamic
     /// These two have exact token equivalents whose meaning already matches, and both were
     /// unreadable on a light ground as literals — the review gold measured 1.3:1 there.
     static let statusNeeds = ConchColor.attention.dynamic

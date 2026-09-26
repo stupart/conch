@@ -13,8 +13,8 @@ const read = (path: string): string => readFileSync(join(root, path), "utf8");
  * terminal surfaces were not part of that slice, so for a week the same session showed a
  * star in tmux and a check in both apps.
  *
- * Green because that is what the apps draw: `ConchColor.ready` is #30B35A, and the lab's
- * `--ready` is the same. `\x1b[32m` is the terminal's green; the star's `\x1b[33m` was yellow.
+ * Green because that is what the apps draw: `ConchColor.ready` (#279B4C in light, #30B35A in
+ * dark), the lab's `--ready`. `\x1b[32m` is the terminal's green; the star's `\x1b[33m` was yellow.
  */
 test("the terminal marks a review with a green check, not a star", () => {
   for (const path of ["src/status.ts", "src/panel.ts"]) {

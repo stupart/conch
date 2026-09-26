@@ -77,7 +77,7 @@ struct LedgerView: View {
                                 ProgressView().controlSize(.small)
                                 Text(staleLine(state))
                                     .font(Type.caption)
-                                    .foregroundStyle(Palette.waiting)
+                                    .foregroundStyle(Palette.caution)
                             }
                             .listRowBackground(Palette.bg)
                             .listRowSeparator(.hidden)

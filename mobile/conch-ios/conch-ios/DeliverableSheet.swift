@@ -233,8 +233,9 @@ enum ReviewQueue {
         ReviewIdentity.key(published: published, sessionId: sessionId, filedAt: filedAt)
     }
 
-    /// Ready as the Mac's pill counts it (`StatusItem.readyRows`): a review on
-    /// a session that is not working.
+    /// What Next walks, as the Mac's pill walks it (`StatusItem.heldRows`): a
+    /// review on a session that is not working, looked at or not. The unopened
+    /// come first (`next`); only they count as ready for you (`StatusMark`).
     static func ready(_ rows: [(id: String, status: String, hasReview: Bool, filedAt: Double?, published: String?)]) -> [Entry] {
         rows.filter { $0.hasReview && $0.status != "working" }
             .map { (sessionId: $0.id, key: key(sessionId: $0.id, filedAt: $0.filedAt, published: $0.published), at: $0.filedAt ?? 0) }

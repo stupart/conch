@@ -817,7 +817,7 @@ struct SessionView: View {
                             Image(systemName: "stop.fill")
                                 .font(.system(size: 15, weight: .bold))
                                 .frame(width: 38, height: 38)
-                                .background(Palette.waiting, in: Circle())
+                                .background(Palette.caution, in: Circle())
                                 .foregroundStyle(Palette.bg)
                         }
                         .buttonStyle(.plain)
@@ -1256,7 +1256,7 @@ private struct YourTurnBubble: View {
             HStack(spacing: 10) {
                 Text(reason)
                     .font(Type.caption)
-                    .foregroundStyle(Palette.waiting)
+                    .foregroundStyle(Palette.caution)
                     .multilineTextAlignment(.trailing)
                 Button("Retry", action: onRetry)
                     .font(Type.caption.weight(.semibold))

@@ -25,7 +25,9 @@ test("the phone gives the same row the same mark, and says it can be talked to",
   expect(mark).toContain("case .waiting, .waitingOnAgents: Palette.waiting");
   expect(mark).toContain('case .waitingOnAgents: "Waiting on its agents — you can talk to it"');
   // The one line beside a glyph cut the sentence off at "you…"; the whole of it is still read out.
-  expect(mark).toContain('self == .waitingOnAgents ? "Agents working — talk to it" : meaning');
+  const caption = mark.slice(mark.indexOf("var caption: String {"), mark.indexOf("var meaning: String {"));
+  expect(caption).toContain('case .waitingOnAgents: "Agents working — talk to it"');
+  expect(caption).toContain("default: meaning");
   const session = readFileSync(`${import.meta.dir}/../mobile/conch-ios/conch-ios/SessionView.swift`, "utf8");
   expect(session).toMatch(/Text\(mark\.caption\)[\s\S]{0,200}\.accessibilityLabel\(mark\.meaning\)/);
 });

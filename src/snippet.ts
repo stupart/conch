@@ -1048,7 +1048,7 @@ export interface ReviewScene {
   v: 1;
   target: { kind: ReviewSceneKind };
   inspect?: string;
-  /** Agent ink: what the agent drew over it, for the apps to draw where the user is looking. */
+  /** Agent ink: what the agent drew over it, for the apps to draw where they show it: conch's own panel, side panel or canvas. */
   marks?: ReviewMark[];
 }
 
@@ -1059,8 +1059,8 @@ export interface ReviewScene {
  * - `canvas`: the user's canvas the agent is answering; its numbers are 0-1 of that canvas.
  * - `image`: an image file under the session's folder or a temp folder; its numbers are 0-1 of the image. A still
  *   the user sent sits in conch's own hidden cache, which the check refuses: an agent copies it out first.
- * - `selector`, `quote`: an element, or text, in the linked page. conch finds it wherever it is
- *   on screen and places the mark on it, so these take no numbers at all.
+ * - `selector`, `quote`: an element, or text, in the linked page. conch finds it in its own view
+ *   of the page (the panel or the side panel; never a browser) and places the mark on it, so these take no numbers.
  *
  * (0, 0) is the top left. No colour: conch draws every mark in the agent's own.
  */

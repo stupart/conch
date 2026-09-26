@@ -79,14 +79,20 @@ test("the legend, the menu bar menu and the panel's switcher draw working blue, 
   const legend = between(read("mac-app/conch-mac/ContentView.swift"), "private let entries: [Entry] = [", "    ]\n");
   expect(legend).toContain('Entry(symbol: "circle.fill", color: ConchPalette.statusActive, meaning: "Working — an agent is running, nothing needed from you")');
   expect(legend).toContain('Entry(symbol: "circle", color: ConchPalette.textFaint, meaning: "Paused — a sub-agent that isn\'t running")');
+  // Working is a FILLED dot in active's blue in the menu and the switcher, as the sidebar draws working: the hollow ring
+  // is the sidebar's paused sub-agent (ReadyTests pins the symbols and the colours).
   const menu = read("mac-app/conch-mac/StatusItem.swift");
-  expect(menu).toContain('addSessions("Working", working, symbol: "circle", colour: ConchColor.active, to: menu)');
+  const statusMenu = read("design/ConchDesign/Sources/ConchDesign/StatusMenu.swift");
+  expect(statusMenu).toContain("rows.append(.item(Item(title: session.label, command: .openSession(session.id), dot: .working)))");
+  expect(statusMenu).toContain('public var symbol: String { "circle.fill" }');
+  expect(statusMenu).not.toContain('"circle"');
   expect(menu).toContain("NSImage.SymbolConfiguration(paletteColors: [tint])");
   // A menu tints a template image with its own ink, which would undo the colour.
-  expect(menu).toContain("dot?.isTemplate = false");
+  expect(menu).toContain("image?.isTemplate = false");
   const components = read("design/ConchDesign/Sources/ConchDesign/Components.swift");
   expect(components).toContain("case .working: ConchColor.active");
   expect(components).toContain(".foregroundStyle(FogSession.markColor(session.standing))");
+  expect(components).toContain("Image(systemName: FogSession.markSymbol(session.standing))");
 });
 
 test("the breath is a halo behind a still dot, and holds still under Reduce Motion", () => {

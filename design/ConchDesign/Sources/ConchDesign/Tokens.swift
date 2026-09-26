@@ -137,11 +137,19 @@ public enum ConchColor {
     public static let accent = ConchColorToken("accent", .init(0x1D1D1F), .init(0xF2F1EF))
     public static let onAccent = ConchColorToken("onAccent", .init(0xFFFFFF), .init(0x1D1D1F))
 
-    // Voice state: the same in light and dark, like the macOS mic indicator.
+    // Voice state: the same in light and dark, like the macOS mic indicator, but for ready.
     public static let speaking = ConchColorToken("speaking", both: .init(0x2BB5C8))
     public static let listening = ConchColorToken("listening", both: .init(0xFF9F0A))
     public static let quiet = ConchColorToken("quiet", both: .init(0x8E8E93))
-    public static let ready = ConchColorToken("ready", both: .init(0x30B35A))
+    /// Ready for you, and every mark that means come and look: the orb, the menu's dot, the sidebar's check, the
+    /// switcher's dot, the phone's waiting and review.
+    ///
+    /// A mark needs 3:1, and #30B35A, the same in both schemes, failed it on every light surface it marks something that
+    /// needs Tyler: 2.41 on the ground, 2.72 on white, about 2.4 in the menu, and 2.72 for the orb's white check. Light
+    /// is #279B4C, the green the Mac's waiting mark already moved to for the same reason: 3.16 on the ground, 3.39 on the
+    /// fog, 3.57 on surface and raised, about 3.1 in the menu, and the white check 3.57. Dark keeps #30B35A, which clears
+    /// it everywhere: 5.14 at worst on raised, 3.14 on the switcher's glass (ActiveMarkTests).
+    public static let ready = ConchColorToken("ready", .init(0x279B4C), .init(0x30B35A))
     public static let listeningRing = ConchColorToken("listeningRing", both: .init(0xFF9F0A, alpha: 0.22))
     public static let onVoice = ConchColorToken("onVoice", both: .init(0xFFFFFF))
     /// The overlay's glow while nobody is talking: a calm iris between listening's orange and speaking's teal.
