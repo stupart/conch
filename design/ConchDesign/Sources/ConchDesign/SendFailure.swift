@@ -59,6 +59,11 @@ public enum ConchSendFailure {
         // Keys typed into an open dialog would answer it, so conch typed nothing.
         case "session-awaiting-answer":
             "that session is waiting on a permission prompt or question. Answer it on the Mac, then send again."
+        // The terminal the row names no longer holds the session, so conch typed nothing there.
+        case "session-stopped":
+            "that session isn't running in its terminal any more: it was stopped. Resume it, and conch will pick it up."
+        case "session-ended":
+            "that session isn't running in its terminal any more: its process has ended. Resume it, and conch will pick it up."
         default:
             nil
         }

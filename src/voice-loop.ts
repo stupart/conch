@@ -38,6 +38,7 @@ import {
   type WindowIdentity,
 } from "./conversation.ts";
 import { isWindowKey } from "./window-key.ts";
+import { deadTarget, type DeadTarget } from "./dead-target.ts";
 import { clipboardFallbackError } from "./app-errors.ts";
 import { recordTelemetry } from "./telemetry.ts";
 import { askClaude, type AskClaude } from "./model.ts";
@@ -409,6 +410,8 @@ export interface VoiceLoopDeps {
     toClipboard: typeof inject.toClipboard;
     /** Optional: a test terminal without it reads no screen, which is today's behaviour. */
     readSessionScreen?: typeof inject.readSessionScreen;
+    /** Optional: a test terminal without it checks no target before typing (`dead-target.ts`). */
+    deadTarget?: typeof deadTarget;
   };
   ear?: {
     createDictationSession: typeof listen.createDictationSession;
@@ -497,6 +500,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
   };
   const injectKeys = deps.terminal ? deps.terminal.injectKeys : inject.injectKeys;
   const readSessionScreen = deps.terminal ? deps.terminal.readSessionScreen : inject.readSessionScreen;
+  const findDeadTarget = deps.terminal ? deps.terminal.deadTarget : deadTarget;
   const { createDictationSession, listenGap, armBargeRecorder, killActiveRecorders } = deps.ear ?? listen;
   // A window of a shared transcript counts only its own branch's prompts (A8).
   // With no registry entry it gets `{}`, which attributes nothing: unknown.
@@ -1834,6 +1838,27 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     return false;
   }
 
+  /**
+   * The terminal an event's pid names, if it no longer holds the session: a `claude attach`
+   * window on a stopped job, or a process that has gone. Read now, not from the last snapshot,
+   * since the row keeps its pid until the registry is read again. What the row knows about the
+   * pid (its job, the process bound to it) counts only when it is still the row's pid.
+   */
+  async function deadTargetOf(event: TurnEvent): Promise<DeadTarget | null> {
+    if (!findDeadTarget || !event.pid) return null;
+    const row = deps.window(event.sessionId);
+    const same = row?.pid === event.pid;
+    try {
+      return await findDeadTarget(cfg.claudeDir, {
+        pid: event.pid,
+        ...(same && row?.jobId ? { jobId: row.jobId } : {}),
+        ...(same && row?.processIdentity ? { processIdentity: row.processIdentity } : {}),
+      });
+    } catch {
+      return null; // a check that breaks must not cost the send
+    }
+  }
+
   /** The original session delivery path, reached only after local voice routing. */
   async function deliverToSession(
     event: TurnEvent,
@@ -1894,6 +1919,21 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         }
         return false;
       };
+      // The terminal the row names no longer holds the session (`dead-target.ts`): nothing is
+      // typed, nothing goes on the clipboard, and the words go back to the draft with a reason
+      // the apps put on the row. A resume registers the new process, and a retry goes there.
+      const refused = async (dead: DeadTarget): Promise<false> => {
+        receiptCode = dead.reason;
+        publishDictation(text, event.sessionId);
+        log(`not typing into "${event.label}": ${dead.detail}`);
+        reportSend("Nothing typed: the session isn't running in that terminal any more. The words went back to the draft.", {
+          pid: event.pid, ...(dead.jobId ? { jobId: dead.jobId } : {}), detail: dead.detail,
+        });
+        if (!beforeInject || await beforeInject()) {
+          await speak(cfg, "That session isn't running in its terminal any more. Resume it, and I'll pick it up. Your words are in the draft.", event.label, false, event.sessionId);
+        }
+        return false;
+      };
 
       // A hookless Codex session's rollout is known only to the live session list:
       // `findTranscript` reads conch's hook registry and Claude's projects folder, and
@@ -1907,6 +1947,8 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       // into an open permission prompt: the words went nowhere and the Return approved the
       // pending command.
       if (target?.status === "waiting") return failedDelivery("session-awaiting-answer");
+      const dead = await deadTargetOf(event);
+      if (dead) return refused(dead);
 
       // Baseline the target session's user-prompt count so we can CONFIRM the
       // prompt actually submitted. null ⇒ no transcript to watch, skip confirmation.
@@ -2079,6 +2121,9 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         // the Return (2026-09-23 21:46). Pressing again was reported as a lost Return.
         if (attempt < 2 && (await inputBoxHolds(event, text)) === false) continue;
         if (attempt < 2) {
+          // The job behind a window can stop while conch waits on it; a Return there answers nothing.
+          const stopped = await deadTargetOf(event);
+          if (stopped) return refused(stopped);
           resends++;
           log(`not confirmed yet — re-pressing Return (try ${attempt + 1})`);
           let retry: inject.InjectTextResult;
