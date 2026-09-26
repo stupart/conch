@@ -136,7 +136,7 @@ test("the front comes back only from the Terminal conch raised, without touching
 
 test("the daemon hands back an immediate inject's handling instead of dropping it", () => {
   const daemon = read("src/daemon.ts");
-  const branch = daemon.slice(daemon.indexOf('if (event.type === "inject" || event.type === "interrupt") {'));
+  const branch = daemon.slice(daemon.indexOf('if (event.type === "inject" || event.type === "interrupt" || event.type === "session-start") {'));
   expect(branch.slice(0, 400)).toContain("return handle(event).catch((error) => {");
   expect(branch.slice(0, 400)).not.toContain("void handle(event)");
 });

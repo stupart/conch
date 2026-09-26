@@ -106,7 +106,8 @@ because a naive publisher would drop or re-apply them.
 ## 4. The two agents, read completely differently
 
 - **Claude Code** pushes: hooks fire `conch hook` as a short-lived process on
-  Stop, Notification and UserPromptSubmit. Session liveness comes from
+  Stop, Notification, UserPromptSubmit, PermissionRequest and SessionStart (which
+  tells the daemon which process a resumed session now runs in). Session liveness comes from
   `~/.claude/sessions/<pid>.json`, which it removes on exit.
 - **Codex** is polled: conch reads its SQLite databases read-only and watches
   rollout files, because wiring Codex hooks would mean editing shared config
@@ -120,8 +121,8 @@ without touching them.
 **Claude's subagents are a third shape, and they are read from disk only.** A
 Task/Agent call runs inside the parent's process: it gets no
 `~/.claude/sessions/<pid>.json`, so `registrySnapshot` can never list one, and
-it fires `SubagentStop`, not `Stop` — conch registers only Stop, Notification
-and UserPromptSubmit, and `hook.ts` drops SubagentStop explicitly, which is
+it fires `SubagentStop`, not `Stop` — conch never registers SubagentStop,
+and `hook.ts` drops it explicitly anyway, which is
 what keeps a finishing subagent from being announced as the parent's turn. What
 Claude Code does write is a sidechain transcript at
 `<project>/<sessionId>/subagents/agent-<id>.jsonl` (with `agentType`,

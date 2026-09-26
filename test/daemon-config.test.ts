@@ -1254,7 +1254,7 @@ describe("an inject never waits for the voice engine", () => {
     // An interrupt is the other event nobody may be made to wait for: its whole
     // value is arriving before the agent does more of what you are stopping.
     expect(source).toContain(
-      'if (event.type !== "inject" && event.type !== "interrupt") await ttsStartup;',
+      'if (event.type !== "inject" && event.type !== "interrupt" && event.type !== "session-start") await ttsStartup;',
     );
   });
 });

@@ -52,7 +52,7 @@ import {
   type ConchState,
 } from "./status.ts";
 import { findSessionBySpokenName, findTranscript, sessionLabel, type SessionInfo } from "./sessions.ts";
-import { eventTimestamp, type SessionLedger } from "./session-ledger.ts";
+import { eventTimestamp, refreshTurnIdentity, type SessionLedger } from "./session-ledger.ts";
 import type { EventQueue } from "./event-queue.ts";
 import { sessionHasLiveBackgroundWork } from "./agent-activity.ts";
 import { carriedReview, carriedReviews, fileReview, filedVersions, latestLatchedState, type SessionStatus } from "./panel.ts";
@@ -1141,10 +1141,48 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     }
   }
 
+  /**
+   * A session started, resumed, cleared or compacted (Claude Code's SessionStart).
+   *
+   * Stopped and resumed, a session is a new process in a new terminal under its
+   * old id, and conch kept the old one until the first prompt, so a message sent
+   * from conch meanwhile was typed at the old window. The daemon re-reads the
+   * registry as it accepts this; here every turn held for the session is pointed
+   * at the new process, and the row reads idle.
+   *
+   * Silent by construction: it returns before the per-event reset below and
+   * never reaches `handleTurn`, so nothing is spoken, no mic opens, and it is
+   * never the session's last turn. Held deliverables ride along in the latch.
+   * A dismissed session stays dismissed (see the dismissed gate in
+   * control-server.ts): hiding a conversation is the person's choice, and a
+   * resume that followed an exit already lost the dismissal when the registry
+   * saw the old process go.
+   */
+  function sessionStarted(event: TurnEvent): void {
+    if (!event.sessionId) return;
+    const identity = { pid: event.pid, cwd: event.cwd, label: event.label };
+    let refreshed = ledger.refreshIdentity(event.sessionId, identity);
+    // An exchange already under way for it replies to where the session is now.
+    for (const current of new Set([handlingEvent, recitingEvent])) {
+      if (current?.sessionId === event.sessionId && refreshTurnIdentity(current, identity)) refreshed += 1;
+    }
+    // Compaction also runs mid-turn (auto-compact) in the same process: the
+    // session is still working, so it keeps whatever status it had.
+    if (event.startSource !== "compact") {
+      // A new process shows no dialog the old one was showing.
+      hookApprovals.delete(event.sessionId);
+      hookQuestions.delete(event.sessionId);
+      setSessionState(event.sessionId, event.label, "waiting", undefined, event.eventAt);
+    }
+    log(`session ${event.startSource ?? "start"} — "${event.label}"${event.pid ? ` in pid ${event.pid}` : ""}${refreshed ? `, ${refreshed} held turn(s) moved to it` : ""}`);
+  }
+
   async function handle(event: TurnEvent): Promise<boolean | "staged" | inject.SendFailure | void> {
     // Inject and interrupt arrive immediately, not through the drain, so a
     // queued exchange may be mid-await right now: they must not touch its stop
-    // or its mic (A14). The per-event reset sits below them.
+    // or its mic (A14). The per-event reset sits below them. A session start,
+    // which is silent, is handled here too.
+    if (event.type === "session-start") return sessionStarted(event);
     if (event.type === "interrupt") return void (await interruptSession(event));
     if (event.type === "inject") {
       // Answering STOPS the reading.

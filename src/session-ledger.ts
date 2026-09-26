@@ -62,6 +62,39 @@ export class TurnEventOrder {
   }
 }
 
+/** Which process and folder a session is in now, and what it is called. */
+export type SessionIdentity = Pick<TurnEvent, "pid" | "cwd" | "label">;
+
+/**
+ * Point one held event at the process that has its session now, in place.
+ *
+ * In place because the event queue, manual-mode replay and `TurnEventOrder`
+ * all hold these exact objects: a copy would be a different event to each of
+ * them. Only who the session is changes: what it said, its deliverable, its
+ * transcript and its mark stay as they were.
+ *
+ * All or nothing on the pid: with no registry entry to read, the hook's label
+ * is only the folder's name, and a guess must not replace what was known.
+ */
+export function refreshTurnIdentity(event: TurnEvent, identity: SessionIdentity): boolean {
+  const pid = identity.pid;
+  if (pid === undefined || !Number.isSafeInteger(pid) || pid <= 0) return false;
+  let changed = false;
+  if (event.pid !== pid) {
+    event.pid = pid;
+    changed = true;
+  }
+  if (identity.cwd && event.cwd !== identity.cwd) {
+    event.cwd = identity.cwd;
+    changed = true;
+  }
+  if (identity.label && event.label !== identity.label) {
+    event.label = identity.label;
+    changed = true;
+  }
+  return changed;
+}
+
 /**
  * Owns daemon state keyed by conch's addressable session/window id.
  *
@@ -114,6 +147,27 @@ export class SessionLedger {
       || this.sessionHeldTurns.has(sessionId)
       || this.dismissedHeldTurns.has(sessionId)
       || this.pending.has(sessionId);
+  }
+
+  /**
+   * A session now lives in another process (Claude Code's SessionStart, after
+   * `claude --resume` in a new terminal): every turn held for it — for manual
+   * mode, for a dismissed row's restore, for a bare wake — is typed into that
+   * process when it replays, so each one learns the new pid. Nothing is added,
+   * removed or reordered. Returns how many held events changed.
+   */
+  refreshIdentity(sessionId: string, identity: SessionIdentity): number {
+    if (!sessionId) return 0;
+    const held = new Set([
+      this.pending.get(sessionId),
+      this.sessionHeldTurns.get(sessionId),
+      this.dismissedHeldTurns.get(sessionId),
+      this.latestTurnBySession.get(sessionId),
+      this.lastTurn?.sessionId === sessionId ? this.lastTurn : undefined,
+    ]);
+    let refreshed = 0;
+    for (const event of held) if (event && refreshTurnIdentity(event, identity)) refreshed += 1;
+    return refreshed;
   }
 
   forget(sessionId: string): void {
