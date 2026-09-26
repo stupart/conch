@@ -133,6 +133,17 @@ final class CanvasPillTests: XCTestCase {
         XCTAssertEqual(CanvasPillPlacement.spot(size: pill, visible: visible, panel: .docked(right), controlBar: nil).frame.maxX, right.minX - CanvasPillPlacement.gap, accuracy: 0.01)
     }
 
+    /// Too wide to sit beside: kept on the screen, either side would land half over the panel, so it goes to the top
+    /// centre instead.
+    func testAPanelTooWideToSitBesideSendsItToTheTopNotHalfOverIt() {
+        let glass = CGRect(x: 24, y: 94, width: 1076, height: 760)
+        let spot = CanvasPillPlacement.spot(size: pill, visible: visible, panel: .docked(glass), controlBar: nil)
+        assertClear(spot, of: nil)
+        XCTAssertTrue(spot.hangs)
+        XCTAssertEqual(spot.frame.midX, visible.midX, accuracy: 0.01)
+        XCTAssertEqual(spot.frame.maxY, visible.maxY - ConchSpace.x3, accuracy: 0.01)
+    }
+
     /// Room over the panel, but the control bar is there: beside it instead, never on the bar.
     func testOverThePanelButUnderTheControlBarGoesBeside() {
         let glass = CGRect(x: 360, y: 94, width: 720, height: 700)
