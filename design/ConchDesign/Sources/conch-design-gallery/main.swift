@@ -615,7 +615,7 @@ let menuInput = StatusMenu.Input(
     working: [.init(id: "w1", label: "Parser refactor"), .init(id: "w2", label: "Invite tests")]
 )
 
-try render("m2-status-menu", width: 1100) {
+try render("m2-status-menu", width: 1180) {
     Heading(title: "Menu bar menu", note: "M2. StatusMenu's rows. The conversation panel folded to its handle is a dash, not a tick; Ready for you rows open the item, ⌥ opens conch; working is a filled blue dot.")
     HStack(alignment: .top, spacing: 36) {
         VStack(alignment: .leading, spacing: 10) {

@@ -258,4 +258,10 @@ final class ReadyTests: XCTestCase {
         let remote = await LocalServer.isListening(URL(string: "https://example.com/")!)
         XCTAssertTrue(remote, "not local: nothing to say it's down")
     }
+
+    /// A connect that fails at once, rather than after the wait, is not a listener either: on loopback a refusal comes
+    /// back through the wait (`SO_ERROR`), so it takes an address nothing can be reached on to fail at the first step.
+    func testAConnectThatFailsAtOnceIsNotAListener() {
+        XCTAssertFalse(LocalServer.accepts(.v4(0xFFFF_FFFF), port: 9, timeout: 0.1))
+    }
 }
