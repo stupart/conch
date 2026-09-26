@@ -169,6 +169,11 @@ export const BG_NO_TERMINAL = "running in the background, not open in a terminal
 /** `claude attach <jobId>` as `ps -Ao pid=,args=` shows it: bare or path-prefixed, with room for flags in between. */
 const ATTACH_ARGS = /(?:^|\/)claude(?:\s+\S+)*?\s+attach\s+([A-Za-z0-9][A-Za-z0-9_-]{0,63})\b/;
 
+/** The job a `claude attach <jobId>` command line views; undefined for any other command. */
+export function attachedJobId(args: string): string | undefined {
+  return ATTACH_ARGS.exec(args)?.[1];
+}
+
 /**
  * jobId -> pid of a live `claude attach <jobId>` process, parsed from one
  * `ps -Ao pid=,args=`. Exported so the parser is unit-testable without a real

@@ -39,6 +39,7 @@ import {
   approvalDetail,
 } from "../src/approval.ts";
 import { createVoiceLoop, type VoiceLoop, type VoiceLoopDeps } from "../src/voice-loop.ts";
+import type { DeadTarget, TargetToCheck } from "../src/dead-target.ts";
 import { EventQueue } from "../src/event-queue.ts";
 import type { RecordObservation } from "../src/records-receipts.ts";
 
@@ -132,6 +133,8 @@ interface Options {
   answerKeys?: (keys: readonly AnswerKey[]) => InjectTextResult;
   /** What the session's terminal shows; absent means conch can't read it (today's rules). */
   screen?: () => string | null;
+  /** The dead-target check (`dead-target.ts`); absent means none runs. */
+  deadTarget?: NonNullable<NonNullable<VoiceLoopDeps["terminal"]>["deadTarget"]>;
   /** The picker takes the keys without recording an answer, as one laid out unlike the measured one did. */
   pickerIgnoresKeys?: boolean;
   beforeKey?: (key: string) => void | Promise<void>;
@@ -222,6 +225,7 @@ function harness(options: Options = {}) {
   const keyPids: Array<number | undefined> = [];
   const answered: AnswerKey[][] = [];
   const commands: string[] = [];
+  const clipboard: string[] = [];
   const gone: string[] = [];
   const sessions: FakeSession[] = [];
   const hooks: ListenHooks[] = [];
@@ -291,8 +295,9 @@ function harness(options: Options = {}) {
         commands.push(line);
         return options.command?.(line) ?? { kind: "delivered", via: "tmux" };
       },
-      toClipboard: async () => {},
+      toClipboard: async (text) => void clipboard.push(text),
       ...(options.screen ? { readSessionScreen: async () => options.screen!() } : {}),
+      ...(options.deadTarget ? { deadTarget: options.deadTarget } : {}),
     },
     ear: {
       createDictationSession: (_cfg, listenHooks = {}) => {
@@ -313,7 +318,7 @@ function harness(options: Options = {}) {
   voice = createVoiceLoop(deps);
   return {
     voice, cfg, ledger, lease, holder, speech, said, playing, cues, cueExits, violations, order, queue,
-    logs, presented, latch, errors, texts, textPids, keys, keyPids, answered, commands, gone, sessions, hooks,
+    logs, presented, latch, errors, texts, textPids, keys, keyPids, answered, commands, clipboard, gone, sessions, hooks,
     barges: () => barges,
   };
 }
@@ -3037,5 +3042,107 @@ describe("a session that starts again in a new process", () => {
     expect(h.ledger.dismissedSessionIds.has("s1")).toBe(true);
     expect(h.ledger.dismissedHeldTurns.get("s1")?.pid).toBe(222);
     expect(h.said).toEqual([]);
+  });
+});
+
+/**
+ * A send to a terminal the session has left (`dead-target.ts`). Tyler's "conch" ran as a
+ * background job he watched through a `claude attach` window (pid 10231); stopped, the job
+ * leaves that window open on nothing, and the row names it until the registry says otherwise.
+ * Nothing is typed there: the words go back to the draft with a reason the row can show, and
+ * once the resumed session has registered, the same send goes to it.
+ */
+describe("a send to a terminal the session has left", () => {
+  const stoppedJob: DeadTarget = {
+    reason: "session-stopped", jobId: "f31f0d15",
+    detail: "pid 10231 is `claude attach f31f0d15`, and job f31f0d15 is not in Claude Code's daemon roster",
+  };
+  const attachRow = { sessionId: "s1", pid: 10231, jobId: "f31f0d15", kind: "bg", status: "idle" } as SessionInfo;
+
+  test("is refused before a key, off the clipboard, with its reason, and the words go back to the draft", async () => {
+    const asked: Array<[string, TargetToCheck]> = [];
+    const h = harness({
+      window: () => attachRow,
+      deadTarget: async (claudeDir, target) => { asked.push([claudeDir, target]); return target.pid === 10231 ? stoppedJob : null; },
+    });
+    const before = getLiveState().dictated?.id ?? 0;
+    expect(await h.voice.handle(inject("did the fix land?", { pid: 10231 })))
+      .toEqual({ delivered: false, reason: "session-stopped" });
+    // Nothing typed, no Return, nothing on the clipboard.
+    expect(h.texts).toEqual([]);
+    expect(h.keys).toEqual([]);
+    expect(h.clipboard).toEqual([]);
+    // The words are back in the composer for this session.
+    expect(getLiveState().dictated).toEqual({ text: "did the fix land?", id: before + 1, sessionId: "s1" });
+    // The check was asked about the pid it would have typed at, with what the row knows of it.
+    expect(asked).toEqual([[h.cfg.claudeDir, { pid: 10231, jobId: "f31f0d15" }]]);
+    expect(h.said).toEqual(["That session isn't running in its terminal any more. Resume it, and I'll pick it up. Your words are in the draft."]);
+    expect(h.logs).toContain(`not typing into "alpha": ${stoppedJob.detail}`);
+    expect(h.errors).toHaveLength(1);
+    const [operation, , sessionId, state] = h.errors[0] as [string, string, string, Record<string, unknown>];
+    expect([operation, sessionId]).toEqual(["inject", "s1"]);
+    expect(state).toMatchObject({ code: "session-stopped", pid: 10231, jobId: "f31f0d15", detail: stoppedJob.detail });
+  });
+
+  test("a live target is typed into as before", async () => {
+    const h = harness({ window: () => attachRow, deadTarget: async () => null });
+    expect(await h.voice.handle(inject("words", { pid: 10231 }))).toBe(true);
+    expect(h.texts).toEqual(["words"]);
+    expect(h.textPids).toEqual([10231]);
+  });
+
+  test("a row whose pid has moved on lends the check nothing it knew about the old one", async () => {
+    const asked: TargetToCheck[] = [];
+    const h = harness({ window: () => attachRow, deadTarget: async (_dir, target) => { asked.push(target); return null; } });
+    await h.voice.handle(inject("words", { pid: 95117 }));
+    expect(asked).toEqual([{ pid: 95117 }]);
+  });
+
+  test("a check that throws costs nothing: the send goes ahead", async () => {
+    const h = harness({ deadTarget: async () => { throw new Error("ps fell over"); } });
+    expect(await h.voice.handle(inject("words", { pid: 10231 }))).toBe(true);
+    expect(h.texts).toEqual(["words"]);
+  });
+
+  test("once the resumed session has registered, the same send goes to its new terminal", async () => {
+    let row: SessionInfo = attachRow;
+    const h = harness({
+      window: () => row,
+      deadTarget: async (_dir, target) => target.pid === 10231 ? stoppedJob : null,
+    });
+    expect(await h.voice.handle(inject("did the fix land?", { pid: 10231 })))
+      .toEqual({ delivered: false, reason: "session-stopped" });
+    expect(h.texts).toEqual([]);
+
+    // Resumed in a new terminal: its SessionStart arrives, and the registry now names that process.
+    await h.voice.handle({ type: "session-start", sessionId: "s1", label: "alpha", announce: "", pid: 95117, eventAt: 5, startSource: "resume" });
+    row = { sessionId: "s1", pid: 95117, kind: "interactive", status: "idle" } as SessionInfo;
+    // Retried, the send carries the row's pid as the socket scopes it (control-server.ts).
+    expect(await h.voice.handle(inject("did the fix land?", { pid: 95117 }))).toBe(true);
+    expect(h.texts).toEqual(["did the fix land?"]);
+    expect(h.textPids).toEqual([95117]);
+  });
+
+  test("a job that stops while conch waits on it gets no Return pressed again", async () => {
+    const path = transcript(user({ type: "text", text: "prior" }));
+    try {
+      let checks = 0;
+      const h = harness({
+        window: () => attachRow,
+        // Live when the words go in; gone by the time a Return would be pressed again.
+        deadTarget: async () => ++checks === 1 ? null : stoppedJob,
+        inject: () => ({ via: "osascript-focused" }),
+      });
+      const outcome = await h.voice.handle(inject("words", { pid: 10231, transcriptPath: path }));
+      expect(outcome).toEqual({ delivered: false, reason: "session-stopped" });
+      expect(h.texts).toEqual(["words"]);
+      expect(h.keys).toEqual([]);
+      expect(h.clipboard).toEqual([]);
+    } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
+  });
+
+  test("the daemon's loop runs the real check: no terminal seam, no way around it", () => {
+    const loop = readFileSync(join(import.meta.dir, "..", "src/voice-loop.ts"), "utf8");
+    expect(loop).toContain("const findDeadTarget = deps.terminal ? deps.terminal.deadTarget : deadTarget;");
   });
 });

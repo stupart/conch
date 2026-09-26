@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DEAD_TARGET_REASONS } from "../src/dead-target.ts";
 
 const root = join(import.meta.dir, "..");
 
@@ -36,6 +37,8 @@ const SENTENCES: Record<string, string> = {
   "delivery-unattributed": "Not delivered — another window shares this session, so conch can't tell whether it landed.",
   "delivery-interrupted": "Not delivered — the send was stopped before it went in.",
   "session-awaiting-answer": "Not delivered — that session is waiting on a permission prompt or question. Answer it on the Mac, then send again.",
+  "session-stopped": "Not delivered — that session isn't running in its terminal any more: it was stopped. Resume it, and conch will pick it up.",
+  "session-ended": "Not delivered — that session isn't running in its terminal any more: its process has ended. Resume it, and conch will pick it up.",
 };
 
 /** Every reason `injectText` itself can report, read from the daemon's own source. */
@@ -46,6 +49,17 @@ function injectReasons(): string[] {
   const union = source.slice(start, source.indexOf(";", start));
   return [...union.matchAll(/"([a-z][a-z-]+)"/g)].map((match) => match[1]!);
 }
+
+/**
+ * A send to a terminal the session has left is refused in the voice loop, before a key
+ * (`src/dead-target.ts`). Those codes reach the phone the same way, so they need sentences too.
+ */
+test("every dead-target refusal has a sentence for the phone", () => {
+  expect(DEAD_TARGET_REASONS.length).toBeGreaterThan(0);
+  for (const reason of DEAD_TARGET_REASONS) {
+    expect(SENTENCES[reason], `src/dead-target.ts can refuse with "${reason}" and no sentence says so`).toBeTruthy();
+  }
+});
 
 /** A Swift string literal. None of these carry `\(`, so JSON escaping is exactly Swift's. */
 const swift = (value: string): string => JSON.stringify(value);

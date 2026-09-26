@@ -35,6 +35,18 @@ final class SendFailureTests: XCTestCase {
         )
     }
 
+    /// A send to a terminal the session has left is refused before a key, and says what to do.
+    func testAStoppedSessionSaysToResumeIt() {
+        XCTAssertEqual(
+            ConchSendFailure.sentence(reason: "session-stopped"),
+            "Not delivered — that session isn't running in its terminal any more: it was stopped. Resume it, and conch will pick it up."
+        )
+        XCTAssertEqual(
+            ConchSendFailure.sentence(reason: "session-ended"),
+            "Not delivered — that session isn't running in its terminal any more: its process has ended. Resume it, and conch will pick it up."
+        )
+    }
+
     /// The honesty rule: no reason, no cause. A guessed cause sends someone to fix the wrong thing.
     func testAnUnknownReasonInventsNothing() {
         for reason in [nil, "", "delivery-fell-over", "staged-not-submitted", "transport-submitted"] {
@@ -53,7 +65,7 @@ final class SendFailureTests: XCTestCase {
             "submit-failed",
             "clipboard-fallback", "delivery-failed", "transport-error", "submit-error",
             "delivery-unconfirmed", "delivery-unattributed", "delivery-interrupted",
-            "session-awaiting-answer",
+            "session-awaiting-answer", "session-stopped", "session-ended",
         ]
         for reason in reasons {
             let sentence = ConchSendFailure.sentence(reason: reason)
