@@ -1096,14 +1096,27 @@ export function fileReview(
 
 /**
  * Whether a row's deliverable is work waiting to be LOOKED at: the star, the
- * "to look at" count. A deliverable stays on a working row (it is still the
- * session's artifact) but a session that went back to work is not waiting on
- * you. Derived from `status` rather than published as a field, so every app
- * applies the same rule to old and new daemons alike — an old daemon never
- * publishes a review on a working row, so the rule holds there unchanged.
+ * "to look at" count, the apps' Ready for you. A deliverable stays on a working
+ * row (it is still the session's artifact) but a session that went back to work
+ * is not waiting on you; and one you have looked at (`viewedAt`, on any device)
+ * is not waiting on you either. It used to be held-and-not-working alone, so
+ * looking changed nothing: the Mac's mark and pill stayed green and kept walking
+ * through what Tyler had already opened.
+ *
+ * Any held deliverable nobody has looked at keeps the row ready, not only the
+ * newest. Derived from `status` and `viewedAt` rather than published as a field,
+ * so every app applies the same rule (`ReadyForYou` in ConchDesign) to old and
+ * new daemons alike — an old daemon never publishes `viewedAt`, so there the
+ * rule is the old one unchanged.
  */
-export function reviewReady(row: { status: SessionStatus | null; review?: unknown }): boolean {
-  return row.review !== undefined && row.status !== "working";
+export function reviewReady(row: {
+  status: SessionStatus | null;
+  review?: { viewedAt?: number };
+  reviews?: readonly { viewedAt?: number }[];
+}): boolean {
+  if (row.review === undefined || row.status === "working") return false;
+  const held = row.reviews?.length ? row.reviews : [row.review];
+  return held.some((one) => one.viewedAt === undefined);
 }
 
 /**

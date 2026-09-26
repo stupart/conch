@@ -507,22 +507,132 @@ let panelSession = panelSessions[0]
 
 let barDetails: [VoiceState: String] = [
     .talk: "Blueprint monorepo", .speaking: "Blueprint monorepo", .listening: "You turned on the mic",
-    .quiet: "Blueprint monorepo", .ready: "Arch brand page",
+    .quiet: "Blueprint monorepo", .ready: "3 sessions",
 ]
+let barReady = ControlBar.Ready(label: "Prime page wireframe", position: 1, count: 3, inspect: "Save stays reachable at phone width")
 
-try render("m3-control-bar") {
-    Heading(title: "Control bar", note: "M3. A non-activating panel under the menu bar, one row per voice state. The conversation is shown and hidden from the menu bar menu.")
-    ForEach(VoiceState.allCases, id: \.self) { state in
+/// One bar over the page standing in for another app, with a caption saying which state it is.
+func barRow(_ caption: String, _ bar: ControlBar) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+        Caption(caption)
         ZStack {
             OtherApp(compact: true)
-            ControlBar(
-                state: state,
-                detail: barDetails[state] ?? "",
-                mode: .constant(state == .quiet ? .quiet : .talk)
-            )
+            bar
         }
         .frame(width: 880, height: 104)
         .clipShape(RoundedRectangle(cornerRadius: ConchRadius.large))
+    }
+}
+
+try render("m3-control-bar") {
+    Heading(title: "Control bar", note: "M3. A non-activating panel under the menu bar. While anything is ready its label is the Ready pill, with its ›, whatever the voice is doing; Talk and Quiet give their second line to news.")
+    barRow("Talk, with news", ControlBar(state: .talk, detail: barDetails[.talk]!, mode: .constant(.talk), news: "2 working"))
+    barRow("Talk, nothing to report", ControlBar(state: .talk, detail: barDetails[.talk]!, mode: .constant(.talk)))
+    barRow("Ready: the next session, and where it is — tooltip \"\(barReady.help.replacingOccurrences(of: "\n", with: " / "))\"", ControlBar(state: .ready, detail: barDetails[.ready]!, mode: .constant(.talk), ready: barReady, onTap: {}))
+    barRow("Ready, one alone", ControlBar(state: .ready, detail: barDetails[.ready]!, mode: .constant(.talk), ready: .init(label: "Arch brand page", position: 1, count: 1), onTap: {}))
+    barRow("Speaking, with something still ready: the pill stays a button", ControlBar(state: .speaking, detail: barDetails[.speaking]!, mode: .constant(.talk), ready: barReady, onTap: {}))
+    barRow("Listening: the ring clears the capsule, the mic dark on the orange", ControlBar(state: .listening, detail: barDetails[.listening]!, mode: .constant(.talk)))
+    barRow("Quiet", ControlBar(state: .quiet, detail: barDetails[.quiet]!, mode: .constant(.quiet), news: "1 working"))
+}
+
+// M2: the menu bar menu, drawn from `StatusMenu`'s rows, the words the app builds its NSMenu from. The drawing stands in
+// for AppKit's (an NSMenu can't be rendered offscreen); the rows, ticks, dots and keys are the real ones.
+struct MenuPicture: View {
+    let rows: [StatusMenu.Row]
+    let voice: VoiceState
+    let detail: String
+    /// ⌥ held: each alternate in place of the item before it.
+    var option = false
+    @Environment(\.colorScheme) private var scheme
+
+    private var shown: [StatusMenu.Row] {
+        var out: [StatusMenu.Row] = []
+        for row in rows {
+            guard case let .item(item) = row else { out.append(row); continue }
+            if item.alternate {
+                if option { out[out.count - 1] = row }
+            } else {
+                out.append(row)
+            }
+        }
+        return out
+    }
+
+    private func keys(_ item: StatusMenu.Item) -> String {
+        guard !item.key.isEmpty else { return "" }
+        return item.modifiers.map(\.rawValue).joined() + (item.key == " " ? "Space" : item.key.uppercased())
+    }
+
+    var body: some View {
+        let dark = scheme == .dark
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(shown.enumerated()), id: \.offset) { _, row in
+                switch row {
+                case .header:
+                    VoiceStateLabel(state: voice, detail: detail, orbSize: 30)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 6)
+                case .separator:
+                    Rectangle().fill(dark ? Color.white.opacity(0.1) : Color.black.opacity(0.1)).frame(height: 1).padding(.horizontal, 10).padding(.vertical, 5)
+                case let .section(title):
+                    Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(dark ? Color.white.opacity(0.5) : Color.black.opacity(0.5))
+                        .padding(.horizontal, 14).padding(.top, 4).padding(.bottom, 2)
+                case let .item(item):
+                    HStack(spacing: 6) {
+                        Group {
+                            switch item.mark {
+                            case .on: Image(systemName: "checkmark")
+                            case .mixed: Image(systemName: "minus")
+                            case .off: Color.clear
+                            }
+                        }
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 12)
+                        if let dot = item.dot {
+                            Image(systemName: dot.symbol).font(.system(size: 7)).foregroundStyle(dot.colour)
+                        }
+                        Text(item.title).font(.system(size: 13))
+                        Spacer(minLength: 16)
+                        Text(keys(item)).font(.system(size: 13)).opacity(0.5)
+                    }
+                    .foregroundStyle(dark ? Color.white.opacity(item.enabled ? 0.88 : 0.3) : Color.black.opacity(item.enabled ? 0.85 : 0.3))
+                    .padding(.horizontal, 10)
+                    .frame(height: 22)
+                }
+            }
+        }
+        .padding(.vertical, 5)
+        .frame(width: 330, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(dark ? Color(white: 0.17) : Color(white: 0.95)))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(dark ? Color.white.opacity(0.12) : Color.black.opacity(0.12), lineWidth: 0.5))
+    }
+}
+
+let menuInput = StatusMenu.Input(
+    voice: .ready, quiet: false, exchangeActive: false, controlBar: true, conversation: true, collapsed: true,
+    replyLine: true, drawing: false,
+    ready: [.init(id: "r1", label: "Prime page wireframe"), .init(id: "r2", label: "Arch brand page")],
+    working: [.init(id: "w1", label: "Parser refactor"), .init(id: "w2", label: "Invite tests")]
+)
+
+try render("m2-status-menu", width: 1180) {
+    Heading(title: "Menu bar menu", note: "M2. StatusMenu's rows. The conversation panel folded to its handle is a dash, not a tick; Ready for you rows open the item, ⌥ opens conch; working is a filled blue dot.")
+    HStack(alignment: .top, spacing: 36) {
+        VStack(alignment: .leading, spacing: 10) {
+            Caption("As it opens")
+            MenuPicture(rows: StatusMenu.rows(menuInput), voice: .ready, detail: "2 sessions")
+        }
+        VStack(alignment: .leading, spacing: 10) {
+            Caption("With ⌥ held")
+            MenuPicture(rows: StatusMenu.rows(menuInput), voice: .ready, detail: "2 sessions", option: true)
+        }
+        VStack(alignment: .leading, spacing: 10) {
+            Caption("Listening, the panel open, drawing")
+            MenuPicture(rows: StatusMenu.rows(StatusMenu.Input(
+                voice: .listening, quiet: true, exchangeActive: true, controlBar: false, conversation: true, collapsed: false,
+                replyLine: false, drawing: true, ready: [], working: [.init(id: "w1", label: "Parser refactor")]
+            )), voice: .listening, detail: "You turned on the mic")
+        }
     }
 }
 
@@ -943,10 +1053,10 @@ do {
 // sub-agents under one, working and paused. Working is `active`'s blue, with its breath caught at its fullest; the
 // breath's other moments, and the blue beside the colours it must never be taken for, follow.
 
-/// The two state colours ConchDesign has no token for yet, as Palette.swift holds them, so the page draws the sidebar
-/// the way the app does.
+/// The sidebar's state colours as Palette.swift holds them, so the page draws the sidebar the way the app does: waiting
+/// is ready's token, and the mic's cyan has none yet.
 enum SidebarInk {
-    static let waiting = Color(red: 0.153, green: 0.608, blue: 0.298)
+    static let waiting = ConchColor.ready
     static let micOpen = Color(red: 88 / 255, green: 201 / 255, blue: 212 / 255)
 }
 
@@ -962,9 +1072,9 @@ struct SidebarMark {
     static let working = SidebarMark(symbol: "circle.fill", size: 8, colour: AnyShapeStyle(ConchColor.active), meaning: "Working — an agent is running, nothing needed from you", breathes: true)
     static let waitingOnAgents = SidebarMark(symbol: "person.2.fill", size: 9, colour: AnyShapeStyle(SidebarInk.waiting), meaning: "Its agents are working — you can talk to it")
     static let listening = SidebarMark(symbol: "mic.fill", size: 10, colour: AnyShapeStyle(SidebarInk.micOpen), meaning: "Mic open — it is hearing you", live: true)
-    static let waiting = SidebarMark(symbol: "circle.inset.filled", size: 8, colour: AnyShapeStyle(SidebarInk.waiting), meaning: "Finished — waiting on you", wantsYou: true)
+    static let waiting = SidebarMark(symbol: "circle.inset.filled", size: 8, colour: AnyShapeStyle(SidebarInk.waiting), meaning: "Ready for you — its turn is over", wantsYou: true)
     static let needs = SidebarMark(symbol: "exclamationmark.circle.fill", size: 10.5, colour: AnyShapeStyle(ConchColor.attention), meaning: "Blocked — needs an answer", wantsYou: true)
-    static let review = SidebarMark(symbol: "checkmark.circle.fill", size: 10.5, colour: AnyShapeStyle(ConchColor.ready), meaning: "Has work for you to look at")
+    static let review = SidebarMark(symbol: "checkmark.circle.fill", size: 10.5, colour: AnyShapeStyle(ConchColor.ready), meaning: "Ready for you — work to look at")
     static let manual = SidebarMark(symbol: "pause.fill", size: 9, colour: AnyShapeStyle(ConchColor.textSecondary), meaning: "Manual — turns held for later")
     static let recording = SidebarMark(symbol: "record.circle.fill", size: 10.5, colour: AnyShapeStyle(SidebarInk.micOpen), meaning: "Recording your reply", live: true)
     static let speaking = SidebarMark(symbol: "play.fill", size: 9, colour: AnyShapeStyle(ConchColor.textTertiary), meaning: "Reading a reply aloud", live: true)

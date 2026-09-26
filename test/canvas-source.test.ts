@@ -182,10 +182,13 @@ describe("turning it on", () => {
     expect(panels).toContain("@ObservedObject private var canvas = CanvasController.shared");
   });
 
-  test("the menu's Canvas, showing the hotkey, and installed after the panels it follows", () => {
-    const menu = member(item, "func menuNeedsUpdate(_ menu: NSMenu) {");
-    expect(menu).toContain('entry("Canvas", #selector(toggleCanvas), checked: CanvasController.shared.armed, key: "p")');
-    expect(menu).toContain("canvas.keyEquivalentModifierMask = [.control, .option, .command]");
+  test("the menu's Draw on Screen, showing the hotkey, and installed after the panels it follows", () => {
+    // Named for what it does; the words are StatusMenu's (ReadyTests pins the title and the key).
+    const statusMenu = readFileSync(join(import.meta.dir, "..", "design/ConchDesign/Sources/ConchDesign/StatusMenu.swift"), "utf8");
+    expect(statusMenu).toContain('Item(title: "Draw on Screen", command: .draw, mark: input.drawing ? .on : .off, key: "p", modifiers: [.control, .option, .command])');
+    expect(member(item, "func menuNeedsUpdate(_ menu: NSMenu) {")).toContain("drawing: CanvasController.shared.armed,");
+    expect(item).toContain("case .draw: #selector(toggleCanvas)");
+    expect(item).toContain("entry.keyEquivalentModifierMask = NSEvent.ModifierFlags(item.modifiers.map {");
     expect(item).toContain("@objc private func toggleCanvas() { CanvasController.shared.toggle() }");
     const install = member(item, "static func install(store: StateStore) {");
     expect(install.indexOf("FloatingPanels.install(store: store)")).toBeLessThan(install.indexOf("CanvasController.shared.install(store: store)"));

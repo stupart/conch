@@ -106,7 +106,10 @@ https://brew.sh rather than trying to install Homebrew yourself.
     is not accepted yet.
 
   **Marks.** Optional `scene.marks`, agent ink: conch draws them over your
-  result where the user is looking. Mark the one thing that decides whether the
+  result where conch shows it, in its own conversation panel or side panel,
+  and on the user's canvas; not over a browser or another app, where conch
+  can't see the page. So a result with marks that conch can show opens in its
+  panel, even from the Ready pill. Mark the one thing that decides whether the
   result is right (the button you moved, the heading that still wraps, the frame
   that blurs) and say why in its `label`. Don't mark the whole page, or what the
   summary already says. Up to 12, each `{id, kind, frame, at?, to?, rect?,
@@ -117,8 +120,8 @@ https://brew.sh rather than trying to install Homebrew yourself.
   - `frame`, exactly one of:
     - `{selector: ".hero .cta"}` or `{quote: "Start free trial"}`: an element,
       or text, in the page your `link` opens, at most 120 characters. conch
-      finds it wherever it is on screen and places the mark on it, so these
-      take no numbers. Prefer them for a page you wrote.
+      finds it in the page as its panel shows it and places the mark on it, so
+      these take no numbers. Prefer them for a page you wrote.
     - `{canvas: id}`: the user's canvas you are answering, by the id conch gave
       you with it. Mark a canvas this way, never by its picture's path.
     - `{image: "/tmp/still.png"}`: an absolute path to an image file. It must

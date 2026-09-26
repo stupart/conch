@@ -512,6 +512,15 @@ final class FloatingPanels: ObservableObject {
         if isFullScreen { toggleFullScreen() }
     }
 
+    /// On and open, now, for an open that shows in the panel and for the first open from the pill or the menu
+    /// (`ConchStatusItem.open`): the menu's own defaults, so it stays on, applied at once rather than when their notice
+    /// comes, so what follows finds the panel out.
+    func bringOut() {
+        UserDefaults.standard.set(true, forKey: ConchStatusItem.showConversationKey)
+        UserDefaults.standard.set(false, forKey: Self.conversationCollapsedKey)
+        showWhatIsOn()
+    }
+
     /// The fog's frame to `target` on the morph spring (ConchMotion's for full screen), stepped on the display's frames
     /// with the rest of its motion; at once under Reduce Motion. It was AppKit's own resize animation, which no spring
     /// could tune.
@@ -710,7 +719,6 @@ private struct ControlBarHost: View {
 
     var body: some View {
         let voice = ConchStatusItem.voiceState(store.state)
-        let ready = ReviewQueue.ready(store.state)
         ControlBar(
             state: voice,
             detail: ConchStatusItem.detail(store.state, voice, message: store.daemonMessage),
@@ -718,9 +726,10 @@ private struct ControlBarHost: View {
                 get: { store.state?.mode.paused == true ? .quiet : .talk },
                 set: { store.send($0 == .talk ? .global(.resume) : .global(.pause)) }
             ),
-            onTap: { queue.walk(store: store, panels: panels) },
-            // What the agent asked you to check, when it said; else how many are waiting.
-            help: queue.next(in: ready, state: store.state).map { "Show \($0.label) · \($0.inspect ?? "\(ready.count) ready")" } ?? ""
+            // The next ready item's session, where it is among what is ready, and what the agent asked you to check.
+            ready: queue.pill(store.state),
+            news: ConchStatusItem.news(store.state),
+            onTap: { queue.walk(from: .pill, store: store, panels: panels) }
         )
         // A small gap under the menu bar, and room below for the glass's dropped shadow.
         .padding(.top, ConchSpace.x3)
@@ -733,9 +742,9 @@ private struct ControlBarHost: View {
     }
 }
 
-/// What is ready, walked by the Ready pill and by the panel's Previous and Next (Tyler: "ability to click next or select
-/// different session form that"). One walk rather than one each, so the pill and the panel agree on where it is; and its
-/// own object, so the control bar can watch it without watching the fog, whose motion publishes every frame.
+/// What is held, walked by the Ready pill, the menu's Ready for you and the panel's Previous and Next (Tyler: "ability to
+/// click next or select different session form that"). One walk rather than one each, so they agree on where it is; and
+/// its own object, so the control bar can watch it without watching the fog, whose motion publishes every frame.
 @MainActor
 final class ReviewQueue: ObservableObject {
     /// The review version the last click brought forward, and the versions handed off: for the next click to move on from.
@@ -744,50 +753,77 @@ final class ReviewQueue: ObservableObject {
     /// The click being staged. Clicks run one at a time, the pill's and the panel's alike.
     private var staging: Task<Void, Never>?
 
-    /// The reviews waiting on you: every deliverable a ready session still holds, not only its newest, so an older one
-    /// nobody has opened is walked to as well. Each by its exact version (`ReviewItem.id`: what the daemon minted when it
-    /// was filed), never by a place in the queue.
-    static func ready(_ state: PublishedState?) -> [ReviewItem] {
-        ConchStatusItem.readyRows(state).flatMap { row in row.held.map { ReviewItem(row: row, review: $0) } }
+    /// What the walk reaches: every deliverable a session that isn't working still holds, not only its newest, looked at
+    /// or not, so Previous goes back to what you have seen. Each by its exact version (`ReviewItem.id`: what the daemon
+    /// minted when it was filed), never by a place in the queue.
+    static func held(_ state: PublishedState?) -> [ReviewItem] {
+        ConchStatusItem.heldRows(state).flatMap { row in row.held.map { ReviewItem(row: row, review: $0) } }
+    }
+
+    /// What is ready: the held ones nobody has looked at yet (`ReadyForYou`), oldest filed first. What the pill counts.
+    func ready(in held: [ReviewItem], state: PublishedState?) -> [ReviewItem] {
+        let seen = seen(in: held, state: state)
+        let order = ReviewScene.order(held.map { (key: $0.id, at: $0.reviewedAt ?? 0) })
+        return order.compactMap { key in held.first { $0.id == key && !seen.contains(key) } }
+    }
+
+    /// The pill: the session the next click opens, and where that item is among what is ready. Nil while nothing is.
+    func pill(_ state: PublishedState?) -> ControlBar.Ready? {
+        let held = Self.held(state)
+        let ready = ready(in: held, state: state)
+        guard let next = next(in: held, state: state), let at = ready.firstIndex(where: { $0.id == next.id }) else { return nil }
+        return ControlBar.Ready(label: next.label, position: at + 1, count: ready.count, inspect: next.inspect)
     }
 
     /// What has been looked at: whatever the daemon remembers, on any device, plus whatever
     /// this window has just handed off. The local half is optimistic — the pill moves on at
     /// the click and the daemon's answer catches up — and it is the whole story against a
     /// daemon too old to remember, which is what `features.viewedState` distinguishes.
-    private func seen(in ready: [ReviewItem], state: PublishedState?) -> Set<ReviewItem.ID> {
+    private func seen(in held: [ReviewItem], state: PublishedState?) -> Set<ReviewItem.ID> {
         guard state?.features?.viewedState != nil else { return opened }
-        return opened.union(ready.filter { $0.viewedAt != nil }.map(\.id))
+        return opened.union(held.filter { $0.viewedAt != nil }.map(\.id))
     }
 
-    /// The review the next click brings forward.
-    func next(in ready: [ReviewItem], state: PublishedState?) -> ReviewItem? {
-        let key = ReviewScene.next(after: lastStaged, in: ready.map { (key: $0.id, at: $0.reviewedAt ?? 0) }, opened: seen(in: ready, state: state))
-        return ready.first { $0.id == key }
+    /// The review the next click brings forward: the next nobody has looked at, else round again.
+    func next(in held: [ReviewItem], state: PublishedState?) -> ReviewItem? {
+        let key = ReviewScene.next(after: lastStaged, in: held.map { (key: $0.id, at: $0.reviewedAt ?? 0) }, opened: seen(in: held, state: state))
+        return held.first { $0.id == key }
     }
 
-    /// A click on the Ready pill, or on the panel's Previous or Next (`inPanel`). The version is taken at the click, and
-    /// found again when its turn comes: still that version, and still ready.
-    func walk(backward: Bool = false, inPanel: Bool = false, store: StateStore, panels: FloatingPanels) {
-        let ready = Self.ready(store.state)
+    /// A click on the Ready pill, or on the panel's Previous or Next. The version is taken at the click, and found again
+    /// when its turn comes: still that version, and still held.
+    func walk(backward: Bool = false, from origin: ConchStatusItem.OpenFrom, store: StateStore, panels: FloatingPanels) {
+        let held = Self.held(store.state)
         let key = backward
-            ? ReviewScene.previous(before: lastStaged, in: ready.map { (key: $0.id, at: $0.reviewedAt ?? 0) })
-            : next(in: ready, state: store.state)?.id
+            ? ReviewScene.previous(before: lastStaged, in: held.map { (key: $0.id, at: $0.reviewedAt ?? 0) })
+            : next(in: held, state: store.state)?.id
         guard let key else { return }
         lastStaged = key
-        stage(inPanel: inPanel, store: store, panels: panels) { state in
-            for row in ConchStatusItem.readyRows(state) {
-                if let review = row.held.first(where: { ReviewItem(row: row, review: $0).id == key }) { return (row.holding(review), key) }
-            }
-            return nil
+        stage(from: origin, store: store, panels: panels) { state in Self.find(key, in: state) }
+    }
+
+    /// A Ready for you row in the menu bar menu: that session's next item nobody has looked at, oldest filed first, else
+    /// its newest; opened as the pill opens one.
+    func open(session id: SessionRow.ID, store: StateStore, panels: FloatingPanels) {
+        let held = Self.held(store.state).filter { $0.rowID == id }
+        guard let item = ready(in: held, state: store.state).first ?? held.last else { return }
+        lastStaged = item.id
+        stage(from: .menu, store: store, panels: panels) { state in Self.find(item.id, in: state) }
+    }
+
+    /// A held review by its exact version, as its session's row holding it.
+    private static func find(_ key: ReviewItem.ID, in state: PublishedState?) -> (row: SessionRow, key: ReviewItem.ID?)? {
+        for row in ConchStatusItem.heldRows(state) {
+            if let review = row.held.first(where: { ReviewItem(row: row, review: $0).id == key }) { return (row.holding(review), key) }
         }
+        return nil
     }
 
     /// A session picked in the panel's switcher: pinned, and its newest deliverable brought forward as the pill brings
     /// one, ready or not; with none, its words.
     func pick(_ id: SessionRow.ID, store: StateStore, panels: FloatingPanels) {
         panels.switching = false
-        stage(inPanel: true, store: store, panels: panels) { [self] state in
+        stage(from: .panel, store: store, panels: panels) { [self] state in
             guard let row = state?.row(id) else { return nil }
             let key = row.review.map { ReviewItem(row: row, review: $0).id }
             if let key { lastStaged = key }
@@ -796,10 +832,10 @@ final class ReviewQueue: ObservableObject {
     }
 
     /// Clicks run one at a time, so an earlier one finishing late can't retarget the conversation after a later one. Each
-    /// finds what it is showing (`find`), pins the conversation to its session, brings it forward, and counts its review
-    /// opened only once handed off. Never the mic or speech.
+    /// finds what it is showing (`find`), pins the conversation to its session, brings it forward by the one opening rule
+    /// (`ConchStatusItem.open`), and counts its review opened only once handed off. Never the mic or speech.
     private func stage(
-        inPanel: Bool,
+        from origin: ConchStatusItem.OpenFrom,
         store: StateStore,
         panels: FloatingPanels,
         find: @escaping @MainActor (PublishedState?) -> (row: SessionRow, key: ReviewItem.ID?)?
@@ -809,36 +845,13 @@ final class ReviewQueue: ObservableObject {
             await previous?.value
             guard let found = find(store.state) else { return }
             panels.staged = found.row.id
-            guard await Self.show(found.row, inPanel: inPanel, store: store, panels: panels), let key = found.key else { return }
+            guard await ConchStatusItem.open(found.row, from: origin, store: store, panels: panels), let key = found.key else { return }
             opened.insert(key)
             // So the phone, the terminal and the next launch agree with this window.
             if store.state?.features?.viewedState != nil {
                 store.markReviewViewed(sessionId: found.row.id, review: key)
             }
         }
-    }
-
-    /// What a click brings forward. The pill's is `ConchStatusItem.stage`'s scene, as it always was. The panel's goes
-    /// there too, the panel docking first so it isn't left over what comes forward, unless the panel shows it itself, full
-    /// screen: a deliverable it draws (`SessionRow.panelContent`), or with nothing to open the session's words
-    /// (`ReviewScene.panelShowsWords`), not a terminal.
-    private static func show(_ row: SessionRow, inPanel: Bool, store: StateStore, panels: FloatingPanels) async -> Bool {
-        if inPanel {
-            // What `stage` reads to choose, read the same way.
-            let kind = ReviewScene.Kind(rawValue: row.review?.sceneKind ?? "") ?? .auto
-            let link = ReviewItem(row: row)?.link.map { LinkTarget.url(for: $0, cwd: row.cwd) }
-            let content = row.panelContent
-            if ReviewScene.panelShowsWords(hasReview: row.review != nil, kind: kind, link: link, fileExists: { FileManager.default.fileExists(atPath: $0) })
-                || content != nil {
-                panels.showInPanel()
-                // The screen context hears what the panel put on screen, as `stage` tells it what a scene did: the
-                // session, and the deliverable when that is what shows.
-                store.reportShowing(.conch(sessionId: row.id, view: "panel"), staged: ConchScreenStaged(sessionId: row.id, reviewId: content?.id, link: content?.link))
-                return true
-            }
-            panels.dockForScene()
-        }
-        return await ConchStatusItem.stage(row, store: store)
     }
 }
 
@@ -906,8 +919,8 @@ private struct ConversationFogHost: View {
     var body: some View {
         let row = Self.session(store.state, staged: panels.staged)
         let turns = row.map { Self.turns(store.state, $0, whole: history.fullBodies) } ?? []
-        // Previous and Next only while something is ready: with nothing to walk they would do nothing.
-        let walks = !ConchStatusItem.readyRows(store.state).isEmpty
+        // Previous and Next only while something is held to walk to, looked at or not: with nothing they would do nothing.
+        let walks = !ConchStatusItem.heldRows(store.state).isEmpty
         Group {
             if panels.isCollapsed {
                 FogHandle(corner: panels.corner, hovering: panels.hovering) { panels.toggleCollapsed() }
@@ -933,8 +946,8 @@ private struct ConversationFogHost: View {
                     showsReply: panels.showsReply,
                     content: panels.isFullScreen ? row.flatMap(content(of:)) : nil,
                     onPick: { queue.pick($0, store: store, panels: panels) },
-                    onPrevious: walks ? { queue.walk(backward: true, inPanel: true, store: store, panels: panels) } : nil,
-                    onNext: walks ? { queue.walk(inPanel: true, store: store, panels: panels) } : nil,
+                    onPrevious: walks ? { queue.walk(backward: true, from: .panel, store: store, panels: panels) } : nil,
+                    onNext: walks ? { queue.walk(from: .panel, store: store, panels: panels) } : nil,
                     onMic: { if let row { mic(row) } },
                     onSend: { if let row { send(row) } },
                     onCollapse: { panels.toggleCollapsed() },

@@ -13,8 +13,9 @@ struct ReviewItem: Identifiable, Equatable {
     let reviewedAt: TimeInterval?
     /// The one thing the agent asked you to check there (`scene.inspect`), for the Ready pill's tooltip.
     let inspect: String?
-    /// Waiting to be looked at: the deliverable stays on a working row, but a
-    /// session that went back to work is not waiting on you.
+    /// Waiting to be looked at (`ReadyForYou`): the deliverable stays on a working
+    /// row, but a session that went back to work is not waiting on you, and nor is
+    /// one you have already looked at, here or on the phone.
     let isReady: Bool
     /// When it was looked at, as the daemon remembers it — on any device. Nil means nobody
     /// has, or that this daemon is too old to know (`features.viewedState`).
@@ -40,7 +41,7 @@ struct ReviewItem: Identifiable, Equatable {
         self.link = link.isEmpty ? nil : link
         reviewedAt = review.at
         inspect = review.inspect
-        isReady = row.status != .working
+        isReady = ReadyForYou.isReady(working: row.status == .working, viewedAt: [review.viewedAt])
         viewedAt = review.viewedAt
         artifact = review.artifact
         marks = review.marks
@@ -462,6 +463,12 @@ private struct ReviewContent: View {
     @Binding var liveAddress: String?
     @State private var navigationFailure: DeliverableNavigationFailure?
     @State private var reloadID = UUID()
+    /// A page on this Mac whose server didn't answer the knock (`LocalServer`), shown in its place (`ServerDownView`).
+    @State private var downPage: URL?
+    /// The filed link has been knocked on, or needed no knock: the page may load.
+    @State private var knocked = false
+    /// Its session has been asked to start the server again, from here.
+    @State private var askedToStart = false
     @EnvironmentObject private var store: StateStore
     /// A link or file this pane could not open, in the OS's own words with
     /// the resolved target, shown here rather than as a Finder alert (A13).
@@ -625,6 +632,15 @@ private struct ReviewContent: View {
                     .frame(height: 1)
 
                 ZStack {
+                if let downPage {
+                    ServerDownView(
+                        address: LocalServer.name(of: downPage),
+                        session: store.state?.row(rowID)?.label ?? "the session",
+                        asked: askedToStart,
+                        onAsk: { askToStart(downPage) },
+                        onRetry: { Task { await knock(downPage) } }
+                    )
+                } else if knocked {
                 DeliverableWebView(
                     link: shownLink,
                     reloadID: reloadID,
@@ -632,6 +648,11 @@ private struct ReviewContent: View {
                     currentLink: $liveLink,
                     onNavigationFailure: { failure in
                         navigationFailure = failure
+                        // A page on this Mac that can't be reached, typed or followed to as well as filed: its server
+                        // stopped if nothing answers the knock, and that is what the pane says.
+                        if LocalServer.port(of: failure.url) != nil {
+                            Task { if !(await LocalServer.isListening(failure.url)) { downPage = failure.url } }
+                        }
                     }
                 )
                 // The field follows the page: a redirect, or a link followed inside it, moves
@@ -644,13 +665,14 @@ private struct ReviewContent: View {
                     addressDraft = addressText
                     liveAddress = addressText
                 }
+                }
 
                 // WKWebView paints the document white until the page's own
                 // background lands, so a remote deliverable flashed a blinding
                 // white rectangle for several seconds inside a dark app. Cover
                 // it until the load settles. Failure states set isLoading false
                 // too, so this can't strand the pane behind a permanent cover.
-                if isWebLoading, navigationFailure == nil {
+                if isWebLoading || !knocked, navigationFailure == nil, downPage == nil {
                     ConchPalette.surface
                         .overlay(
                             VStack(spacing: 10) {
@@ -663,7 +685,7 @@ private struct ReviewContent: View {
                         .transition(.opacity)
                 }
 
-                if let failure = navigationFailure {
+                if let failure = navigationFailure, downPage == nil {
                     DeliverableFailureView(
                         failure: failure,
                         onRetry: retryNavigation,
@@ -676,6 +698,13 @@ private struct ReviewContent: View {
                 }
             }
             .background(ConchPalette.surface)
+            // Before the filed page loads, a knock on its port when it is on this Mac: a dev server that has stopped
+            // gave "Could not connect to the server", with "Open in Browser" as the way out, which can't help.
+            .task(id: link) {
+                (downPage, askedToStart) = (nil, false)
+                guard let page = URL(string: link), LocalServer.port(of: page) != nil else { knocked = true; return }
+                await knock(page)
+            }
         }
     }
 
@@ -683,6 +712,70 @@ private struct ReviewContent: View {
         navigationFailure = nil
         isWebLoading = true
         reloadID = UUID()
+    }
+
+    /// Knock on a local page's port: answered, it loads (again); refused, the pane says its server isn't running.
+    private func knock(_ page: URL) async {
+        guard await LocalServer.isListening(page) else {
+            downPage = page
+            isWebLoading = false
+            return
+        }
+        let wasDown = downPage != nil
+        downPage = nil
+        askedToStart = false
+        knocked = true
+        if wasDown { retryNavigation() }
+    }
+
+    /// The one thing that helps a stopped server: its session, asked to start it again. Tyler presses it; conch never
+    /// sends it by itself. Through the inject path every reply takes, so it lands in the session's own terminal.
+    private func askToStart(_ page: URL) {
+        guard let row = store.state?.row(rowID) else { return }
+        askedToStart = true
+        let delivery = store.send(.inject(sessionId: row.id, label: row.label, text: Self.startServerPrompt(page)))
+        Task { if !(await delivery.value) { askedToStart = false } }
+    }
+
+    static func startServerPrompt(_ page: URL) -> String {
+        "The page you filed for review, \(page.absoluteString), isn't loading: nothing is listening on \(LocalServer.name(of: page)). Please start its server again and tell me when it's up."
+    }
+}
+
+/// A page on this Mac whose server has stopped, said plainly in place of WebKit's "Could not connect to the server",
+/// with what helps: asking the session that served it to start it again, and trying again once it has.
+private struct ServerDownView: View {
+    let address: String
+    let session: String
+    let asked: Bool
+    let onAsk: () -> Void
+    let onRetry: () -> Void
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "bolt.horizontal.circle")
+                .font(.system(size: 22, weight: .regular))
+                .foregroundStyle(ConchPalette.textDim)
+            Text("The page\u{2019}s server isn\u{2019}t running (\(address))")
+                .font(ConchTypography.font(size: 14, weight: .medium))
+                .foregroundStyle(ConchPalette.textPrimary)
+                .multilineTextAlignment(.center)
+            Text(asked ? "Asked \(session). Try again once it says the server is up." : "Nothing is answering there, so the page can\u{2019}t load.")
+                .font(ConchTypography.font(size: 12))
+                .foregroundStyle(ConchPalette.textDim)
+                .multilineTextAlignment(.center)
+            HStack(spacing: 10) {
+                Button("Ask \(session) to start it", action: onAsk)
+                    .disabled(asked)
+                Button("Try Again", action: onRetry)
+            }
+            .padding(.top, 4)
+        }
+        .frame(maxWidth: 460)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(24)
+        .background(ConchPalette.surface)
+        .accessibilityElement(children: .contain)
     }
 }
 

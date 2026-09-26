@@ -27,6 +27,8 @@ function enclosingFunction(text: string, index: number): string {
 }
 
 const item = read("mac-app/conch-mac/StatusItem.swift");
+// The menu's words and what each does, which StatusItem builds its NSMenu from (ReadyTests pins the rows themselves).
+const statusMenu = read("design/ConchDesign/Sources/ConchDesign/StatusMenu.swift");
 const app = read("mac-app/conch-mac/ConchMacApp.swift");
 const content = read("mac-app/conch-mac/ContentView.swift");
 const macProject = read("mac-app/conch-mac.xcodeproj/project.pbxproj");
@@ -52,8 +54,16 @@ test("M2: the menu bar item is an NSStatusItem with an NSMenu, not MenuBarExtra"
 });
 
 test("M2: each menu item calls the command the dashboard already sends", () => {
-  expect(item).toContain('entry("Talk", #selector(talk), checked: !quiet)');
-  expect(item).toContain('entry("Quiet", #selector(quietMode), checked: quiet)');
+  expect(statusMenu).toContain('Item(title: "Talk", command: .talk, mark: input.quiet ? .off : .on)');
+  expect(statusMenu).toContain('Item(title: "Quiet", command: .quiet, mark: input.quiet ? .on : .off)');
+  const action = body(item, "private func action(_ command: StatusMenu.Command) -> Selector {");
+  for (const wire of ["case .talk: #selector(talk)", "case .quiet: #selector(quietMode)", "case .stop: #selector(stopSpeaking)", "case .openSession: #selector(openSession(_:))", "case .openItem: #selector(openItem(_:))", "case .openConch: #selector(openConch)"]) {
+    expect(action).toContain(wire);
+  }
+  // Every row of StatusMenu becomes an item, header and sections included.
+  const build = body(item, "func menuNeedsUpdate(_ menu: NSMenu) {");
+  expect(build).toContain("for row in StatusMenu.rows(input) {");
+  expect(build).toContain("case let .item(item): menu.addItem(entry(item))");
   expect(item).toContain("@objc private func talk() { store.send(.global(.resume)) }");
   expect(item).toContain("@objc private func quietMode() { store.send(.global(.pause)) }");
   expect(item).toContain("@objc private func stopSpeaking() { store.send(.stop()) }");
@@ -70,12 +80,19 @@ test("M2: each menu item calls the command the dashboard already sends", () => {
   expect(content.slice(receive, receive + 400)).toContain("selectSession(row)");
   expect(body(item, "@objc private func openConch() {")).toContain("bringConchForward()");
 
-  // Ready for you is the daemon's reviewReady rule (PR #191): a review, and not working.
-  expect(item).toContain("state?.rows.filter { $0.review != nil && $0.status != .working } ?? []");
-  expect(read("src/panel.ts")).toContain('return row.review !== undefined && row.status !== "working";');
-  // Each group's mark in the sidebar's colour for the same state: ready's green, working's blue.
-  expect(item).toContain('addSessions("Ready for you", ready, symbol: "circle.fill", colour: ConchColor.ready, to: menu)');
-  expect(item).toContain('addSessions("Working", working, symbol: "circle", colour: ConchColor.active, to: menu)');
+  // Ready for you is the daemon's reviewReady rule, one rule in ConchDesign: held, not working, and not yet looked at
+  // (test/ready-for-you.test.ts runs both on one table).
+  expect(body(item, "nonisolated static func readyRows(_ state: PublishedState?) -> [SessionRow] {")).toContain(
+    "ReadyForYou.isReady(working: $0.status == .working, viewedAt: $0.held.map(\\.viewedAt))",
+  );
+  expect(read("src/panel.ts")).toContain("return held.some((one) => one.viewedAt === undefined);");
+  expect(build).toContain("ready: Self.readyRows(state).map {");
+  expect(build).toContain("working: Self.workingRows(state).map {");
+  // Each group's mark in the sidebar's colour for the same state: ready's green, working's blue, both filled.
+  expect(statusMenu).toContain('rows.append(.section("Ready for you"))');
+  expect(statusMenu).toContain('rows.append(.section("Working"))');
+  expect(statusMenu).toContain("public var colour: ConchColorToken { self == .ready ? ConchColor.ready : ConchColor.active }");
+  expect(item).toContain("if let dot = item.dot { entry.image = Self.dot(dot) }");
 });
 
 test("M2: Show control bar is on by default, and both M3 toggles persist", () => {
@@ -83,9 +100,9 @@ test("M2: Show control bar is on by default, and both M3 toggles persist", () =>
   const defaults = item.slice(register, at(item, "])", register));
   expect(defaults).toContain("Self.showControlBarKey: true,");
   expect(defaults).toContain("Self.showConversationKey: false,");
-  expect(item).toContain(
-    'entry("Show control bar", #selector(toggleControlBar), checked: defaults.bool(forKey: Self.showControlBarKey))',
-  );
+  expect(statusMenu).toContain('Item(title: "Control Bar", command: .controlBar, mark: input.controlBar ? .on : .off)');
+  expect(item).toContain("controlBar: defaults.bool(forKey: Self.showControlBarKey),");
+  expect(item).toContain("case .controlBar: #selector(toggleControlBar)");
   expect(item).toContain("UserDefaults.standard.set(!UserDefaults.standard.bool(forKey: key), forKey: key)");
 });
 

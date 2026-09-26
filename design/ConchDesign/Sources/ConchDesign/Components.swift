@@ -79,6 +79,14 @@ public struct VoiceOrb: View {
     let state: VoiceState
     let size: CGFloat
 
+    /// How far the listening ring reaches past the orb, as a fraction of its size.
+    public static let ringSpread: CGFloat = 5 / 36
+    /// The mic on listening's orange, the same in light and dark as the orange is.
+    public static let onListening = ConchColor.textPrimary.light
+    /// Ready's disc, under a white check: the light green in both schemes, as the menu bar mark draws it. Dark's
+    /// brighter green is for a mark on a dark ground, and the check on it measured 2.72; on this it is 3.57.
+    public static let readyFill = ConchColor.ready.light
+
     public init(state: VoiceState, size: CGFloat = 36) {
         self.state = state
         self.size = size
@@ -91,9 +99,10 @@ public struct VoiceOrb: View {
                 Circle().fill(ConchColor.accent)
                 VoiceGlyph(.speaking, size: size / 2).foregroundStyle(ConchColor.onAccent)
             case .listening:
-                Circle().fill(ConchColor.listeningRing).padding(-size * 5 / 36)
+                Circle().fill(ConchColor.listeningRing).padding(-size * Self.ringSpread)
                 Circle().fill(ConchColor.listening)
-                VoiceGlyph(.listening, size: size / 2).foregroundStyle(ConchColor.onVoice)
+                // Dark on the orange: white on #FF9F0A measured 2.06, this 8.19.
+                VoiceGlyph(.listening, size: size / 2).foregroundStyle(Self.onListening.color)
             case .quiet:
                 Circle().fill(ConchColor.fill)
                 VoiceGlyph(.quiet, size: size / 2).foregroundStyle(ConchColor.textSecondary)
@@ -103,7 +112,7 @@ public struct VoiceOrb: View {
                     .font(.system(size: size * 15 / 36, weight: .semibold))
                     .foregroundStyle(ConchColor.textSecondary)
             case .ready:
-                Circle().fill(ConchColor.ready)
+                Circle().fill(Self.readyFill.color)
                 Image(systemName: "checkmark")
                     .font(.system(size: size * 15 / 36, weight: .bold))
                     .foregroundStyle(ConchColor.onVoice)
@@ -202,6 +211,12 @@ public struct TalkQuietSwitch: View {
 
 // MARK: - GlassPill
 
+/// The glass capsule's measures: its height, and how far its contents sit in from its ends.
+enum PillMetrics {
+    static let height: CGFloat = 48
+    static let inset: CGFloat = 6
+}
+
 /// The one place glass is used: a floating capsule for the control bar (M3).
 public struct GlassPill<Content: View>: View {
     let label: String
@@ -215,8 +230,8 @@ public struct GlassPill<Content: View>: View {
 
     public var body: some View {
         HStack(spacing: ConchSpace.x3) { content }
-            .padding(.horizontal, 6)
-            .frame(height: 48)
+            .padding(.horizontal, PillMetrics.inset)
+            .frame(height: PillMetrics.height)
             .background {
                 // panel.html's shadow, 0 14px 34px -14px: pulled in from the edges and dropped below, so it sits
                 // under the pill instead of glowing around it. Dark grounds swallow it, so it deepens there.
@@ -489,34 +504,135 @@ private struct ReplyField: NSViewRepresentable {
 
 // MARK: - ControlBar
 
-/// The floating control bar (M3): the voice and what it is about, and Talk or Quiet. The conversation is
-/// shown and hidden from the menu bar menu, not from here. Ready, its label is a button that brings forward
-/// what is ready (`ReviewScene`).
+/// The floating control bar (M3): the voice and what it is about, and Talk or Quiet. The conversation is shown and
+/// hidden from the menu bar menu, not from here. While anything is ready its label is the Ready pill, a button that
+/// opens the next ready item (`ReviewScene`), and it stays one while conch speaks or listens.
 public struct ControlBar: View {
+    /// What the pill opens next, and where that is among what is ready.
+    public struct Ready: Equatable, Sendable {
+        /// The session the next item is in.
+        public let label: String
+        /// Its place among what is ready, from 1, and how many are.
+        public let position: Int
+        public let count: Int
+        /// What the agent asked you to check there (`scene.inspect`), when it said.
+        public let inspect: String?
+
+        public init(label: String, position: Int, count: Int, inspect: String? = nil) {
+            self.label = label
+            self.position = position
+            self.count = count
+            self.inspect = inspect
+        }
+
+        /// "Ready · 1 of 3". One alone is just Ready: "1 of 1" says nothing.
+        public var line: String { count > 1 ? "Ready · \(position) of \(count)" : "Ready" }
+
+        /// The tooltip: "Open Prime page wireframe · 1 of 3", then what to check there when the agent said.
+        public var help: String {
+            let open = count > 1 ? "Open \(label) · \(position) of \(count)" : "Open \(label)"
+            return inspect.map { "\(open)\n\($0)" } ?? open
+        }
+    }
+
     let state: VoiceState
     let detail: String
     @Binding var mode: VoiceMode
+    let ready: Ready?
+    /// News for the second line while it would only repeat Talk or Quiet, which the switch beside it says: "2 working".
+    let news: String?
     let onTap: (() -> Void)?
-    /// What a click would show, as a tooltip on the Ready label.
-    let help: String
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    public init(state: VoiceState, detail: String, mode: Binding<VoiceMode>, onTap: (() -> Void)? = nil, help: String = "") {
+    public init(state: VoiceState, detail: String, mode: Binding<VoiceMode>, ready: Ready? = nil, news: String? = nil, onTap: (() -> Void)? = nil) {
         self.state = state
         self.detail = detail
         _mode = mode
+        self.ready = ready
+        self.news = news
         self.onTap = onTap
-        self.help = help
     }
 
-    /// Only a Ready pill takes a click, and only on its label: Talk and Quiet keep their own.
-    var taps: Bool { onTap != nil && state == .ready }
+    /// The label is the Ready pill while anything is ready, whatever the voice is doing: it used to stop taking clicks
+    /// the moment conch spoke or listened. Talk and Quiet keep their own.
+    var taps: Bool { onTap != nil && ready != nil }
+
+    /// A size down from the menu's orb, and sat in the capsule's round end (`PillMetrics`), so the listening ring
+    /// clears the capsule by `ringClearance` all round. At 36 it came within a point of the end.
+    static let orbSize: CGFloat = 32
+    static let orbLead = PillMetrics.height / 2 - PillMetrics.inset - orbSize / 2
+    static var ringClearance: CGFloat { PillMetrics.height / 2 - orbSize * (0.5 + VoiceOrb.ringSpread) }
+
+    /// How a new orb comes in: out of a touch smaller as it fades up; under Reduce Motion, the fade alone.
+    static func orbEntryScale(reduceMotion: Bool) -> CGFloat { reduceMotion ? 1 : 0.8 }
+
+    /// The two lines beside the orb.
+    var lines: (title: String, subtitle: String?) {
+        switch (state, ready) {
+        case (.speaking, _), (.listening, _):
+            // What it is about, and what it is doing, and that something is still ready behind it.
+            let waiting = ready.map { "\($0.count) ready" }
+            guard !detail.isEmpty else { return (state.title, waiting) }
+            return (detail, [state.title, waiting].compactMap { $0 }.joined(separator: " · "))
+        case let (_, ready?):
+            // The session the pill opens next, and where it is among what is ready.
+            return (ready.label, ready.line)
+        case (.ready, nil):
+            return detail.isEmpty ? (state.title, nil) : (detail, state.title)
+        case (.talk, nil), (.quiet, nil):
+            // The switch beside it says Talk or Quiet already, so the line is news, or nothing.
+            return detail.isEmpty ? (news ?? state.title, nil) : (detail, news)
+        }
+    }
 
     public var body: some View {
         GlassPill("Voice controls") {
-            // A fixed width, so the bar keeps its size and place as the state and the session change.
-            // The session first: the orb and the menu bar mark already say what the voice is doing.
-            let label = VoiceStateLabel(state: state, detail: detail, leadsWithDetail: true)
-                .frame(width: 196, alignment: .leading)
+            let lines = lines
+            let words = [lines.title, lines.subtitle].compactMap { $0 }.joined(separator: "\n")
+            let label = HStack(spacing: ConchSpace.x3) {
+                // One on top of the other while they cross, rather than side by side.
+                ZStack {
+                    VoiceOrb(state: state, size: Self.orbSize)
+                        .id(state)
+                        .transition(.opacity.combined(with: .scale(scale: Self.orbEntryScale(reduceMotion: reduceMotion))))
+                }
+                .frame(width: Self.orbSize, height: Self.orbSize)
+                ZStack(alignment: .leading) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(lines.title)
+                            .font(ConchType.uiEmphasis)
+                            .foregroundStyle(ConchColor.textPrimary)
+                            .lineLimit(1)
+                        if let subtitle = lines.subtitle {
+                            Text(subtitle)
+                                .font(ConchType.secondary)
+                                .foregroundStyle(ConchColor.textSecondary)
+                                .lineLimit(1)
+                        }
+                    }
+                    .id(words)
+                    .transition(.opacity)
+                }
+                Spacer(minLength: 0)
+                if taps {
+                    // Says it opens something before the pointer finds it.
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(ConchColor.textSecondary)
+                        .transition(.opacity)
+                }
+            }
+            .padding(.leading, Self.orbLead)
+            // A fixed width, so the bar keeps its size and place as the state and the session change. The session
+            // first: the orb and the menu bar mark already say what the voice is doing. 224 rather than 196 now the ›
+            // shares it, so a name like "Prime page wireframe" still reads whole.
+            .frame(width: 224, alignment: .leading)
+            // The voice's colour takes over on its own spring, the words cross with it; Reduce Motion keeps the fades.
+            .animation(ConchMotion.voiceColour.animation(reduceMotion: reduceMotion), value: state)
+            .animation(ConchMotion.voiceColour.animation(reduceMotion: reduceMotion), value: words)
+            .animation(ConchMotion.voiceColour.animation(reduceMotion: reduceMotion), value: taps)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(words.replacingOccurrences(of: "\n", with: ", ").replacingOccurrences(of: " · ", with: ", "))
             if taps, let onTap {
                 Button(action: onTap) { label.contentShape(Rectangle()) }
                     .buttonStyle(PillPress())
@@ -525,8 +641,8 @@ public struct ControlBar: View {
                         if case .active = phase { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
                     }
                     #endif
-                    .help(help)
-                    .accessibilityHint("Brings forward what is ready")
+                    .help(ready?.help ?? "")
+                    .accessibilityHint("Opens the next ready item")
             } else {
                 label
             }
@@ -600,8 +716,8 @@ public enum ReviewScene: Equatable {
         return queue[(index + queue.count - 1) % queue.count]
     }
 
-    /// Oldest filed first, ties by version so the order never shuffles.
-    static func order<Key: Comparable>(_ ready: [(key: Key, at: Double)]) -> [Key] {
+    /// Oldest filed first, ties by version so the order never shuffles: the walk's order, and the pill's "1 of 3".
+    public static func order<Key: Comparable>(_ ready: [(key: Key, at: Double)]) -> [Key] {
         ready.sorted { ($0.at, $0.key) < ($1.at, $1.key) }.map { $0.key }
     }
 
@@ -682,6 +798,16 @@ public struct FogSession: Identifiable, Equatable, Sendable {
         let item = item?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         self.item = item.isEmpty ? nil : item
         self.standing = standing
+    }
+
+    /// A standing's mark in the switcher, the menu bar menu's own (`StatusMenu.Dot`): a filled dot for ready and for
+    /// working. Working was a ring, which the sidebar now draws for a paused sub-agent.
+    static func markSymbol(_ standing: Standing) -> String {
+        switch standing {
+        case .ready: StatusMenu.Dot.ready.symbol
+        // The rest draw it clear (`markColor`), so the names stay in line.
+        case .working, .other: StatusMenu.Dot.working.symbol
+        }
     }
 
     /// The colour of a standing's mark in the switcher: ready's green, working's blue. The rest draw no mark.
@@ -1954,9 +2080,8 @@ private struct FogSwitcher: View {
         let here = session.id == current
         return Button { onPick(session.id) } label: {
             HStack(spacing: ConchSpace.x2) {
-                // The menu bar menu's marks: a dot for ready, a ring for working, in the sidebar's colours for the same
-                // two states. Working was the secondary ink; it is `active`'s blue wherever a session is at work.
-                Image(systemName: session.standing == .ready ? "circle.fill" : "circle")
+                // The menu bar menu's marks, in the sidebar's colours for the same two states (`FogSession.markSymbol`).
+                Image(systemName: FogSession.markSymbol(session.standing))
                     .font(.system(size: 7))
                     .foregroundStyle(FogSession.markColor(session.standing))
                     .opacity(session.standing == .other ? 0 : 1)

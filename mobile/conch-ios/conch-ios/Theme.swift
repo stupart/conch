@@ -43,12 +43,18 @@ enum Palette {
     static let calm = Color(red: 0.31, green: 0.55, blue: 0.60)
     /// Your microphone is open — the one state that owns full brand cyan.
     static let micOpen = Color(red: 88 / 255, green: 201 / 255, blue: 212 / 255)
-    /// A finished turn is sitting on you.
-    static let waiting = Color(red: 0.96, green: 0.60, blue: 0.13)
+    /// A finished turn is sitting on you: ready for you, in ready's green, as on the Mac. It was
+    /// orange here after the Mac moved to green ("does orange dot mean its waiting for me? We
+    /// should make that green"), so the two apps disagreed about the one state that asks for
+    /// you; the glyph, not the colour, tells it from a deliverable.
+    static let waiting = ConchColor.ready.dynamic
+    /// The orange waiting used to borrow, kept for what is a caution rather than a state: a
+    /// connection gone quiet, a send conch could not confirm, the button that stops a turn.
+    static let caution = Color(red: 0.96, green: 0.60, blue: 0.13)
     /// Blocked on an answer. Its token equivalent already means this, and the literal was
     /// dark-only.
     static let needs = ConchColor.attention.dynamic
-    /// Has work for you to look at. The literal gold measured 1.3:1 on a light ground.
+    /// Ready for you, with work to look at. The literal gold measured 1.3:1 on a light ground.
     static let review = ConchColor.ready.dynamic
 }
 

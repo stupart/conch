@@ -23,6 +23,9 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
     static let showConversationKey = "conch.showConversation"
     /// The conversation panel's reply line; off, the panel only shows the words.
     static let showReplyLineKey = "conch.showReplyLine"
+    /// A first open from the Ready pill or the menu has turned the conversation panel on (`open`): once, so a panel
+    /// turned off after that stays off.
+    static let panelTurnedOnByOpenKey = "conch.conversationTurnedOnByOpen"
 
     private static var installed: ConchStatusItem?
 
@@ -69,13 +72,26 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
 
     // MARK: State
 
-    /// Ready for you: a review is filed and the session is not working. The daemon's `reviewReady` (PR #191).
+    /// Ready for you: the session isn't working and holds a deliverable nobody has looked at yet (`ReadyForYou`, the
+    /// daemon's `reviewReady`). What the menu bar mark, the menu and the switcher count.
     nonisolated static func readyRows(_ state: PublishedState?) -> [SessionRow] {
+        state?.rows.filter { ReadyForYou.isReady(working: $0.status == .working, viewedAt: $0.held.map(\.viewedAt)) } ?? []
+    }
+
+    /// Every session that isn't working and still holds a deliverable, looked at or not: what the Ready pill and the
+    /// panel's Previous and Next can walk to (`ReviewQueue.held`).
+    nonisolated static func heldRows(_ state: PublishedState?) -> [SessionRow] {
         state?.rows.filter { $0.review != nil && $0.status != .working } ?? []
     }
 
     nonisolated static func workingRows(_ state: PublishedState?) -> [SessionRow] {
         state?.rows.filter { $0.status == .working } ?? []
+    }
+
+    /// The control bar's second line while it would only repeat Talk or Quiet: how many sessions are at work, or nothing.
+    nonisolated static func news(_ state: PublishedState?) -> String? {
+        let working = workingRows(state).filter { $0.parentSessionId == nil }.count
+        return working > 0 ? "\(working) working" : nil
     }
 
     nonisolated static func voiceState(_ state: PublishedState?) -> VoiceState {
@@ -93,43 +109,34 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
 
     // MARK: Menu
 
-    /// Rebuilt each time it opens, from the state at that moment.
+    /// Rebuilt each time it opens, from the state at that moment. The words and what each does are `StatusMenu`'s.
     // ponytail: an open menu does not update live; watch store.$state while open if that ever matters.
     func menuNeedsUpdate(_ menu: NSMenu) {
         let state = store.state
         let voice = Self.voiceState(state)
-        let quiet = state?.mode.paused ?? false
         let defaults = UserDefaults.standard
         menu.removeAllItems()
-
-        menu.addItem(header(voice, detail: Self.detail(state, voice, message: store.daemonMessage)))
-        menu.addItem(.separator())
-        menu.addItem(entry("Talk", #selector(talk), checked: !quiet))
-        menu.addItem(entry("Quiet", #selector(quietMode), checked: quiet))
-        menu.addItem(.separator())
-        // Space is the conch window's stop key.
-        let stop = entry(voice == .listening ? "Stop listening" : "Stop speaking", #selector(stopSpeaking), key: " ")
-        stop.isEnabled = state?.live.isExchangeActive == true
-        menu.addItem(stop)
-        menu.addItem(.separator())
         // FloatingPanels watches these defaults and shows or hides its panels, and the conversation's reply line, as they change.
-        menu.addItem(entry("Show control bar", #selector(toggleControlBar), checked: defaults.bool(forKey: Self.showControlBarKey)))
-        menu.addItem(entry("Show conversation", #selector(toggleConversation), checked: defaults.bool(forKey: Self.showConversationKey)))
-        menu.addItem(entry("Show reply line", #selector(toggleReplyLine), checked: defaults.bool(forKey: Self.showReplyLineKey)))
-        // The pen, with its hotkey shown (`CanvasHotKey`).
-        let canvas = entry("Canvas", #selector(toggleCanvas), checked: CanvasController.shared.armed, key: "p")
-        canvas.keyEquivalentModifierMask = [.control, .option, .command]
-        menu.addItem(canvas)
-
-        let ready = Self.readyRows(state)
-        let working = Self.workingRows(state)
-        if !ready.isEmpty || !working.isEmpty {
-            menu.addItem(.separator())
-            addSessions("Ready for you", ready, symbol: "circle.fill", colour: ConchColor.ready, to: menu)
-            addSessions("Working", working, symbol: "circle", colour: ConchColor.active, to: menu)
+        let input = StatusMenu.Input(
+            voice: voice,
+            quiet: state?.mode.paused ?? false,
+            exchangeActive: state?.live.isExchangeActive == true,
+            controlBar: defaults.bool(forKey: Self.showControlBarKey),
+            conversation: defaults.bool(forKey: Self.showConversationKey),
+            collapsed: defaults.bool(forKey: FloatingPanels.conversationCollapsedKey),
+            replyLine: defaults.bool(forKey: Self.showReplyLineKey),
+            drawing: CanvasController.shared.armed,
+            ready: Self.readyRows(state).map { StatusMenu.Session(id: $0.id, label: $0.label) },
+            working: Self.workingRows(state).map { StatusMenu.Session(id: $0.id, label: $0.label) }
+        )
+        for row in StatusMenu.rows(input) {
+            switch row {
+            case .header: menu.addItem(header(voice, detail: Self.detail(state, voice, message: store.daemonMessage)))
+            case .separator: menu.addItem(.separator())
+            case let .section(title): menu.addItem(.sectionHeader(title: title))
+            case let .item(item): menu.addItem(entry(item))
+            }
         }
-        menu.addItem(.separator())
-        menu.addItem(entry("Open conch", #selector(openConch)))
     }
 
     private func header(_ voice: VoiceState, detail: String) -> NSMenuItem {
@@ -154,38 +161,64 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         return state?.live.label ?? ""
     }
 
+    /// One of `StatusMenu`'s items as an NSMenuItem: its command, its tick (a dash for on but not showing), its key, and
+    /// its dot. An alternate takes the place of the item before it while ⌥ is held.
+    private func entry(_ item: StatusMenu.Item) -> NSMenuItem {
+        let entry = NSMenuItem(title: item.title, action: action(item.command), keyEquivalent: item.key)
+        entry.target = self
+        entry.state = switch item.mark {
+        case .off: .off
+        case .on: .on
+        case .mixed: .mixed
+        }
+        entry.keyEquivalentModifierMask = NSEvent.ModifierFlags(item.modifiers.map { modifier -> NSEvent.ModifierFlags in
+            switch modifier {
+            case .control: .control
+            case .option: .option
+            case .command: .command
+            }
+        })
+        entry.isAlternate = item.alternate
+        entry.isEnabled = item.enabled
+        switch item.command {
+        case let .openItem(session), let .openSession(session): entry.representedObject = session
+        default: break
+        }
+        if let dot = item.dot { entry.image = Self.dot(dot) }
+        return entry
+    }
+
+    private func action(_ command: StatusMenu.Command) -> Selector {
+        switch command {
+        case .talk: #selector(talk)
+        case .quiet: #selector(quietMode)
+        case .stop: #selector(stopSpeaking)
+        case .controlBar: #selector(toggleControlBar)
+        case .conversation: #selector(toggleConversation)
+        case .replyLine: #selector(toggleReplyLine)
+        case .draw: #selector(toggleCanvas)
+        case .openItem: #selector(openItem(_:))
+        case .openSession: #selector(openSession(_:))
+        case .openConch: #selector(openConch)
+        }
+    }
+
     /// Each group's mark in the colour the sidebar draws the same state in: ready's green, working's
-    /// blue. They were template images in the menu's own ink, so working read as nothing happening
-    /// and ready no louder than it; the conversation panel's switcher, which copies these marks,
-    /// already coloured ready.
-    private func addSessions(_ title: String, _ rows: [SessionRow], symbol: String, colour: ConchColorToken, to menu: NSMenu) {
-        guard !rows.isEmpty else { return }
-        menu.addItem(.sectionHeader(title: title))
+    /// blue, both filled. They were template images in the menu's own ink, so working read as nothing
+    /// happening and ready no louder than it; the conversation panel's switcher copies these marks.
+    private static func dot(_ dot: StatusMenu.Dot) -> NSImage? {
         let tint = NSColor(name: nil) { appearance in
             let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            return NSColor(colour.rgba(isDark ? .dark : .light).color)
+            return NSColor(dot.colour.rgba(isDark ? .dark : .light).color)
         }
-        let dot = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+        let image = NSImage(systemSymbolName: dot.symbol, accessibilityDescription: nil)?
             .withSymbolConfiguration(
                 NSImage.SymbolConfiguration(pointSize: 7, weight: .regular)
                     .applying(NSImage.SymbolConfiguration(paletteColors: [tint]))
             )
         // Coloured, so not a template: a menu tints a template image with its own ink.
-        dot?.isTemplate = false
-        for row in rows {
-            let session = entry(row.label, #selector(openSession(_:)))
-            session.representedObject = row.id
-            session.image = dot
-            menu.addItem(session)
-        }
-    }
-
-    private func entry(_ title: String, _ action: Selector, checked: Bool = false, key: String = "") -> NSMenuItem {
-        let entry = NSMenuItem(title: title, action: action, keyEquivalent: key)
-        entry.target = self
-        entry.state = checked ? .on : .off
-        entry.keyEquivalentModifierMask = []
-        return entry
+        image?.isTemplate = false
+        return image
     }
 
     // MARK: Commands
@@ -200,11 +233,15 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
     @objc private func toggleCanvas() { CanvasController.shared.toggle() }
     @objc private func toggleReplyLine() { toggle(Self.showReplyLineKey) }
     @objc private func toggleConversation() {
-        // Turned on from the menu, the conversation opens full size, not as its collapsed handle.
-        if !UserDefaults.standard.bool(forKey: Self.showConversationKey) {
-            UserDefaults.standard.set(false, forKey: FloatingPanels.conversationCollapsedKey)
-        }
-        toggle(Self.showConversationKey)
+        // Turned on from the menu, the conversation opens full size, not as its collapsed handle; folded to its handle,
+        // choosing it opens it rather than hiding a panel nobody could see (`StatusMenu.conversationToggle`).
+        let defaults = UserDefaults.standard
+        let next = StatusMenu.conversationToggle(
+            on: defaults.bool(forKey: Self.showConversationKey),
+            collapsed: defaults.bool(forKey: FloatingPanels.conversationCollapsedKey)
+        )
+        defaults.set(next.collapsed, forKey: FloatingPanels.conversationCollapsedKey)
+        defaults.set(next.on, forKey: Self.showConversationKey)
     }
 
     private func toggle(_ key: String) {
@@ -214,6 +251,12 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
     @objc private func openSession(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String else { return }
         Self.openSession(id)
+    }
+
+    /// A Ready for you row: its session's next ready item, opened the way the Ready pill opens one (`open`).
+    @objc private func openItem(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String, let panels = FloatingPanels.installed else { return }
+        panels.queue.open(session: id, store: store, panels: panels)
     }
 
     /// conch's window on a session: chosen in the menu, or the Ready pill's scene.
@@ -227,9 +270,50 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         Self.bringConchForward()
     }
 
-    /// A click on the Ready pill (FloatingPanels): what this session's review is about, brought forward, in
-    /// `ReviewScene`'s order for the scene the review asked for (none is auto). A scene that fails falls through to the
-    /// next, down to conch's window on the session. True once it was handed off; nothing is raised later.
+    /// Where an open came from: the Ready pill and the menu's Ready for you rows open from outside the conversation
+    /// panel, its Previous, Next and switcher from inside it.
+    enum OpenFrom {
+        case pill, menu, panel
+    }
+
+    /// The one opening rule, for the pill, the menu's rows and the panel alike. They each did their own: the pill opened
+    /// the work in its own app, the panel's Previous and Next in the panel, the menu conch's window, and the pill over a
+    /// full-screen panel did both at once.
+    ///
+    /// While the panel is on, anything it can draw (`SessionRow.panelContent`) opens in it, full screen. So does a
+    /// review with marks from anywhere, turning the panel on if it has to: marks are drawn only where conch shows the
+    /// work. From inside the panel, a pick with nothing to open is the session's words there. Everything else opens in
+    /// its own app (`stage`), the panel docking first so it isn't left over what comes forward. And the first open from
+    /// the pill or the menu turns the panel on, docked and open, and it stays on: it was off by default, so nothing
+    /// Tyler's setup did could put work on the screen conch draws in.
+    static func open(_ row: SessionRow, from origin: OpenFrom, store: StateStore, panels: FloatingPanels) async -> Bool {
+        let defaults = UserDefaults.standard
+        if origin != .panel, !defaults.bool(forKey: panelTurnedOnByOpenKey) {
+            defaults.set(true, forKey: panelTurnedOnByOpenKey)
+            panels.bringOut()
+        }
+        let content = row.panelContent
+        let marked = !(row.review?.marks.isEmpty ?? true)
+        // What `stage` reads to choose, read the same way.
+        let kind = ReviewScene.Kind(rawValue: row.review?.sceneKind ?? "") ?? .auto
+        let link = ReviewItem(row: row)?.link.map { LinkTarget.url(for: $0, cwd: row.cwd) }
+        let words = origin == .panel
+            && ReviewScene.panelShowsWords(hasReview: row.review != nil, kind: kind, link: link, fileExists: { FileManager.default.fileExists(atPath: $0) })
+        if (content != nil && (defaults.bool(forKey: showConversationKey) || marked)) || words {
+            panels.bringOut()
+            panels.showInPanel()
+            // The screen context hears what the panel put on screen, as `stage` tells it what a scene did: the session,
+            // and the deliverable when that is what shows.
+            store.reportShowing(.conch(sessionId: row.id, view: "panel"), staged: ConchScreenStaged(sessionId: row.id, reviewId: content?.id, link: content?.link))
+            return true
+        }
+        panels.dockForScene()
+        return await stage(row, store: store)
+    }
+
+    /// What this session's review is about, brought forward in its own app, in `ReviewScene`'s order for the scene the
+    /// review asked for (none is auto): what `open` does with anything the panel doesn't show. A scene that fails falls
+    /// through to the next, down to conch's window on the session. True once it was handed off; nothing is raised later.
     static func stage(_ row: SessionRow, store: StateStore) async -> Bool {
         let window = ReviewNotifications.shared.reviewWindow
         let kind = ReviewScene.Kind(rawValue: row.review?.sceneKind ?? "") ?? .auto
@@ -247,6 +331,13 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
                 revealable: revealable
             ) {
             case let .open(url):
+                // A page on this Mac whose server has stopped: conch's window on the session, whose pane says so and
+                // offers to ask for it again (`ServerDownView`), rather than a browser tab that can't connect.
+                if LocalServer.port(of: url) != nil, !(await LocalServer.isListening(url)) {
+                    openSession(row.id)
+                    store.reportShowing(.conch(sessionId: row.id, view: "main"), staged: staged)
+                    return true
+                }
                 // Through the one door for links, which logs a failure; the pill has no pane to show it in.
                 let opened = await withCheckedContinuation { done in
                     store.openLink(LinkTarget.text(of: url), cwd: nil, rowId: row.id, onOpened: { app in
