@@ -14,7 +14,8 @@ import WebKit
 /// - `{image}`: on the image while conch shows it; else left out.
 /// - `{canvas}`: on the display of the canvas Tyler sent, by the id the prompt gave the agent.
 ///
-/// Nothing is drawn at a guessed position: a mark that can't be placed is skipped and logged. A page or an image can move
+/// Nothing is drawn at a guessed position: a mark that can't be placed is skipped, logged, and counted on the pill's chip
+/// ("2 marks couldn't be shown here", their labels on hover). A page or an image can move
 /// under its marks (a scroll, a resize, the window moving or going behind another), and following it frame by frame would
 /// mean running script in the page every frame; so conch looks five times a second, fades the marks out while it moves,
 /// and brings them back where it is once it is still. The glass stays click-through throughout: agent ink never puts the
@@ -68,12 +69,13 @@ final class AgentInkController {
                 .sink { [weak self] session, key in MainActor.assumeIsolated { self?.staged(key, in: session) } }
                 .store(in: &subscriptions)
         }
-        // Esc in conch — the side panel, the conversation panel — clears the agent's marks, and lets the Esc go on to
-        // whatever else it does. Only conch's own keys: seeing Esc in other apps would need the Accessibility grant, and
-        // taking the keys to get it would steal focus. On the glass itself its own Esc clears everything (`escape`).
+        // Esc on what the marks are drawn over — conch's own page or image of the review, with the keyboard — clears them,
+        // and lets the Esc go on to whatever else it does. Esc anywhere else in conch (a field, a sheet, the panel) is
+        // someone else's, and used to clear them too; the chip's × is for that. Only conch's own keys: seeing Esc in other
+        // apps would need the Accessibility grant, and taking the keys to get it would steal focus.
         escape = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            if event.keyCode == 53, !(event.window?.contentView is CanvasInkView) {
-                MainActor.assumeIsolated { AgentInkController.shared.dismiss() }
+            if event.keyCode == 53 {
+                MainActor.assumeIsolated { AgentInkController.shared.escaped(in: event.window) }
             }
             return event
         }
@@ -120,11 +122,22 @@ final class AgentInkController {
         seen = nil
     }
 
-    /// Esc elsewhere in conch: the agent's marks go, Tyler's stay.
-    private func dismiss() {
+    /// The chip's ×, or Esc where they are: the agent's marks go, and stay gone for this review; Tyler's stay.
+    func dismiss() {
         guard CanvasController.shared.document?.has(.agent) == true else { return }
         stop()
         CanvasController.shared.clearAgent()
+    }
+
+    /// Esc in `window`: the marks go only when what they are drawn over has the keyboard there.
+    private func escaped(in window: NSWindow?) {
+        guard let shown, let focus = window?.firstResponder as? NSView,
+              surfaces.contains(where: { surface in
+                  guard surface.item.id == shown.id, let view = surface.view, view.window === window else { return false }
+                  return focus === view || focus.isDescendant(of: view)
+              })
+        else { return }
+        dismiss()
     }
 
     // MARK: Placing
@@ -139,10 +152,12 @@ final class AgentInkController {
         }
         watching = Task { [weak self] in
             while !Task.isCancelled, let self {
-                let placement = await place(item)
+                let (placement, missed) = await place(item)
                 guard !Task.isCancelled else { return }
                 let watched = surfaces.contains { $0.view != nil && $0.item.id == item.id }
                 settle(placement, by: item, lasting: !watched)
+                // Said on the chip while some are drawn; with none drawn there is no chip, and nothing to say it on.
+                CanvasController.shared.setAgentMissed(placement == nil ? nil : AgentInk.Missed(missed))
                 guard watched else { return }
                 try? await Task.sleep(for: Self.look)
             }
@@ -164,13 +179,19 @@ final class AgentInkController {
     }
 
     /// Every mark of `item` that can be placed right now, on one display: the first a mark lands on. Ids are the review's
-    /// and the agent's, so another review's marks are new marks and this one's keep theirs.
-    private func place(_ item: ReviewItem) async -> Placement? {
+    /// and the agent's, so another review's marks are new marks and this one's keep theirs. And the marks that can't be
+    /// placed here at all, by kind and label, for the chip — not ones merely scrolled away or covered, which come back.
+    private func place(_ item: ReviewItem) async -> (Placement?, [(kind: String, label: String?)]) {
         var screen: NSScreen?
         var marks: [CanvasMark] = []
+        var missed: [(kind: String, label: String?)] = []
+        func miss(_ agent: AgentMark, _ why: String) {
+            NSLog("conch: agent mark %@ %@; skipped", agent.id, why)
+            missed.append((agent.kind.rawValue, agent.label))
+        }
         func add(_ mark: CanvasMark?, on display: NSScreen, _ agent: AgentMark) {
-            guard let mark else { return NSLog("conch: agent mark %@ has no geometry to draw; skipped", agent.id) }
-            guard screen == nil || screen === display else { return NSLog("conch: agent mark %@ is on another display than the rest; skipped", agent.id) }
+            guard let mark else { return miss(agent, "has no geometry to draw") }
+            guard screen == nil || screen === display else { return miss(agent, "is on another display than the rest") }
             screen = display
             marks.append(mark)
         }
@@ -178,31 +199,47 @@ final class AgentInkController {
         var found: [String: Found] = [:]
         // Only while its window is in sight: a page behind other windows or minimised places nothing anyway (`visible`),
         // and asking it five times a second woke its web process for as long as it stayed open.
-        if let page, page.window?.occlusionState.contains(.visible) == true {
+        let asked = page?.window?.occlusionState.contains(.visible) == true
+        if let page, asked {
             found = await Self.find(item.marks, in: page, link: item.link)
         }
         for agent in item.marks {
-            guard let kind = AgentInk.Kind(rawValue: agent.kind.rawValue) else { continue }
+            guard let kind = AgentInk.Kind(rawValue: agent.kind.rawValue) else {
+                miss(agent, "is a kind this build doesn't draw")
+                continue
+            }
             let id = "\(item.id)/\(agent.id)"
             switch agent.frame {
             case let .canvas(canvas):
                 guard let anchor = anchor(of: canvas), let display = NSScreen.screens.first(where: { $0.displayID == anchor.id }) else {
-                    NSLog("conch: agent mark %@ is on canvas %@, which isn't on this Mac's displays; skipped", agent.id, canvas)
+                    miss(agent, "is on canvas \(canvas), which isn't on this Mac's displays")
                     continue
                 }
                 let whole = CGRect(x: 0, y: 0, width: 1, height: 1)
                 add(AgentInk.mark(id: id, kind: kind, label: agent.label, at: agent.at, to: agent.to, rect: agent.rect, pts: agent.pts, in: whole), on: display, agent)
             case let .image(path):
                 // On the image while conch shows it, where it is on screen now; each mark only where the image shows.
-                guard let view = surfaces.first(where: { $0.item.id == item.id && $0.image.map(Self.same(path)) == true })?.view,
-                      let (display, rect) = Self.onScreen(view.bounds, of: view),
+                guard let view = surfaces.first(where: { $0.item.id == item.id && $0.image.map(Self.same(path)) == true })?.view else {
+                    miss(agent, "is on an image conch isn't showing")
+                    continue
+                }
+                guard let (display, rect) = Self.onScreen(view.bounds, of: view),
                       let mark = AgentInk.mark(id: id, kind: kind, label: agent.label, at: agent.at, to: agent.to, rect: agent.rect, pts: agent.pts, in: rect),
                       Self.visible(Self.middle(of: mark, on: display), in: view)
                 else { continue }
                 add(mark, on: display, agent)
             case .selector, .quote:
-                // Only in conch's own page of this review: anywhere else conch can't see what it names.
-                guard let page, let client = found[agent.id] else { continue }
+                // Only in conch's own page of this review: anywhere else conch can't see what it names. On a page it
+                // asked that hasn't got it, it isn't there; on one out of sight, it may be.
+                guard let page else {
+                    miss(agent, "names part of a page conch isn't showing")
+                    continue
+                }
+                guard let client = found[agent.id] else {
+                    // `find` has logged it, selector and all.
+                    if asked, !page.isLoading, item.link.map({ Self.showsReview(page.url, link: $0) }) == true { missed.append((agent.kind.rawValue, agent.label)) }
+                    continue
+                }
                 let local = AgentInk.viewRect(client: client.rect, viewport: client.viewport, viewWidth: page.bounds.width)
                 let flipped = page.isFlipped ? local : CGRect(x: local.minX, y: page.bounds.height - local.maxY, width: local.width, height: local.height)
                 guard let (display, rect) = Self.onScreen(flipped, of: page),
@@ -211,8 +248,8 @@ final class AgentInkController {
                 add(AgentInk.mark(id: id, kind: kind, label: agent.label, on: rect, size: display.frame.size), on: display, agent)
             }
         }
-        guard let screen, let display = screen.displayID else { return nil }
-        return Placement(display: display, frame: screen.frame, marks: marks)
+        guard let screen, let display = screen.displayID else { return (nil, missed) }
+        return (Placement(display: display, frame: screen.frame, marks: marks), missed)
     }
 
     private func anchor(of canvas: String) -> CanvasAnchor? {

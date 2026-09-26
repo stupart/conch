@@ -119,7 +119,10 @@ describe("the glass", () => {
 
   test("Esc lifts the pen and keeps the ink; the pill's × throws the ink or a Show away", () => {
     expect(member(canvas, "override func keyDown(with event: NSEvent) {")).toContain("case UInt16(kVK_Escape):\n            controller?.escape()");
-    expect(member(canvas, "func escape() {")).toContain("armed ? lift() : clear()");
+    // Esc never throws anything away: a recording stops, else the pen comes up.
+    const escape = member(canvas, "func escape() {");
+    inOrder(escape, "if let recorder, recorder.isRecording { return stopRecording(recorder) }", "lift()");
+    for (const throwsAway of ["clear()", "cancelShow()", "discard("]) expect(escape).not.toContain(throwsAway);
     // The keys go back with the pen, so the × is how the ink goes once it is up; a Show goes first, and nothing is sent.
     expect(member(canvas, "func discard() {")).toContain("recorder != nil ? cancelShow() : clear()");
     expect(canvas).toContain("onDiscard: canvas.recorder != nil || canvas.document?.isEmpty == false ? { canvas.discard() } : nil");
@@ -142,7 +145,7 @@ describe("the glass", () => {
     expect(show).toContain("if document?.id != shown {\n            liftAway()");
     // Reduce Motion keeps the fade and drops the blur.
     const lift = member(canvas, "private func liftAway() {");
-    expect(lift).toContain("CASpringAnimation(perceptualDuration: 0.32, bounce: 0)");
+    expect(lift).toContain("CASpringAnimation(perceptualDuration: ConchMotion.appearance.response, bounce: ConchMotion.appearance.bounce)");
     expect(lift).toContain("if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, let blur = CIFilter(name: \"CIGaussianBlur\")");
   });
 
@@ -192,7 +195,8 @@ describe("turning it on", () => {
     const install = member(canvas, "func install(store: StateStore) {");
     expect(install).toContain("pill.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)");
     expect(install).toContain("pill.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle, .transient]");
-    expect(install).toContain("pill.contentView = FirstClickHostingView(");
+    expect(install).toContain("let host = FirstClickHostingView(rootView: CanvasPillHost(");
+    expect(install).toContain("pill.contentView = host");
     expect(install).not.toContain("pill.ignoresMouseEvents");
     expect(canvas).toContain(
       "private let pill = FloatingPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)",
@@ -202,7 +206,7 @@ describe("turning it on", () => {
 
 describe("Send", () => {
   test("the still is ScreenCaptureKit's, of the display under the ink, with conch's floating windows left out", () => {
-    const sendBody = member(send, "    func send() {");
+    const sendBody = member(send, "    func send(marksOnly: Bool = false) {");
     expect(sendBody).toContain("let conch = Self.leftOut(keepingGlass: false)");
     expect(sendBody).toContain("await CanvasCapture.still(of: document.anchor.id, leavingOut: conch)");
     const still = member(send, "static func still(of display: CGDirectDisplayID, leavingOut windows: [Int]) async -> CGImage? {");
@@ -239,36 +243,47 @@ describe("Send", () => {
     expect(filesWith("SCScreenshotManager")).toEqual(["CanvasSend.swift", "WindowPreview.swift"]);
     expect(filesWith("CanvasCapture.still(")).toEqual(["CanvasSend.swift"]);
     // Show is the other capture, on its own explicit press (canvas-show-source.test.ts).
-    for (const capture of ["SCShareableContent", "CGPreflightScreenCaptureAccess"]) {
-      expect(filesWith(capture), capture).toEqual(["CanvasSend.swift", "CanvasShow.swift", "WindowPreview.swift"]);
-    }
-    expect(filesWith("CGRequestScreenCaptureAccess")).toEqual(["CanvasSend.swift", "CanvasShow.swift"]);
+    expect(filesWith("SCShareableContent")).toEqual(["CanvasSend.swift", "CanvasShow.swift", "WindowPreview.swift"]);
+    expect(filesWith("CGPreflightScreenCaptureAccess")).toEqual(["CanvasSend.swift", "WindowPreview.swift"]);
+    // The grant is asked for in one place, for a Send and a Show alike (`CanvasCapture.granted`).
+    expect(filesWith("CGRequestScreenCaptureAccess")).toEqual(["CanvasSend.swift"]);
+    expect(send.match(/CGRequestScreenCaptureAccess\(\)/g)?.length).toBe(1);
     expect(send.match(/CanvasCapture\.still\(/g)?.length).toBe(1);
-    const sendBody = member(send, "    func send() {");
+    const sendBody = member(send, "    func send(marksOnly: Bool = false) {");
     expect(sendBody).toContain("CanvasCapture.still(");
     // Nowhere to send it: nothing captured, and the pill says why.
-    expect(sendBody.indexOf("guard let row = Self.route(state, panel: FloatingPanels.installed?.staged) else {")).toBeLessThan(sendBody.indexOf("CanvasCapture.still("));
-    expect(sendBody).toContain('message = "Nothing to send this to: no session owns what is on screen, and the panel has none."\n            return\n        }');
-    // Send is the pill's button and Return on the glass: nothing else calls it.
+    expect(sendBody.indexOf("guard let route = Self.route(state, panel: FloatingPanels.installed?.staged, picked: picked) else {")).toBeLessThan(sendBody.indexOf("CanvasCapture.still("));
+    expect(sendBody).toContain("guard let route = Self.route(state, panel: FloatingPanels.installed?.staged, picked: picked) else {\n            return say(.nowhere)\n        }");
+    // Send is the pill's button, Return on the glass, a pick from Send's own menu, and the notice's Send marks only:
+    // nothing else calls it.
     const callers = Object.entries(macSources).flatMap(([name, source]) => (source.match(/(?:canvas|controller\?|CanvasController\.shared)\.send\(\)/g) ?? []).map((call) => `${name}: ${call}`));
     expect(callers.sort()).toEqual(["Canvas.swift: canvas.send()", "Canvas.swift: controller?.send()"]);
     expect(canvas).toContain("onSend: { canvas.send() }");
     expect(canvas).toContain("if controller?.armed == true { controller?.send() }");
-    // The grant: checked silently; asked for once, on a Send without it, and the Send still goes as the marks alone.
+    expect(member(canvas, "func choose(_ id: SessionRow.ID) {")).toContain("if sends { send() }");
+    expect(Object.values(macSources).join("\n").match(/send\(marksOnly: true\)/g)?.length).toBe(1);
+    expect(member(send, "func act(_ action: CanvasToolPill.Notice.Action) {")).toContain("case .sendMarksOnly:\n            send(marksOnly: true)");
+    // The grant: checked silently; asked for once a launch at most; and the still never asks.
+    const granted = member(send, "static func granted() -> Bool {");
+    inOrder(granted, "if CGPreflightScreenCaptureAccess() { return true }", "CGRequestScreenCaptureAccess()");
+    expect(granted).toContain("if !asked {\n            asked = true\n            CGRequestScreenCaptureAccess()");
     const still = member(send, "static func still(of display: CGDirectDisplayID, leavingOut windows: [Int]) async -> CGImage? {");
-    expect(still.indexOf("guard CGPreflightScreenCaptureAccess() else {")).toBeLessThan(still.indexOf("CGRequestScreenCaptureAccess()"));
-    expect(still).toContain("if !asked {\n                asked = true\n                CGRequestScreenCaptureAccess()");
+    expect(still).toContain("guard CGPreflightScreenCaptureAccess() else { return nil }");
+    expect(still).not.toContain("CGRequestScreenCaptureAccess");
     expect(member(send, "static func write(_ document: CanvasDocument, screen: CGImage?) throws -> Files {")).toContain(
       'raw: try screen.map { try save(CanvasInk.png($0), "raw.png") },',
     );
   });
 
   test("it goes to the session that owns what is on screen when the screen context is sure, else the panel's", () => {
-    expect(send).toContain("static let sureEnough = 0.8");
-    const route = member(send, "static func route(_ state: PublishedState?, panel staged: SessionRow.ID?) -> SessionRow? {");
-    expect(route).toContain("if let showing = state?.showing, showing.confidence >= sureEnough, let owner = state?.row(showing.sessionId) {\n            return owner");
-    expect(route).toContain("return state?.row(WorkspaceFocus.viewed(in: Workspace(state), pinned: staged))");
-    expect(route.indexOf("showing.confidence")).toBeLessThan(route.indexOf("WorkspaceFocus.viewed"));
+    // The rule itself is pure, in CanvasRouting (CanvasPillTests): Tyler's pick, the sure owner, then the panel's as a guess.
+    expect(ink).toContain("public static let sureEnough = 0.8");
+    const route = member(send, "static func route(_ state: PublishedState?, panel staged: SessionRow.ID?, picked: SessionRow.ID? = nil) -> (row: SessionRow, sure: Bool)? {");
+    expect(route).toContain("let choice = CanvasRouting.choice(");
+    expect(route).toContain("onScreen: state.showing?.sessionId,");
+    expect(route).toContain("confidence: state.showing?.confidence ?? 0,");
+    expect(route).toContain("panel: WorkspaceFocus.viewed(in: Workspace(state), pinned: staged),");
+    expect(route).toContain("return (row, choice.sure)");
     // `showing` reaches the app, and survives the store's rebuild.
     expect(models).toContain("showing = try? container.decodeIfPresent(Showing.self, forKey: .showing)");
     expect(models).toContain("&& showing == other.showing");
@@ -286,11 +301,12 @@ describe("Send", () => {
     expect(text).toContain('lines.append("Clean screen + marks: \\(clean), \\(marks)")');
     expect(text).toContain('return lines.joined(separator: "\\n")');
     expect(ink).toContain('return "\\(number). \\(place(document.target(of: note) ?? note)): \\"\\(words)\\""');
-    const sendBody = member(send, "    func send() {");
+    const sendBody = member(send, "    func send(marksOnly: Bool = false) {");
     expect(sendBody).toContain("CanvasPrompt.text(for: document, about: label, picture: files.flat.path, clean: files.raw?.path, marks: files.json.path)");
     // The composer's own delivery (DashboardView's onSend), then a clear canvas.
-    expect(sendBody).toContain("let delivery = store.send(.inject(sessionId: row.id, label: row.label, text: prompt), overApp: true)");
-    expect(sendBody.indexOf("store.send(.inject(")).toBeLessThan(sendBody.indexOf("clear()"));
+    expect(sendBody).toContain("let event = ConchDaemonEvent.inject(sessionId: row.id, label: row.label, text: prompt)");
+    expect(sendBody).toContain("let delivery = store.send(event, overApp: true)");
+    expect(sendBody.indexOf("store.send(event")).toBeLessThan(sendBody.indexOf("clear()"));
     expect(read("mac-app/conch-mac/DashboardView.swift")).toContain("store.send(.inject(sessionId: row.id, label: row.label, text: text))");
   });
 
@@ -359,19 +375,20 @@ describe("agent ink", () => {
     // Esc in conch clears them, seen by a local monitor that passes the key on; never a global one (Accessibility).
     expect(agentInk).toContain("escape = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in");
     expect(agentInk).not.toContain("addGlobalMonitorForEvents");
-    expect(agentInk).toContain("MainActor.assumeIsolated { AgentInkController.shared.dismiss() }\n            }\n            return event");
+    expect(agentInk).toContain("MainActor.assumeIsolated { AgentInkController.shared.escaped(in: event.window) }\n            }\n            return event");
   });
 
   test("a mark is drawn only where conch found it: never at a guessed position", () => {
-    const place = member(agentInk, "private func place(_ item: ReviewItem) async -> Placement? {");
+    const place = member(agentInk, "private func place(_ item: ReviewItem) async -> (Placement?, [(kind: String, label: String?)]) {");
     // A selector or a quote only in conch's own page of this review, where the script found it, and in sight.
-    expect(place).toContain("guard let page, let client = found[agent.id] else { continue }");
+    expect(place).toContain("guard let page else {");
+    expect(place).toContain("guard let client = found[agent.id] else {");
     expect(place).toContain("Self.visible(NSPoint(x: display.frame.minX + rect.midX * display.frame.width, y: display.frame.maxY - rect.midY * display.frame.height), in: page)");
     // An image only while conch shows it; a canvas only on its own display.
-    expect(place).toContain("guard let view = surfaces.first(where: { $0.item.id == item.id && $0.image.map(Self.same(path)) == true })?.view,");
+    expect(place).toContain("guard let view = surfaces.first(where: { $0.item.id == item.id && $0.image.map(Self.same(path)) == true })?.view else {");
     expect(place).toContain("guard let anchor = anchor(of: canvas), let display = NSScreen.screens.first(where: { $0.displayID == anchor.id }) else {");
     // A mark without the geometry its kind takes is skipped and said so.
-    expect(place).toContain('guard let mark else { return NSLog("conch: agent mark %@ has no geometry to draw; skipped", agent.id) }');
+    expect(place).toContain('guard let mark else { return miss(agent, "has no geometry to draw") }');
     // And the pure placement refuses rather than guesses (`AgentInkTests`).
     expect(placing).toContain("guard let at, let to else { return nil }");
     expect(placing).toContain("guard size.width > 0, size.height > 0, element.width > 0, element.height > 0 else { return nil }");
@@ -417,7 +434,7 @@ describe("agent ink", () => {
     const drawOn = member(canvas, "private func drawOn(_ layer: CALayer, _ mark: CanvasMark, after delay: CFTimeInterval) {");
     expect(drawOn).toContain("guard !Self.reduceMotion, let spine = CanvasInk.spine(of: mark, in: bounds.size) else {");
     expect(drawOn).toContain('let draw = CABasicAnimation(keyPath: "strokeEnd")');
-    expect(canvas).toContain("static let drawOnTime: CFTimeInterval = 0.4");
+    expect(canvas).toContain("static let drawOnTime: CFTimeInterval = ConchMotion.gentle");
     const show = member(canvas, "func show(_ document: CanvasDocument?, armed: Bool, agentHidden: Bool = false, agentName: String = \"Claude\") {");
     expect(show).toContain("let delay = fresh ? Double(order) * 0.06 : 0");
     expect(show).toContain("label.pop(after: delay + (Self.reduceMotion ? 0 : Self.drawOnTime * 0.8))");
@@ -436,7 +453,7 @@ describe("agent ink follows the item the panel is on", () => {
     const start = canvas.indexOf("panels.$staged.combineLatest(panels.queue.$lastStaged)");
     const clearChain = canvas.slice(start, canvas.indexOf(".store(in: &subscriptions)", start) + ".store(in: &subscriptions)".length);
     const installed = agentInk.indexOf("self.store = store\n") + "self.store = store\n".length;
-    const inkChain = agentInk.slice(installed, agentInk.indexOf("        // Esc in conch", installed));
+    const inkChain = agentInk.slice(installed, agentInk.indexOf("        // Esc on what the marks are drawn over", installed));
     expect(clearChain).toContain("self?.clear()");
     expect(inkChain).toContain("subscriptions");
     // The harness's `staged(_:in:)` is the source's rule: only a review the panel's own session holds.
@@ -503,8 +520,8 @@ MainActor.assumeIsolated { run() }
   }, 120_000);
 
   test("the page is asked where the marks are only while its window is in sight", () => {
-    const place = member(agentInk, "private func place(_ item: ReviewItem) async -> Placement? {");
-    expect(place).toContain("if let page, page.window?.occlusionState.contains(.visible) == true {\n            found = await Self.find(item.marks, in: page, link: item.link)");
+    const place = member(agentInk, "private func place(_ item: ReviewItem) async -> (Placement?, [(kind: String, label: String?)]) {");
+    expect(place).toContain("let asked = page?.window?.occlusionState.contains(.visible) == true\n        if let page, asked {\n            found = await Self.find(item.marks, in: page, link: item.link)");
     expect(place).not.toContain("if let page { found = await Self.find(");
   });
 });

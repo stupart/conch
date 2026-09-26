@@ -5,59 +5,137 @@ import ScreenCaptureKit
 /// Send (the canvas's phase 2). Tyler: "can send an image of the screen when the prompt is sent if there is content on the
 /// canvas". What is under the ink is captured without conch's own windows, the marks are drawn over it by the same path
 /// builder as the glass, the lot is packed into a folder, and one message goes to the session that owns what is on
-/// screen, through the composer's own path. Nothing is ever captured but here, on an explicit Send.
+/// screen, through the composer's own path. Nothing is ever captured but here, on an explicit Send; and nothing is ever
+/// sent, or sent as less than it looks, without the pill saying so: where it went, why it didn't, and what Screen
+/// Recording still needs.
 extension CanvasController {
-    /// How sure the screen context has to be to route a canvas: 0.8 and up is conch having staged it, a held
-    /// deliverable's link, or the session's own terminal. Below that, a folder match can't say whose it is.
-    static let sureEnough = 0.8
-
-    /// Where a canvas goes: the session that owns what is on screen, when the screen context is sure of it; else the
-    /// conversation panel's own session (the panel's rule, `WorkspaceFocus`); else nowhere. The canvas only reads
-    /// `showing`; it never looks at the screen to decide.
-    static func route(_ state: PublishedState?, panel staged: SessionRow.ID?) -> SessionRow? {
-        if let showing = state?.showing, showing.confidence >= sureEnough, let owner = state?.row(showing.sessionId) {
-            return owner
-        }
-        return state?.row(WorkspaceFocus.viewed(in: Workspace(state), pinned: staged))
+    /// Where a canvas goes (`CanvasRouting`): Tyler's pick from Send's menu; else the session that owns what is on screen,
+    /// when the screen context is sure of it (`CanvasRouting.sureEnough`); else the conversation panel's own session (the
+    /// panel's rule, `WorkspaceFocus`), which is a guess, and Send asks; else nowhere. The canvas only reads `showing`; it
+    /// never looks at the screen to decide.
+    static func route(_ state: PublishedState?, panel staged: SessionRow.ID?, picked: SessionRow.ID? = nil) -> (row: SessionRow, sure: Bool)? {
+        guard let state else { return nil }
+        let choice = CanvasRouting.choice(
+            picked: picked,
+            onScreen: state.showing?.sessionId,
+            confidence: state.showing?.confidence ?? 0,
+            panel: WorkspaceFocus.viewed(in: Workspace(state), pinned: staged),
+            sessions: state.rows.map(\.id)
+        )
+        guard let choice, let row = state.row(choice.id) else { return nil }
+        return (row, choice.sure)
     }
 
-    /// Send: capture, pack, deliver, and a clear canvas. With nowhere to send it, nothing is captured and the pill says why.
-    /// Only once Tyler has drawn: an agent's marks alone are what he is answering, not an answer.
-    func send() {
+    /// Send's menu: every session but a sub-agent, most likely first (`CanvasRouting.ranked`), each saying why it is near
+    /// the top.
+    static func destinations(_ state: PublishedState?, panel staged: SessionRow.ID?, picked: SessionRow.ID?) -> [CanvasToolPill.Destination] {
+        guard let state else { return [] }
+        let onScreen = state.showing?.sessionId, panel = WorkspaceFocus.viewed(in: Workspace(state), pinned: staged)
+        let ranked = CanvasRouting.ranked(picked: picked, onScreen: onScreen, confidence: state.showing?.confidence ?? 0, panel: panel, sessions: state.rows.map(\.id))
+        return ranked.compactMap { id in
+            guard let row = state.row(id), row.parentSessionId == nil else { return nil }
+            return CanvasToolPill.Destination(id: id, label: row.label, why: id == onScreen ? "on screen" : id == panel ? "in the panel" : nil)
+        }
+    }
+
+    /// Send: capture, pack, deliver, and a clear canvas, "Sent to …" on the pill. Only once Tyler has drawn: an agent's
+    /// marks alone are what he is answering, not an answer. With nowhere to send it, nothing is captured and the pill says
+    /// why; to a guess, Send asks where; without the Screen Recording grant it asks first, and `marksOnly` is his answer.
+    func send(marksOnly: Bool = false) {
         if let recorder { return sendShow(recorder) }
         guard let document, document.has(.you), !sending, let store else { return }
         let state = store.state
-        guard let row = Self.route(state, panel: FloatingPanels.installed?.staged) else {
-            message = "Nothing to send this to: no session owns what is on screen, and the panel has none."
+        guard let route = Self.route(state, panel: FloatingPanels.installed?.staged, picked: picked) else {
+            return say(.nowhere)
+        }
+        // A guess isn't sent to: a localhost page at 0.7 went to the panel's session without a word.
+        guard route.sure else {
+            routeMenu = .sendTo
             return
         }
-        message = nil
-        // The glass lets clicks through while this runs, so the Screen Recording prompt can be answered.
+        // Never the marks alone without saying so: the agent was told, Tyler wasn't.
+        guard marksOnly || CanvasCapture.granted() else {
+            // The pen comes up, so the system's own prompt, when it asks, isn't under the glass.
+            lift()
+            return say(settingsOpened ? .reopen(marks: true) : .noScreen(marks: true))
+        }
+        let row = route.row
+        notice = nil
+        routeMenu = nil
+        // The glass lets clicks through while this runs.
         sending = true
         apply()
         let label = Self.label(of: row, showing: state?.showing)
         // conch's floating windows are left out of the picture, the glass with them: its marks are drawn over it again.
         let conch = Self.leftOut(keepingGlass: false)
         Task { @MainActor in
-            let screen = await CanvasCapture.still(of: document.anchor.id, leavingOut: conch)
+            let screen = marksOnly ? nil : await CanvasCapture.still(of: document.anchor.id, leavingOut: conch)
             let files: CanvasFolder.Files
             do {
                 files = try await Task.detached(priority: .userInitiated) { try CanvasFolder.write(document, screen: screen) }.value
             } catch {
                 sending = false
-                message = "Couldn't save the picture: \(error.localizedDescription)"
-                return apply()
+                NSLog("conch: couldn't save the canvas: %@", error.localizedDescription)
+                return say(.noPicture)
             }
             let prompt = CanvasPrompt.text(for: document, about: label, picture: files.flat.path, clean: files.raw?.path, marks: files.json.path)
             // From over the app under the glass, pen down or up: the store hands it the front back once delivered.
-            let delivery = store.send(.inject(sessionId: row.id, label: row.label, text: prompt), overApp: true)
+            let event = ConchDaemonEvent.inject(sessionId: row.id, label: row.label, text: prompt)
+            let delivery = store.send(event, overApp: true)
+            // Taken — a line on the daemon's socket, a moment — before the ink goes, so the pill goes straight from Send
+            // to "Sent to …" rather than sinking and rising again, and a Send the daemon never took leaves the ink be.
+            let taken = await delivery.value
             sending = false
+            revealing = files.flat.deletingLastPathComponent()
+            guard taken else {
+                apply()
+                return say(.notSent(to: row.label, sentence: nil))
+            }
             clear()
             lift()
-            guard !(await delivery.value) else { return }
-            // It didn't get there: the ink comes back, unless something new was drawn meanwhile, and the files stay.
-            restore(document)
-            message = "That didn't reach \(row.label). The picture is in \(files.flat.deletingLastPathComponent().path)."
+            say(.sent(to: row.label), lasting: CanvasToolPill.Notice.sentFor)
+            // Taken isn't landed. Refused after all, the ink comes back, unless something new was drawn meanwhile, and the
+            // pill says why, with the picture a click away.
+            guard let failure = await Self.failure(of: event.opId, in: store) else { return }
+            let back = restore(document)
+            say(.notSent(to: row.label, sentence: failure, kept: back ? "Your marks are still here." : "The picture is kept."))
+        }
+    }
+
+    /// What became of a send the daemon took: taken is not landed, and the daemon's outcome comes back against the send's
+    /// own id, in `StateStore.outbox`. The sentence it failed with; nil once it landed, was left staged, or retired, or
+    /// after two minutes with no word.
+    // ponytail: polled twice a second; the outbox's publisher, raced against a timeout, if two minutes of polling ever shows.
+    static func failure(of opId: String?, in store: StateStore) async -> String? {
+        guard let opId else { return nil }
+        for _ in 0..<240 {
+            guard let entry = store.outbox.entries.first(where: { $0.id == opId }) else { return nil }
+            if case let .failed(sentence) = entry.state { return sentence }
+            if entry.state.isTerminal { return nil }
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+        return nil
+    }
+
+    /// One of the pill's notice's buttons. Settings and Finder open through the store's one door (`openLink`), which
+    /// files a failure; the pill says it in its own words, never the system's or a path.
+    func act(_ action: CanvasToolPill.Notice.Action) {
+        switch action {
+        case .openSettings:
+            settingsOpened = true
+            say(.reopen(marks: recorder == nil && document?.has(.you) == true))
+            store?.openLink(CanvasCapture.settings.absoluteString, cwd: nil, rowId: nil) { [weak self] _ in
+                self?.say(CanvasToolPill.Notice("Couldn't open System Settings. It is under Privacy & Security › Screen Recording."))
+            }
+        case .sendMarksOnly:
+            send(marksOnly: true)
+        case .reopen:
+            CanvasCapture.reopen(store) { [weak self] in self?.say(.reopenFailed) }
+        case .showInFinder:
+            guard let revealing else { return }
+            store?.openLink(revealing.path, cwd: nil, rowId: nil, reveal: true) { [weak self] _ in
+                self?.say(CanvasToolPill.Notice("Couldn't show it in Finder: it has gone."))
+            }
         }
     }
 
@@ -74,29 +152,51 @@ extension CanvasController {
     /// What was marked up, for the prompt's first line: the deliverable on screen when the screen context knows it for this
     /// session, else the app in front; with where it is, when the screen context says.
     static func label(of row: SessionRow, showing: PublishedState.Showing?) -> String {
-        let sure = showing.flatMap { $0.confidence >= sureEnough && $0.sessionId == row.id ? $0 : nil }
+        let sure = showing.flatMap { $0.confidence >= CanvasRouting.sureEnough && $0.sessionId == row.id ? $0 : nil }
         let item = sure?.reviewId.flatMap { id in row.held.first { ReviewItem(row: row, review: $0).id == id }?.summary }
         let name = item ?? NSWorkspace.shared.frontmostApplication?.localizedName ?? "the screen"
         return (sure?.surface.url ?? sure?.surface.path).map { "\(name) (\($0))" } ?? name
     }
 }
 
-/// A still of a display, never of conch's floating windows over it.
+/// A still of a display, never of conch's floating windows over it; and the Screen Recording grant both a still and a
+/// Show need.
 @MainActor
 enum CanvasCapture {
-    /// Asked for once a launch at most, on a Send.
+    /// Asked for once a launch at most, on a Send or a Show.
     private static var asked = false
 
-    /// What is on `display` now, without the windows `leavingOut`; nil without the Screen Recording grant. The grant is
-    /// checked silently, and asked for on the first Send without it — the Send still goes, as the marks alone.
-    static func still(of display: CGDirectDisplayID, leavingOut windows: [Int]) async -> CGImage? {
-        guard CGPreflightScreenCaptureAccess() else {
-            if !asked {
-                asked = true
-                CGRequestScreenCaptureAccess()
-            }
-            return nil
+    /// The Screen Recording grant, checked silently; the first time a launch it is missing, asked for — which is also
+    /// what puts conch in System Settings' list, to be turned on. macOS asks only once ever: after that, nothing appears,
+    /// which is why the pill says so itself (`Notice.noScreen`).
+    static func granted() -> Bool {
+        if CGPreflightScreenCaptureAccess() { return true }
+        if !asked {
+            asked = true
+            CGRequestScreenCaptureAccess()
         }
+        return false
+    }
+
+    /// System Settings at Privacy & Security › Screen Recording.
+    static let settings = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
+
+    /// conch reopened, as a grant only reaches a new process: the store's own relaunch (a new instance up before this one
+    /// quits). `failed` when it didn't happen.
+    static func reopen(_ store: StateStore?, failed: @escaping @MainActor () -> Void) {
+        guard let store else { return failed() }
+        store.relaunchForNewBuild()
+        Task { @MainActor in
+            // The failure is set from the open's own completion: a moment is plenty, and a reopen that worked has quit.
+            try? await Task.sleep(for: .seconds(5))
+            if store.relaunchFailure != nil { failed() }
+        }
+    }
+
+    /// What is on `display` now, without the windows `leavingOut`; nil without the Screen Recording grant, which Send has
+    /// already asked about (`granted`).
+    static func still(of display: CGDirectDisplayID, leavingOut windows: [Int]) async -> CGImage? {
+        guard CGPreflightScreenCaptureAccess() else { return nil }
         let start = CACurrentMediaTime()
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)

@@ -8,8 +8,9 @@ import ScreenCaptureKit
 /// Show (the canvas's phase 3). Tyler: "or we could also have like a 'show' and that's recording it via video instead of
 /// only an image." The display under the glass is recorded with the ink on it, conch's other floating windows — the
 /// tools, the conversation panel, the control bar — left out; Send stops it and sends a storyboard of frames from it
-/// (`CanvasStoryboard`), since agents can't watch video; Esc throws it away. Nothing is ever recorded but here, on an
-/// explicit Show: the pill's record button, or R with the pen down.
+/// (`CanvasStoryboard`), since agents can't watch video; Esc stops it, and only the pill's × deletes it. It starts with the
+/// pen up, so clicks reach the app being shown. Nothing is ever recorded but here, on an explicit Show: the pill's record
+/// button, or ⇧R with the pen down.
 ///
 /// The app never opens the mic. The mic must not be open while conch speaks, and the reservation that keeps it so lives
 /// inside the daemon; so with the pill's mic on, a Show asks the DAEMON to narrate (`CanvasNarration`, `src/narration.ts`):
@@ -23,32 +24,30 @@ extension CanvasController {
         return false
     }
 
-    /// The record button, and R with the pen down: a Show starts on the display with the ink on it, else the one under the
+    /// The record button, and ⇧R with the pen down: a Show starts on the display with the ink on it, else the one under the
     /// pointer. While one records, it stops and waits for Send or the ×.
     func toggleShow() {
         guard !sending else { return }
-        if let recorder {
-            Task { await stopShow(recorder) }
-            return
-        }
+        if let recorder { return stopRecording(recorder) }
         guard #available(macOS 15.0, *), !CanvasRecorder.starting else { return }
-        // The system asks for the grant in a prompt of its own, which the glass would cover with the pen down (R): the pen
-        // comes up first, as Send lets clicks through for the same prompt.
-        if !CGPreflightScreenCaptureAccess() { lift() }
-        guard CanvasRecorder.granted() else {
-            message = "Show needs Screen Recording: allow conch in System Settings › Privacy & Security, then quit and reopen it."
-            return
+        // The pen comes up first: a Show is of the app being shown, which takes its own clicks; and the system's grant
+        // prompt, when it asks, isn't under the glass. A tool from the pill puts it down again to mark.
+        lift()
+        // Without the grant, the pill says so and stays up to say it: the pen coming up used to hide the pill, with this
+        // on it.
+        guard CanvasCapture.granted() else {
+            return say(settingsOpened ? .reopen(marks: false) : .noScreen(marks: false))
         }
         let pointer = NSEvent.mouseLocation
         guard let display = document?.anchor.id ?? NSScreen.screens.first(where: { $0.frame.contains(pointer) })?.displayID else { return }
-        message = nil
+        notice = nil
         Task { @MainActor in
             let recorder: CanvasRecorder
             do {
                 recorder = try await CanvasRecorder.start(on: display)
             } catch {
-                message = "Couldn't start recording: \(error.localizedDescription)"
-                return
+                NSLog("conch: Show couldn't start recording: %@", error.localizedDescription)
+                return say(.noRecording)
             }
             recorder.watch($document, from: document)
             self.recorder = recorder
@@ -71,37 +70,48 @@ extension CanvasController {
             recorder.narration = narration
         case let .refused(reason):
             guard self.recorder === recorder else { return }
-            message = "Recording without narration: \(reason)."
+            say(.silent(reason))
         }
     }
 
-    /// A Show stopped, by its button or at the cap, and kept for Send or the ×.
-    private func stopShow(_ recorder: CanvasRecorder) async {
+    /// A Show stopped, by its button, Esc or the cap, and kept for Send or the ×.
+    func stopShow(_ recorder: CanvasRecorder) async {
         guard case .since = recorder.phase else { return }
         let length = await recorder.stop()
         guard self.recorder === recorder, !sending else { return }
-        message = "Stopped at \(CanvasStoryboard.clock(length)). Send it, or × to throw it away."
+        say(.stopped(at: length))
     }
 
-    /// Esc while there is a Show: it stops and is thrown away, and nothing is sent. The ink and the pen stay as they were.
+    /// The record button, ⇧R, or Esc while a Show records: it stops, and waits.
+    func stopRecording(_ recorder: CanvasRecorder) {
+        Task { await stopShow(recorder) }
+    }
+
+    /// The pill's × while there is a Show: it stops and is deleted, and nothing is sent. The ink and the pen stay as they
+    /// were. The one way to delete one: Esc only stops it.
     func cancelShow() {
         guard let recorder, !sending else { return }
         self.recorder = nil
-        message = "Recording thrown away. Nothing was sent."
-        apply()
+        say(.deleted)
         Task { await recorder.discard() }
     }
 
     /// Send while there is a Show: to where a still would go; stopped, its storyboard pulled, and one message through the
-    /// composer's path; then a clear canvas. With nowhere to send it, it keeps recording and the pill says why.
+    /// composer's path; then a clear canvas and "Sent to …". With nowhere to send it, it keeps recording and the pill says
+    /// why; to a guess, Send asks where first.
     func sendShow(_ recorder: CanvasRecorder) {
         guard !sending, let store else { return }
         let state = store.state
-        guard let row = Self.route(state, panel: FloatingPanels.installed?.staged) else {
-            message = "Nothing to send this to: no session owns what is on screen, and the panel has none."
+        guard let route = Self.route(state, panel: FloatingPanels.installed?.staged, picked: picked) else {
+            return say(.nowhere)
+        }
+        guard route.sure else {
+            routeMenu = .sendTo
             return
         }
-        message = nil
+        let row = route.row
+        notice = nil
+        routeMenu = nil
         sending = true
         apply()
         let label = Self.label(of: row, showing: state?.showing)
@@ -121,17 +131,23 @@ extension CanvasController {
             } catch {
                 sending = false
                 self.recorder = nil
-                message = "Couldn't read the recording: \(error.localizedDescription). It is in \(recorder.folder.path)."
-                return apply()
+                NSLog("conch: couldn't turn the Show into frames: %@", error.localizedDescription)
+                revealing = recorder.folder
+                return say(.noFrames)
             }
-            let delivery = store.send(.inject(sessionId: row.id, label: row.label, text: prompt), overApp: true)
+            let event = ConchDaemonEvent.inject(sessionId: row.id, label: row.label, text: prompt)
+            let delivery = store.send(event, overApp: true)
+            let taken = await delivery.value
             sending = false
             self.recorder = nil
+            revealing = recorder.folder
             clear()
             lift()
-            apply()
-            guard !(await delivery.value) else { return }
-            message = "That didn't reach \(row.label). The recording is in \(recorder.folder.path)."
+            // As a still's: "Sent to …" once the daemon has it, and why not if it didn't land, the recording a click away.
+            guard taken else { return say(.notSent(to: row.label, sentence: nil, kept: "The recording is kept.")) }
+            say(.sent(to: row.label), lasting: CanvasToolPill.Notice.sentFor)
+            guard let failure = await Self.failure(of: event.opId, in: store) else { return }
+            say(.notSent(to: row.label, sentence: failure, kept: "The recording is kept."))
         }
     }
 }
@@ -142,8 +158,6 @@ extension CanvasController {
 final class CanvasRecorder: NSObject {
     /// Starting takes a moment (the window list, the stream); a second press meanwhile is dropped.
     private(set) static var starting = false
-    /// Asked for once a launch at most, on a Show.
-    private static var asked = false
     /// Recorded no wider than this, in pixels: sharper than the frames need (1568) and within what H.264 encodes.
     static let widest: CGFloat = 2560
 
@@ -212,16 +226,6 @@ final class CanvasRecorder: NSObject {
         folder = named
     }
 
-    /// The Screen Recording grant, checked silently, and asked for on the first Show without it.
-    static func granted() -> Bool {
-        if CGPreflightScreenCaptureAccess() { return true }
-        if !asked {
-            asked = true
-            CGRequestScreenCaptureAccess()
-        }
-        return false
-    }
-
     /// A Show recording `display` into a new canvas folder, the ring round it once it is.
     @available(macOS 15.0, *)
     static func start(on display: CGDirectDisplayID) async throws -> CanvasRecorder {
@@ -277,7 +281,7 @@ final class CanvasRecorder: NSObject {
         phase = .since(began)
         let ring = ring
         NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.16
+            context.duration = ConchMotion.quick
             ring.animator().alphaValue = 1
         }, completionHandler: nil)
     }
@@ -321,7 +325,7 @@ final class CanvasRecorder: NSObject {
         watching = nil
         let ring = ring
         NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.16
+            context.duration = ConchMotion.quick
             ring.animator().alphaValue = 0
         }, completionHandler: { ring.orderOut(nil) })
         try? await stream?.stopCapture()
@@ -332,7 +336,8 @@ final class CanvasRecorder: NSObject {
         return length
     }
 
-    /// Esc: stopped, and its folder gone. A narration is cancelled, not read, and the daemon deletes what it recorded.
+    /// The pill's ×: stopped, and its folder gone. A narration is cancelled, not read, and the daemon deletes what it
+    /// recorded.
     func discard() async {
         narration?.cancel()
         narration = nil
@@ -360,14 +365,15 @@ final class CanvasRecorder: NSObject {
 
     /// The recording ended under the Show — it failed, the stream stopped (the system's own Stop, a display gone), or the
     /// file finished without being asked — rather than by its button, the cap, Send or Esc, which stop it first: it stops
-    /// where it got to, the ring and the narration with it, and the pill says so.
+    /// where it got to, the ring and the narration with it, and the pill says so in its own words, never the system's
+    /// ("The user stopped the stream…").
     fileprivate func ended(_ error: Error?) {
         if let error { NSLog("conch: Show's recording failed: %@", error.localizedDescription) }
         guard case .since = phase else { return }
+        let length = Date().timeIntervalSince(began)
         Task { await stop() }
         if CanvasController.shared.recorder === self {
-            let why = error.map { ": \($0.localizedDescription)" } ?? " on its own"
-            CanvasController.shared.message = "The recording stopped\(why). Send what there is, or throw it away."
+            CanvasController.shared.say(.stoppedByMacOS(at: length))
         }
     }
 
@@ -542,7 +548,7 @@ final class CanvasNarration {
         return stopped.segments.map { CanvasStoryboard.Said(start: $0.start + offset, end: $0.end + offset, text: $0.text) }
     }
 
-    /// Esc: the daemon closes the mic and deletes what it recorded.
+    /// The pill's ×: the daemon closes the mic and deletes what it recorded.
     func cancel() {
         let canvasId = canvasId
         Task {

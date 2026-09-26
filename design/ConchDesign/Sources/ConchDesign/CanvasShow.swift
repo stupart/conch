@@ -18,8 +18,12 @@ public enum CanvasStoryboard {
     public static let most = 12
     /// A frame's long edge, the still's and the phone uploads' rule.
     public static let longEdge: CGFloat = 1568
-    /// The recording red (panel-lab's `--rec`): the ring round the screen, the record button, the timer.
+    /// The recording red (panel-lab's `--rec`): the ring round the screen and the record button's disc, marks both.
     public static let red = ConchRGBA(0xFF3B30)
+    /// The same red as words, the pill's timer: #FF3B30 measured 3.52:1 on the pill's light glass and 2.40 on its dark
+    /// (overlayGlassStrong over the fog). Apple's accessible red is 5.34 in light; its dark #FF6961 measured 3.02 there,
+    /// so dark is lifted until it clears 4.5, at 4.62 (CanvasPillTests).
+    public static let redText = ConchColorToken("recordingText", .init(0xD70015), .init(0xFFA8A3))
 
     /// A moment in the recording worth a frame.
     public struct Moment: Equatable, Sendable {
@@ -254,8 +258,9 @@ extension CanvasToolPill {
         case stopped(TimeInterval)
     }
 
-    /// The mic (narration: off unless Tyler turns it on, and fixed once a Show starts), the record button (panel-lab's
-    /// `#bShow`), red while recording, and beside it the time; none where Show isn't.
+    /// The mic (narration: off unless Tyler turns it on, and fixed once a Show starts; its tooltip says "Voice off" rather
+    /// than leaving a slashed mic to explain itself), the record button (panel-lab's `#bShow`), red while recording, and
+    /// beside it the time; none where Show isn't.
     @ViewBuilder var showControl: some View {
         if let onShow {
             let on = { if case .since = recording { return true } else { return false } }()
@@ -271,8 +276,8 @@ extension CanvasToolPill {
                 .buttonStyle(.plain)
                 .disabled(recording != nil)
                 .opacity(recording != nil && !narrate ? 0.4 : 1)
-                .help(narrate ? "Narration on: Show records what you say too" : "Narration off: Show records the screen alone")
-                .accessibilityLabel("Narrate")
+                .help(narrate ? "Voice on: Show records what you say too" : "Voice off: Show records the screen alone. Click to record your voice too")
+                .accessibilityLabel("Voice")
                 .accessibilityValue(narrate ? "On" : "Off")
                 .accessibilityAddTraits(narrate ? .isSelected : [])
             }
@@ -288,7 +293,7 @@ extension CanvasToolPill {
             // Stopped, it waits for Send or the ×.
             .disabled(sending || !(recording == nil || on))
             .opacity(sending || !(recording == nil || on) ? 0.4 : 1)
-            .help(on ? "Stop recording: Send sends it, Esc throws it away" : "Show: record the screen, ink and all (R)")
+            .help(on ? "Stop recording (Send to send it, × to delete it)" : "Show: record the screen, ink and all (⇧R)")
             .accessibilityLabel(on ? "Stop recording" : "Show")
             switch recording {
             case let .since(start)?:
@@ -308,7 +313,7 @@ extension CanvasToolPill {
         Text(text)
             .font(ConchType.code.weight(.semibold))
             .monospacedDigit()
-            .foregroundStyle(CanvasStoryboard.red.color)
+            .foregroundStyle(CanvasStoryboard.redText)
             .padding(.horizontal, 6)
             .accessibilityLabel("Recording, \(text)")
     }

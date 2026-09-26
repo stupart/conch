@@ -166,6 +166,23 @@ public struct CanvasMark: Codable, Equatable, Identifiable, Sendable {
         let rect = rect(in: size)
         return rect.isNull ? 0 : max(rect.width, rect.height)
     }
+
+    /// Whether a mark just finished drew anything worth keeping, on a display of `size`: a stroke that moved at all, an
+    /// arrow or a box at least 4 points across, a note always. A click that never moved is not ink: with the pen down,
+    /// a click aimed at the panel's pen button left a dot where it landed.
+    public func drew(in size: CGSize) -> Bool {
+        switch kind {
+        case .note, .text:
+            return true
+        case .pen, .highlight:
+            // Every sample, not the ends alone: a loop comes back to where it began. A point's jitter is still a click.
+            let at = points.map { $0.point(in: size) }
+            guard let first = at.first else { return false }
+            return at.contains { hypot($0.x - first.x, $0.y - first.y) >= 1 }
+        case .arrow, .box, .ellipse, .area:
+            return extent(in: size) >= 4
+        }
+    }
 }
 
 /// A point on a canvas, 0 to 1 across and down its anchor.
@@ -212,6 +229,18 @@ public enum CanvasInk {
     public static let washOpacity = 0.06
 
     public static func colour(_ author: CanvasMark.Author) -> ConchRGBA { author == .agent ? agent : you }
+
+    /// Words on each ink: Send's, and a note's number on its badge. White on Tyler's orange measured 2.85:1 (the route at
+    /// 85%, 2.44); off-black is 5.92, and 4.75 at 85%. The orange stays, since it is his ink's colour. On the agent's
+    /// violet the badge carries a ✦, a mark rather than words: white clears its 3:1 at 4.35.
+    public static let onYou = ConchRGBA(0x1D1D1F)
+    public static let onAgent = ConchRGBA(0xFFFFFF)
+    public static func on(_ author: CanvasMark.Author) -> ConchRGBA { author == .agent ? onAgent : onYou }
+
+    /// An agent's name in its colour, as words ("Claude · …" beside its mark): the violet itself is a mark's colour, and
+    /// at 13 pt semibold it read 3.9:1 on its label in light and 3.2 in dark ("Claude ·" was unreadable). These clear 4.5 on
+    /// every ground, light and dark (CanvasPillTests).
+    public static let agentText = ConchColorToken("agentText", .init(0x6A4BEB), .init(0xB39FFF))
 
     /// What to fill: the mark in its colour, and under it a box's wash.
     public struct Shape {
@@ -459,7 +488,7 @@ extension CanvasInk {
             context.restoreGState()
             if mark.kind == .note, let number = document.number(of: mark), let spot = mark.points.first?.point(in: size) {
                 let side = pinSide * scale
-                label(mark.author == .agent ? "✦" : "\(number)", centredIn: CGRect(x: spot.x, y: spot.y - side, width: side, height: side), size: 12 * scale, in: context)
+                label(mark.author == .agent ? "✦" : "\(number)", centredIn: CGRect(x: spot.x, y: spot.y - side, width: side, height: side), size: 12 * scale, colour: on(mark.author), in: context)
             }
             // An agent's words, in the picture as they were on screen. Tyler's own are in the prompt, by number.
             if mark.author == .agent, let words = mark.text, !words.isEmpty {
@@ -493,12 +522,12 @@ extension CanvasInk {
         context.restoreGState()
     }
 
-    /// White bold type, centred on its cap height in `rect`, in a y-down context.
-    private static func label(_ text: String, centredIn rect: CGRect, size: CGFloat, in context: CGContext) {
+    /// Bold type in `colour` (the words on its ink, `on`), centred on its cap height in `rect`, in a y-down context.
+    private static func label(_ text: String, centredIn rect: CGRect, size: CGFloat, colour: ConchRGBA, in context: CGContext) {
         let font = CTFontCreateUIFontForLanguage(.emphasizedSystem, size, nil) ?? CTFontCreateWithName("Helvetica-Bold" as CFString, size, nil)
         let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [
             NSAttributedString.Key(kCTFontAttributeName as String): font,
-            NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1),
+            NSAttributedString.Key(kCTForegroundColorAttributeName as String): colour.cgColor,
         ]))
         let width = CTLineGetTypographicBounds(line, nil, nil, nil)
         context.saveGState()
@@ -574,6 +603,45 @@ public enum CanvasPrompt {
             let middle = CGPoint(x: ((xs.min() ?? 0) + (xs.max() ?? 0)) / 2, y: ((ys.min() ?? 0) + (ys.max() ?? 0)) / 2)
             return "\(whose)\(mark.kind.rawValue) \(percent(middle))"
         }
+    }
+}
+
+// MARK: - Where it goes
+
+/// Where a canvas is sent, and the sessions Send's menu offers. Tyler's own pick first; else the session that owns what is
+/// on screen when the screen context is sure of it — 0.8 and up is conch having staged it, a held deliverable's link, or
+/// the session's own terminal; else the conversation panel's session. That last is a guess (a localhost page at 0.7 fell
+/// to it without a word), so it is never sent to unasked: Send reads "Send to…" and opens the menu instead.
+public enum CanvasRouting {
+    /// How sure the screen context has to be for a canvas to go to what it names. Below it, a folder match can't say whose.
+    public static let sureEnough = 0.8
+
+    public struct Choice: Equatable, Sendable {
+        public let id: String
+        /// Tyler's pick, or the screen context sure of it. Not sure, Send asks.
+        public let sure: Bool
+
+        public init(id: String, sure: Bool) {
+            self.id = id
+            self.sure = sure
+        }
+    }
+
+    /// `sessions` are every session there is, in the daemon's order; `onScreen` is whose the screen context thinks what
+    /// is on screen is, `confidence` how sure it is; `panel` is the conversation panel's own session (`WorkspaceFocus`).
+    public static func choice(picked: String?, onScreen: String?, confidence: Double, panel: String?, sessions: [String]) -> Choice? {
+        if let picked, sessions.contains(picked) { return Choice(id: picked, sure: true) }
+        if let onScreen, confidence >= sureEnough, sessions.contains(onScreen) { return Choice(id: onScreen, sure: true) }
+        if let panel, sessions.contains(panel) { return Choice(id: panel, sure: false) }
+        return nil
+    }
+
+    /// Send's menu, most likely first: where it would go now, whose the screen seems to be however unsure, the panel's,
+    /// then the rest as the daemon lists them. Each once.
+    public static func ranked(picked: String?, onScreen: String?, confidence: Double, panel: String?, sessions: [String]) -> [String] {
+        let now = choice(picked: picked, onScreen: onScreen, confidence: confidence, panel: panel, sessions: sessions)?.id
+        var listed = Set<String>()
+        return ([now, onScreen, panel].compactMap { $0 } + sessions).filter { sessions.contains($0) && listed.insert($0).inserted }
     }
 }
 
