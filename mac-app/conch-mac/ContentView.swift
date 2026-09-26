@@ -888,7 +888,7 @@ private struct KeyboardShortcutsSheet: View {
     private let drawRows = [
         ShortcutHelpRow(command: "⌃⌥⌘P", result: "Draw on screen"),
         ShortcutHelpRow(command: "1 – 5", result: "Pick a pen tool"),
-        ShortcutHelpRow(command: "R", result: "Show: record the screen"),
+        ShortcutHelpRow(command: "⇧R", result: "Show: record the screen"),
         ShortcutHelpRow(command: "Return", result: "Send"),
         ShortcutHelpRow(command: "⌘Z", result: "Undo the last mark"),
         ShortcutHelpRow(command: "Esc", result: "Put the pen down"),
