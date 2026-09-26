@@ -725,6 +725,19 @@ Verify Codex hook activation:
 export const HOOKS_WIRED_LINE =
   "Done. Any Claude Code session already open needs `/hooks` typed once; sessions opened from now on pick conch up automatically.";
 
+/**
+ * The Claude Code events `conch install` wires to `conch hook`.
+ *
+ * PermissionRequest: the only moment a pending permission's tool call is knowable on
+ * Claude Code 2.1.280 (see hook.ts); conch reports it and never answers it here.
+ * SessionStart: a stopped session resumed in a new terminal is a new process under its
+ * old id, and conch knew only the old one until the first prompt (see hook.ts).
+ *
+ * The merge adds only what an install lacks, so an existing install gains a new event on
+ * its next `conch install` or `conch setup`, and keeps the rest untouched.
+ */
+export const CLAUDE_HOOK_EVENTS = ["Stop", "Notification", "UserPromptSubmit", "PermissionRequest", "SessionStart"] as const;
+
 /** A hook command that runs conch's hook: `"<bun>" "<…>/src/cli.ts" hook` or `"<…>/conch" hook`. */
 export function isConchHookCommand(command: string | undefined): boolean {
   return /(?:conch|cli\.ts)"?\s+hook\s*$/i.test(command ?? "");
@@ -748,9 +761,7 @@ export async function runInstall(cfg: Config): Promise<void> {
 
   settings.hooks ??= {};
   let changed = false;
-  // PermissionRequest: the only moment a pending permission's tool call is knowable on
-  // Claude Code 2.1.280 (see hook.ts); conch reports it and never answers it here.
-  for (const event of ["Stop", "Notification", "UserPromptSubmit", "PermissionRequest"]) {
+  for (const event of CLAUDE_HOOK_EVENTS) {
     const entries: HookEntry[] = (settings.hooks[event] ??= []);
     // Exact match first, as the Codex merge does. The loose match alone missed a
     // source checkout whose path has no lowercase "conch" in it (~/Projects/Conch),

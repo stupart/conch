@@ -17,7 +17,7 @@ import type { DeliverableKind } from "./deliverables.ts";
 import { createHash } from "node:crypto";
 import { summarizeToolUse } from "./approval.ts";
 import { currentTurnText } from "./transcript-turn.ts";
-import { findHookWindow, sessionLabel, isEngageable } from "./sessions.ts";
+import { findHookWindow, sessionLabel, isEngageable, type SessionInfo } from "./sessions.ts";
 import { sessionHasLiveBackgroundWork } from "./agent-activity.ts";
 import { askClaude } from "./model.ts";
 
@@ -31,10 +31,20 @@ interface HookPayload {
   /** PermissionRequest: the tool call its dialog is asking about. */
   tool_name?: string;
   tool_input?: unknown;
+  /** SessionStart: why the session started (`SESSION_START_SOURCES`). */
+  source?: string;
+}
+
+/** What Claude Code's SessionStart hook says started the session. */
+export const SESSION_START_SOURCES = ["startup", "resume", "clear", "compact"] as const;
+export type SessionStartSource = (typeof SESSION_START_SOURCES)[number];
+
+export function isSessionStartSource(value: unknown): value is SessionStartSource {
+  return typeof value === "string" && (SESSION_START_SOURCES as readonly string[]).includes(value);
 }
 
 export interface TurnEvent {
-  type: "turn-end" | "review-published" | "needs-you" | "wake" | "recite" | "spacebar" | "pause" | "resume" | "speak" | "working" | "inject" | "interrupt";
+  type: "turn-end" | "review-published" | "needs-you" | "wake" | "recite" | "spacebar" | "pause" | "resume" | "speak" | "working" | "inject" | "interrupt" | "session-start";
   sessionId: string;
   label: string;
   cwd?: string;
@@ -129,6 +139,41 @@ export interface TurnEvent {
    * until they are answered.
    */
   asking?: { id: string; questions: AgentQuestion[] };
+  /** On `session-start`: what started it. Absent when Claude Code named nothing conch knows. */
+  startSource?: SessionStartSource;
+}
+
+/**
+ * Claude Code's SessionStart hook, as the daemon hears it.
+ *
+ * A session stopped and resumed (`claude --resume`, same id) runs as a NEW
+ * process, usually in a new Terminal tab. Until something told the daemon, it
+ * kept the old process's window: conch learned about a session only from its
+ * first prompt, so a message sent from conch in between was typed into the old
+ * terminal and landed on the clipboard (2026-09-26, the "conch" session).
+ *
+ * This carries the same identity a UserPromptSubmit does — the window's key,
+ * label, folder and pid, from Claude Code's registry — and nothing to say. It
+ * is never a finished turn: the daemon refreshes who the session is and shows
+ * it idle.
+ */
+export function sessionStartEvent(
+  payload: Pick<HookPayload, "session_id" | "cwd" | "transcript_path" | "source">,
+  session: Pick<SessionInfo, "sessionId" | "pid"> | null,
+  label: string,
+  eventAt: number,
+): TurnEvent {
+  return {
+    type: "session-start",
+    sessionId: session?.sessionId ?? payload.session_id ?? "",
+    label,
+    cwd: payload.cwd,
+    pid: session?.pid,
+    announce: "",
+    transcriptPath: payload.transcript_path,
+    eventAt,
+    ...(isSessionStartSource(payload.source) ? { startSource: payload.source } : {}),
+  };
 }
 
 // Notification types that actually need a human; everything else stays silent.
@@ -207,6 +252,15 @@ export async function runHook(cfg: Config): Promise<void> {
   // subagent is NOT the main turn ending. Drop it explicitly — never let it
   // reach the Stop path (→ false "waiting") or the else branch (→ false needs-you).
   if (event === "SubagentStop") return;
+
+  // SessionStart: a session started, resumed, cleared or compacted, perhaps as a
+  // new process in a new terminal. Identity only, like UserPromptSubmit: no bell,
+  // no speech, no daemonless fallback. Claude Code adds a SessionStart hook's
+  // stdout to the session's context, so this prints nothing either.
+  if (event === "SessionStart") {
+    await sendToDaemon(cfg.socketPath, sessionStartEvent(payload, session, label, eventAt));
+    return;
+  }
 
   // UserPromptSubmit: the session just STARTED working — a visual-only status
   // signal for the dashboard panel. No bell, no speech; if the daemon is down

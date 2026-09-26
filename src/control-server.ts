@@ -4,7 +4,7 @@ import { createServer, connect } from "node:net";
 import { chmodSync, existsSync, lstatSync, renameSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { lockSocketPath, type SocketOwnership } from "./socket-ownership.ts";
-import type { TurnEvent } from "./hook.ts";
+import { isSessionStartSource, type TurnEvent } from "./hook.ts";
 import type { SendFailure } from "./inject.ts";
 import { checkReviewScene, sanitizeReviewSummary } from "./snippet.ts";
 import { ARTIFACT_KEY_MAX, deliverableKindRefusal, isDeliverableKind } from "./deliverables.ts";
@@ -467,6 +467,7 @@ const TURN_EVENT_TYPES = new Set<TurnEvent["type"]>([
   "resume",
   "speak",
   "working",
+  "session-start",
 ]);
 
 const SPARSE_TURN_EVENT_TYPES = new Set<TurnEvent["type"]>([
@@ -679,6 +680,9 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
     const err = type === "inject" ? questionAnswersError(value.answers) : "answers are only for inject";
     if (err) return { ok: false, err };
   }
+  if (value.startSource !== undefined && (type !== "session-start" || !isSessionStartSource(value.startSource))) {
+    return { ok: false, err: "startSource is startup, resume, clear or compact, on session-start" };
+  }
   if (value.questionId !== undefined && (value.answers === undefined || typeof value.questionId !== "string"
     || !value.questionId || value.questionId.length > 300)) {
     return { ok: false, err: "questionId names the question answers are for" };
@@ -838,7 +842,11 @@ export function dispatchSocketTurnEvent(
   }
 
   if (event.sessionId) {
-    if (callbacks.isDismissedSession?.(event.sessionId)) return;
+    // Nothing a dismissed session sends gets through, except where it now lives:
+    // a resume moves it to a new process, and the turn held for its restore
+    // must be typed into that one. `session-start` is silent and never
+    // un-dismisses (voice-loop `sessionStarted`).
+    if (event.type !== "session-start" && callbacks.isDismissedSession?.(event.sessionId)) return;
     if (event.type === "pause" || event.type === "resume") {
       callbacks.setSessionPaused(event.sessionId, event.type === "pause", event.origin);
       return;

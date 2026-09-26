@@ -1161,7 +1161,11 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     // barrier exists to serialise AUDIO, and neither of these produces any. An
     // inject cancels whatever is being read first, so it cannot race the very
     // speech it is meant to cut off.
-    if (event.type === "inject" || event.type === "interrupt") {
+    //
+    // A session start is silent too, and it says where a session now lives:
+    // behind another session's announcement it would leave the held turns
+    // pointed at a terminal the session left.
+    if (event.type === "inject" || event.type === "interrupt" || event.type === "session-start") {
       traceQueue(`immediate ${event.type}:${event.label}`);
       // Returned, not voided: the Mac app's `awaitDelivery` inject is answered
       // only once this settles (control-server.ts).
@@ -2006,7 +2010,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     // Neither an inject nor an interrupt speaks, and both are things a person
     // is waiting on right now — an interrupt most of all, since its whole value
     // is arriving before the agent does more of what you are stopping.
-    if (event.type !== "inject" && event.type !== "interrupt") await ttsStartup;
+    if (event.type !== "inject" && event.type !== "interrupt" && event.type !== "session-start") await ttsStartup;
     return voice.handle(event);
   }
 

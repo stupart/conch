@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { validateSocketTurnEvent } from "../src/control-server.ts";
+import { CLAUDE_HOOK_EVENTS } from "../src/install.ts";
 
 /**
  * Claude Code 2.1.280 writes a pending tool call to the transcript only once its permission
@@ -76,8 +77,9 @@ describe("the PermissionRequest hook", () => {
   }, 30_000);
 
   test("conch's installer wires it with the others", () => {
+    expect(CLAUDE_HOOK_EVENTS).toContain("PermissionRequest");
     const install = readFileSync(join(import.meta.dir, "../src/install.ts"), "utf8");
-    expect(install).toContain('for (const event of ["Stop", "Notification", "UserPromptSubmit", "PermissionRequest"]) {');
+    expect(install).toContain("for (const event of CLAUDE_HOOK_EVENTS) {");
   });
 });
 

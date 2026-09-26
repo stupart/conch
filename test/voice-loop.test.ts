@@ -216,6 +216,8 @@ function harness(options: Options = {}) {
   const latch: Array<string | undefined> = [];
   const errors: unknown[][] = [];
   const texts: string[] = [];
+  /** The pid each text was typed at: the process the loop thinks holds the session. */
+  const textPids: Array<number | undefined> = [];
   const keys: string[] = [];
   const keyPids: Array<number | undefined> = [];
   const answered: AnswerKey[][] = [];
@@ -261,8 +263,9 @@ function harness(options: Options = {}) {
     prewarmEar: () => void order.push("prewarm"),
     control: async () => {},
     terminal: {
-      injectText: async (_cfg, _pid, text, beforeInject) => {
+      injectText: async (_cfg, pid, text, beforeInject) => {
         texts.push(text);
+        textPids.push(pid);
         order.push(`text:${text}`);
         if (beforeInject && !(await beforeInject())) return { via: "none", interrupted: true };
         return options.inject?.(text) ?? { via: "tmux" };
@@ -310,7 +313,7 @@ function harness(options: Options = {}) {
   voice = createVoiceLoop(deps);
   return {
     voice, cfg, ledger, lease, holder, speech, said, playing, cues, cueExits, violations, order, queue,
-    logs, presented, latch, errors, texts, keys, keyPids, answered, commands, gone, sessions, hooks,
+    logs, presented, latch, errors, texts, textPids, keys, keyPids, answered, commands, gone, sessions, hooks,
     barges: () => barges,
   };
 }
@@ -1749,7 +1752,7 @@ describe("the daemon's wiring of the loop", () => {
     expect(at).toBeGreaterThan(-1);
     const end = daemon.indexOf("\n  }\n", at);
     const handle = daemon.slice(at, end);
-    const wait = handle.indexOf('if (event.type !== "inject" && event.type !== "interrupt") await ttsStartup;');
+    const wait = handle.indexOf('if (event.type !== "inject" && event.type !== "interrupt" && event.type !== "session-start") await ttsStartup;');
     expect(wait).toBeGreaterThan(-1);
     expect(handle.indexOf("return voice.handle(event);")).toBeGreaterThan(wait);
   });
@@ -2933,5 +2936,106 @@ describe("a question known only from Claude Code's PermissionRequest hook", () =
     await h.voice.handle(accepted(h, needs(path)));
     await h.voice.handle(accepted(h, turnEnd({ type: "working", transcriptPath: path, eventAt: 2 })));
     expect(h.voice.heldQuestionFor("s1")).toBeNull();
+  });
+});
+
+/**
+ * Claude Code's SessionStart, as the loop gets it. Stopped and resumed
+ * (`claude --resume`, same id), a session is a new process in a new terminal,
+ * and everything conch held for it still named the old one: a message sent
+ * from conch was typed at the old window (2026-09-26, the "conch" session).
+ */
+describe("a session that starts again in a new process", () => {
+  const started = (over: Partial<TurnEvent> = {}): TurnEvent => ({
+    type: "session-start", sessionId: "s1", label: "alpha", announce: "", cwd: "/work", pid: 222, eventAt: 5, startSource: "resume", ...over,
+  });
+  const fix = { summary: "the stale-id fix", link: "https://example.com/pr" };
+
+  test("a resume moves the held turn to the new process, so what is said next is typed there", async () => {
+    const h = harness({ paused: true, heard: [["ship it"]] });
+    await h.voice.handle(accepted(h, turnEnd({ pid: 111, cwd: "/old", eventAt: 1 })));
+    const held = h.ledger.pending.get("s1")!;
+    expect(held.pid).toBe(111);
+
+    await h.voice.handle(started());
+    // The same held object, still held and still replayable, now naming the new process.
+    expect(h.ledger.pending.get("s1")).toBe(held);
+    expect(held).toMatchObject({ pid: 222, cwd: "/work", type: "turn-end", announce: "alpha: the build is green." });
+    expect(h.ledger.lastTurn).toBe(held);
+
+    // A bare wake answers the last session to speak: into the new terminal.
+    const run = h.voice.handle(wake({ sessionId: "", label: "" }));
+    await waitFor("the mic", () => h.sessions.length > 0);
+    h.voice.stop("spacebar"); // send what was heard
+    await run;
+    expect(h.texts).toEqual(["ship it"]);
+    expect(h.textPids).toEqual([222]);
+  });
+
+  test("with no registry entry to name the process yet, held turns keep what was known", async () => {
+    const h = harness({ paused: true });
+    await h.voice.handle(accepted(h, turnEnd({ pid: 111, cwd: "/old", eventAt: 1 })));
+    // The hook's label is then only the folder's name.
+    await h.voice.handle(started({ pid: undefined, label: "work" }));
+    expect(h.ledger.pending.get("s1")).toMatchObject({ pid: 111, cwd: "/old", label: "alpha" });
+  });
+
+  test("it is silent: no bell, no reading, no mic, and never the session's last turn", async () => {
+    const h = harness({ cfg: { bell: true } }); // auto mode, audio here
+    await h.voice.handle(started());
+    await h.voice.handle(started({ startSource: "startup", sessionId: "s2", eventAt: 6 }));
+    expect(h.said).toEqual([]);
+    expect(h.cues).toEqual([]);
+    expect(h.order).toEqual([]);
+    expect(h.sessions).toHaveLength(0);
+    expect(h.presented).toEqual([]);
+    expect(h.latch).toEqual([]);
+    expect(h.ledger.lastTurn).toBeNull();
+    expect(h.ledger.pending.size).toBe(0);
+    expect(getLiveState().state).toBe("idle");
+  });
+
+  test("the row reads idle and keeps its deliverable, over the old process's working", async () => {
+    const h = harness({ paused: true });
+    await h.voice.handle(accepted(h, turnEnd({ pid: 111, eventAt: 1, announce: "alpha has work ready for your review: the stale-id fix", review: fix })));
+    await h.voice.handle(accepted(h, turnEnd({ type: "working", pid: 111, eventAt: 2 }))); // stopped mid-turn
+    const filed = h.ledger.sessionStates.get("s1")!;
+    expect(filed.status).toBe("working");
+
+    await h.voice.handle(started());
+    const now = h.ledger.sessionStates.get("s1")!;
+    expect(now.status).toBe("waiting");
+    expect(now.review).toBe(filed.review!);
+    expect(now.reviews).toEqual(filed.reviews!);
+    expect(h.said).toEqual([]);
+  });
+
+  test("a compaction, which also runs mid-turn, leaves the status alone", async () => {
+    const h = harness();
+    await h.voice.handle(accepted(h, turnEnd({ type: "working", pid: 111, eventAt: 2 })));
+    await h.voice.handle(started({ startSource: "compact", pid: 111 }));
+    expect(h.ledger.sessionStates.get("s1")?.status).toBe("working");
+  });
+
+  test("/clear starts a new id: the old session's deliverable and held turn are left as they were", async () => {
+    const h = harness({ paused: true });
+    await h.voice.handle(accepted(h, turnEnd({ pid: 111, eventAt: 1, review: fix })));
+    const before = structuredClone(h.ledger.sessionStates.get("s1"));
+    await h.voice.handle(started({ sessionId: "s2", startSource: "clear", pid: 111 }));
+    expect(h.ledger.sessionStates.get("s1")).toEqual(before!);
+    expect(h.ledger.pending.get("s1")?.pid).toBe(111);
+    expect(h.ledger.sessionStates.get("s2")?.status).toBe("waiting");
+  });
+
+  test("a dismissed session stays dismissed, and the turn held for its restore goes to the new process", async () => {
+    const h = harness();
+    h.ledger.dismissedSessionIds.add("s1");
+    await h.voice.handle(accepted(h, turnEnd({ pid: 111, eventAt: 1 })));
+    expect(h.ledger.dismissedHeldTurns.get("s1")?.pid).toBe(111);
+
+    await h.voice.handle(started());
+    expect(h.ledger.dismissedSessionIds.has("s1")).toBe(true);
+    expect(h.ledger.dismissedHeldTurns.get("s1")?.pid).toBe(222);
+    expect(h.said).toEqual([]);
   });
 });
