@@ -892,3 +892,238 @@ do {
         .background(ConchColor.surface, in: RoundedRectangle(cornerRadius: ConchRadius.large))
     }
 }
+
+// The sidebar's marks, as the Mac draws them (DashboardView's `LedgerVisual`): every state a session can be in, and the
+// sub-agents under one, working and paused. Working is `active`'s blue, with its breath caught at its fullest; the
+// breath's other moments, and the blue beside the colours it must never be taken for, follow.
+
+/// The two state colours ConchDesign has no token for yet, as Palette.swift holds them, so the page draws the sidebar
+/// the way the app does.
+enum SidebarInk {
+    static let waiting = Color(red: 0.153, green: 0.608, blue: 0.298)
+    static let micOpen = Color(red: 88 / 255, green: 201 / 255, blue: 212 / 255)
+}
+
+struct SidebarMark {
+    let symbol: String
+    let size: CGFloat
+    let colour: AnyShapeStyle
+    let meaning: String
+    var breathes = false
+    var wantsYou = false
+    var live = false
+
+    static let working = SidebarMark(symbol: "circle.fill", size: 8, colour: AnyShapeStyle(ConchColor.active), meaning: "Working — an agent is running, nothing needed from you", breathes: true)
+    static let waitingOnAgents = SidebarMark(symbol: "person.2.fill", size: 9, colour: AnyShapeStyle(SidebarInk.waiting), meaning: "Its agents are working — you can talk to it")
+    static let listening = SidebarMark(symbol: "mic.fill", size: 10, colour: AnyShapeStyle(SidebarInk.micOpen), meaning: "Mic open — it is hearing you", live: true)
+    static let waiting = SidebarMark(symbol: "circle.inset.filled", size: 8, colour: AnyShapeStyle(SidebarInk.waiting), meaning: "Finished — waiting on you", wantsYou: true)
+    static let needs = SidebarMark(symbol: "exclamationmark.circle.fill", size: 10.5, colour: AnyShapeStyle(ConchColor.attention), meaning: "Blocked — needs an answer", wantsYou: true)
+    static let review = SidebarMark(symbol: "checkmark.circle.fill", size: 10.5, colour: AnyShapeStyle(ConchColor.ready), meaning: "Has work for you to look at")
+    static let manual = SidebarMark(symbol: "pause.fill", size: 9, colour: AnyShapeStyle(ConchColor.textSecondary), meaning: "Manual — turns held for later")
+    static let recording = SidebarMark(symbol: "record.circle.fill", size: 10.5, colour: AnyShapeStyle(SidebarInk.micOpen), meaning: "Recording your reply", live: true)
+    static let speaking = SidebarMark(symbol: "play.fill", size: 9, colour: AnyShapeStyle(ConchColor.textTertiary), meaning: "Reading a reply aloud", live: true)
+    static let transcribing = SidebarMark(symbol: "ellipsis", size: 11, colour: AnyShapeStyle(ConchColor.active), meaning: "Transcribing what you said — it goes in next", live: true)
+    static let paused = SidebarMark(symbol: "circle", size: 8, colour: AnyShapeStyle(ConchColor.textTertiary), meaning: "Paused — a sub-agent that isn't running")
+    static let idle = SidebarMark(symbol: "circle.dotted", size: 8, colour: AnyShapeStyle(ConchColor.textTertiary), meaning: "Idle — nothing happening")
+}
+
+struct SidebarGlyph: View {
+    let mark: SidebarMark
+    var phase = 0.5
+
+    var body: some View {
+        Image(systemName: mark.symbol)
+            .font(.system(size: mark.size, weight: .medium))
+            .foregroundStyle(mark.colour)
+            .activeBreath(pointSize: mark.size, breathes: mark.breathes, phase: phase)
+    }
+}
+
+/// `DashboardRow`'s anatomy: the live rail, the 16 pt mark, the label, the summary, the age.
+struct SidebarSessionRow: View {
+    let mark: SidebarMark
+    let label: String
+    var summary = ""
+    var age = "4m"
+    var phase = 0.5
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Capsule(style: .continuous)
+                .fill(mark.colour)
+                .frame(width: 3, height: 22)
+                .opacity(mark.live ? 1 : 0)
+                .frame(width: 10)
+            SidebarGlyph(mark: mark, phase: phase).frame(width: 16)
+            Text(label)
+                .font(.system(size: 13, weight: mark.wantsYou ? .semibold : .medium))
+                .foregroundStyle(ConchColor.textPrimary)
+                .lineLimit(1)
+            Text(summary)
+                .font(.system(size: 12))
+                .foregroundStyle(ConchColor.textTertiary)
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            Text(age).font(.system(size: 11).monospacedDigit()).foregroundStyle(ConchColor.textTertiary)
+        }
+        .padding(.trailing, 10)
+        .frame(height: 30)
+    }
+}
+
+/// `AgentGroup`'s line: the mark at three quarters, the name in 11.5 pt.
+struct SidebarAgentRow: View {
+    let mark: SidebarMark
+    let label: String
+    var phase = 0.5
+
+    var body: some View {
+        HStack(spacing: 7) {
+            SidebarGlyph(mark: mark, phase: phase)
+                .scaleEffect(0.75)
+                .frame(width: 12, height: 12)
+            Text(label).font(.system(size: 11.5)).foregroundStyle(ConchColor.textSecondary).lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .padding(.leading, 30)
+    }
+}
+
+struct SidebarColumn<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Caption(title)
+            VStack(alignment: .leading, spacing: 0) { content }
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: ConchRadius.medium).fill(ConchColor.ground))
+                .overlay(RoundedRectangle(cornerRadius: ConchRadius.medium).strokeBorder(ConchColor.hairlineStrong, lineWidth: 1))
+        }
+    }
+}
+
+try render("ledger-marks", width: 1240) {
+    Heading(title: "Sidebar marks", note: "Working is `active`'s blue, its halo breathing (caught here at its fullest). A sub-agent is working or paused: never waiting's green, since nobody replies to one.")
+    HStack(alignment: .top, spacing: 28) {
+        SidebarColumn(title: "Sessions, and the sub-agents under one") {
+            SidebarSessionRow(mark: .working, label: "Parser refactor", summary: "Running the suite")
+            SidebarSessionRow(mark: .waitingOnAgents, label: "Release notes", summary: "Handed out three drafts", age: "2m")
+            SidebarAgentRow(mark: .working, label: "Socrates")
+            SidebarAgentRow(mark: .working, label: "Gibbs", phase: 0)
+            SidebarAgentRow(mark: .paused, label: "Pasteur")
+            SidebarSessionRow(mark: .working, label: "Invite tests", age: "1m")
+            SidebarAgentRow(mark: .working, label: "fix flaky retry test")
+            SidebarAgentRow(mark: .paused, label: "Hume")
+            SidebarAgentRow(mark: .needs, label: "Euler")
+            SidebarSessionRow(mark: .listening, label: "Docs pass", age: "now")
+            SidebarSessionRow(mark: .waiting, label: "Settings copy", summary: "Done — three options", age: "6m")
+            SidebarSessionRow(mark: .needs, label: "Deploy script", summary: "Allow rm -rf build?", age: "1m")
+            SidebarSessionRow(mark: .review, label: "Invite page", summary: "The button reads Join", age: "12m")
+            SidebarSessionRow(mark: .manual, label: "Nightly cleanup", age: "1h")
+            SidebarSessionRow(mark: .recording, label: "Docs pass", age: "now")
+            SidebarSessionRow(mark: .transcribing, label: "Docs pass", age: "now")
+            SidebarSessionRow(mark: .speaking, label: "Settings copy", age: "now")
+            SidebarSessionRow(mark: .idle, label: "Scratch", age: "2d")
+        }
+        .frame(width: 400)
+
+        VStack(alignment: .leading, spacing: 10) {
+            Caption("The legend (Keyboard Shortcuts)")
+            ForEach([SidebarMark.working, .waitingOnAgents, .listening, .waiting, .needs, .review, .manual, .recording, .speaking, .transcribing, .paused, .idle], id: \.meaning) { mark in
+                HStack(spacing: 10) {
+                    Image(systemName: mark.symbol)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(mark.colour)
+                        .frame(width: 16)
+                    Text(mark.meaning).font(.system(size: 12.5)).foregroundStyle(ConchColor.textPrimary)
+                }
+            }
+        }
+        .frame(width: 360, alignment: .leading)
+
+        VStack(alignment: .leading, spacing: 22) {
+            VStack(alignment: .leading, spacing: 10) {
+                Caption("One breath, \(Int(ConchMotion.activeBreathPeriod)) s; Reduce Motion is the first, still")
+                HStack(spacing: 18) {
+                    ForEach([0, 0.125, 0.25, 0.375, 0.5], id: \.self) { phase in
+                        VStack(spacing: 6) {
+                            ActiveMark(pointSize: 8, phase: phase)
+                                .scaleEffect(3)
+                                .frame(width: 48, height: 48)
+                            Text(String(format: "%.0f%%", ActiveHalo.opacity(at: phase * ConchMotion.activeBreathPeriod, reduceMotion: false) * 100))
+                                .font(ConchType.code)
+                                .foregroundStyle(ConchColor.textSecondary)
+                        }
+                    }
+                }
+            }
+            VStack(alignment: .leading, spacing: 10) {
+                Caption("Working beside the colours it must never be taken for")
+                ForEach(ConchColor.grounds, id: \.name) { ground in
+                    GroundStrip(ground: ground)
+                }
+            }
+            VStack(alignment: .leading, spacing: 10) {
+                Caption("The phone (SessionRowView, AgentRowView)")
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        Image(systemName: "circle.fill")
+                            .font(.system(size: 15))
+                            .foregroundStyle(ConchColor.active)
+                            .activeBreath(pointSize: 15, phase: 0.5)
+                            .frame(width: 22)
+                        Text("Parser refactor").font(.body.weight(.semibold)).foregroundStyle(ConchColor.textPrimary)
+                    }
+                    ForEach([("circle.fill", "Socrates", true), ("circle", "Pasteur", false)], id: \.1) { symbol, name, working in
+                        HStack(spacing: 8) {
+                            Image(systemName: symbol)
+                                .font(.system(size: 11))
+                                .foregroundStyle(working ? AnyShapeStyle(ConchColor.active) : AnyShapeStyle(ConchColor.textTertiary))
+                                .activeBreath(pointSize: 11, breathes: working, phase: 0.5)
+                                .frame(width: 16)
+                            Text(name).font(.footnote).foregroundStyle(ConchColor.textSecondary)
+                        }
+                        .padding(.leading, 34)
+                    }
+                }
+                .padding(14)
+                .frame(width: 330, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: ConchRadius.medium).fill(ConchColor.ground))
+                .overlay(RoundedRectangle(cornerRadius: ConchRadius.medium).strokeBorder(ConchColor.hairlineStrong, lineWidth: 1))
+            }
+        }
+    }
+}
+
+/// Mic open, working, waiting and review on one ground, with working's contrast there.
+struct GroundStrip: View {
+    let ground: ConchColorToken
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        HStack(spacing: 14) {
+            ForEach([("mic", AnyShapeStyle(SidebarInk.micOpen)), ("working", AnyShapeStyle(ConchColor.active)), ("waiting", AnyShapeStyle(SidebarInk.waiting)), ("review", AnyShapeStyle(ConchColor.ready))], id: \.0) { name, colour in
+                VStack(spacing: 4) {
+                    Circle().fill(colour).frame(width: 14, height: 14)
+                    Text(name).font(.system(size: 9.5)).foregroundStyle(ConchColor.textTertiary)
+                }
+            }
+            Spacer(minLength: 0)
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(ground.name).font(ConchType.meta).foregroundStyle(ConchColor.textSecondary)
+                Text(String(format: "working %.2f:1", ConchColor.active.rgba(scheme).contrast(on: ground.rgba(scheme))))
+                    .font(ConchType.code)
+                    .foregroundStyle(ConchColor.textSecondary)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(width: 330)
+        .background(RoundedRectangle(cornerRadius: ConchRadius.small).fill(ground))
+        .overlay(RoundedRectangle(cornerRadius: ConchRadius.small).strokeBorder(ConchColor.hairline, lineWidth: 1))
+    }
+}

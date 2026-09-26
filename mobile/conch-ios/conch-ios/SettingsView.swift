@@ -54,7 +54,7 @@ struct SettingsView: View {
                         Section("Connection") {
                             HStack {
                                 Circle()
-                                    .fill(bridge.isConnected ? Palette.working : Palette.needs)
+                                    .fill(bridge.isConnected ? Palette.calm : Palette.needs)
                                     .frame(width: 7, height: 7)
                                 Text(bridge.isConnected ? "Connected" : "Not connected")
                                     .font(Type.summary)

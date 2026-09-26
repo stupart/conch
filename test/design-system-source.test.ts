@@ -73,8 +73,9 @@ test("M2: each menu item calls the command the dashboard already sends", () => {
   // Ready for you is the daemon's reviewReady rule (PR #191): a review, and not working.
   expect(item).toContain("state?.rows.filter { $0.review != nil && $0.status != .working } ?? []");
   expect(read("src/panel.ts")).toContain('return row.review !== undefined && row.status !== "working";');
-  expect(item).toContain('addSessions("Ready for you", ready, symbol: "circle.fill", to: menu)');
-  expect(item).toContain('addSessions("Working", working, symbol: "circle", to: menu)');
+  // Each group's mark in the sidebar's colour for the same state: ready's green, working's blue.
+  expect(item).toContain('addSessions("Ready for you", ready, symbol: "circle.fill", colour: ConchColor.ready, to: menu)');
+  expect(item).toContain('addSessions("Working", working, symbol: "circle", colour: ConchColor.active, to: menu)');
 });
 
 test("M2: Show control bar is on by default, and both M3 toggles persist", () => {

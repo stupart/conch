@@ -576,6 +576,7 @@ struct SessionView: View {
                 Image(systemName: mark.symbol)
                     .font(.system(size: 12))
                     .foregroundStyle(mark.color)
+                    .activeBreath(pointSize: 12, breathes: mark == .working)
             }
             // The word earns its place only when nothing else on screen
             // explains the glyph — a review card beneath saying the same

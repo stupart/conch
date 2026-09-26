@@ -959,8 +959,9 @@ private struct LedgerLegendSection: View {
         var id: String { meaning }
     }
 
+    // Every line says what the state means for you, not only what it is called.
     private let entries: [Entry] = [
-        Entry(symbol: "circle.fill", color: ConchPalette.statusWorking, meaning: "Working — nothing needed"),
+        Entry(symbol: "circle.fill", color: ConchPalette.statusActive, meaning: "Working — an agent is running, nothing needed from you"),
         Entry(symbol: "person.2.fill", color: ConchPalette.statusWaiting, meaning: "Its agents are working — you can talk to it"),
         Entry(symbol: "mic.fill", color: ConchPalette.statusMicOpen, meaning: "Mic open — it is hearing you"),
         Entry(symbol: "circle.inset.filled", color: ConchPalette.statusWaiting, meaning: "Finished — waiting on you"),
@@ -968,9 +969,10 @@ private struct LedgerLegendSection: View {
         Entry(symbol: "checkmark.circle.fill", color: ConchPalette.statusReview, meaning: "Has work for you to look at"),
         Entry(symbol: "pause.fill", color: ConchPalette.textDim, meaning: "Manual — turns held for later"),
         Entry(symbol: "record.circle.fill", color: ConchPalette.statusMicOpen, meaning: "Recording your reply"),
-        Entry(symbol: "play.fill", color: ConchPalette.statusWorking, meaning: "Reading a reply aloud"),
-        Entry(symbol: "ellipsis", color: ConchPalette.statusWorking, meaning: "Transcribing what you said"),
+        Entry(symbol: "play.fill", color: ConchPalette.statusQuiet, meaning: "Reading a reply aloud"),
+        Entry(symbol: "ellipsis", color: ConchPalette.statusActive, meaning: "Transcribing what you said — it goes in next"),
         Entry(symbol: "diamond.fill", color: ConchPalette.textDim, meaning: "Prioritised — jumps the queue"),
+        Entry(symbol: "circle", color: ConchPalette.textFaint, meaning: "Paused — a sub-agent that isn't running"),
         Entry(symbol: "circle.dotted", color: ConchPalette.textFaint, meaning: "Idle — nothing happening"),
     ]
 
