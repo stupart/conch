@@ -28,5 +28,17 @@ test("resume watches for its exact session, not just any new row", () => {
   expect(wait).toContain("rows.contains(where: { $0.id == expected })");
   // And a fresh session, which has no id yet, is a SESSION id not there before: a count
   // grew whenever another session's agent appeared (agents are rows since #390).
-  expect(wait).toContain("sessions(rows).contains(where: { !before.contains($0.id) })");
+  expect(wait).toContain("sessions(rows).first(where: { !before.contains($0.id) })");
+});
+
+test("a session that checks in is shown in conch, and conch comes back from the Terminal it raised", () => {
+  // Tyler: "When a session starts successfully it should then show the session back in the conch app."
+  const start = content.slice(content.indexOf("private func start()"));
+  expect(start).toContain("if let appeared {\n                onStarted(appeared)\n                dismiss()");
+  expect(content).toContain("StartSessionSheet(onStarted: showStarted)");
+  const show = content.slice(content.indexOf("private func showStarted("), content.indexOf("private func showStarted(") + 700);
+  expect(show).toContain("workspace.viewing = id");
+  // Only back from Terminal: anywhere else Tyler went meanwhile, he stays.
+  expect(show).toContain('guard !NSApp.isActive, NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.Terminal" else { return }');
+  expect(show).toContain("NSApp.activate(ignoringOtherApps: true)");
 });
