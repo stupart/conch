@@ -25,12 +25,14 @@
  * over a metered relay on every render.
  */
 
+import { dirname, join } from "node:path";
 import {
   SUBAGENT_ROW_PREFIX,
   sidechainTranscriptPath,
   subagentRowId,
   taskNotificationText,
 } from "./agent-activity.ts";
+import { conchHome } from "./home.ts";
 import { isWindowKey } from "./window-key.ts";
 
 export type ConversationItemKind =
@@ -104,6 +106,8 @@ export interface ConversationItem {
   /** Machine-authored context rendered as itself rather than as something the user said. */
   material?: ConversationMaterial;
   review?: { summary: string; link?: string };
+  /** Present when this row is something Tyler sent through conch itself, summed up (`SentReceipt`). */
+  receipt?: SentReceipt;
 }
 
 export interface Conversation {
@@ -140,7 +144,8 @@ export function upsertConversationItem(
     && existing.kind === item.kind
     && existing.tool?.status === item.tool?.status
     && existing.tool?.result === item.tool?.result
-    && JSON.stringify(existing.material) === JSON.stringify(item.material);
+    && JSON.stringify(existing.material) === JSON.stringify(item.material)
+    && JSON.stringify(existing.receipt) === JSON.stringify(item.receipt);
   if (unchanged) return;
   conversation.items[item.id] = { ...item, rev: existing.rev + 1 };
 }
@@ -284,6 +289,267 @@ function splitMaterialPaths(text: string): { text: string; materials: Conversati
   return { text: kept.join("\n").trim(), materials };
 }
 
+/**
+ * Something Tyler sent through conch itself, as the one line he needs to see.
+ *
+ * A canvas, a Show and a video from the phone each reach the session as one message written for the agent: the
+ * picture's path, the files beside it, how to draw an answer back. Rendered as it was written, his own conversation
+ * showed him a 320 pt picture of the screen he was already looking at, under the agent's instructions. Tyler: "There's
+ * an image of the work in the convo and then you see the work itself behind. Don't need the image of the work I'm
+ * currently looking at to also be in the convo if I'm currently looking at it." And: "It's repetitive."
+ *
+ * So the apps get this instead: what it was, his own words from it, a thumbnail, and what a click opens. The
+ * transcript is untouched; the agent still reads every line.
+ */
+export interface SentReceipt {
+  kind: "canvas" | "show" | "video";
+  /** "Marked up Invite page", "Showed Invite page · 0:23", "Sent a video · 0:42". */
+  title: string;
+  /** What is in it, a line each: the counts, then his notes or what he said, quoted and cut short. */
+  detail?: string;
+  /** The picture: the canvas's flat.png, a Show's first frame, a video's contact sheet. */
+  thumb?: string;
+  /** What a click opens: the picture, or the recording itself. */
+  open?: string;
+}
+
+/**
+ * Where conch keeps what these messages point at: `~/.cache/conch/canvas/<uuid>/` for a canvas and a Show
+ * (`CanvasFolder`), `~/.cache/conch/uploads/` for what the phone sent (`phone-uploads.ts`). A message is a receipt only
+ * when its paths are there: conch wrote those files, so the words around them are conch's too.
+ */
+function conchFolders(): { canvas: string; uploads: string } {
+  const data = join(conchHome(), ".cache", "conch");
+  return { canvas: join(data, "canvas"), uploads: join(data, "uploads") };
+}
+
+const CANVAS_ID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i;
+
+/** The canvas folder `path` is in when it is `<canvas>/<uuid>/<name>` with a name `file` accepts; else null. */
+function canvasFolderOf(path: string, file: RegExp): string | null {
+  const { canvas } = conchFolders();
+  if (!path.startsWith(`${canvas}/`)) return null;
+  const [id, name, ...rest] = path.slice(canvas.length + 1).split("/");
+  return !rest.length && id && CANVAS_ID.test(id) && name && file.test(name) ? join(canvas, id) : null;
+}
+
+/** Whether `path` is a file the phone sent with an extension `file` accepts (`sanitizeUploadId` names them). */
+function isPhoneUpload(path: string, file: RegExp): boolean {
+  const { uploads } = conchFolders();
+  return path.startsWith(`${uploads}/`) && /^[A-Za-z0-9_-]{6,64}\.[a-z0-9]+$/.test(path.slice(uploads.length + 1))
+    && file.test(path);
+}
+
+/** "Invite page (http://localhost:3000/invite)" as "Invite page": where it was is for the agent (`CanvasController.label`). */
+function withoutPlace(label: string): string {
+  return /^(.+?) \((?:[a-z][a-z0-9+.-]*:\/\/|\/|~\/).*\)$/i.exec(label)?.[1] ?? label;
+}
+
+/** One line, no longer than `max`, cut with an ellipsis. */
+function clipped(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1).trimEnd()}…` : flat;
+}
+
+const quoted = (words: string, max: number) => `“${clipped(words, max)}”`;
+const counted = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
+/** His notes, a line each, as many as a quiet row holds. */
+const noteLines = (notes: readonly string[]) => notes.slice(0, 2).map((note) => quoted(note, 80));
+
+/** The line an agent answers a canvas by (`CanvasPrompt.answer`), and the canvas it names. */
+const CANVAS_ANSWER = /^To mark your answer on this canvas, frame your marks \{canvas: "([^"]+)"\}\.$/;
+/** A frame or a spoken line's time (`CanvasStoryboard.stamp`), then what is there. */
+const STAMP = String.raw`\[\d+:\d{2}\]`;
+const SHOW_FRAME = new RegExp(`^${STAMP} (.+?) — (.*)$`);
+const VIDEO_FRAME = new RegExp(`^${STAMP} frame \\d{2,} — `);
+const SPOKEN = new RegExp(`^${STAMP} (.*)$`);
+
+type ReceiptBlock = { end: number; receipt: SentReceipt };
+
+/**
+ * A canvas sent as a still (`CanvasPrompt.text`): its flat.png on its own line, "[canvas] Tyler marked up …", his
+ * notes by number, where the clean screen and the marks are, and how to answer on it.
+ */
+function canvasStill(lines: readonly string[], start: number): ReceiptBlock | null {
+  const picture = lines[start]!;
+  const folder = canvasFolderOf(picture, /^flat\.png$/);
+  const said = folder ? /^\[canvas\] Tyler marked up (.+)\.$/.exec(lines[start + 1] ?? "") : null;
+  if (!folder || !said) return null;
+  let at = start + 2;
+  const notes: string[] = [];
+  for (let note; (note = /^\d+\. .+?: "(.*)"$/.exec(lines[at] ?? "")); at += 1) notes.push(note[1]!);
+  const marks = join(folder, "canvas.json");
+  const rest = lines[at] ?? "";
+  const withScreen = rest === `Clean screen + marks: ${join(folder, "raw.png")}, ${marks}`;
+  const alone = rest.startsWith("conch can't see the screen") && rest.endsWith(`. Marks: ${marks}`);
+  const answer = CANVAS_ANSWER.exec(lines[at + 1] ?? "");
+  if (!(withScreen || alone) || answer?.[1]?.toUpperCase() !== folder.split("/").pop()!.toUpperCase()) return null;
+  const detail = [notes.length ? counted(notes.length, "note") : "", ...noteLines(notes)].filter(Boolean).join("\n");
+  return {
+    end: at + 1,
+    receipt: {
+      kind: "canvas",
+      title: `Marked up ${withoutPlace(said[1]!)}`,
+      ...(detail ? { detail } : {}),
+      thumb: picture,
+      open: picture,
+    },
+  };
+}
+
+/**
+ * A Show (`CanvasStoryboard.prompt`): "[canvas] Tyler showed … (0:23).", its storyboard, a line a frame with what he
+ * said there, the recording, and how to answer on its canvas. Every file in the one canvas folder.
+ */
+function canvasShow(lines: readonly string[], start: number): ReceiptBlock | null {
+  const showed = /^\[canvas\] Tyler showed (.+) \((\d+:\d{2})\)\.$/.exec(lines[start]!);
+  const storyboard = showed ? /^Storyboard: (.+)$/.exec(lines[start + 1] ?? "")?.[1] : undefined;
+  const folder = storyboard ? canvasFolderOf(storyboard, /^storyboard\.md$/) : null;
+  if (!showed || !folder) return null;
+  let at = start + 2;
+  const frames: string[] = [];
+  const words: string[] = [];
+  const notes: string[] = [];
+  for (let frame; (frame = SHOW_FRAME.exec(lines[at] ?? "")); at += 1) {
+    if (canvasFolderOf(frame[1]!, /^frame-\d{2,}\.png$/) !== folder) return null;
+    frames.push(frame[1]!);
+    const heard = /^"(.*?)" · (.*)$/.exec(frame[2]!);
+    if (heard?.[1]) words.push(heard[1]);
+    for (const note of (heard?.[2] ?? frame[2]!).matchAll(/: "([^"]*)"/g)) if (note[1]) notes.push(note[1]);
+  }
+  const recording = join(folder, "show.mp4");
+  if (!frames.length || lines[at] !== `The recording, for people (agents can't watch video): ${recording}`) return null;
+  if (!CANVAS_ANSWER.test(lines[at + 1] ?? "")) return null;
+  // What he said over it; a silent Show, his notes.
+  const detail = words.length ? quoted(words.join(" "), 140) : noteLines(notes).join("\n");
+  return {
+    end: at + 1,
+    receipt: {
+      kind: "show",
+      title: `Showed ${withoutPlace(showed[1]!)} · ${showed[2]}`,
+      ...(detail ? { detail } : {}),
+      thumb: frames[0],
+      open: recording,
+    },
+  };
+}
+
+/**
+ * A video from the phone (`VideoStoryboard.prompt`): "[video] Tyler sent a video from his phone (0:42).", its
+ * contact sheet and a line a frame, what he said, timed, and the video. Both files are ones the phone uploaded.
+ */
+function phoneVideo(lines: readonly string[], start: number): ReceiptBlock | null {
+  const sent = /^\[video\] Tyler sent a video from his phone \((\d+:\d{2})\)\.$/.exec(lines[start]!);
+  const sheet = sent
+    ? /^Contact sheet: (.+) — (\d+) frames?, left to right and down, each stamped with its time:$/.exec(lines[start + 1] ?? "")
+    : null;
+  if (!sent || !sheet || !isPhoneUpload(sheet[1]!, /\.(jpg|png)$/)) return null;
+  let at = start + 2;
+  for (let frame = 0; frame < Number(sheet[2]); frame += 1, at += 1) {
+    if (!VIDEO_FRAME.test(lines[at] ?? "")) return null;
+  }
+  const words: string[] = [];
+  if (lines[at] === "What he said:") {
+    for (let line; (line = SPOKEN.exec(lines[at + 1] ?? "")); at += 1) words.push(line[1]!);
+    at += 1;
+  }
+  const video = /^The video itself, for people \(agents can't watch video\): (.+)$/.exec(lines[at] ?? "")?.[1];
+  if (!video || !isPhoneUpload(video, /\.mp4$/)) return null;
+  return {
+    end: at,
+    receipt: {
+      kind: "video",
+      title: `Sent a video · ${sent[1]}`,
+      ...(words.length ? { detail: quoted(words.join(" "), 140) } : {}),
+      thumb: sheet[1]!,
+      open: video,
+    },
+  };
+}
+
+/**
+ * Take what conch sent out of a message of Tyler's: each canvas, Show and phone video it carries becomes a receipt,
+ * and the lines around them — his own words, a picture he pasted — are left as they were. A block that is not exactly
+ * conch's format is left as it was too, so the worst a changed format can do is show what it always showed.
+ */
+export function splitSentReceipts(text: string): { text: string; receipts: SentReceipt[] } {
+  if (!text.includes("[canvas] Tyler ") && !text.includes("[video] Tyler ")) return { text, receipts: [] };
+  const lines = text.split("\n");
+  const trimmed = lines.map((line) => line.trim());
+  const kept: string[] = [];
+  const receipts: SentReceipt[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const block = canvasStill(trimmed, index) ?? canvasShow(trimmed, index) ?? phoneVideo(trimmed, index);
+    if (!block) {
+      kept.push(lines[index]!);
+      continue;
+    }
+    receipts.push(block.receipt);
+    index = block.end;
+  }
+  return receipts.length ? { text: kept.join("\n").trim(), receipts } : { text, receipts: [] };
+}
+
+/** A receipt as words, for anything that reads only an item's text: an older app, the overlay, a search. */
+function receiptText(receipt: SentReceipt): string {
+  return receipt.detail ? `${receipt.title}\n${receipt.detail}` : receipt.title;
+}
+
+/**
+ * A message's receipts as rows of Tyler's. A message that is nothing but one is that row, under the message's own
+ * id; beside his words, each is its own row after them, as a picture he pasted is.
+ */
+function upsertReceipts(
+  conversation: Conversation,
+  id: string,
+  receipts: readonly SentReceipt[],
+  alone: boolean,
+  at: number | undefined,
+): void {
+  for (const [index, receipt] of receipts.entries()) {
+    upsertConversationItem(conversation, {
+      id: alone && index === 0 ? id : `${id}:receipt:${index}`,
+      kind: "user",
+      text: receiptText(receipt),
+      at,
+      receipt,
+    });
+  }
+}
+
+/** Tyler's own marks on a canvas he sent, read from its canvas.json once (`attachCanvasCounts`). */
+const canvasCounts = new Map<string, { marks: number; notes: number } | null>();
+const MAX_CANVAS_COUNTS = 256;
+
+/**
+ * Put the count of Tyler's marks on each canvas receipt: "2 marks · 1 note". The message names only the notes with
+ * words in them, so the rest are counted from the canvas.json beside the picture — once, since a sent canvas does
+ * not change. The reducer reads lines, never files, so this runs once per read, as `attachSidechainPaths` does.
+ */
+export async function attachCanvasCounts(conversation: Conversation): Promise<void> {
+  for (const key of conversation.order) {
+    const receipt = conversation.items[key]?.receipt;
+    if (receipt?.kind !== "canvas" || !receipt.thumb) continue;
+    const marks = join(dirname(receipt.thumb), "canvas.json");
+    if (!canvasCounts.has(marks)) {
+      if (canvasCounts.size >= MAX_CANVAS_COUNTS) canvasCounts.delete(canvasCounts.keys().next().value!);
+      canvasCounts.set(marks, await Bun.file(marks).json().then((document) => {
+        const his = (document?.marks as any[] ?? []).filter((mark) => mark?.author === "you");
+        const notes = his.filter((mark) => mark.kind === "note" && String(mark.text ?? "").trim()).length;
+        return { marks: his.filter((mark) => mark.kind !== "note").length, notes };
+      }).catch(() => null));
+    }
+    const counts = canvasCounts.get(marks);
+    if (!counts) continue;
+    const said = (receipt.detail ?? "").split("\n").filter((line) => line.startsWith("“"));
+    const summary = [counts.marks ? counted(counts.marks, "mark") : "", counts.notes ? counted(counts.notes, "note") : ""]
+      .filter(Boolean).join(" · ");
+    const detail = [summary, ...said].filter(Boolean).join("\n");
+    if (detail) receipt.detail = detail;
+    conversation.items[key]!.text = receiptText(receipt);
+  }
+}
+
 function attachmentMaterial(part: any): ConversationMaterial | null {
   if (part?.type !== "image" && part?.type !== "document") return null;
   const image = part.type === "image";
@@ -332,12 +598,12 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
       ? queued.prompt.trim()
       : Array.isArray(queued.prompt) ? textFromClaudeParts(queued.prompt, "text").trim() : "");
     if (text) {
-      upsertConversationItem(conversation, {
-        id: `queued:${typeof queued.source_uuid === "string" ? queued.source_uuid : id ?? conversation.order.length}`,
-        kind: "user",
-        text,
-        at: Date.parse(queued.timestamp ?? "") || at,
-      });
+      const key = `queued:${typeof queued.source_uuid === "string" ? queued.source_uuid : id ?? conversation.order.length}`;
+      const when = Date.parse(queued.timestamp ?? "") || at;
+      // A canvas sent while the session was busy is queued like anything else.
+      const sent = splitSentReceipts(text);
+      if (sent.text) upsertConversationItem(conversation, { id: key, kind: "user", text: sent.text, at: when });
+      upsertReceipts(conversation, key, sent.receipts, !sent.text, when);
     }
     return;
   }
@@ -386,8 +652,10 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
           .slice()
           .reverse()
           .map((key) => conversation.items[key])
-          .find((item) => item?.material?.kind === "image")
+          .find((item) => item?.material?.kind === "image" || item?.receipt)
         : undefined;
+      // A receipt's picture is summed up already: its dimensions are the agent's business.
+      if (previousImage?.receipt) return;
       if (previousImage?.material) {
         upsertConversationItem(conversation, {
           ...previousImage,
@@ -405,19 +673,23 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
       return;
     }
 
-    const split = splitMaterialPaths(rawText);
+    // What conch sent first, so its pictures are receipts rather than materials; then the rest as it always was.
+    const sent = splitSentReceipts(rawText);
+    const split = splitMaterialPaths(sent.text);
     const attachments = parts
       .map(attachmentMaterial)
       .filter((material): material is ConversationMaterial => material !== null);
     const materials = [...split.materials, ...attachments];
+    const key = id ?? `user:${conversation.order.length}`;
     if (split.text) {
       upsertConversationItem(conversation, {
-        id: id ?? `user:${conversation.order.length}`,
+        id: key,
         kind: "user",
         text: split.text,
         at,
       });
     }
+    upsertReceipts(conversation, key, sent.receipts, !split.text, at);
     for (const [index, material] of materials.entries()) {
       upsertConversationItem(conversation, {
         id: `${id ?? `material:${conversation.order.length}`}:material:${index}`,
@@ -1029,12 +1301,11 @@ function upsertCodexMessage(
   text: string,
   at: number | undefined,
 ): void {
-  upsertConversationItem(conversation, {
-    id: codexMessageId(role, text, codexTurn.get(conversation)),
-    kind: role,
-    text,
-    at,
-  });
+  // Keyed on the whole message, so both of Codex's copies still collapse into one.
+  const id = codexMessageId(role, text, codexTurn.get(conversation));
+  const sent = role === "user" ? splitSentReceipts(text) : { text, receipts: [] };
+  if (sent.text || !sent.receipts.length) upsertConversationItem(conversation, { id, kind: role, text: sent.text, at });
+  upsertReceipts(conversation, id, sent.receipts, !sent.text, at);
 }
 
 /**
@@ -1437,6 +1708,7 @@ async function readConversationTailOnce(
   const conversation = buildConversation(sessionId, lines, format);
   if (shared) conversation.shared = true;
   if (format === "claude") attachSidechainPaths(conversation, transcriptPath);
+  await attachCanvasCounts(conversation);
   return { conversation, wholeFile: start === 0 };
 }
 

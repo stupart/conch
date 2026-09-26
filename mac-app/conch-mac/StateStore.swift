@@ -1262,8 +1262,10 @@ final class StateStore: ObservableObject {
             let users = conversation.items.filter { $0.kind == .user }
             seenUserItems[session] = Set(users.map(\.id))
             for message in reconciled.entries(for: session) {
+                // A canvas or a Show comes back as a receipt, which has none of its words: it names the same file.
                 guard users.contains(where: {
-                    !message.earlierUserItems.contains($0.id) && Self.sameMessage($0.text, message.text)
+                    !message.earlierUserItems.contains($0.id)
+                        && (Self.sameMessage($0.text, message.text) || $0.receipt?.stands(for: message.text) == true)
                 }) else { continue }
                 reconciled.remove(message.id)
             }

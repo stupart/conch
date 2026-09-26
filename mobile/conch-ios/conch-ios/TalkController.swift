@@ -372,8 +372,10 @@ final class TalkController: NSObject, ObservableObject {
         let users = items.filter { $0.kind == "user" }
         seenUserItems[session] = Set(users.map(\.id))
         for message in outbox.entries(for: session) {
+            // A video sent on its own comes back as a receipt, which has none of its words: it names the same file.
             guard users.contains(where: {
-                !message.earlierUserItems.contains($0.id) && Self.sameMessage($0.text, message.text)
+                !message.earlierUserItems.contains($0.id)
+                    && (Self.sameMessage($0.text, message.text) || $0.receipt?.stands(for: message.text) == true)
             }) else { continue }
             // Your words in the transcript are the strongest evidence there is — stronger
             // than a receipt that said it failed, and enough on their own to let them go.

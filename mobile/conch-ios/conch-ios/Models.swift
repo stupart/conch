@@ -1,3 +1,4 @@
+import ConchDesign
 import Foundation
 import SwiftUI
 
@@ -690,9 +691,12 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
     var questions: [AgentQuestion]?
     /// Machine-authored context shown as itself rather than under the user's name.
     var material: Material?
+    /// Something Tyler sent through conch itself — a canvas, a Show, a video from this phone — summed up by the
+    /// daemon and drawn as one quiet row. Nil from an older daemon, which keeps today's rows.
+    var receipt: ConchSentReceipt?
 
     private enum CodingKeys: String, CodingKey {
-        case id, rev, kind, text, at, tool, plan, change, question, questions, material
+        case id, rev, kind, text, at, tool, plan, change, question, questions, material, receipt
     }
 
     /// What a question card shows: every question, or the one.
@@ -710,6 +714,7 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
         question = try? c.decodeIfPresent(AgentQuestion.self, forKey: .question)
         questions = try? c.decodeIfPresent([AgentQuestion].self, forKey: .questions)
         material = try? c.decodeIfPresent(Material.self, forKey: .material)
+        receipt = try? c.decodeIfPresent(ConchSentReceipt.self, forKey: .receipt)
     }
 }
 

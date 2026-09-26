@@ -838,3 +838,57 @@ do {
     if let flat = CanvasInk.render(document, over: screen) { try writePNG(flat, "w2-canvas-flat.png") }
     if let alone = CanvasInk.render(document, over: nil) { try writePNG(alone, "w2-canvas-flat-no-screen.png") }
 }
+
+// Something Tyler sent through conch, as his own row in the conversation (`SentReceiptRow`): a canvas, a Show, a video
+// from the phone, and a canvas whose picture hasn't been read yet, between his words and a reply so the row can be
+// judged against the bubble beside it. The thumbnails are the pictures each one sends: the canvas's flat.png, a frame,
+// and a contact sheet.
+do {
+    var document = CanvasDocument(anchor: CanvasAnchor(id: 1, frame: CGRect(origin: .zero, size: m3Screen)), id: "receipts", at: 0)
+    canvasMarks.forEach { document.add($0) }
+    let screen = MainActor.assumeIsolated { () -> CGImage? in
+        let renderer = ImageRenderer(content: m3Fog(.bottomLeading, session: panelSession, pager: true).environment(\.conchRendersStatically, true))
+        renderer.scale = 1
+        return renderer.cgImage
+    }
+    let flat = CanvasInk.render(document, over: screen)
+    let sheet = screen.flatMap { frame in VideoStoryboard.contactSheet((0..<6).map { (at: Double($0) * 3, image: frame) }) }
+    let picture = { (image: CGImage?) in image.map { Image(decorative: $0, scale: 2) } }
+    let canvas = ConchSentReceipt(kind: .canvas, title: "Marked up Invite page", detail: "2 marks · 1 note\n“make the button just say Join”")
+    let show = ConchSentReceipt(kind: .show, title: "Showed Invite page · 0:23", detail: "“okay so this page, this one bigger, and this footer, that's it”")
+    let video = ConchSentReceipt(kind: .video, title: "Sent a video · 0:42", detail: "“this button should be blue, and the header jumps when I scroll”")
+    let yours = { (words: String) in
+        HStack {
+            Spacer(minLength: 48)
+            Text(words)
+                .font(ConchType.readingBody)
+                .foregroundStyle(ConchColor.textPrimary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(ConchColor.fill, in: RoundedRectangle(cornerRadius: ConchRadius.large))
+        }
+    }
+    let sent = { (receipt: ConchSentReceipt, thumbnail: Image?) in
+        HStack {
+            Spacer(minLength: 48)
+            SentReceiptRow(receipt: receipt, thumbnail: thumbnail) {}
+        }
+    }
+    try render("w3-sent-receipts", width: 720) {
+        Heading(title: "Sent receipts", note: "What Tyler sent through conch, as one quiet row in his bubble: a thumbnail, what it was, his words from it. A click opens it whole.")
+        VStack(alignment: .leading, spacing: 22) {
+            yours("The invite page still says Accept invitation.")
+            sent(canvas, picture(flat))
+            Text("Changed. The button reads **Join**, and it still waits for the email check.")
+                .font(ConchType.readingBody)
+                .foregroundStyle(ConchColor.textPrimary)
+            sent(show, picture(screen))
+            sent(video, picture(sheet))
+            sent(ConchSentReceipt(kind: .canvas, title: "Marked up Safari", detail: "3 marks"), nil)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+        .frame(width: 600)
+        .background(ConchColor.surface, in: RoundedRectangle(cornerRadius: ConchRadius.large))
+    }
+}

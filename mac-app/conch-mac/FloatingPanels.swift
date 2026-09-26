@@ -1011,6 +1011,8 @@ private struct ConversationFogHost: View {
     /// `whole` is what the record store says the message actually was, by provider id.
     /// The snapshot keeps only the last 4,000 characters of a long one, so enlarging the
     /// overlay without this enlarged the cut rather than showing the message.
+    /// Something Tyler sent through conch is its title alone ("Marked up Invite page"): the
+    /// words are the fog's, and the whole message is written for the agent.
     static func turns(
         _ state: PublishedState?,
         _ row: SessionRow,
@@ -1024,7 +1026,7 @@ private struct ConversationFogHost: View {
                 ConversationTurn(
                     id: $0.id,
                     fromYou: $0.kind == .user,
-                    text: whole[HistorySnapshot.nativeId(forSnapshotItem: $0.id)] ?? $0.text
+                    text: $0.receipt?.title ?? whole[HistorySnapshot.nativeId(forSnapshotItem: $0.id)] ?? $0.text
                 )
             }
     }
