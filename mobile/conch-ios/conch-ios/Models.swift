@@ -263,7 +263,9 @@ struct PublishedState: Decodable, Equatable {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             id = (try? c.decodeIfPresent(String.self, forKey: .id)) ?? ""
             label = (try? c.decodeIfPresent(String.self, forKey: .label)) ?? ""
-            status = (try? c.decodeIfPresent(String.self, forKey: .status)) ?? "working"
+            // A null status is a session with nothing to report, not one at work: the Mac reads it
+            // as none. Only a missing key still reads as working, as it always has.
+            status = c.contains(.status) ? ((try? c.decodeIfPresent(String.self, forKey: .status)) ?? "idle") : "working"
             backend = try? c.decodeIfPresent(String.self, forKey: .backend)
             context = try? c.decodeIfPresent(ContextUsage.self, forKey: .context)
             detail = try? c.decodeIfPresent(String.self, forKey: .detail)
@@ -380,12 +382,17 @@ private struct AnyIgnored: Decodable {}
 
 /// The Mac ledger's glyph vocabulary, one for one.
 enum StatusMark {
-    case working, waitingOnAgents, waiting, needs, review, paused, micOpen, speaking, idle
+    /// `agentPaused` is a sub-agent that is not running (C4); `paused` is a session in manual mode.
+    case working, waitingOnAgents, waiting, needs, review, paused, micOpen, speaking, idle, agentPaused
 
     init(row: PublishedState.Row) {
         let wantsUser = row.status == "waiting" || row.status == "needs"
         // The deliverable stays on a working row; the mark means it is waiting for you.
         if row.review != nil, row.status != "working" { self = .review; return }
+        // A sub-agent is working or it is paused, as on the Mac. Nobody replies to one, so a
+        // Codex helper between turns is not "waiting for you", and waiting's colour was wrong on
+        // it. Only a question it is blocked on still asks something of you.
+        if row.parentSessionId != nil, row.status != "working", row.status != "needs" { self = .agentPaused; return }
         if row.paused, !wantsUser { self = .paused; return }
         switch row.live {
         case "listening", "recording": self = .micOpen
@@ -396,7 +403,10 @@ enum StatusMark {
             case "needs": self = .needs
             // Its own turn is over and only its agents are running: talk to it.
             case "working" where row.waitingOnAgents: self = .waitingOnAgents
-            default: self = .working
+            case "working": self = .working
+            // Nothing to report, which the Mac draws idle. This was `.working`, a false working
+            // dot, and working is blue now: the colour must only ever mean an agent is running.
+            default: self = .idle
             }
         }
     }
@@ -413,19 +423,23 @@ enum StatusMark {
         case .micOpen: "mic.fill"
         case .speaking: "play.fill"
         case .idle: "circle.dotted"
+        // Hollow: the working dot with the work taken out of it. Solid, where idle's is dotted.
+        case .agentPaused: "circle"
         }
     }
 
     var color: Color {
         switch self {
-        case .working, .speaking: Palette.working
+        case .working: Palette.active
+        // Reading aloud comes once the turn is over, when no agent is running: not working's blue.
+        case .speaking: Palette.calm
         // The waiting colour: the same answer to "can I talk to it?"; the glyph says why.
         case .waiting, .waitingOnAgents: Palette.waiting
         case .needs: Palette.needs
         case .review: Palette.review
         case .paused: Palette.textDim
         case .micOpen: Palette.micOpen
-        case .idle: Palette.textFaint
+        case .idle, .agentPaused: Palette.textFaint
         }
     }
 
@@ -437,7 +451,7 @@ enum StatusMark {
     /// happening right now.
     var showsMeaningInLedger: Bool {
         switch self {
-        case .working, .idle: false
+        case .working, .idle, .agentPaused: false
         case .waitingOnAgents, .waiting, .needs, .review, .micOpen, .speaking, .paused: true
         }
     }
@@ -459,6 +473,7 @@ enum StatusMark {
         case .micOpen: "Mic open"
         case .speaking: "Reading aloud"
         case .idle: "Idle"
+        case .agentPaused: "Paused"
         }
     }
 }

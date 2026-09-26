@@ -461,7 +461,7 @@ struct ConversationStack: View {
         switch status {
         case "error": return Palette.needs
         case "done": return Palette.textFaint
-        default: return Palette.working
+        default: return Palette.calm
         }
     }
 
@@ -488,7 +488,7 @@ struct ConversationStack: View {
                     if !change.added.isEmpty {
                         Text("+\(change.added.count)")
                             .font(Type.mono)
-                            .foregroundStyle(Palette.working)
+                            .foregroundStyle(Palette.calm)
                     }
                     if !change.removed.isEmpty {
                         Text("−\(change.removed.count)")
@@ -512,7 +512,7 @@ struct ConversationStack: View {
                         diffLine(line, sign: "−", tint: Palette.needs)
                     }
                     ForEach(Array(change.added.enumerated()), id: \.offset) { _, line in
-                        diffLine(line, sign: "+", tint: Palette.working)
+                        diffLine(line, sign: "+", tint: Palette.calm)
                     }
                     if change.truncated {
                         Text("… longer than this view shows")
@@ -920,7 +920,7 @@ struct ConversationStack: View {
     private func stepColor(_ status: ConversationItem.PlanStep.Status) -> Color {
         switch status {
         case .done: return Palette.textDim
-        case .running: return Palette.working
+        case .running: return Palette.calm
         case .pending: return Palette.textFaint
         }
     }

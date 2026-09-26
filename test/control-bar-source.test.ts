@@ -325,9 +325,12 @@ test("M3: the fog moves the way the overlay lab does: thrown by its middle on on
   expect(palette).toContain("blue: 0.298");
   // The orange it replaces is gone for good.
   expect(palette).not.toContain("red: 0.96,\n        green: 0.60,\n        blue: 0.13");
-  // Working is the quiet state: a session doing its job asks for nothing, so its dot recedes
-  // rather than competing with the ones that do.
-  expect(palette).toContain("static let statusWorking = textFaint");
+  // Working is BLUE now, not the quiet grey it was: Tyler asked for "some other color that feels
+  // more like 'active' and 'positive'". The grey stays only for what is not an agent at work
+  // (test/active-blue-source.test.ts pins both).
+  expect(palette).toContain("static let statusActive = ConchColor.active.dynamic");
+  expect(palette).toContain("static let statusQuiet = textFaint");
+  expect(palette).not.toContain("statusWorking");
   // The glyphs stay as they were — the check is what separates review from waiting.
   // LedgerVisual lives in DashboardView, not in the panels.
   const dashboard = read("mac-app/conch-mac/DashboardView.swift");

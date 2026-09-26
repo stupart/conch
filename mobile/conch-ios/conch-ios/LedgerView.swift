@@ -542,9 +542,11 @@ struct AgentRowView: View {
 
     var body: some View {
         HStack(spacing: 8) {
+            // Working breathes, as the session's own does; paused is the hollow ring (`StatusMark`).
             Image(systemName: mark.symbol)
                 .font(.system(size: 11))
                 .foregroundStyle(mark.color)
+                .activeBreath(pointSize: 11, breathes: mark == .working)
                 .frame(width: 16)
                 .accessibilityLabel(mark.meaning)
             Text(row.label)
@@ -565,9 +567,12 @@ struct SessionRowView: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
+            // Working's dot breathes a halo, slowly, as on the Mac: alive, and still asking nothing.
+            // Still under Reduce Motion (ConchDesign's `ActiveHalo`).
             Image(systemName: mark.symbol)
                 .font(.system(size: 15))
                 .foregroundStyle(mark.color)
+                .activeBreath(pointSize: 15, breathes: mark == .working)
                 .frame(width: 22)
                 .accessibilityLabel(mark.meaning)
 

@@ -959,11 +959,13 @@ private struct DashboardRow: View {
             // Full brand cyan means "your mic is open". The rail was painting it
             // on speaking and transcribing rows too — a bigger patch of it than
             // the glyph — so it contradicted the very invariant the glyph sets.
+            // Otherwise it takes its glyph's colour: transcribing's blue, speaking's
+            // faint ink.
             Capsule(style: .continuous)
                 .fill(
                     LedgerVisual(row: row) == .listening || LedgerVisual(row: row) == .recording
                         ? ConchPalette.statusMicOpen
-                        : ConchPalette.statusWorking
+                        : LedgerVisual(row: row).color
                 )
                 .frame(width: 3, height: 22)
                 .opacity(isLiveSession ? 1 : 0)
@@ -1326,6 +1328,13 @@ private struct DashboardStatusGlyph: View {
                 Image(systemName: candidate.symbol)
                     .font(.system(size: candidate.symbolSize, weight: .medium))
                     .foregroundStyle(candidate.color)
+                    // Working's dot breathes a halo, slowly: the list is alive where agents are at
+                    // work. Only while it is the mark shown, so a hidden copy costs no frames; still
+                    // under Reduce Motion (ConchDesign's `ActiveHalo`).
+                    .activeBreath(
+                        pointSize: candidate.symbolSize,
+                        breathes: candidate == .working && visual == .working
+                    )
                     .opacity(candidate == visual ? 1 : 0)
             }
         }
@@ -1352,6 +1361,8 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
     case listening
     case recording
     case transcribing
+    /// A sub-agent that is not running (C4).
+    case agentPaused
 
     var id: String { rawValue }
 
@@ -1375,6 +1386,15 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
         // for you to look", which a working session is not.
         if (row.review != nil && row.status != .working) || row.status == .review {
             self = .review
+            return
+        }
+        // A sub-agent is working or it is paused. Nobody replies to one, so a Codex helper
+        // between turns is not "finished — waiting on you", and waiting's green ("come and
+        // look") was wrong on it. Tyler: "make it more clear when sub-agents are working vs
+        // paused". Only a question it is blocked on still asks something of him. The daemon's
+        // status is unchanged; this is how the list reads it.
+        if row.parentSessionId != nil, row.status != .working, row.status != .needs {
+            self = .agentPaused
             return
         }
         // A mode glyph must not hide work waiting on the person. The row's dimmed
@@ -1438,6 +1458,10 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
             return "record.circle.fill"
         case .transcribing:
             return "ellipsis"
+        case .agentPaused:
+            // Hollow: the working dot with the work taken out of it. A solid ring, where idle's
+            // is dotted, and only ever on a sub-agent's line.
+            return "circle"
         }
     }
 
@@ -1451,7 +1475,7 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
             return 11
         case .listening:
             return 10
-        case .idle, .working, .waiting:
+        case .idle, .working, .waiting, .agentPaused:
             return 8
         }
     }
@@ -1459,7 +1483,8 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
     var color: Color {
         switch self {
         case .working:
-            return ConchPalette.statusWorking
+            // An agent at work, a session or a sub-agent: `active`'s blue (Palette.swift).
+            return ConchPalette.statusActive
         case .listening:
             // Full brand cyan is reserved for "your mic is open" — the state
             // with the highest cost of being wrong about.
@@ -1477,18 +1502,27 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
         case .speaking:
             // Speaking is LIVENESS, not a demand. Sharing gold with .review left
             // the one colour that means "act" claimed by a session merely
-            // talking, so a real review no longer stood out.
-            return ConchPalette.statusWorking
+            // talking, so a real review no longer stood out. Nor is it working's
+            // blue: a reply is read aloud once the turn is over, when no agent is
+            // running.
+            return ConchPalette.statusQuiet
         case .recording:
             return ConchPalette.statusMicOpen
         case .transcribing:
-            return ConchPalette.statusWorking.opacity(0.78)
+            // The machine busy on your behalf, a moment before the agent is: the
+            // words you said going in. So the same blue as the working that
+            // follows, and at full strength: the 78% it was drawn at measures 2.53
+            // on the light ground, under a mark's 3:1.
+            return ConchPalette.statusActive
         case .idle:
             return ConchPalette.textFaint
         case .manual:
             // "Why is this one silent?" is a question the user actually asks;
             // textFaint answered it at 2.63:1, below AA.
             return ConchPalette.textDim
+        case .agentPaused:
+            // Faint, as idle is: nothing to do and nothing to look at.
+            return ConchPalette.textFaint
         }
     }
 
@@ -1516,6 +1550,8 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
             return "Recording"
         case .transcribing:
             return "Transcribing"
+        case .agentPaused:
+            return "Paused"
         }
     }
 }

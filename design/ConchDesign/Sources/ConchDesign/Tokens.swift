@@ -106,6 +106,24 @@ public enum ConchColor {
     /// stands.
     public static let attention = ConchColorToken("attention", .init(0xCA321B), .init(0xFF6A55))
 
+    /// An agent at work: a session, or one of its sub-agents, running. Tyler: "could maybe generally
+    /// replace the gray color for work with a blue or yea idk some other color that feels more like
+    /// 'active' and 'positive'".
+    ///
+    /// Apple's system blue, a step brighter than a link on each ground: the dark scheme's #0A84FF
+    /// in light (a link there is #0068DA to #007AFF), and in dark the accessible dark blue #409CFF
+    /// lifted a touch, to #4A9EFF. Held to a mark's 3:1 (ActiveMarkTests). Light: 3.23 on the
+    /// ground, 3.47 on the fog, 3.65 on surface and raised, 3.62 on the switcher's glass. Dark: 5.08
+    /// on raised, 5.99 on surface, 6.56 on the fog, 6.58 on the ground, and 3.10 on the switcher's
+    /// glass, where #0A84FF measured 2.34 and #409CFF 2.99.
+    ///
+    /// Blue, not the brand cyan: full-strength cyan means one thing, that your microphone is open.
+    /// This sits 25 degrees of hue from it in light and 27 in dark (the cyan is 185, this 210 and
+    /// 212), and 71 from waiting's green, so the mark that says "it is working" never reads as "it
+    /// can hear you" or "come and look". Stopped short of violet, which read soft rather than
+    /// active beside the cyan and drifted toward the overlay's iris glow.
+    public static let active = ConchColorToken("active", .init(0x0A84FF), .init(0x4A9EFF))
+
     // Text: every level is at least 4.5:1 on every ground above (ConchDesignTests pins it).
     public static let textPrimary = ConchColorToken("textPrimary", .init(0x1D1D1F), .init(0xF2F1EF))
     public static let textSecondary = ConchColorToken("textSecondary", .init(0x5C5C61), .init(0xAEAEB2))
@@ -146,7 +164,7 @@ public enum ConchColor {
     public static let grounds = [ground, surface, surfaceRaised, fog]
     public static let text = [textPrimary, textSecondary, textTertiary]
     public static let all = grounds + [glass, fill, fillSelected, rowHover, rowSelected] + text
-        + [hairline, hairlineStrong, accent, onAccent, attention]
+        + [hairline, hairlineStrong, accent, onAccent, attention, active]
         + [speaking, listening, quiet, ready, listeningRing, onVoice, idleGlow] + overlay
     public static let overlay = [overlayText, overlayTextSecondary, overlayTextPending, overlayPlaceholder, overlayFill,
                                  overlayFillStrong, overlayGlass, overlayGlassStrong, overlayGlassIcon, overlayLine]
@@ -387,6 +405,9 @@ public enum ConchMotion {
     public static let wavePeriod: Double = 1.1
     /// One breath of a listening mic.
     public static let breathPeriod: Double = 2.4
+    /// One breath of an agent at work (`ActiveMark`): slower than the mic's, a resting pace, so a list of working
+    /// sessions reads as alive rather than busy.
+    public static let activeBreathPeriod: Double = 4
 
     /// Nil under Reduce Motion, so `withAnimation(ConchMotion.animation(...))` simply jumps.
     public static func animation(_ duration: Double = standard, reduceMotion: Bool) -> Animation? {

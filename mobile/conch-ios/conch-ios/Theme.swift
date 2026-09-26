@@ -32,8 +32,15 @@ enum Palette {
     // language the ledger is read by. That is a change to see and react to, not one to slip
     // in under a theme change.
 
-    /// Machine-busy. Calm, ignorable.
-    static let working = Color(red: 0.31, green: 0.55, blue: 0.60)
+    /// An agent at work, a session or one of its sub-agents running: ConchDesign's `active`, the
+    /// Mac's working blue. Tyler: "could maybe generally replace the gray color for work with a
+    /// blue or yea idk some other color that feels more like 'active' and 'positive'". Its 3:1 on
+    /// every ground, and its distance from the mic's cyan, are measured in ActiveMarkTests.
+    static let active = ConchColor.active.dynamic
+    /// Calm, ignorable: reading a reply aloud, a tool call or plan step, an added line, a live
+    /// connection. It drew the working mark too until that became `active`; what is left here is
+    /// not an agent at work, so it did not move.
+    static let calm = Color(red: 0.31, green: 0.55, blue: 0.60)
     /// Your microphone is open — the one state that owns full brand cyan.
     static let micOpen = Color(red: 88 / 255, green: 201 / 255, blue: 212 / 255)
     /// A finished turn is sitting on you.

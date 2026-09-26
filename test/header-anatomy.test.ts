@@ -65,7 +65,9 @@ describe("the header carries the lab's anatomy", () => {
     expect(meter).toContain('.help("Context \\(label) tokens');
     // Two bands can render; the third colour went with the rows it used to sit on.
     expect(meter).toContain("context.fraction >= 0.97 ? ConchPalette.statusNeeds : ConchPalette.statusWaiting");
-    expect(meter).not.toContain("ConchPalette.statusWorking.opacity(0.66)");
+    // The third band was working's grey at 66%; working's colours are now `statusActive` and,
+    // for what was left behind, `statusQuiet`. Neither is a context band.
+    expect(meter).not.toMatch(/ConchPalette\.status(Working|Active|Quiet)/);
   });
 
   // `.seg{padding:2px;border-radius:8px;background:var(--fill);gap:1px;margin-right:4px}`.

@@ -77,15 +77,31 @@ enum ConchPalette {
     // restful state; "waiting" means a finished turn is sitting on YOU, so it
     // reads as attention rather than inert grey; "needs" is blocking and
     // outranks it.
-    // Machine-busy states share a calmer cyan so the brand cyan at full strength
-    // can mean one thing only: your microphone is open. That is the state with
-    // the highest cost of being wrong about.
-    // Working is the QUIET state. Tyler: "have working be like yellow or orange or some sort of
-    // working icon or no icon or color at all since its working". A session doing its job is not
-    // asking for anything, and a coloured dot on it competes with the ones that are. The dot stays
-    // — dropping it entirely would make working indistinguishable from idle, which is a different
-    // fact — but it recedes to the same faint ink idle uses.
-    static let statusWorking = textFaint
+    // No other session state borrows the brand cyan at full strength, so in the
+    // ledger it can mean one thing only: your microphone is open. That is the
+    // state with the highest cost of being wrong about.
+    //
+    // Working is BLUE: an agent running, a session or one of its sub-agents. It was the faint ink
+    // idle uses, on Tyler's earlier "no icon or color at all since its working"; he has since
+    // asked the other way — "could maybe generally replace the gray color for work with a blue or
+    // yea idk some other color that feels more like 'active' and 'positive'" — and "make it more
+    // clear when sub-agents are working vs paused". Grey said "nothing is happening" about the
+    // sessions where the most was.
+    //
+    // It stays the calm end of the ladder by shape and stillness rather than by greyness: a small
+    // dot, still apart from a slow breath of its halo (`activeBreath`), while waiting, needs and
+    // review keep the larger, still marks. The value is ConchDesign's `active`: #0A84FF in light,
+    // #4A9EFF in dark. As a mark it clears 3:1 on bg, surface, raised and fog in both schemes, 3.23
+    // at worst in light (bg) and 5.08 in dark (raised), and sits 25-27 degrees of hue from the
+    // mic's cyan (ActiveMarkTests).
+    //
+    // For an agent's working state only. A sub-agent that is not running is PAUSED, a hollow ring
+    // in `textFaint`, never waiting's green: nobody replies to a sub-agent.
+    static let statusActive = ConchColor.active.dynamic
+    // The faint ink working used to share, kept for the marks that are not an agent at work and so
+    // did not move with it: reading a reply aloud (the turn is over), a starting daemon, "Copied",
+    // a notice's button, an observed capability, a tool call or plan step in the transcript.
+    static let statusQuiet = textFaint
     static let statusMicOpen = brandCyan
     // Waiting is GREEN, in review's family, because both mean the same thing to the person
     // reading the ledger: come and look. Tyler: "does orange dot mean its waiting for me? We

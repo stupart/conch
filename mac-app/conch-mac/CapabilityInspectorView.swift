@@ -585,7 +585,7 @@ private struct EvidenceChip: View {
     /// calmly is the honest thing. Colour is reserved for the states that
     /// actually differ from the norm.
     private var tint: Color {
-        if observedOnly { return ConchPalette.statusWorking }
+        if observedOnly { return ConchPalette.statusQuiet }
         switch evidence.state {
         case "yes": return ConchPalette.textDim
         // The one state that has to catch the eye: everything else on this

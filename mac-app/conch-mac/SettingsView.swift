@@ -624,7 +624,7 @@ private struct DaemonPowerRow: View {
     private var indicator: Color {
         switch daemon.state {
         case .running, .adopted: return ConchPalette.brandCyan
-        case .starting: return ConchPalette.statusWorking
+        case .starting: return ConchPalette.statusQuiet
         case .stopped: return ConchPalette.textDim
         case .failed: return ConchPalette.statusWaiting
         }

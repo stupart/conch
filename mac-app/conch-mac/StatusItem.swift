@@ -125,8 +125,8 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         let working = Self.workingRows(state)
         if !ready.isEmpty || !working.isEmpty {
             menu.addItem(.separator())
-            addSessions("Ready for you", ready, symbol: "circle.fill", to: menu)
-            addSessions("Working", working, symbol: "circle", to: menu)
+            addSessions("Ready for you", ready, symbol: "circle.fill", colour: ConchColor.ready, to: menu)
+            addSessions("Working", working, symbol: "circle", colour: ConchColor.active, to: menu)
         }
         menu.addItem(.separator())
         menu.addItem(entry("Open conch", #selector(openConch)))
@@ -154,11 +154,24 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         return state?.live.label ?? ""
     }
 
-    private func addSessions(_ title: String, _ rows: [SessionRow], symbol: String, to menu: NSMenu) {
+    /// Each group's mark in the colour the sidebar draws the same state in: ready's green, working's
+    /// blue. They were template images in the menu's own ink, so working read as nothing happening
+    /// and ready no louder than it; the conversation panel's switcher, which copies these marks,
+    /// already coloured ready.
+    private func addSessions(_ title: String, _ rows: [SessionRow], symbol: String, colour: ConchColorToken, to menu: NSMenu) {
         guard !rows.isEmpty else { return }
         menu.addItem(.sectionHeader(title: title))
+        let tint = NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            return NSColor(colour.rgba(isDark ? .dark : .light).color)
+        }
         let dot = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 7, weight: .regular))
+            .withSymbolConfiguration(
+                NSImage.SymbolConfiguration(pointSize: 7, weight: .regular)
+                    .applying(NSImage.SymbolConfiguration(paletteColors: [tint]))
+            )
+        // Coloured, so not a template: a menu tints a template image with its own ink.
+        dot?.isTemplate = false
         for row in rows {
             let session = entry(row.label, #selector(openSession(_:)))
             session.representedObject = row.id

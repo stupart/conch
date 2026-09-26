@@ -554,7 +554,9 @@ struct ComposerView: View {
     private var micBackground: Color {
         switch voiceState {
         case "listening", "recording": return ConchPalette.brandCyan
-        case "transcribing": return ConchPalette.statusWorking
+        // What you said going in, a moment before the agent is at work on it: working's blue,
+        // as the sidebar draws the same moment. The black ellipsis reads 5.76:1 on it in light, 7.62 in dark.
+        case "transcribing": return ConchPalette.statusActive
         case "speaking": return ConchPalette.fill
         default: return ConchPalette.fill
         }
@@ -585,7 +587,7 @@ struct ComposerView: View {
     private var micCaptionColor: Color {
         switch voiceState {
         case "listening", "recording": return ConchPalette.brandCyan
-        case "transcribing": return ConchPalette.statusWorking
+        case "transcribing": return ConchPalette.statusActive
         case "speaking": return ConchPalette.statusReview
         default: return ConchPalette.textDim
         }

@@ -42,7 +42,7 @@ struct WorkspaceNotices: View {
             Button("Relaunch", action: store.relaunchForNewBuild)
                 .buttonStyle(.plain)
                 .font(ConchTypography.font(size: 11, weight: .medium))
-                .foregroundStyle(ConchPalette.statusWorking)
+                .foregroundStyle(ConchPalette.statusQuiet)
         }
         .foregroundStyle(ConchPalette.statusWaiting)
         .padding(.horizontal, 16)
@@ -68,7 +68,7 @@ struct WorkspaceNotices: View {
             Button("Start", action: daemon.start)
                 .buttonStyle(.plain)
                 .font(ConchTypography.font(size: 11, weight: .medium))
-                .foregroundStyle(ConchPalette.statusWorking)
+                .foregroundStyle(ConchPalette.statusQuiet)
         }
         .foregroundStyle(ConchPalette.statusWaiting)
         .padding(.horizontal, 16)
@@ -197,7 +197,7 @@ private struct PluginHintBar: View {
             } label: {
                 Text(copied ? "Copied" : "Copy command")
                     .font(ConchTypography.font(size: 11))
-                    .foregroundStyle(copied ? ConchPalette.statusWorking : ConchPalette.textPrimary)
+                    .foregroundStyle(copied ? ConchPalette.statusQuiet : ConchPalette.textPrimary)
             }
             .buttonStyle(.plain)
             .help(Self.command)

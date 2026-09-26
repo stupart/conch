@@ -684,6 +684,15 @@ public struct FogSession: Identifiable, Equatable, Sendable {
         self.standing = standing
     }
 
+    /// The colour of a standing's mark in the switcher: ready's green, working's blue. The rest draw no mark.
+    static func markColor(_ standing: Standing) -> ConchColorToken {
+        switch standing {
+        case .ready: ConchColor.ready
+        case .working: ConchColor.active
+        case .other: ConchColor.overlayTextSecondary
+        }
+    }
+
     /// Ready for you first, then working, then the rest, each group in the order the daemon sent it.
     public static func ordered(_ sessions: [FogSession]) -> [FogSession] {
         sessions.enumerated()
@@ -1945,10 +1954,11 @@ private struct FogSwitcher: View {
         let here = session.id == current
         return Button { onPick(session.id) } label: {
             HStack(spacing: ConchSpace.x2) {
-                // The menu bar menu's marks: a dot for ready, a ring for working.
+                // The menu bar menu's marks: a dot for ready, a ring for working, in the sidebar's colours for the same
+                // two states. Working was the secondary ink; it is `active`'s blue wherever a session is at work.
                 Image(systemName: session.standing == .ready ? "circle.fill" : "circle")
                     .font(.system(size: 7))
-                    .foregroundStyle(session.standing == .ready ? ConchColor.ready : ConchColor.overlayTextSecondary)
+                    .foregroundStyle(FogSession.markColor(session.standing))
                     .opacity(session.standing == .other ? 0 : 1)
                 FogAgentMark(session: session)
                 Text(session.label)

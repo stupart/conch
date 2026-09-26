@@ -1226,7 +1226,10 @@ struct ConversationStackView: View {
         switch status {
         case "error": return ConchPalette.statusNeeds
         case "done": return ConchPalette.textFaint
-        default: return ConchPalette.statusWorking
+        // Faint, not working's blue. A tool call is "running" until its result lands, and one
+        // whose result never does (an interrupted turn, a question answered elsewhere) reads
+        // running for good, so blue here would claim work that stopped long ago.
+        default: return ConchPalette.statusQuiet
         }
     }
 }
@@ -1642,7 +1645,8 @@ private struct PlanRow: View {
     private func colour(_ status: ConversationItem.PlanStep.Status) -> Color {
         switch status {
         case .done: return ConchPalette.brandCyan
-        case .running: return ConchPalette.statusWorking
+        // Faint for the tool call's reason: a plan left mid-step when its turn ended still says running.
+        case .running: return ConchPalette.statusQuiet
         case .pending: return ConchPalette.textFaint
         }
     }
