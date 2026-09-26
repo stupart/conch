@@ -4,11 +4,19 @@ import SwiftUI
 
 /// A borderless panel over every app, on every space, and out of the window cycle (M3). Non-activating: a
 /// click in it never makes conch the active app. It becomes key only if `takesKeys`, and then, with
-/// `becomesKeyOnlyIfNeeded`, only when a view that needs the keyboard (the fog's reply field) is clicked.
+/// `becomesKeyOnlyIfNeeded`, only when a view that needs the keyboard (the fog's reply field) is clicked, or when the
+/// fog takes the keys itself (`FloatingPanels.takeKeys`).
 final class FloatingPanel: NSPanel {
     var takesKeys = false
+    /// The panel's own keys, seen before whatever view has the keyboard: true when it was one of them (`PanelKeys`).
+    var onKey: ((NSEvent) -> Bool)?
     override var canBecomeKey: Bool { takesKeys }
     override var canBecomeMain: Bool { false }
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .keyDown, let onKey, onKey(event) { return }
+        super.sendEvent(event)
+    }
 }
 
 /// The first click on a control acts. conch never comes forward, so there is no click to focus it first. For the same
@@ -164,15 +172,34 @@ final class FloatingPanels: ObservableObject {
     }
 
     /// While the canvas's pen is down its glass takes every click, so docked the panel rises over it, and its own controls
-    /// still work; full screen it stays under, since it is what is being marked up (`CanvasController.apply`).
+    /// still work; full screen it stays under, since it is what is being marked up (`CanvasController.apply`). Full screen
+    /// from the moment it starts to grow, so it never rides over the glass on the way.
     func overGlass(_ over: Bool) {
         let level: NSWindow.Level = over && !isFullScreen ? NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1) : .floating
         if fog.level != level { fog.level = level }
     }
 
-    /// The fog fills its screen; leaving docks it back in its corner.
+    /// The fog fills its screen; leaving docks it back in its corner. Set as the morph starts: the words follow `form`.
     @Published private(set) var isFullScreen = false
     @Published private(set) var isCollapsed = false
+    /// What the panel has landed as, which is what its words lay out for: the frame morphs first, and the words, laid out
+    /// for where it is going, come back once it has all but arrived (`arrive`). Never full-screen type in a docked-size
+    /// window, nor docked type in a full-screen one.
+    enum Form: Equatable { case docked, fullScreen, collapsed }
+    @Published private(set) var form = Form.docked
+    /// The words and buttons, or the handle, show: out as the frame starts to morph, back `ConchMotion.revealDelay` after
+    /// it lands.
+    @Published private(set) var revealed = true
+    /// The glass under the words, where it is in the window and its corner, frame by frame as it morphs.
+    @Published private(set) var glass = PanelGlass.Geometry.docked
+    /// The glass shows: everywhere but the collapsed handle, which draws its own.
+    @Published private(set) var glassShows = true
+    /// Where the words lay out: the glass of the form the panel landed in, and the screen's insets over its window then.
+    /// Held while the frame morphs.
+    @Published private(set) var laidGlass = PanelGlass.Geometry.docked
+    @Published private(set) var laidInsets = EdgeInsets()
+    /// The row the keyboard has picked out in the open switcher.
+    @Published private(set) var switcherSelection: SessionRow.ID?
     /// The screen corner the fog is docked in.
     @Published private(set) var corner: FogCorner = .bottomLeading
     /// Where the Dock and the menu bar overlap the fog, so its words stay clear of them.
@@ -200,12 +227,24 @@ final class FloatingPanels: ObservableObject {
     /// Told when the fog starts or stops covering the screen (`coverChanged`).
     private weak var store: StateStore?
     /// The panel's session switcher is open. Here rather than in the view, so a press anywhere else on the fog, which is
-    /// AppKit's (`pressed`), closes it.
-    @Published var switching = false
+    /// AppKit's (`pressed`), closes it; so does a click in any other app, or the panel losing the keys. Open, it has the
+    /// keys, for Esc, ↑, ↓ and Return.
+    @Published var switching = false {
+        didSet { if switching != oldValue { switchingChanged() } }
+    }
     /// The reply line shows (`ConchStatusItem.showReplyLineKey`).
     @Published private(set) var showsReply = true
-    /// Full screen and back on the morph spring: the frame it left, the frame it is going to, and how far along it is.
-    private var morphing: (from: NSRect, to: NSRect, progress: CGFloat, velocity: CGFloat)?
+    /// Full screen, docked or collapsed on the morph spring: the frame it left and the frame it is going to, the glass in
+    /// each, the form it lands as, whether the words have come back for it, and how far along it is.
+    private var morphing: (from: NSRect, to: NSRect, glassFrom: PanelGlass.Geometry, glassTo: PanelGlass.Geometry, form: Form, arrived: Bool, progress: CGFloat, velocity: CGFloat)?
+    /// How far along a morph the words come back for where it is going: all but there.
+    private static let arrives: CGFloat = 0.99
+    /// When the words come back, on the display's clock.
+    private var revealAt: TimeInterval?
+    /// The words' view held at the size it had as a morph began, in its corner, so it never lays out again mid-morph.
+    private var wordsFrozen: CGSize?
+    /// Set once the panels are up: anything before (a collapsed panel restored at launch) lands at once.
+    private var settled = false
     /// Where the fog is, at what size, and how it is moving; kept through collapsing and full screen.
     private var motion = FogMotion(size: CGSize(width: 900, height: 640), corner: .bottomLeading, in: .zero)
     /// Where the fog's buttons and reply line are (`FogControls`): a press there is theirs.
@@ -221,6 +260,10 @@ final class FloatingPanels: ObservableObject {
     private var defaultsObserver: NSObjectProtocol?
     private var screenObserver: NSObjectProtocol?
     private var activationObserver: NSObjectProtocol?
+    private var resignObserver: NSObjectProtocol?
+    /// While the switcher is open: a click in any other app closes it. conch is never the app in front, so no activation
+    /// says so.
+    private var outsideClicks: Any?
 
     /// The look's mask for the blur. A behind-window blur ignores layer masks, so NSVisualEffectView takes this small image
     /// and stretches it to its own size.
@@ -245,6 +288,9 @@ final class FloatingPanels: ObservableObject {
             panel.isOpaque = false
             panel.hasShadow = false
         }
+        // Never shown, but what VoiceOver names each window by.
+        controlBar.title = "Voice controls"
+        fog.title = "Conversation"
 
         let bar = FirstClickHostingView(rootView: ControlBarHost(store: store, queue: queue, panels: self, onSize: { [weak self] size in self?.fitControlBar(to: size) }))
         controlBar.contentView = bar
@@ -255,6 +301,7 @@ final class FloatingPanels: ObservableObject {
 
         fog.takesKeys = true
         fog.becomesKeyOnlyIfNeeded = true
+        fog.onKey = { [weak self] event in MainActor.assumeIsolated { self?.key(event) ?? false } }
         // conch moves and resizes the fog itself (dragMoved, resizeMoved), so the window server never races it.
         fog.isMovableByWindowBackground = false
         // Every click inside the panel is the fog's. Left alone, the window server lets clicks through a see-through
@@ -266,7 +313,8 @@ final class FloatingPanels: ObservableObject {
         UserDefaults.standard.register(defaults: Look.defaults)
         blur.blendingMode = .behindWindow
         blur.state = .active
-        blur.isHidden = !Self.showsFog || (Self.usesGlass && !isFullScreen)
+        // Liquid Glass draws the panel, docked and full screen alike: the blur is only for below macOS 26 (`showBlur`).
+        blur.isHidden = !Self.showsFog || Self.usesGlass
         // The blur, its look and the words are siblings: a visual effect view's mask shapes everything inside it, which
         // faded the words with the fog and hid the collapsed handle along with the blur.
         container.panels = self
@@ -302,13 +350,25 @@ final class FloatingPanels: ObservableObject {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.redock() }
         }
-        // Another app coming forward mid-drag takes the pointer with it: the gesture ends there, with no throw.
+        // Another app coming forward mid-drag takes the pointer with it: the gesture ends there, with no throw. It closes
+        // the switcher too, as a click outside a menu does.
         activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.released(cancelled: true) }
+            MainActor.assumeIsolated {
+                self?.released(cancelled: true)
+                self?.switching = false
+            }
+        }
+        // The keys gone to another window: the switcher they drove closes.
+        resignObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification,
+            object: fog,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.switching = false }
         }
 
         applyLook()
@@ -329,6 +389,7 @@ final class FloatingPanels: ObservableObject {
             MainActor.assumeIsolated { self?.showWhatIsOn() }
         }
         showWhatIsOn()
+        settled = true
     }
 
     /// Where it was last left, or where it starts; saved under `name` from then on.
@@ -443,60 +504,62 @@ final class FloatingPanels: ObservableObject {
         UserDefaults.standard.set(!isCollapsed, forKey: Self.conversationCollapsedKey)
     }
 
-    /// Collapsed, the fog is a small hover area in its corner, clear of the Dock and the menu bar; opened, it docks
-    /// there again at the size it had.
+    /// Collapsed, the fog is a small hover area in its corner, clear of the Dock and the menu bar: the glass shrinks into
+    /// the handle's circle on the morph spring and the handle takes over from it. Opened, it docks there again at the size
+    /// it had, the glass growing out of the handle. Full screen, it goes straight to the handle.
     private func setCollapsed(_ collapsed: Bool) {
         guard collapsed != isCollapsed else { return }
-        if collapsed, isFullScreen { toggleFullScreen() }
-        // Its frame is set here, not by a morph still on its way.
-        morphing = nil
         switching = false
         isCollapsed = collapsed
         guard let screen = screen() else { return }
-        // Whatever it was doing ends in its corner, where it opens again.
-        dock(corner, on: screen)
         if collapsed {
+            if isFullScreen {
+                // It no longer covers the screen, and the keys it took for full screen go back.
+                isFullScreen = false
+                coverChanged()
+                giveKeysBack()
+            } else {
+                // Whatever it was doing ends in its corner, where it opens again.
+                dock(corner, on: screen)
+            }
             // Not saved while collapsed, so the saved frame stays the open one.
             fog.setFrameAutosaveName("")
             let side = FogHandle.side
-            fog.setFrame(FogDock.frame(size: CGSize(width: side, height: side), corner: corner, in: screen.visibleFrame), display: true)
-            blur.isHidden = true
+            morph(to: FogDock.frame(size: CGSize(width: side, height: side), corner: corner, in: screen.visibleFrame), form: .collapsed)
         } else {
-            fog.setFrameAutosaveName(Self.conversationFrameName)
-            blur.isHidden = !Self.showsFog || (Self.usesGlass && !isFullScreen)
-            // Its mask waited while it was hidden (`setLook`).
-            if !blur.isHidden { blur.maskImage = blurMask() }
+            // Docked in its corner at the size it had, from the handle's own frame: `dock` would set the docked frame at
+            // once. Saved again once it has landed (`landed`).
+            motion.dock(corner, in: screen.frame)
+            glassShows = true
+            morph(to: FogDock.frame(size: motion.size, corner: corner, in: screen.frame), form: .docked)
         }
+        showBlur()
     }
 
-    /// Command-Return, the fog's button, or a pick the panel shows itself (`showInPanel`): fill the screen, or dock back in
-    /// its corner at the size it had.
+    /// Command-Return, the fog's button, Esc, or a pick the panel shows itself (`showInPanel`): fill the screen, or dock
+    /// back in its corner at the size it had. It stays glass all the way, the corner easing from 30 to 26 as it grows to
+    /// 12 pt from the screen's edges (`PanelGlass.Geometry`), and the words come back laid out for where it landed.
     func toggleFullScreen() {
-        guard let screen = screen() else { return }
+        guard !isCollapsed, let screen = screen() else { return }
         dock(corner, on: screen)
+        switching = false
         if isFullScreen {
             isFullScreen = false
             let frame = FogDock.frame(size: motion.size, corner: corner, in: screen.frame)
-            morph(to: frame)
             updateInsets(frame, on: screen)
-            // Hidden again under the glass, as at launch; left showing, it stayed on behind the docked panel after the
-            // first full screen, its mask redrawn every frame of a drag.
-            blur.isHidden = !Self.showsFog || Self.usesGlass
-            if !blur.isHidden { blur.maskImage = blurMask() }
+            morph(to: frame, form: .docked)
+            // The keys it took for full screen go back to the app in front.
+            giveKeysBack()
         } else {
             fog.setFrameAutosaveName("")
             // Full screen before the morph starts, so a morph that lands at once (Reduce Motion) never saves this frame.
             isFullScreen = true
-            morph(to: screen.frame)
-            // The glass panel is a rounded rect in a corner; full screen is the whole screen, so `FogLookHost` leaves
-            // it out and the behind-window blur comes back to soften the work under the words. Without it the only
-            // thing painting was ConversationFog's wash — a gradient over an UNBLURRED desktop, which is why the text
-            // stopped being readable (Tyler: "on the converation overlay fullscreen mode the background fo teh panel
-            // dissapears"). panel.html blurs the work AND washes it; this had kept only the wash.
-            blur.isHidden = !Self.showsFog
             updateInsets(screen.frame, on: screen)
-            blur.maskImage = nil
+            morph(to: screen.frame, form: .fullScreen)
+            // Full screen, the panel is what is on screen, so it takes the keys: Esc, Command-Return and the rest reach it.
+            takeKeys()
         }
+        showBlur()
         coverChanged()
     }
 
@@ -514,30 +577,171 @@ final class FloatingPanels: ObservableObject {
 
     /// On and open, now, for an open that shows in the panel and for the first open from the pill or the menu
     /// (`ConchStatusItem.open`): the menu's own defaults, so it stays on, applied at once rather than when their notice
-    /// comes, so what follows finds the panel out.
+    /// comes, so what follows finds the panel out. Folded, it opens on the morph; a full screen asked for next picks the
+    /// morph up from wherever it is.
     func bringOut() {
         UserDefaults.standard.set(true, forKey: ConchStatusItem.showConversationKey)
         UserDefaults.standard.set(false, forKey: Self.conversationCollapsedKey)
         showWhatIsOn()
     }
 
-    /// The fog's frame to `target` on the morph spring (ConchMotion's for full screen), stepped on the display's frames
-    /// with the rest of its motion; at once under Reduce Motion. It was AppKit's own resize animation, which no spring
-    /// could tune.
-    private func morph(to target: NSRect) {
-        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+    /// The glass for each form: 24 pt in with the panel's corner docked, 12 pt from the screen's edges full screen, the
+    /// handle's circle collapsed.
+    private func geometry(for form: Form) -> PanelGlass.Geometry {
+        switch form {
+        case .docked: .docked
+        case .fullScreen: .fullScreen(menuBar: insets.top)
+        case .collapsed: .collapsed(corner: corner)
+        }
+    }
+
+    /// The fog's frame and its glass to `target` on the morph spring (ConchMotion's), stepped on the display's frames with
+    /// the rest of its motion; at once under Reduce Motion, and before the panels are up. The words step aside as it
+    /// starts, held as they were rather than laid out again at every size on the way, and come back for `form` once it
+    /// has all but landed (`arrive`). It was AppKit's own resize animation, which no spring could tune, and then a frame
+    /// that went full screen before the glass did.
+    private func morph(to target: NSRect, form next: Form) {
+        let from = glass, to = geometry(for: next)
+        revealAt = nil
+        revealed = false
+        if wordsFrozen == nil { wordsFrozen = words.frame.size }
+        guard settled, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
             morphing = nil
             fog.setFrame(target, display: true)
+            glass = to
+            arrive(next, at: 0)
             return landed()
         }
-        morphing = (from: fog.frame, to: target, progress: 0, velocity: 0)
+        morphing = (from: fog.frame, to: target, glassFrom: from, glassTo: to, form: next, arrived: false, progress: 0, velocity: 0)
         container.run(true)
+    }
+
+    /// The frame all but landed as `next`: the words lay out for it in the window's whole bounds, and come back `delay`
+    /// later, from a touch small and soft (`ConchMotion.reveal`). Collapsed, the glass gives way to the handle at once.
+    private func arrive(_ next: Form, at delay: TimeInterval) {
+        form = next
+        wordsFrozen = nil
+        laidGlass = geometry(for: next)
+        laidInsets = insets
+        glassShows = next != .collapsed
+        layOut(margin: EdgeInsets())
+        if delay > 0 {
+            revealAt = ProcessInfo.processInfo.systemUptime + delay
+            container.run(true)
+        } else {
+            revealed = true
+        }
     }
 
     /// Docked again, it is saved again: only once it is back, so the next launch never restores a frame from full screen
     /// or from on the way.
     private func landed() {
         if !isFullScreen, !isCollapsed { fog.setFrameAutosaveName(Self.conversationFrameName) }
+        showBlur()
+    }
+
+    /// The behind-window blur, below macOS 26 only: Liquid Glass draws its own. Docked, it lies under the look's mask; while
+    /// the panel morphs or fills the screen it is the glass's own rounded shape, so full screen is the same glass panel
+    /// there too, never a square. Hidden with the handle.
+    private func showBlur() {
+        let hidden = !Self.showsFog || Self.usesGlass || (form == .collapsed && morphing == nil)
+        if blur.isHidden != hidden { blur.isHidden = hidden }
+        // Drawn only while it shows: a hidden blur's mask is an image nobody sees.
+        if !blur.isHidden { blur.maskImage = isFullScreen || morphing != nil ? Self.roundedMask(radius: glass.radius) : blurMask() }
+        layOut(margin: EdgeInsets())
+    }
+
+    /// A rounded rect for the blur's mask, stretched to any size about its corners.
+    private static func roundedMask(radius: CGFloat) -> NSImage {
+        let side = 2 * radius + 1
+        let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+            return true
+        }
+        image.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
+        image.resizingMode = .stretch
+        return image
+    }
+
+    // MARK: The keys
+
+    /// A key on the panel while it has the keys (`PanelKeys`): full screen, the switcher open, or typing a reply. True when
+    /// it was the panel's; anything else goes on to the view with the keyboard.
+    private func key(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags
+        guard let action = PanelKeys.action(
+            key: event.keyCode,
+            command: flags.contains(.command),
+            option: flags.contains(.option),
+            control: flags.contains(.control),
+            shift: flags.contains(.shift),
+            switching: switching,
+            fullScreen: isFullScreen,
+            typing: fog.firstResponder is NSTextView
+        ) else { return false }
+        switch action {
+        case .fullScreen: toggleFullScreen()
+        case .exitFullScreen: if isFullScreen { toggleFullScreen() }
+        case .previous, .next:
+            // Only while something is held to walk to, as the buttons are; the panel's own walk (`from: .panel`).
+            guard let store, !ConchStatusItem.heldRows(store.state).isEmpty else { return false }
+            queue.walk(backward: action == .previous, from: .panel, store: store, panels: self)
+        case .collapse: toggleCollapsed()
+        case .closeSwitcher: switching = false
+        case let .move(step): switcherSelection = FogSession.selection(after: switcherSelection, in: switcherSessions, by: step)
+        case .pick:
+            guard let store, let id = switcherSelection else { return true }
+            queue.pick(id, store: store, panels: self)
+        case .giveBack: giveKeysBack()
+        }
+        return true
+    }
+
+    /// What the switcher lists, in its order, for the keyboard to walk.
+    private var switcherSessions: [FogSession] {
+        ConversationFogHost.sessions(store?.state, staged: staged, lastStaged: queue.lastStaged)
+    }
+
+    /// The panel takes the keys without bringing conch forward: a non-activating panel is key while the app in front stays
+    /// in front, as the canvas's glass is while the pen is down.
+    private func takeKeys() {
+        guard fog.isVisible, !fog.isKeyWindow else { return }
+        fog.makeKey()
+    }
+
+    /// The keys back to the app in front, which never stopped being in front: the canvas's way (`CanvasController`'s
+    /// `giveKeysBack`). A non-activating panel gives up the keyboard by leaving the screen, so it goes out and straight
+    /// back in within the turn. conch is never activated.
+    private func giveKeysBack() {
+        guard fog.isKeyWindow else { return }
+        fog.makeFirstResponder(nil)
+        fog.orderOut(nil)
+        fog.orderFrontRegardless()
+    }
+
+    /// Esc in the reply line, once the field has let go: docked, the keys go back to the app in front, so the next ones
+    /// reach it rather than a panel with nothing to type into. Full screen, or with the switcher open, the panel keeps them.
+    func replyLeft() {
+        guard !isFullScreen, !switching else { return }
+        giveKeysBack()
+    }
+
+    /// The switcher opened or closed. Open, it has the keys, the row on screen picked out, and a click in any other app
+    /// closes it; closed, the keys go back unless full screen or a reply being typed still wants them.
+    private func switchingChanged() {
+        if switching {
+            switcherSelection = ConversationFogHost.session(store?.state, staged: staged)?.id
+            takeKeys()
+            outsideClicks = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
+                MainActor.assumeIsolated { self?.switching = false }
+            }
+        } else {
+            if let outsideClicks { NSEvent.removeMonitor(outsideClicks) }
+            outsideClicks = nil
+            switcherSelection = nil
+            if !isFullScreen, !(fog.firstResponder is NSTextView) { giveKeysBack() }
+        }
     }
 
     // MARK: Docking
@@ -561,6 +765,8 @@ final class FloatingPanels: ObservableObject {
         if let screen = NSScreen.screens.first(where: { $0.frame == motion.screen }) {
             updateInsets(FogDock.frame(size: motion.size, corner: corner, in: screen.frame), on: screen)
         }
+        // Docked and still, the words follow the insets as it moves.
+        if laidInsets != insets { laidInsets = insets }
         var next = FogLook(motion, insets: insets)
         (next.resizeHover, next.darkness, next.tint, next.colour, next.scrim) = (resizeHover, darkness, look.tint, look.colour, look.scrim)
         // With no reply line, the look thickens behind the newest words themselves.
@@ -574,19 +780,26 @@ final class FloatingPanels: ObservableObject {
     }
 
     /// The words where the fog is in its window, and the blur and its look over the whole window. The container's origin
-    /// stays the fog's, so presses and control frames need no converting.
+    /// stays the fog's, so presses and control frames need no converting. Mid-morph the words keep the size they had, in
+    /// the fog's corner, rather than laying out again at every size on the way (`morph`); and below macOS 26 the blur is
+    /// the glass's own rect while it morphs or fills the screen.
     private func layOut(margin: EdgeInsets) {
         let origin = CGPoint(x: -margin.leading, y: -margin.top)
         if container.bounds.origin != origin { container.setBoundsOrigin(origin) }
         let bounds = container.bounds
-        blur.frame = bounds
+        let inset = glass.insets
+        blur.frame = isFullScreen || morphing != nil
+            ? CGRect(x: bounds.minX + inset.leading, y: bounds.minY + inset.top, width: max(0, bounds.width - inset.leading - inset.trailing), height: max(0, bounds.height - inset.top - inset.bottom))
+            : bounds
         lookHost.frame = bounds
-        words.frame = CGRect(x: 0, y: 0, width: bounds.width - margin.leading - margin.trailing, height: bounds.height - margin.top - margin.bottom)
+        let size = wordsFrozen ?? CGSize(width: bounds.width - margin.leading - margin.trailing, height: bounds.height - margin.top - margin.bottom)
+        // Top left, as the fog's view is flipped: a bottom corner holds the words to the bottom, a trailing one to the right.
+        let frame = CGRect(x: corner.leading ? 0 : bounds.width - size.width, y: corner.bottom ? bounds.height - size.height : 0, width: size.width, height: size.height)
+        if words.frame != frame { words.frame = frame }
     }
 
-    /// A new look, and the blur's mask drawn again for it: only while the blur shows. On Liquid Glass it is hidden but for
-    /// full screen, and drawing its mask on every frame of a drag drew an image nobody saw (`setCollapsed` draws it on the
-    /// way back).
+    /// A new look, and the blur's mask drawn again for it: only while the blur shows. On Liquid Glass it is always hidden,
+    /// and drawing its mask on every frame of a drag drew an image nobody saw (`showBlur` draws it on the way back).
     private func setLook(_ next: FogLook) {
         guard next != look else { return }
         look = next
@@ -643,10 +856,12 @@ final class FloatingPanels: ObservableObject {
         text.scroll(by: towardOldest, momentum: event.momentumPhase != [])
     }
 
-    /// Pressed near any edge, text included, the fog resizes from its docked corner; in the middle it moves.
+    /// Pressed near any edge, text included, the fog resizes from its docked corner; in the middle it moves. Not while it
+    /// morphs: the morph has the frame.
     func pressed() {
         // A press anywhere but the switcher closes it, as a click outside a menu does.
         if switching { switching = false }
+        guard morphing == nil, form != .collapsed else { return }
         motion.press(at: NSEvent.mouseLocation, time: ProcessInfo.processInfo.systemUptime)
         container.run(true)
     }
@@ -690,19 +905,31 @@ final class FloatingPanels: ObservableObject {
             darkness = darkTarget
             darkVelocity = 0
         }
-        if ConchSpring(bounce: 0, response: 0.3).step(&resizeHover, velocity: &hoverVelocity, to: hoverTarget, dt: dt) {
+        if ConchMotion.hover.step(&resizeHover, velocity: &hoverVelocity, to: hoverTarget, dt: dt) {
             resizeHover = hoverTarget
             hoverVelocity = 0
         }
-        let words = text.step(dt: dt, now: ProcessInfo.processInfo.systemUptime, reduceMotion: motion.reduceMotion)
+        let now = ProcessInfo.processInfo.systemUptime
+        let words = text.step(dt: dt, now: now, reduceMotion: motion.reduceMotion)
         if var morph = morphing {
             let done = ConchMotion.morph.step(&morph.progress, velocity: &morph.velocity, to: 1, dt: dt)
+            let arrives = !morph.arrived && (done || morph.progress >= Self.arrives)
+            morph.arrived = morph.arrived || arrives
             morphing = done ? nil : morph
             fog.setFrame(done ? morph.to : Self.frame(from: morph.from, to: morph.to, at: morph.progress), display: true)
+            glass = done ? morph.glassTo : PanelGlass.Geometry.lerp(morph.glassFrom, morph.glassTo, morph.progress)
+            // The window's shadow is drawn from the glass, whose shape just changed.
+            fog.invalidateShadow()
+            if arrives { arrive(morph.form, at: morph.form == .collapsed ? 0 : ConchMotion.revealDelay) }
+            showBlur()
             if done { landed() }
         }
+        if let at = revealAt, now >= at {
+            revealAt = nil
+            revealed = true
+        }
         apply()
-        if motion.isSettled, darkness == darkTarget, resizeHover == hoverTarget, morphing == nil, !words { container.run(false) }
+        if motion.isSettled, darkness == darkTarget, resizeHover == hoverTarget, morphing == nil, revealAt == nil, !words { container.run(false) }
     }
 }
 
@@ -819,6 +1046,14 @@ final class ReviewQueue: ObservableObject {
         return nil
     }
 
+    /// The version the panel is on was published again, newer (the same artifact, `SessionRow.newest(of:)`): the walk goes
+    /// on from the newest, so Next moves past it, and the agent's marks, which follow this key, are the newest's. Nothing is
+    /// counted opened by it.
+    func follow(to key: ReviewItem.ID) {
+        guard key != lastStaged else { return }
+        lastStaged = key
+    }
+
     /// A session picked in the panel's switcher: pinned, and its newest deliverable brought forward as the pill brings
     /// one, ready or not; with none, its words.
     func pick(_ id: SessionRow.ID, store: StateStore, panels: FloatingPanels) {
@@ -863,6 +1098,14 @@ extension SessionRow {
         return review.map { [$0] } ?? []
     }
 
+    /// The newest filing of the artifact `key` is a version of, among what this session holds (`DeliverableGroups`, the
+    /// dashboard's own grouping: the daemon's artifact, else the link): `key` itself when nothing newer has been published,
+    /// or when it is no longer held. A different artifact arriving is never a newer version of this one.
+    func newest(of key: ReviewItem.ID) -> ReviewItem.ID {
+        let versions = held.map { DeliverableVersion(id: ReviewItem(row: self, review: $0).id, link: $0.link, artifact: $0.artifact) }
+        return DeliverableGroups.newest(of: key, in: versions) ?? key
+    }
+
     /// This row with `review` as its newest, so `ConchStatusItem.stage`, which brings a row's `review` forward, brings
     /// an older held one.
     func holding(_ review: ReviewInfo) -> SessionRow {
@@ -886,19 +1129,43 @@ private struct ControlBarSize: PreferenceKey {
     static func reduce(value: inout CGSize, nextValue: () -> CGSize) { value = nextValue() }
 }
 
-/// The look over the fog's blur, in the voice's colour: the control bar's voice state.
+/// The glass under the words, in the voice's colour (the control bar's voice state), wherever the panel is on its way.
 private struct FogLookHost: View {
     @ObservedObject var store: StateStore
     @ObservedObject var panels: FloatingPanels
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        if FloatingPanels.showsFog, !panels.isCollapsed, !panels.isFullScreen {
+        if FloatingPanels.showsFog {
             // panel.html floats the panel off the corner (`left:24px;bottom:24px`) rather than hanging it flush, which
-            // is what lets all four corners round and the shadow read on every side. The window stays the docked frame,
-            // so the magnet, the docking contract and every motion test are untouched.
-            ConchGlassPanel(darkness: panels.look.darkness, voice: ConchStatusItem.voiceState(store.state))
-                .padding(FloatingPanels.glassInset)
+            // is what lets all four corners round and the shadow read on every side. It stays glass everywhere: docked,
+            // full screen, and on the way between them and into the collapsed handle, where it gives way to the handle
+            // (`PanelGlass.Geometry`). The window is the frame, so the magnet, the docking contract and every motion test
+            // are untouched.
+            ConchGlassPanel(darkness: panels.look.darkness, voice: ConchStatusItem.voiceState(store.state), radius: panels.glass.radius)
+                .padding(panels.glass.insets)
+                .animation(reduceMotion ? nil : ConchMotion.liftOff.animation(reduceMotion: false)) {
+                    $0.opacity(panels.glassShows ? 1 : 0)
+                }
         }
+    }
+}
+
+/// The panel's words and buttons, or its handle, stepping aside while the frame morphs and coming back once it lands
+/// (`FloatingPanels.revealed`): out quick, in on the reveal spring from a touch small and soft, as panel-lab's content
+/// fades in once the panel has room for it. Under Reduce Motion they cut.
+private struct Revealed: ViewModifier {
+    let shown: Bool
+    let reduceMotion: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .animation(reduceMotion ? nil : (shown ? ConchMotion.reveal : ConchMotion.liftOff).animation(reduceMotion: false)) {
+                $0.opacity(shown ? 1 : 0)
+                    .scaleEffect(shown || reduceMotion ? 1 : ConchMotion.revealScale)
+                    .blur(radius: shown || reduceMotion ? 0 : ConchMotion.revealBlur)
+            }
+            .allowsHitTesting(shown)
     }
 }
 
@@ -921,8 +1188,10 @@ private struct ConversationFogHost: View {
         let turns = row.map { Self.turns(store.state, $0, whole: history.fullBodies) } ?? []
         // Previous and Next only while something is held to walk to, looked at or not: with nothing they would do nothing.
         let walks = !ConchStatusItem.heldRows(store.state).isEmpty
+        // The words lay out for the form the panel has landed in, inside its glass (`FloatingPanels.laidGlass`).
+        let glass = panels.laidGlass
         Group {
-            if panels.isCollapsed {
+            if panels.form == .collapsed {
                 FogHandle(corner: panels.corner, hovering: panels.hovering) { panels.toggleCollapsed() }
             } else {
                 ConversationFog(
@@ -932,10 +1201,9 @@ private struct ConversationFogHost: View {
                     isListening: row.map { ["listening", "recording"].contains(voice(for: $0)) } ?? false,
                     // The store's own working state, not a timer: "Thinking" after your message until the reply comes.
                     isWorking: row?.status == .working,
-                    isFullScreen: panels.isFullScreen,
+                    isFullScreen: panels.form == .fullScreen,
                     corner: panels.corner,
-                    insets: panels.insets.less(FloatingPanels.glassInset),
-                    showsFog: FloatingPanels.showsFog,
+                    insets: panels.laidInsets.less(glass.insets),
                     look: panels.look,
                     floating: panels.floating,
                     hovering: panels.hovering,
@@ -943,13 +1211,20 @@ private struct ConversationFogHost: View {
                     // Built only while the switcher is open.
                     sessions: panels.switching ? Self.sessions(store.state, staged: panels.staged, lastStaged: queue.lastStaged) : [],
                     isSwitching: $panels.switching,
-                    showsReply: panels.showsReply,
-                    content: panels.isFullScreen ? row.flatMap(content(of:)) : nil,
+                    switcherSelection: panels.switcherSelection,
+                    // No session, nothing to reply to: no line to type into that goes nowhere.
+                    showsReply: panels.showsReply && row != nil,
+                    content: panels.form == .fullScreen ? row.flatMap(content(of:)) : nil,
+                    // What the store says of this session's last send: why a reply didn't go (`ConchSendFailure`).
+                    notice: row.flatMap { store.rowMessages[$0.id] },
+                    empty: row == nil ? Self.empty(store.liveness) : nil,
+                    speaking: Self.speaking(store.state, besides: row?.id),
                     onPick: { queue.pick($0, store: store, panels: panels) },
                     onPrevious: walks ? { queue.walk(backward: true, from: .panel, store: store, panels: panels) } : nil,
                     onNext: walks ? { queue.walk(from: .panel, store: store, panels: panels) } : nil,
                     onMic: { if let row { mic(row) } },
                     onSend: { if let row { send(row) } },
+                    onLeaveReply: { panels.replyLeft() },
                     onCollapse: { panels.toggleCollapsed() },
                     onFullScreen: { panels.toggleFullScreen() },
                     onCanvas: { canvas.toggle() },
@@ -959,12 +1234,13 @@ private struct ConversationFogHost: View {
                 // placed from the edge they are given, and left at the window's they sat out on the desktop beside the
                 // panel. Inside the Group, so `FogControls` frames and the presses they are matched against
                 // (`grabs`, in the container's space) move together; outside it they would not.
-                .padding(FloatingPanels.glassInset)
+                .padding(glass.insets)
                 // A throw's flight: it softens and shrinks a little mid-air, and lands whole. Reduce Motion keeps only the fade.
                 .scaleEffect(1 - (1 - ConchMotion.flightScale) * (reduceMotion ? 0 : panels.throwMotion))
                 .blur(radius: reduceMotion ? 0 : ConchMotion.flightBlur * panels.throwMotion)
             }
         }
+        .modifier(Revealed(shown: panels.revealed, reduceMotion: reduceMotion))
         // The palette crossfades with the look, light to dark.
         .environment(\.conchDarkness, panels.look.darkness)
         .environment(\.colorScheme, panels.look.darkness > 0.5 ? .dark : .light)
@@ -982,6 +1258,13 @@ private struct ConversationFogHost: View {
         .onChange(of: row?.id) { _, _ in if panels.isFullScreen { readWhole(row) } }
         .onChange(of: panels.isFullScreen) { _, full in if full { readWhole(row) } }
         .onChange(of: turns, initial: true) { _, turns in panels.text.update(turns: turns, now: ProcessInfo.processInfo.systemUptime) }
+        // A newer version of the item the panel is on, published again as the same artifact, is followed to: the queue's
+        // walk, and with it the header, full screen and the agent's marks (`AgentInkController`). Not while Tyler has marks
+        // of his own on the canvas, which a new item clears (`CanvasController`): they are on this version, and it follows
+        // once they are sent or thrown away.
+        .onChange(of: canvas.document?.has(.you) == true ? nil : Self.followed(store.state, staged: panels.staged, lastStaged: queue.lastStaged)) { _, newer in
+            if let newer { queue.follow(to: newer) }
+        }
     }
 
     /// The session the Ready pill staged, else the one the voice is on, else the daemon's active or selected one, else
@@ -989,6 +1272,24 @@ private struct ConversationFogHost: View {
     /// different session from the dashboard, but it must not resolve it by a different rule.
     static func session(_ state: PublishedState?, staged: SessionRow.ID? = nil) -> SessionRow? {
         state?.row(WorkspaceFocus.viewed(in: Workspace(state), pinned: staged))
+    }
+
+    /// With no session to show, what the panel says instead: the daemon not answering, or nothing to show yet. While it
+    /// is still finding out, nothing.
+    static func empty(_ liveness: DaemonLiveness) -> String? {
+        switch liveness {
+        case .checking: nil
+        case .alive: "No sessions yet"
+        case .dead, .stalled: "conch isn't running"
+        }
+    }
+
+    /// The session the voice is reading aloud, when it isn't the one the panel shows (`besides`): named in the panel's
+    /// header row, a click from it. The session the voice is on is the dashboard's rule (`WorkspaceFocus.addressed`).
+    static func speaking(_ state: PublishedState?, besides shown: SessionRow.ID?) -> FogSession? {
+        guard let state, state.live.state == "speaking", let id = WorkspaceFocus.addressed(in: Workspace(state)), id != shown,
+              let row = state.row(id) else { return nil }
+        return fogSession(row, item: nil)
     }
 
     /// Every session the switcher lists: ready for you and working as the menu bar menu groups them, then the rest
@@ -1010,13 +1311,22 @@ private struct ConversationFogHost: View {
         return FogSession(id: row.id, label: row.label, agent: codex ? "Codex" : "Claude", mark: codex ? "AgentCodex" : "AgentClaude", item: item, standing: standing)
     }
 
-    /// The item a session is on: the review the queue brought forward when this is the session it staged, else the
-    /// session's newest held one; with none, nothing. The header names it, and full screen shows it.
+    /// The item a session is on: the review the queue brought forward when this is the session it staged (which follows a
+    /// newer version of it, `followed`), else the session's newest held one; with none, nothing. The header names it, and
+    /// full screen shows it.
     static func review(of row: SessionRow, staged: SessionRow.ID?, lastStaged: ReviewItem.ID?) -> ReviewInfo? {
         if row.id == staged, let review = row.held.first(where: { ReviewItem(row: row, review: $0).id == lastStaged }) {
             return review
         }
         return row.review
+    }
+
+    /// The newer version the queue should follow to, when the item it brought forward has been published again as the same
+    /// artifact; nil while it is the newest, or the panel isn't on the session it staged.
+    static func followed(_ state: PublishedState?, staged: SessionRow.ID?, lastStaged: ReviewItem.ID?) -> ReviewItem.ID? {
+        guard let lastStaged, let row = state?.row(staged) else { return nil }
+        let newest = row.newest(of: lastStaged)
+        return newest == lastStaged ? nil : newest
     }
 
     /// Full screen, the item the header names, in the panel itself when it is one the panel draws

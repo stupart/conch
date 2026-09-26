@@ -114,9 +114,9 @@ final class ConchDesignTests: XCTestCase {
         XCTAssertEqual(ConversationFog.buttonsY(in: size, corner: .topTrailing, insets: ConversationFog.buttonInsets(EdgeInsets(top: 33, leading: 0, bottom: 70, trailing: 0)), fullScreen: false), 33 + ConversationFog.padding, accuracy: 0.01)
         XCTAssertEqual(ConversationFog.buttonsAlignment(corner: .bottomTrailing, fullScreen: false), .trailing)
         XCTAssertEqual(ConversationFog.buttonsAlignment(corner: .bottomLeading, fullScreen: false), .leading)
-        // A column up to 620 wide, 52 pt in from its side.
+        // A column up to 620 wide, 24 pt in from its side: the buttons' own edge.
         XCTAssertEqual(text.width, 620, accuracy: 0.01)
-        XCTAssertEqual(text.minX, 52, accuracy: 0.01)
+        XCTAssertEqual(text.minX, 24, accuracy: 0.01)
     }
 
     /// The springs are the overlay lab's, in SwiftUI's own terms, so the apps move the way the lab felt.

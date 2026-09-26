@@ -7,6 +7,9 @@ extension EnvironmentValues {
     /// Set by the overlay: how far its palette has crossfaded from light (0) to dark (1). Colour tokens follow it rather
     /// than the colour scheme, so the words turn with the look.
     @Entry public var conchDarkness: Double? = nil
+    /// How much of the overlay's button fills show, 0 to 1: all of them while the pointer is over the panel, none while it
+    /// is away. Only the fills fade, never the icons or the words on them, which keep their contrast.
+    @Entry public var overlayFills: Double = 1
 }
 
 // MARK: - VoiceGlyph
@@ -264,14 +267,23 @@ public struct IconButton: View {
     let label: String
     let style: Style
     let size: CGFloat
+    /// The key that does the same, named in its tooltip: "Full screen (⌘↩)".
+    let shortcut: String?
     let action: () -> Void
+    @Environment(\.overlayFills) private var fills
 
-    public init(_ systemName: String, label: String, style: Style = .plain, size: CGFloat = 36, action: @escaping () -> Void) {
+    public init(_ systemName: String, label: String, style: Style = .plain, size: CGFloat = 36, shortcut: String? = nil, action: @escaping () -> Void) {
         self.systemName = systemName
         self.label = label
         self.style = style
         self.size = size
+        self.shortcut = shortcut
         self.action = action
+    }
+
+    /// The tooltip: what it does, and its key when it has one.
+    public static func help(_ label: String, shortcut: String?) -> String {
+        shortcut.map { "\(label) (\($0))" } ?? label
     }
 
     public var body: some View {
@@ -287,11 +299,13 @@ public struct IconButton: View {
                     case .glass:
                         Circle().fill(ConchColor.overlayGlass)
                             .overlay(Circle().strokeBorder(ConchColor.overlayLine, lineWidth: 0.5))
+                            .opacity(fills)
                     }
                 }
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
+        .help(Self.help(label, shortcut: shortcut))
         .accessibilityLabel(label)
     }
 }
@@ -299,8 +313,8 @@ public struct IconButton: View {
 // MARK: - InlineReplyLine
 
 /// Replying without a text box: the mic comes first, then your words in the conversation's own type. Return sends,
-/// Shift-Return starts a new line and Esc leaves the field. Its host gives it its height (`FogReply`): it grows to five
-/// lines, then scrolls inside itself.
+/// Shift-Return starts a new line and Esc leaves the field, and then `onLeave`, for a host that gives the keys back. Its
+/// host gives it its height (`FogReply`): it grows to five lines, then scrolls inside itself.
 public struct InlineReplyLine: View {
     @Binding var text: String
     let isListening: Bool
@@ -312,6 +326,7 @@ public struct InlineReplyLine: View {
     let overflows: Bool
     let onMic: () -> Void
     let onSend: () -> Void
+    let onLeave: (() -> Void)?
     @Environment(\.conchRendersStatically) private var rendersStatically
 
     public init(
@@ -322,7 +337,8 @@ public struct InlineReplyLine: View {
         alignsTop: Bool = false,
         overflows: Bool = false,
         onMic: @escaping () -> Void,
-        onSend: @escaping () -> Void
+        onSend: @escaping () -> Void,
+        onLeave: (() -> Void)? = nil
     ) {
         _text = text
         self.isListening = isListening
@@ -332,6 +348,7 @@ public struct InlineReplyLine: View {
         self.overflows = overflows
         self.onMic = onMic
         self.onSend = onSend
+        self.onLeave = onLeave
     }
 
     public var body: some View {
@@ -365,7 +382,7 @@ public struct InlineReplyLine: View {
                         .padding(.vertical, FogReply.padding(fontSize))
                 } else {
                     #if os(macOS)
-                    ReplyField(text: $text, fontSize: fontSize, onSend: onSend)
+                    ReplyField(text: $text, fontSize: fontSize, onSend: onSend, onLeave: onLeave)
                     #else
                     TextField("", text: $text, axis: .vertical)
                         .textFieldStyle(.plain)
@@ -388,7 +405,7 @@ public struct InlineReplyLine: View {
                 if text.isEmpty {
                     HStack(spacing: 6.5) {
                         if rendersStatically { caret }
-                        Text(placeholder)
+                        Text(placeholder).lineLimit(1)
                     }
                     .font(.system(size: fontSize, weight: .medium))
                     .tracking(-0.014 * fontSize)
@@ -414,6 +431,7 @@ private struct ReplyField: NSViewRepresentable {
     @Binding var text: String
     let fontSize: CGFloat
     let onSend: () -> Void
+    let onLeave: (() -> Void)?
     @Environment(\.conchDarkness) private var darkness
     @Environment(\.colorScheme) private var scheme
 
@@ -441,7 +459,10 @@ private struct ReplyField: NSViewRepresentable {
             switch FogReply.key(returnKey: returnKey, shift: flags.contains(.shift), option: flags.contains(.option)) {
             case .send: field.onSend()
             case .newline: view.insertNewlineIgnoringFieldEditor(nil)
-            case .leave: view.window?.makeFirstResponder(nil)
+            case .leave:
+                view.window?.makeFirstResponder(nil)
+                // Left, the field no longer wants the keys; the host decides whether the panel keeps them.
+                field.onLeave?()
             }
             return true
         }
@@ -777,6 +798,15 @@ public struct FogSession: Identifiable, Equatable, Sendable {
             case .other: "Other sessions"
             }
         }
+
+        /// What VoiceOver says of a row after its name, as its mark says it to the eye; the rest say nothing.
+        var spoken: String {
+            switch self {
+            case .ready: "Ready"
+            case .working: "Working"
+            case .other: ""
+            }
+        }
     }
 
     public let id: String
@@ -798,6 +828,19 @@ public struct FogSession: Identifiable, Equatable, Sendable {
         let item = item?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         self.item = item.isEmpty ? nil : item
         self.standing = standing
+    }
+
+    /// This session naming another item, or none.
+    public func with(item: String?) -> FogSession {
+        FogSession(id: id, label: label, agent: agent, mark: mark, item: item, standing: standing)
+    }
+
+    /// The switcher's keyboard selection moved `by` rows from `current`, stopping at either end rather than wrapping (the
+    /// lab's clamp). None yet, or one no longer listed, starts from the first.
+    public static func selection(after current: String?, in sessions: [FogSession], by step: Int) -> String? {
+        guard !sessions.isEmpty else { return nil }
+        guard let index = sessions.firstIndex(where: { $0.id == current }) else { return sessions[0].id }
+        return sessions[min(max(index + step, 0), sessions.count - 1)].id
     }
 
     /// A standing's mark in the switcher, the menu bar menu's own (`StatusMenu.Dot`): a filled dot for ready and for
@@ -889,7 +932,13 @@ public extension EdgeInsets {
     /// These insets with `amount` taken off each side, never below zero: the screen's edges are that much further from a
     /// panel that floats in from them.
     func less(_ amount: CGFloat) -> EdgeInsets {
-        EdgeInsets(top: max(0, top - amount), leading: max(0, leading - amount), bottom: max(0, bottom - amount), trailing: max(0, trailing - amount))
+        less(EdgeInsets(top: amount, leading: amount, bottom: amount, trailing: amount))
+    }
+
+    /// These insets with each of `other`'s sides taken off its own, never below zero: the screen's edges as seen from a
+    /// glass that sits `other` in from its window.
+    func less(_ other: EdgeInsets) -> EdgeInsets {
+        EdgeInsets(top: max(0, top - other.top), leading: max(0, leading - other.leading), bottom: max(0, bottom - other.bottom), trailing: max(0, trailing - other.trailing))
     }
 }
 
@@ -1111,11 +1160,11 @@ public struct FogMotion {
             if flight == nil { origin = docked }
         }
         let goal: CGFloat = gesture.map { $0.resizes ? 0 : 1 } ?? (flight == nil ? 0 : min(1, hypot(docked.x - origin.x, docked.y - origin.y) / 90))
-        if ConchSpring(bounce: 0, response: 0.2).step(&flying, velocity: &flyingVelocity, to: goal, dt: dt) {
+        if ConchMotion.liftOff.step(&flying, velocity: &flyingVelocity, to: goal, dt: dt) {
             flying = goal
             flyingVelocity = 0
         }
-        if ConchSpring(bounce: 0, response: 0.22).step(&free, velocity: &freeVelocity, to: isMoving ? 1 : 0, dt: dt) {
+        if ConchMotion.liftOff.step(&free, velocity: &freeVelocity, to: isMoving ? 1 : 0, dt: dt) {
             free = isMoving ? 1 : 0
             freeVelocity = 0
         }
@@ -1220,9 +1269,8 @@ extension View {
 /// as the overlay lab has them (~/Projects/conch-design/overlay-lab.html). The newest reply is large and its words come
 /// in one by one (`WordReveal`); the transcript scrolls under the reader's wheel and otherwise follows the newest line
 /// (`FogScroll`), fading out toward its far end; and the reply line grows under it (`FogReply`). Hanging from a top corner
-/// it all runs top-down, the newest nearest the top. The blur is the host's (a behind-window visual effect view on the
-/// Mac, masked with `FogLook.mask`), and so is the look over it (`FogLookView`); this draws the words, and collapse and
-/// full-screen buttons that brighten on hover.
+/// it all runs top-down, the newest nearest the top. The glass is the host's (`ConchGlassPanel` on the Mac, under the
+/// words as a sibling); this draws the words, and the panel's buttons, whose fills come in on hover.
 public struct ConversationFog: View {
     let turns: [ConversationTurn]
     @Binding var draft: String
@@ -1236,15 +1284,13 @@ public struct ConversationFog: View {
     let corner: FogCorner
     /// Where the Dock and the menu bar overlap the fog, so the words stay clear of them.
     let insets: EdgeInsets
-    /// Draws the full screen's wash; off, the words and buttons stand alone.
-    let showsFog: Bool
     /// The look under the words: they fade where its blur does, and off a corner its magnet moves them.
     let look: FogLook?
     /// Draws the collapse and full-screen buttons; a host that layers its own controls over the fog draws them itself.
     let showsButtons: Bool
     /// Off its corner, dragged or in flight: the buttons hide.
     let floating: Bool
-    /// The pointer is over the fog: the buttons show fully.
+    /// The pointer is over the fog: the buttons' fills show.
     let hovering: Bool
     /// The session the words are from, named beside the buttons (`FogHeader`); nil names none.
     let session: FogSession?
@@ -1252,17 +1298,27 @@ public struct ConversationFog: View {
     let sessions: [FogSession]
     /// The switcher is open. The host's, so a press anywhere else on the fog can close it.
     @Binding var isSwitching: Bool
+    /// The row the keyboard has picked out in the open switcher (↑ and ↓), the host's since it has the keys.
+    let switcherSelection: String?
     /// The reply line; off, the transcript takes its room (the menu bar's Show Reply Line).
     let showsReply: Bool
     /// Full screen, the deliverable the panel is on, under the button row in place of the words; the reply line floats at
     /// its foot. Docked, the words as ever.
     let content: FogContent?
+    /// Under the reply line: why the last reply didn't go, in the sentence the store has for it (`ConchSendFailure`).
+    let notice: String?
+    /// With no session to show, what to say instead of the words: "No sessions yet", or that conch isn't running.
+    let empty: String?
+    /// The session the voice is reading aloud, when it isn't this one: named beside the header, a click away.
+    let speaking: FogSession?
     let onPick: (String) -> Void
     /// Back and on through what is ready; nil leaves the button out.
     let onPrevious: (() -> Void)?
     let onNext: (() -> Void)?
     let onMic: () -> Void
     let onSend: () -> Void
+    /// Esc in the reply line, once it has left the field: the host hands the keys back.
+    let onLeaveReply: (() -> Void)?
     let onCollapse: () -> Void
     let onFullScreen: () -> Void
     /// The canvas's pen; nil leaves the button out.
@@ -1270,6 +1326,10 @@ public struct ConversationFog: View {
     let isCanvasOn: Bool
     @Environment(\.conchRendersStatically) private var rendersStatically
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The notice's height as laid out, so the transcript gives it room.
+    @State private var noticeHeight: CGFloat = 0
+    /// Full screen on a deliverable, the newest reply opened whole rather than its one line.
+    @State private var newestOpen = false
 
     public init(
         turns: [ConversationTurn],
@@ -1280,7 +1340,6 @@ public struct ConversationFog: View {
         isFullScreen: Bool,
         corner: FogCorner = .bottomLeading,
         insets: EdgeInsets = EdgeInsets(),
-        showsFog: Bool = true,
         look: FogLook? = nil,
         showsButtons: Bool = true,
         floating: Bool = false,
@@ -1288,13 +1347,18 @@ public struct ConversationFog: View {
         session: FogSession? = nil,
         sessions: [FogSession] = [],
         isSwitching: Binding<Bool> = .constant(false),
+        switcherSelection: String? = nil,
         showsReply: Bool = true,
         content: FogContent? = nil,
+        notice: String? = nil,
+        empty: String? = nil,
+        speaking: FogSession? = nil,
         onPick: @escaping (String) -> Void = { _ in },
         onPrevious: (() -> Void)? = nil,
         onNext: (() -> Void)? = nil,
         onMic: @escaping () -> Void,
         onSend: @escaping () -> Void,
+        onLeaveReply: (() -> Void)? = nil,
         onCollapse: @escaping () -> Void,
         onFullScreen: @escaping () -> Void,
         onCanvas: (() -> Void)? = nil,
@@ -1308,7 +1372,6 @@ public struct ConversationFog: View {
         self.isFullScreen = isFullScreen
         self.corner = corner
         self.insets = insets
-        self.showsFog = showsFog
         self.look = look
         self.showsButtons = showsButtons
         self.floating = floating
@@ -1316,13 +1379,18 @@ public struct ConversationFog: View {
         self.session = session
         self.sessions = sessions
         _isSwitching = isSwitching
+        self.switcherSelection = switcherSelection
         self.showsReply = showsReply
         self.content = content
+        self.notice = notice
+        self.empty = empty
+        self.speaking = speaking
         self.onPick = onPick
         self.onPrevious = onPrevious
         self.onNext = onNext
         self.onMic = onMic
         self.onSend = onSend
+        self.onLeaveReply = onLeaveReply
         self.onCollapse = onCollapse
         self.onFullScreen = onFullScreen
         self.onCanvas = onCanvas
@@ -1332,15 +1400,27 @@ public struct ConversationFog: View {
     /// Inside the fog, before the screen's own insets.
     public static let padding: CGFloat = ConchSpace.x6
     static let buttonSize: CGFloat = 36
-    /// From a screen side the words are docked against to their column: the lab's 52.
-    static let side: CGFloat = 52
+    /// From a screen side the words are docked against to their column: the buttons' own 24, so the buttons, the mic and
+    /// the words share one left edge. The lab's 52 set the words 28 pt in from the buttons under them.
+    static let side: CGFloat = padding
     /// The mic and the gap after it, before the reply's words.
     public static let micSpace: CGFloat = 40 + ConchSpace.x3
     /// ponytail: the daemon sends 40 turns at most; a runaway list shows its newest 200 rather than laying out thousands.
     static let turnsShown = 200
+    /// A past turn against the newest: 70% of the words' ink, which holds 4.5:1 on the glass at its worst. Half, as the
+    /// lab had it, measured 2.3 to 3.0 over a real screen.
+    public static let pastOpacity: Double = 0.7
+    /// Full screen on a deliverable, the newest reply's one line above the floating reply, and the gap under it.
+    static let newestLineHeight: CGFloat = 34
+    static let newestLineGap: CGFloat = ConchSpace.x2
 
     /// The reply line's type size: the conversation's newest, `ConchType.conversationNow` (24) or, full screen, 36.
     public static func replyFontSize(fullScreen: Bool) -> CGFloat { fullScreen ? 36 : 24 }
+
+    /// What the empty reply line says: whom a reply goes to.
+    public static func placeholder(for session: FogSession?) -> String {
+        session.map { "Reply to \($0.label)" } ?? "Reply"
+    }
 
     /// Where the words and the reply line sit: a column up to 620 pt wide, clear of the fog's padding, the
     /// screen's insets and the button row. Docked it keeps to its corner's side; off its corner `magnet` pulls it toward the
@@ -1415,18 +1495,19 @@ public struct ConversationFog: View {
     static let floatingReplyPadding: CGFloat = ConchSpace.x2
 
     /// Full screen on a deliverable, where it sits: under the button row, as wide as the row runs, down to a one-line
-    /// reply capsule and the gap above it, or with the reply line off to the foot. A reply that grows past one line floats
-    /// up over it.
-    public static func contentFrame(in size: CGSize, insets: EdgeInsets, showsReply: Bool) -> CGRect {
+    /// reply capsule and the gap above it, or with the reply line off to the foot; and above the newest reply's line when
+    /// there is one (`showsNewest`). A reply that grows past one line floats up over it.
+    public static func contentFrame(in size: CGSize, insets: EdgeInsets, showsReply: Bool, showsNewest: Bool = false) -> CGRect {
         let top = buttonsY(in: size, corner: .topLeading, insets: buttonInsets(insets), fullScreen: true) + buttonSize + ConchSpace.x3
         let fontSize = replyFontSize(fullScreen: false)
         let reply = showsReply ? FogReply.lineHeight(fontSize) + 2 * FogReply.padding(fontSize) + 2 * floatingReplyPadding + FogReply.gap : 0
+        let newest = showsNewest ? newestLineHeight + newestLineGap + (showsReply ? 0 : FogReply.gap) : 0
         let leading = insets.leading + padding
         return CGRect(
             x: leading,
             y: top,
             width: max(0, size.width - leading - insets.trailing - padding),
-            height: max(0, size.height - insets.bottom - padding - reply - top)
+            height: max(0, size.height - insets.bottom - padding - reply - newest - top)
         )
     }
 
@@ -1439,93 +1520,140 @@ public struct ConversationFog: View {
             let shown = isFullScreen ? content : nil
             let fontSize = Self.replyFontSize(fullScreen: isFullScreen && shown == nil)
             let lineWidth = shown == nil ? frame.width : Self.floatingReplyWidth(in: proxy.size) - 2 * Self.floatingReplyPadding
-            let target = text.replyTarget(for: draft, width: max(0, lineWidth - Self.micSpace), fontSize: fontSize, in: frame.height)
+            // The notice under the reply line takes its room from the transcript, never from the reply.
+            let noticeRoom = notice == nil || !showsReply ? 0 : noticeHeight + ConchSpace.x1
+            let target = text.replyTarget(for: draft, width: max(0, lineWidth - Self.micSpace), fontSize: fontSize, in: frame.height - noticeRoom)
             let reply = rendersStatically ? target : text.replyHeight
             let overflows = CGFloat(text.replyLines) * FogReply.lineHeight(fontSize) + 2 * FogReply.padding(fontSize) > target + 0.5
-            let box = showsReply ? max(0, frame.height - FogReply.gap - reply) : frame.height
+            let box = showsReply ? max(0, frame.height - FogReply.gap - reply - noticeRoom) : frame.height
+            // With the words stepped aside for a deliverable, the newest reply still shows, as one line.
+            let newest = shown == nil ? nil : turns.last { !$0.fromYou }
             ZStack(alignment: .topLeading) {
-                if showsFog, isFullScreen {
-                    // panel.html's wash: light at the top so the blurred work still shows, deepening toward the words.
-                    Rectangle().fill(ConchColor.fog).mask(LinearGradient(
-                        stops: [.init(color: .black.opacity(0.12), location: 0), .init(color: .black.opacity(0.42), location: 0.55), .init(color: .black.opacity(0.62), location: 1)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ))
-                    .accessibilityHidden(true)
-                }
                 if shown == nil {
-                    VStack(alignment: .leading, spacing: FogReply.gap) {
-                        if top {
-                            if showsReply { replyLine(fontSize: fontSize, height: reply, top: true, overflows: overflows) }
-                            words(width: frame.width, height: box, top: true, fontSize: fontSize)
-                        } else {
-                            words(width: frame.width, height: box, top: false, fontSize: fontSize)
-                            if showsReply { replyLine(fontSize: fontSize, height: reply, top: false, overflows: overflows) }
+                    if session == nil, turns.isEmpty, let empty {
+                        emptyState(empty, in: frame)
+                    } else {
+                        VStack(alignment: .leading, spacing: FogReply.gap) {
+                            if top {
+                                if showsReply { replyLine(fontSize: fontSize, height: reply, top: true, overflows: overflows) }
+                                words(width: frame.width, height: box, top: true, fontSize: fontSize)
+                            } else {
+                                words(width: frame.width, height: box, top: false, fontSize: fontSize)
+                                if showsReply { replyLine(fontSize: fontSize, height: reply, top: false, overflows: overflows) }
+                            }
                         }
+                        .frame(width: frame.width, height: frame.height, alignment: .topLeading)
+                        // The oldest words fade out at the panel's far end rather than ending in a cut — panel.html's
+                        // `.body{-webkit-mask-image:linear-gradient(transparent 0,#000 26%)}`. The newest end never fades, so
+                        // the gradient runs from whichever end holds the oldest (`newestAtTop`).
+                        .mask(alignment: .topLeading) {
+                            LinearGradient(
+                                stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.26)],
+                                startPoint: top ? .bottom : .top,
+                                endPoint: top ? .top : .bottom
+                            )
+                        }
+                        .offset(x: frame.minX, y: frame.minY)
                     }
-                    .frame(width: frame.width, height: frame.height, alignment: .topLeading)
-                    // The oldest words fade out at the panel's far end rather than ending in a cut — panel.html's
-                    // `.body{-webkit-mask-image:linear-gradient(transparent 0,#000 26%)}`. The newest end never fades, so
-                    // the gradient runs from whichever end holds the oldest (`newestAtTop`).
-                    .mask(alignment: .topLeading) {
-                        LinearGradient(
-                            stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.26)],
-                            startPoint: top ? .bottom : .top,
-                            endPoint: top ? .top : .bottom
-                        )
-                    }
-                    .offset(x: frame.minX, y: frame.minY)
                 }
-                deliverable(shown, frame: Self.contentFrame(in: proxy.size, insets: insets, showsReply: showsReply))
+                deliverable(shown, frame: Self.contentFrame(in: proxy.size, insets: insets, showsReply: showsReply, showsNewest: newest != nil))
+                if let newest {
+                    let foot = proxy.size.height - insets.bottom - Self.padding - (showsReply ? reply + noticeRoom + 2 * Self.floatingReplyPadding + Self.newestLineGap : 0)
+                    newestLine(newest, width: Self.floatingReplyWidth(in: proxy.size), room: proxy.size.height * 0.4)
+                        .frame(width: proxy.size.width, height: max(0, foot), alignment: .bottom)
+                }
                 if shown != nil, showsReply { floatingReply(in: proxy.size, fontSize: fontSize, height: reply, overflows: overflows) }
                 if showsButtons {
                     let buttons = Self.buttonInsets(insets)
                     let alignment = Self.buttonsAlignment(corner: corner, fullScreen: isFullScreen)
                     let y = Self.buttonsY(in: proxy.size, corner: corner, insets: buttons, fullScreen: isFullScreen)
-                    // The session is named beside the buttons, on their free side: the buttons keep the nook.
+                    // The session is named beside the buttons, on their free side: the buttons keep the nook. Its item only
+                    // full screen on a deliverable, where the words are hidden; anywhere else the newest reply says it.
                     HStack(spacing: ConchSpace.x3) {
-                        if alignment != .leading { header }
+                        if alignment != .leading {
+                            speakingChip
+                            header(showsItem: shown != nil)
+                        }
                         FogPanelButtons(corner: corner, isFullScreen: isFullScreen, onCollapse: onCollapse, onFullScreen: onFullScreen, onPrevious: onPrevious, onNext: onNext, onCanvas: onCanvas, isCanvasOn: isCanvasOn)
                             .fogControl()
-                        if alignment == .leading { header }
+                        if alignment == .leading {
+                            header(showsItem: shown != nil)
+                            speakingChip
+                        }
                     }
                     .frame(width: max(0, proxy.size.width - buttons.leading - buttons.trailing - 2 * Self.padding), alignment: alignment)
                     .offset(x: buttons.leading + Self.padding, y: y)
-                    // Faint until the pointer is over the fog, and gone while it flies.
-                    .opacity(isFullScreen ? 1 : floating ? 0 : hovering ? 1 : 0.4)
+                    // With the pointer away only the fills go, never an icon or the name, which keep their contrast on the
+                    // glass; and all of it is gone while the panel flies.
+                    .environment(\.overlayFills, isFullScreen || hovering ? 1 : 0)
+                    .opacity(isFullScreen || !floating ? 1 : 0)
                     .allowsHitTesting(isFullScreen || !floating)
-                    .animation(ConchSpring(bounce: 0, response: 0.28).animation(reduceMotion: reduceMotion), value: hovering)
-                    .animation(ConchSpring(bounce: 0, response: 0.2).animation(reduceMotion: reduceMotion), value: floating)
+                    .animation(ConchMotion.hover.animation(reduceMotion: reduceMotion), value: hovering)
+                    .animation(ConchMotion.liftOff.animation(reduceMotion: reduceMotion), value: floating)
                     switcher(in: proxy.size, y: y, leading: alignment == .leading)
                 }
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
             .onChange(of: target, initial: true) { _, target in text.grow(to: target) }
+            // Another reply is its own line again, folded.
+            .onChange(of: newest?.id) { _, _ in newestOpen = false }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Conversation")
     }
 
-    /// The reply line, its height springing (`FogTextState.replyHeight`); and while the reader is scrolled away, the pill
-    /// back to the newest line beside it, on the transcript's side.
+    /// The reply line, its height springing (`FogTextState.replyHeight`), and under it why the last reply didn't go; and
+    /// while the reader is scrolled away, the pill back to the newest line beside it, on the transcript's side.
     private func replyLine(fontSize: CGFloat, height: CGFloat, top: Bool, overflows: Bool) -> some View {
-        InlineReplyLine(text: $draft, isListening: isListening, fontSize: fontSize, alignsTop: top, overflows: overflows, onMic: onMic, onSend: onSend)
-            .frame(height: height, alignment: top ? .top : .bottom)
-            .fogControl()
-            .overlay(alignment: top ? .bottomLeading : .topLeading) {
-                if !text.scroll.pinned {
-                    pill(top: top)
-                        .fogControl()
-                        .offset(y: top ? 38 : -38)
-                        .transition(.scale(scale: 0.85, anchor: top ? .top : .bottom).combined(with: .opacity))
+        VStack(alignment: .leading, spacing: ConchSpace.x1) {
+            InlineReplyLine(text: $draft, isListening: isListening, placeholder: Self.placeholder(for: session), fontSize: fontSize, alignsTop: top, overflows: overflows, onMic: onMic, onSend: onSend, onLeave: onLeaveReply)
+                .frame(height: height, alignment: top ? .top : .bottom)
+                .fogControl()
+                .overlay(alignment: top ? .bottomLeading : .topLeading) {
+                    if !text.scroll.pinned {
+                        pill(top: top)
+                            .fogControl()
+                            .offset(y: top ? 38 : -38)
+                            .transition(reduceMotion ? .opacity : .scale(scale: 0.85, anchor: top ? .top : .bottom).combined(with: .opacity))
+                    }
                 }
-            }
-            .animation(ConchSpring(bounce: 0.25, response: 0.32).animation(reduceMotion: reduceMotion), value: text.scroll.pinned)
+                .animation(ConchMotion.pop.animation(reduceMotion: reduceMotion), value: text.scroll.pinned)
+            if let notice { noticeLine(notice) }
+        }
+    }
+
+    /// Why the last reply didn't go, under the reply line and in line with its words: the store's sentence
+    /// (`ConchSendFailure`), which says what to do about it. The words stay in the line to send again.
+    private func noticeLine(_ notice: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "exclamationmark.circle.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(ConchColor.attention)
+            Text(notice)
+                .font(ConchType.secondary)
+                .foregroundStyle(ConchColor.overlayText)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.leading, Self.micSpace)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { noticeHeight = $0 }
+        .accessibilityElement(children: .combine)
+    }
+
+    /// Nothing to show: said quietly where the words would be.
+    private func emptyState(_ message: String, in frame: CGRect) -> some View {
+        Text(message)
+            .font(ConchType.conversationPast)
+            .foregroundStyle(ConchColor.overlayTextSecondary)
+            .multilineTextAlignment(.center)
+            .frame(width: frame.width, height: frame.height)
+            .offset(x: frame.minX, y: frame.minY)
     }
 
     /// Full screen, the deliverable in a rounded card with a hairline under the button row. The next one crossfades in on
     /// `swap`, the old out soft and a touch large, the new in from a touch small and soft; under Reduce Motion they only
-    /// fade. Presses and scrolls on it are its own (`fogControl`), never the transcript's.
+    /// fade. The card itself only fades in and out, so arriving with the panel's own reveal it never zooms inside it.
+    /// Presses and scrolls on it are its own (`fogControl`), never the transcript's.
     private func deliverable(_ shown: FogContent?, frame: CGRect) -> some View {
         let shape = RoundedRectangle(cornerRadius: ConchRadius.large, style: .continuous)
         let swap: AnyTransition = reduceMotion ? .opacity : .asymmetric(
@@ -1546,64 +1674,132 @@ public struct ConversationFog: View {
                 .overlay(shape.strokeBorder(ConchColor.overlayLine, lineWidth: 0.5))
                 .fogControl()
                 .offset(x: frame.minX, y: frame.minY)
-                .transition(swap)
+                .transition(.opacity)
             }
         }
         .animation(ConchMotion.swap.animation(reduceMotion: reduceMotion), value: shown?.id)
     }
 
     /// Full screen on a deliverable, the reply line in a capsule centred at the panel's foot (panel-lab's full-screen
-    /// `.reply`), in the switcher's glass and hairline. Past one line it grows up over the deliverable.
+    /// `.reply`), in the overlay's glass so the deliverable under it never ghosts through. Past one line it grows up over
+    /// the deliverable.
     private func floatingReply(in size: CGSize, fontSize: CGFloat, height: CGFloat, overflows: Bool) -> some View {
         let width = Self.floatingReplyWidth(in: size)
         let shape = RoundedRectangle(cornerRadius: ConchRadius.panel, style: .continuous)
-        return InlineReplyLine(text: $draft, isListening: isListening, fontSize: fontSize, overflows: overflows, onMic: onMic, onSend: onSend)
-            .frame(height: height, alignment: .bottom)
-            .padding(Self.floatingReplyPadding)
-            .frame(width: width)
-            .background(shape.fill(ConchColor.overlayGlassStrong))
-            .overlay(shape.strokeBorder(ConchColor.overlayLine, lineWidth: 0.5))
-            .conchElevation(.floating)
-            .fogControl()
-            .offset(x: (size.width - width) / 2, y: size.height - insets.bottom - Self.padding - height - 2 * Self.floatingReplyPadding)
+        return VStack(alignment: .leading, spacing: ConchSpace.x1) {
+            InlineReplyLine(text: $draft, isListening: isListening, placeholder: Self.placeholder(for: session), fontSize: fontSize, overflows: overflows, onMic: onMic, onSend: onSend, onLeave: onLeaveReply)
+                .frame(height: height, alignment: .bottom)
+            if let notice { noticeLine(notice) }
+        }
+        .padding(Self.floatingReplyPadding)
+        .frame(width: width)
+        .overlayGlass(shape)
+        .fogControl()
+        .frame(width: size.width, height: max(0, size.height - insets.bottom - Self.padding), alignment: .bottom)
     }
 
-    /// The transcript, crossfading to another session's rather than cutting to it. A dissolve is what Reduce Motion
-    /// keeps, so it stays under it.
+    /// Full screen on a deliverable, where the words have stepped aside: the newest reply's first line, quiet, above the
+    /// floating reply, so a reply is never written blind. A click opens it whole over the deliverable, and folds it again.
+    private func newestLine(_ turn: ConversationTurn, width: CGFloat, room: CGFloat) -> some View {
+        let shape = RoundedRectangle(cornerRadius: Self.newestLineHeight / 2, style: .continuous)
+        return Button { newestOpen.toggle() } label: {
+            HStack(alignment: newestOpen ? .top : .center, spacing: ConchSpace.x2) {
+                if newestOpen {
+                    ScrollView(.vertical) {
+                        Text(Self.inlineMarkdown(turn.text))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: room)
+                    .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text(Self.plain(turn.text).replacingOccurrences(of: "\n", with: " "))
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Image(systemName: newestOpen ? "chevron.down" : "chevron.up")
+                    .font(.system(size: 11, weight: .semibold))
+                    .padding(.top, newestOpen ? 4 : 0)
+            }
+            .font(ConchType.uiBody)
+            .foregroundStyle(newestOpen ? ConchColor.overlayText : ConchColor.overlayTextSecondary)
+            .padding(.horizontal, 16)
+            .padding(.vertical, newestOpen ? 10 : 0)
+            .frame(minHeight: Self.newestLineHeight)
+            .frame(width: width)
+            .overlayGlass(shape)
+            .contentShape(shape)
+        }
+        .buttonStyle(.plain)
+        .fogControl()
+        .animation(ConchMotion.pop.animation(reduceMotion: reduceMotion), value: newestOpen)
+        .accessibilityLabel("Newest reply: \(Self.plain(turn.text))")
+        .accessibilityHint(newestOpen ? "Folds it to one line" : "Shows the whole reply")
+    }
+
+    /// The transcript, crossing over to another session's rather than cutting to it (panel-lab's crossfade): out soft and
+    /// up, in from a little below, a beat behind the header. Reduce Motion keeps the dissolve.
     private func words(width: CGFloat, height: CGFloat, top: Bool, fontSize: CGFloat) -> some View {
         ZStack {
             transcript(width: width, height: height, top: top, fontSize: fontSize)
                 .id(session?.id)
-                .transition(.opacity)
+                .transition(cross)
         }
-        .animation(ConchMotion.appearance.animation(reduceMotion: reduceMotion), value: session?.id)
+        .animation(ConchMotion.pop.animation(reduceMotion: reduceMotion).delay(ConchMotion.crossStagger), value: session?.id)
     }
 
-    /// The session the words are from, crossfading with them. A click opens the switcher.
-    @ViewBuilder private var header: some View {
+    /// panel-lab's crossfade: out soft, up and a touch small; in from a little below. Reduce Motion keeps only the fade.
+    private var cross: AnyTransition {
+        reduceMotion ? .opacity : .asymmetric(
+            insertion: .modifier(active: Swap(scale: ConchMotion.crossScale, blur: ConchMotion.crossBlur, opacity: 0, y: ConchMotion.crossShift), identity: Swap()),
+            removal: .modifier(active: Swap(scale: ConchMotion.crossScale, blur: ConchMotion.crossBlur, opacity: 0, y: -ConchMotion.crossShift), identity: Swap())
+        )
+    }
+
+    /// What the header crosses over on: the session, and the item it names, so a new item in the same session crosses
+    /// over too rather than cutting.
+    static func crossKey(_ session: FogSession) -> String { "\(session.id)\n\(session.item ?? "")" }
+
+    /// The session the words are from, crossing over with them. A click opens the switcher.
+    @ViewBuilder private func header(showsItem: Bool) -> some View {
         if let session {
+            let named = showsItem ? session : session.with(item: nil)
             ZStack {
-                FogHeader(session: session) { isSwitching.toggle() }
-                    .id(session.id)
-                    .transition(.opacity)
+                FogHeader(session: named, isOpen: isSwitching) { isSwitching.toggle() }
+                    .id(Self.crossKey(named))
+                    .transition(cross)
             }
-            .animation(ConchMotion.appearance.animation(reduceMotion: reduceMotion), value: session.id)
+            .animation(ConchMotion.pop.animation(reduceMotion: reduceMotion), value: Self.crossKey(named))
             .fogControl()
         }
     }
 
+    /// The session the voice is reading aloud, when it isn't this one: "Speaking: Dayloop ›", quiet, a click from it.
+    @ViewBuilder private var speakingChip: some View {
+        if let speaking, speaking.id != session?.id {
+            SpeakingChip(session: speaking) { onPick(speaking.id) }
+                .fogControl()
+                .transition(.opacity)
+        }
+    }
+
     /// The switcher opens from the button row away from the edge the fog is docked on: up from a bottom corner, down from
-    /// a top one and full screen, on the button row's side.
+    /// a top one and full screen, on the button row's side. It pops as panel-lab's does: from a touch small, a little
+    /// toward the row and soft, its rows following one another in.
     private func switcher(in size: CGSize, y: CGFloat, leading: Bool) -> some View {
         let up = Self.buttonsAtBottom(corner: corner, fullScreen: isFullScreen)
         let top = up ? 0 : y + Self.buttonSize + ConchSpace.x2
         let room = max(0, up ? y - ConchSpace.x2 : size.height - top - Self.padding)
         let anchor: UnitPoint = up ? (leading ? .bottomLeading : .bottomTrailing) : (leading ? .topLeading : .topTrailing)
+        let pop: AnyTransition = reduceMotion ? .opacity : .modifier(
+            active: Popped(scale: ConchMotion.popScale, anchor: anchor, y: up ? ConchMotion.popShift : -ConchMotion.popShift, blur: ConchMotion.popBlur, opacity: 0),
+            identity: Popped(anchor: anchor)
+        )
         return ZStack {
             if isSwitching {
-                FogSwitcher(sessions: sessions, current: session?.id, tallest: room, onPick: onPick)
+                FogSwitcher(sessions: sessions, current: session?.id, selected: switcherSelection, tallest: room, onPick: onPick)
                     .fogControl()
-                    .transition(reduceMotion ? .opacity : .scale(scale: 0.96, anchor: anchor).combined(with: .opacity))
+                    .transition(pop)
             }
         }
         .frame(width: max(0, size.width - 2 * Self.padding), height: room, alignment: Alignment(horizontal: leading ? .leading : .trailing, vertical: up ? .bottom : .top))
@@ -1612,24 +1808,26 @@ public struct ConversationFog: View {
     }
 
     private func pill(top: Bool) -> some View {
-        Button(action: text.toNewest) {
+        let label = text.scroll.unseen ? "New reply" : "Newest"
+        return Button(action: text.toNewest) {
             HStack(spacing: 5) {
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 10, weight: .bold))
+                    .font(.system(size: 11, weight: .bold))
                     .rotationEffect(.degrees(top ? 180 : 0))
-                Text(text.scroll.unseen ? "New reply" : "Newest")
+                Text(label)
                     .font(.system(size: 12, weight: .semibold))
             }
             .foregroundStyle(ConchColor.overlayText)
             .padding(.leading, 8)
             .padding(.trailing, 11)
             .frame(height: 28)
-            .background(Capsule().fill(ConchColor.overlayGlassStrong).shadow(color: .black.opacity(0.18), radius: 8, y: 6))
-            .overlay(Capsule().strokeBorder(ConchColor.overlayLine, lineWidth: 0.5))
+            .overlayGlass(Capsule())
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Scroll to the newest message")
+        // Its name is what it says, so a voice command that reads the screen finds it.
+        .accessibilityLabel(label)
+        .accessibilityHint("Scrolls to the newest message")
     }
 
     private enum Line: Identifiable {
@@ -1694,7 +1892,7 @@ public struct ConversationFog: View {
             }
             .scaleEffect(y: top ? -1 : 1)
         }
-        .animation(ConchSpring(bounce: 0, response: 0.32).animation(reduceMotion: reduceMotion), value: pinned)
+        .animation(ConchMotion.hover.animation(reduceMotion: reduceMotion), value: pinned)
     }
 
     /// Where each word of `attributed` starts.
@@ -1794,14 +1992,44 @@ public struct ConversationFog: View {
     }
 }
 
-/// A deliverable part way through `ConchMotion.swap`.
+/// A deliverable part way through `ConchMotion.swap`, or the words and header part way through a crossover.
 private struct Swap: ViewModifier {
     var scale: CGFloat = 1
     var blur: CGFloat = 0
     var opacity: Double = 1
+    var y: CGFloat = 0
 
     func body(content: Content) -> some View {
-        content.scaleEffect(scale).blur(radius: blur).opacity(opacity)
+        content.scaleEffect(scale).blur(radius: blur).offset(y: y).opacity(opacity)
+    }
+}
+
+/// A popover part way open (`ConchMotion.pop`): a touch small about the corner it opens from, a little toward it, soft.
+private struct Popped: ViewModifier {
+    var scale: CGFloat = 1
+    var anchor: UnitPoint
+    var y: CGFloat = 0
+    var blur: CGFloat = 0
+    var opacity: Double = 1
+
+    func body(content: Content) -> some View {
+        content.scaleEffect(scale, anchor: anchor).offset(y: y).blur(radius: blur).opacity(opacity)
+    }
+}
+
+extension View {
+    /// A small piece of the overlay over whatever is under it — the switcher, the Newest pill, the floating reply, the
+    /// collapsed handle: the system blur, the overlay's strong glass and a hairline, raised. The canvas's tool pill is
+    /// the same recipe. Without the blur, the words under the switcher read through its rows.
+    func overlayGlass<S: InsettableShape>(_ shape: S) -> some View {
+        background {
+            ZStack {
+                shape.fill(.ultraThinMaterial)
+                shape.fill(ConchColor.overlayGlassStrong)
+                shape.strokeBorder(ConchColor.overlayLine, lineWidth: 0.5)
+            }
+            .conchElevation(.floating)
+        }
     }
 }
 
@@ -1853,7 +2081,7 @@ private struct TurnLine: View, Equatable {
                 .foregroundStyle(ConchColor.overlayText)
                 // Wraps at the column, long paths and links included, rather than running out of the blur.
                 .fixedSize(horizontal: false, vertical: true)
-                .opacity(now ? 1 : 1 - 0.5 * e)
+                .opacity(now ? 1 : 1 - (1 - ConversationFog.pastOpacity) * e)
                 .scaleEffect(1 + (fontSize / past - 1) * (1 - e), anchor: top ? .topLeading : .bottomLeading)
                 .offset(
                     x: ConversationFog.micSpace * (1 - e),
@@ -1966,11 +2194,14 @@ private struct FogAgentMark: View {
 }
 
 /// The session the fog's words are from, beside its buttons: the agent's mark, the session's name, and the item the
-/// panel is on, on one line that gives way from its end. Small and in the buttons' glass, so it never competes with the
-/// words. A click lists the other sessions.
+/// panel is on (full screen on a deliverable only), on one line that gives way from its end. Small and in the buttons'
+/// glass, so it never competes with the words. A click lists the other sessions.
 private struct FogHeader: View {
     let session: FogSession
+    /// The switcher is open, for VoiceOver to say so.
+    let isOpen: Bool
     let onSwitch: () -> Void
+    @Environment(\.overlayFills) private var fills
 
     var body: some View {
         Button(action: onSwitch) {
@@ -1989,20 +2220,25 @@ private struct FogHeader: View {
                         .lineLimit(1)
                 }
                 Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(ConchColor.overlayTextSecondary)
             }
             .padding(.horizontal, 14)
             .frame(height: ConversationFog.buttonSize)
-            .background(Capsule().fill(ConchColor.overlayGlass))
-            .overlay(Capsule().strokeBorder(ConchColor.overlayLine, lineWidth: 0.5))
+            .background {
+                Capsule().fill(ConchColor.overlayGlass)
+                    .overlay(Capsule().strokeBorder(ConchColor.overlayLine, lineWidth: 0.5))
+                    .opacity(fills)
+            }
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         // Past this a long summary only pushes the name further from the buttons.
         .modifier(AtMost(width: 460))
+        .help("Switch session")
         .accessibilityLabel([session.label, session.agent, session.item].compactMap { $0 }.joined(separator: ", "))
-        .accessibilityHint("Lists the other sessions")
+        .accessibilityValue(isOpen ? "Sessions open" : "")
+        .accessibilityHint(isOpen ? "Closes the list of sessions" : "Lists the other sessions")
     }
 }
 
@@ -2022,19 +2258,57 @@ private struct AtMost: ViewModifier, Layout {
     }
 }
 
+/// The session the voice is reading aloud while the panel shows another: "Speaking: Dayloop ›", quiet beside the header.
+/// A click brings that one into the panel.
+private struct SpeakingChip: View {
+    let session: FogSession
+    let onShow: () -> Void
+    @Environment(\.overlayFills) private var fills
+
+    var body: some View {
+        Button(action: onShow) {
+            HStack(spacing: 4) {
+                Text("Speaking: \(session.label)")
+                    .lineLimit(1)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .font(ConchType.secondary)
+            .foregroundStyle(ConchColor.overlayTextSecondary)
+            .padding(.horizontal, 12)
+            .frame(height: 28)
+            .background(Capsule().fill(ConchColor.overlayFill).opacity(fills))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .modifier(AtMost(width: 260))
+        .help("Show \(session.label), which the voice is reading")
+        .accessibilityLabel("Speaking: \(session.label)")
+        .accessibilityHint("Shows that session in the panel")
+    }
+}
+
 /// The panel's switcher: every session, ready for you first, then working, then the rest, under the menu bar menu's own
-/// headings and marks, the one on screen marked. Its own height up to `tallest`, then it scrolls.
+/// headings, the one on screen marked and the keyboard's pick (↑ ↓) lit. Its own height up to `tallest`, then it scrolls.
+/// Its rows follow one another in as it opens (`ConchMotion.popStagger`).
 private struct FogSwitcher: View {
     static let width: CGFloat = 340
     static let rowHeight: CGFloat = 30
     static let headingHeight: CGFloat = 24
+    /// panel-lab's `#switcher`: a popover's corner, rounder than a menu's.
+    static let radius: CGFloat = 20
 
     let sessions: [FogSession]
     let current: String?
+    /// The row the keyboard has picked out.
+    let selected: String?
     /// The room it has, from the button row to the fog's far edge.
     let tallest: CGFloat
     let onPick: (String) -> Void
     @State private var hovered: String?
+    /// Rows in: false for the frame it opens on, so each row springs in after the one before.
+    @State private var shown = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private func startsGroup(_ index: Int) -> Bool {
         index == 0 || sessions[index - 1].standing != sessions[index].standing
@@ -2043,7 +2317,7 @@ private struct FogSwitcher: View {
     var body: some View {
         let headings = sessions.indices.filter(startsGroup).count
         let content = CGFloat(sessions.count) * Self.rowHeight + CGFloat(headings) * Self.headingHeight + 2 * ConchSpace.x2
-        let shape = RoundedRectangle(cornerRadius: ConchRadius.medium, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: Self.radius, style: .continuous)
         let height = min(content, 360, tallest)
         let list = VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(sessions.enumerated()), id: \.element.id) { index, session in
@@ -2060,6 +2334,9 @@ private struct FogSwitcher: View {
                         .accessibilityAddTraits(.isHeader)
                 }
                 row(session)
+                    .opacity(shown || reduceMotion ? 1 : 0)
+                    .offset(y: shown || reduceMotion ? 0 : 5)
+                    .animation(ConchMotion.pop.animation(reduceMotion: reduceMotion).delay(ConchMotion.popLead + Double(index) * ConchMotion.popStagger), value: shown)
             }
         }
         .padding(ConchSpace.x2)
@@ -2068,16 +2345,16 @@ private struct FogSwitcher: View {
             if content <= height { list } else { ScrollView(.vertical) { list } }
         }
         .frame(width: Self.width, height: height, alignment: .top)
-        .background(shape.fill(ConchColor.overlayGlassStrong))
-        .overlay(shape.strokeBorder(ConchColor.overlayLine, lineWidth: 0.5))
         .clipShape(shape)
-        .conchElevation(.floating)
+        .overlayGlass(shape)
+        .onAppear { shown = true }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Sessions")
     }
 
     private func row(_ session: FogSession) -> some View {
         let here = session.id == current
+        let lit = here || session.id == selected || hovered == session.id
         return Button { onPick(session.id) } label: {
             HStack(spacing: ConchSpace.x2) {
                 // The menu bar menu's marks, in the sidebar's colours for the same two states (`FogSession.markSymbol`).
@@ -2102,9 +2379,9 @@ private struct FogSwitcher: View {
             .padding(.horizontal, ConchSpace.x2)
             .frame(height: Self.rowHeight)
             .background(
-                RoundedRectangle(cornerRadius: ConchRadius.small, style: .continuous)
+                RoundedRectangle(cornerRadius: ConchRadius.medium, style: .continuous)
                     .fill(here ? ConchColor.overlayFillStrong : ConchColor.overlayFill)
-                    .opacity(here || hovered == session.id ? 1 : 0)
+                    .opacity(lit ? 1 : 0)
             )
             .contentShape(Rectangle())
         }
@@ -2113,6 +2390,7 @@ private struct FogSwitcher: View {
             if inside { hovered = session.id } else if hovered == session.id { hovered = nil }
         }
         .accessibilityLabel([session.label, session.agent, session.item].compactMap { $0 }.joined(separator: ", "))
+        .accessibilityValue(session.standing.spoken)
         .accessibilityAddTraits(here ? .isSelected : [])
     }
 }
@@ -2121,7 +2399,8 @@ private struct FogSwitcher: View {
 
 /// The fog's collapse and full-screen buttons: in that order, as a Mac window's minimise and zoom come. Then, while
 /// something is ready, Previous and Next, which walk it as the Ready pill does. Then, when it is given one, the canvas's
-/// pen, dark while the pen is down (panel-lab's `#bPen`).
+/// pen, dark while the pen is down (panel-lab's `#bPen`). Full screen, Collapse steps out: beside Exit full screen it hid
+/// the whole panel down to a handle you can't see. Each names its key in its tooltip (`PanelKeys`).
 public struct FogPanelButtons: View {
     let corner: FogCorner
     let isFullScreen: Bool
@@ -2145,31 +2424,34 @@ public struct FogPanelButtons: View {
 
     public var body: some View {
         HStack(spacing: ConchSpace.x2) {
-            IconButton(
-                corner.bottom || isFullScreen ? "chevron.down" : "chevron.up",
-                label: "Collapse conversation",
-                style: .glass,
-                size: ConversationFog.buttonSize,
-                action: onCollapse
-            )
+            if !isFullScreen {
+                IconButton(
+                    corner.bottom ? "chevron.down" : "chevron.up",
+                    label: "Collapse conversation",
+                    style: .glass,
+                    size: ConversationFog.buttonSize,
+                    shortcut: PanelKeys.Shortcut.collapse,
+                    action: onCollapse
+                )
+            }
             IconButton(
                 isFullScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
                 label: isFullScreen ? "Exit full screen" : "Full screen",
                 style: .glass,
                 size: ConversationFog.buttonSize,
+                shortcut: isFullScreen ? PanelKeys.Shortcut.exitFullScreen : PanelKeys.Shortcut.fullScreen,
                 action: onFullScreen
             )
-            .keyboardShortcut(.return, modifiers: .command)
             if let onPrevious {
-                IconButton("chevron.left", label: "Previous ready item", style: .glass, size: ConversationFog.buttonSize, action: onPrevious)
+                IconButton("chevron.left", label: "Previous ready item", style: .glass, size: ConversationFog.buttonSize, shortcut: PanelKeys.Shortcut.previous, action: onPrevious)
                     // A pair of their own, a little apart from the window's two.
                     .padding(.leading, ConchSpace.x1)
             }
             if let onNext {
-                IconButton("chevron.right", label: "Next ready item", style: .glass, size: ConversationFog.buttonSize, action: onNext)
+                IconButton("chevron.right", label: "Next ready item", style: .glass, size: ConversationFog.buttonSize, shortcut: PanelKeys.Shortcut.next, action: onNext)
             }
             if let onCanvas {
-                IconButton("pencil", label: isCanvasOn ? "Stop drawing" : "Draw on the screen", style: isCanvasOn ? .primary : .glass, size: ConversationFog.buttonSize, action: onCanvas)
+                IconButton("pencil", label: isCanvasOn ? "Stop drawing" : "Draw on the screen", style: isCanvasOn ? .primary : .glass, size: ConversationFog.buttonSize, shortcut: PanelKeys.Shortcut.pen, action: onCanvas)
                     .padding(.leading, ConchSpace.x1)
             }
         }
@@ -2179,10 +2461,14 @@ public struct FogPanelButtons: View {
 // MARK: - FogHandle
 
 /// The conversation fog collapsed (M3): nothing to see until the pointer comes into the fog's corner, then a caret
-/// that opens it again at the size it had. The whole corner area opens it.
+/// that opens it again at the size it had. The whole corner area opens it. The panel's glass shrinks into its circle as
+/// the panel collapses (`PanelGlass.Geometry.collapsed`), and grows out of it as it opens.
 public struct FogHandle: View {
     /// The corner area the pointer shows the caret in.
     public static let side: CGFloat = 72
+    /// The caret's circle, and how far it sits in from the corner's two edges.
+    public static let circle: CGFloat = 44
+    public static let inset: CGFloat = ConchSpace.x3
 
     let corner: FogCorner
     let hovering: Bool
@@ -2199,23 +2485,20 @@ public struct FogHandle: View {
         ZStack(alignment: corner.alignment) {
             Color.clear
             Button(action: onExpand) {
+                // The panel's own buttons' glyph: semibold, in their ink.
                 Image(systemName: corner.bottom ? "chevron.up" : "chevron.down")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(ConchColor.textPrimary)
-                    .frame(width: 44, height: 44)
-                    .background {
-                        Circle().fill(.ultraThinMaterial)
-                        Circle().fill(ConchColor.glass)
-                    }
-                    .overlay(Circle().strokeBorder(ConchColor.hairlineStrong, lineWidth: 0.5))
-                    .conchElevation(.raised)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(ConchColor.overlayGlassIcon)
+                    .frame(width: Self.circle, height: Self.circle)
+                    .overlayGlass(Circle())
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
-            .padding(ConchSpace.x3)
+            .padding(Self.inset)
             // Hidden until the pointer is in the corner (Tyler: "only shows when your hovering in that area").
             .opacity(hovering ? 1 : 0)
-            .animation(ConchMotion.animation(ConchMotion.quick, reduceMotion: reduceMotion), value: hovering)
+            .animation(ConchMotion.hover.animation(reduceMotion: reduceMotion), value: hovering)
+            .help("Show conversation")
             .accessibilityLabel("Show conversation")
         }
         .frame(width: Self.side, height: Self.side)

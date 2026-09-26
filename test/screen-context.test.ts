@@ -807,9 +807,11 @@ describe("the Mac app's front-window observer (source guards)", () => {
     expect(code).toContain("func readNow() {\n        read(after: .zero)\n    }");
     const panels = read("mac-app/conch-mac/FloatingPanels.swift");
     expect(panels).toContain("store?.screenCovered(isFullScreen && fog.isVisible)");
-    // Both ways it can stop covering: docking back (or collapsing, which docks first) and being hidden from the menu.
+    // Every way it can stop covering: docking back, collapsing straight from full screen, and being hidden from the menu.
     const toggle = panels.slice(panels.indexOf("func toggleFullScreen() {"), panels.indexOf("func showInPanel() {"));
-    expect(toggle).toMatch(/blur\.maskImage = nil\n        \}\n        coverChanged\(\)\n    \}/);
+    expect(toggle).toMatch(/showBlur\(\)\n        coverChanged\(\)\n    \}/);
+    const collapse = panels.slice(panels.indexOf("private func setCollapsed(_ collapsed: Bool) {"), panels.indexOf("func toggleFullScreen() {"));
+    expect(collapse).toContain("isFullScreen = false\n                coverChanged()");
     const shown = panels.slice(panels.indexOf("private func showWhatIsOn() {"), panels.indexOf("private func coverChanged() {"));
     expect(shown).toContain("show(fog, defaults.bool(forKey: ConchStatusItem.showConversationKey))\n        coverChanged()");
     expect(panels).toContain("self.store = store");

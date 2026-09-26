@@ -114,6 +114,8 @@ describe("one state, one name", () => {
       expect(sheet).toContain(row);
     }
     expect(sheet).toContain('ShortcutHelpSection(title: "Drawing on screen", rows: drawRows)');
+    // The key the canvas actually takes for Show (⇧R: a bare R started recordings by accident).
+    expect(sheet).toContain('ShortcutHelpRow(command: "⇧R", result: "Show: record the screen")');
     expect(sheet).toContain('ShortcutHelpSection(title: "Conversation panel", rows: panelRows)');
     // Esc and Return each mean two things in one list, so a row is its key and its meaning.
     expect(content).toContain('var id: String { command + "\\u{1F}" + result }');

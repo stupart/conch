@@ -290,6 +290,12 @@ public enum DeliverableGroups {
         }
         return order.map { DeliverableGroup(id: $0, versions: versions[$0]!) }
     }
+
+    /// The newest filing of whatever artifact `id` is a version of, among `held` (oldest first): the conversation panel,
+    /// on a version when a newer one of the same artifact is published, follows to it. Nil when `id` isn't held.
+    public static func newest(of id: String, in held: [DeliverableVersion]) -> String? {
+        grouped(held).first { $0.versions.contains(id) }?.newest
+    }
 }
 
 /// A Figma file, addressed to the Figma app rather than the browser.

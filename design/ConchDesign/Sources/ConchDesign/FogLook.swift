@@ -190,8 +190,9 @@ public struct FogLook: Equatable {
     }
 
     /// Light or dark from `conch.overlay.appearance`: "light", "dark", or anything else (auto) the system's.
-    /// ponytail: auto is the system's for now. The lab turns dark over dark content under the words, which needs Screen
-    /// Recording to read; that reading would come in here, beside `systemDark`.
+    /// Auto stays the system's. The lab turns dark over dark content under the words, which needs Screen Recording to
+    /// read; instead the glass carries a wash dense enough that either appearance reads over anything (`PanelGlass.wash`,
+    /// which says why), so a panel that doesn't match the app under it is quieter, never unreadable.
     public static func isDark(_ setting: String?, systemDark: Bool) -> Bool {
         switch setting {
         case "light": false

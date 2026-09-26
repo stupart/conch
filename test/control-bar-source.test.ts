@@ -45,11 +45,14 @@ test("M3: both panels are non-activating NSPanels on every space, out of the win
   expect(panels.match(/\.takesKeys = true/g)?.length).toBe(1);
   expect(panels).toContain("fog.takesKeys = true");
   expect(panels).toContain("fog.becomesKeyOnlyIfNeeded = true");
-  // Shown without activating conch; nothing here brings conch forward.
+  // Shown without activating conch; nothing here brings conch forward. The fog takes the keys itself in exactly one
+  // place, as a non-activating panel (the app in front stays in front): full screen, and the open switcher.
   expect(panels).toContain("if on { panel.orderFrontRegardless() } else { panel.orderOut(nil) }");
-  for (const intrusion of ["NSApp.activate", "makeKeyAndOrderFront", "makeKey()"]) {
+  for (const intrusion of ["NSApp.activate", "makeKeyAndOrderFront"]) {
     expect(panels).not.toContain(intrusion);
   }
+  expect(panels.match(/makeKey\(\)/g)?.length).toBe(1);
+  expect(member(panels, "private func takeKeys() {")).toContain("fog.makeKey()");
   expect(project).toContain("/* FloatingPanels.swift in Sources */ = {isa = PBXBuildFile;");
   expect(project.match(/\/\* FloatingPanels\.swift in Sources \*\/,/g)?.length).toBe(1);
 });
@@ -90,14 +93,20 @@ test("M3: the fog collapses to a small handle and opens again at the size it had
     "UserDefaults.standard.set(!isCollapsed, forKey: Self.conversationCollapsedKey)",
   );
   const collapse = member(panels, "private func setCollapsed(_ collapsed: Bool) {");
-  expect(collapse).toContain("if collapsed, isFullScreen { toggleFullScreen() }");
-  // Collapsed, a hover area in its corner clear of the Dock and the menu bar; opened, docked again at its size.
-  expect(collapse).toContain("fog.setFrame(FogDock.frame(size: CGSize(width: side, height: side), corner: corner, in: screen.visibleFrame), display: true)");
+  // Collapsed, a hover area in its corner clear of the Dock and the menu bar, the glass shrinking into it on the morph
+  // spring; opened, docked again at its size, growing out of it. From full screen it goes straight there.
+  expect(collapse).toContain("morph(to: FogDock.frame(size: CGSize(width: side, height: side), corner: corner, in: screen.visibleFrame), form: .collapsed)");
+  expect(collapse).toContain("morph(to: FogDock.frame(size: motion.size, corner: corner, in: screen.frame), form: .docked)");
   expect(collapse).toContain("dock(corner, on: screen)");
-  // The collapsed frame is never the one saved: autosave stops before it shrinks and resumes once it is open.
+  expect(collapse).toContain("if isFullScreen {\n                // It no longer covers the screen, and the keys it took for full screen go back.\n                isFullScreen = false");
+  // Opening docks the motion alone: `dock` would set the docked frame at once and there would be nothing to morph.
+  expect(collapse).toContain("motion.dock(corner, in: screen.frame)");
+  expect(collapse.slice(collapse.indexOf("} else {\n            // Docked in its corner"))).not.toContain("dock(corner, on: screen)");
+  // The collapsed frame is never the one saved: autosave stops before it shrinks and resumes only once it has landed open.
   expect(collapse.indexOf('fog.setFrameAutosaveName("")')).toBeGreaterThan(-1);
   expect(collapse.indexOf('fog.setFrameAutosaveName("")')).toBeLessThan(collapse.indexOf("width: side, height: side"));
-  expect(collapse.indexOf("fog.setFrameAutosaveName(Self.conversationFrameName)")).toBeGreaterThan(collapse.indexOf("dock(corner, on: screen"));
+  expect(collapse).not.toContain("fog.setFrameAutosaveName(Self.conversationFrameName)");
+  expect(member(panels, "private func landed() {")).toContain("if !isFullScreen, !isCollapsed { fog.setFrameAutosaveName(Self.conversationFrameName) }");
   // The fog's button collapses it; hovering its corner shows the caret that opens it (Tyler: "only shows when your
   // hovering in that area"), tracked by the panel's own view so it works while conch is in the background.
   expect(panels).toContain("FogHandle(corner: panels.corner, hovering: panels.hovering) { panels.toggleCollapsed() }");
@@ -122,29 +131,33 @@ test("M3: both panels keep their frames, and the fog goes full screen on Command
   const button = components.slice(components.indexOf("public struct FogPanelButtons: View {"), components.indexOf("// MARK: - FogHandle"));
   expect(button.length).toBeGreaterThan(100);
   expect(button).toContain("action: onFullScreen");
-  expect(button).toContain(".keyboardShortcut(.return, modifiers: .command)");
+  // Command-Return is the panel's own key now (`PanelKeys`), seen before the reply line, so it works whenever the panel
+  // has the keys and not only while typing; the button's tooltip names it.
+  expect(button).toContain("shortcut: isFullScreen ? PanelKeys.Shortcut.exitFullScreen : PanelKeys.Shortcut.fullScreen,");
+  expect(button).not.toContain(".keyboardShortcut(");
+  expect(member(panels, "private func key(_ event: NSEvent) -> Bool {")).toContain("case .fullScreen: toggleFullScreen()");
   expect(panels).toContain("onFullScreen: { panels.toggleFullScreen() }");
   const toggle = member(panels, "func toggleFullScreen() {");
   // Both ways on the morph spring, stepped with the fog's motion; at once under Reduce Motion.
-  expect(toggle).toContain("morph(to: screen.frame)");
+  expect(toggle).toContain("morph(to: screen.frame, form: .fullScreen)");
   // Leaving docks it back in its corner at the size it had.
   expect(toggle).toContain("let frame = FogDock.frame(size: motion.size, corner: corner, in: screen.frame)");
-  expect(toggle).toContain("morph(to: frame)");
-  const morph = member(panels, "private func morph(to target: NSRect) {");
-  expect(morph).toContain("guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {");
-  expect(morph).toContain("morphing = (from: fog.frame, to: target, progress: 0, velocity: 0)");
+  expect(toggle).toContain("morph(to: frame, form: .docked)");
+  const morph = member(panels, "private func morph(to target: NSRect, form next: Form) {");
+  expect(morph).toContain("guard settled, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {");
+  expect(morph).toContain("morphing = (from: fog.frame, to: target, glassFrom: from, glassTo: to, form: next, arrived: false, progress: 0, velocity: 0)");
   const step = member(panels, "func step(dt: Double) {");
   expect(step).toContain("let done = ConchMotion.morph.step(&morph.progress, velocity: &morph.velocity, to: 1, dt: dt)");
   expect(step.indexOf("ConchMotion.morph.step(")).toBeLessThan(step.indexOf("apply()"));
   // Mid-morph the morph has the frame: the docked frame never fights it.
   expect(member(panels, "private func apply() {")).toContain("guard !isCollapsed, !isFullScreen, morphing == nil else { return layOut(margin: EdgeInsets()) }");
-  // Collapsing sets its own frame, so a morph on its way stops there.
-  expect(member(panels, "private func setCollapsed(_ collapsed: Bool) {")).toContain("morphing = nil");
+  // Collapsing morphs from wherever it is, so a morph on its way gives way to it.
+  expect(member(panels, "private func setCollapsed(_ collapsed: Bool) {")).toContain("form: .collapsed)");
   // A full-screen frame is never the one saved: autosave is off before it grows, full screen is set before a morph that
   // lands at once, and autosave comes back only once it has landed docked.
   expect(toggle.indexOf('fog.setFrameAutosaveName("")')).toBeGreaterThan(-1);
-  expect(toggle.indexOf('fog.setFrameAutosaveName("")')).toBeLessThan(toggle.indexOf("morph(to: screen.frame)"));
-  expect(toggle.indexOf("isFullScreen = true")).toBeLessThan(toggle.indexOf("morph(to: screen.frame)"));
+  expect(toggle.indexOf('fog.setFrameAutosaveName("")')).toBeLessThan(toggle.indexOf("morph(to: screen.frame"));
+  expect(toggle.indexOf("isFullScreen = true")).toBeLessThan(toggle.indexOf("morph(to: screen.frame"));
   expect(toggle).not.toContain("fog.setFrameAutosaveName(Self.conversationFrameName)");
   expect(member(panels, "private func landed() {")).toContain("if !isFullScreen, !isCollapsed { fog.setFrameAutosaveName(Self.conversationFrameName) }");
 });
@@ -163,8 +176,9 @@ test("M3: the fog replies through inject and dictates through the composer's dic
   // The spoken words come back into the same shared draft, once.
   expect(panels).toContain("drafts.apply(store.state?.live.dictated)");
   expect(panels).toContain("@ObservedObject private var drafts = ComposerDraftStore.shared");
-  // A fog, not a pane: the fog's wash, and a behind-window blur under the look's own mask.
-  expect(components).toContain(".fill(ConchColor.fog)");
+  // The fog's wash, now over the glass rather than a square over the screen, and a behind-window blur under the look's
+  // own mask below macOS 26.
+  expect(read("design/ConchDesign/Sources/ConchDesign/GlassPanel.swift")).toContain("ConchColor.fog.rgba(darkness: darkness).color.opacity(PanelGlass.wash.at(darkness))");
   expect(panels).toContain("blur.blendingMode = .behindWindow");
   expect(panels).toContain("blur.maskImage = blurMask()");
   expect(member(panels, "private func blurMask() -> NSImage? {")).toContain("guard let mask = look.mask(strength: blurStrength) else { return nil }");
@@ -244,7 +258,7 @@ test("M3: the fog moves the way the overlay lab does: thrown by its middle on on
   expect(member(panels, "func grabs(_ point: CGPoint) -> Bool {")).toContain("!controlFrames.contains { $0.contains(point) }");
   expect(panels).toContain(".coordinateSpace(name: FogControls.space)");
   expect(panels).toContain(".onPreferenceChange(FogControls.self) { panels.controlFrames = $0 }");
-  expect(components).toContain("overflows: overflows, onMic: onMic, onSend: onSend)\n            .frame(height: height, alignment: top ? .top : .bottom)\n            .fogControl()");
+  expect(components).toContain("overflows: overflows, onMic: onMic, onSend: onSend, onLeave: onLeaveReply)\n                .frame(height: height, alignment: top ? .top : .bottom)\n                .fogControl()");
   expect(components).toContain(
     "FogPanelButtons(corner: corner, isFullScreen: isFullScreen, onCollapse: onCollapse, onFullScreen: onFullScreen, onPrevious: onPrevious, onNext: onNext, onCanvas: onCanvas, isCanvasOn: isCanvasOn)\n                            .fogControl()",
   );
@@ -254,7 +268,7 @@ test("M3: the fog moves the way the overlay lab does: thrown by its middle on on
   expect(step).toContain("if motion.isGesturing, NSEvent.pressedMouseButtons & 1 == 0 { released() }");
   expect(step.indexOf("released()")).toBeLessThan(step.indexOf("motion.step(dt: dt)"));
   expect(panels).toContain("forName: NSWorkspace.didActivateApplicationNotification");
-  expect(panels).toContain("MainActor.assumeIsolated { self?.released(cancelled: true) }");
+  expect(panels).toContain("MainActor.assumeIsolated {\n                self?.released(cancelled: true)");
   expect(member(panels, "private func dock(_ corner: FogCorner, on screen: NSScreen) {")).toContain("motion.dock(corner, in: screen.frame)");
   expect(member(panels, "private func redock() {")).toContain("dock(corner, on: screen)");
   expect(member(panels, "func toggleFullScreen() {")).toContain("dock(corner, on: screen)");
@@ -268,7 +282,7 @@ test("M3: the fog moves the way the overlay lab does: thrown by its middle on on
   expect(panels).toContain("displayLink(target: self, selector: #selector(step(_:)))");
   expect(panels).toContain("let dt = lastFrame > 0 ? min(link.timestamp - lastFrame, 0.05) : 1.0 / 120");
   expect(step).toContain("motion.step(dt: dt)");
-  expect(step).toContain("if motion.isSettled, darkness == darkTarget, resizeHover == hoverTarget, morphing == nil, !words { container.run(false) }");
+  expect(step).toContain("if motion.isSettled, darkness == darkTarget, resizeHover == hoverTarget, morphing == nil, revealAt == nil, !words { container.run(false) }");
   expect(member(panels, "func pressed() {")).toContain("container.run(true)");
   expect(read("design/ConchDesign/Sources/ConchDesign/Tokens.swift")).toContain("let h = CGFloat(min(t, 1.0 / 240))");
   // Calm under Reduce Motion: the dock spring without its overshoot, and only the fade of the flight.
@@ -303,7 +317,10 @@ test("M3: the fog moves the way the overlay lab does: thrown by its middle on on
   // The overlay's look is on (Tyler: "i don't see any overlay"), and the testing outline is gone.
   expect(panels).toContain("static let showsFog = true");
   expect(panels).not.toContain("strokeBorder(Color.black");
-  expect(panels).toContain("ConchGlassPanel(darkness: panels.look.darkness, voice: ConchStatusItem.voiceState(store.state))");
+  // Glass everywhere, docked and full screen and on the way between: its inset and corner are the morph's, frame by frame.
+  const glassHost = member(panels, "private struct FogLookHost: View {");
+  expect(glassHost).toContain("ConchGlassPanel(darkness: panels.look.darkness, voice: ConchStatusItem.voiceState(store.state), radius: panels.glass.radius)\n                .padding(panels.glass.insets)");
+  expect(glassHost).not.toContain("isFullScreen");
   // Liquid Glass draws the panel; the effect view stays a sibling but hidden, so the collapse guard below still holds.
   expect(panels).toContain("static var usesGlass: Bool { if #available(macOS 26.0, *) { true } else { false } }");
   expect(panels).toContain("fog.hasShadow = Self.usesGlass");
@@ -395,13 +412,14 @@ test("M3: the fog moves the way the overlay lab does: thrown by its middle on on
   expect(panels).toContain("private static func savedSize(forFrameName name: String) -> NSSize?");
   expect(panels).toContain("if panel !== controlBar, let saved = Self.savedSize(forFrameName: name) { panel.setContentSize(saved) }");
   expect(panels).toContain('UserDefaults.standard.string(forKey: "NSWindow Frame \\(name)")');
-  // Full screen has no glass panel — it is a rounded rect in a corner and full screen is the whole screen, so
-  // `FogLookHost` leaves it out. The behind-window blur therefore has to come BACK, or nothing softens the work under
-  // the words and the only thing painting is ConversationFog's wash over an unblurred desktop (Tyler: "on the
-  // converation overlay fullscreen mode the background fo teh panel dissapears"). This regressed silently when the
-  // glass first hid the blur unconditionally, because no test asserted anything paints behind the words there.
-  expect(panels).toContain("blur.isHidden = !Self.showsFog || (Self.usesGlass && !isFullScreen)");
-  expect(member(panels, "func toggleFullScreen() {")).toContain("blur.isHidden = !Self.showsFog");
+  // Something always paints behind the words full screen (Tyler: "on the converation overlay fullscreen mode the
+  // background fo teh panel dissapears", which regressed silently once, when nothing asserted it). It used to be the
+  // behind-window blur coming back in place of the glass, square, on the first frame; now the glass itself stays, grown
+  // to 12 pt from the screen's edges, and only the collapsed handle does without it. Below macOS 26 the blur stays with
+  // it, shaped to the glass.
+  expect(member(panels, "private func arrive(_ next: Form, at delay: TimeInterval) {")).toContain("glassShows = next != .collapsed");
+  expect(member(panels, "private func showBlur() {")).toContain("blur.maskImage = isFullScreen || morphing != nil ? Self.roundedMask(radius: glass.radius) : blurMask()");
+  expect(member(panels, "private func layOut(margin: EdgeInsets) {")).toContain("blur.frame = isFullScreen || morphing != nil");
   // AppKit draws the focus ring on the SCROLL VIEW, not the text view inside it, so turning it off on the text view
   // alone left the ring exactly where it was (Tyler: "thers still a strange outline around teh component").
   expect(components).toContain("scroll.focusRingType = .none");
@@ -410,7 +428,8 @@ test("M3: the fog moves the way the overlay lab does: thrown by its middle on on
   expect(member(panels, "private func apply() {")).toContain("layOut(margin: EdgeInsets())");
   const glass = read("design/ConchDesign/Sources/ConchDesign/GlassPanel.swift");
   expect(glass).toContain("content.glassEffect(.regular.tint(tint), in: shape)");
-  expect(glass).toContain("RoundedRectangle(cornerRadius: ConchRadius.panel, style: .continuous)");
+  expect(glass).toContain("RoundedRectangle(cornerRadius: radius, style: .continuous)");
+  expect(glass).toContain("public init(darkness: Double = 0, voice: VoiceState = .talk, radius: CGFloat = ConchRadius.panel) {");
   expect(glass).toContain("content.background(ConchColor.glass.rgba(darkness: darkness).color, in: shape)");
   // The transcript fades out toward its far end, the fade shrinking with its box, rather than ending in a cut.
   expect(components).toContain(".frame(height: min(72, height * 0.4))");
@@ -427,9 +446,9 @@ test("M3: the blur sits behind the words as a sibling, so its mask never touches
   expect(panels).toContain("private final class LookHostingView<Content: View>: NSHostingView<Content> {\n    override func hitTest(_: NSPoint) -> NSView? { nil }");
   expect(panels).not.toContain("blur.addSubview");
   expect(panels).not.toContain("fog.contentView = blur");
-  const collapse = member(panels, "private func setCollapsed(_ collapsed: Bool) {");
-  expect(collapse).toContain("blur.isHidden = true");
-  expect(collapse).toContain("blur.isHidden = !Self.showsFog");
+  // Collapsed, the blur hides with the glass; the handle, a sibling, is untouched by it.
+  expect(member(panels, "private func setCollapsed(_ collapsed: Bool) {")).toContain("showBlur()");
+  expect(member(panels, "private func showBlur() {")).toContain("let hidden = !Self.showsFog || Self.usesGlass || (form == .collapsed && morphing == nil)");
   expect(panels).not.toContain("noBlur");
 });
 
@@ -529,7 +548,7 @@ test("M3: the look is a magnet: gathered to the edges it touches, a blob off the
   expect(components).toContain("public var magnet: EdgeInsets {");
   expect(components).toContain("func pull(_ anchored: Bool, _ measured: CGFloat) -> CGFloat { (anchored ? 1 : 0) * (1 - free) + measured * free }");
   expect(components).toContain("let t = 1 - min(max(gap / 160, 0), 1)");
-  expect(components).toContain("if ConchSpring(bounce: 0, response: 0.22).step(&free, velocity: &freeVelocity, to: isMoving ? 1 : 0, dt: dt) {");
+  expect(components).toContain("if ConchMotion.liftOff.step(&free, velocity: &freeVelocity, to: isMoving ? 1 : 0, dt: dt) {");
   expect(components).toContain("sizeTarget == nil && flying == 0 && free == 0 }");
   expect(look).toContain("public var blob: CGRect { ellipse(across: (0.58, 1.15), up: (0.58, 1), scale: scale) }");
   expect(look).toContain("[(0, 1), (0.36, 1), (0.5, 0.75), (0.64, 0.3), (0.78, 0)]");
@@ -559,7 +578,7 @@ test("M3: the look glows in the voice's colour, crossfades light and dark, thick
   // Light and dark crossfade, the look and the words' palette together.
   const step = member(panels, "func step(dt: Double) {");
   expect(step).toContain("ConchMotion.appearance.step(&darkness, velocity: &darkVelocity, to: darkTarget, dt: dt)");
-  expect(step).toContain("if motion.isSettled, darkness == darkTarget, resizeHover == hoverTarget, morphing == nil, !words { container.run(false) }");
+  expect(step).toContain("if motion.isSettled, darkness == darkTarget, resizeHover == hoverTarget, morphing == nil, revealAt == nil, !words { container.run(false) }");
   expect(panels).toContain(".environment(\\.conchDarkness, panels.look.darkness)");
   expect(tokens).toContain("environment.conchDarkness.map { rgba(darkness: $0).color } ?? color(environment.colorScheme)");
   expect(look).toContain("let wash = ConchColor.fog.rgba(darkness: dark).color");
@@ -572,7 +591,10 @@ test("M3: the look glows in the voice's colour, crossfades light and dark, thick
   expect(member(panels, "func pointerMoved(to point: CGPoint) {")).toContain("hoverResizeBand(resizes)");
   expect(panels).toContain("if !inside { self?.hoverResizeBand(false) }");
   expect(look).toContain("let alpha = colour.at(darkness) * (1 + 0.9 * resizeHover)");
-  expect(components).toContain(".opacity(isFullScreen ? 1 : floating ? 0 : hovering ? 1 : 0.4)");
+  // Pointer away, only the button fills fade: the lab's 0.4 over everything left the name at 2.1:1 and the icons at 1.6.
+  expect(components).toContain(".environment(\\.overlayFills, isFullScreen || hovering ? 1 : 0)");
+  expect(components).toContain(".opacity(isFullScreen || !floating ? 1 : 0)");
+  expect(components).not.toContain("hovering ? 1 : 0.4");
   expect(components).toContain(".allowsHitTesting(isFullScreen || !floating)");
   expect(panels).toContain("hovering: panels.hovering,");
 });
@@ -600,10 +622,10 @@ test("M3: the overlay's text is the lab's: pinned by the reader alone, words at 
   expect(member(text, "public mutating func layout(range next: CGFloat) {")).toContain("offset = pinned ? min(offset, next) : min(max(next - (range - offset), 0), next)");
   expect(member(text, "public mutating func toNewest() {")).toContain("ignoresGlide = true");
   expect(components).toContain("Button(action: text.toNewest)");
-  expect(components).toContain('Text(text.scroll.unseen ? "New reply" : "Newest")');
+  expect(components).toContain('let label = text.scroll.unseen ? "New reply" : "Newest"');
   // Stepped with the motion on the display's frames, and fed by the store: its working state, not a timer.
   const step = member(panels, "func step(dt: Double) {");
-  expect(step).toContain("let words = text.step(dt: dt, now: ProcessInfo.processInfo.systemUptime, reduceMotion: motion.reduceMotion)");
+  expect(step).toContain("let now = ProcessInfo.processInfo.systemUptime\n        let words = text.step(dt: dt, now: now, reduceMotion: motion.reduceMotion)");
   expect(step.indexOf("text.step(")).toBeLessThan(step.indexOf("apply()"));
   expect(panels).toContain("text.wake = { [weak self] in MainActor.assumeIsolated { self?.container.run(true) } }");
   expect(member(panels, "private func apply() {")).toContain("next.replyHeight = showsReply ? text.replyHeight : 0");
@@ -628,9 +650,9 @@ test("M3: the overlay's text is the lab's: pinned by the reader alone, words at 
   expect(text).toContain("return shift || option ? .newline : .send");
   expect(components).toContain("case .send: field.onSend()");
   expect(components).toContain("case .newline: view.insertNewlineIgnoringFieldEditor(nil)");
-  expect(components).toContain("case .leave: view.window?.makeFirstResponder(nil)");
+  expect(components).toContain("case .leave:\n                view.window?.makeFirstResponder(nil)");
   expect(components).toContain("override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }");
-  expect(components).toContain("pill(top: top)\n                        .fogControl()");
+  expect(components).toContain("pill(top: top)\n                            .fogControl()");
   const replyLine = components.slice(components.indexOf("public struct InlineReplyLine: View {"), components.indexOf("// MARK: - ControlBar"));
   expect(replyLine.length).toBeGreaterThan(1000);
   expect(replyLine).not.toContain('label: "Send"');
@@ -645,7 +667,7 @@ test("M3: the overlay's text is the lab's: pinned by the reader alone, words at 
   // scrim and the words' fade following the newest lines and a growing reply.
   expect(components).toContain("!corner.bottom && !fullScreen");
   expect(components).toContain("magnet: look?.magnet)");
-  expect(components).toContain(".fixedSize(horizontal: false, vertical: true)\n                .opacity(now ? 1 : 1 - 0.5 * e)");
+  expect(components).toContain(".fixedSize(horizontal: false, vertical: true)\n                .opacity(now ? 1 : 1 - (1 - ConversationFog.pastOpacity) * e)");
   expect(look).toContain("y = newestAtTop ? text.minY + replyHeight + 70 : text.maxY - replyHeight - 70");
   expect(look).toContain("y: newestAtTop ? text.minY : text.maxY - 230");
   // The type is as it was.
@@ -844,8 +866,8 @@ test("the pill, the menu and the panel walk one queue: every deliverable a sessi
   expect(panels).toContain("onNext: walks ? { queue.walk(from: .panel, store: store, panels: panels) } : nil,");
   expect(panels).toContain("let walks = !ConchStatusItem.heldRows(store.state).isEmpty");
   const buttons = components.slice(components.indexOf("public struct FogPanelButtons: View {"), components.indexOf("// MARK: - FogHandle"));
-  expect(buttons).toContain('IconButton("chevron.left", label: "Previous ready item", style: .glass, size: ConversationFog.buttonSize, action: onPrevious)');
-  expect(buttons).toContain('IconButton("chevron.right", label: "Next ready item", style: .glass, size: ConversationFog.buttonSize, action: onNext)');
+  expect(buttons).toContain('IconButton("chevron.left", label: "Previous ready item", style: .glass, size: ConversationFog.buttonSize, shortcut: PanelKeys.Shortcut.previous, action: onPrevious)');
+  expect(buttons).toContain('IconButton("chevron.right", label: "Next ready item", style: .glass, size: ConversationFog.buttonSize, shortcut: PanelKeys.Shortcut.next, action: onNext)');
 });
 
 /**
@@ -858,6 +880,7 @@ test("the panel names its session, switches from it, and shows the words full sc
   expect(panels).toContain("session: row.map { Self.fogSession($0, item: Self.review(of: $0, staged: panels.staged, lastStaged: queue.lastStaged)?.summary) },");
   expect(panels).toContain('mark: codex ? "AgentCodex" : "AgentClaude"');
   const item = member(panels, "static func review(of row: SessionRow, staged: SessionRow.ID?, lastStaged: ReviewItem.ID?) -> ReviewInfo? {");
+  // The item the queue brought forward, which follows a newer version of it (panel-quality-source pins how).
   expect(item).toContain("if row.id == staged, let review = row.held.first(where: { ReviewItem(row: row, review: $0).id == lastStaged }) {");
   expect(item.trimEnd().endsWith("return row.review")).toBe(true);
   // The switcher: the menu bar menu's groups, never a subagent, open state the panels' so a press elsewhere closes it.
@@ -896,21 +919,30 @@ test("the panel names its session, switches from it, and shows the words full sc
     "case .terminal, .conversation: return false",
   );
   // Every new control keeps its clicks: the fog's view takes a press anywhere that isn't one (FogTextTests pins it).
-  expect(components).toContain("FogHeader(session: session) { isSwitching.toggle() }");
-  expect(components).toContain(".animation(ConchMotion.appearance.animation(reduceMotion: reduceMotion), value: session.id)\n            .fogControl()");
-  expect(components).toContain("FogSwitcher(sessions: sessions, current: session?.id, tallest: room, onPick: onPick)\n                    .fogControl()");
+  expect(components).toContain("FogHeader(session: named, isOpen: isSwitching) { isSwitching.toggle() }");
+  expect(components).toContain(".animation(ConchMotion.pop.animation(reduceMotion: reduceMotion), value: Self.crossKey(named))\n            .fogControl()");
+  expect(components).toContain("FogSwitcher(sessions: sessions, current: session?.id, selected: switcherSelection, tallest: room, onPick: onPick)\n                    .fogControl()");
+  expect(components).toContain("SpeakingChip(session: speaking) { onPick(speaking.id) }\n                .fogControl()");
 });
 
 test("the words and the header crossfade to another session; the switcher springs full screen", () => {
-  // A crossfade, not the hard cut; a dissolve is what Reduce Motion keeps.
+  // panel-lab's crossover, not the hard cut: out soft and up, in from a little below, on the pop spring, the words a beat
+  // behind the header; a dissolve is what Reduce Motion keeps. The header crosses over on its item too.
   expect(components).toContain(
-    "transcript(width: width, height: height, top: top, fontSize: fontSize)\n                .id(session?.id)\n                .transition(.opacity)",
+    "transcript(width: width, height: height, top: top, fontSize: fontSize)\n                .id(session?.id)\n                .transition(cross)",
   );
-  expect(components).toContain(".animation(ConchMotion.appearance.animation(reduceMotion: reduceMotion), value: session?.id)");
-  expect(components).toContain("FogHeader(session: session) { isSwitching.toggle() }\n                    .id(session.id)\n                    .transition(.opacity)");
-  // The switcher pops on the existing pop spring; under Reduce Motion it only fades.
+  expect(components).toContain(".animation(ConchMotion.pop.animation(reduceMotion: reduceMotion).delay(ConchMotion.crossStagger), value: session?.id)");
+  expect(components).toContain("FogHeader(session: named, isOpen: isSwitching) { isSwitching.toggle() }\n                    .id(Self.crossKey(named))\n                    .transition(cross)");
+  const cross = components.slice(components.indexOf("private var cross: AnyTransition {"), components.indexOf("static func crossKey("));
+  expect(cross).toContain("reduceMotion ? .opacity : .asymmetric(");
+  expect(cross).toContain("Swap(scale: ConchMotion.crossScale, blur: ConchMotion.crossBlur, opacity: 0, y: ConchMotion.crossShift)");
+  expect(cross).toContain("Swap(scale: ConchMotion.crossScale, blur: ConchMotion.crossBlur, opacity: 0, y: -ConchMotion.crossShift)");
+  // The switcher pops on the pop spring as panel-lab's does, from .94, 6 pt toward the row and a 4 pt blur, its rows
+  // following one another in; under Reduce Motion it only fades.
   expect(components).toContain(".animation(ConchMotion.pop.animation(reduceMotion: reduceMotion), value: isSwitching)");
-  expect(components).toContain(".transition(reduceMotion ? .opacity : .scale(scale: 0.96, anchor: anchor).combined(with: .opacity))");
+  expect(components).toContain("let pop: AnyTransition = reduceMotion ? .opacity : .modifier(");
+  expect(components).toContain("active: Popped(scale: ConchMotion.popScale, anchor: anchor, y: up ? ConchMotion.popShift : -ConchMotion.popShift, blur: ConchMotion.popBlur, opacity: 0),");
+  expect(components).toContain(".delay(ConchMotion.popLead + Double(index) * ConchMotion.popStagger), value: shown)");
   // No new spring: the morph is ConchMotion's own.
   expect(panels).not.toMatch(/ConchSpring\(bounce: [0-9.]+, response: [0-9.]+\)\.step\(&morph/);
 });
@@ -928,24 +960,26 @@ test("Reply Line hides the panel's reply line, from the menu bar, remembered", (
   expect(item).toContain("case .replyLine: #selector(toggleReplyLine)");
   expect(item).toContain("@objc private func toggleReplyLine() { toggle(Self.showReplyLineKey) }");
   expect(member(panels, "private func showWhatIsOn() {")).toContain("let reply = defaults.bool(forKey: ConchStatusItem.showReplyLineKey)");
-  expect(panels).toContain("showsReply: panels.showsReply,");
+  expect(panels).toContain("showsReply: panels.showsReply && row != nil,");
   // Off, the transcript takes the reply line's room, and the look thickens behind the newest words instead.
-  expect(components).toContain("let box = showsReply ? max(0, frame.height - FogReply.gap - reply) : frame.height");
+  expect(components).toContain("let box = showsReply ? max(0, frame.height - FogReply.gap - reply - noticeRoom) : frame.height");
   expect(components.match(/if showsReply \{ replyLine\(/g)?.length).toBe(2);
   expect(member(panels, "private func apply() {")).toContain("next.replyHeight = showsReply ? text.replyHeight : 0");
 });
 
 /** A hidden blur's mask is never drawn: on Liquid Glass the blur is hidden but for full screen, and a drag redrew it every frame. */
 test("the blur's mask is drawn only while the blur shows", () => {
-  const draws = panels.split("\n").filter((line) => line.includes("blur.maskImage = blurMask()"));
-  expect(draws.length).toBe(4);
+  const draws = panels.split("\n").filter((line) => line.includes("blur.maskImage = "));
+  expect(draws.length).toBe(3);
   for (const line of draws) expect(line).toContain("!blur.isHidden");
   expect(member(panels, "private func setLook(_ next: FogLook) {")).toContain("if !blur.isHidden { blur.maskImage = blurMask() }");
-  // Shown again, it is drawn then: opened from collapsed, and back from full screen, where it hides again under the glass.
-  expect(member(panels, "private func setCollapsed(_ collapsed: Bool) {")).toContain("if !blur.isHidden { blur.maskImage = blurMask() }");
-  const toggle = member(panels, "func toggleFullScreen() {");
-  expect(toggle).toContain("blur.isHidden = !Self.showsFog || Self.usesGlass");
-  expect(toggle.indexOf("blur.isHidden = !Self.showsFog || Self.usesGlass")).toBeLessThan(toggle.indexOf("if !blur.isHidden { blur.maskImage = blurMask() }"));
+  // Shown again, it is drawn then, after it is shown or hidden, in the one place that does both; on Liquid Glass it stays
+  // hidden, full screen included, since the glass is kept there.
+  const show = member(panels, "private func showBlur() {");
+  expect(show.indexOf("if blur.isHidden != hidden { blur.isHidden = hidden }")).toBeLessThan(show.indexOf("if !blur.isHidden { blur.maskImage ="));
+  for (const way of ["func toggleFullScreen() {", "private func setCollapsed(_ collapsed: Bool) {", "private func landed() {"]) {
+    expect(member(panels, way)).toContain("showBlur()");
+  }
 });
 
 test("the conversation stays on the pill's scene, whatever the voice does, until the pill again or another pick", () => {
@@ -1046,7 +1080,7 @@ test("one opening rule: a deliverable the panel draws opens in it while it is on
   );
   expect(panels).not.toContain("ConchStatusItem.stage(");
   // Full screen shows the item the header names: one rule for both, read from the queue's walk.
-  expect(panels).toContain("content: panels.isFullScreen ? row.flatMap(content(of:)) : nil,");
+  expect(panels).toContain("content: panels.form == .fullScreen ? row.flatMap(content(of:)) : nil,");
   const shown = member(panels, "private func content(of row: SessionRow) -> FogContent? {");
   expect(shown).toContain("guard let review = Self.review(of: row, staged: panels.staged, lastStaged: queue.lastStaged),");
   expect(shown).toContain("let item = row.holding(review).panelContent else { return nil }");
@@ -1099,7 +1133,7 @@ test("the deliverable in the panel crossfades in place, the words step aside, an
   expect(card).toContain(".clipShape(shape)\n                .overlay(shape.strokeBorder(ConchColor.overlayLine, lineWidth: 0.5))\n                .fogControl()");
   // Only full screen; the words only while nothing shows; the capsule only with the reply line on.
   expect(components).toContain("let shown = isFullScreen ? content : nil");
-  expect(components).toContain("if shown == nil {\n                    VStack(alignment: .leading, spacing: FogReply.gap) {");
+  expect(components).toContain("if shown == nil {\n                    if session == nil, turns.isEmpty, let empty {\n                        emptyState(empty, in: frame)\n                    } else {\n                        VStack(alignment: .leading, spacing: FogReply.gap) {");
   expect(components).toContain("if shown != nil, showsReply { floatingReply(in: proxy.size, fontSize: fontSize, height: reply, overflows: overflows) }");
   expect(member(components, "private func floatingReply(in size: CGSize, fontSize: CGFloat, height: CGFloat, overflows: Bool) -> some View {")).toContain(".fogControl()");
 });

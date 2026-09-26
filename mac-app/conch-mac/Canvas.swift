@@ -425,12 +425,12 @@ final class CanvasController: ObservableObject {
     @Published private(set) var hangs = true
 
     /// Where the full-screen panel's header row ends: under its buttons and the session's name, where its deliverable
-    /// begins (`ConversationFog.contentFrame`, in the panel's glass inset).
+    /// begins (`ConversationFog.contentFrame`, in the full-screen glass: 12 pt in, and under the menu bar).
     private static func headerBottom(of frame: NSRect, panels: FloatingPanels) -> CGFloat {
-        let inset = FloatingPanels.glassInset
-        let inner = CGSize(width: frame.width - 2 * inset, height: frame.height - 2 * inset)
-        let content = ConversationFog.contentFrame(in: inner, insets: panels.insets.less(inset), showsReply: panels.showsReply)
-        return frame.maxY - inset - content.minY + ConchSpace.x3
+        let glass = PanelGlass.Geometry.fullScreen(menuBar: panels.insets.top).insets
+        let inner = CGSize(width: frame.width - glass.leading - glass.trailing, height: frame.height - glass.top - glass.bottom)
+        let content = ConversationFog.contentFrame(in: inner, insets: panels.insets.less(glass), showsReply: panels.showsReply)
+        return frame.maxY - glass.top - content.minY + ConchSpace.x3
     }
 
     /// The control bar's glass while it shows: its window less the room `ControlBarHost` pads it with, for the shadow

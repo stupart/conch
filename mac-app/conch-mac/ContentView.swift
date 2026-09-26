@@ -888,7 +888,7 @@ private struct KeyboardShortcutsSheet: View {
     private let drawRows = [
         ShortcutHelpRow(command: "⌃⌥⌘P", result: "Draw on screen"),
         ShortcutHelpRow(command: "1 – 5", result: "Pick a pen tool"),
-        ShortcutHelpRow(command: "R", result: "Show: record the screen"),
+        ShortcutHelpRow(command: "⇧R", result: "Show: record the screen"),
         ShortcutHelpRow(command: "Return", result: "Send"),
         ShortcutHelpRow(command: "⌘Z", result: "Undo the last mark"),
         ShortcutHelpRow(command: "Esc", result: "Put the pen down"),
@@ -900,6 +900,8 @@ private struct KeyboardShortcutsSheet: View {
         ShortcutHelpRow(command: "⌘.", result: "Collapse"),
         ShortcutHelpRow(command: "Esc", result: "Leave full screen"),
         ShortcutHelpRow(command: "Return", result: "Send the reply"),
+        // The switcher, open (`PanelKeys`): Esc closes it before it leaves full screen.
+        ShortcutHelpRow(command: "↑ / ↓, Return", result: "Pick a session in the switcher"),
     ]
 
     private let spokenRows = [
