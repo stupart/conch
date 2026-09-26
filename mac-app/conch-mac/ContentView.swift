@@ -900,6 +900,8 @@ private struct KeyboardShortcutsSheet: View {
         ShortcutHelpRow(command: "⌘.", result: "Collapse"),
         ShortcutHelpRow(command: "Esc", result: "Leave full screen"),
         ShortcutHelpRow(command: "Return", result: "Send the reply"),
+        // The switcher, open (`PanelKeys`): Esc closes it before it leaves full screen.
+        ShortcutHelpRow(command: "↑ / ↓, Return", result: "Pick a session in the switcher"),
     ]
 
     private let spokenRows = [

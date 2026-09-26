@@ -1283,3 +1283,282 @@ struct GroundStrip: View {
         .overlay(RoundedRectangle(cornerRadius: ConchRadius.small).strokeBorder(ConchColor.hairline, lineWidth: 1))
     }
 }
+
+// MARK: - The conversation panel as it ships: glass
+
+// The m3 pages above draw the retired fog (FogLookView). These draw the panel the Mac shows: the page, then the glass,
+// then the words and buttons padded in by the glass's inset (FloatingPanels). ImageRenderer can't draw Liquid Glass, so
+// the glass is panel-lab's stand-in (`PanelGlass.standIn`: white at 52% or #1E1E22 at 50% over the page blurred), with
+// `ConchGlassPanel`'s own colour, wash, hairline and grab bar over it. The lab's screenshots are read from CONCH_LAB as
+// above; without them the stand-in page is the gallery's own gradient.
+let panelScreenSize = CGSize(width: 1440, height: 900)
+/// The lab's menu bar, which full screen keeps clear of.
+let panelMenuBar: CGFloat = 28
+let dockedWindow = CGRect(x: 0, y: panelScreenSize.height - 640, width: 900, height: 640)
+
+/// A backdrop covering the panel's screen, and the same blurred as the glass blurs it (panel-lab: blur 28, saturate 1.7).
+struct PanelBackdrop {
+    let name: String
+    let page: CGImage
+    let soft: CGImage
+
+    init(_ name: String, _ image: CGImage) {
+        self.name = name
+        page = bitmap(panelScreenSize) { context in
+            let scale = max(panelScreenSize.width / CGFloat(image.width), panelScreenSize.height / CGFloat(image.height))
+            let w = CGFloat(image.width) * scale, h = CGFloat(image.height) * scale
+            context.draw(image, in: CGRect(x: (panelScreenSize.width - w) / 2, y: (panelScreenSize.height - h) / 2, width: w, height: h))
+        }!
+        soft = softened(page, sigma: 28, saturation: 1.7)!
+    }
+}
+
+@MainActor
+func drawnPage(_ dark: Bool) -> CGImage? {
+    let renderer = ImageRenderer(content: OtherApp().frame(width: panelScreenSize.width, height: panelScreenSize.height).environment(\.colorScheme, dark ? .dark : .light))
+    renderer.scale = 1
+    return renderer.cgImage
+}
+
+let panelBackdrops: [PanelBackdrop] = MainActor.assumeIsolated {
+    let drawn = drawnPage
+    var all: [PanelBackdrop] = []
+    if let busy = labImage("lab-backdrops/real-screen-busy.png") { all.append(PanelBackdrop("busy", busy)) }
+    if let dark = labImage("lab-backdrops/real-screen-dark-app.png") { all.append(PanelBackdrop("dark app", dark)) }
+    if let light = drawn(false) { all.append(PanelBackdrop("gradient, light", light)) }
+    if let dark = drawn(true) { all.append(PanelBackdrop("gradient, dark", dark)) }
+    return all
+}
+
+/// The busy screen, else the gallery's own page.
+let panelBackdrop = panelBackdrops[0]
+let darkBackdrop = panelBackdrops.first { $0.name == "dark app" } ?? panelBackdrops[panelBackdrops.count - 1]
+
+/// The panel over a screen, as FloatingPanels layers it, in its window (top left, in the screen) with its glass
+/// `geometry`. `darkness` overrides the sheet's appearance, for a panel that doesn't match the app under it.
+struct PanelScene: View {
+    var backdrop = panelBackdrop
+    var window = dockedWindow
+    var geometry = PanelGlass.Geometry.docked
+    var fullScreen = false
+    var corner = FogCorner.bottomLeading
+    var turns = sampleTurns
+    var draft = ""
+    var hovering = true
+    var session: FogSession? = panelSession
+    var switching = false
+    var selection: String?
+    var content: FogContent?
+    var notice: String?
+    var empty: String?
+    var speaking: FogSession?
+    var voice = VoiceState.talk
+    var working = false
+    var showsWords = true
+    var darkness: Double?
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        let dark = darkness ?? (scheme == .dark ? 1 : 0)
+        let inset = geometry.insets
+        let glass = CGRect(x: window.minX + inset.leading, y: window.minY + inset.top, width: window.width - inset.leading - inset.trailing, height: window.height - inset.top - inset.bottom)
+        let shape = RoundedRectangle(cornerRadius: geometry.radius, style: .continuous)
+        let screenInsets = fullScreen ? EdgeInsets(top: panelMenuBar, leading: 0, bottom: 0, trailing: 0) : EdgeInsets()
+        ZStack(alignment: .topLeading) {
+            Image(decorative: backdrop.page, scale: 1)
+            // The stand-in for Liquid Glass: the page blurred under the lab's glass colour, with the lab's drop shadow.
+            ZStack(alignment: .topLeading) {
+                Image(decorative: backdrop.soft, scale: 1).offset(x: -glass.minX, y: -glass.minY)
+                PanelGlass.standIn(darkness: dark).color
+            }
+            .frame(width: glass.width, height: glass.height, alignment: .topLeading)
+            .clipShape(shape)
+            .shadow(color: .black.opacity(0.42), radius: 35, y: 30)
+            .offset(x: glass.minX, y: glass.minY)
+            ConchGlassPanel(darkness: dark, voice: voice, radius: geometry.radius)
+                .frame(width: glass.width, height: glass.height)
+                .offset(x: glass.minX, y: glass.minY)
+            if showsWords {
+                ConversationFog(
+                    turns: turns,
+                    draft: .constant(draft),
+                    text: FogTextState(),
+                    isListening: voice == .listening,
+                    isWorking: working,
+                    isFullScreen: fullScreen,
+                    corner: corner,
+                    insets: screenInsets.less(inset),
+                    hovering: hovering,
+                    session: session,
+                    sessions: switching ? panelSessions : [],
+                    isSwitching: .constant(switching),
+                    switcherSelection: selection,
+                    showsReply: session != nil,
+                    content: content,
+                    notice: notice,
+                    empty: empty,
+                    speaking: speaking,
+                    onPrevious: {},
+                    onNext: {},
+                    onMic: {},
+                    onSend: {},
+                    onCollapse: {},
+                    onFullScreen: {},
+                    onCanvas: {}
+                )
+                .padding(inset)
+                .frame(width: window.width, height: window.height)
+                .offset(x: window.minX, y: window.minY)
+            }
+        }
+        .frame(width: panelScreenSize.width, height: panelScreenSize.height, alignment: .topLeading)
+        .clipped()
+        .environment(\.conchDarkness, dark)
+        .environment(\.colorScheme, dark > 0.5 ? .dark : .light)
+        .clipShape(RoundedRectangle(cornerRadius: ConchRadius.large))
+    }
+}
+
+let standInNote = "The glass is a stand-in: ImageRenderer can't draw Liquid Glass, so it is panel-lab's own (white 52% in light, #1E1E22 50% in dark, over the screen blurred 28 pt), under the panel's colour, wash (PanelGlass.wash), hairline and grab bar."
+let fullWindow = CGRect(origin: .zero, size: panelScreenSize)
+let fullGlass = PanelGlass.Geometry.fullScreen(menuBar: panelMenuBar)
+
+try render("qp-panel-docked", width: 1520) {
+    Heading(title: "Conversation panel, docked, as it ships", note: standInNote)
+    Caption("Pointer over the panel: the buttons' fills in. One left edge for the buttons, the mic and the words; the item isn't repeated beside the name (the newest reply says it); the placeholder names who the reply goes to.")
+    PanelScene()
+    Caption("Pointer away: only the fills go. The name and the icons keep their contrast (the lab's 0.4 over everything left them at 2.1:1 and 1.6:1).")
+    PanelScene(hovering: false)
+}
+
+try render("qp-panel-mismatch", width: 1520) {
+    Heading(title: "The panel over an app that doesn't match it", note: "Auto follows the system's appearance, so a light panel can sit over a dark app and a dark one over a light page. The wash keeps every level of the words at 4.5:1 either way. " + standInNote)
+    Caption("Light panel over a dark app.")
+    PanelScene(backdrop: darkBackdrop, darkness: 0)
+    Caption("Dark panel over the busy screen.")
+    PanelScene(darkness: 1)
+}
+
+try render("qp-panel-fullscreen", width: 1520) {
+    Heading(title: "Full screen, on a deliverable", note: "Still the glass: 12 pt from the screen's edges and the menu bar, a 26 pt corner. The header names the item only here, where the words are hidden; the newest reply keeps one quiet line above the reply, and a click opens it whole. Collapse steps out beside Exit full screen. " + standInNote)
+    PanelScene(window: fullWindow, geometry: fullGlass, fullScreen: true, session: panelSession, content: stagedPage)
+    Caption("Full screen on a session with nothing to open: its words, in the same glass.")
+    PanelScene(window: fullWindow, geometry: fullGlass, fullScreen: true, session: panelSessions[1])
+}
+
+try render("qp-panel-switcher", width: 1520) {
+    Heading(title: "The switcher", note: "Glass that blurs the words under it, with a 20 pt corner. Ready and working are filled dots in their colours (the hollow ring is the sidebar's Paused). ↑ and ↓ pick a row out (here the working one), Return opens it, Esc or a click anywhere else closes it. " + standInNote)
+    PanelScene(switching: true, selection: "tests")
+}
+
+try render("qp-panel-states", width: 1520) {
+    Heading(title: "Empty, not running, a failed reply, and the voice elsewhere", note: standInNote)
+    Caption("No sessions yet: said where the words would be, with no reply line to type into.")
+    PanelScene(turns: [], session: nil, empty: "No sessions yet")
+    Caption("The daemon down.")
+    PanelScene(turns: [], session: nil, empty: "conch isn't running")
+    Caption("A reply that didn't go: the words are back in the line, and the reason under it, in the sentence the dashboard and the phone show.")
+    PanelScene(draft: "Make the button just say Join", notice: ConchSendFailure.sentence(reason: "system-dialog-blocking"))
+    Caption("The voice reading another session: named beside the header, a click away.")
+    PanelScene(speaking: panelSessions[1], voice: .speaking)
+}
+
+/// The glass part way through a morph: the window and its glass in a straight line from one to the other.
+func morphFrame(_ from: CGRect, _ to: CGRect, _ glassFrom: PanelGlass.Geometry, _ glassTo: PanelGlass.Geometry, at t: CGFloat) -> some View {
+    let window = CGRect(x: from.minX + (to.minX - from.minX) * t, y: from.minY + (to.minY - from.minY) * t, width: from.width + (to.width - from.width) * t, height: from.height + (to.height - from.height) * t)
+    return PanelScene(window: window, geometry: PanelGlass.Geometry.lerp(glassFrom, glassTo, t), showsWords: false)
+        .scaleEffect(0.24, anchor: .topLeading)
+        .frame(width: panelScreenSize.width * 0.24, height: panelScreenSize.height * 0.24, alignment: .topLeading)
+}
+
+try render("qp-panel-morph", width: 1520) {
+    Heading(title: "The morphs, frame by frame", note: "On ConchMotion.morph, the window and its glass together; the words step aside and come back 120 ms after it lands, laid out for where it landed. Under Reduce Motion each is a cut. " + standInNote)
+    Caption("Docked to full screen: the corner eases from 30 to 26, the margin from 24 to 12.")
+    HStack(spacing: 12) {
+        ForEach([0, 0.35, 0.7, 1] as [CGFloat], id: \.self) { t in morphFrame(dockedWindow, fullWindow, .docked, fullGlass, at: t) }
+    }
+    Caption("Docked to collapsed: the glass shrinks into the handle's circle, which takes over as it lands.")
+    let handle = CGRect(x: 0, y: panelScreenSize.height - FogHandle.side, width: FogHandle.side, height: FogHandle.side)
+    HStack(spacing: 12) {
+        ForEach([0, 0.35, 0.7, 1] as [CGFloat], id: \.self) { t in morphFrame(dockedWindow, handle, .docked, .collapsed(corner: .bottomLeading), at: t) }
+    }
+    Caption("The handle, collapsed: the panel's own glyph and glass.")
+    ZStack(alignment: .bottomLeading) {
+        Image(decorative: panelBackdrop.page, scale: 1)
+        FogHandle {}
+    }
+    .frame(width: 480, height: 200, alignment: .bottomLeading)
+    .clipped()
+    .clipShape(RoundedRectangle(cornerRadius: ConchRadius.large))
+}
+
+// The contrast, before and after, over each backdrop: the ground under the words' column read off the blurred page
+// pixel by pixel, the stand-in glass and (after) the wash laid over it, and each ink measured against it. Before is the
+// lab's inks with no wash: #6E6E73, past turns at half, the placeholder at 28% and 32%.
+struct ContrastRow: Identifiable {
+    let id: String
+    let values: [(String, Double, Double)]
+}
+
+@MainActor
+func contrastRows() -> [ContrastRow] {
+    let column = ConversationFog.textFrame(in: CGSize(width: dockedWindow.width - 48, height: dockedWindow.height - 48), corner: .bottomLeading, insets: EdgeInsets(), fullScreen: false)
+        .offsetBy(dx: dockedWindow.minX + 24, dy: dockedWindow.minY + 24)
+    var rows: [ContrastRow] = []
+    for backdrop in panelBackdrops {
+        let width = backdrop.soft.width, height = backdrop.soft.height
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let context = CGContext(data: &pixels, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.draw(backdrop.soft, in: CGRect(x: 0, y: 0, width: width, height: height))
+        var samples: [ConchRGBA] = []
+        for y in stride(from: Int(column.minY), to: Int(column.maxY), by: 6) {
+            for x in stride(from: Int(column.minX), to: Int(column.maxX), by: 6) {
+                let i = (y * width + x) * 4
+                samples.append(ConchRGBA(UInt32(pixels[i]) << 16 | UInt32(pixels[i + 1]) << 8 | UInt32(pixels[i + 2])))
+            }
+        }
+        for darkness in [0.0, 1.0] {
+            let lightest = PanelGlass.mesh.max { $0.contrast(on: ConchRGBA(0)) < $1.contrast(on: ConchRGBA(0)) }
+            func worst(_ ink: ConchRGBA, wash: Double?) -> Double {
+                samples.flatMap { backdrop in [nil, lightest].map { PanelGlass.ground(over: backdrop, darkness: darkness, mesh: $0, wash: wash) } }
+                    .map { ink.contrast(on: $0) }.min() ?? 0
+            }
+            let text = ConchColor.overlayText.rgba(darkness: darkness)
+            let secondary = ConchColor.overlayTextSecondary.rgba(darkness: darkness), placeholder = ConchColor.overlayPlaceholder.rgba(darkness: darkness)
+            let oldSecondary = darkness > 0.5 ? ConchRGBA(0xB8B8BE) : ConchRGBA(0x6E6E73)
+            let oldPlaceholder = darkness > 0.5 ? ConchRGBA(0xF5F5F7, alpha: 0.32) : ConchRGBA(0x1D1D1F, alpha: 0.28)
+            rows.append(ContrastRow(id: "\(backdrop.name), \(darkness > 0.5 ? "dark" : "light") panel", values: [
+                ("past turn", worst(ConchRGBA(text.hex, alpha: 0.5), wash: 0), worst(ConchRGBA(text.hex, alpha: ConversationFog.pastOpacity), wash: nil)),
+                ("You / item", worst(oldSecondary, wash: 0), worst(secondary, wash: nil)),
+                ("placeholder", worst(oldPlaceholder, wash: 0), worst(placeholder, wash: nil)),
+                ("newest", worst(text, wash: 0), worst(text, wash: nil)),
+            ]))
+        }
+    }
+    return rows
+}
+
+let panelContrast = MainActor.assumeIsolated { contrastRows() }
+for row in panelContrast {
+    print("contrast \(row.id): " + row.values.map { String(format: "%@ %.2f → %.2f", $0.0, $0.1, $0.2) }.joined(separator: " · "))
+}
+
+try render("qp-panel-contrast", width: 1100) {
+    Heading(title: "Words on the glass, before and after", note: "The worst spot under the docked panel's words, over each screen: the page blurred as the glass blurs it, the stand-in glass, the mesh's lightest colour or none, and after, the wash. Before is the lab's inks with no wash. 4.5:1 is the bar for words.")
+    VStack(alignment: .leading, spacing: 8) {
+        ForEach(panelContrast) { row in
+            HStack(spacing: 18) {
+                Text(row.id).font(ConchType.uiEmphasis).foregroundStyle(ConchColor.textPrimary).frame(width: 260, alignment: .leading)
+                ForEach(row.values, id: \.0) { value in
+                    VStack(alignment: .leading, spacing: 1) {
+                        Caption(value.0)
+                        Text(String(format: "%.2f → %.2f", value.1, value.2))
+                            .font(ConchType.code)
+                            .foregroundStyle(value.2 >= 4.5 ? ConchColor.textPrimary : ConchColor.attention)
+                    }
+                    .frame(width: 150, alignment: .leading)
+                }
+            }
+        }
+    }
+}

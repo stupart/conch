@@ -308,11 +308,14 @@ final class FogTextTests: XCTestCase {
         host.frame = CGRect(origin: .zero, size: size)
         host.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-        let frame = ConversationFog.contentFrame(in: size, insets: EdgeInsets(), showsReply: true)
-        let reply = CGPoint(x: size.width / 2, y: frame.maxY + 40)
-        for point in [CGPoint(x: frame.minX + 20, y: frame.minY + 20), CGPoint(x: frame.midX, y: frame.midY), CGPoint(x: frame.maxX - 20, y: frame.maxY - 20), reply] {
+        // Its turns end in a reply, so the newest reply's line sits above the floating reply, and the deliverable above it.
+        let frame = ConversationFog.contentFrame(in: size, insets: EdgeInsets(), showsReply: true, showsNewest: true)
+        let newest = CGPoint(x: size.width / 2, y: frame.maxY + ConversationFog.newestLineGap + ConversationFog.newestLineHeight / 2)
+        let reply = CGPoint(x: size.width / 2, y: size.height - ConversationFog.padding - 20)
+        for point in [CGPoint(x: frame.minX + 20, y: frame.minY + 20), CGPoint(x: frame.midX, y: frame.midY), CGPoint(x: frame.maxX - 20, y: frame.maxY - 20), newest, reply] {
             XCTAssertTrue(frames.value.contains { $0.contains(point) }, "a press or scroll at \(point) would be the fog's: \(frames.value)")
         }
+        XCTAssertLessThan(frame.maxY, ConversationFog.contentFrame(in: size, insets: EdgeInsets(), showsReply: true).maxY, "the newest reply's line takes its room from the deliverable")
         // Under the button row, the width of the panel's padding, and clear of the reply line at the foot.
         XCTAssertEqual(frame.minX, ConversationFog.padding)
         XCTAssertEqual(frame.maxX, size.width - ConversationFog.padding)
@@ -337,10 +340,10 @@ final class FogTextTests: XCTestCase {
         func column(_ width: CGFloat) -> (width: CGFloat, travel: CGFloat) {
             let size = CGSize(width: width, height: 640)
             let frame = ConversationFog.textFrame(in: size, corner: .bottomTrailing, insets: insets, fullScreen: false)
-            let room = width - 2 * 52
+            let room = width - 2 * ConversationFog.side
             return (frame.width, room - frame.width)
         }
-        // The default panel is untouched: 796 pt of room, 60% of which is under the floor, so it stays at 620.
+        // The default panel is untouched: 852 pt of room, 60% of which is under the floor, so it stays at 620.
         XCTAssertEqual(column(900).width, 620, accuracy: 0.01)
         XCTAssertGreaterThan(column(900).travel, 100)
         // Past about 1185 pt the column starts earning width rather than the margin earning it.
@@ -353,10 +356,11 @@ final class FogTextTests: XCTestCase {
             XCTAssertGreaterThan(column(CGFloat(width)).travel, 50, "no magnet travel at \(width)")
         }
         // A panel too narrow for the floor still just uses what it has.
-        XCTAssertEqual(column(500).width, 500 - 104, accuracy: 0.01)
+        XCTAssertEqual(column(500).width, 500 - 2 * ConversationFog.side, accuracy: 0.01)
     }
 
-    /// Docked, the words keep 52 pt from their side in a column up to 620 wide; off the corner they centre.
+    /// Docked, the words keep the buttons' 24 pt from their side, one edge for the buttons, the mic and the words, in a
+    /// column up to 620 wide; off the corner they centre.
     func testTopCornersRunTopDownAndFloatingWordsCentre() {
         XCTAssertTrue(ConversationFog.newestAtTop(corner: .topLeading, fullScreen: false))
         XCTAssertTrue(ConversationFog.newestAtTop(corner: .topTrailing, fullScreen: false))
@@ -366,11 +370,12 @@ final class FogTextTests: XCTestCase {
 
         let size = CGSize(width: 900, height: 640)
         let bl = ConversationFog.textFrame(in: size, corner: .bottomLeading, insets: Self.dock, fullScreen: false)
-        XCTAssertEqual(bl.minX, 52)
+        XCTAssertEqual(bl.minX, 24)
+        XCTAssertEqual(bl.minX, ConversationFog.padding, "the words' edge is the buttons' edge")
         XCTAssertEqual(bl.width, 620)
         let tr = ConversationFog.textFrame(in: size, corner: .topTrailing, insets: Self.menuBar, fullScreen: false)
-        XCTAssertEqual(tr.maxX, 900 - 52)
-        XCTAssertEqual(ConversationFog.textFrame(in: CGSize(width: 480, height: 360), corner: .bottomLeading, insets: Self.dock, fullScreen: false).width, 376)
+        XCTAssertEqual(tr.maxX, 900 - 24)
+        XCTAssertEqual(ConversationFog.textFrame(in: CGSize(width: 480, height: 360), corner: .bottomLeading, insets: Self.dock, fullScreen: false).width, 432)
 
         // Held in the middle of the screen: centred both ways.
         var motion = FogMotion(size: size, corner: .bottomLeading, in: Self.screen)

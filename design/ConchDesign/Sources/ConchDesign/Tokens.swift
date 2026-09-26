@@ -22,6 +22,12 @@ public struct ConchRGBA: Equatable, Sendable {
         String(format: "#%06X", hex) + (alpha < 1 ? " @ \(Int((alpha * 100).rounded()))%" : "")
     }
 
+    /// This colour laid over an opaque `background`: what is seen there, opaque.
+    public func over(_ background: ConchRGBA) -> ConchRGBA {
+        func mix(_ fore: Double, _ back: Double) -> UInt32 { UInt32(((fore * alpha + back * (1 - alpha)) * 255).rounded()) }
+        return ConchRGBA(mix(red, background.red) << 16 | mix(green, background.green) << 8 | mix(blue, background.blue))
+    }
+
     /// WCAG 2 contrast ratio of this colour, composited over an opaque `background`, against it.
     public func contrast(on background: ConchRGBA) -> Double {
         func over(_ fore: Double, _ back: Double) -> Double { fore * alpha + back * (1 - alpha) }
@@ -156,11 +162,16 @@ public enum ConchColor {
     public static let idleGlow = ConchColorToken("idleGlow", both: .init(0x7F8CFF))
 
     // The conversation overlay, drawn over whatever is on screen, from the overlay lab's light and dark palettes.
+    // Every text level is held to 4.5:1 on the panel's glass at its worst, over black or white (PanelContrastTests).
     public static let overlayText = ConchColorToken("overlayText", .init(0x1D1D1F), .init(0xF5F5F7))
-    public static let overlayTextSecondary = ConchColorToken("overlayTextSecondary", .init(0x6E6E73), .init(0xB8B8BE))
+    /// The light value is the dashboard's `textSecondary`. The lab's #6E6E73 measured 1.7 to 3.5 for "You" over a real
+    /// screen through the glass.
+    public static let overlayTextSecondary = ConchColorToken("overlayTextSecondary", .init(0x5C5C61), .init(0xB8B8BE))
     /// Words still to be read out.
     public static let overlayTextPending = ConchColorToken("overlayTextPending", .init(0x1D1D1F, alpha: 0.32), .init(0xF5F5F7, alpha: 0.36))
-    public static let overlayPlaceholder = ConchColorToken("overlayPlaceholder", .init(0x1D1D1F, alpha: 0.28), .init(0xF5F5F7, alpha: 0.32))
+    /// "Reply to …" in the empty reply line: 4.5:1 like any other words, since it is the only thing saying the line is there.
+    /// The lab's 28% and 32% measured 1.6 to 2.8.
+    public static let overlayPlaceholder = ConchColorToken("overlayPlaceholder", .init(0x1D1D1F, alpha: 0.68), .init(0xF5F5F7, alpha: 0.64))
     public static let overlayFill = ConchColorToken("overlayFill", .init(0x1D1D1F, alpha: 0.07), .init(0xFFFFFF, alpha: 0.12))
     public static let overlayFillStrong = ConchColorToken("overlayFillStrong", .init(0x1D1D1F, alpha: 0.12), .init(0xFFFFFF, alpha: 0.2))
     /// The overlay's round buttons.
@@ -380,13 +391,46 @@ public enum ConchMotion {
     /// One deliverable in the panel giving way to the next: the old one out soft and a touch large, the new one in from a
     /// touch small and soft (panel-lab's stage swoop).
     public static let swap = ConchSpring(bounce: 0.08, response: 0.52)
+    /// Something letting go of its corner or settling back into it: a thrown panel's fade, its look leaving the corner,
+    /// its buttons hiding mid-air, the panel's words stepping aside for a morph. Quick, and no overshoot.
+    public static let liftOff = ConchSpring(bounce: 0, response: 0.2)
+    /// The pointer coming over something: the panel's buttons filling in, the resize band's glow, a fade opening at the
+    /// transcript's near end.
+    public static let hover = ConchSpring(bounce: 0, response: 0.3)
+    /// A message you sent flying from the reply line into the transcript.
+    public static let sent = ConchSpring(bounce: 0.14, response: 0.42)
+    /// The panel's words, or its deliverable, arriving once its frame has landed (panel-lab's `.inner`, 0.1 / 0.42).
+    public static let reveal = ConchSpring(bounce: 0.1, response: 0.42)
     public static let springs: [(name: String, spring: ConchSpring)] = [
         ("dock", dock), ("morph", morph), ("pop", pop), ("grow", grow), ("voiceColour", voiceColour), ("appearance", appearance), ("swap", swap),
+        ("liftOff", liftOff), ("hover", hover), ("sent", sent), ("reveal", reveal),
     ]
 
     /// How small and soft a deliverable comes in on `swap`; it leaves as much larger.
     public static let swapScale: CGFloat = 0.965
     public static let swapBlur: CGFloat = 6
+
+    /// The panel's content coming back after its frame morphs (full screen, docked, collapsed): `revealDelay` after the
+    /// frame lands, from a touch small and soft, on `reveal`. Never while it is still small: the words laid out for full
+    /// screen inside a docked-size window was what the morph used to show.
+    public static let revealScale: CGFloat = 0.985
+    public static let revealBlur: CGFloat = 3
+    public static let revealDelay: Double = 0.12
+
+    /// One session's words and header giving way to another's (panel-lab's crossfade): the old out soft and up, the new in
+    /// from a little below, on `pop`, the words `crossStagger` behind the header. Never a hard cut.
+    public static let crossBlur: CGFloat = 4
+    public static let crossShift: CGFloat = 8
+    public static let crossScale: CGFloat = 0.985
+    public static let crossStagger: Double = 0.024
+
+    /// A popover opening on `pop` (the panel's switcher, panel-lab's `#switcher`): from a touch small, `popShift` toward
+    /// where it opens from and soft; its rows following `popStagger` apart after `popLead`.
+    public static let popScale: CGFloat = 0.94
+    public static let popShift: CGFloat = 6
+    public static let popBlur: CGFloat = 4
+    public static let popLead: Double = 0.04
+    public static let popStagger: Double = 0.018
 
     /// A thrown view mid-air: a little smaller, softer and fainter, whole again as it lands.
     public static let flightScale: CGFloat = 0.97

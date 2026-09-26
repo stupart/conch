@@ -327,7 +327,7 @@ public final class FogTextState: ObservableObject {
             }
         }
         if var flight {
-            if ConchSpring(bounce: reduceMotion ? 0 : 0.14, response: 0.42).step(&flight.progress, velocity: &flightVelocity, to: 1, dt: dt, epsilon: 0.002) {
+            if ConchMotion.sent.resolved(reduceMotion: reduceMotion).step(&flight.progress, velocity: &flightVelocity, to: 1, dt: dt, epsilon: 0.002) {
                 self.flight = nil
             } else {
                 self.flight = flight
