@@ -149,6 +149,8 @@ describe("what Tyler sent through conch is a receipt, not the message", () => {
     expect(other[1]!.material?.path).toBe(join(folder, "flat.png"));
     // A picture outside conch's own folder.
     today(canvasMessage().replace(join(folder, "flat.png"), "/tmp/x/flat.png"));
+    // The whole message moved elsewhere, every path agreeing: still only conch's own canvas folder makes a receipt.
+    today(canvasMessage().replaceAll(folder, join("/tmp/elsewhere", ID)));
     // A frame from somewhere else; a Show cut short.
     today(showMessage((n) => (n === 3 ? "/tmp/frame-03.png" : join(folder, `frame-0${n}.png`))));
     today(showMessage().split("\n").slice(0, -1).join("\n"));
