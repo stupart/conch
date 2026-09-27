@@ -9,5 +9,12 @@
 	     buffer - with no error anywhere in the chain. -->
 	<key>com.apple.security.device.audio-input</key>
 	<true/>
+	<!-- The daemon's osascript sends Apple Events to Terminal and System Events,
+	     charged to this app, and Settings › Permissions asks for Automation from
+	     the app itself (AEDeterminePermissionToAutomateTarget, on a press). Under
+	     Hardened Runtime an app may prompt for Apple Events only with this
+	     entitlement; without it the ask is refused and nothing appears. -->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
 </dict>
 </plist>

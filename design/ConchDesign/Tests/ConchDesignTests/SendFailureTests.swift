@@ -60,7 +60,7 @@ final class SendFailureTests: XCTestCase {
     func testEveryReasonTheDaemonSendsHasASentence() {
         let reasons = [
             "keystroke-fallback-off", "window-not-focusable", "session-not-routable",
-            "system-dialog-blocking", "automation-permission-denied", "front-window-changed",
+            "system-dialog-blocking", "automation-permission-denied", "accessibility-permission-denied", "front-window-changed",
             "automation-failed", "clipboard-changed", "clipboard-unavailable", "clipboard-unpreservable",
             "submit-failed",
             "clipboard-fallback", "delivery-failed", "transport-error", "submit-error",

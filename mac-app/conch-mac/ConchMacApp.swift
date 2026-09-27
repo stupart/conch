@@ -118,6 +118,10 @@ struct ConchMacApp: App {
                     .tabItem { Label("Phone app", systemImage: "iphone") }
                 ConchSettingsView()
                     .tabItem { Label("Settings", systemImage: "slider.horizontal.3") }
+                // conch's four macOS permissions, read without asking (`PermissionCenter`). Not among the daemon's
+                // settings: those vanish when the daemon is down, and these are the app's.
+                ConchPermissionsView()
+                    .tabItem { Label("Permissions", systemImage: "hand.raised") }
             }
             // A Settings window sizes to its content and does NOT scroll, so
             // an ideal height taller than a laptop screen simply overflows.

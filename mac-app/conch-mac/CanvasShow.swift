@@ -36,7 +36,7 @@ extension CanvasController {
         // Without the grant, the pill says so and stays up to say it: the pen coming up used to hide the pill, with this
         // on it.
         guard CanvasCapture.granted() else {
-            return say(settingsOpened ? .reopen(marks: false) : .noScreen(marks: false))
+            return say(screenAwaitsReopen ? .reopen(marks: false) : .noScreen(marks: false))
         }
         let pointer = NSEvent.mouseLocation
         guard let display = document?.anchor.id ?? NSScreen.screens.first(where: { $0.frame.contains(pointer) })?.displayID else { return }

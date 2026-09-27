@@ -329,6 +329,25 @@ naming, because neither is obvious from the code:
   Hardened Runtime requires independently of the permission database. **The
   signing identity is part of this contract**: TCC keys the grant to it, so an
   app signed by a different cert is a new app and loses the permission.
+- **One grant, to conch.app, for every permission.** The rule above is not the
+  microphone's alone: macOS charges every TCC check to the *responsible*
+  process, which a child inherits and bun never disclaims. Probed 2026-09-27
+  (`responsibility_get_pid_responsible_for_pid`): the app's daemon answers to
+  `conch.app`, and an `osascript` under bun answers to whatever bun answers to.
+  The same probe binary read Accessibility, Screen Recording and Automation as
+  granted under Terminal and as refused (`-1744`, not asked) once spawned with
+  its responsibility disclaimed, so disclaiming would move the grants off
+  conch, not onto it. So Accessibility (the front-window observer and the
+  daemon's System Events keystrokes), Automation (the daemon's Apple Events to
+  Terminal and System Events), Screen Recording (the canvas, Show, the phone's
+  window snapshots) and the Microphone (the daemon's recorder) are each one
+  switch for conch. The exception is a daemon conch did not start: from a
+  terminal it answers to that terminal, from launchd to bun itself, and
+  Settings › Permissions says so. The app reads all four without prompting and
+  asks only on a press (`mac-app/conch-mac/Permissions.swift`); the daemon
+  names a refused keystroke `accessibility-permission-denied`, which the apps
+  show with an Open Settings. Asking for Automation from the app needs
+  `com.apple.security.automation.apple-events` under Hardened Runtime.
 
 ## What this means for building on top
 

@@ -39,6 +39,8 @@ final class WindowPreviewer {
         func refuse(_ why: String) -> ReviewPreviewReport { ReviewPreviewReport(request: request.id, path: nil, error: why) }
         // Checked, never asked for: asking would put a system dialog in front of Tyler because a phone wanted a picture.
         guard CGPreflightScreenCaptureAccess() else {
+            // The phone can't fix it; the Mac's window says so, with the button that can.
+            PermissionCenter.shared.note(.screen)
             return refuse("conch's Mac app hasn't been allowed Screen Recording, so it can't take a snapshot of a window. Allow it in System Settings › Privacy & Security › Screen Recording.")
         }
         guard let folder = PreviewOwner.folder(request.folder, temp: [NSTemporaryDirectory(), "/tmp"]) else {

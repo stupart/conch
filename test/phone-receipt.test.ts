@@ -20,6 +20,7 @@ const root = join(import.meta.dir, "..");
 const SENTENCES: Record<string, string> = {
   "system-dialog-blocking": "Not delivered — a dialog is open on your Mac and it's blocking conch. Dismiss it and send again.",
   "automation-permission-denied": "Not delivered — macOS is blocking conch from controlling Terminal. Turn conch on under Privacy & Security → Automation.",
+  "accessibility-permission-denied": "Not delivered — conch can't type into Terminal: allow conch in Accessibility.",
   "window-not-focusable": "Not delivered — couldn't reach that session's window.",
   "clipboard-fallback": "Not delivered — couldn't reach that session's window.",
   "session-not-routable": "Not delivered — conch can't tell which window that session is in.",

@@ -306,6 +306,7 @@ import {
   type AgentCapabilityObservation,
 } from "./agent-capabilities.ts";
 import { resolveAgentInstall } from "./agent-install.ts";
+import { accessibilityTrusted } from "./accessibility.ts";
 
 /**
  * The turn-based voice loop.
@@ -1381,6 +1382,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     reportError: recordDaemonError,
     observeRecords,
     prewarmEar: () => whisperSupervisor?.prewarm(),
+    // Asked of macOS for this process, which answers to whoever started the daemon: conch.app, from the app.
+    accessibilityTrusted,
     control: handleControl,
   });
   // Publication is always on, independent of the selected terminal renderer.
