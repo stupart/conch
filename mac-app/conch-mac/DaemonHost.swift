@@ -99,6 +99,13 @@ final class DaemonHost: ObservableObject {
         // under ~/.local/bin) or a brew tool the way the launchd service can:
         // the service plist lists these same directories (src/install.ts).
         // Found the night of 2026-09-10: Kokoro installed, daemon still on `say`.
+        // The natural voices set themselves up with the uv this app carries
+        // (Contents/Helpers/uv, from scripts/embed-uv.sh): the daemon builds its
+        // own Python environment with it (src/voice-env.ts), so a downloaded
+        // conch needs nothing else installed. An explicit CONCH_UV wins.
+        if environment["CONCH_UV"] == nil, let uv = DaemonHost.bundledUV() {
+            environment["CONCH_UV"] = uv.path
+        }
         task.environment = environment
 
         // Capture output rather than inheriting: a GUI app has no terminal, so
@@ -269,6 +276,15 @@ final class DaemonHost: ObservableObject {
         let existing = (inherited ?? "/usr/bin:/bin:/usr/sbin:/sbin").split(separator: ":").map(String.init)
         var seen = Set<String>()
         return (wanted + existing).filter { seen.insert($0).inserted }.joined(separator: ":")
+    }
+
+    /// The uv embedded in this app by the "Embed uv helper" build phase, if it is there.
+    static func bundledUV(
+        bundle: Bundle = .main,
+        fileExists: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+    ) -> URL? {
+        let uv = bundle.bundleURL.appendingPathComponent("Contents/Helpers/uv")
+        return fileExists(uv.path) ? uv : nil
     }
 
     /// Is a daemon already listening?

@@ -29,6 +29,9 @@ if command -v xcodebuild >/dev/null 2>&1; then
        ARCHS="x86_64 arm64" ONLY_ACTIVE_ARCH=NO build >/dev/null 2>&1; then
     APP_SRC="build/release-app.noindex/Build/Products/Release/conch-mac.app"
     codesign --verify --strict "$APP_SRC" || { echo "app signature invalid" >&2; exit 1; }
+    # The uv the natural voices set themselves up with (scripts/embed-uv.sh).
+    [ -x "$APP_SRC/Contents/Helpers/uv" ] || { echo "app has no Contents/Helpers/uv" >&2; exit 1; }
+    codesign --verify --strict "$APP_SRC/Contents/Helpers/uv" || { echo "embedded uv signature invalid" >&2; exit 1; }
   else
     echo "⚠️  app build failed — shipping the CLI only" >&2
   fi

@@ -36,6 +36,9 @@ xcodebuild -project mac-app/conch-mac.xcodeproj -scheme conch-mac \
 echo "→ verifying the signature"
 codesign --verify --strict --verbose=2 "$APP"
 codesign -dv --verbose=2 "$APP" 2>&1 | grep -E 'Authority=Developer ID|TeamIdentifier'
+# The uv the natural voices set themselves up with (scripts/embed-uv.sh).
+[[ -x "$APP/Contents/Helpers/uv" ]] || { echo "app has no Contents/Helpers/uv" >&2; exit 1; }
+codesign --verify --strict --verbose=2 "$APP/Contents/Helpers/uv"
 
 mkdir -p "$DIST"
 rm -f "$ZIP"

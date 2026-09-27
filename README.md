@@ -132,29 +132,25 @@ conch daemon
 
 No daemon running at all? The hooks still work standalone: bell + spoken announcements, no voice-back. That's a perfectly good way to use conch.
 
-### Natural voices (optional, recommended)
+### Natural voices
 
-Without MLX installed, conch speaks through macOS `say`. Install [mlx-audio](https://github.com/Blaizzy/mlx-audio) and the daemon upgrades itself to [Kokoro-82M](https://huggingface.co/mlx-community/Kokoro-82M-bf16) — dramatically more natural, running warm and local on Apple GPU (~340MB model, auto-downloaded on first use):
+Every session gets its own natural voice — [Kokoro-82M](https://huggingface.co/mlx-community/Kokoro-82M-bf16), running warm and local on the Apple GPU — and it sets itself up. There is nothing to install: the first time the daemon starts, it builds conch's own voice environment in the background (about 1.3 GB, once, into `~/.cache/conch/voice`) and fetches the model (~360 MB, into the standard Hugging Face cache), speaking with macOS `say` until it is ready. Settings → Session voices shows where it stands: *Natural voices: setting up… / ready / off (reason)*; so does `conch doctor`.
 
-```bash
-brew install uv
-uv tool install --with "misaki[en]" \
-  --with "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" \
-  "mlx-audio[server]"
-```
+How it works: the Mac app carries a pinned [uv](https://github.com/astral-sh/uv) (`conch.app/Contents/Helpers/uv`) and hands it to the daemon, which installs its own uv-managed Python 3.12 and exactly the packages in a hashed lock (`src/voice-requirements.txt`) — nothing touches your system Python or your own uv tools. Every start probes that environment against the lock; if it is missing or wrong, the daemon rebuilds it in the background (at most three attempts a day, each failure logged with its reason in `~/.cache/conch/voice/setup.log`). `conch voices setup` does the same build in the foreground, with its progress printed. An existing `uv tool install` of mlx-audio keeps working: it speaks while conch builds its own, as long as it can import Kokoro. Kokoro needs Apple silicon; an Intel Mac stays on `say`.
 
-That's it — the daemon uses the `mlx_audio.server` launcher only to locate its isolated Python, then starts a Conch-owned worker with no HTTP listener. The worker loads Kokoro once, warms the MLX/G2P path, and accepts private JSON lines over stdin/stdout. A request timeout or crash hard-kills that exact child and starts a fresh one; while it is loading or restarting, speech immediately degrades to `say`. Manual mode unloads the worker after a minute (freeing its memory) and auto mode warms it again; explicit speech in between goes through `say`.
+- **Opt out:** `CONCH_TTS=say` — nothing is downloaded or built.
+- **Use your own Python:** `CONCH_TTS_WORKER_PYTHON=/path/to/python` — used as-is; conch builds nothing. It needs `mlx-audio`, `misaki[en]`, `loguru` and the spaCy English model on Python 3.10 or newer.
 
-**Every session gets its own voice**: labels are hashed onto a ring of 8 Kokoro voices, so dayloop always sounds like dayloop and you can tell sessions apart by ear. Audition the ring with `conch voices` (or press `v` in the dashboard to hear each LIVE session in its assigned voice), pin any session with `conch voice dayloop bm_george` (persisted), or customize the ring with `CONCH_TTS_VOICES` (any of Kokoro's 50+ voices). Force `CONCH_TTS=say` to opt out, or set `CONCH_TTS=server` to temporarily restore the legacy HTTP backend.
+The daemon runs one owned worker with no HTTP listener: it loads Kokoro once, warms the MLX/G2P path, and accepts private JSON lines over stdin/stdout. A request timeout or crash hard-kills that exact child and starts a fresh one; while it is loading or restarting, speech immediately degrades to `say`. Manual mode unloads the worker after a minute (freeing its memory) and auto mode warms it again; explicit speech in between goes through `say`.
 
-The worker itself adds no package beyond the installed `mlx-audio`, NumPy, `misaki[en]`, and English spaCy model. The `[server]` extra above is kept only for the one-variable rollback path.
+**Every session gets its own voice**: labels are hashed onto a ring of 8 Kokoro voices, so dayloop always sounds like dayloop and you can tell sessions apart by ear. Audition the ring with `conch voices` (or press `v` in the dashboard to hear each LIVE session in its assigned voice), pin any session with `conch voice dayloop bm_george` (persisted), or customize the ring with `CONCH_TTS_VOICES` (any of Kokoro's 50+ voices). `CONCH_TTS=server` temporarily restores the legacy HTTP backend, which uses your own `mlx_audio.server`.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
 | `conch setup [--no-service] [--no-plugin]` | Run once: deps, models, hooks, doctor, service, and available-app plugins |
-| `conch uninstall [--models]` | Remove managed hooks, instructions, service, tmux session, and plugin; also remove downloaded models only with `--models` |
+| `conch uninstall [--models]` | Remove managed hooks, instructions, service, tmux session, and plugin; also remove downloaded models and the natural-voice environment only with `--models` |
 | `conch version` / `--version` | Print the installed package version |
 | `conch service [install\|off]` | Optionally install/refresh or remove launchd supervision |
 | `conch install-plugin` / `uninstall-plugin` | Optionally manage the Claude Code plugin separately |
@@ -282,10 +278,11 @@ The full environment-variable surface remains available (put overrides in the ho
 | `CONCH_AWAY_AFTER_SECS` | `0` (off) | opt-in: silence everything after N seconds of keyboard idle |
 | `CONCH_MEETING_AUTOPAUSE` | `0` (off) | silently pause while another app is using the default microphone |
 | `CONCH_SCREEN_LOG` | `1` | keep a local log of which session's work was on screen, and for how long, in `~/.config/conch/screen`; never sent anywhere (`conch set screen-log …`, [docs/screen-context.md](docs/screen-context.md)) |
-| `CONCH_TTS` | `worker` | `worker` (owned, no HTTP) / `server` (legacy rollback) / `say`; old `auto` aliases to `worker` |
+| `CONCH_TTS` | `worker` | `worker` (owned, no HTTP; sets up its own environment) / `server` (legacy rollback) / `say` (opt out: nothing is downloaded); old `auto` aliases to `worker` |
 | `CONCH_TTS_PORT` | `8880` | legacy `server` mode only; `0` disables that backend |
-| `CONCH_TTS_SERVER` | `mlx_audio.server` | legacy server binary and launcher whose shebang locates the uv-tool Python |
-| `CONCH_TTS_WORKER_PYTHON` | derived | optional worker interpreter override; normally read from `mlx_audio.server` |
+| `CONCH_TTS_SERVER` | `mlx_audio.server` | legacy server binary; its shebang also locates an existing mlx-audio tool that speaks while conch builds its own |
+| `CONCH_TTS_WORKER_PYTHON` | unset | your own worker interpreter, used as-is; unset, conch uses the environment it builds in `~/.cache/conch/voice` |
+| `CONCH_UV` | the app's | the uv conch builds its voice environment with; the app sets it to its own `Contents/Helpers/uv` |
 | `CONCH_TTS_VOICES` | 8-voice ring | comma-separated Kokoro voices; sessions hash onto the ring |
 | `CONCH_TTS_SPEED` | `1.35` | Kokoro/voice synthesis speed (`conch set voice-speed …`) |
 | `CONCH_TTS_BATCH_CHARS` | `240` | coalesce later short sentences up to this size; `0` disables (sentence one always stays separate) |

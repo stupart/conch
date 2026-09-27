@@ -8,6 +8,7 @@ import { deliverableFacts, type DeliverableKind, type DeliverableKindSource } fr
 import { reviewIdentity } from "./records-receipts.ts";
 import type { PendingApproval } from "./approval.ts";
 import type { PublishedShowing } from "./screen-context.ts";
+import type { NaturalVoicesStatus } from "./voice-env.ts";
 
 export type PanelConchState = "idle" | "muted" | "paused" | "speaking" | "listening" | "recording" | "transcribing";
 
@@ -424,6 +425,12 @@ export interface PublishedState {
   audioOutbox?: AudioOutboxItem[];
   /** What is on screen and whose it is (`screen-context.ts`). Absent until something was observed. */
   showing?: PublishedShowing;
+  /**
+   * Where the natural voices stand (`voice-env.ts`): checking, setting up, ready, or off and why.
+   * The Mac app's Settings shows it beside the session voices. Absent from older daemons and in
+   * CONCH_TTS=server mode, which conch does not set up.
+   */
+  naturalVoices?: NaturalVoicesStatus;
 }
 
 const MAX_PUBLISHED_CONVERSATION_CHARS = 4_000;
@@ -571,6 +578,7 @@ export function buildPublishedState(
     /** The permission prompt a session is showing; asked only of rows that need you. */
     approvalForSessionId?(sessionId: string, transcriptPath: string | undefined): PendingApproval | null;
     showing?: PublishedShowing;
+    naturalVoices?: NaturalVoicesStatus;
   } = {},
 ): PublishedState {
   return {
@@ -584,6 +592,7 @@ export function buildPublishedState(
     ...(options.audio ? { audioControl: options.audio.control, audioOutbox: options.audio.outbox } : {}),
     ...(options.deliveries?.length ? { deliveries: [...options.deliveries] } : {}),
     ...(options.previewRequests?.length ? { previewRequests: [...options.previewRequests] } : {}),
+    ...(options.naturalVoices ? { naturalVoices: { ...options.naturalVoices } } : {}),
     mode: { ...model.mode },
     live: publishedLiveState(model.live),
     ...(model.reply ? { reply: publishedReply(model.reply) } : {}),

@@ -163,8 +163,15 @@ export interface ManagedTtsWorkerOptions {
   model: string;
   voices: string[];
   speed: number;
-  /** Interpreter from the mlx_audio.server shebang, or an explicit override. */
+  /**
+   * The interpreter to run the worker with. Usually null at construction: the
+   * daemon's VoiceEnvManager hands one over with setPython() once it has
+   * checked it (voice-env.ts). With none, the worker spawns nothing and speech
+   * goes to `say`.
+   */
   python?: string | null;
+  /** A start burst ended with the worker still down (after its bounded attempts). */
+  onStartFailed?: (lastError: string) => void;
   /** Complete command test seam; the production command is assembled when omitted. */
   command?: string[];
   spawn?: (command: string[]) => TtsWorkerProcess;
@@ -312,12 +319,14 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
   private periodicTimer: ReturnType<typeof setTimeout> | null = null;
   private unloadTimer: ReturnType<typeof setTimeout> | null = null;
   private requestCounter = 0;
+  private python: string | null;
   private readonly outputFiles = new Set<string>();
   private readonly lifecycle = new AbortController();
   private readonly log: WatchdogWarning;
 
   constructor(private readonly options: ManagedTtsWorkerOptions) {
     this.status = options.enabled ? "starting" : "disabled";
+    this.python = options.python ?? null;
     const logger = options.log ?? console.warn;
     this.log = (message) => {
       try { logger(message); } catch {}
@@ -351,6 +360,25 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
     if (!this.options.enabled || this.stopped() || this.status === "unloaded") return Promise.resolve(false);
     if (this.isReady()) return Promise.resolve(true);
     return this.beginRecovery("startup");
+  }
+
+  /**
+   * Change the interpreter (voice-env.ts decides it). A worker down for want of
+   * one starts now; a warm worker keeps its child until it next restarts, so a
+   * better interpreter never interrupts speech; an unloaded one (manual mode)
+   * stays unloaded and uses it at the next prewarm. Null withdraws it: nothing
+   * is retried against an interpreter known to be broken, and `say` speaks.
+   */
+  setPython(python: string | null): void {
+    if (this.python === python) return;
+    this.python = python;
+    if (!this.options.enabled || this.stopped()) return;
+    if (!python) {
+      this.clearPeriodic();
+      return;
+    }
+    if (this.status === "unloaded" || this.isReady()) return;
+    void this.beginRecovery("startup");
   }
 
   requestRecovery(reason: string): void {
@@ -519,8 +547,20 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
     this.unloadTimer = null;
   }
 
+  private hasInterpreter(): boolean {
+    return Boolean(this.options.command?.length || this.python);
+  }
+
   private beginRecovery(reason: string): Promise<boolean> {
     if (this.recovery) return this.recovery;
+    if (!this.hasInterpreter()) {
+      // Waiting for voice-env.ts to hand one over. Spawning would only fail,
+      // four times a burst, every 30 s — the log that said "start attempt
+      // failed … using say" 53 times without saying why.
+      this.status = "down";
+      this.lastError = "no voice environment yet";
+      return Promise.resolve(false);
+    }
     this.clearPeriodic();
     this.status = reason === "startup" ? "starting" : "restarting";
     const work = this.recover(reason);
@@ -567,6 +607,7 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
       this.status = "down";
       this.log("kokoro worker remains down after bounded restart attempts; using say and retrying periodically");
       this.armPeriodic();
+      try { this.options.onStartFailed?.(this.lastError ?? "unknown"); } catch {}
     }
     return false;
   }
@@ -608,15 +649,13 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
 
   private workerCommand(): string[] {
     if (this.options.command?.length) return [...this.options.command];
-    if (!this.options.python) {
-      throw new TtsWorkerUnavailableError(
-        "mlx_audio Python not found; install mlx-audio or set CONCH_TTS_WORKER_PYTHON",
-      );
+    if (!this.python) {
+      throw new TtsWorkerUnavailableError("no voice environment yet — conch is setting it up, or CONCH_TTS_WORKER_PYTHON");
     }
     const voices = this.options.voices.filter((voice) => VOICE_NAME.test(voice));
     const warmupVoice = voices[0] ?? "af_heart";
     return [
-      this.options.python,
+      this.python,
       "-u",
       materializeTtsWorkerScript(),
       "--model", this.options.model,

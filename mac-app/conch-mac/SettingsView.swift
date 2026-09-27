@@ -117,21 +117,43 @@ struct ConchSettingsView: View {
 /// Per-session voices, moved off the ledger — they are reference information,
 /// not something you act on while triaging. Read straight from the daemon's
 /// published snapshot; voices are session state, not a curated setting.
+///
+/// Headed by where the natural voices stand (`naturalVoices`, src/voice-env.ts).
+/// A first run builds them in the background while macOS `say` speaks, and
+/// without this line nothing on screen said why every session sounded the same
+/// (Tyler, 2026-09-27: "the voices are all default Mac — what happened there?").
 private struct SessionVoicesSection: View {
     @State private var rows: [(label: String, voice: String)] = []
+    @State private var natural: NaturalVoicesStatus?
 
     var body: some View {
         Group {
-            if rows.isEmpty {
+            if rows.isEmpty, natural == nil {
                 EmptyView()
             } else {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Session voices")
                         .font(ConchTypography.font(size: 13, weight: .semibold))
                         .foregroundStyle(ConchPalette.textPrimary)
-                    Text("Change one with `conch voice <session> <voice>`, or just say it.")
-                        .font(ConchTypography.font(size: 11))
-                        .foregroundStyle(ConchPalette.textDim)
+
+                    if let natural {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(natural.headline)
+                                .font(ConchTypography.font(size: 12.5, weight: .medium))
+                                .foregroundStyle(natural.state == "ready" ? ConchPalette.textPrimary : ConchPalette.textDim)
+                            Text(natural.detail)
+                                .font(ConchTypography.font(size: 11))
+                                .foregroundStyle(ConchPalette.textDim)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .textSelection(.enabled)
+                        }
+                    }
+
+                    if !rows.isEmpty {
+                        Text("Change one with `conch voice <session> <voice>`, or just say it.")
+                            .font(ConchTypography.font(size: 11))
+                            .foregroundStyle(ConchPalette.textDim)
+                    }
 
                     ForEach(rows, id: \.label) { row in
                         HStack(spacing: 10) {
@@ -153,23 +175,57 @@ private struct SessionVoicesSection: View {
                 .padding(.top, 18)
             }
         }
-        .task { await load() }
+        // Re-read while Settings is open: a first-run setup walks through its
+        // steps over minutes, and "setting up…" that never moves reads as stuck.
+        .task {
+            while !Task.isCancelled {
+                await load()
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+        }
     }
 
     private func load() async {
         let path = ProcessInfo.processInfo.environment["CONCH_SESSIONS_FILE"]
             ?? "/tmp/conch-sessions.json"
-        let parsed: [(String, String)] = await Task.detached(priority: .utility) {
-            guard let data = FileManager.default.contents(atPath: path),
-                  let state = try? JSONDecoder().decode(PublishedState.self, from: data)
-            else { return [] }
-            return state.rows.compactMap { row in
+        let (parsed, status) = await Task.detached(priority: .utility) { () -> ([(String, String)], NaturalVoicesStatus?) in
+            guard let data = FileManager.default.contents(atPath: path) else { return ([], nil) }
+            let status = (try? JSONDecoder().decode(NaturalVoicesEnvelope.self, from: data))?.naturalVoices
+            guard let state = try? JSONDecoder().decode(PublishedState.self, from: data) else { return ([], status) }
+            let rows: [(String, String)] = state.rows.compactMap { row in
                 let voice = row.voice?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 return voice.isEmpty ? nil : (row.label, voice)
             }
+            return (rows, status)
         }.value
         rows = parsed.map { (label: $0.0, voice: $0.1) }
+        if natural != status { natural = status }
     }
+}
+
+/// Where the natural voices stand, as the daemon publishes it (`naturalVoices`
+/// in /tmp/conch-sessions.json, from src/voice-env.ts). Absent from an older
+/// daemon and in CONCH_TTS=server mode; the line is then simply not drawn.
+private struct NaturalVoicesStatus: Decodable, Equatable, Sendable {
+    /// "checking" | "setting-up" | "ready" | "off"
+    let state: String
+    /// Short, for "off (reason)".
+    let reason: String?
+    /// One sentence: which step, from where, or why not.
+    let detail: String
+
+    var headline: String {
+        switch state {
+        case "ready": return "Natural voices: ready"
+        case "setting-up": return "Natural voices: setting up…"
+        case "checking": return "Natural voices: checking…"
+        default: return "Natural voices: off" + (reason.map { " (\($0))" } ?? "")
+        }
+    }
+}
+
+private struct NaturalVoicesEnvelope: Decodable {
+    let naturalVoices: NaturalVoicesStatus?
 }
 
 private struct SettingsEmptyView: View {

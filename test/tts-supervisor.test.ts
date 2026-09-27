@@ -557,7 +557,10 @@ describe("D1 wiring inside runDaemon", () => {
   test("a daemon booting in manual mode unloads before either engine starts", () => {
     const boot = between("ttsSupervisor = new TtsSupervisor({", "const whisperBinaryAvailable");
     const unload = boot.indexOf("if (pause.paused) kokoroByMode(true, 0)");
-    const worker = boot.indexOf("void ttsWorker.start()");
+    // The worker starts when voiceEnv hands it an interpreter (setPython), so
+    // voiceEnv's start is the worker's start; an unloaded worker stays unloaded
+    // through a handover (test/voice-env.test.ts).
+    const worker = boot.indexOf("void voiceEnv?.start()");
     const server = boot.indexOf("ttsStartup = ttsSupervisor.start()");
     expect(unload).toBeGreaterThan(-1);
     expect(worker).toBeGreaterThan(unload);

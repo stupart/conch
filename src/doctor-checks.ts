@@ -6,6 +6,16 @@ import { readState } from "./daemon-state.ts";
 import { speakCancellable } from "./speak.ts";
 import { readWhisperRecord, type WhisperSpawnRecord } from "./whisper-orphan.ts";
 import type { AudioSpawner, WatchdogProcess } from "./audio-watchdog.ts";
+import {
+  describeNaturalVoices,
+  readPublishedVoiceStatus,
+  readVoiceEnvRecord,
+  VOICE_ENV_SIZE_HINT,
+  VOICE_LOCK,
+  voiceEnvPaths,
+  type NaturalVoicesStatus,
+  type VoiceEnvPaths,
+} from "./voice-env.ts";
 
 export const MICROPHONE_PROBE_DURATION_MS = 300;
 export const TTS_PROBE_WORD = "Ready.";
@@ -16,7 +26,7 @@ const TTS_PROBE_TIMEOUT_MS = 5_000;
 export interface DoctorProbeResult {
   /** Live probes are advisory: callers should display this, not use it as the doctor's exit status. */
   ok: boolean;
-  label: "microphone" | "TTS" | "agents" | "conch" | "whisper-server" | "kokoro";
+  label: "microphone" | "TTS" | "agents" | "conch" | "whisper-server" | "kokoro" | "natural voices";
   message: string;
   action?: string;
 }
@@ -101,6 +111,55 @@ export async function checkKokoro(cfg: Config, deps: KokoroProbeDeps = {}): Prom
     message: paused
       ? `kokoro: unloaded — daemon ${daemon.pid} is in manual mode; reloads in auto mode`
       : `kokoro: not loaded — daemon ${daemon.pid} is in auto mode (still warming, or voices via say)`,
+  };
+}
+
+export interface NaturalVoicesProbeDeps {
+  paths?: VoiceEnvPaths;
+  /** The live daemon's published status, or null when no daemon is up. */
+  published?: () => (NaturalVoicesStatus & { pid: number }) | null;
+}
+
+/**
+ * Where conch's natural voices stand (voice-env.ts). With a daemon up, its own
+ * published status — checking, setting up (which step), ready (from where), or
+ * off and why. Without one, what is on disk, read without running anything.
+ * Always informational: `say` covers every state that is not ready.
+ */
+export function checkNaturalVoices(cfg: Config, deps: NaturalVoicesProbeDeps = {}): DoctorProbeResult {
+  const label = "natural voices" as const;
+  if (cfg.ttsEngine === "say") {
+    return { ok: true, label, message: "Natural voices: off (CONCH_TTS=say) — conch speaks with macOS say and sets nothing up" };
+  }
+  if (cfg.ttsEngine === "server") {
+    return { ok: true, label, message: "Natural voices: legacy server mode (CONCH_TTS=server) — conch sets nothing up in that mode" };
+  }
+  const paths = deps.paths ?? voiceEnvPaths();
+  const published = (deps.published ?? (() => readPublishedVoiceStatus(paths)))();
+  if (published) {
+    return {
+      ok: true,
+      label,
+      message: `${describeNaturalVoices(published)} (daemon ${published.pid}).`,
+      ...(published.state === "off" && (published.reason === "setup failed" || published.reason === "no uv")
+        ? { action: `Retry in the foreground with \`conch voices setup\`; the setup log is ${paths.log}.` }
+        : {}),
+    };
+  }
+  if (cfg.ttsWorkerPython.trim()) {
+    return { ok: true, label, message: `Natural voices: your Python, from CONCH_TTS_WORKER_PYTHON (${cfg.ttsWorkerPython.trim()})` };
+  }
+  const record = readVoiceEnvRecord(paths);
+  if (record?.lock === VOICE_LOCK.id) {
+    return { ok: true, label, message: `Natural voices: conch's own environment is installed (Python ${record.python}); the daemon checks it when it starts` };
+  }
+  return {
+    ok: true,
+    label,
+    message: record
+      ? "Natural voices: conch's environment is from an older lock; the daemon rebuilds it in the background when it starts."
+      : `Natural voices: not set up yet — the daemon sets them up in the background when it starts (${VOICE_ENV_SIZE_HINT}), speaking with say meanwhile.`,
+    action: "To set them up now, in the foreground: `conch voices setup`.",
   };
 }
 

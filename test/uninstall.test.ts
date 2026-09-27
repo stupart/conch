@@ -204,6 +204,39 @@ describe("uninstall helpers", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test("the natural-voice environment conch built goes with --models, and stays without it", async () => {
+    for (const models of [false, true]) {
+      const root = mkdtempSync(join(tmpdir(), "conch-uninstall-voice-"));
+      const voiceDir = join(root, "voice");
+      const logs: string[] = [];
+      try {
+        mkdirSync(join(voiceDir, "env", "bin"), { recursive: true });
+        writeFileSync(join(voiceDir, "env", "bin", "python"), "123456");
+        const summary = await runUninstall(
+          { claudeDir: join(root, ".claude") } as Config,
+          {
+            models,
+            paths: {
+              codexHooks: join(root, ".codex", "hooks.json"),
+              codexInstructions: join(root, ".codex", "AGENTS.md"),
+              servicePlist: join(root, "missing.plist"),
+              modelsDir: join(root, "models"),
+              voiceDir,
+            },
+            log: (line) => logs.push(line),
+            error: () => {},
+          },
+          { serviceOff: async () => {}, stopTmux: () => "absent", pluginOff: () => true },
+        );
+        expect(exists(voiceDir)).toBe(!models);
+        expect(summary.modelsRemovedBytes).toBe(models ? 6 : 0);
+        expect(logs.some((line) => line.startsWith(`Natural-voice environment: ${models ? "removed" : "kept"}`))).toBeTrue();
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  });
 });
 
 function exists(path: string): boolean {

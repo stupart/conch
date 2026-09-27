@@ -5,8 +5,7 @@ import type { Config } from "./config.ts";
 import { CONCH_DATA } from "./config.ts";
 import { readState } from "./daemon-state.ts";
 import { runInstallPlugin } from "./plugin-install.ts";
-import { resolveMlxAudioPython } from "./tts-worker.ts";
-import { checkAgentBinaries, checkConchBinaries, checkKokoro, checkMicrophone, checkTts, checkWhisperServer, formatDoctorProbe } from "./doctor-checks.ts";
+import { checkAgentBinaries, checkConchBinaries, checkKokoro, checkMicrophone, checkNaturalVoices, checkTts, checkWhisperServer, formatDoctorProbe } from "./doctor-checks.ts";
 import { CONCH_VERSION } from "./version.ts";
 
 const SERVICE_LABEL = "com.conch.daemon";
@@ -322,21 +321,12 @@ export async function runSetup(
     }
   }
 
-  // 3. Kokoro voices (optional). The server extra is retained solely so
-  // CONCH_TTS=server remains an immediate rollback path.
-  if (!Bun.which(cfg.ttsServerBin)) {
-    console.log('\nℹ️  Natural per-session voices are optional. For them, install mlx-audio:');
-    console.log('      uv tool install --with "misaki[en]" \\');
-    console.log('        --with "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" \\');
-    console.log('        "mlx-audio[server]"');
-    console.log("   Without it, conch uses the macOS `say` voice.");
-  } else {
-    const workerPython = resolveMlxAudioPython(cfg.ttsWorkerPython, cfg.ttsServerBin);
-    console.log(
-      workerPython
-        ? `✅ kokoro worker available via ${workerPython}`
-        : `ℹ️  ${cfg.ttsServerBin} exists but its Python could not be resolved — set CONCH_TTS_WORKER_PYTHON`,
-    );
+  // 3. Natural voices (Kokoro). Nothing to install: the daemon builds conch's
+  // own voice environment in the background with the uv the app carries
+  // (voice-env.ts), and speaks with `say` until it is ready. Setup only says so.
+  console.log(`\n${formatDoctorProbe(checkNaturalVoices(cfg))}`);
+  if (cfg.ttsEngine === "worker" && !cfg.ttsWorkerPython.trim()) {
+    console.log("   Every session gets its own voice. To opt out: CONCH_TTS=say. To use your own Python: CONCH_TTS_WORKER_PYTHON.");
   }
 
   // 4. Wire Claude Code's hooks. Codex hooks remain an explicit
@@ -557,8 +547,9 @@ export async function runService(cfg: Config, action: "install" | "off"): Promis
   // model needs several gigabytes, and on a machine already swapping it stalls
   // the daemon in page-fault waits — alive in `ps`, never reading its socket,
   // which is what "couldn't reach your Mac" actually was. Installing with
-  // `CONCH_TTS=say conch service install` has to stick.
-  const carriedEnv = ["CONCH_TTS", "CONCH_TTS_MODEL", "CONCH_TTS_VOICES", "CONCH_SEASHELL_ROOT"]
+  // `CONCH_TTS=say conch service install` has to stick — and so does pointing
+  // the voices at your own Python (CONCH_TTS_WORKER_PYTHON) or uv (CONCH_UV).
+  const carriedEnv = ["CONCH_TTS", "CONCH_TTS_MODEL", "CONCH_TTS_VOICES", "CONCH_TTS_WORKER_PYTHON", "CONCH_UV", "CONCH_SEASHELL_ROOT"]
     .filter((key) => process.env[key])
     .map((key) => `\n    <key>${key}</key><string>${process.env[key]}</string>`)
     .join("");
@@ -831,16 +822,13 @@ export async function runDoctor(cfg: Config): Promise<void> {
   );
 
   const ttsAvailable = binaryExists(cfg.ttsServerBin);
-  const workerPython = resolveMlxAudioPython(cfg.ttsWorkerPython, cfg.ttsServerBin);
   const ttsSummary = cfg.ttsEngine === "say"
     ? "say (forced)"
     : cfg.ttsEngine === "server"
       ? ttsAvailable
         ? `legacy kokoro HTTP server via ${cfg.ttsServerBin} on :${cfg.ttsPort}, ${cfg.ttsVoices.length} voices`
         : `say — ${cfg.ttsServerBin} not found`
-      : workerPython
-        ? `owned kokoro worker via ${workerPython}, ${cfg.ttsVoices.length} voices (no HTTP listener)`
-        : `say — mlx-audio Python not found via ${cfg.ttsServerBin}`;
+      : `owned kokoro worker, ${cfg.ttsVoices.length} voices (no HTTP listener); its Python is under natural voices below`;
   console.log(
     `ℹ️  tts: ${ttsSummary}`,
   );
@@ -854,6 +842,7 @@ export async function runDoctor(cfg: Config): Promise<void> {
   console.log(formatDoctorProbe(await checkMicrophone()));
   console.log(formatDoctorProbe(await checkTts(cfg)));
   console.log(formatDoctorProbe(await checkWhisperServer(cfg)));
+  console.log(formatDoctorProbe(checkNaturalVoices(cfg)));
   console.log(formatDoctorProbe(await checkKokoro(cfg)));
 
   if (!ok) process.exit(1);

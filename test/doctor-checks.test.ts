@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import {
   checkConchBinaries,
   checkKokoro,
   checkMicrophone,
+  checkNaturalVoices,
   checkTts,
   checkWhisperServer,
   formatDoctorProbe,
@@ -13,6 +16,7 @@ import {
   pcm16HasNonZeroSample,
   TTS_PROBE_WORD,
 } from "../src/doctor-checks.ts";
+import { VOICE_LOCK, voiceEnvPaths } from "../src/voice-env.ts";
 
 function config() {
   return loadConfig({
@@ -224,5 +228,45 @@ describe("kokoro state (D1)", () => {
     expect(from).toBeGreaterThan(-1);
     const doctor = source.slice(from, source.indexOf("function binaryExists", from));
     expect(doctor).toContain("formatDoctorProbe(await checkKokoro(cfg))");
+  });
+});
+
+describe("natural voices doctor line (voice-env.ts)", () => {
+  test("says where the voices stand: the live daemon's status first, else what is on disk", () => {
+    const root = mkdtempSync(join(tmpdir(), "conch-doctor-voices-"));
+    try {
+      const paths = voiceEnvPaths(root);
+      const worker = config();
+      worker.ttsEngine = "worker";
+      const none = () => null;
+
+      expect(checkNaturalVoices({ ...worker, ttsEngine: "say" }, { paths, published: none }).message)
+        .toBe("Natural voices: off (CONCH_TTS=say) — conch speaks with macOS say and sets nothing up");
+
+      const fresh = checkNaturalVoices(worker, { paths, published: none });
+      expect(fresh.message).toContain("Natural voices: not set up yet — the daemon sets them up in the background");
+      expect(fresh.action).toContain("conch voices setup");
+
+      mkdirSync(paths.env, { recursive: true });
+      writeFileSync(paths.record, JSON.stringify({ lock: VOICE_LOCK.id, python: "3.12.14" }));
+      expect(checkNaturalVoices(worker, { paths, published: none }).message)
+        .toBe("Natural voices: conch's own environment is installed (Python 3.12.14); the daemon checks it when it starts");
+
+      const failed = checkNaturalVoices(worker, {
+        paths,
+        published: () => ({ state: "off", reason: "setup failed", detail: "setup failed 3 times: no space left", pid: 4321 }),
+      });
+      expect(failed.message).toBe("Natural voices: off (setup failed) — setup failed 3 times: no space left (daemon 4321).");
+      expect(failed.action).toContain(paths.log);
+
+      const building = checkNaturalVoices(worker, {
+        paths,
+        published: () => ({ state: "setting-up", detail: "installing Kokoro and its packages (3/4) — speaking with macOS say until it is ready", pid: 4321 }),
+      });
+      expect(building.message).toStartWith("Natural voices: setting up… — installing Kokoro");
+      expect(building.action).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

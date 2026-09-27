@@ -15,6 +15,7 @@ import {
 } from "./install.ts";
 import { listenOnce } from "./listen.ts";
 import { speak, probeTtsServer, voiceFor, setVoiceOverride } from "./speak.ts";
+import { setUpVoicesNow } from "./voice-env.ts";
 import { emitRecorderTraces } from "./diagnostics.ts";
 import { CONCH_VERSION } from "./version.ts";
 import {
@@ -49,7 +50,7 @@ Everyday:
   conch rename <session> <name> | model <session> <model>  save a name | type /model into it
 
 Voice and settings:
-  conch voice <session> [voice] | voices   show/pin or audition voices
+  conch voice <session> [voice] | voices [setup]  show/pin, audition, or set up voices now
   conch set <key> <value>                   save and apply a setting
   conch get <key> | unset <key> | settings inspect, revert, or list settings
   conch listen | speak <text>               microphone and speech tests
@@ -978,6 +979,18 @@ switch (command) {
     break;
   }
   case "voices": {
+    if (rest[0] === "setup") {
+      const ready = await setUpVoicesNow({
+        engine: cfg.ttsEngine,
+        explicitPython: cfg.ttsWorkerPython,
+        model: cfg.ttsModel,
+        voices: cfg.ttsVoices,
+        speed: cfg.ttsSpeed,
+        print: (line) => console.log(line),
+      });
+      if (!ready) process.exitCode = 1;
+      break;
+    }
     let localUp: boolean | undefined;
     for (const v of cfg.ttsVoices) {
       console.log(v);
