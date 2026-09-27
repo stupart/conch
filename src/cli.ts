@@ -78,8 +78,14 @@ Internal entrypoints: conch hook | codex-hook | daemon | mcp
  */
 async function runDashboard(): Promise<void> {
   const tmux = Bun.which("tmux") ?? "/opt/homebrew/bin/tmux";
-  const hasSession = () =>
-    Bun.spawnSync([tmux, "has-session", "-t", "conch"]).exitCode === 0;
+  // tmux is optional: without it there is no session to attach to, never a crash.
+  const hasSession = () => {
+    try {
+      return Bun.spawnSync([tmux, "has-session", "-t", "conch"]).exitCode === 0;
+    } catch {
+      return false;
+    }
+  };
   console.log("conch dashboard  ·  ctrl-b d to detach (leaves the daemon running)");
   let warned = false;
   while (true) {

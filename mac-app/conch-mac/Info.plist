@@ -39,5 +39,7 @@
 	<string>conch listens when you press its microphone, so your spoken reply reaches the session you are talking to. Audio is transcribed on this Mac and is never uploaded.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>ConchDaemonSource</key>
+	<string>$(CONCH_DAEMON_SOURCE)</string>
 </dict>
 </plist>

@@ -125,16 +125,32 @@ struct ConchSettingsView: View {
 private struct SessionVoicesSection: View {
     @State private var rows: [(label: String, voice: String)] = []
     @State private var natural: NaturalVoicesStatus?
+    @State private var engine: SpeechEngineStatus?
 
     var body: some View {
         Group {
-            if rows.isEmpty, natural == nil {
+            if rows.isEmpty, natural == nil, engine == nil {
                 EmptyView()
             } else {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Session voices")
                         .font(ConchTypography.font(size: 13, weight: .semibold))
                         .foregroundStyle(ConchPalette.textPrimary)
+
+                    // What hears you, beside what speaks: seashell's engine the
+                    // app carries, and the first-run model download's progress.
+                    if let engine {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(engine.headline)
+                                .font(ConchTypography.font(size: 12.5, weight: .medium))
+                                .foregroundStyle(engine.state == "ready" ? ConchPalette.textPrimary : ConchPalette.textDim)
+                            Text(engine.detail)
+                                .font(ConchTypography.font(size: 11))
+                                .foregroundStyle(ConchPalette.textDim)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .textSelection(.enabled)
+                        }
+                    }
 
                     if let natural {
                         VStack(alignment: .leading, spacing: 3) {
@@ -188,18 +204,22 @@ private struct SessionVoicesSection: View {
     private func load() async {
         let path = ProcessInfo.processInfo.environment["CONCH_SESSIONS_FILE"]
             ?? "/tmp/conch-sessions.json"
-        let (parsed, status) = await Task.detached(priority: .utility) { () -> ([(String, String)], NaturalVoicesStatus?) in
-            guard let data = FileManager.default.contents(atPath: path) else { return ([], nil) }
+        let (parsed, status, speech) = await Task.detached(priority: .utility) { () -> ([(String, String)], NaturalVoicesStatus?, SpeechEngineStatus?) in
+            guard let data = FileManager.default.contents(atPath: path) else { return ([], nil, nil) }
+            // Decoded apart, so one status an older or newer daemon shapes
+            // differently never hides the other.
             let status = (try? JSONDecoder().decode(NaturalVoicesEnvelope.self, from: data))?.naturalVoices
-            guard let state = try? JSONDecoder().decode(PublishedState.self, from: data) else { return ([], status) }
+            let speech = (try? JSONDecoder().decode(SpeechEngineEnvelope.self, from: data))?.speechEngine
+            guard let state = try? JSONDecoder().decode(PublishedState.self, from: data) else { return ([], status, speech) }
             let rows: [(String, String)] = state.rows.compactMap { row in
                 let voice = row.voice?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 return voice.isEmpty ? nil : (row.label, voice)
             }
-            return (rows, status)
+            return (rows, status, speech)
         }.value
         rows = parsed.map { (label: $0.0, voice: $0.1) }
         if natural != status { natural = status }
+        if engine != speech { engine = speech }
     }
 }
 
@@ -224,8 +244,40 @@ private struct NaturalVoicesStatus: Decodable, Equatable, Sendable {
     }
 }
 
+/// Where the speech engine stands, as the daemon publishes it (`speechEngine`
+/// in /tmp/conch-sessions.json, from src/speech-engine.ts): checking, downloading
+/// the whisper model on a first run, ready, or off and why. Absent from an older
+/// daemon; the line is then simply not drawn.
+private struct SpeechEngineStatus: Decodable, Equatable, Sendable {
+    struct Progress: Decodable, Equatable, Sendable {
+        let bytes: Double
+        let total: Double
+    }
+
+    /// "checking" | "downloading" | "ready" | "off"
+    let state: String
+    let reason: String?
+    let detail: String
+    let progress: Progress?
+
+    var headline: String {
+        switch state {
+        case "ready": return "Speech engine: ready"
+        case "downloading":
+            guard let progress, progress.total > 0 else { return "Speech engine: downloading…" }
+            return "Speech engine: downloading… \(Int((progress.bytes / progress.total * 100).rounded(.down)))%"
+        case "checking": return "Speech engine: checking…"
+        default: return "Speech engine: off" + (reason.map { " (\($0))" } ?? "")
+        }
+    }
+}
+
 private struct NaturalVoicesEnvelope: Decodable {
     let naturalVoices: NaturalVoicesStatus?
+}
+
+private struct SpeechEngineEnvelope: Decodable {
+    let speechEngine: SpeechEngineStatus?
 }
 
 private struct SettingsEmptyView: View {

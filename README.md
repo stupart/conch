@@ -63,11 +63,11 @@ house.
 macOS. Two commands. (Where each path goes quiet, and what is left to fix: [docs/install-journeys.md](docs/install-journeys.md).)
 
 ```bash
-brew install stupart/tap/conch     # binary + sox/tmux/whisper-cpp
-conch setup                        # models, hooks, service, and app plugins
+brew install stupart/tap/conch     # the CLI + conch.app, which carries its daemon and speech engine
+conch setup                        # model, hooks, service, and app plugins
 ```
 
-`brew install` pulls the system dependencies (`sox`, `tmux`, `whisper-cpp`) automatically. `conch setup` then downloads the two speech models into `~/.cache/conch/models` (whisper large-v3-turbo q5_0 ~574 MB, silero VAD ~900 KB), wires the Claude Code hooks, verifies the chain, starts the launchd service, and installs the conch plugin. It's idempotent — re-run it any time; it skips or safely refreshes managed pieces. Already have a whisper.cpp build and models (e.g. a [seashell](https://github.com/stupart/seashell) checkout)? Point `CONCH_WHISPER_CLI` / `CONCH_WHISPER_MODEL` / `CONCH_VAD_MODEL` (or `CONCH_SEASHELL_ROOT`) at them and setup leaves them untouched.
+`conch.app` carries everything it runs: its daemon (`Contents/Helpers/conch-daemon`, the same build as the `conch` CLI) and [seashell](https://github.com/stupart/seashell)'s speech engine — whisper.cpp's `whisper-cli` and `whisper-server` with Metal, SoX for the microphone, and the silero VAD model. Nothing else needs installing; tmux is optional (sessions in a tmux pane are typed into through it, every other session through its own window). The one thing too big to ship is the whisper model (large-v3-turbo q5_0, ~574 MB): the daemon downloads it into `~/.cache/conch/models` on its first run, checked against its pinned sha256, and Settings shows the progress; `conch setup` does the same in the foreground. setup also wires the Claude Code hooks, verifies the chain, starts the launchd service when there is no app, and installs the conch plugin. It's idempotent — re-run it any time; it skips or safely refreshes managed pieces. Already have seashell (its checkout or its Homebrew formula)? conch finds its model and does not download a second copy; `CONCH_WHISPER_CLI` / `CONCH_WHISPER_SERVER` / `CONCH_WHISPER_MODEL` / `CONCH_VAD_MODEL` / `CONCH_SOX` (or `CONCH_SEASHELL_ROOT`) point at anything else, and win over the app's own copies.
 
 Prefer to install the Claude Code plugin yourself, straight from this repo? `conch setup` does this for you locally; the public catalog is:
 
@@ -272,7 +272,7 @@ The full environment-variable surface remains available (put overrides in the ho
 | `CONCH_REVEAL_ON_TURN` | `1` | raise a session's window (without stealing focus) when conch starts talking to it |
 | `CONCH_NO_MOUSE` | `0` | set to `1` to disable dashboard mouse capture and use native terminal selection |
 | `CONCH_SAY_VOLUME` | `0.4` | `say` fallback loudness — tuned to match Kokoro (raw `say` is ~3× louder) |
-| `CONCH_SEASHELL_ROOT` | `~/whisper-cli` | first place probed for the whisper.cpp build + models; falls back to a brew `whisper-cpp` install and `~/.cache/conch/models` |
+| `CONCH_SEASHELL_ROOT` | `~/whisper-cli`, then seashell's formula | the seashell tree probed for the whisper.cpp build + models, after the copies conch.app carries; then a brew `whisper-cpp` install and `~/.cache/conch/models` (`src/speech-engine.ts`) |
 | `CONCH_WHISPER_PORT` | `8642` | warm whisper-server port; `0` = cold cli only |
 | `CONCH_WHISPER_IDLE_UNLOAD_MINS` | `20` | unload the warm whisper-server (~628MB) after this many minutes without a transcription; it reloads the moment a mic is about to open; `0` keeps it loaded (`conch set whisper-idle-unload …`) |
 | `CONCH_AWAY_AFTER_SECS` | `0` (off) | opt-in: silence everything after N seconds of keyboard idle |

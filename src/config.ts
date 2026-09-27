@@ -1,6 +1,5 @@
 import { join } from "node:path";
 import { conchHome } from "./home.ts";
-import { existsSync } from "node:fs";
 import {
   DEFAULT_CONCH_CONFIG_DIR,
   loadSettingResolutions,
@@ -8,25 +7,16 @@ import {
   type HandoffOrder,
   type PhoneLanMode,
 } from "./settings.ts";
+import { resolveSpeechEngine, type SpeechEngine } from "./speech-engine.ts";
 
 const HOME = conchHome();
 
-// The whisper engine can come from three places, probed in this order so that
-// each existing setup keeps working AND a fresh `brew install whisper-cpp`
-// + `conch setup` works with zero env vars:
-//   1. a seashell checkout (the original: ~/whisper-cli)
-//   2. a Homebrew whisper-cpp install (/opt/homebrew or /usr/local)
-//   3. models downloaded by `conch setup` into ~/.cache/conch
-export const CONCH_DATA = join(HOME, ".cache", "conch"); // `conch setup` writes models here
+// The speech engine (whisper-cli/-server, the models, sox) resolves in one
+// order, in speech-engine.ts: an explicit CONCH_* path, then the copy conch.app
+// carries, then a seashell install, then Homebrew — and, for the models,
+// conch's own downloads in ~/.cache/conch/models, fetched on first run.
+export const CONCH_DATA = join(HOME, ".cache", "conch"); // `conch setup` and the daemon write models here
 export const CONCH_CONFIG_DIR = process.env.CONCH_CONFIG_DIR ?? DEFAULT_CONCH_CONFIG_DIR;
-const BREW = existsSync("/opt/homebrew/bin") ? "/opt/homebrew/bin" : "/usr/local/bin";
-const WHISPER_MODEL_FILE = "ggml-large-v3-turbo-q5_0.bin";
-const VAD_MODEL_FILE = "ggml-silero-v6.2.0.bin";
-
-/** First path that exists, else the last candidate (so doctor reports a sensible expected path). */
-function firstExisting(...candidates: string[]): string {
-  return candidates.find((p) => existsSync(p)) ?? candidates[candidates.length - 1]!;
-}
 
 export interface Config {
   whisperCli: string;
@@ -37,6 +27,10 @@ export interface Config {
   whisperIdleUnloadMins: number;
   whisperModel: string;
   vadModel: string;
+  /** the sox that captures the microphone: conch.app's, Homebrew's, or bare `sox` on PATH */
+  soxBin: string;
+  /** where each engine part came from (speech-engine.ts), for the status and the doctor */
+  speechEngine: SpeechEngine;
   /** TTS voice for `say`; empty string = system default */
   voice: string;
   /** speech rate for `say`, words per minute; 0 = system default (~175) */
@@ -171,18 +165,20 @@ export interface LoadConfigOptions {
 
 export function loadConfig(options: LoadConfigOptions = {}): Config {
   const env = options.env ?? process.env;
-  const seashellRoot = env.CONCH_SEASHELL_ROOT ?? join(HOME, "whisper-cli");
+  const engine = resolveSpeechEngine({ env, home: HOME });
   const settings = loadSettingResolutions({
     env,
     settingsPath: options.settingsPath ?? settingsPathFor(env),
   });
   return {
-    whisperCli: env.CONCH_WHISPER_CLI ?? firstExisting(join(seashellRoot, "whisper.cpp/build/bin/whisper-cli"), join(BREW, "whisper-cli")),
-    whisperServerBin: env.CONCH_WHISPER_SERVER ?? firstExisting(join(seashellRoot, "whisper.cpp/build/bin/whisper-server"), join(BREW, "whisper-server")),
+    whisperCli: engine.whisperCli.path,
+    whisperServerBin: engine.whisperServer.path,
     whisperPort: zeroable(env.CONCH_WHISPER_PORT, 8642),
     whisperIdleUnloadMins: settings["whisper-idle-unload"].value as number,
-    whisperModel: env.CONCH_WHISPER_MODEL ?? firstExisting(join(seashellRoot, "models", WHISPER_MODEL_FILE), join(CONCH_DATA, "models", WHISPER_MODEL_FILE)),
-    vadModel: env.CONCH_VAD_MODEL ?? firstExisting(join(seashellRoot, "whisper.cpp/models", VAD_MODEL_FILE), join(CONCH_DATA, "models", VAD_MODEL_FILE)),
+    whisperModel: engine.whisperModel.path,
+    vadModel: engine.vadModel.path,
+    soxBin: engine.sox.path,
+    speechEngine: engine,
     voice: env.CONCH_VOICE ?? "",
     sayRate: settings["say-rate"].value as number,
     sayVolume: num(env.CONCH_SAY_VOLUME, 0.4), // measured: [[volm 0.4]] ≈ Kokoro loudness (say raw is ~3.4x louder)

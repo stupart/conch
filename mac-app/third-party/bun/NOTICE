@@ -1,0 +1,5 @@
+conch.app carries its daemon at Contents/Helpers/conch-daemon: conch's own
+source compiled by `bun build --compile`, which embeds the Bun runtime
+(https://bun.sh). Bun is distributed under the MIT license, and embeds
+third-party components under their own licenses, listed in LICENSE.md beside
+this notice (unmodified from Bun's source tree at bun-v1.4.2).

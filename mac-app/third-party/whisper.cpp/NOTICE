@@ -1,0 +1,10 @@
+conch.app carries whisper.cpp (https://github.com/ggml-org/whisper.cpp) as
+Contents/Helpers/whisper-cli and Contents/Helpers/whisper-server, built from the
+revision seashell pins (927cfce34f31707e17f2bff35c349632fb9e2c3a), statically
+linked, with Metal on Apple silicon.
+
+whisper.cpp is Copyright (c) 2023-2026 The ggml authors and is distributed
+under the MIT license (LICENSE, beside this notice, unmodified from the pinned
+source tree). The source tarball's sha256 and the exact build flags are in
+scripts/fetch-engine.sh; scripts/embed-engine.sh copies the binaries into the
+app and signs them with the app's identity.

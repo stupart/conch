@@ -242,18 +242,34 @@ describe("one-command setup", () => {
       () => null,
       () => false,
     );
+    // tmux is not one: sessions outside tmux are typed into through their own window.
     expect(missing.map(({ formula }) => formula)).toEqual([
       "sox",
-      "tmux",
       "whisper-cpp",
     ]);
     expect(hardDependencyInstallCommand(missing)).toBe(
-      "brew install sox tmux whisper-cpp",
+      "brew install sox whisper-cpp",
     );
     const failure = renderHardDependencyFailure(missing, false);
     expect(failure).toContain("stopped before downloading speech models");
     expect(failure).toContain("https://brew.sh");
-    expect(failure.split("\n")).toContain("brew install sox tmux whisper-cpp");
+    expect(failure.split("\n")).toContain("brew install sox whisper-cpp");
+  });
+
+  test("the app's own sox and whisper-cli satisfy setup, with no Homebrew at all", () => {
+    const app = "/Applications/conch.app/Contents/Helpers";
+    const present = new Set([`${app}/sox`, `${app}/whisper-cli`]);
+    expect(missingHardDependencies(
+      { whisperCli: `${app}/whisper-cli`, soxBin: `${app}/sox` },
+      () => null,
+      (path) => present.has(path),
+    )).toEqual([]);
+    // A bare `sox` (nothing bundled) is looked up on PATH, as it always was.
+    expect(missingHardDependencies(
+      { whisperCli: `${app}/whisper-cli`, soxBin: "sox" },
+      (binary) => (binary === "sox" ? "/opt/homebrew/bin/sox" : null),
+      (path) => present.has(path),
+    )).toEqual([]);
   });
 
   test("help presents setup as the single entry point in one grouped screen", () => {
@@ -426,9 +442,14 @@ describe("setup says what it does", () => {
     const src = readFileSync(join(import.meta.dir, "..", "src", "install.ts"), "utf8");
     expect(src).toContain("readState().paused");
     expect(src).toContain("renderSetupReady(completion, { codexNeedsInstall, paused: readState().paused })");
-    const download = "await downloadModel(m, join(modelsDir, m.file))";
+    const download = "await downloadModel(m, dest)";
     expect(src).toContain(download);
     expect(src.slice(src.indexOf(download), src.indexOf(download) + 300))
       .toContain("Check your connection and re-run");
+    // One writer per `.part`: the daemon fetches the same file on its first run.
+    const lock = src.indexOf("let held = acquireFetchLock(dest);");
+    expect(lock).toBeGreaterThan(-1);
+    expect(lock).toBeLessThan(src.indexOf(download));
+    expect(src).toContain("const dest = join(modelsDir, m.file);");
   });
 });

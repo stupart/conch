@@ -1,0 +1,8 @@
+conch.app carries the Silero VAD model in whisper.cpp's format
+(ggml-silero-v6.2.0.bin, https://huggingface.co/ggml-org/whisper-vad) at
+Contents/Resources/models/ggml-silero-v6.2.0.bin, pinned by sha256
+2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987.
+
+Silero VAD is Copyright (c) 2020-present Silero Team and is distributed under
+the MIT license (LICENSE, beside this notice, unmodified from
+https://github.com/snakers4/silero-vad at be95df9152c0d7618fa1edfeb296fc3dae32376f).

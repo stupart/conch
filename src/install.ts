@@ -5,27 +5,21 @@ import type { Config } from "./config.ts";
 import { CONCH_DATA } from "./config.ts";
 import { readState } from "./daemon-state.ts";
 import { runInstallPlugin } from "./plugin-install.ts";
-import { checkAgentBinaries, checkConchBinaries, checkKokoro, checkMicrophone, checkNaturalVoices, checkTts, checkWhisperServer, formatDoctorProbe } from "./doctor-checks.ts";
+import { checkAgentBinaries, checkConchBinaries, checkKokoro, checkMicrophone, checkNaturalVoices, checkSpeechEngine, checkTts, checkWhisperServer, formatDoctorProbe } from "./doctor-checks.ts";
+import { acquireFetchLock, VAD_MODEL, WHISPER_MODEL } from "./speech-engine.ts";
 import { CONCH_VERSION } from "./version.ts";
 
 const SERVICE_LABEL = "com.conch.daemon";
 
-// The two models conch downloads on a fresh machine. Both live under
-// ~/.cache/conch/models (where config.ts probes as its second candidate), so an
-// install with no seashell checkout resolves them automatically.
+// The two models conch downloads on a fresh machine — the daemon does it on its
+// first run too (speech-engine.ts); this is the foreground way. Both live under
+// ~/.cache/conch/models, the models' last candidate, and both are pinned by
+// sha256 (the same pins seashell verifies): a download that is not those exact
+// bytes never lands. conch.app carries the VAD model, so with the app installed
+// only the whisper model is fetched.
 const MODELS = [
-  {
-    file: "ggml-large-v3-turbo-q5_0.bin",
-    url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
-    label: "whisper large-v3-turbo (~574 MB)",
-    minBytes: 500_000_000, // guards against a 404-page masquerading as the model
-  },
-  {
-    file: "ggml-silero-v6.2.0.bin",
-    url: "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin",
-    label: "silero VAD (~900 KB)",
-    minBytes: 100_000,
-  },
+  { ...WHISPER_MODEL, label: "whisper large-v3-turbo (~574 MB)", minBytes: 500_000_000 },
+  { ...VAD_MODEL, label: "silero VAD (~900 KB)", minBytes: 100_000 },
 ] as const;
 
 // conch runs two ways: via bun (dev / `bun link`, where process.execPath is bun
@@ -81,20 +75,22 @@ export interface SetupInstallers {
   plugin: (absBun: string, absCli: string) => Promise<boolean>;
 }
 
-const HARD_DEPENDENCIES = [
-  { binary: "sox", formula: "sox", why: "microphone capture" },
-  { binary: "tmux", formula: "tmux", why: "daemon hosting + pane injection" },
-] as const;
-
-/** Resolve setup's hard, Homebrew-provided dependencies without doing any work. */
+/**
+ * Resolve setup's hard dependencies without doing any work. conch.app carries
+ * sox and whisper.cpp (speech-engine.ts resolves them from the app first), so
+ * with the app installed there is nothing to brew. tmux is not one of them:
+ * a session in a tmux pane is typed into through tmux, and every other session
+ * through its own window (or the clipboard) — conch works without it.
+ */
 export function missingHardDependencies(
-  cfg: Pick<Config, "whisperCli">,
+  cfg: Pick<Config, "whisperCli"> & Partial<Pick<Config, "soxBin">>,
   which: (binary: string) => string | null = Bun.which,
   pathExists: (path: string) => boolean = existsSync,
 ): HardDependency[] {
   const missing: HardDependency[] = [];
-  for (const dependency of HARD_DEPENDENCIES) {
-    if (!which(dependency.binary)) missing.push({ ...dependency });
+  const sox = cfg.soxBin || "sox";
+  if (!(sox.includes("/") ? pathExists(sox) : which(sox))) {
+    missing.push({ binary: "sox", formula: "sox", why: "microphone capture" });
   }
   if (!pathExists(cfg.whisperCli)) {
     missing.push({
@@ -269,8 +265,9 @@ export async function runSetup(
 ): Promise<void> {
   console.log("conch setup — getting your machine ready for voice\n");
 
-  // 1. Binaries. sox + tmux come from Homebrew; whisper-cli/-server ship in the
-  //    whisper-cpp formula. `say`/`afplay` are macOS built-ins (checked by doctor).
+  // 1. Binaries. conch.app carries sox and whisper-cli/-server; without it they
+  //    come from Homebrew (sox, whisper-cpp). tmux is optional. `say`/`afplay`
+  //    are macOS built-ins (checked by doctor).
   const brew = Bun.which("brew");
   let missing = missingHardDependencies(cfg);
   if (missing.length) {
@@ -299,7 +296,7 @@ export async function runSetup(
     process.exitCode = 1;
     return;
   }
-  console.log("✅ binaries present (sox, tmux, whisper-cpp)");
+  console.log(`✅ binaries present (sox at ${cfg.soxBin}, whisper-cli at ${cfg.whisperCli})`);
 
   // 2. Models. Skip any that config already resolves (a seashell box has them).
   const wanted = [
@@ -313,11 +310,30 @@ export async function runSetup(
       continue;
     }
     mkdirSync(modelsDir, { recursive: true });
+    const dest = join(modelsDir, m.file);
+    // The daemon fetches the same file on its first run (speech-engine.ts):
+    // one writer per `.part`, so wait for it rather than race it.
+    let held = acquireFetchLock(dest);
+    if ("heldBy" in held) console.log(`⏳ ${m.label}: the conch daemon (pid ${held.heldBy}) is downloading it — waiting`);
+    while ("heldBy" in held && !existsSync(dest)) {
+      await Bun.sleep(2_000);
+      held = acquireFetchLock(dest);
+    }
+    if ("heldBy" in held) {
+      console.log(`✅ ${m.label} downloaded by the daemon to ${dest}`);
+      continue;
+    }
     try {
-      await downloadModel(m, join(modelsDir, m.file));
+      if (existsSync(dest)) {
+        console.log(`✅ ${m.label} downloaded by the daemon to ${dest}`);
+        continue;
+      }
+      await downloadModel(m, dest);
     } catch (error) {
       console.error(`❌ ${error instanceof Error ? error.message : String(error)}. Check your connection and re-run \`conch setup\`.`);
       process.exit(1);
+    } finally {
+      held.release();
     }
   }
 
@@ -405,7 +421,7 @@ export function progressReporter(total: number | undefined, out: DownloadOutput)
  * connection `conch setup` looked hung for the length of a 574 MB download.
  */
 export async function downloadModel(
-  model: { url: string; label: string; minBytes: number },
+  model: { url: string; label: string; minBytes: number; sha256?: string },
   dest: string,
   out: DownloadOutput = { write: (text) => process.stdout.write(text), tty: Boolean(process.stdout.isTTY) },
 ): Promise<void> {
@@ -417,9 +433,11 @@ export async function downloadModel(
   out.write(`⬇️  ${model.label}: ${total ? formatBytes(total) : "size unknown"} → ${dest}\n`);
   const report = progressReporter(total, out);
   const sink = Bun.file(tmp).writer();
+  const hasher = new Bun.CryptoHasher("sha256");
   let done = 0;
   for await (const chunk of res.body) {
     sink.write(chunk);
+    hasher.update(chunk);
     done += chunk.byteLength;
     report(done);
   }
@@ -428,6 +446,12 @@ export async function downloadModel(
   if (done < model.minBytes) {
     rmSync(tmp, { force: true });
     throw new Error(`downloaded file is too small (${done} bytes) — the URL may have returned an error page`);
+  }
+  // Pinned: the same bytes seashell verifies, or nothing lands.
+  const digest = hasher.digest("hex");
+  if (model.sha256 && digest !== model.sha256) {
+    rmSync(tmp, { force: true });
+    throw new Error(`checksum mismatch — sha256 ${digest}, expected ${model.sha256}`);
   }
   renameSync(tmp, dest); // same dir → atomic, no 574 MB re-copy
 }
@@ -460,11 +484,12 @@ export function renderSupervisorScript(_tmux: string, _daemonCmd: string): strin
   return "#!/bin/zsh\n# obsolete — conch is supervised by launchd directly\n";
 }
 
-export function serviceRestartCommands(tmux: string, uid: number): string[][] {
+export function serviceRestartCommands(tmux: string | null, uid: number): string[][] {
   return [
     // Clear a session left by an older tmux-hosted install, so its daemon
-    // cannot keep the socket while launchd starts the replacement.
-    [tmux, "kill-session", "-t", "conch"],
+    // cannot keep the socket while launchd starts the replacement. No tmux,
+    // no such session: spawning a missing binary would throw before kickstart.
+    ...(tmux ? [[tmux, "kill-session", "-t", "conch"]] : []),
     ["launchctl", "kickstart", "-k", `gui/${uid}/${SERVICE_LABEL}`],
   ];
 }
@@ -539,7 +564,7 @@ export async function runService(cfg: Config, action: "install" | "off"): Promis
   const conchRoot = dirname(import.meta.dir); // src/.. (real only when run via bun)
   // tmux is still how the daemon types into a session's pane; it just no longer
   // hosts the daemon itself. An install without it is degraded, not broken.
-  const tmux = Bun.which("tmux") ?? "/opt/homebrew/bin/tmux";
+  const tmux = Bun.which("tmux");
 
   // A launchd job inherits none of the shell you installed from, so settings
   // that live only in the environment would silently revert to their defaults
@@ -798,8 +823,7 @@ export async function runDoctor(cfg: Config): Promise<void> {
   const checks: Array<[string, () => boolean | Promise<boolean>]> = [
     ["say (TTS)", () => binaryExists("say")],
     ["afplay (bell)", () => binaryExists("afplay")],
-    ["sox (mic capture)", () => binaryExists("sox")],
-    ["tmux (pane injection)", () => binaryExists("tmux")],
+    [`sox (mic capture) at ${cfg.soxBin}`, () => cfg.soxBin.includes("/") ? existsSync(cfg.soxBin) : binaryExists(cfg.soxBin)],
     [`whisper-cli at ${cfg.whisperCli}`, () => existsSync(cfg.whisperCli)],
     [`whisper model at ${cfg.whisperModel}`, () => existsSync(cfg.whisperModel)],
     [`VAD model at ${cfg.vadModel}`, () => existsSync(cfg.vadModel)],
@@ -837,9 +861,17 @@ export async function runDoctor(cfg: Config): Promise<void> {
   // They are advisory: an ambiently silent input or an unavailable output
   // should produce a concrete recovery action without masking otherwise sound
   // installation state behind a hard doctor failure.
+  // Optional: a session in a tmux pane is typed into through tmux; every other
+  // session through its own window, or the clipboard.
+  console.log(
+    binaryExists("tmux")
+      ? "ℹ️  tmux — sessions in tmux panes are typed into directly"
+      : "ℹ️  tmux not installed (optional) — sessions are typed into through their own window instead",
+  );
+  console.log(formatDoctorProbe(checkSpeechEngine(cfg)));
   console.log(formatDoctorProbe(checkConchBinaries()));
   console.log(formatDoctorProbe(await checkAgentBinaries()));
-  console.log(formatDoctorProbe(await checkMicrophone()));
+  console.log(formatDoctorProbe(await checkMicrophone({ sox: cfg.soxBin })));
   console.log(formatDoctorProbe(await checkTts(cfg)));
   console.log(formatDoctorProbe(await checkWhisperServer(cfg)));
   console.log(formatDoctorProbe(checkNaturalVoices(cfg)));

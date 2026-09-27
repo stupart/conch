@@ -1,7 +1,12 @@
 #!/bin/zsh
 # Build, sign, notarize and package conch.app for a Homebrew cask.
 #
-#   scripts/release-app.sh [version]
+#   scripts/release-app.sh [version] [arm64|x86_64]
+#
+# One architecture per zip (arm64 unless asked): the app carries that
+# architecture's daemon and speech engine (scripts/embed-daemon.sh,
+# scripts/embed-engine.sh), and a universal app would carry both — about twice
+# the download for a slice every Mac ignores. The x86_64 zip is named -x64.
 #
 # A cask download carries com.apple.quarantine, so Gatekeeper DOES assess it —
 # unlike a local build, which is never assessed. That makes notarization
@@ -14,12 +19,18 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 VERSION="${1:-$(bun --print 'require("./package.json").version')}"
+ARCH="${2:-arm64}"
+case "$ARCH" in
+  arm64) ZIP_SUFFIX="" ;;
+  x86_64) ZIP_SUFFIX="-x64" ;;
+  *) echo "architecture must be arm64 or x86_64, got '$ARCH'" >&2; exit 1 ;;
+esac
 DIST=dist
 # .noindex so Spotlight skips the build output. Without it every build
 # leaves another launchable "conch" in Launchpad — Tyler hit this twice.
-DERIVED=build/app-release.noindex
+DERIVED=build/app-release-$ARCH.noindex
 APP="$DERIVED/Build/Products/Release/conch-mac.app"
-ZIP="$DIST/conch-mac-$VERSION.zip"
+ZIP="$DIST/conch-mac-$VERSION$ZIP_SUFFIX.zip"
 
 command -v xcodebuild >/dev/null || { echo "xcodebuild not found — install Xcode." >&2; exit 1; }
 security find-identity -v -p codesigning | grep -q "Developer ID Application" || {
@@ -28,10 +39,11 @@ security find-identity -v -p codesigning | grep -q "Developer ID Application" ||
   exit 1
 }
 
-echo "→ building Release"
+echo "→ building Release ($ARCH)"
 rm -rf "$DERIVED"
 xcodebuild -project mac-app/conch-mac.xcodeproj -scheme conch-mac \
-  -configuration Release -derivedDataPath "$DERIVED" build >/dev/null
+  -configuration Release -derivedDataPath "$DERIVED" \
+  ARCHS="$ARCH" ONLY_ACTIVE_ARCH=NO CONCH_DAEMON_SOURCE=bundled build >/dev/null
 
 echo "→ verifying the signature"
 codesign --verify --strict --verbose=2 "$APP"
@@ -39,6 +51,8 @@ codesign -dv --verbose=2 "$APP" 2>&1 | grep -E 'Authority=Developer ID|TeamIdent
 # The uv the natural voices set themselves up with (scripts/embed-uv.sh).
 [[ -x "$APP/Contents/Helpers/uv" ]] || { echo "app has no Contents/Helpers/uv" >&2; exit 1; }
 codesign --verify --strict --verbose=2 "$APP/Contents/Helpers/uv"
+# The daemon and speech engine a downloaded conch runs with nothing else installed.
+scripts/check-app-bundle.sh "$APP" bundled
 
 mkdir -p "$DIST"
 rm -f "$ZIP"

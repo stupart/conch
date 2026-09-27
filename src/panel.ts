@@ -9,6 +9,7 @@ import { reviewIdentity } from "./records-receipts.ts";
 import type { PendingApproval } from "./approval.ts";
 import type { PublishedShowing } from "./screen-context.ts";
 import type { NaturalVoicesStatus } from "./voice-env.ts";
+import type { SpeechEngineStatus } from "./speech-engine.ts";
 
 export type PanelConchState = "idle" | "muted" | "paused" | "speaking" | "listening" | "recording" | "transcribing";
 
@@ -431,6 +432,13 @@ export interface PublishedState {
    * CONCH_TTS=server mode, which conch does not set up.
    */
   naturalVoices?: NaturalVoicesStatus;
+  /**
+   * Where the speech engine stands (`speech-engine.ts`): checking, downloading
+   * the whisper model (with progress), ready, or off and why — and where each
+   * part came from (the app, seashell, Homebrew). Settings shows it beside the
+   * natural voices; onboarding reads it as setup status. Absent from older daemons.
+   */
+  speechEngine?: SpeechEngineStatus;
 }
 
 const MAX_PUBLISHED_CONVERSATION_CHARS = 4_000;
@@ -579,6 +587,7 @@ export function buildPublishedState(
     approvalForSessionId?(sessionId: string, transcriptPath: string | undefined): PendingApproval | null;
     showing?: PublishedShowing;
     naturalVoices?: NaturalVoicesStatus;
+    speechEngine?: SpeechEngineStatus;
   } = {},
 ): PublishedState {
   return {
@@ -593,6 +602,7 @@ export function buildPublishedState(
     ...(options.deliveries?.length ? { deliveries: [...options.deliveries] } : {}),
     ...(options.previewRequests?.length ? { previewRequests: [...options.previewRequests] } : {}),
     ...(options.naturalVoices ? { naturalVoices: { ...options.naturalVoices } } : {}),
+    ...(options.speechEngine ? { speechEngine: structuredClone(options.speechEngine) } : {}),
     mode: { ...model.mode },
     live: publishedLiveState(model.live),
     ...(model.reply ? { reply: publishedReply(model.reply) } : {}),

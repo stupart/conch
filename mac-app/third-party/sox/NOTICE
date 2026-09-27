@@ -1,0 +1,16 @@
+conch.app carries SoX 14.4.2 (https://sox.sourceforge.net) as
+Contents/Helpers/sox. conch runs it as a separate program to capture the
+microphone; nothing of SoX is linked into conch.
+
+SoX is distributed under the GNU General Public License, version 2 (sox.c, the
+program) and the GNU Lesser General Public License, version 2.1 (libsox): see
+COPYING, LICENSE.GPL and LICENSE.LGPL beside this notice, unmodified from the
+SoX source tree.
+
+The complete corresponding source is included beside this notice as
+sox-14.4.2.tar.gz, unmodified (sha256
+b45f598643ffbd8e363ff24d61166ccec4836fea6d3888881b8df53e3bb55f6c, from
+https://downloads.sourceforge.net/project/sox/sox/14.4.2/sox-14.4.2.tar.gz).
+It was built with no changes to the source, as a static program with only the
+CoreAudio driver and SoX's built-in formats; the exact configure and make
+invocation is in scripts/fetch-engine.sh in conch's source.
