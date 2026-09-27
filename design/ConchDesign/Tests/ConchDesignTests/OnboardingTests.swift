@@ -51,6 +51,12 @@ final class OnboardingTests: XCTestCase {
         XCTAssertEqual(after.step, .permissions)
     }
 
+    /// Quitting to reopen closes the window on the way out: that close must not put setup away before it comes back.
+    func testTheWindowClosingAsConchQuitsForAGrantStillComesBack() {
+        let quitting = run([.begin, .next, .reopenForGrant, .close])
+        XCTAssertEqual(OnboardingProgress.entry(quitting, readiness: fresh), .resume(.permissions))
+    }
+
     // MARK: Moving through
 
     func testContinueWalksTheRailToTheEnd() {
