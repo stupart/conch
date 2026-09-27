@@ -255,20 +255,16 @@ final class HistoryTests: XCTestCase {
 
     // MARK: - What a phone will hold
 
-    func testAPhoneStopsPagingOnceItHoldsAllItWill() {
+    func testAPhoneKeepsPagingPastItsCeilingAndLetsTheFarthestPagesGo() {
         var paging = HistoryPaging(session: "a", itemCap: 4)
-        paging.apply(page: page(["3", "4"], previousCursor: "older"), generation: paging.beginLoad())
-        XCTAssertFalse(paging.isAtCap)
-        XCTAssertTrue(paging.canLoadOlder)
+        paging.apply(page: page(["5", "6"], previousCursor: "older"), generation: paging.beginLoad())
+        paging.apply(page: page(["3", "4"], previousCursor: "older-still"), generation: paging.beginLoad(anchor: "5"))
+        paging.apply(page: page(["1", "2"], previousCursor: "oldest"), generation: paging.beginLoad(anchor: "3"))
 
-        paging.apply(page: page(["1", "2"], previousCursor: "older-still"), generation: paging.beginLoad(anchor: "3"))
-
-        XCTAssertEqual(paging.items.map(\.id), ["1", "2", "3", "4"], "nothing is dropped; the reader stops asking")
-        XCTAssertTrue(paging.isAtCap)
-        XCTAssertFalse(paging.canLoadOlder, "the record goes further back, but this phone is full")
-        XCTAssertFalse(paging.reachedStart, "which is NOT the same as having reached the start of the session")
-        // And the reader is told where the rest of it is.
-        XCTAssertTrue(HistoryNotice.cap.contains("Mac"))
+        XCTAssertEqual(paging.rows.map(\.id), ["1", "2", "3", "4", "5", "6"], "every row keeps its place")
+        XCTAssertEqual(paging.items.map(\.id), ["3", "4", "5", "6"], "and no more than the ceiling is held")
+        XCTAssertTrue(paging.canLoadOlder, "the record goes further back, and the phone keeps reading it")
+        XCTAssertFalse(paging.reachedStart)
     }
 
     func testTheCeilingTravelsWithTheReaderAndIsNotInTheWayAfterARestart() {
@@ -277,20 +273,19 @@ final class HistoryTests: XCTestCase {
         XCTAssertEqual(paging.itemCap, 2, "a different session is still the same phone")
 
         paging.apply(page: page(["1", "2"], previousCursor: "older"), generation: paging.beginLoad())
-        XCTAssertTrue(paging.isAtCap)
-
-        // A stale epoch drops everything bound to it; the ceiling must not then read as full.
+        // A stale epoch drops everything bound to it.
         paging.restart()
         XCTAssertEqual(paging.itemCap, 2)
-        XCTAssertFalse(paging.isAtCap)
+        XCTAssertTrue(paging.rows.isEmpty)
         XCTAssertTrue(paging.canLoadOlder)
     }
 
-    func testTheMacKeepsReadingPastAnyCeiling() {
+    func testTheMacKeepsEverythingWithoutACeiling() {
         var paging = HistoryPaging(session: "a")
         paging.apply(page: page(["1", "2", "3"], previousCursor: "older"), generation: paging.beginLoad())
+        paging.apply(page: page(["0"], previousCursor: "older-still"), generation: paging.beginLoad())
         XCTAssertNil(paging.itemCap)
-        XCTAssertFalse(paging.isAtCap, "no ceiling means no ceiling, however many pages arrive")
+        XCTAssertEqual(paging.items.count, 4, "no ceiling means nothing is released, however many pages arrive")
         XCTAssertTrue(paging.canLoadOlder)
     }
 

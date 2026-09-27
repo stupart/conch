@@ -323,10 +323,12 @@ describe("the apps say when a window's conversation is shared", () => {
     expect(models).toContain("case sessionId, items, truncated, shared");
     expect(models).toContain('shared = (try? c.decodeIfPresent(Bool.self, forKey: .shared)) ?? false');
     const stack = read("mac-app/conch-mac/ConversationStackView.swift");
-    expect(stack).toContain("if conversation.shared {");
-    expect(stack).toContain('Text("Shared with another window');
-    expect(stack.indexOf("if conversation.truncated {")).toBeLessThan(stack.indexOf("if conversation.shared {"));
-    expect(stack.indexOf("if conversation.shared {")).toBeLessThan(stack.indexOf("ForEach(conversation.items)"));
+    // Said at the top of the history region, with what it says about where the history starts,
+    // and before the window's own messages.
+    const note = 'note: conversation.shared ? "Shared with another window — both windows\' messages are shown" : nil';
+    expect(stack).toContain(note);
+    expect(stack).toContain("liveIsWhole: !conversation.truncated && !conversation.items.isEmpty");
+    expect(stack.indexOf(note)).toBeLessThan(stack.indexOf("ForEach(conversation.items)"));
     // The Mac's own file reader shows whichever window wrote last; a row keyed
     // per window must wait for the daemon's stack instead.
     const dashboard = read("mac-app/conch-mac/DashboardView.swift");
@@ -342,9 +344,9 @@ describe("the apps say when a window's conversation is shared", () => {
     expect(models).toContain("case sessionId, items, truncated, shared");
     expect(models).toContain('shared = (try? c.decodeIfPresent(Bool.self, forKey: .shared)) ?? false');
     const stack = read("mobile/conch-ios/conch-ios/ConversationStack.swift");
-    expect(stack).toContain("if conversation.shared {");
-    expect(stack).toContain('Text("Shared with another window');
-    expect(stack.indexOf("if conversation.shared {")).toBeLessThan(stack.indexOf("ForEach(conversation.items)"));
+    const note = 'note: conversation.shared ? "Shared with another window — both windows\' messages are shown" : nil';
+    expect(stack).toContain(note);
+    expect(stack.indexOf(note)).toBeLessThan(stack.indexOf("ForEach(conversation.items)"));
   });
 });
 

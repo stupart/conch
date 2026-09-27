@@ -318,23 +318,10 @@ struct SessionView: View {
                 pinnedToBottom = true
                 scrollToBottom(scroller, animated: false)
             }
-            // Older messages land ABOVE what you are reading and push it down. Putting
-            // the row you were on back under the eye is the whole difference between
-            // history arriving and the transcript jumping while you read it.
-            .onChange(of: history.paging.items.count) { previous, next in
-                // The FIRST page is not a prepend. It lands under a conversation
-                // sitting at its end, and scrolling to it would throw the reader to
-                // the top of a session they just opened.
-                guard previous > 0, next > previous, let anchor = history.paging.anchor else { return }
-                Task { @MainActor in
-                    // After layout: the rows are only there to scroll to once they
-                    // have been measured.
-                    await Task.yield()
-                    var transaction = Transaction()
-                    transaction.disablesAnimations = true
-                    withTransaction(transaction) { scroller.scrollTo(anchor, anchor: .top) }
-                }
-            }
+            // Older messages land ABOVE what you are reading. The history region moves the
+            // scroll view by exactly what arrived, in the layout pass that adds it, so the row
+            // under the eye stays put (ConchDesign/HistoryRegion.swift). Scrolling to the
+            // anchor row after a yield put it at the TOP of the screen a frame late: a jump.
             // Focus used to be a trap: once the cursor entered the field there
             // was no way out short of sending or discarding, and the keyboard
             // sat over the conversation you wanted to re-read before deciding.

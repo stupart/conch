@@ -113,7 +113,9 @@ describe("the iPhone reads recorded history", () => {
     // And where the record could not prove the branch, the reader says so rather than
     // passing the other window's messages off as this one's.
     expect(store).toContain("branch: coverage?.branch");
-    expect(stack).toContain("sharedBranch: history.paging.sharedBranch");
+    // Said at the top of the history region, by the edge's own rule — the Mac's.
+    expect(stack).toContain("HistoryEdge.of(");
+    expect(read("design/ConchDesign/Sources/ConchDesign/HistoryScroll.swift")).toContain("sharedBranch: paging.sharedBranch");
     expect(history).toContain("public static let allBranches =");
   });
 
@@ -130,45 +132,46 @@ describe("the iPhone reads recorded history", () => {
     // Both copies are released together. `bodies` is keyed by record id and
     // `fullBodies` by provider id; freeing one while the other still holds the
     // string frees nothing, and a cap that frees nothing is worse than no cap.
-    const keep = sliceFrom(store, "private func keep(body text: String", "// MARK: - Complete text");
-    expect(keep).toContain("HistoryBudget.release(held, keepingUnder: HistoryBudget.phoneBodyBytes)");
+    const keep = sliceFrom(store, "private func keep(body text: String", "/// A recorded row's whole body");
+    // Never a body drawn right now: the row would shrink under the reader's eye.
+    expect(keep).toContain("HistoryBudget.release(held, keepingUnder: HistoryBudget.phoneBodyBytes, pinned: pinned)");
     expect(keep).toContain("bodies[released] = nil");
     expect(keep).toContain("fullBodies[native] = nil");
   });
 
-  test("the phone holds a bounded number of rows, and says so when it stops", () => {
-    // Not a guess about bytes: the stack is eager, so every row held is a row laid
-    // out, and the largest session in the record store is twelve thousand items.
+  test("the phone holds a bounded number of items, and keeps reading past it", () => {
+    // A ceiling on what is HELD. Past it the pages farthest from the reader are released, their
+    // rows keep their place and height, and they are read again with their own cursor if the
+    // reader scrolls back — so the phone's old stopping point, and its notice, are gone.
     expect(store).toContain("static let itemCap = 1_000");
     expect(store).toContain("HistoryPaging(itemCap: HistoryStore.itemCap)");
-    // Stopping, never dropping: the store pages backwards only, so anything released
-    // could not be fetched again when the reader scrolled back down.
-    expect(history).toContain("public var isAtCap: Bool");
-    expect(history).toContain("guard status != .loading, status != .off, !isAtCap else { return false }");
-    expect(stack).toContain("Text(HistoryNotice.cap)");
-    expect(history).toContain("public static let cap =");
+    expect(history).not.toContain("public var isAtCap: Bool");
+    expect(history).toContain("guard status != .loading, status != .off else { return false }");
+    expect(history).not.toContain("public static let cap =");
+    expect(stack).not.toContain("HistoryNotice.cap");
+    expect(store).toContain("for page in paging.releasedPages(holding: shown) { reread(page: page) }");
+    expect(store).toContain("paging.beginReread(page: id)");
   });
 
-  test("reaching the top asks for the page before it", () => {
-    // The same zero-height marker the end of the conversation already uses, pointed
-    // the other way.
-    const top = sliceFrom(stack, "VStack(alignment: .leading, spacing: 14) {", "historyHeader");
-    expect(top).toContain(".onAppear { loadOlder() }");
+  test("reaching near the top asks for the page before it, with no button", () => {
+    // The zero-height marker's onAppear fired once when it was built — the stack was eager —
+    // and again only if it left the screen and came back.
+    expect(stack).not.toContain(".onAppear { loadOlder() }");
+    expect(store).toContain("region.onNearTop = { [weak self] in self?.loadOlder() }");
     expect(stack).toContain("private func loadOlder() {");
     expect(stack).toContain("guard history.paging.canLoadOlder else { return }");
-    expect(stack).toContain("history.loadOlder(anchor: recordedRows.first?.id ?? conversation.items.first?.id)");
+    expect(stack).toContain("history.loadOlder(anchor: history.paging.rows.first?.id ?? conversation.items.first?.id)");
   });
 
   test("the transcript keeps the reader's place when older messages arrive", () => {
-    const restore = sliceFrom(session, ".onChange(of: history.paging.items.count)", "@ViewBuilder");
-    // The first page is not a prepend: it lands under a conversation sitting at its
-    // end, and scrolling to it would throw the reader to the top of a session they
-    // just opened.
-    expect(restore).toContain("guard previous > 0, next > previous, let anchor = history.paging.anchor else { return }");
-    // After layout, and without animating: this is a correction, not a movement.
-    expect(restore).toContain("await Task.yield()");
-    expect(restore).toContain("transaction.disablesAnimations = true");
-    expect(restore).toContain("scroller.scrollTo(anchor, anchor: .top)");
+    // `scrollTo(anchor, anchor: .top)` a yield after the rows arrived put the anchor row at
+    // the TOP of the screen, a frame late: a jump every page. The region moves the scroll
+    // view by exactly what arrived, in the layout pass that adds it.
+    expect(session).not.toContain(".onChange(of: history.paging.items.count)");
+    expect(session).not.toContain("scroller.scrollTo(anchor, anchor: .top)");
+    const region = read("design/ConchDesign/Sources/ConchDesign/HistoryRegion.swift");
+    expect(region).toContain("found.observe(\\.contentSize");
+    expect(region).toContain("offset.y += delta");
   });
 
   test("the session screen owns one reader and points it at what is on screen", () => {
@@ -200,53 +203,52 @@ describe("the iPhone reads recorded history", () => {
     // screen the app already draws rather than inventing an emptier one.
     expect(history).toContain("public var hasAnythingToShow: Bool");
     expect(history).toContain("guard status != .off else { return false }");
-    expect(history).toContain("return !items.isEmpty || status != .idle || canLoadOlder");
+    // Rows, released or held: a session whose every page is released still has rows to show.
+    expect(history).toContain("return !rows.isEmpty || status != .idle || canLoadOlder");
   });
 
-  test("the honest states are different sentences, each with what to do about it", () => {
-    const header = sliceFrom(stack, "private var historyHeader: some View", "/// When the record starts");
-    expect(header).toContain("case .off:");
-    expect(header).toContain("Text(HistoryNotice.off)");
-    expect(header).toContain('Text("Loading earlier messages…")');
-    expect(header).toContain("case let .failed(message):");
-    expect(header).toContain("Button(\"Retry\") { history.retry() }");
-    expect(header).toContain('Button("Load earlier messages") { loadOlder() }');
-    expect(header).toContain("HistoryNotice.coverage(");
+  test("the top says what is true of it, and never offers a button", () => {
+    const edge = sliceFrom(stack, "private var historyEdge: HistoryEdge", "/// When the record starts");
+    expect(edge).toContain("HistoryEdge.of(");
+    expect(stack).not.toContain('Button("Load earlier messages")');
+    expect(stack).not.toContain('Button("Retry") { history.retry() }');
+    expect(stack).not.toContain('Text("Loading earlier messages…")');
+    expect(stack).not.toContain('"Earlier messages not shown"');
+    expect(store).toContain("HistoryRetry.delay(afterFailures: paging.failures)");
     // The one thing a person can do about an off record store.
     expect(history).toContain("conch set records true");
   });
 
   test("recorded rows stop where the live window starts and are drawn as rows", () => {
-    const rows = sliceFrom(stack, "private var recordedRows", "/// Ask for the page before");
+    const rows = sliceFrom(stack, "private var recordedEntries", "private static func isToolStep");
     // Undecorated: `tool:call_7` in the snapshot is `call_7` in the record.
     expect(rows).toContain("HistorySnapshot.nativeId(forSnapshotItem: $0.id)");
     expect(rows).toContain("HistorySnapshot.older(");
     // Codex keys a snapshot row by a hash of its own text, so time is the only join.
     expect(rows).toContain("startingAt: conversation.items.first?.at");
-    expect(rows).toContain("ConversationItem(recorded: recorded, text: whole ?? recorded.preview)");
-    // Repointed when the phone's transcript began folding runs of tool steps: the recorded
-    // rows are read once into `recorded` and drawn through `foldedRow`, which draws a plain
-    // row for everything a run does not claim. Scoped to the body, where the loop lives.
-    const body = sliceFrom(stack, "var body: some View {", "private var historyHeader");
-    expect(body).toContain("let recorded = recordedRows");
-    expect(body).toContain("ForEach(recorded) { item in");
+    expect(stack).toContain("ConversationItem(recorded: recorded, text: whole ?? (recorded.hasFullBody ? recorded.preview + \"…\" : recorded.preview))");
+    const body = sliceFrom(stack, "var body: some View {", "private var historyEdge");
+    expect(body).toContain("let recorded = recordedEntries");
+    expect(body).toContain("entries: recorded,");
+    expect(body).toContain("HistoryRegion(");
     // Which needs the published item's timestamp to survive decoding.
     const models = ios("Models.swift");
     expect(models).toContain("case id, rev, kind, text, at, tool, plan, change, question, questions, material");
     expect(models).toContain("at = try? c.decodeIfPresent(Double.self, forKey: .at)");
   });
 
-  test("a row the snapshot cut offers the rest of itself", () => {
+  test("a cut message is read whole as it arrives, with no \"Show the rest\"", () => {
+    expect(stack).not.toContain('Button("Show the rest")');
+    expect(stack).not.toContain("cutTail");
+    const text = sliceFrom(stack, "private func text(of item: ConversationItem) -> String {", "/// Whether the snapshot cut this row");
+    expect(text).toContain("HistorySnapshot.whole(record: full, cut: item.text) ?? item.text");
+    expect(stack).toContain(".onChange(of: cutLive, initial: true) { _, rows in");
+    expect(store).toContain("func wantWhole(_ rows: [(id: String, cut: String)])");
+    expect(store).toContain("HistoryDemand.bodies(for: wantedRecorded, around: wantedCenter");
     expect(stack).toContain('let result = history.fullText(forSnapshotItem: item.id) ?? item.tool?.result ?? ""');
     expect(stack).toContain("loadFullBody(of: item)");
-    expect(stack).toContain('Button("Show the rest")');
-    // Loading and failed are both said, under the row that is waiting.
     const status = sliceFrom(stack, "private func fullBodyStatus", "/// The daemon's own caps");
-    expect(status).toContain("case .some(.loading):");
     expect(status).toContain('Text("Loading the rest…")');
-    expect(status).toContain("case let .some(.failed(message)):");
-    expect(status).toContain('Button("Retry") { history.loadFullBodies(forSnapshotItems: [item.id]) }');
-    // The daemon's caps, as `publishedConversation` applies them.
     expect(stack).toContain("private static let messageCap = 4_000");
     expect(stack).toContain("private static let toolResultCap = 400");
   });

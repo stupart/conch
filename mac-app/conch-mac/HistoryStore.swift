@@ -150,25 +150,53 @@ struct ConchHistoryReply: Decodable, Sendable {
 /// because they show different sessions and neither may answer with the other's.
 @MainActor
 final class HistoryStore: ObservableObject {
-    @Published private(set) var paging = HistoryPaging()
+    @Published private(set) var paging = HistoryPaging(itemCap: HistoryStore.itemCap)
     /// Bodies being read, by RECORD item id.
     @Published private(set) var bodies: [String: HistoryBody] = [:]
     /// Complete bodies by PROVIDER id: what a cut live row shows once it is opened.
     @Published private(set) var fullBodies: [String: String] = [:]
+    /// The transcript's older rows as laid out: which are real views, their heights, and the
+    /// scroll view they sit in. Held here, with the reader, and not published: the stack drawing
+    /// the conversation is not redrawn every time a row is measured.
+    let region = HistoryRegionModel(overscan: 2, cap: 160)
 
     /// The API's own default. A page is about 28 KiB, so this is one socket read.
     static let pageLimit = 50
+    /// How many recorded items this reader holds at once. The Mac read a whole session and held
+    /// all of it; the largest in this record store is twelve thousand items. Past this the pages
+    /// farthest from the reader are released and read again if they scroll back (`HistoryPaging`).
+    static let itemCap = 4_000
     /// A history read is a SQLite query behind a worker, not an agent: slow means broken.
     private static let timeout: TimeInterval = 5
 
     private let client: ConchSocketClient
     private var pageTask: Task<Void, Never>?
     private var bodyTasks: [String: Task<Void, Never>] = [:]
+    private var rereadTasks: [Int: Task<Void, Never>] = [:]
     /// Live rows waiting for their complete body, by provider id, until a page names them.
     private var wantedBodies: Set<String> = []
+    /// Recorded messages near the viewport that are longer than their preview, nearest the
+    /// middle of the viewport first: what is read whole next.
+    private var wantedRecorded: [HistoryItem] = []
+    private var wantedCenter = 0
+    /// The rows that are real views now, in order: their bodies are never released under them.
+    private var shown: Set<String> = []
+    private var shownOrder: [String] = []
+    private var shownCenter: String?
+    /// Record item ids whose bodies are held, least recently read first.
+    private var bodyOrder: [String] = []
+    /// The provider id each held body answers for, so releasing one releases both copies.
+    private var bodyNative: [String: String] = [:]
+    /// No read before this: the pause after a failure (`HistoryRetry`).
+    private var retryNotBefore: Date?
+    private var retryTask: Task<Void, Never>?
+    /// When each cut live row's body was last read again because the record was behind.
+    private var refreshed: [String: Date] = [:]
 
     init(client: ConchSocketClient = ConchSocketClient()) {
         self.client = client
+        region.onNearTop = { [weak self] in self?.loadOlder() }
+        region.onShown = { [weak self] ids, center in self?.show(ids, around: center) }
     }
 
     /// Follow the transcript. A different session is a different reader: everything in
@@ -185,16 +213,33 @@ final class HistoryStore: ObservableObject {
         pageTask = nil
         for task in bodyTasks.values { task.cancel() }
         bodyTasks = [:]
+        for task in rereadTasks.values { task.cancel() }
+        rereadTasks = [:]
+        retryTask?.cancel()
+        retryTask = nil
+        retryNotBefore = nil
         bodies = [:]
         fullBodies = [:]
         wantedBodies = []
+        wantedRecorded = []
+        shown = []
+        shownOrder = []
+        shownCenter = nil
+        bodyOrder = []
+        bodyNative = [:]
+        refreshed = [:]
         paging.select(session: next, branchTip: branchTip)
+        region.reset()
     }
 
     /// The newest page, or the one before the oldest item held. `anchor` is the item the
     /// reader is looking at, which the view puts back under the eye after the prepend.
+    ///
+    /// Asked for on every scroll tick near the top, so it is cheap to refuse: already reading,
+    /// nothing older, or still pausing after a failure.
     func loadOlder(anchor: String? = nil) {
         guard !paging.session.isEmpty, paging.canLoadOlder else { return }
+        if let retryNotBefore, Date() < retryNotBefore { return }
         let generation = paging.beginLoad(anchor: anchor)
         let request = ConchHistoryPageRequest(
             session: paging.session,
@@ -220,6 +265,7 @@ final class HistoryStore: ObservableObject {
         guard case let .reply(data) = outcome,
               let reply = try? JSONDecoder().decode(ConchHistoryReply.self, from: data) else {
             paging.apply(failure: .message("conch's daemon didn't answer."), generation: generation)
+            scheduleRetry()
             return
         }
         if let page = reply.page {
@@ -235,6 +281,84 @@ final class HistoryStore: ObservableObject {
         let restarted = paging.generation
         paging.apply(failure: failure, generation: generation)
         if paging.generation != restarted { loadOlder(anchor: paging.anchor) }
+        if case .failed = paging.status { scheduleRetry() }
+    }
+
+    /// Try again on its own after a pause that doubles; after the last, the reader's next
+    /// scroll to the top tries again. There is no button.
+    private func scheduleRetry() {
+        retryTask?.cancel()
+        guard let delay = HistoryRetry.delay(afterFailures: paging.failures) else {
+            retryNotBefore = nil
+            return
+        }
+        retryNotBefore = Date().addingTimeInterval(delay)
+        let generation = paging.generation
+        retryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled, let self, self.paging.generation == generation else { return }
+            self.retryNotBefore = nil
+            self.loadOlder(anchor: self.paging.anchor)
+        }
+    }
+
+    // MARK: - What is on screen
+
+    /// A different set of rows is real: read what they need, and let go of what is far away.
+    ///
+    /// The ceiling releases pages farthest from the row in the middle of the viewport; a
+    /// released page among the rows now shown is read again; and a message longer than its
+    /// preview is read whole, nearest the middle first, so it is whole before it is seen.
+    private func show(_ ids: [String], around center: String?) {
+        // Only when it moves: every change to `paging` redraws the conversation.
+        if paging.page(of: center) != paging.focusPage { paging.focus(on: center) }
+        shown = Set(ids)
+        shownOrder = ids
+        shownCenter = center
+        for page in paging.releasedPages(holding: shown) { reread(page: page) }
+        refreshWanted()
+    }
+
+    /// The shown rows' messages that are longer than their preview, nearest the middle first.
+    private func refreshWanted() {
+        let byID = Dictionary(paging.items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        wantedRecorded = shownOrder.compactMap { byID[$0] }
+        wantedCenter = shownCenter.flatMap { id in wantedRecorded.firstIndex { $0.id == id } } ?? wantedRecorded.count / 2
+        pumpBodies()
+    }
+
+    private func pumpBodies() {
+        let held = Set(bodies.compactMap { $0.value.isComplete ? $0.key : nil })
+        for id in HistoryDemand.bodies(for: wantedRecorded, around: wantedCenter, held: held, reading: Set(bodyTasks.keys)) {
+            loadBody(item: id)
+        }
+    }
+
+    /// A released page, read again with the cursor it was first read with.
+    private func reread(page id: Int) {
+        guard rereadTasks[id] == nil, let reread = paging.beginReread(page: id) else { return }
+        let request = ConchHistoryPageRequest(
+            session: paging.session,
+            branch: paging.branchTip,
+            before: reread.cursor,
+            limit: Self.pageLimit
+        )
+        let client = self.client
+        rereadTasks[id] = Task { @MainActor [weak self] in
+            let outcome = await client.request(request, timeout: Self.timeout)
+            guard !Task.isCancelled, let self else { return }
+            self.rereadTasks[id] = nil
+            var reply: ConchHistoryReply?
+            if case let .reply(data) = outcome { reply = try? JSONDecoder().decode(ConchHistoryReply.self, from: data) }
+            if let page = reply?.page {
+                self.paging.apply(reread: page, page: id, generation: reread.generation)
+            } else {
+                let failure = reply?.failure ?? .message("History couldn't be read.")
+                self.paging.apply(rereadFailure: failure, page: id, generation: reread.generation)
+            }
+            // The rows it filled in may be the very ones on screen: read their bodies too.
+            self.refreshWanted()
+        }
     }
 
     // MARK: - Bodies
@@ -253,7 +377,10 @@ final class HistoryStore: ObservableObject {
         let session = paging.session
         let generation = paging.generation
         bodyTasks[item] = Task { @MainActor [weak self] in
-            defer { self?.bodyTasks[item] = nil }
+            defer {
+                self?.bodyTasks[item] = nil
+                self?.pumpBodies()
+            }
             while !Task.isCancelled {
                 guard let store = self, store.paging.generation == generation, store.paging.session == session else { return }
                 let request = ConchHistoryItemRequest(session: session, item: item, bodyCursor: store.bodies[item]?.cursor)
@@ -271,7 +398,7 @@ final class HistoryStore: ObservableObject {
                     next.apply(chunk: content, revision: revision, next: reply.nextBodyCursor, encoding: reply.encoding ?? "text")
                     store.bodies[item] = next
                     if next.isComplete {
-                        if let nativeId { store.fullBodies[nativeId] = next.text }
+                        store.keep(body: next.text, item: item, nativeId: nativeId)
                         return
                     }
                     continue
@@ -287,7 +414,66 @@ final class HistoryStore: ObservableObject {
         }
     }
 
+    /// Hold a finished body, and let go of the ones read longest ago once this reader holds more
+    /// than its budget — never one drawn right now, which would shrink under the reader's eye.
+    ///
+    /// Both copies go together. `bodies` is keyed by record id and `fullBodies` by provider id;
+    /// releasing only one of them would free nothing, because the other still holds the string.
+    private func keep(body text: String, item: String, nativeId: String?) {
+        if let nativeId {
+            fullBodies[nativeId] = text
+            bodyNative[item] = nativeId
+        }
+        bodyOrder.removeAll { $0 == item }
+        bodyOrder.append(item)
+
+        let held = bodyOrder.map { (id: $0, bytes: bodies[$0]?.text.utf8.count ?? 0) }
+        let pinned = shown.union(bodyNative.filter { wantedBodies.contains($0.value) || livePinned.contains($0.value) }.keys)
+        for released in HistoryBudget.release(held, keepingUnder: HistoryBudget.macBodyBytes, pinned: pinned) {
+            bodies[released] = nil
+            if let native = bodyNative[released] { fullBodies[native] = nil }
+            bodyNative[released] = nil
+            bodyOrder.removeAll { $0 == released }
+        }
+    }
+
+    /// A recorded row's whole body, asked for when its tool output is opened.
+    func loadRecordedBody(_ id: String) {
+        guard let item = paging.items.first(where: { $0.id == id }), item.hasFullBody else { return }
+        loadBody(item: id)
+    }
+
     // MARK: - Complete text behind a cut live row
+
+    /// The live rows cut to their tail, by provider id: their bodies are drawn now.
+    private var livePinned: Set<String> = []
+
+    /// The live window's cut messages, read whole as they appear rather than behind "Show the
+    /// rest". One whose record is behind — still being written — is read again when it has
+    /// changed, at most every few seconds, until the record's copy and the tail can be joined.
+    func wantWhole(_ rows: [(id: String, cut: String)]) {
+        livePinned = Set(rows.map { HistorySnapshot.nativeId(forSnapshotItem: $0.id) })
+        var missing: [String] = []
+        for row in rows {
+            guard let full = fullText(forSnapshotItem: row.id) else {
+                missing.append(row.id)
+                continue
+            }
+            let native = HistorySnapshot.nativeId(forSnapshotItem: row.id)
+            guard HistorySnapshot.whole(record: full, cut: row.cut) == nil,
+                  Date().timeIntervalSince(refreshed[native] ?? .distantPast) > Self.refreshInterval,
+                  let recorded = paging.items.first(where: { $0.nativeId == native }), bodyTasks[recorded.id] == nil
+            else { continue }
+            refreshed[native] = Date()
+            bodies[recorded.id] = nil
+            fullBodies[native] = nil
+            missing.append(row.id)
+        }
+        if !missing.isEmpty { loadFullBodies(forSnapshotItems: missing) }
+    }
+
+    /// How often a message still being written is read again from the record.
+    private static let refreshInterval: TimeInterval = 3
 
     /// The whole text behind a snapshot row, when the record has it.
     ///

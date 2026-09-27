@@ -135,6 +135,36 @@ public enum HistoryStatus: Equatable, Sendable {
 
 // MARK: - Paging
 
+/// One page as the record served it: the rows it holds, and the cursor that reads it again.
+///
+/// Kept after its rows are let go. The record pages backwards only, but every cursor it hands
+/// out stays good for the life of its epoch (`docs/records-paging.md`: a traversal's insertion
+/// fence keeps a page's slice fixed), so a page released to stay under the ceiling is one
+/// request away from coming back — in either direction the reader scrolls.
+public struct HistoryPageSlot: Equatable, Sendable, Identifiable {
+    /// Numbered as pages arrive, so one being read again is still found after older pages
+    /// have landed in front of it.
+    public let id: Int
+    /// The `before` it was read with. Nil for the newest page, which is never released:
+    /// read again without a cursor it would be a different, newer slice.
+    public let cursor: String?
+    /// Its rows, in order. They outlive `items`, so a released page keeps its place.
+    public fileprivate(set) var ids: [String]
+    /// Nil once released.
+    public fileprivate(set) var items: [HistoryItem]?
+
+    public var isReleased: Bool { items == nil }
+}
+
+/// One row of recorded history in display order: an item, or the place a released one keeps.
+public struct HistoryRow: Equatable, Sendable, Identifiable {
+    public let id: String
+    /// Nil while its page is released. The view draws the row's last known height instead.
+    public let item: HistoryItem?
+    /// The page it belongs to, to read it again by.
+    public let page: Int
+}
+
 /// The transcript's reader: which items it holds, where it can go back to, and which answers it will still accept.
 ///
 /// Answers are tagged with a generation. Selecting another session, and any restart
@@ -144,7 +174,12 @@ public enum HistoryStatus: Equatable, Sendable {
 public struct HistoryPaging: Equatable, Sendable {
     public private(set) var session: String
     public private(set) var epoch: String?
+    /// Every item held, in display order. A released page's items are not among them.
     public private(set) var items: [HistoryItem]
+    /// Every row, held or released, in display order: what the transcript lays out.
+    public private(set) var rows: [HistoryRow]
+    /// Every page read so far, oldest first.
+    public private(set) var pages: [HistoryPageSlot]
     public private(set) var previousCursor: String?
     public private(set) var coverage: HistoryCoverage?
     public private(set) var status: HistoryStatus
@@ -157,41 +192,56 @@ public struct HistoryPaging: Equatable, Sendable {
     ///
     /// Captured when the session is selected and never again — see `select`.
     public private(set) var branchTip: String?
-    /// The most recorded items this reader will hold, or nil for no ceiling.
+    /// The most recorded items this reader will hold at once, or nil for no ceiling.
     ///
-    /// The Mac has no ceiling: it lays out a whole session and has the memory to.
-    /// A phone does not — the largest session in this record store is twelve
-    /// thousand items, and every page held is laid out as well as retained. So the
-    /// phone stops asking rather than dropping: the store pages BACKWARDS only
-    /// (`docs/records-paging.md` has no forward cursor), so anything released to
-    /// make room could not be fetched again when the reader scrolled back down,
-    /// and a transcript with a hole torn in the middle of it is worse than one
-    /// that says plainly where it stops.
+    /// A ceiling on what is HELD, not on how far back the reader can go. It used to be the
+    /// phone's stopping point — "That's as far back as this phone will hold" — because a
+    /// released page could not be read again. It can: every page keeps the cursor it was read
+    /// with. So past the ceiling the pages farthest from the reader are let go, their rows keep
+    /// their place and height, and whichever of them the reader scrolls back to is read again.
     public private(set) var itemCap: Int?
+    /// When the oldest page read so far begins, kept once that page is released.
+    public private(set) var oldestAt: Double?
+    /// Why the last read failed, until one succeeds. Said at the top while the reader tries again.
+    public private(set) var lastFailure: String?
+    /// Reads failed in a row: how long to wait before the next (`HistoryRetry`).
+    public private(set) var failures: Int
+    /// Released pages being read again.
+    public private(set) var rereading: Set<Int>
+    /// The page the reader is looking at: what the ceiling releases farthest from.
+    public private(set) var focusPage: Int?
+    private var nextPage: Int
+    /// The cursor the load in flight was asked with: the new page's own `cursor`.
+    private var loadingCursor: String?
 
     public init(session: String = "", itemCap: Int? = nil) {
         self.session = session
         self.itemCap = itemCap
         epoch = nil
         items = []
+        rows = []
+        pages = []
         previousCursor = nil
         coverage = nil
         status = .idle
         anchor = nil
         generation = 0
         branchTip = nil
-    }
-
-    /// Holding as much as this reader will. Not the same as having reached the start:
-    /// the record goes further back, and the Mac can read it.
-    public var isAtCap: Bool {
-        guard let itemCap else { return false }
-        return items.count >= itemCap
+        oldestAt = nil
+        lastFailure = nil
+        failures = 0
+        rereading = []
+        focusPage = nil
+        nextPage = 0
+        loadingCursor = nil
     }
 
     /// Older messages exist and can be asked for. The first load is the one with no cursor yet.
+    ///
+    /// The ceiling is not in this: holding as much as it will, the reader releases the pages
+    /// farthest from where it is looking and keeps going.
     public var canLoadOlder: Bool {
-        guard status != .loading, status != .off, !isAtCap else { return false }
+        guard status != .loading, status != .off else { return false }
         return epoch == nil || previousCursor != nil
     }
 
@@ -204,8 +254,8 @@ public struct HistoryPaging: Equatable, Sendable {
     /// It is the view's gate, and it lives here because getting it wrong is invisible:
     /// recorded history is drawn INSIDE the conversation stack, so a phone that drew
     /// the stack only when the daemon's snapshot had items showed a session with an
-    /// empty live window and a full record as nothing at all — no messages, no "Load
-    /// earlier messages", no state line.
+    /// empty live window and a full record as nothing at all — no messages, no state
+    /// line.
     ///
     /// `.off` is deliberately not something to show. Nothing is being recorded, so
     /// there is nothing above the window, and whatever the app already draws for a
@@ -213,7 +263,7 @@ public struct HistoryPaging: Equatable, Sendable {
     /// a record that answered and does not hold this session: same screen, same reason.
     public var hasAnythingToShow: Bool {
         guard status != .off else { return false }
-        return !items.isEmpty || status != .idle || canLoadOlder
+        return !rows.isEmpty || status != .idle || canLoadOlder
     }
 
     /// A different session is a different reader. Nothing in flight for the old one may land here.
@@ -258,6 +308,7 @@ public struct HistoryPaging: Equatable, Sendable {
     public mutating func beginLoad(anchor: String? = nil) -> Int {
         self.anchor = anchor ?? self.anchor
         status = .loading
+        loadingCursor = epoch == nil ? nil : previousCursor
         return generation
     }
 
@@ -270,11 +321,20 @@ public struct HistoryPaging: Equatable, Sendable {
             restart()
             return
         }
-        items = epoch == nil ? page.items : Self.merge(older: page.items, into: items)
+        let fresh = absorb(page.items)
+        pages.insert(
+            HistoryPageSlot(id: nextPage, cursor: epoch == nil ? nil : loadingCursor, ids: fresh.map(\.id), items: fresh),
+            at: 0
+        )
+        nextPage += 1
+        if let at = fresh.first?.at { oldestAt = at }
         epoch = page.epoch
         previousCursor = page.previousCursor
         coverage = page.coverage
         status = .idle
+        succeeded()
+        releaseOverCeiling()
+        rebuild()
     }
 
     /// Take a failure, if it still belongs to this reader.
@@ -283,29 +343,166 @@ public struct HistoryPaging: Equatable, Sendable {
         switch failure {
         case .off:
             // Not a failure to retry: there is nothing recorded to read.
-            items = []
             epoch = nil
             previousCursor = nil
             coverage = nil
+            pages = []
+            rereading = []
+            oldestAt = nil
+            succeeded()
             status = .off
+            rebuild()
         case .stale:
             restart()
         case let .message(text):
             // What is already on screen stays there. Losing a read is not a reason
             // to lose the messages the reader was in the middle of.
             status = .failed(text)
+            lastFailure = text
+            failures += 1
         }
     }
 
     /// Drop everything bound to the old index generation, keep the anchor and the tip,
     /// and refuse what is in flight. The epoch moved; which window this is did not.
     public mutating func restart() {
-        items = []
         epoch = nil
         previousCursor = nil
         coverage = nil
         status = .idle
+        pages = []
+        rereading = []
+        focusPage = nil
+        oldestAt = nil
         generation += 1
+        rebuild()
+    }
+
+    // MARK: Released pages, read again
+
+    /// The released pages holding any of these rows: what the reader has scrolled back to.
+    public func releasedPages(holding ids: Set<String>) -> [Int] {
+        pages.filter { $0.isReleased && !rereading.contains($0.id) && $0.ids.contains(where: ids.contains) }.map(\.id)
+    }
+
+    /// Begin reading a released page again, with the cursor it was first read with.
+    public mutating func beginReread(page id: Int) -> (cursor: String, generation: Int)? {
+        guard let slot = pages.first(where: { $0.id == id }), slot.isReleased,
+              let cursor = slot.cursor, !rereading.contains(id) else { return nil }
+        rereading.insert(id)
+        return (cursor, generation)
+    }
+
+    /// A released page, read again. Its rows are what they were — the cursor's fence keeps
+    /// the slice fixed — so they fill the places they kept; a revision can still have moved.
+    public mutating func apply(reread page: HistoryPage, page id: Int, generation: Int) {
+        guard generation == self.generation else { return }
+        rereading.remove(id)
+        guard page.epoch == epoch else {
+            restart()
+            return
+        }
+        guard let released = pages.firstIndex(where: { $0.id == id }), pages[released].isReleased else { return }
+        // Held (and empty) while the page is absorbed, so it is not deduplicated against itself.
+        pages[released].items = []
+        let fresh = absorb(page.items)
+        guard let index = pages.firstIndex(where: { $0.id == id }) else { return }
+        pages[index].items = fresh
+        pages[index].ids = fresh.map(\.id)
+        releaseOverCeiling()
+        rebuild()
+    }
+
+    /// A released page that would not come back. It stays released, and is asked for again
+    /// the next time the reader needs it; a stale cursor starts the reader again.
+    public mutating func apply(rereadFailure failure: HistoryFailure, page id: Int, generation: Int) {
+        guard generation == self.generation else { return }
+        rereading.remove(id)
+        if failure == .stale { restart() }
+    }
+
+    /// The page a row belongs to.
+    public func page(of id: String?) -> Int? {
+        id.flatMap { id in rows.first { $0.id == id }?.page }
+    }
+
+    /// Where the reader is looking: the ceiling releases farthest from here.
+    public mutating func focus(on id: String?) {
+        let page = page(of: id)
+        guard page != focusPage else { return }
+        focusPage = page
+        if releaseOverCeiling() { rebuild() }
+    }
+
+    // MARK: Bookkeeping
+
+    /// A new page's items, less any already held: the held copy moves to the page's
+    /// position and keeps the newer revision, as `merge(older:into:)` always has.
+    private mutating func absorb(_ incoming: [HistoryItem]) -> [HistoryItem] {
+        guard !pages.isEmpty else { return incoming }
+        var incomingIDs: [String: Int] = [:]
+        var fresh = incoming
+        for (index, item) in incoming.enumerated() { incomingIDs[item.id] = index }
+        for p in pages.indices {
+            guard let held = pages[p].items, held.contains(where: { incomingIDs[$0.id] != nil }) else {
+                if pages[p].items == nil { pages[p].ids.removeAll { incomingIDs[$0] != nil } }
+                continue
+            }
+            for item in held {
+                if let index = incomingIDs[item.id], item.revision > fresh[index].revision { fresh[index] = item }
+            }
+            pages[p].items = held.filter { incomingIDs[$0.id] == nil }
+            pages[p].ids = pages[p].items!.map(\.id)
+        }
+        pages.removeAll { $0.ids.isEmpty && $0.cursor != nil }
+        return fresh
+    }
+
+    private mutating func succeeded() {
+        lastFailure = nil
+        failures = 0
+    }
+
+    /// Let go of the pages farthest from the reader until what is held fits under the ceiling.
+    ///
+    /// Never the newest two pages: they meet the live window, and the newest cannot be read
+    /// again without becoming a different slice. Never the page being looked at, or one either
+    /// side of it. Of what is left, the farthest goes first, and between two as far the older.
+    @discardableResult
+    private mutating func releaseOverCeiling() -> Bool {
+        guard let itemCap else { return false }
+        var held = pages.reduce(0) { $0 + ($1.items?.count ?? 0) }
+        guard held > itemCap else { return false }
+        let focus = focusPage.flatMap { id in pages.firstIndex { $0.id == id } } ?? (pages.count - 1)
+        var released = false
+        while held > itemCap {
+            let candidates = pages.indices.filter { index in
+                !pages[index].isReleased && pages[index].cursor != nil
+                    && index < pages.count - 2 && abs(index - focus) > 1
+                    && !rereading.contains(pages[index].id)
+            }
+            guard let farthest = candidates.max(by: { abs($0 - focus) < abs($1 - focus) || (abs($0 - focus) == abs($1 - focus) && $0 > $1) })
+            else { break }
+            held -= pages[farthest].items?.count ?? 0
+            pages[farthest].items = nil
+            released = true
+        }
+        return released
+    }
+
+    private mutating func rebuild() {
+        var items: [HistoryItem] = []
+        var rows: [HistoryRow] = []
+        for page in pages {
+            if let held = page.items {
+                items.append(contentsOf: held)
+                rows.append(contentsOf: held.map { HistoryRow(id: $0.id, item: $0, page: page.id) })
+            } else {
+                rows.append(contentsOf: page.ids.map { HistoryRow(id: $0, item: nil, page: page.id) })
+            }
+        }
+        self.items = items
+        self.rows = rows
     }
 
     /// Older items in front of what is already held, with any item the store has
@@ -389,9 +586,13 @@ public enum HistoryNotice {
     /// The record store is off. The only honest thing to show, with the one command that changes it.
     public static let off = "History isn't recorded for this session. Turn it on with: conch set records true"
 
-    /// The phone is holding as much of this session as it will. The record goes
-    /// further back, and the machine with the memory to read it is named.
-    public static let cap = "That's as far back as this phone will hold — the rest of this session is on your Mac."
+    /// The top of a conversation whose every message is on screen: the record was read back to
+    /// its first item, or the live window never lost one.
+    public static let start = "Start of the conversation"
+
+    /// The record answered and holds nothing for this session, while the live window says
+    /// earlier messages exist. The same plain sentence a partly recorded session gets.
+    public static let unrecorded = "Part of this session wasn't recorded."
 
     /// Everything above the live conversation belongs to more than one window, because
     /// the record could not prove which branch is this one's.
@@ -420,10 +621,10 @@ public enum HistoryNotice {
         guard let coverage else { return nil }
         if coverage.isIndexing { return "Still reading this session's history — earlier messages may appear." }
         if coverage.isComplete { return nil }
-        guard let oldest, !oldest.isEmpty else { return "Part of this session wasn't recorded." }
+        guard let oldest, !oldest.isEmpty else { return unrecorded }
         return reachedStart
             ? "Recorded back to \(oldest) — anything earlier wasn't recorded."
-            : "Part of this session wasn't recorded."
+            : unrecorded
     }
 }
 
@@ -503,27 +704,55 @@ extension HistorySnapshot {
     }
 }
 
+extension HistorySnapshot {
+    /// The same seam over rows, some of whose pages may be released.
+    ///
+    /// A released row is always older than the live window: the two newest pages, where the
+    /// record meets the snapshot, are never released (`HistoryPaging`).
+    public static func older(
+        rows: [HistoryRow],
+        thanSnapshot ids: Set<String>,
+        startingAt oldest: Double? = nil
+    ) -> [HistoryRow] {
+        Array(rows.prefix { row in
+            guard let candidate = row.item else { return true }
+            if ids.contains(candidate.nativeId ?? candidate.id) { return false }
+            if let oldest, let at = candidate.at, at >= oldest { return false }
+            return true
+        })
+    }
+}
+
 // MARK: - What a phone will hold
 
-/// The other half of the phone's memory ceiling: opened message bodies.
+/// The other half of each reader's memory ceiling: message bodies.
 ///
 /// `HistoryPaging` bounds the ROWS, whose previews are 240 characters each. A
-/// body is unbounded — a tool result can be megabytes — so a reader who opens
-/// twenty of them has retained something no row count describes. Releasing one
-/// costs a request, not a message: it is read again on demand.
+/// body is unbounded — a tool result can be megabytes — and now that a long
+/// message is read whole as it scrolls into view rather than when someone asks,
+/// a reader that scrolls a long session reads a great many of them. Releasing one
+/// costs a request, not a message: it is read again when its row comes back.
 public enum HistoryBudget {
-    /// What one phone holds in opened bodies at a time.
+    /// What one phone holds in bodies at a time.
     public static let phoneBodyBytes = 2 * 1024 * 1024
+    /// What one Mac reader holds. Larger, not unbounded: the Mac reads the same twelve
+    /// thousand item sessions the phone does, and holds two readers.
+    public static let macBodyBytes = 16 * 1024 * 1024
 
     /// Which bodies to let go of, least recently read first, until what is kept fits.
     ///
     /// The most recently read is never released: it is the one being looked at, and
     /// releasing it would empty the row that asked for it. One body larger than the
-    /// whole budget is therefore kept.
-    public static func release(_ sizes: [(id: String, bytes: Int)], keepingUnder limit: Int) -> [String] {
+    /// whole budget is therefore kept. Neither is any body in `pinned` — the rows drawn
+    /// right now, which would shrink under the reader's eye.
+    public static func release(
+        _ sizes: [(id: String, bytes: Int)],
+        keepingUnder limit: Int,
+        pinned: Set<String> = []
+    ) -> [String] {
         var total = sizes.reduce(0) { $0 + $1.bytes }
         var released: [String] = []
-        for entry in sizes.dropLast() where total > limit {
+        for entry in sizes.dropLast() where total > limit && !pinned.contains(entry.id) {
             released.append(entry.id)
             total -= entry.bytes
         }
