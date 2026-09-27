@@ -217,3 +217,9 @@ test("service install restarts the detached daemon before kicking its supervisor
     ["launchctl", "kickstart", "-k", "gui/502/com.conch.daemon"],
   ]);
 });
+
+test("without tmux, service install only kicks its supervisor — spawning a missing tmux would throw first", () => {
+  expect(serviceRestartCommands(null, 502)).toEqual([
+    ["launchctl", "kickstart", "-k", "gui/502/com.conch.daemon"],
+  ]);
+});

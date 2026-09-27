@@ -140,12 +140,13 @@ const activeControllers = new Set<DictationController>();
 const activeBargeShutdowns = new Map<ReturnType<typeof Bun.spawn>, () => Promise<void>>();
 
 export function soxCaptureArgs(
-  cfg: Pick<Config, "micGainDb" | "endSilenceSecs" | "endThresholdPct">,
+  cfg: Pick<Config, "micGainDb" | "endSilenceSecs" | "endThresholdPct"> & Partial<Pick<Config, "soxBin">>,
   raw: string,
   startPct: number,
 ): string[] {
   return [
-    "sox", "-d", "-q",
+    // conch.app's own sox when it carries one (speech-engine.ts); bare `sox` is PATH's.
+    cfg.soxBin || "sox", "-d", "-q",
     "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw",
     raw,
     ...(cfg.micGainDb ? ["gain", String(cfg.micGainDb)] : []),
@@ -249,9 +250,9 @@ function spawnCapture(
  * pauses are what place the words against the recording — and `trim` ends it
  * at `seconds` even if nothing is left alive to stop it.
  */
-export function narrationSoxArgs(cfg: Pick<Config, "micGainDb">, wav: string, seconds: number): string[] {
+export function narrationSoxArgs(cfg: Pick<Config, "micGainDb"> & Partial<Pick<Config, "soxBin">>, wav: string, seconds: number): string[] {
   return [
-    "sox", "-d", "-q",
+    cfg.soxBin || "sox", "-d", "-q",
     "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "wav",
     wav,
     ...(cfg.micGainDb ? ["gain", String(cfg.micGainDb)] : []),

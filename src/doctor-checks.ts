@@ -16,6 +16,13 @@ import {
   type NaturalVoicesStatus,
   type VoiceEnvPaths,
 } from "./voice-env.ts";
+import {
+  describeSpeechEngine,
+  readPublishedEngineStatus,
+  WHISPER_MODEL,
+  type EnginePart,
+  type SpeechEngineStatus,
+} from "./speech-engine.ts";
 
 export const MICROPHONE_PROBE_DURATION_MS = 300;
 export const TTS_PROBE_WORD = "Ready.";
@@ -26,7 +33,7 @@ const TTS_PROBE_TIMEOUT_MS = 5_000;
 export interface DoctorProbeResult {
   /** Live probes are advisory: callers should display this, not use it as the doctor's exit status. */
   ok: boolean;
-  label: "microphone" | "TTS" | "agents" | "conch" | "whisper-server" | "kokoro" | "natural voices";
+  label: "microphone" | "TTS" | "agents" | "conch" | "whisper-server" | "kokoro" | "natural voices" | "speech engine";
   message: string;
   action?: string;
 }
@@ -71,6 +78,51 @@ export async function checkWhisperServer(cfg: Config, deps: WhisperServerProbeDe
         ? `whisper-server: unloaded — daemon ${daemon} is up but nothing listens on :${port} (idle for ${cfg.whisperIdleUnloadMins} min, or still warming); it reloads when a mic is about to open`
         : `whisper-server: not listening on :${port} — daemon ${daemon} is up (still warming, or on the cold cli); whisper-idle-unload is 0, so it was not unloaded`
       : `whisper-server: not listening on :${port} — starts with the daemon`,
+  };
+}
+
+export interface SpeechEngineProbeDeps {
+  published?: () => (SpeechEngineStatus & { pid: number }) | null;
+}
+
+function describePart(name: string, part: EnginePart): string {
+  const from = part.source === "conch.app" ? "the app" : part.source === "conch" ? "conch's download" : part.source;
+  return part.found ? `${name} from ${from} (${part.path})` : `${name} missing (${part.path})`;
+}
+
+/**
+ * Where the speech engine stands (speech-engine.ts): a live daemon's own view
+ * when one is up — which includes a first-run model download in progress —
+ * else where each part resolves from here. Informational: the checks above say
+ * pass or fail for each file.
+ */
+export function checkSpeechEngine(cfg: Pick<Config, "speechEngine">, deps: SpeechEngineProbeDeps = {}): DoctorProbeResult {
+  const label = "speech engine" as const;
+  const published = (deps.published ?? readPublishedEngineStatus)();
+  if (published) {
+    return {
+      ok: published.state !== "off",
+      label,
+      message: `${describeSpeechEngine(published)} (daemon ${published.pid}).`,
+      ...(published.reason === "download failed" ? { action: "Run `conch setup` to download the model in the foreground." } : {}),
+    };
+  }
+  const engine = cfg.speechEngine;
+  const parts = [
+    describePart("whisper-cli", engine.whisperCli),
+    describePart("whisper-server", engine.whisperServer),
+    describePart("model", engine.whisperModel),
+    describePart("VAD", engine.vadModel),
+    describePart("capture (sox)", engine.sox),
+  ];
+  const modelToFetch = !engine.whisperModel.found && engine.whisperModel.source === "missing";
+  return {
+    ok: engine.whisperCli.found && engine.whisperModel.found && engine.vadModel.found && engine.sox.found,
+    label,
+    message: `Speech engine: ${parts.join("; ")}`,
+    ...(modelToFetch
+      ? { action: `The daemon downloads the ${WHISPER_MODEL.label} model (574 MB) on its first run; \`conch setup\` does it now.` }
+      : {}),
   };
 }
 
@@ -195,6 +247,8 @@ export type MicrophoneCaptureRunner = (
 export interface MicrophoneProbeOptions {
   capture?: MicrophoneCaptureRunner;
   durationMs?: number;
+  /** The sox the daemon captures with (`cfg.soxBin`: conch.app's, Homebrew's, or PATH's). */
+  sox?: string;
 }
 
 export type TtsProbeRunner = (
@@ -220,10 +274,10 @@ function errorMessage(error: unknown): string {
 }
 
 /** The exact finite SoX recording used by the live doctor probe. */
-export function microphoneProbeCommand(durationMs = MICROPHONE_PROBE_DURATION_MS): string[] {
+export function microphoneProbeCommand(durationMs = MICROPHONE_PROBE_DURATION_MS, sox = "sox"): string[] {
   const seconds = Math.max(1, durationMs) / 1_000;
   return [
-    "sox", "-d", "-q",
+    sox, "-d", "-q",
     "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw",
     "-",
     "trim", "0", String(seconds),
@@ -238,8 +292,8 @@ export function pcm16HasNonZeroSample(pcm: Uint8Array): boolean {
   return false;
 }
 
-async function captureMicrophoneWithSox(durationMs: number): Promise<MicrophoneCapture> {
-  const process = Bun.spawn(microphoneProbeCommand(durationMs), {
+async function captureMicrophoneWithSox(durationMs: number, sox = "sox"): Promise<MicrophoneCapture> {
+  const process = Bun.spawn(microphoneProbeCommand(durationMs, sox), {
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -278,7 +332,7 @@ export async function checkMicrophone(
 ): Promise<DoctorProbeResult> {
   const durationMs = options.durationMs ?? MICROPHONE_PROBE_DURATION_MS;
   try {
-    const { pcm } = await (options.capture ?? captureMicrophoneWithSox)(durationMs);
+    const { pcm } = await (options.capture ?? ((ms: number) => captureMicrophoneWithSox(ms, options.sox)))(durationMs);
     if (!pcm16HasNonZeroSample(pcm)) {
       return {
         ok: false,

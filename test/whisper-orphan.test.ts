@@ -96,6 +96,9 @@ test("the daemon records the whisper-server it spawns and reaps a dead daemon's 
   expect(socketAt).toBeGreaterThan(-1);
   const reapAt = daemon.indexOf("void reapOrphanedWhisper(cfg.whisperPort)");
   expect(reapAt).toBeGreaterThan(socketAt);
-  const startAt = daemon.indexOf(".then(() => supervisor.start())", reapAt);
-  expect(startAt).toBeGreaterThan(reapAt);
+  // …and, on a first run, after the model it loads has landed (speech-engine.ts).
+  const readyAt = daemon.indexOf(".then(() => speechEngine.modelReady())", reapAt);
+  expect(readyAt).toBeGreaterThan(reapAt);
+  const startAt = daemon.indexOf(".then((ready) => (ready ? supervisor.start() : false))", readyAt);
+  expect(startAt).toBeGreaterThan(readyAt);
 });

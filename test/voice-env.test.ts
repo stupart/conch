@@ -660,7 +660,7 @@ describe("the daemon wiring", () => {
     expect(daemon).toContain("void voiceEnv?.start().catch(");
     expect(daemon).not.toContain("resolveMlxAudioPython(cfg.ttsWorkerPython");
     // Published on every document the panel builds.
-    expect(daemon).toContain("screen.showing(), windowPreviews.requests(), naturalVoices, );");
+    expect(daemon).toContain("screen.showing(), windowPreviews.requests(), naturalVoices, speechEngineStatus, );");
   });
 });
 

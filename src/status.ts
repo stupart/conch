@@ -43,7 +43,10 @@ export type LiveState = PanelLiveState;
 // Overridable only so the TEST SUITE does not overwrite the live daemon's
 // state on every `setState`: `test/preload.ts` points it at a temp file.
 export const STATE_FILE = process.env.CONCH_STATE_FILE || "/tmp/conch-state.json";
-export const SESSIONS_FILE = "/tmp/conch-sessions.json";
+// Overridable like STATE_FILE, and by the name the Mac app already reads
+// (CONCH_SESSIONS_FILE), so a daemon started for a test or a smoke check in a
+// temp home never rewrites the live app's snapshot.
+export const SESSIONS_FILE = process.env.CONCH_SESSIONS_FILE || "/tmp/conch-sessions.json";
 // Each session's current deliverable, so a daemon restart does not erase it
 // from both apps (`SessionLedger.saveReviews`). Under ~/.config/conch with the
 // other durable files: it lived in /tmp, which macOS recreates at every boot

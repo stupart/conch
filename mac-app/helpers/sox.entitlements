@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- sox is the process that opens the microphone. macOS asks conch.app (the
+	     responsible app) for permission, but a Hardened Runtime process that
+	     touches the audio input needs this entitlement itself, or it records
+	     silence with no error anywhere in the chain — the same failure the app's
+	     own entitlement exists to prevent. -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+</dict>
+</plist>

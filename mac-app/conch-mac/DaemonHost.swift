@@ -39,6 +39,9 @@ final class DaemonHost: ObservableObject {
     /// writes once it owns the socket (`daemon-identity.ts`). Nil when the
     /// daemon is ours, absent, or too old to have written one.
     @Published private(set) var adoptedIdentity: Identity?
+    /// Which daemon we launched: the bundled one, a checkout's, or a `conch` on
+    /// PATH. Nil when none is ours.
+    @Published private(set) var launchedFrom: LaunchCommand.Source?
 
     struct Identity: Decodable, Equatable {
         let pid: Int32
@@ -106,6 +109,15 @@ final class DaemonHost: ObservableObject {
         if environment["CONCH_UV"] == nil, let uv = DaemonHost.bundledUV() {
             environment["CONCH_UV"] = uv.path
         }
+        // The speech engine too: whisper-cli, whisper-server and the
+        // microphone recorder in Contents/Helpers, the VAD model in
+        // Contents/Resources/models (scripts/embed-engine.sh). The app itself
+        // never records; the daemon does. The daemon resolves them from this app
+        // first (src/speech-engine.ts) — whichever daemon runs, the checkout's
+        // included — and never from another copy of conch.
+        if environment["CONCH_APP_BUNDLE"] == nil {
+            environment["CONCH_APP_BUNDLE"] = Bundle.main.bundleURL.path
+        }
         task.environment = environment
 
         // Capture output rather than inheriting: a GUI app has no terminal, so
@@ -127,6 +139,7 @@ final class DaemonHost: ObservableObject {
         do {
             try task.run()
             process = task
+            launchedFrom = launch.source
             state = .running(pid: task.processIdentifier)
         } catch {
             state = .failed(error.localizedDescription)
@@ -147,6 +160,7 @@ final class DaemonHost: ObservableObject {
             return
         }
         process = nil
+        launchedFrom = nil
         outputPipe?.fileHandleForReading.readabilityHandler = nil
         outputPipe = nil
         task.terminationHandler = nil
@@ -233,6 +247,7 @@ final class DaemonHost: ObservableObject {
     private func handleExit(_ finished: Process) {
         guard process === finished else { return } // a stop() we already handled
         process = nil
+        launchedFrom = nil
         outputPipe?.fileHandleForReading.readabilityHandler = nil
         outputPipe = nil
 
@@ -266,7 +281,7 @@ final class DaemonHost: ObservableObject {
 
     /// The PATH the daemon needs, whatever the app was launched with: brew,
     /// uv tools (mlx_audio.server), bun, then whatever was inherited.
-    static func daemonPath(inherited: String?, home: URL = FileManager.default.homeDirectoryForCurrentUser) -> String {
+    nonisolated static func daemonPath(inherited: String?, home: URL = FileManager.default.homeDirectoryForCurrentUser) -> String {
         let wanted = [
             "/opt/homebrew/bin",
             "/usr/local/bin",
@@ -279,7 +294,7 @@ final class DaemonHost: ObservableObject {
     }
 
     /// The uv embedded in this app by the "Embed uv helper" build phase, if it is there.
-    static func bundledUV(
+    nonisolated static func bundledUV(
         bundle: Bundle = .main,
         fileExists: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
     ) -> URL? {
@@ -319,7 +334,7 @@ final class DaemonHost: ObservableObject {
     /// `~/.cache/conch/daemon.json`, written by the daemon once it owns the
     /// socket and removed on its way out (`daemon-identity.ts`). A record whose
     /// pid is gone is no record: a stale file must never name an owner.
-    static func readIdentity(
+    nonisolated static func readIdentity(
         path: String = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".cache/conch/daemon.json").path,
         alive: (Int32) -> Bool = { kill($0, 0) == 0 || errno == EPERM }
@@ -332,36 +347,109 @@ final class DaemonHost: ObservableObject {
 
     // MARK: - Finding the daemon
 
-    struct LaunchCommand {
+    struct LaunchCommand: Equatable {
+        /// Where the daemon came from, for the log and the status the app shows.
+        enum Source: String, Equatable {
+            /// `Contents/Helpers/conch-daemon`, compiled into this app by
+            /// scripts/embed-daemon.sh — what a downloaded conch runs.
+            case bundled
+            /// `~/conch/src/cli.ts` under `~/.bun/bin/bun` — a developer's.
+            case checkout
+            /// A `conch` on the daemon's PATH — Homebrew's CLI, usually.
+            case path
+        }
+
         let executable: URL
         let arguments: [String]
         let workingDirectory: URL?
+        let source: Source
     }
 
-    /// Prefer the copy inside the app bundle, so a downloaded conch works with
-    /// nothing else installed. Fall back to a checkout for development, where
-    /// the bundled binary would be stale the moment anyone edits the source.
-    static func launchCommand(
+    /// Does this build run the daemon from a checkout first?
+    ///
+    /// A dev install (scripts/build-app.sh) says "checkout" in its Info.plist
+    /// (`ConchDaemonSource`, from the `CONCH_DAEMON_SOURCE` build setting): the
+    /// bundled binary would be stale the moment anyone edits the source. A
+    /// release says "bundled". `CONCH_DAEMON_SOURCE` in the environment wins, for
+    /// an app started from a shell. The build is what differs, not the
+    /// configuration: build-app.sh builds Release too, so Debug-vs-Release could
+    /// not tell Tyler's install from a shipped one.
+    nonisolated static func prefersCheckout(
+        bundle: Bundle = .main,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        let declared = environment["CONCH_DAEMON_SOURCE"]
+            ?? (bundle.object(forInfoDictionaryKey: "ConchDaemonSource") as? String)
+        return declared?.trimmingCharacters(in: .whitespaces).lowercased() == "checkout"
+    }
+
+    /// The daemon to run, in order.
+    ///
+    /// A release: the copy inside this app, so a downloaded conch works with
+    /// nothing else installed; then a `conch` on PATH (Homebrew's CLI); then a
+    /// checkout. A dev install: the checkout first, then the same two — so a
+    /// missing or moved checkout still leaves a working daemon.
+    nonisolated static func launchCommand(
         subcommand: [String] = ["daemon"],
         bundle: Bundle = .main,
+        preferCheckout: Bool? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
         fileExists: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) },
+        isFile: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
         home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> LaunchCommand? {
-        if let bundled = bundle.url(forResource: "conch-daemon", withExtension: nil),
-           fileExists(bundled.path) {
-            return LaunchCommand(executable: bundled, arguments: subcommand, workingDirectory: nil)
+        let bundled = bundledDaemon(bundle: bundle, fileExists: fileExists).map {
+            LaunchCommand(executable: $0, arguments: subcommand, workingDirectory: nil, source: .bundled)
         }
+        let onPath = pathDaemon(environment: environment, home: home, fileExists: fileExists).map {
+            LaunchCommand(executable: $0, arguments: subcommand, workingDirectory: nil, source: .path)
+        }
+        let checkout = checkoutDaemon(subcommand: subcommand, fileExists: fileExists, isFile: isFile, home: home)
+        let order = (preferCheckout ?? prefersCheckout(bundle: bundle, environment: environment))
+            ? [checkout, bundled, onPath]
+            : [bundled, onPath, checkout]
+        return order.compactMap { $0 }.first
+    }
 
+    /// `Contents/Helpers/conch-daemon`, where scripts/embed-daemon.sh puts it.
+    nonisolated static func bundledDaemon(
+        bundle: Bundle = .main,
+        fileExists: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+    ) -> URL? {
+        let daemon = bundle.bundleURL.appendingPathComponent("Contents/Helpers/conch-daemon")
+        return fileExists(daemon.path) ? daemon : nil
+    }
+
+    /// The first `conch` on the PATH the daemon would get: Homebrew's, then
+    /// whatever the app inherited.
+    nonisolated static func pathDaemon(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        home: URL = FileManager.default.homeDirectoryForCurrentUser,
+        fileExists: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+    ) -> URL? {
+        for directory in daemonPath(inherited: environment["PATH"], home: home).split(separator: ":") {
+            let conch = URL(fileURLWithPath: String(directory)).appendingPathComponent("conch")
+            if fileExists(conch.path) { return conch }
+        }
+        return nil
+    }
+
+    /// A conch checkout at `~/conch`, run with `~/.bun/bin/bun`.
+    nonisolated static func checkoutDaemon(
+        subcommand: [String] = ["daemon"],
+        fileExists: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) },
+        isFile: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> LaunchCommand? {
         let checkout = home.appendingPathComponent("conch")
         let entry = checkout.appendingPathComponent("src/cli.ts")
         let bun = home.appendingPathComponent(".bun/bin/bun")
-        if FileManager.default.fileExists(atPath: entry.path), fileExists(bun.path) {
-            return LaunchCommand(
-                executable: bun,
-                arguments: [entry.path] + subcommand,
-                workingDirectory: checkout
-            )
-        }
-        return nil
+        guard isFile(entry.path), fileExists(bun.path) else { return nil }
+        return LaunchCommand(
+            executable: bun,
+            arguments: [entry.path] + subcommand,
+            workingDirectory: checkout,
+            source: .checkout
+        )
     }
 }

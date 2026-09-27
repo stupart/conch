@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The daemon is conch compiled into one Bun executable: JavaScriptCore
+	     plus bun:ffi, which conch uses for flock, libproc and CoreAudio
+	     (socket-ownership.ts, process-identity.ts, mic-claim.ts). Under the
+	     Hardened Runtime both need MAP_JIT memory. Measured 2026-09-27: without
+	     this entitlement JavaScript ran 7x slower and the first bun:ffi call
+	     crashed the process; with it, both match an unsigned build. Nothing
+	     else is relaxed. -->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+</dict>
+</plist>

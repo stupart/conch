@@ -99,6 +99,7 @@ import { PauseOriginLedger } from "./pause-origin.ts";
 import { TtsSupervisor } from "./tts-supervisor.ts";
 import { ManagedTtsWorker } from "./tts-worker.ts";
 import { VoiceEnvManager, type NaturalVoicesStatus } from "./voice-env.ts";
+import { SpeechEngineManager, speechEngineStatusPath, type SpeechEngineStatus } from "./speech-engine.ts";
 import {
   listenOnce,
   hasActiveRecorders,
@@ -620,6 +621,8 @@ export function buildDaemonPublishedState(
   previewRequests?: readonly PreviewRequest[],
   /** Where the natural voices stand (`voice-env.ts`), for the app's Settings. */
   naturalVoices?: NaturalVoicesStatus,
+  /** Where the speech engine stands (`speech-engine.ts`): Settings, and onboarding's setup status. */
+  speechEngine?: SpeechEngineStatus,
 ): PublishedState {
   return buildPublishedState(
     ownerDeviceId,
@@ -640,6 +643,7 @@ export function buildDaemonPublishedState(
       ...(showing ? { showing } : {}),
       ...(previewRequests?.length ? { previewRequests } : {}),
       ...(naturalVoices ? { naturalVoices } : {}),
+      ...(speechEngine ? { speechEngine } : {}),
     },
   );
 }
@@ -936,6 +940,22 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       log,
     });
   }
+  // The speech engine: where whisper, the models and sox come from (the app's
+  // own copies first), and the first-run model download — bounded, resumable,
+  // pinned by sha256 — that whisper-server waits for. Off the critical path:
+  // the socket, hooks and speech are live while it runs.
+  let speechEngineStatus: SpeechEngineStatus | undefined;
+  const speechEngine = new SpeechEngineManager({
+    engine: cfg.speechEngine,
+    daemon: { version: CONCH_VERSION, path: process.execPath },
+    statusPath: speechEngineStatusPath(),
+    onStatus: (status) => {
+      speechEngineStatus = status;
+      void renderSessionPanel();
+    },
+    log,
+  });
+  speechEngineStatus = speechEngine.snapshot();
   whisperServerClient.setRecoveryHandler((reason) => whisperSupervisor?.requestRecovery(reason));
   whisperServerClient.setNoteHandler((detail) => log(`whisper request failed — ${detail}`));
   // D2: every warm transcription (partials included) restarts the idle-unload clock.
@@ -1947,6 +1967,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         screen.showing(),
         windowPreviews.requests(),
         naturalVoices,
+        speechEngineStatus,
       );
       publishedStateWriter.request();
       if (theaterMode) theaterNavigation.commitFrame(nextActiveSessionId, navSelectedId);
@@ -2729,6 +2750,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     whisperSupervisor?.close();
     ttsSupervisor?.close();
     voiceEnv?.close(); // kills a setup step in flight; the next start resumes it
+    speechEngine.close(); // a model download in flight keeps its `.part`; the next start resumes it
     ttsWorker.close();
     // Preserve the synchronous audio cancellation above, then drain accepted journal writes before exit.
     await records.close();
@@ -2860,6 +2882,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   // Only the socket's owner may claim to be the daemon (A2): the Mac app reads
   // this to say who started what it adopted, and to tell its own child apart.
   writeIdentity();
+  // Only the socket's owner fetches models: a daemon that lost the race exited above.
+  void speechEngine.start();
   recordsMayStart = true;
   if (!shuttingDown) void records.setEnabled(cfg.recordsEnabled);
   syncPhoneBridge();
@@ -2997,7 +3021,10 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         (pid) => { if (pid) log(`killed whisper-server ${pid}, orphan of a dead conch daemon — starting our own`); },
         (error) => log(`whisper-server orphan check failed — adopting whatever listens: ${error}`),
       )
-      .then(() => supervisor.start())
+      // whisper-server cannot load a model that is still downloading (first
+      // run): it starts once the engine says the model is in place.
+      .then(() => speechEngine.modelReady())
+      .then((ready) => (ready ? supervisor.start() : false))
       .catch((error) => {
         if (!shuttingDown) log(`whisper-server startup failed — using the cold cli: ${error}`);
       });

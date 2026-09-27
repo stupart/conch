@@ -19,30 +19,44 @@ rm -rf "$DIST"; mkdir -p "$DIST"
 # com.apple.quarantine, a formula-installed one does not), and a quarantined app
 # that is signed but not notarized is refused by Gatekeeper. Shipping it in the
 # formula means one `brew install` delivers both halves, with no notarization
-# required. Universal so a single tarball serves both architectures.
-APP_SRC=""
-if command -v xcodebuild >/dev/null 2>&1; then
-  echo "→ building conch.app (universal)"
-  rm -rf build/release-app.noindex
-  if xcodebuild -project mac-app/conch-mac.xcodeproj -scheme conch-mac \
-       -configuration Release -derivedDataPath build/release-app.noindex \
-       ARCHS="x86_64 arm64" ONLY_ACTIVE_ARCH=NO build >/dev/null 2>&1; then
-    APP_SRC="build/release-app.noindex/Build/Products/Release/conch-mac.app"
-    codesign --verify --strict "$APP_SRC" || { echo "app signature invalid" >&2; exit 1; }
-    # The uv the natural voices set themselves up with (scripts/embed-uv.sh).
-    [ -x "$APP_SRC/Contents/Helpers/uv" ] || { echo "app has no Contents/Helpers/uv" >&2; exit 1; }
-    codesign --verify --strict "$APP_SRC/Contents/Helpers/uv" || { echo "embedded uv signature invalid" >&2; exit 1; }
-  else
-    echo "⚠️  app build failed — shipping the CLI only" >&2
-  fi
-else
-  echo "⚠️  no xcodebuild — shipping the CLI only" >&2
-fi
+# required.
+#
+# One app per architecture, each carrying that architecture's daemon and speech
+# engine (scripts/embed-daemon.sh, scripts/embed-engine.sh). A universal app
+# would carry both — a 64 MB and a 71 MB daemon plus two engines — about twice
+# the size, for a slice every Mac ignores. The app's daemon IS the CLI built just
+# before it (CONCH_DAEMON_BINARY), so the two halves of a release are one build.
+command -v xcodebuild >/dev/null 2>&1 || echo "⚠️  no xcodebuild — shipping the CLI only" >&2
 
-for pair in "arm64:bun-darwin-arm64" "x64:bun-darwin-x64"; do
-  arch="${pair%%:*}"; target="${pair##*:}"
+for pair in "arm64:bun-darwin-arm64:arm64" "x64:bun-darwin-x64:x86_64"; do
+  arch="${pair%%:*}"; rest="${pair#*:}"; target="${rest%%:*}"; xcode_arch="${rest##*:}"
   echo "→ building conch $VERSION for $arch ($target)"
   bun build --compile --target="$target" ./src/cli.ts --outfile "$DIST/conch"
+  APP_SRC=""
+  if command -v xcodebuild >/dev/null 2>&1; then
+    echo "→ building conch.app for $arch"
+    derived="build/release-app-$arch.noindex"
+    rm -rf "$derived"
+    if xcodebuild -project mac-app/conch-mac.xcodeproj -scheme conch-mac \
+         -configuration Release -derivedDataPath "$derived" \
+         ARCHS="$xcode_arch" ONLY_ACTIVE_ARCH=NO \
+         CONCH_DAEMON_BINARY="$PWD/$DIST/conch" CONCH_DAEMON_SOURCE=bundled \
+         build >"$derived.log" 2>&1; then
+      APP_SRC="$derived/Build/Products/Release/conch-mac.app"
+      codesign --verify --strict "$APP_SRC" || { echo "app signature invalid" >&2; exit 1; }
+      # The uv the natural voices set themselves up with (scripts/embed-uv.sh).
+      [ -x "$APP_SRC/Contents/Helpers/uv" ] || { echo "app has no Contents/Helpers/uv" >&2; exit 1; }
+      codesign --verify --strict "$APP_SRC/Contents/Helpers/uv" || { echo "embedded uv signature invalid" >&2; exit 1; }
+      # Its daemon and speech engine, signed and entitled, for this architecture.
+      scripts/check-app-bundle.sh "$APP_SRC" bundled || exit 1
+      # The daemon is the CLI in this tarball, the same build: its digest before signing.
+      cli_sha="$(shasum -a 256 "$DIST/conch" | cut -d' ' -f1)"
+      app_sha="$(cut -d' ' -f1 "$APP_SRC/Contents/Resources/conch-daemon.sha256")"
+      [ "$cli_sha" = "$app_sha" ] || { echo "the app's daemon ($app_sha) is not this CLI ($cli_sha)" >&2; exit 1; }
+    else
+      echo "⚠️  app build for $arch failed (see $derived.log) — shipping the CLI only" >&2
+    fi
+  fi
   if [ -n "$APP_SRC" ]; then
     # ditto, not cp: it preserves the bundle's code signature.
     /usr/bin/ditto "$APP_SRC" "$DIST/conch.app"

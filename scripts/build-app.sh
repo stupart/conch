@@ -35,12 +35,17 @@ fi
 cd "$REPO_ROOT"
 
 echo "Building conch.app (Release) with derived data at $DERIVED_DATA_PATH"
+# CONCH_DAEMON_SOURCE=checkout: this is the dev install, so the app runs the
+# daemon from the checkout first (DaemonHost.prefersCheckout) — the bundled one
+# would be stale the moment anyone edits the source. It still carries the
+# bundled daemon and engine, checked below exactly as a release checks them.
 xcodebuild \
   -project "$PROJECT_PATH" \
   -scheme conch-mac \
   -configuration Release \
   -destination 'platform=macOS' \
   -derivedDataPath "$DERIVED_DATA_PATH" \
+  CONCH_DAEMON_SOURCE=checkout \
   build
 
 if [[ ! -d "$BUILT_APP_PATH" ]]; then
@@ -84,6 +89,12 @@ echo "Verifying the embedded uv:"
 codesign --verify --strict --verbose=2 "$UV_HELPER"
 codesign -dv --verbose=2 "$UV_HELPER" 2>&1 | grep -E '^(Authority=Developer ID Application|TeamIdentifier|CodeDirectory)'
 "$UV_HELPER" --version
+
+# The daemon and seashell's speech engine the app carries (scripts/embed-daemon.sh,
+# scripts/embed-engine.sh): present, signed, entitled, the app's architectures,
+# the source's version.
+echo "Verifying the bundled daemon and speech engine:"
+"$SCRIPT_DIR/check-app-bundle.sh" "$INSTALLED_APP_PATH" checkout
 
 if [[ -n "$WAS_RUNNING" ]]; then
   echo "Relaunching conch.app"
