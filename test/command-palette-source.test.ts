@@ -51,9 +51,11 @@ describe("B4: the palette lists the four sections for the selected session", () 
     for (const id of ['"pause"', '"wake"', '"recite"', '"stop"', '"rename"', '"reveal"', '"model"']) {
       expect(conch).toContain(`id: ${id}`);
     }
-    // Pause is one row that reads the session's effective state, not two.
-    expect(conch).toContain("let paused = globallyPaused || row.paused");
-    expect(conch).toContain("action: paused ? .resume : .pause");
+    // Quiet is one row that reads the session's effective state, not two: the rule P and the
+    // row's mark read, so a session let speak through a global quiet offers Quiet, not Resume.
+    expect(conch).toContain("let voice = row.voice(everythingQuiet: globallyPaused)");
+    expect(conch).toContain("action: voice.togglesToQuiet ? .pause : .resume");
+    expect(conch).toContain('title: voice.togglesToQuiet ? "Quiet \\(row.label)" : "Let \\(row.label) speak"');
     // Rename and Model take an argument; the row says which.
     expect(conch).toContain('argumentHint: "new name", action: .rename');
     expect(conch).toContain('argumentHint: "model, e.g. opus or gpt-5", action: .setModel');

@@ -520,8 +520,10 @@ final class BridgeClient: ObservableObject {
         ])
     }
 
-    func send(mode action: String) async -> Bool {
-        await post(control: ["type": action, "sessionId": "", "label": "", "announce": ""])
+    /// `pause` or `resume`: every session, or with `sessionId` just that one — quiet it, or let it
+    /// speak (out of a global quiet, it alone). The daemon's scoped route, as the Mac's P sends it.
+    func send(mode action: String, sessionId: String = "", label: String = "") async -> Bool {
+        await post(control: ["type": action, "sessionId": sessionId, "label": label, "announce": ""])
     }
 
     enum SessionCommand: String {

@@ -1075,7 +1075,6 @@ struct SidebarMark {
     static let waiting = SidebarMark(symbol: "circle.inset.filled", size: 8, colour: AnyShapeStyle(SidebarInk.waiting), meaning: "Ready for you — its turn is over", wantsYou: true)
     static let needs = SidebarMark(symbol: "exclamationmark.circle.fill", size: 10.5, colour: AnyShapeStyle(ConchColor.attention), meaning: "Blocked — needs an answer", wantsYou: true)
     static let review = SidebarMark(symbol: "checkmark.circle.fill", size: 10.5, colour: AnyShapeStyle(ConchColor.ready), meaning: "Ready for you — work to look at")
-    static let manual = SidebarMark(symbol: "pause.fill", size: 9, colour: AnyShapeStyle(ConchColor.textSecondary), meaning: "Manual — turns held for later")
     static let recording = SidebarMark(symbol: "record.circle.fill", size: 10.5, colour: AnyShapeStyle(SidebarInk.micOpen), meaning: "Recording your reply", live: true)
     static let speaking = SidebarMark(symbol: "play.fill", size: 9, colour: AnyShapeStyle(ConchColor.textTertiary), meaning: "Reading a reply aloud", live: true)
     static let transcribing = SidebarMark(symbol: "ellipsis", size: 11, colour: AnyShapeStyle(ConchColor.active), meaning: "Transcribing what you said — it goes in next", live: true)
@@ -1095,13 +1094,15 @@ struct SidebarGlyph: View {
     }
 }
 
-/// `DashboardRow`'s anatomy: the live rail, the 16 pt mark, the label, the summary, the age.
+/// `DashboardRow`'s anatomy: the live rail, the 16 pt mark, the label, the summary, the quiet mark, the age.
 struct SidebarSessionRow: View {
     let mark: SidebarMark
     let label: String
     var summary = ""
     var age = "4m"
     var phase = 0.5
+    /// `SessionVoice.mark`: quiet, or let speak while the rest are quiet. Beside the age; the status mark is untouched.
+    var voice: SessionVoice.Mark? = nil
 
     var body: some View {
         HStack(spacing: 8) {
@@ -1120,6 +1121,9 @@ struct SidebarSessionRow: View {
                 .foregroundStyle(ConchColor.textTertiary)
                 .lineLimit(1)
             Spacer(minLength: 4)
+            if let voice {
+                SessionVoiceGlyph(voice, pointSize: 9.5).frame(width: 16, height: 16)
+            }
             Text(age).font(.system(size: 11).monospacedDigit()).foregroundStyle(ConchColor.textTertiary)
         }
         .padding(.trailing, 10)
@@ -1179,7 +1183,7 @@ try render("ledger-marks", width: 1240) {
             SidebarSessionRow(mark: .waiting, label: "Settings copy", summary: "Done — three options", age: "6m")
             SidebarSessionRow(mark: .needs, label: "Deploy script", summary: "Allow rm -rf build?", age: "1m")
             SidebarSessionRow(mark: .review, label: "Invite page", summary: "The button reads Join", age: "12m")
-            SidebarSessionRow(mark: .manual, label: "Nightly cleanup", age: "1h")
+            SidebarSessionRow(mark: .working, label: "Nightly cleanup", age: "1h", voice: .quiet)
             SidebarSessionRow(mark: .recording, label: "Docs pass", age: "now")
             SidebarSessionRow(mark: .transcribing, label: "Docs pass", age: "now")
             SidebarSessionRow(mark: .speaking, label: "Settings copy", age: "now")
@@ -1189,13 +1193,19 @@ try render("ledger-marks", width: 1240) {
 
         VStack(alignment: .leading, spacing: 10) {
             Caption("The legend (Keyboard Shortcuts)")
-            ForEach([SidebarMark.working, .waitingOnAgents, .listening, .waiting, .needs, .review, .manual, .recording, .speaking, .transcribing, .paused, .idle], id: \.meaning) { mark in
+            ForEach([SidebarMark.working, .waitingOnAgents, .listening, .waiting, .needs, .review, .recording, .speaking, .transcribing, .paused, .idle], id: \.meaning) { mark in
                 HStack(spacing: 10) {
                     Image(systemName: mark.symbol)
                         .font(.system(size: 10.5))
                         .foregroundStyle(mark.colour)
                         .frame(width: 16)
                     Text(mark.meaning).font(.system(size: 12.5)).foregroundStyle(ConchColor.textPrimary)
+                }
+            }
+            ForEach(SessionVoice.Mark.allCases, id: \.symbol) { voice in
+                HStack(spacing: 10) {
+                    SessionVoiceGlyph(voice, pointSize: 10.5).frame(width: 16)
+                    Text(voice.meaning).font(.system(size: 12.5)).foregroundStyle(ConchColor.textPrimary)
                 }
             }
         }
@@ -1251,6 +1261,139 @@ try render("ledger-marks", width: 1240) {
                 .background(RoundedRectangle(cornerRadius: ConchRadius.medium).fill(ConchColor.ground))
                 .overlay(RoundedRectangle(cornerRadius: ConchRadius.medium).strokeBorder(ConchColor.hairlineStrong, lineWidth: 1))
             }
+        }
+    }
+}
+
+// Quiet, not paused (`SessionVoice`): the same four sessions in auto with one quieted by name, in manual, and in
+// manual with one let speak. Every mark beside an age comes from `SessionVoice.mark`, so this page draws the rule.
+
+/// One session as the quiet page lists it: its status, and the two flags that decide its voice.
+struct QuietCase {
+    let mark: SidebarMark
+    let label: String
+    var summary = ""
+    var age = "4m"
+    var sessionQuiet = false
+    var exempt = false
+}
+
+struct QuietColumn: View {
+    let title: String
+    let everythingQuiet: Bool
+    let cases: [QuietCase]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Caption(title)
+            VStack(alignment: .leading, spacing: 0) {
+                // The header's Manual/Auto, as `ModeToggle` draws it.
+                HStack(spacing: 5) {
+                    Image(systemName: everythingQuiet ? "hand.raised.fill" : "waveform.circle.fill")
+                        .font(.system(size: 11, weight: .medium))
+                    Text(everythingQuiet ? "Manual" : "Auto").font(.system(size: 11, weight: .medium))
+                }
+                .foregroundStyle(everythingQuiet ? AnyShapeStyle(ConchColor.textSecondary) : AnyShapeStyle(SidebarInk.micOpen))
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .padding(.horizontal, 8)
+                .frame(height: 26)
+                ForEach(cases, id: \.label) { item in
+                    SidebarSessionRow(
+                        mark: item.mark,
+                        label: item.label,
+                        summary: item.summary,
+                        age: item.age,
+                        voice: SessionVoice(sessionQuiet: item.sessionQuiet, exempt: item.exempt, everythingQuiet: everythingQuiet).mark
+                    )
+                }
+            }
+            .padding(8)
+            .background(RoundedRectangle(cornerRadius: ConchRadius.medium).fill(ConchColor.ground))
+            .overlay(RoundedRectangle(cornerRadius: ConchRadius.medium).strokeBorder(ConchColor.hairlineStrong, lineWidth: 1))
+        }
+        .frame(width: 380)
+    }
+}
+
+/// The Mac's toast after P (ContentView's `QuietToastView`).
+struct QuietToastSample: View {
+    let mark: SessionVoice.Mark
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 7) {
+            SessionVoiceGlyph(mark, pointSize: 10.5)
+            Text(text).font(.system(size: 12, weight: .medium)).foregroundStyle(ConchColor.textPrimary).lineLimit(1)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 28)
+        .background(Capsule(style: .continuous).fill(ConchColor.surfaceRaised))
+        .overlay(Capsule(style: .continuous).strokeBorder(ConchColor.hairlineStrong, lineWidth: 1))
+        .conchElevation(.floating)
+        .fixedSize()
+    }
+}
+
+try render("quiet-marks", width: 1320) {
+    Heading(title: "Quiet, not paused", note: "A session conch won't read aloud keeps working, so its status mark stays and a speaker mark sits by the age. Everything quiet (Manual) subsumes it; the one let speak through it is marked instead. Click the mark, or press P on the row, to undo.")
+    let brand = "Conch brand identity and strategy"
+    HStack(alignment: .top, spacing: 24) {
+        QuietColumn(title: "Auto, one session quieted by name", everythingQuiet: false, cases: [
+            QuietCase(mark: .working, label: "Parser refactor", summary: "Running the suite"),
+            QuietCase(mark: .working, label: brand, age: "2m", sessionQuiet: true),
+            QuietCase(mark: .waiting, label: "Settings copy", summary: "Done — three options", age: "6m", sessionQuiet: true),
+            QuietCase(mark: .review, label: "Invite page", summary: "The button reads Join", age: "12m"),
+        ])
+        QuietColumn(title: "Manual: every session quiet, no row marked", everythingQuiet: true, cases: [
+            QuietCase(mark: .working, label: "Parser refactor", summary: "Running the suite"),
+            QuietCase(mark: .working, label: brand, age: "2m", sessionQuiet: true),
+            QuietCase(mark: .waiting, label: "Settings copy", summary: "Done — three options", age: "6m", sessionQuiet: true),
+            QuietCase(mark: .review, label: "Invite page", summary: "The button reads Join", age: "12m"),
+        ])
+        QuietColumn(title: "Manual, one let speak (exempt)", everythingQuiet: true, cases: [
+            QuietCase(mark: .working, label: "Parser refactor", summary: "Running the suite"),
+            QuietCase(mark: .working, label: brand, age: "2m", sessionQuiet: true),
+            QuietCase(mark: .listening, label: "Docs pass", age: "now", exempt: true),
+            QuietCase(mark: .review, label: "Invite page", summary: "The button reads Join", age: "12m"),
+        ])
+    }
+    VStack(alignment: .leading, spacing: 10) {
+        Caption("After P (ContentView's toast), read from the state before the press")
+        HStack(spacing: 14) {
+            QuietToastSample(mark: .quiet, text: SessionVoice(sessionQuiet: false, exempt: false, everythingQuiet: false).toggledToast(label: brand))
+            QuietToastSample(mark: .speaks, text: SessionVoice(sessionQuiet: false, exempt: false, everythingQuiet: true).toggledToast(label: "Docs pass"))
+            QuietToastSample(mark: .quiet, text: SessionVoice.toggledAllToast(nowQuiet: true, stillQuiet: 0))
+        }
+    }
+    HStack(alignment: .top, spacing: 40) {
+        VStack(alignment: .leading, spacing: 10) {
+            Caption("Tooltips (the mark, and the header's Manual/Auto with a row selected)")
+            ForEach([
+                SessionVoice.Mark.quiet.help(on: .mac),
+                SessionVoice.Mark.speaks.help(on: .mac),
+                SessionVoice(sessionQuiet: true, exempt: false, everythingQuiet: false).modeHelp(label: brand),
+                SessionVoice.modeHelp(everythingQuiet: true, on: .mac),
+            ], id: \.self) { line in
+                Text(line).font(.system(size: 11.5)).foregroundStyle(ConchColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(width: 560, alignment: .leading)
+            }
+        }
+        VStack(alignment: .leading, spacing: 10) {
+            Caption("The phone (SessionRowView)")
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Image(systemName: "circle.fill")
+                    .font(.system(size: 15))
+                    .foregroundStyle(ConchColor.active)
+                    .activeBreath(pointSize: 15, phase: 0.5)
+                    .frame(width: 22)
+                Text(brand).font(.body.weight(.semibold)).foregroundStyle(ConchColor.textPrimary).lineLimit(1)
+                SessionVoiceGlyph(.quiet, pointSize: 11).frame(width: 28, height: 22)
+            }
+            .padding(14)
+            .frame(width: 330, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: ConchRadius.medium).fill(ConchColor.ground))
+            .overlay(RoundedRectangle(cornerRadius: ConchRadius.medium).strokeBorder(ConchColor.hairlineStrong, lineWidth: 1))
         }
     }
 }

@@ -90,7 +90,11 @@ struct LedgerView: View {
                                         if row.parentSessionId != nil {
                                             AgentRowView(row: row)
                                         } else {
-                                            SessionRowView(row: row)
+                                            SessionRowView(
+                                                row: row,
+                                                everythingQuiet: state.mode.paused,
+                                                onToggleQuiet: { toggleQuiet(row) }
+                                            )
                                         }
                                     }
                                     // A subagent sits under the session it runs inside, the way
@@ -99,6 +103,21 @@ struct LedgerView: View {
                                     .listRowBackground(Palette.bg)
                                     .listRowSeparatorTint(Palette.divider)
                                     .opacity(bridge.isConnected ? 1 : 0.55)
+                                    // Quiet or speak, the phone's P: the same scoped command as the mark.
+                                    .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                                        if row.parentSessionId == nil {
+                                            let toQuiet = row.voice(everythingQuiet: state.mode.paused).togglesToQuiet
+                                            Button { toggleQuiet(row) } label: {
+                                                Label(
+                                                    toQuiet ? "Quiet" : "Speak",
+                                                    systemImage: (toQuiet ? SessionVoice.Mark.quiet : .speaks).symbol
+                                                )
+                                            }
+                                            .tint(Palette.textDim)
+                                            .disabled(!bridge.isConnected)
+                                            .accessibilityLabel(toQuiet ? "Quiet \(row.label)" : "Let \(row.label) speak")
+                                        }
+                                    }
                                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                         Button(role: .destructive) {
                                             runSessionCommand(.dismiss, id: row.id, label: row.label)
@@ -289,6 +308,16 @@ struct LedgerView: View {
         }
     }
 
+    /// One session quiet, or speaking again: its speaker mark, tapped. The Mac's P and its row's
+    /// mark send the same scoped command.
+    private func toggleQuiet(_ row: PublishedState.Row) {
+        let voice = row.voice(everythingQuiet: bridge.state?.mode.paused ?? false)
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        Task {
+            _ = await bridge.send(mode: voice.togglesToQuiet ? "pause" : "resume", sessionId: row.id, label: row.label)
+        }
+    }
+
     /// Active or passive, in one tap.
     ///
     /// Active is the loop: finished turns announce themselves, get read aloud,
@@ -345,11 +374,8 @@ struct LedgerView: View {
                 .foregroundStyle(passive ? Palette.textDim : Palette.micOpen)
                 .animation(.easeOut(duration: 0.12), value: passive)
         }
-        .accessibilityLabel(
-            passive
-                ? "Manual — conch stays quiet and waits. Switch to auto."
-                : "Auto — finished turns read aloud and the mic opens itself. Switch to manual."
-        )
+        // Every session, said so: one quiet session is its own mark in the list.
+        .accessibilityLabel(SessionVoice.modeHelp(everythingQuiet: passive, on: .phone))
         .onChange(of: bridge.state?.mode.paused) { _, actual in
             // The daemon has caught up (or something else changed it); stop
             // holding the local guess so the two can never disagree for long.
@@ -562,8 +588,13 @@ struct AgentRowView: View {
 
 struct SessionRowView: View {
     let row: PublishedState.Row
+    /// Every session is quiet, so no row carries its own quiet mark (`SessionVoice.mark`).
+    var everythingQuiet = false
+    /// Its speaker mark, tapped: let it speak, or quiet it again.
+    var onToggleQuiet: (() -> Void)? = nil
 
     private var mark: StatusMark { StatusMark(row: row) }
+    private var voice: SessionVoice { row.voice(everythingQuiet: everythingQuiet) }
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
@@ -584,6 +615,19 @@ struct SessionRowView: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     AgentBadge(backend: row.backend)
+                    // Quiet: conch won't read it aloud, and it is still working, which the status
+                    // mark keeps saying. Tapping it is the way back. Borderless, so a tap on it is
+                    // its own and does not open the session.
+                    if let quiet = voice.mark {
+                        Button { onToggleQuiet?() } label: {
+                            SessionVoiceGlyph(quiet, pointSize: 11)
+                                .frame(width: 28, height: 22)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(onToggleQuiet == nil)
+                        .accessibilityLabel(quiet.help(on: .phone))
+                    }
                 }
 
                 if let summary = row.review?.summary ?? row.detail ?? row.noTerminal, !summary.isEmpty {
@@ -634,7 +678,6 @@ struct SessionRowView: View {
             }
         }
         .padding(.vertical, 8)
-        .opacity(row.paused ? 0.72 : 1)
     }
 }
 

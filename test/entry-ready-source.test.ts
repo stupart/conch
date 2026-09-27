@@ -96,10 +96,11 @@ describe("one state, one name", () => {
     expect(dashboard).toContain('return "Ready for you — work to look at"');
   });
 
-  test("the shortcuts say Talk and Quiet, and list the keys of what floats over other apps", () => {
+  test("the shortcuts say what P quiets, and list the keys of what floats over other apps", () => {
     const sheet = content.slice(content.indexOf("private struct KeyboardShortcutsSheet: View {"), content.indexOf("/// What the ledger's glyphs mean"));
     expect(sheet).not.toContain("Auto / manual");
-    expect(sheet).toContain('ShortcutHelpRow(command: "P", result: "Talk / Quiet")');
+    // P reaches the selected session, or every session with none selected (`pauseOrResume`).
+    expect(sheet).toContain('ShortcutHelpRow(command: "P", result: "Quiet / speak for the selected session (all, if none)")');
     // Space stops and never starts (`talkOrStop`).
     expect(sheet).toContain('ShortcutHelpRow(command: "Space", result: "Stop speaking or listening")');
     for (const row of [

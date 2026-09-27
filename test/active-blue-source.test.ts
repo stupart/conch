@@ -39,10 +39,10 @@ test("on the Mac a sub-agent that is not running is paused, before anything can 
     "if row.parentSessionId != nil, row.status != .working, row.status != .needs {\n            self = .agentPaused\n            return\n        }",
   );
   expect(paused).toBeGreaterThan(-1);
-  // After the review check (a deliverable still outranks), before the manual check, the live
-  // states and the status switch, any of which could otherwise reach `.waiting`.
+  // After the review check (a deliverable still outranks), before the live states and the
+  // status switch, either of which could otherwise reach `.waiting`. (Quiet is not a status:
+  // it has its own mark, so nothing here reads the row's `paused`.)
   expect(rowInit.indexOf("self = .review")).toBeLessThan(paused);
-  expect(paused).toBeLessThan(rowInit.indexOf("self = .manual"));
   expect(paused).toBeLessThan(rowInit.indexOf("switch row.live {"));
   expect(paused).toBeLessThan(rowInit.indexOf("self.init(status: row.status)"));
 });
@@ -112,7 +112,6 @@ test("on the phone a sub-agent that is not running is paused too, and working is
   );
   expect(paused).toBeGreaterThan(-1);
   expect(markInit.indexOf("self = .review")).toBeLessThan(paused);
-  expect(paused).toBeLessThan(markInit.indexOf("self = .paused"));
   expect(paused).toBeLessThan(markInit.indexOf('case "waiting": self = .waiting'));
   expect(statusMark).toContain('case .agentPaused: "circle"');
   expect(statusMark).toContain("case .idle, .agentPaused: Palette.textFaint");

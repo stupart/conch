@@ -43,9 +43,12 @@ describe("iPhone Phase 1 interaction model", () => {
     expect(models).toContain("decodeIfPresent([String].self, forKey: .dismissed)");
   });
 
-  test("per-session passive status uses the shared Manual vocabulary", () => {
-    expect(models).toContain('case .paused: "Manual"');
-    expect(models).not.toContain('case .paused: "Paused"');
+  test("a quiet session keeps its status mark; quiet is a mark of its own (SessionVoice)", () => {
+    const statusMark = models.slice(models.indexOf("enum StatusMark {"), models.indexOf("func relativeAge("));
+    expect(statusMark.length).toBeGreaterThan(500);
+    expect(statusMark).not.toContain("case .paused");
+    expect(statusMark).not.toContain("row.paused");
+    expect(statusMark).not.toContain('"Manual"');
   });
 
   test("dismiss and restore use typed commands and both remain reachable", () => {

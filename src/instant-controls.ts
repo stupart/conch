@@ -94,7 +94,10 @@ export class InstantControls {
       this.#options.resumedSessionIds?.delete(sessionId);
       sessionHeldTurns.delete(sessionId);
       pause.interrupt({ sessionId, hold: sessionHeldTurns });
-      this.#options.log(`⏸ manual for "${label}" — its latest turn will replay when you press p`);
+      // Quiet, not paused: the session keeps working, conch just won't read it. Said so, and
+      // how to undo it, because this line was all Tyler had to go on ("I just paused a session
+      // somehow — how do I resume?").
+      this.#options.log(`quiet: "${label}" keeps working but won't be read aloud — p on it, or its speaker mark, lets it speak`);
     } else {
       // An explicit wake may run through pause. Stop and hold it before taking
       // the latest-only replay snapshot.
@@ -109,9 +112,9 @@ export class InstantControls {
       // global gate runs first.
       if (pause.paused) {
         this.#options.resumedSessionIds?.add(sessionId);
-        this.#options.log(`▶ auto for "${label}" — the rest stay manual`);
+        this.#options.log(`speaks: "${label}" is read aloud again — the rest stay quiet`);
       } else {
-        this.#options.log(`▶ auto for "${label}"`);
+        this.#options.log(`speaks: "${label}" is read aloud again`);
       }
       const latest = sessionHeldTurns.get(sessionId);
       sessionHeldTurns.delete(sessionId);
