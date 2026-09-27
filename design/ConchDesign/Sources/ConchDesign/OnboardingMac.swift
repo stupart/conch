@@ -6,7 +6,7 @@ import SwiftUI
 
 /// The window's measures.
 public enum OnboardingWindowMetrics {
-    public static let size = CGSize(width: 880, height: 600)
+    public static let size = CGSize(width: 880, height: 620)
     /// The rail, and how far it floats in from the window's edges.
     public static let railWidth: CGFloat = 220
     public static let railInset: CGFloat = 10
@@ -231,21 +231,11 @@ public struct DownloadsTray: View {
 
     public init(downloads: [OnboardingDownload]) { self.downloads = downloads }
 
+    /// How many are ready: only speech recognition knows its bytes (the voices are built in steps), so a byte total
+    /// across both would be a guess.
     private var summary: String {
-        if downloads.allSatisfy(\.isReady) { return "Ready" }
-        let total = downloads.compactMap { item -> Double? in
-            switch item.state {
-            case let .downloading(_, total, _), let .offline(_, total): total
-            default: nil
-            }
-        }.reduce(0, +)
-        let done = downloads.compactMap { item -> Double? in
-            switch item.state {
-            case let .downloading(done, _, _), let .offline(done, _): done
-            default: nil
-            }
-        }.reduce(0, +)
-        return total > 0 ? "\(OnboardingDownload.size(done)) of \(OnboardingDownload.size(total))" : ""
+        let ready = downloads.filter(\.isReady).count
+        return ready == downloads.count ? "Ready" : "\(ready) of \(downloads.count) ready"
     }
 
     public var body: some View {
@@ -620,13 +610,13 @@ public struct OnboardingAgentRow: View {
     @ViewBuilder private var trailing: some View {
         switch agent.state {
         case .connected: OnboardingStatus(.done, "Connected")
-        case .found: OnboardingButton("Connect", style: .row)
+        case .found: OnboardingButton("Connect", style: .action)
         case .connecting: OnboardingStatus(.working, "Connecting")
-        case .signIn: OnboardingButton("Sign in", systemImage: "arrow.up.forward", style: .row)
-        case .missing: OnboardingButton("Install", style: .row)
+        case .signIn: OnboardingButton("Sign in", systemImage: "arrow.up.forward", style: .action)
+        case .missing: OnboardingButton("Install", style: .action)
         case .installing: OnboardingSpinner(size: 14)
-        case .failed: OnboardingButton("Try again", style: .row)
-        case .twoCopies: OnboardingButton("Use the newer one", style: .row)
+        case .failed: OnboardingButton("Try again", style: .action)
+        case .twoCopies: OnboardingButton("Use the newer one", style: .action)
         }
     }
 
@@ -698,33 +688,59 @@ struct CopyableCommand: View {
 // MARK: - Permissions
 
 public struct OnboardingPermissionsStep: View {
-    let now: [OnboardingPermission]
-    let whenNeeded: [OnboardingPermission]
+    let statuses: [ConchPermission: ConchPermissionStatus]
+    let now: [ConchPermission]
+    let whenNeeded: [OnboardingDeferredAsk]
+    /// The permission whose System Settings list is open right now, which conch is watching.
+    let waitingOn: ConchPermission?
+    let onAction: (ConchPermission, ConchPermissionAction) -> Void
+    let onAllowNow: (OnboardingDeferredAsk) -> Void
     let onContinue: () -> Void
     let onSkip: () -> Void
 
-    /// `now` are asked here; `whenNeeded` are asked by the feature that uses them, the first time it does, and can be
-    /// allowed early from here.
-    public init(now: [OnboardingPermission], whenNeeded: [OnboardingPermission] = [], onContinue: @escaping () -> Void = {}, onSkip: @escaping () -> Void = {}) {
+    /// The three the voice loop needs, in the order it needs them: hearing you, then typing your reply into Terminal.
+    public static let loop: [ConchPermission] = [.microphone, .accessibility, .automation]
+
+    /// `now` are Settings' own rows (`ConchPermissionRow`), asked here; `whenNeeded` are asked by the feature that uses
+    /// them, the first time it does, and can be allowed early from here.
+    public init(statuses: [ConchPermission: ConchPermissionStatus], now: [ConchPermission] = Self.loop,
+                whenNeeded: [OnboardingDeferredAsk] = [.screenRecording, .notifications], waitingOn: ConchPermission? = nil,
+                onAction: @escaping (ConchPermission, ConchPermissionAction) -> Void = { _, _ in },
+                onAllowNow: @escaping (OnboardingDeferredAsk) -> Void = { _ in },
+                onContinue: @escaping () -> Void = {}, onSkip: @escaping () -> Void = {}) {
+        self.statuses = statuses
         self.now = now
         self.whenNeeded = whenNeeded
+        self.waitingOn = waitingOn
+        self.onAction = onAction
+        self.onAllowNow = onAllowNow
         self.onContinue = onContinue
         self.onSkip = onSkip
     }
 
+    /// While System Settings is open at a list, its row says conch is watching instead of offering the same button again.
+    public static let waitingLine = "Waiting for you in System Settings…"
+
     public var body: some View {
         OnboardingPage(
             title: "A few permissions",
-            lede: "Only the microphone is needed to talk. The rest let conch type your replies and tap you when something's ready.",
-            note: "Change any of these later in System Settings › Privacy & Security.",
+            lede: "Only the microphone is needed to talk. The other two let conch type your answer into the right Terminal.",
+            note: "Each is one grant, to conch. Change them later in Settings › Permissions.",
             onPrimary: onContinue,
             onSecondary: onSkip
         ) {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 8) {
                 OnboardingCard {
-                    ForEach(Array(now.enumerated()), id: \.element.id) { index, permission in
-                        if index > 0 { OnboardingDivider() }
-                        PermissionRow(permission: permission)
+                    ForEach(Array(now.enumerated()), id: \.element) { index, permission in
+                        if index > 0 { OnboardingDivider(leading: 54) }
+                        ConchPermissionRow(
+                            permission: permission,
+                            status: permission == waitingOn && statuses[permission] != .granted
+                                ? .unknown(Self.waitingLine) : statuses[permission] ?? .unknown("Checking…"),
+                            onAction: { onAction(permission, $0) }
+                        )
+                        .padding(.horizontal, ConchSpace.x4)
+                        .padding(.vertical, 12)
                     }
                 }
                 if !whenNeeded.isEmpty {
@@ -734,9 +750,9 @@ public struct OnboardingPermissionsStep: View {
                         .padding(.top, 8)
                         .padding(.leading, 2)
                     OnboardingCard {
-                        ForEach(Array(whenNeeded.enumerated()), id: \.element.id) { index, permission in
-                            if index > 0 { OnboardingDivider() }
-                            PermissionRow(permission: permission, deferred: true)
+                        ForEach(Array(whenNeeded.enumerated()), id: \.element.id) { index, ask in
+                            if index > 0 { OnboardingDivider(leading: 54) }
+                            DeferredAskRow(ask: ask) { onAllowNow(ask) }
                         }
                     }
                 }
@@ -745,66 +761,42 @@ public struct OnboardingPermissionsStep: View {
     }
 }
 
-/// A permission, why conch wants it, and the one thing to press. Stands in for the shared permission row, which takes
-/// over once it lands; the states and words are the ones that row shows. The button that brings up macOS's own alert
-/// says Allow… (the ellipsis: more comes); one that can only open System Settings says so.
-public struct PermissionRow: View {
-    let permission: OnboardingPermission
-    /// Asked by the feature that needs it, the first time: shown compact, with a quiet way to allow it early.
-    var deferred = false
+/// One line for a permission asked later: what, when, and a quiet way to allow it now.
+public struct DeferredAskRow: View {
+    let ask: OnboardingDeferredAsk
+    let onAllowNow: () -> Void
 
-    public init(permission: OnboardingPermission, deferred: Bool = false) {
-        self.permission = permission
-        self.deferred = deferred
+    public init(ask: OnboardingDeferredAsk, onAllowNow: @escaping () -> Void = {}) {
+        self.ask = ask
+        self.onAllowNow = onAllowNow
     }
 
     public var body: some View {
-        let kind = permission.kind
-        OnboardingRow(
-            tile: OnboardingTile(symbol: kind.symbol),
-            title: kind.title,
-            detail: detail,
-            detailTone: permission.state == .denied ? ConchColor.attention : ConchColor.textSecondary,
-            tag: kind.required && !deferred ? "Needed to talk" : nil
-        ) {
-            trailing
-        }
-    }
-
-    private var detail: String {
-        switch permission.state {
-        case .denied: "Off. macOS won't ask again, so it's a switch in System Settings now."
-        case .reopen: "On. It takes effect once conch reopens, and you'll land back here."
-        default: deferred ? permission.kind.whenNeeded : permission.kind.why
-        }
-    }
-
-    @ViewBuilder private var trailing: some View {
-        switch permission.state {
-        case .notAsked:
-            if deferred {
-                OnboardingButton("Allow now", style: .quiet)
-            } else if permission.kind.prompts {
-                OnboardingButton("Allow…", style: .row)
-            } else {
-                OnboardingButton("Open Settings", systemImage: "arrow.up.forward", style: .row)
+        HStack(spacing: ConchSpace.x4) {
+            Image(systemName: ask.symbol)
+                .font(.system(size: 15))
+                .foregroundStyle(ConchColor.textSecondary)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(ask.title).font(ConchType.uiEmphasis).foregroundStyle(ConchColor.textPrimary)
+                Text(ask.when).font(ConchType.secondary).foregroundStyle(ConchColor.textSecondary).lineLimit(1)
             }
-        case .waiting: OnboardingStatus(.working, "Waiting")
-        case .granted: OnboardingStatus(.done, "Allowed")
-        case .denied: OnboardingButton("Open Settings", systemImage: "arrow.up.forward", style: .row)
-        case .reopen: OnboardingButton("Quit & Reopen", style: .primary)
+            Spacer(minLength: 8)
+            OnboardingButton("Allow now", style: .quiet, action: onAllowNow)
         }
+        .padding(.horizontal, ConchSpace.x4)
+        .frame(height: 52)
     }
 }
 
 /// Under System Settings' list while conch waits on it: conch's own tile to drag into the list, which is the whole
 /// job. It never takes focus from System Settings, and closes itself a moment after the switch goes on.
 public struct PermissionGuide: View {
-    let kind: OnboardingPermission.Kind
+    let permission: ConchPermission
     let granted: Bool
 
-    public init(kind: OnboardingPermission.Kind, granted: Bool = false) {
-        self.kind = kind
+    public init(permission: ConchPermission, granted: Bool = false) {
+        self.permission = permission
         self.granted = granted
     }
 
@@ -845,6 +837,7 @@ public struct PermissionGuide: View {
         .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(ConchColor.hairlineStrong, lineWidth: 0.5))
         .conchElevation(.overlay)
         .accessibilityElement(children: .combine)
+        .accessibilityLabel(granted ? "conch is on in \(permission.title)" : "Drag conch into the \(permission.title) list above")
     }
 }
 
@@ -989,7 +982,7 @@ public struct OnboardingVoiceStep: View {
                 }
                 Spacer()
                 if mic.state == .needsPermission {
-                    OnboardingButton("Allow…", style: .row)
+                    OnboardingButton("Allow…", style: .action)
                 } else {
                     OnboardingButton("Change", systemImage: "chevron.up.chevron.down", style: .row)
                 }
@@ -1182,7 +1175,7 @@ public struct OnboardingPhoneStep: View {
                 Text("Couldn't pair").font(.system(size: 15, weight: .semibold)).foregroundStyle(ConchColor.textPrimary)
                 Text(reason).font(.system(size: 13)).foregroundStyle(ConchColor.textSecondary)
                     .lineSpacing(2).fixedSize(horizontal: false, vertical: true)
-                OnboardingButton("New code", systemImage: "arrow.clockwise", style: .row).padding(.top, 4)
+                OnboardingButton("New code", systemImage: "arrow.clockwise", style: .action).padding(.top, 4)
             }
         }
     }
@@ -1663,7 +1656,7 @@ public struct OnboardingSettingsPane: View {
                             Text(line.detail).font(.system(size: 12)).foregroundStyle(ConchColor.textSecondary).lineLimit(1)
                         }
                         Spacer(minLength: 8)
-                        if line.done { OnboardingStatus(.done, line.status) } else { OnboardingButton(line.status, style: .row) }
+                        if line.done { OnboardingStatus(.done, line.status) } else { OnboardingButton(line.status, style: .action) }
                     }
                     .padding(.horizontal, ConchSpace.x4)
                     .frame(height: 54)

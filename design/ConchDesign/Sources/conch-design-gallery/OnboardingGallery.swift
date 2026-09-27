@@ -208,9 +208,11 @@ func downloads(stt: OnboardingDownload.State, voices: OnboardingDownload.State) 
     ]
 }
 
-let dlEarly = downloads(stt: .downloading(done: 212e6, total: 574e6, secondsLeft: 70), voices: .downloading(done: 180e6, total: 1_660e6, secondsLeft: 260))
-let dlMid = downloads(stt: .downloading(done: 488e6, total: 574e6, secondsLeft: 20), voices: .downloading(done: 610e6, total: 1_660e6, secondsLeft: 190))
-let dlLate = downloads(stt: .ready, voices: .installing("Setting up the voices, step 3 of 4"))
+// Speech recognition is one pinned file, so it has bytes; the natural voices are built in four steps (voice-env.ts) and
+// say which one they're on.
+let dlEarly = downloads(stt: .downloading(done: 212e6, total: 574e6, secondsLeft: 70), voices: .installing("Installing Python, step 1 of 4"))
+let dlMid = downloads(stt: .downloading(done: 488e6, total: 574e6, secondsLeft: 20), voices: .installing("Installing the voices (1.3 GB), step 3 of 4"))
+let dlLate = downloads(stt: .ready, voices: .installing("Checking the voices, step 4 of 4"))
 let dlDone = downloads(stt: .ready, voices: .ready)
 
 func progress(_ step: OnboardingStep, done: [OnboardingStep] = [], later: [OnboardingStep] = []) -> OnboardingProgress {
@@ -225,14 +227,9 @@ let agentsFound = [
     OnboardingAgent(.codex, .found(version: "0.156.0", from: "Homebrew")),
 ]
 
-let permissionsNow = [
-    OnboardingPermission(.microphone, .granted),
-    OnboardingPermission(.accessibility, .waiting),
-    OnboardingPermission(.notifications, .notAsked),
-]
-let permissionsLater = [
-    OnboardingPermission(.screenRecording, .notAsked),
-    OnboardingPermission(.automation, .notAsked),
+/// Partway through the step: the microphone allowed, System Settings open at Accessibility, Automation not asked yet.
+let permissionsPartway: [ConchPermission: ConchPermissionStatus] = [
+    .microphone: .granted, .accessibility: .denied, .automation: .notAsked, .screenRecording: .notAsked,
 ]
 
 let micLevels: [Double] = (0..<44).map { index in
@@ -261,10 +258,12 @@ struct OnbScreens {
         }
     }
 
-    static func permissions(_ now: [OnboardingPermission] = permissionsNow, later: [OnboardingPermission] = permissionsLater, downloads: [OnboardingDownload] = dlMid) -> some View {
-        OnbMacWindow {
-            OnboardingWindow(progress: progress(.permissions, done: [.agents]), downloads: downloads, details: [.permissions: "1 of 3"]) {
-                OnboardingPermissionsStep(now: now, whenNeeded: later)
+    static func permissions(_ statuses: [ConchPermission: ConchPermissionStatus] = permissionsPartway, waitingOn: ConchPermission? = .accessibility,
+                            downloads: [OnboardingDownload] = dlMid) -> some View {
+        let allowed = OnboardingPermissionsStep.loop.filter { statuses[$0] == .granted }.count
+        return OnbMacWindow {
+            OnboardingWindow(progress: progress(.permissions, done: [.agents]), downloads: downloads, details: [.permissions: "\(allowed) of 3"]) {
+                OnboardingPermissionsStep(statuses: statuses, waitingOn: waitingOn)
             }
         }
     }
@@ -344,12 +343,22 @@ struct OnbScreens {
         OnbMacWindow {
             OnboardingWindow(progress: progress(.permissions, done: [.agents, .voice]), downloads: dlDone, details: [.permissions: "1 off", .phone: "New"]) {
                 OnboardingWelcomeBack {
-                    PermissionRow(permission: OnboardingPermission(.screenRecording, .notAsked))
-                    OnboardingDivider()
-                    OnboardingRow(tile: OnboardingTile(symbol: "iphone"), title: "Your iPhone",
-                                  detail: "New: hear your agents and answer them from anywhere.") {
-                        OnboardingButton("Pair", style: .row)
+                    ConchPermissionRow(permission: .screenRecording, status: .notAsked, onAction: { _ in })
+                        .padding(.horizontal, ConchSpace.x4)
+                        .padding(.vertical, 12)
+                    OnboardingDivider(leading: 54)
+                    // Drawn as the permission row above is: the icon bare, the words, the one button.
+                    HStack(alignment: .center, spacing: ConchSpace.x4) {
+                        Image(systemName: "iphone").font(.system(size: 15)).foregroundStyle(ConchColor.textSecondary).frame(width: 22)
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("Your iPhone").font(ConchType.uiEmphasis).foregroundStyle(ConchColor.textPrimary)
+                            Text("New: hear your agents and answer them from anywhere.").font(ConchType.secondary).foregroundStyle(ConchColor.textSecondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        OnboardingButton("Pair", style: .action)
                     }
+                    .padding(.horizontal, ConchSpace.x4)
+                    .padding(.vertical, 14)
                 }
             }
         }
@@ -659,16 +668,24 @@ struct GrantRow: View {
 
     var body: some View {
         OnboardingCard {
-            OnboardingRow(tile: OnboardingTile(symbol: "accessibility"), title: "Accessibility", detail: OnboardingPermission.Kind.accessibility.why) {
-                GrantCross(t: t, reduceMotion: reduceMotion).frame(width: 96, alignment: .trailing)
+            HStack(alignment: .center, spacing: ConchSpace.x4) {
+                Image(systemName: ConchPermission.accessibility.symbol).font(.system(size: 15)).foregroundStyle(ConchColor.textSecondary).frame(width: 22)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(ConchPermission.accessibility.title).font(ConchType.uiEmphasis).foregroundStyle(ConchColor.textPrimary)
+                    Text(ConchPermission.accessibility.purpose).font(ConchType.secondary).foregroundStyle(ConchColor.textSecondary)
+                    GrantCross(t: t, reduceMotion: reduceMotion)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .padding(.horizontal, ConchSpace.x4)
+            .padding(.vertical, 12)
         }
         .frame(width: 556)
     }
 }
 
-/// Waiting giving way to Allowed without the two ever sharing the spot: Waiting leaves first, up and soft (the
-/// crossfade's shift and blur), and Allowed follows 70 ms later, its check popping in from half size.
+/// The shared row's status line turning over: "Waiting for you in System Settings…" leaves first, up and soft (the
+/// crossfade's shift and blur), and "Allowed" follows 70 ms later, its green dot popping in from half size.
 struct GrantCross: View {
     let t: Double
     var reduceMotion = false
@@ -676,14 +693,17 @@ struct GrantCross: View {
     var body: some View {
         let fade = springAt(ConchMotion.liftOff, t)
         let pop = springAt(ConchMotion.pop.resolved(reduceMotion: reduceMotion), max(0, t - 0.07))
-        return ZStack(alignment: .trailing) {
-            OnboardingStatus(.working, "Waiting")
-                .offset(y: reduceMotion ? 0 : -ConchMotion.crossShift / 2 * fade)
-                .blur(radius: reduceMotion ? 0 : ConchMotion.crossBlur * fade)
-                .opacity(Double(1 - fade))
+        return ZStack(alignment: .leading) {
             HStack(spacing: 6) {
-                OnboardingCheck(size: 16).scaleEffect(reduceMotion ? 1 : lerp(0.5, 1, pop))
-                Text("Allowed").font(.system(size: 12, weight: .medium)).foregroundStyle(ConchColor.textSecondary)
+                Circle().fill(ConchColor.quiet).frame(width: 7, height: 7)
+                Text(OnboardingPermissionsStep.waitingLine).font(ConchType.meta).foregroundStyle(ConchColor.textSecondary)
+            }
+            .offset(y: reduceMotion ? 0 : -ConchMotion.crossShift / 2 * fade)
+            .blur(radius: reduceMotion ? 0 : ConchMotion.crossBlur * fade)
+            .opacity(Double(1 - fade))
+            HStack(spacing: 6) {
+                Circle().fill(ConchColor.ready).frame(width: 7, height: 7).scaleEffect(reduceMotion ? 1 : lerp(0.3, 1, pop))
+                Text(ConchPermissionStatus.granted.label).font(ConchType.meta).foregroundStyle(ConchColor.textSecondary)
                     .offset(x: reduceMotion ? 0 : lerp(4, 0, pop))
             }
             .opacity(Double(min(1, pop * 1.4)))
@@ -699,7 +719,7 @@ struct GrantStatus: View {
     var body: some View {
         GrantCross(t: t, reduceMotion: reduceMotion)
             .padding(.horizontal, 20)
-        .frame(width: 200, height: 56, alignment: .trailing)
+            .frame(width: 280, height: 56, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: ConchRadius.medium, style: .continuous).fill(ConchColor.surface))
         .overlay(RoundedRectangle(cornerRadius: ConchRadius.medium, style: .continuous).strokeBorder(ConchColor.hairline, lineWidth: 1))
     }
@@ -900,13 +920,13 @@ func renderOnboarding() throws {
     }
 
     try onb("onb-mac-03-permissions", width: windowPage) {
-        Heading(title: "2 · Permissions", note: "Three asked now, each with conch's reason; the two most people skip are asked by the feature that needs them, the first time. Accessibility is waiting on System Settings, with the guide under its list.")
+        Heading(title: "2 · Permissions", note: "Settings' own rows (Settings › Permissions, #435), for the three the voice loop needs; Screen Recording and notifications are asked by the feature that needs them, the first time. Accessibility is waiting on System Settings, with the guide under its list.")
         OnbDesk {
             VStack(alignment: .leading, spacing: 28) {
                 OnbScreens.permissions()
                 VStack(alignment: .leading, spacing: 8) {
                     Caption("The guide, fixed under System Settings' list while conch waits (it never takes the focus)")
-                    PermissionGuide(kind: .accessibility)
+                    PermissionGuide(permission: .accessibility)
                 }
             }
         }

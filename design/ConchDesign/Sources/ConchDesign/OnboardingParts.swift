@@ -54,81 +54,30 @@ public struct OnboardingAgent: Identifiable, Equatable, Sendable {
     }
 }
 
-/// One macOS permission, with conch's reason for it in conch's words.
-public struct OnboardingPermission: Identifiable, Equatable, Sendable {
-    public enum Kind: String, CaseIterable, Sendable {
-        case microphone
-        case accessibility
-        case automation
-        case notifications
-        case screenRecording
+/// A permission asked the first time its feature is used rather than in setup: setup says when, and offers it early.
+/// Screen Recording is the ask people most often turn down when it comes before they've seen why.
+public struct OnboardingDeferredAsk: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let symbol: String
+    public let title: String
+    /// When it will be asked: "The first time you draw on your screen or record a Show."
+    public let when: String
 
-        public var title: String {
-            switch self {
-            case .microphone: "Microphone"
-            case .accessibility: "Accessibility"
-            case .automation: "Automation"
-            case .notifications: "Notifications"
-            case .screenRecording: "Screen Recording"
-            }
-        }
-
-        /// Why conch asks: one sentence, what it does with it, not what the permission is.
-        public var why: String {
-            switch self {
-            case .microphone: "So you can answer out loud. What you say is turned into text on this Mac and never uploaded."
-            case .accessibility: "To type your reply into the right Terminal, and to know which window you're looking at."
-            case .automation: "To bring a session's Terminal window forward when you click its name."
-            case .notifications: "To tap you when an agent has something ready and conch is quiet."
-            case .screenRecording: "For drawing on your screen and Show, so an agent sees what you marked."
-            }
-        }
-
-        public var symbol: String {
-            switch self {
-            case .microphone: "mic"
-            case .accessibility: "accessibility"
-            case .automation: "macwindow.on.rectangle"
-            case .notifications: "bell.badge"
-            case .screenRecording: "rectangle.dashed.badge.record"
-            }
-        }
-
-        /// When a deferred permission is asked: the moment its feature is first used.
-        public var whenNeeded: String {
-            switch self {
-            case .screenRecording: "The first time you draw on your screen or record a Show."
-            case .automation: "The first time you click a session's name to bring its Terminal forward."
-            default: why
-            }
-        }
-
-        /// Voice can't work without it; everything else still works, a little less.
-        public var required: Bool { self == .microphone }
-
-        /// macOS asks with its own prompt for these; the others are switched on in System Settings by hand.
-        public var prompts: Bool { self == .microphone || self == .notifications || self == .automation }
+    public init(id: String, symbol: String, title: String, when: String) {
+        self.id = id
+        self.symbol = symbol
+        self.title = title
+        self.when = when
     }
 
-    public enum State: Equatable, Sendable {
-        case notAsked
-        /// System Settings is open at the right pane, and conch is watching for the switch.
-        case waiting
-        case granted
-        /// Turned down, or turned off later: macOS won't ask again, so only System Settings can change it.
-        case denied
-        /// On, but it only reaches a new process: conch reopens to finish.
-        case reopen
-    }
-
-    public let kind: Kind
-    public var state: State
-    public var id: Kind { kind }
-
-    public init(_ kind: Kind, _ state: State) {
-        self.kind = kind
-        self.state = state
-    }
+    public static let screenRecording = OnboardingDeferredAsk(
+        id: ConchPermission.screenRecording.rawValue, symbol: ConchPermission.screenRecording.symbol, title: ConchPermission.screenRecording.title,
+        when: "The first time you draw on your screen or record a Show."
+    )
+    public static let notifications = OnboardingDeferredAsk(
+        id: "notifications", symbol: "bell.badge", title: "Notifications",
+        when: "The first time something is ready while conch is quiet."
+    )
 }
 
 /// One of the things conch downloads on a first run. They start when setup begins and finish on their own; nothing
@@ -223,11 +172,13 @@ public enum OnboardingType {
 
 // MARK: - Buttons
 
-/// Setup's buttons. Primary is the one thing that moves the step on (ink, like every primary action in conch); row is
-/// the small capsule a row acts with; quiet is words alone.
+/// Setup's buttons. Primary is the one thing that moves the step on (ink, like every primary action in conch); action
+/// is a row's one thing to do, drawn as Settings' permission rows draw theirs (a small ink capsule); row is a quieter
+/// control on a card (Change, Hear one); quiet is words alone.
 public struct OnboardingButton: View {
     public enum Style: Sendable {
         case primary
+        case action
         case row
         case quiet
     }
@@ -258,7 +209,7 @@ public struct OnboardingButton: View {
         case (.phone, .quiet): OnboardingType.Phone.body
         case (.phone, _): OnboardingType.Phone.button
         case (.large, _): .system(size: 15, weight: .semibold)
-        case (.regular, .row): .system(size: 12, weight: .semibold)
+        case (.regular, .row), (.regular, .action): .system(size: 12, weight: .semibold)
         case (.regular, .quiet): .system(size: 13, weight: .medium)
         case (.regular, .primary): .system(size: 13, weight: .semibold)
         }
@@ -268,7 +219,7 @@ public struct OnboardingButton: View {
         switch size {
         case .phone: 52
         case .large: 40
-        case .regular: style == .row ? 26 : 30
+        case .regular: style == .row || style == .action ? 26 : 30
         }
     }
 
@@ -283,13 +234,13 @@ public struct OnboardingButton: View {
             .font(font)
             .lineLimit(1)
             .fixedSize()
-            .foregroundStyle(style == .primary ? AnyShapeStyle(ConchColor.onAccent) : style == .row ? AnyShapeStyle(ConchColor.textPrimary) : AnyShapeStyle(ConchColor.textSecondary))
-            .padding(.horizontal, style == .quiet ? 4 : size == .large ? 26 : size == .phone ? 20 : style == .row ? 12 : 16)
+            .foregroundStyle(style == .primary || style == .action ? AnyShapeStyle(ConchColor.onAccent) : style == .row ? AnyShapeStyle(ConchColor.textPrimary) : AnyShapeStyle(ConchColor.textSecondary))
+            .padding(.horizontal, style == .quiet ? 4 : size == .large ? 26 : size == .phone ? 20 : style == .action ? 11 : style == .row ? 12 : 16)
             .frame(maxWidth: size == .phone && style != .quiet ? .infinity : nil)
             .frame(height: height)
             .background {
                 switch style {
-                case .primary:
+                case .primary, .action:
                     if size == .phone {
                         RoundedRectangle(cornerRadius: 16, style: .continuous).fill(ConchColor.accent)
                     } else {

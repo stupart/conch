@@ -95,37 +95,29 @@ func renderOnboardingStates() throws {
         }
     }
 
-    try onb("onb-mac-states-permissions", width: 556 * 2 + 24 + 80) {
-        Heading(title: "Permissions: every state", note: "Allow… where macOS asks with its own alert (the ellipsis says more is coming); Open Settings where it's a switch by hand. Denied is said once, plainly, with the only way back. Screen Recording (and a microphone turned on after a no) only reaches a new process.")
-        let rows: [(String, OnboardingPermission)] = [
-            ("Not asked, macOS asks with its own alert", OnboardingPermission(.microphone, .notAsked)),
-            ("Not asked, a switch in System Settings", OnboardingPermission(.accessibility, .notAsked)),
-            ("Waiting: System Settings is open, conch watches", OnboardingPermission(.accessibility, .waiting)),
-            ("Allowed", OnboardingPermission(.notifications, .granted)),
-            ("Denied: macOS won't ask again", OnboardingPermission(.microphone, .denied)),
-            ("On, but only after conch reopens", OnboardingPermission(.screenRecording, .reopen)),
-        ]
-        VStack(alignment: .leading, spacing: 20) {
-            ForEach(0..<3, id: \.self) { row in
-                HStack(alignment: .top, spacing: 24) {
-                    ForEach(0..<2, id: \.self) { column in
-                        let item = rows[row * 2 + column]
-                        stateCard(item.0) { PermissionRow(permission: item.1) }
-                    }
-                }
+    try onb("onb-mac-states-permissions", width: 880 * 0.62 * 2 + 24 + 80) {
+        Heading(title: "Permissions: every state", note: "The rows are Settings' own, so each status and its one button read the same in both places: Allow… where macOS hasn't asked, Open Settings where it's a switch by hand or was turned off, Reopen conch where it's on but only reaches a new process.")
+        HStack(alignment: .top, spacing: 24) {
+            VStack(alignment: .leading, spacing: 8) {
+                Caption("Nothing asked yet")
+                OnbDesk(padding: 0) { OnbScreens.permissions([:].merging(ConchPermission.allCases.map { ($0, .notAsked) }) { a, _ in a }, waitingOn: nil, downloads: dlEarly) }
+                    .scaleEffect(0.62, anchor: .topLeading).frame(width: 880 * 0.62, height: 620 * 0.62, alignment: .topLeading)
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                Caption("The microphone turned down, and Accessibility on but a reopen away")
+                OnbDesk(padding: 0) { OnbScreens.permissions([.microphone: .denied, .accessibility: .needsRelaunch, .automation: .granted, .screenRecording: .notAsked], waitingOn: nil) }
+                    .scaleEffect(0.62, anchor: .topLeading).frame(width: 880 * 0.62, height: 620 * 0.62, alignment: .topLeading)
             }
         }
-        Caption("Asked when first needed: shown compact, with a quiet way to allow it early")
-        OnboardingCard {
-            PermissionRow(permission: OnboardingPermission(.screenRecording, .notAsked), deferred: true)
-            OnboardingDivider()
-            PermissionRow(permission: OnboardingPermission(.automation, .notAsked), deferred: true)
+        VStack(alignment: .leading, spacing: 8) {
+            Caption("All three allowed: no buttons left, Continue")
+            OnbDesk(padding: 0) { OnbScreens.permissions([.microphone: .granted, .accessibility: .granted, .automation: .granted, .screenRecording: .notAsked], waitingOn: nil, downloads: dlLate) }
+                .scaleEffect(0.62, anchor: .topLeading).frame(width: 880 * 0.62, height: 620 * 0.62, alignment: .topLeading)
         }
-        .frame(width: 556)
         Caption("The guide under System Settings' list: waiting, then on. It closes itself a moment after.")
         HStack(alignment: .top, spacing: 24) {
-            PermissionGuide(kind: .screenRecording)
-            PermissionGuide(kind: .screenRecording, granted: true)
+            PermissionGuide(permission: .screenRecording)
+            PermissionGuide(permission: .screenRecording, granted: true)
         }
         .padding(.vertical, 20)
     }
@@ -135,11 +127,12 @@ func renderOnboardingStates() throws {
         HStack(alignment: .top, spacing: 24) {
             trayCard("Both downloading", dlEarly)
             trayCard("Voices setting up", dlLate)
-            trayCard("Failed, retrying by itself", downloads(stt: .failed("The connection dropped at 212 MB. Trying again in 30 s."), voices: .downloading(done: 610e6, total: 1_660e6, secondsLeft: 190)))
-            trayCard("Offline", downloads(stt: .ready, voices: .offline(done: 610e6, total: 1_660e6)))
+            trayCard("Failed, retrying by itself", downloads(stt: .failed("The connection dropped at 212 MB. Trying again in a minute; it carries on from there."), voices: .installing("Installing the voices (1.3 GB), step 3 of 4")))
+            trayCard("Offline", downloads(stt: .offline(done: 212e6, total: 574e6), voices: .installing("Installing Python, step 1 of 4")))
         }
         HStack(alignment: .top, spacing: 24) {
-            trayCard("No room", downloads(stt: .ready, voices: .noSpace(needs: 1.66e9, free: 0.9e9)))
+            trayCard("No room", downloads(stt: .ready, voices: .noSpace(needs: 1.7e9, free: 0.9e9)))
+            trayCard("Voices off: an Intel Mac", downloads(stt: .ready, voices: .failed("Natural voices need Apple silicon. conch speaks with the Mac's own voice.")))
             trayCard("Queued behind the first", downloads(stt: .downloading(done: 488e6, total: 574e6, secondsLeft: 20), voices: .queued))
             trayCard("All ready", dlDone)
         }
@@ -151,24 +144,24 @@ func renderOnboardingStates() throws {
             VStack(alignment: .leading, spacing: 8) {
                 Caption("Voices still setting up")
                 OnbDesk(padding: 0) { OnbScreens.voice(ring: .settingUp(fraction: 0.64), mic: MicCheck(device: "MacBook Pro Microphone", state: .listening, levels: micLevels), downloads: dlLate) }
-                    .scaleEffect(0.62, anchor: .topLeading).frame(width: 880 * 0.62, height: 600 * 0.62, alignment: .topLeading)
+                    .scaleEffect(0.62, anchor: .topLeading).frame(width: 880 * 0.62, height: 620 * 0.62, alignment: .topLeading)
             }
             VStack(alignment: .leading, spacing: 8) {
                 Caption("Speech recognition still downloading: the level moves, the words wait")
                 OnbDesk(padding: 0) { OnbScreens.voice(mic: MicCheck(device: "MacBook Pro Microphone", state: .waitingForRecognition(0.74), levels: micLevels), downloads: dlMid) }
-                    .scaleEffect(0.62, anchor: .topLeading).frame(width: 880 * 0.62, height: 600 * 0.62, alignment: .topLeading)
+                    .scaleEffect(0.62, anchor: .topLeading).frame(width: 880 * 0.62, height: 620 * 0.62, alignment: .topLeading)
             }
         }
         HStack(alignment: .top, spacing: 24) {
             VStack(alignment: .leading, spacing: 8) {
                 Caption("Silent: nothing above the room's noise for five seconds")
                 OnbDesk(padding: 0) { OnbScreens.voice(mic: MicCheck(device: "Studio Display Microphone", state: .silent, levels: micQuiet)) }
-                    .scaleEffect(0.62, anchor: .topLeading).frame(width: 880 * 0.62, height: 600 * 0.62, alignment: .topLeading)
+                    .scaleEffect(0.62, anchor: .topLeading).frame(width: 880 * 0.62, height: 620 * 0.62, alignment: .topLeading)
             }
             VStack(alignment: .leading, spacing: 8) {
                 Caption("The microphone skipped on the step before: asked for here, where it's needed")
                 OnbDesk(padding: 0) { OnbScreens.voice(ring: .unavailable("This Mac speaks with its own voice: natural voices need Apple silicon."), mic: MicCheck(device: "MacBook Pro Microphone", state: .needsPermission, levels: [])) }
-                    .scaleEffect(0.62, anchor: .topLeading).frame(width: 880 * 0.62, height: 600 * 0.62, alignment: .topLeading)
+                    .scaleEffect(0.62, anchor: .topLeading).frame(width: 880 * 0.62, height: 620 * 0.62, alignment: .topLeading)
             }
         }
     }
@@ -178,17 +171,17 @@ func renderOnboardingStates() throws {
         HStack(alignment: .top, spacing: 24) {
             VStack(alignment: .leading, spacing: 8) {
                 Caption("Scanned: connecting")
-                OnbDesk(padding: 0) { OnbScreens.phone(.connecting) }.scaleEffect(0.62, anchor: .topLeading).frame(width: 880 * 0.62, height: 600 * 0.62, alignment: .topLeading)
+                OnbDesk(padding: 0) { OnbScreens.phone(.connecting) }.scaleEffect(0.62, anchor: .topLeading).frame(width: 880 * 0.62, height: 620 * 0.62, alignment: .topLeading)
             }
             VStack(alignment: .leading, spacing: 8) {
                 Caption("No relay: this Wi-Fi only, with the short code")
-                OnbDesk(padding: 0) { OnbScreens.phone(.waiting(relay: false)) }.scaleEffect(0.62, anchor: .topLeading).frame(width: 880 * 0.62, height: 600 * 0.62, alignment: .topLeading)
+                OnbDesk(padding: 0) { OnbScreens.phone(.waiting(relay: false)) }.scaleEffect(0.62, anchor: .topLeading).frame(width: 880 * 0.62, height: 620 * 0.62, alignment: .topLeading)
             }
         }
         VStack(alignment: .leading, spacing: 8) {
             Caption("Couldn't pair")
             OnbDesk(padding: 0) { OnbScreens.phone(.failed("The relay didn't answer for 20 seconds. Check this Mac is online, then make a new code; the old one stops working.")) }
-                .scaleEffect(0.62, anchor: .topLeading).frame(width: 880 * 0.62, height: 600 * 0.62, alignment: .topLeading)
+                .scaleEffect(0.62, anchor: .topLeading).frame(width: 880 * 0.62, height: 620 * 0.62, alignment: .topLeading)
         }
     }
 
