@@ -104,8 +104,6 @@ struct ConversationStackView: View {
     /// Which tool rows are open — kept per session by the workspace model, so leaving a
     /// session and coming back finds the rows you opened still open (ConchDesign/Workspace.swift).
     @EnvironmentObject private var workspace: WorkspaceModel
-    /// Where the reader was looking when older messages were asked for.
-    @State private var scrollAnchor = ConversationScrollAnchor()
     /// A multi-select question is a tiny form: taps edit this set and only the
     /// explicit Submit button sends it. Keying by tool row keeps two questions
     /// in the retained transcript from sharing checkmarks.
@@ -143,8 +141,8 @@ struct ConversationStackView: View {
     }
 
     /// ponytail: computed per list, so a run straddling the history/live seam draws as two
-    /// folds. Merging the two lists would mean restructuring the scroll anchoring that history
-    /// paging depends on, which is a great deal of risk for a seam.
+    /// folds. The recorded rows are a separate, windowed region above the live tail
+    /// (`HistoryRegion`), and a fold drawn across the two would be one row in two layouts.
     private func folds(in items: [ConversationItem]) -> FoldIndex {
         var index = FoldIndex()
         for run in ToolFolding.runs(for: items.map { (id: $0.id, isTool: foldable($0), at: $0.at) }) {
@@ -159,41 +157,46 @@ struct ConversationStackView: View {
     @ViewBuilder
     private func foldedRow(for item: ConversationItem, in items: [ConversationItem], folds: FoldIndex) -> some View {
         if let run = folds.heads[item.id] {
-            let open = isExpanded(run.id)
-            VStack(alignment: .leading, spacing: 8) {
-                Button { toggleExpanded(run.id) } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: open ? "chevron.down" : "chevron.right")
-                            .font(.system(size: 8))
-                            .foregroundStyle(ConchPalette.textFaint)
-                        Text(run.summary)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(ConchPalette.textDim)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help(open ? "Hide these steps" : "Show these steps")
-
-                if open {
-                    let members = Set(run.itemIDs)
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(items.filter { members.contains($0.id) }) { step in
-                            memoRow(step)
-                        }
-                    }
-                    .padding(.leading, 10)
-                    .overlay(alignment: .leading) {
-                        Rectangle().fill(ConchPalette.divider).frame(width: 1)
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            let members = Set(run.itemIDs)
+            runView(run, steps: items.filter { members.contains($0.id) })
         } else if folds.memberOf[item.id] != nil {
             EmptyView()
         } else {
             memoRow(item)
         }
+    }
+
+    /// A run of steps as §3's one quiet line, and the steps themselves once it is opened.
+    private func runView(_ run: ToolRun, steps: [ConversationItem]) -> some View {
+        let open = isExpanded(run.id)
+        return VStack(alignment: .leading, spacing: 8) {
+            Button { toggleExpanded(run.id) } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: open ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 8))
+                        .foregroundStyle(ConchPalette.textFaint)
+                    Text(run.summary)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(ConchPalette.textDim)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(open ? "Hide these steps" : "Show these steps")
+
+            if open {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(steps) { step in
+                        memoRow(step)
+                    }
+                }
+                .padding(.leading, 10)
+                .overlay(alignment: .leading) {
+                    Rectangle().fill(ConchPalette.divider).frame(width: 1)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// `row(for:)`, redrawn only when something it shows has changed.
@@ -244,14 +247,16 @@ struct ConversationStackView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                // Eager, still. A lazy stack leaves the viewport at an offset whose rows
-                // have not been materialised, which showed as bare scroll background while
-                // a streaming row changed the document height.
+                // Eager, still, for the live tail. A lazy stack leaves the viewport at an offset
+                // whose rows have not been materialised, which showed as bare scroll background
+                // while a streaming row changed the document height — and the live window is where
+                // rows stream. It is at most the daemon's forty items; building all of it is cheap.
                 //
-                // ponytail: that is a ceiling on how much recorded history can be on
-                // screen at once, since every loaded page is laid out. Virtualise when it
-                // can be MEASURED on a Mac with Xcode — guessing is how the bare
-                // background got shipped the first time.
+                // Everything older is `HistoryRegion`: windowed, not lazy. Rows near the viewport
+                // are real views and the rest are spacers at the height each row was drawn at, so
+                // the document's geometry is exact, and nothing streams there to disturb it. That
+                // lifted the ceiling the eager stack put on how much history can be read: measured
+                // offscreen with conch-scroll-bench, a 5,000-item session lays out a few dozen rows.
                 VStack(alignment: .leading, spacing: 22) {
                     // Computed ONCE per body. As a property read inside the loop below it was
                     // rebuilt for every row it was handed to — n rows × n recorded items per
@@ -259,21 +264,20 @@ struct ConversationStackView: View {
                     // 67% of the main thread at rest (Time Profiler, 2026-09-20). Quadratic
                     // in how far back the reader has scrolled, which is why a long session
                     // stuttered harder the longer it was read.
-                    let recordedRows = self.recordedRows
-                    let recordedFolds = folds(in: recordedRows)
+                    let recordedEntries = self.recordedEntries
                     let liveFolds = folds(in: conversation.items)
-                    historyHeader
-                    if conversation.shared {
-                        Text("Shared with another window — both windows' messages are shown")
-                            .font(.system(size: 11))
-                            .foregroundStyle(ConchPalette.textFaint)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                            .padding(.bottom, 4)
-                    }
-                    // What the record store holds above the live window, drawn by the
-                    // same renderers: a recorded message is still a message.
-                    ForEach(recordedRows) { item in
-                        foldedRow(for: item, in: recordedRows, folds: recordedFolds).id(item.id)
+                    // What the record store holds above the live window, drawn by the same
+                    // renderers — a recorded message is still a message — and read further back as
+                    // the reader scrolls up. Its first row is the line saying where it starts.
+                    HistoryRegion(
+                        model: history.region,
+                        edge: historyEdge,
+                        note: conversation.shared ? "Shared with another window — both windows' messages are shown" : nil,
+                        entries: recordedEntries,
+                        gap: 22,
+                        edgeFont: .system(size: 11)
+                    ) { recorded in
+                        recordedRow(recorded)
                     }
                     ForEach(conversation.items) { item in
                         foldedRow(for: item, in: conversation.items, folds: liveFolds).id(item.id)
@@ -332,9 +336,7 @@ struct ConversationStackView: View {
                 .background(
                     ConversationScrollObserver(
                         onUserScroll: { isAtBottom in pinnedToBottom = isAtBottom },
-                        onScrolled: onScrolled,
-                        onReachTop: { loadOlder() },
-                        anchor: scrollAnchor
+                        onScrolled: onScrolled
                     )
                 )
                 // Centred in whatever the window leaves: the column stays put when the
@@ -377,6 +379,7 @@ struct ConversationStackView: View {
                 // anything still in flight for the old session is refused, not merged.
                 history.select(session: conversation.sessionId, branchTip: branchTip)
                 loadOlder()
+                history.wantWhole(cutLive.map { ($0.id, $0.text) })
                 pinnedToBottom = true
                 multiSelections = [:]
                 questionTexts = [:]
@@ -393,96 +396,116 @@ struct ConversationStackView: View {
                 history.select(session: conversation.sessionId, branchTip: branchTip)
                 // One read answers "is any of this recorded" — including the honest
                 // "records are off" — rather than leaving that to a button nobody presses.
+                // After it, scrolling up is what reads further back (`HistoryRegion`).
                 loadOlder()
+                history.wantWhole(cutLive.map { ($0.id, $0.text) })
                 requestBottomScroll(using: proxy)
             }
-            // Older rows land ABOVE the viewport and push everything down. The clip is moved
-            // by however much the document grows, inside the layout pass that grows it, so
-            // the row under the eye never leaves it (ConversationScrollAnchor).
-            .onChange(of: history.paging.items.count) { _, _ in
-                scrollAnchor.expectPrepend()
-                Task { @MainActor in
-                    // The rows measure within a millisecond of this change, and a yield resumes
-                    // 6–24 ms after that (measured 2026-09-20): a growth not absorbed by now is
-                    // not this page's, so the anchor stops waiting for one.
-                    await Task.yield()
-                    scrollAnchor.settle()
-                }
+            // A long message the daemon cut to its tail is read whole as it arrives, rather than
+            // behind "Show the rest". Older rows landing above the reader need nothing here: the
+            // region moves the clip by exactly what arrived, in the layout pass that adds it.
+            .onChange(of: cutLive) { _, rows in
+                history.wantWhole(rows.map { ($0.id, $0.text) })
             }
         }
     }
 
-    /// What the reader is told about everything above the live window: that older
-    /// messages can be asked for, that they are coming, that only part of the session
-    /// was recorded, that a read failed — or that nothing is being recorded at all.
-    ///
-    /// Each of those is a different answer to "why does this conversation start here",
-    /// and an empty conversation is a fifth. They must not all read as the same shrug.
-    @ViewBuilder
-    private var historyHeader: some View {
-        VStack(spacing: 6) {
-            switch history.paging.status {
-            case .off:
-                // Not an error, and not an empty session: nothing is being recorded, and
-                // there is exactly one thing to do about it.
-                Text(HistoryNotice.off)
-            case .loading:
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text("Loading earlier messages…")
-                }
-            case let .failed(message):
-                HStack(spacing: 8) {
-                    Text(message)
-                    Button("Retry") { loadOlder() }
-                        .buttonStyle(.link)
-                }
-            case .idle:
-                if history.paging.canLoadOlder {
-                    Button("Load earlier messages") { loadOlder() }
-                        .buttonStyle(.link)
-                } else if conversation.truncated, history.paging.items.isEmpty {
-                    Text("Earlier messages not shown")
-                }
-            }
-            if let note = HistoryNotice.coverage(
-                history.paging.coverage,
-                reachedStart: history.paging.reachedStart,
-                oldest: oldestRecorded,
-                sharedBranch: history.paging.sharedBranch
-            ) {
-                Text(note)
-            }
-        }
-        .font(.system(size: 11))
-        .foregroundStyle(ConchPalette.textFaint)
-        .frame(maxWidth: .infinity, alignment: .center)
-        .padding(.bottom, 4)
+    /// What the top of the recorded history says: nothing while more is coming, a spinner once
+    /// a read is actually slow, "Start of the conversation" at the true start, and the plain
+    /// sentence where history genuinely is not there (`HistoryEdge`). There is no button: the
+    /// reader scrolling up is what reads further back, and a failed read tries again on its own.
+    private var historyEdge: HistoryEdge {
+        HistoryEdge.of(
+            history.paging,
+            liveIsWhole: !conversation.truncated && !conversation.items.isEmpty,
+            slow: true,
+            oldest: oldestRecorded
+        )
     }
 
     /// When the record starts, in the reader's own locale — the view's job, not the
     /// state machine's, which would otherwise hold a string that reads differently in
     /// every timezone it is tested from.
     private var oldestRecorded: String? {
-        guard let at = history.paging.items.first?.at else { return nil }
+        guard let at = history.paging.oldestAt else { return nil }
         return Date(timeIntervalSince1970: at / 1_000)
             .formatted(date: .abbreviated, time: .shortened)
     }
 
-    /// The recorded rows that belong above the live window.
-    private var recordedRows: [ConversationItem] {
+    /// One row of recorded history as the region draws it: an item, or the fold it heads.
+    private struct RecordedRow {
+        let item: HistoryItem
+        let run: ToolRun?
+        let steps: [HistoryItem]
+    }
+
+    /// The recorded rows that belong above the live window, as the region lays them out.
+    ///
+    /// Only what a row NEEDS to be laid out as a height is worked out here — its id and an
+    /// estimate. The row itself, a `ConversationItem` and its markdown, is built only when the
+    /// region makes it a real view, near the viewport.
+    private var recordedEntries: [HistoryEntry<RecordedRow>] {
         // Undecorated, because the snapshot and the record name the same message
         // differently: `tool:call_7` here is `call_7` there.
         let live = Set(conversation.items.map { HistorySnapshot.nativeId(forSnapshotItem: $0.id) })
-        return HistorySnapshot.older(
-            history.paging.items,
+        let rows = HistorySnapshot.older(
+            rows: history.paging.rows,
             thanSnapshot: live,
             startingAt: conversation.items.first?.at
-        ).map { recorded in
-            let body = history.body(for: recorded.id)
-            let whole = body?.isComplete == true ? body?.text : nil
-            return ConversationItem(recorded: recorded, text: whole ?? recorded.preview)
+        )
+        // §3's folds, over the recorded list on its own (see `folds(in:)`).
+        let runs = ToolFolding.runs(for: rows.map { (id: $0.id, isTool: $0.item.map(Self.isToolStep) ?? false, at: $0.item?.at) })
+        var heads: [String: ToolRun] = [:]
+        var members: Set<String> = []
+        for run in runs {
+            heads[run.id] = run
+            members.formUnion(run.itemIDs.dropFirst())
         }
+        let items = members.isEmpty ? [:] : Dictionary(
+            rows.compactMap { row in row.item.map { (row.id, $0) } },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let estimate = HistoryEstimate.mac
+        let width = history.region.width > 0 ? history.region.width : ConversationTextView.maxMeasure - 36
+        return rows.compactMap { row in
+            guard !members.contains(row.id) else { return nil }
+            guard let item = row.item else { return HistoryEntry(id: row.id, estimate: 0, payload: nil) }
+            if let run = heads[row.id] {
+                return HistoryEntry(
+                    id: row.id,
+                    estimate: estimate.toolRow + estimate.gap,
+                    payload: RecordedRow(item: item, run: run, steps: run.itemIDs.compactMap { items[$0] })
+                )
+            }
+            return HistoryEntry(
+                id: row.id,
+                estimate: estimate.height(kind: item.kind, role: item.role, characters: max(item.bodyBytes, item.preview.count), width: width),
+                payload: RecordedRow(item: item, run: nil, steps: [])
+            )
+        }
+    }
+
+    /// What a recorded row becomes in the stack: `ConversationItem(recorded:)` renders it.
+    private static func isToolStep(_ item: HistoryItem) -> Bool {
+        item.kind == "tool_call" || item.kind == "tool_result"
+    }
+
+    @ViewBuilder
+    private func recordedRow(_ recorded: RecordedRow) -> some View {
+        if let run = recorded.run {
+            runView(run, steps: recorded.steps.map(conversationItem(recorded:)))
+        } else {
+            memoRow(conversationItem(recorded: recorded.item))
+        }
+    }
+
+    /// A recorded item as a row: its whole body once it has been read — which it is, as it comes
+    /// near the viewport — and its preview until then, marked as cut where there is more, so a
+    /// sentence stopped at 240 characters does not read as a rendering bug.
+    private func conversationItem(recorded: HistoryItem) -> ConversationItem {
+        let body = history.body(for: recorded.id)
+        let whole = body?.isComplete == true ? body?.text : nil
+        return ConversationItem(recorded: recorded, text: whole ?? (recorded.hasFullBody ? recorded.preview + "…" : recorded.preview))
     }
 
     /// Which branch of a shared transcript this window is (A8), for the record store to
@@ -494,22 +517,38 @@ struct ConversationStackView: View {
         HistorySnapshot.branchTip(forSnapshotItems: conversation.items.map(\.id), shared: conversation.shared)
     }
 
-    /// Ask for the page before the oldest row on screen.
+    /// Ask for the page before the oldest row held: on arrival, which answers whether anything
+    /// is recorded at all. After that the region asks, as the reader scrolls up.
     ///
-    /// Nothing about the reader's place is captured here, deliberately. This runs on every
-    /// scroll tick within a screenful of the top, so a baseline taken now was overwritten by
-    /// the next tick before the page it belonged to had been absorbed: every page that
-    /// arrived mid-scroll on 2026-09-20 was "compensated" by 2 pt and read as a jump. The
-    /// anchor measures the growth itself, when it happens.
+    /// Nothing about the reader's place is captured here, deliberately: a baseline taken when a
+    /// page is asked for was overwritten by the next scroll tick before the page it belonged to
+    /// arrived (2026-09-20). The region measures each change when it happens.
     private func loadOlder() {
         guard history.paging.canLoadOlder else { return }
-        history.loadOlder(anchor: recordedRows.first?.id ?? conversation.items.first?.id)
+        history.loadOlder(anchor: history.paging.rows.first?.id ?? conversation.items.first?.id)
     }
 
-    /// The row's text: the record store's whole version when it has been read, else the
-    /// snapshot's — which for a long message is its tail rather than all of it.
+    /// A live message the daemon cut to its tail, and the text it was cut to.
+    private struct CutRow: Equatable {
+        let id: String
+        let rev: Int
+        let text: String
+
+        static func == (a: Self, b: Self) -> Bool { a.id == b.id && a.rev == b.rev }
+    }
+
+    /// The live window's messages the daemon cut to their tail, read whole as they appear.
+    private var cutLive: [CutRow] {
+        conversation.items
+            .filter { ($0.kind == .assistant || $0.kind == .user) && $0.text.hasPrefix("…") }
+            .map { CutRow(id: $0.id, rev: $0.rev, text: $0.text) }
+    }
+
+    /// The row's text: the whole message once the record has it, joined to the snapshot's own
+    /// tail where the record is still behind; the snapshot's text until then.
     private func text(of item: ConversationItem) -> String {
-        history.fullText(forSnapshotItem: item.id) ?? item.text
+        guard let full = history.fullText(forSnapshotItem: item.id) else { return item.text }
+        return HistorySnapshot.whole(record: full, cut: item.text) ?? item.text
     }
 
     /// Whether the snapshot cut this row, and so whether the store has more of it.
@@ -518,29 +557,12 @@ struct ConversationStackView: View {
         return HistorySnapshot.wasCut(item.text, cap: Self.messageCap)
     }
 
+    /// A tool row's whole output, read when it is opened: the live row's from the record behind
+    /// it, a recorded row's from its own body.
     private func loadFullBody(of item: ConversationItem) {
+        history.loadRecordedBody(item.id)
         guard wasCut(item), history.fullText(forSnapshotItem: item.id) == nil else { return }
         history.loadFullBodies(forSnapshotItems: [item.id])
-    }
-
-    /// A cut message ends in an offer to read the rest of it.
-    ///
-    /// ponytail: the stack offers this on the machine's replies only; the full-screen
-    /// overlay reads any message whole, which is where a long one is actually read.
-    @ViewBuilder
-    private func cutTail(_ item: ConversationItem) -> some View {
-        if wasCut(item), history.fullText(forSnapshotItem: item.id) == nil {
-            if isExpanded(item.id) {
-                fullBodyStatus(for: item)
-            } else {
-                Button("Show the rest") {
-                    expand(item.id)
-                    loadFullBody(of: item)
-                }
-                .buttonStyle(.link)
-                .font(.system(size: 10.5))
-            }
-        }
     }
 
     /// How the read of a cut row's whole body is going, if one was asked for.
@@ -550,7 +572,7 @@ struct ConversationStackView: View {
         return recorded.flatMap { history.body(for: $0.id) }?.status
     }
 
-    /// How a body read is going, under the row waiting for it.
+    /// How a body read is going, under the tool output waiting for it.
     @ViewBuilder
     private func fullBodyStatus(for item: ConversationItem) -> some View {
         switch bodyStatus(for: item) {
@@ -628,7 +650,8 @@ struct ConversationStackView: View {
                 // findable while scrolling past without reading a word.
                 HStack {
                     Spacer(minLength: 48)
-                    Text(AttributedString.conchMarkdown(item.text))
+                    // Whole: a long paste the daemon cut to its tail is read back from the record.
+                    Text(AttributedString.conchMarkdown(text(of: item)))
                         // workspace-v1 §3: the transcript reads at 15/23, not at the 13 the tool
                         // rows and captions around it use. This is the one thing on screen that is
                         // actually READ rather than scanned.
@@ -642,18 +665,20 @@ struct ConversationStackView: View {
                 }
             }
         case .assistant:
-            VStack(alignment: .leading, spacing: 4) {
-                // The reply as a document: headings on a scale, lists, code on a ground, tables as columns — the
-                // renderer both apps share (ConchDesign/Markdown.swift), at readingBody's size. It replaced an inline
-                // parse that flattened a table to "**first** — rest · rest", which made a 54-row document a wall of
-                // bold runs (Tyler: "i think it might be tables that are broken?"). Affordable because the row is
-                // memoised above: this parses once per change to the row, not once per snapshot.
-                MarkdownView(text: text(of: item))
-                    .lineSpacing(ConchType.readingLineSpacing)
-                    .foregroundStyle(ConchPalette.textPrimary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                cutTail(item)
-            }
+            // The reply as a document: headings on a scale, lists, code on a ground, tables as columns — the
+            // renderer both apps share (ConchDesign/Markdown.swift), at readingBody's size. It replaced an inline
+            // parse that flattened a table to "**first** — rest · rest", which made a 54-row document a wall of
+            // bold runs (Tyler: "i think it might be tables that are broken?"). Affordable because the row is
+            // memoised above, and its parse is cached by text: once per revision, not once per snapshot, and
+            // not again when a recorded row scrolls away and back.
+            //
+            // Whole, always. A reply the daemon cut to its tail, or a recorded one past its preview, is read
+            // from the record as it arrives or comes near the viewport; "Show the rest" is gone. Tyler: "those
+            // should just smooth infinite scroll".
+            MarkdownView(text: text(of: item))
+                .lineSpacing(ConchType.readingLineSpacing)
+                .foregroundStyle(ConchPalette.textPrimary)
+                .frame(maxWidth: .infinity, alignment: .leading)
         case .thinking:
             Text(AttributedString.conchMarkdown(item.text))
                 .font(.system(size: 12).italic())
@@ -1265,76 +1290,6 @@ private struct MemoRow<Key: Equatable, Content: View>: View, Equatable {
     var body: some View { content() }
 }
 
-/// Keeps the row under the eye there when older messages arrive above it.
-///
-/// A prepend pushes everything down by its own height, which reads as the transcript
-/// jumping while you are looking at it. The clip is moved by exactly that growth, from
-/// inside the document's frame-change notification — the same layout pass that grew it —
-/// so no frame is ever displayed with the jump in it.
-///
-/// It used to be a height captured when the page was asked for and restored one
-/// `Task.yield()` after the rows arrived. Measured with a frame probe on 2026-09-20: the
-/// rows take their height about 1 ms after `onChange(of: items.count)`, and the yield
-/// resumes 6–24 ms after that, so every page showed for one to three frames jumped and
-/// then snapped back; and because the request runs on every scroll tick near the top,
-/// the next tick re-captured the already-grown height before the restore ran, which
-/// reduced the correction to 2 pt on every page that arrived mid-scroll. Measuring the
-/// growth at the moment it happens has neither problem, and nothing to be overwritten.
-final class ConversationScrollAnchor {
-    fileprivate weak var scrollView: NSScrollView?
-    private var observation: NSObjectProtocol?
-    /// The document's height as of its last frame change: what a growth is measured from.
-    private var lastHeight: CGFloat = 0
-    /// Rows have been added above and are about to take their height.
-    private var prependPending = false
-
-    deinit {
-        observation.map(NotificationCenter.default.removeObserver)
-    }
-
-    fileprivate func watch(_ scrollView: NSScrollView) {
-        self.scrollView = scrollView
-        observation.map(NotificationCenter.default.removeObserver)
-        observation = nil
-        guard let document = scrollView.documentView else { return }
-        lastHeight = document.bounds.height
-        document.postsFrameChangedNotifications = true
-        observation = NotificationCenter.default.addObserver(
-            forName: NSView.frameDidChangeNotification,
-            object: document,
-            queue: nil
-        ) { [weak self] _ in
-            self?.documentResized()
-        }
-    }
-
-    /// The next growth is a page of older rows: absorb it.
-    func expectPrepend() {
-        prependPending = true
-    }
-
-    /// The page has had its chance to measure. Anything that grows after this — a row
-    /// streaming at the bottom, the window resizing — is not something to correct for.
-    func settle() {
-        prependPending = false
-    }
-
-    private func documentResized() {
-        guard let scrollView, let document = scrollView.documentView else { return }
-        let grown = document.bounds.height - lastHeight
-        lastHeight = document.bounds.height
-        guard prependPending else { return }
-        prependPending = false
-        // Only a prepend moves the reader.
-        guard grown > 0 else { return }
-        let clip = scrollView.contentView
-        // Relative to where the reader is NOW, not to where they were when the page was
-        // asked for: a flick that is still moving keeps its momentum's ground.
-        clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: clip.bounds.origin.y + grown))
-        scrollView.reflectScrolledClipView(clip)
-    }
-}
-
 /// SwiftUI exposes scrolling commands on macOS 14, but not whether the person
 /// has moved the underlying scroll view. Listening only to AppKit's live-scroll
 /// notifications avoids treating content growth as a user scroll: the document
@@ -1346,14 +1301,9 @@ private struct ConversationScrollObserver: NSViewRepresentable {
     /// passed under it. Not the same question as `onUserScroll`, which asks about the BOTTOM —
     /// a long transcript sitting at its top is not at the bottom and has still scrolled nothing.
     let onScrolled: (Bool) -> Void
-    /// Reaching the oldest row held is the request for the page before it. The stack is
-    /// eagerly laid out, so nothing "appears" on the way up: the scroll view has to say so.
-    let onReachTop: () -> Void
-    /// Handed the scroll view as soon as one is found, so a prepend can be absorbed.
-    let anchor: ConversationScrollAnchor
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onUserScroll: onUserScroll, onScrolled: onScrolled, onReachTop: onReachTop, anchor: anchor)
+        Coordinator(onUserScroll: onUserScroll, onScrolled: onScrolled)
     }
 
     func makeNSView(context: Context) -> ProbeView {
@@ -1372,7 +1322,6 @@ private struct ConversationScrollObserver: NSViewRepresentable {
     func updateNSView(_ view: ProbeView, context: Context) {
         context.coordinator.onUserScroll = onUserScroll
         context.coordinator.onScrolled = onScrolled
-        context.coordinator.onReachTop = onReachTop
         DispatchQueue.main.async { [weak coordinator = context.coordinator, weak view] in
             guard let view else { return }
             coordinator?.attach(toAncestorOf: view)
@@ -1395,21 +1344,15 @@ private struct ConversationScrollObserver: NSViewRepresentable {
     final class Coordinator {
         var onUserScroll: (Bool) -> Void
         var onScrolled: (Bool) -> Void
-        var onReachTop: () -> Void
-        let anchor: ConversationScrollAnchor
         private weak var scrollView: NSScrollView?
         private var observations: [NSObjectProtocol] = []
 
         init(
             onUserScroll: @escaping (Bool) -> Void,
-            onScrolled: @escaping (Bool) -> Void,
-            onReachTop: @escaping () -> Void,
-            anchor: ConversationScrollAnchor
+            onScrolled: @escaping (Bool) -> Void
         ) {
             self.onUserScroll = onUserScroll
             self.onScrolled = onScrolled
-            self.onReachTop = onReachTop
-            self.anchor = anchor
         }
 
         deinit {
@@ -1428,7 +1371,6 @@ private struct ConversationScrollObserver: NSViewRepresentable {
 
             detach()
             self.scrollView = scrollView
-            anchor.watch(scrollView)
             let center = NotificationCenter.default
             for name in [
                 NSScrollView.didLiveScrollNotification,
@@ -1464,16 +1406,14 @@ private struct ConversationScrollObserver: NSViewRepresentable {
                 distance = visible.minY - document.minY
             }
             onUserScroll(document.height <= visible.height || distance <= 8)
-            // The other end of the same measurement: within a screenful of the oldest row
-            // held is close enough to ask for the page before it, so it has arrived by the
-            // time the reader gets there.
+            // The other end of the same measurement: has anything gone under the header yet?
+            // A couple of points of slack, because a trackpad rests at 0.5. Reading further back
+            // as the top nears is the history region's own (`HistoryRegion`), which sees every
+            // scroll rather than only the live ones.
             let fromTop = documentView.isFlipped
                 ? visible.minY - document.minY
                 : document.maxY - visible.maxY
-            // The same `fromTop`, asked a different question: has anything gone under the
-            // header yet? A couple of points of slack, because a trackpad rests at 0.5.
             onScrolled(document.height > visible.height && fromTop > 2)
-            if document.height > visible.height, fromTop <= visible.height { onReachTop() }
         }
     }
 }
@@ -1535,17 +1475,28 @@ private struct MaterialRow: View {
     let material: ConversationItem.Material?
     let fallback: String
 
+    /// The picture decoded for the row it is drawn in, never whole: this row is at most 320 pt
+    /// tall in a 700 pt column, so its longest side needs 1,400 pixels at 2x. `NSImage(contentsOfFile:)`
+    /// decoded a 2880 × 1800 screenshot whole, twenty megabytes held for as long as the row was.
     private var image: NSImage? {
         guard material?.kind == .image else { return nil }
-        if let path = material?.path, let image = NSImage(contentsOfFile: path) {
-            return image
+        if let path = material?.path,
+           let image = ConchImage.cached(path, maxPixelSize: Self.maxPixelSize, decode: {
+               ConchImage.thumbnail(atPath: path, maxPixelSize: Self.maxPixelSize)
+           }) {
+            return NSImage(cgImage: image, size: .zero)
         }
         guard let dataUrl = material?.dataUrl,
-              let comma = dataUrl.firstIndex(of: ","),
-              let data = Data(base64Encoded: String(dataUrl[dataUrl.index(after: comma)...]))
+              let comma = dataUrl.firstIndex(of: ",")
         else { return nil }
-        return NSImage(data: data)
+        let key = "data:\(dataUrl.count):\(dataUrl.hashValue)"
+        return ConchImage.cached(key, maxPixelSize: Self.maxPixelSize, decode: {
+            Data(base64Encoded: String(dataUrl[dataUrl.index(after: comma)...]))
+                .flatMap { ConchImage.thumbnail(data: $0, maxPixelSize: Self.maxPixelSize) }
+        }).map { NSImage(cgImage: $0, size: .zero) }
     }
+
+    private static let maxPixelSize = 1_400
 
     var body: some View {
         if let image {

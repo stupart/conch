@@ -46,13 +46,14 @@ describe("the Mac conversation stays readable while it grows", () => {
     // And the recorded rows are computed once per body. Read as a property inside the
     // loop, `recordedRows` was rebuilt for every row it was handed to — n × n items per
     // snapshot, 67% of the main thread at rest with 520 rows paged in — so the local
-    // shadows it before the loop and everything below reads the local.
+    // shadows it before the region and everything below reads the local. What is computed
+    // is only an id and an estimate per row; a row's item is built when it is made real.
     const stackBody = conversation.slice(
       conversation.indexOf("VStack(alignment: .leading, spacing: 22) {"),
-      conversation.indexOf("ForEach(recordedRows) { item in"),
+      conversation.indexOf("ForEach(conversation.items) { item in"),
     );
-    expect(stackBody).toContain("let recordedRows = self.recordedRows");
-    expect(stackBody.indexOf("let recordedRows = self.recordedRows")).toBeLessThan(stackBody.indexOf("folds(in: recordedRows)"));
+    expect(stackBody).toContain("let recordedEntries = self.recordedEntries");
+    expect(stackBody.indexOf("let recordedEntries = self.recordedEntries")).toBeLessThan(stackBody.indexOf("entries: recordedEntries"));
     expect(conversation).toContain("MemoRow(key: rowKey(for: item)) { row(for: item) }.equatable()");
     // The deliverable card too: it reads its file, or decodes its image, in its body.
     expect(conversation).toContain("MemoRow(key: artifact) { ArtifactPreview(artifact: artifact, onOpen: onOpenArtifact) }.equatable()");
@@ -437,8 +438,8 @@ describe("§3's anatomy, where the app had drifted from it", () => {
     // it. A plan is the answer to "what is it doing". Neither may be hidden behind a summary.
     expect(stack).toContain("if let asked = item.question, !asked.options.isEmpty { return false }");
     expect(stack).toContain("if let plan = item.plan, !plan.isEmpty { return false }");
-    // Both loops fold, so recorded history reads the same as the live window.
-    expect(stack).toContain("foldedRow(for: item, in: recordedRows, folds: recordedFolds)");
+    // Both fold, so recorded history reads the same as the live window: one run view for each.
+    expect(stack).toContain("runView(run, steps: recorded.steps.map(conversationItem(recorded:)))");
     expect(stack).toContain("foldedRow(for: item, in: conversation.items, folds: liveFolds)");
     // The run reuses the per-session expand state rather than inventing a second one.
     expect(stack).toContain("toggleExpanded(run.id)");

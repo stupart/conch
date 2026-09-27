@@ -252,13 +252,13 @@ public struct MarkdownView: View {
     /// arrive, is the caller's to know: the phone reads a Mac file through the bridge.
     public typealias ImageView = (_ source: String, _ alt: String) -> AnyView
 
-    private let blocks: [MarkdownBlock]
+    private let text: String
     private let size: CGFloat
     private let image: ImageView?
     @ScaledMetric(relativeTo: .body) private var scale: CGFloat = 1
 
     public init(text: String, size: CGFloat = ConchType.readingBodySize, image: ImageView? = nil) {
-        blocks = MarkdownDocument.blocks(text)
+        self.text = text
         self.size = size
         self.image = image
     }
@@ -313,7 +313,7 @@ public struct MarkdownView: View {
     }
 
     public var body: some View {
-        let pieces = Self.pieces(blocks, size: size * scale, images: image != nil)
+        let pieces = MarkdownPieceCache.shared.pieces(text, size: size * scale, images: image != nil)
         Group {
             if pieces.count == 1, case let .flow(text) = pieces[0] {
                 // Most replies: one text, the one responder a reply always was.
@@ -448,6 +448,72 @@ struct MarkdownTableLayout: Layout {
             x += widths[c]
             subviews[i].place(at: CGPoint(x: x - 1, y: bounds.minY), proposal: ProposedViewSize(width: 1, height: bounds.height)); i += 1
         }
+    }
+}
+
+/// Parsed documents, by their text and size, so a transcript row is parsed once per revision of
+/// its text rather than every time it is built.
+///
+/// A recorded row is only a real view near the viewport (`HistoryWindow`); scrolled away it is a
+/// height, and scrolled back it is built again. Parsing is what building a reply costs — the block
+/// split and a Foundation markdown parse per block, milliseconds for a long one — so a reader who
+/// scrolls up and down through a session would pay for the same parse on every pass. The text IS
+/// the revision: a message that changed is a different key, and one that did not is found again.
+/// Bounded, and NSCache lets it go under memory pressure.
+final class MarkdownPieceCache: @unchecked Sendable {
+    static let shared = MarkdownPieceCache()
+
+    private final class Key: NSObject {
+        let text: String
+        let size: CGFloat
+        let images: Bool
+        private let hashed: Int
+
+        init(_ text: String, size: CGFloat, images: Bool) {
+            self.text = text
+            self.size = size
+            self.images = images
+            var hasher = Hasher()
+            hasher.combine(text)
+            hasher.combine(size)
+            hasher.combine(images)
+            hashed = hasher.finalize()
+        }
+
+        override var hash: Int { hashed }
+        override func isEqual(_ object: Any?) -> Bool {
+            guard let other = object as? Key else { return false }
+            return hashed == other.hashed && size == other.size && images == other.images && text == other.text
+        }
+    }
+
+    private final class Entry {
+        let pieces: [MarkdownView.Piece]
+        init(_ pieces: [MarkdownView.Piece]) { self.pieces = pieces }
+    }
+
+    private let cache: NSCache<Key, Entry> = {
+        let cache = NSCache<Key, Entry>()
+        // Rows, not bytes, is what a scroll revisits; the cost keeps one enormous paste from
+        // holding the rest out.
+        cache.countLimit = 400
+        cache.totalCostLimit = 24 * 1024 * 1024
+        return cache
+    }()
+
+    /// Parses since launch: what the tests and the scroll benchmark count.
+    private(set) var parses = 0
+    private let lock = NSLock()
+
+    func pieces(_ text: String, size: CGFloat, images: Bool) -> [MarkdownView.Piece] {
+        let key = Key(text, size: size, images: images)
+        if let hit = cache.object(forKey: key) { return hit.pieces }
+        let pieces = MarkdownView.pieces(MarkdownDocument.blocks(text), size: size, images: images)
+        cache.setObject(Entry(pieces), forKey: key, cost: text.utf8.count * 4)
+        lock.lock()
+        parses += 1
+        lock.unlock()
+        return pieces
     }
 }
 

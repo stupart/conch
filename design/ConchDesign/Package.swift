@@ -14,6 +14,9 @@ let package = Package(
     targets: [
         .target(name: "ConchDesign"),
         .executableTarget(name: "conch-design-gallery", dependencies: ["ConchDesign"]),
+        // A synthetic long conversation laid out offscreen and scrolled, for infinite scroll's
+        // memory and frame numbers:  swift run -c release conch-scroll-bench [after|before|eager-whole]
+        .executableTarget(name: "conch-scroll-bench", dependencies: ["ConchDesign"]),
         // Fixtures: the documents the markdown renderer is tested against, as they were written.
         .testTarget(name: "ConchDesignTests", dependencies: ["ConchDesign"], resources: [.copy("Fixtures")]),
     ]

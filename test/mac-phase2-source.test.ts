@@ -120,7 +120,8 @@ describe("Mac Phase 2 questions and error reporting", () => {
     expect(models).toContain("let material: Material?");
     expect(conversation).toContain("case .material:");
     expect(conversation).toContain("MaterialRow(material: item.material, fallback: item.text)");
-    expect(conversation).toContain("NSImage(contentsOfFile: path)");
+    // Decoded at the size the row draws it, never whole (ConchDesign/ImageDecode.swift).
+    expect(conversation).toContain("ConchImage.thumbnail(atPath: path, maxPixelSize: Self.maxPixelSize)");
     expect(conversation).toContain("Image(nsImage: image)");
   });
 

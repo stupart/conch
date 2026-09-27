@@ -54,28 +54,24 @@ struct ConversationStack: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            // Reaching the top is the request for the page before it — the same
-            // zero-height marker the end of the conversation already uses to answer
-            // "are we there right now?", pointed the other way.
-            Color.clear
-                .frame(height: 1)
-                .onAppear { loadOlder() }
-            historyHeader
-            if conversation.shared {
-                Text("Shared with another window — both windows' messages are shown")
-                    .font(Type.caption)
-                    .foregroundStyle(Palette.textFaint)
-                    .frame(maxWidth: .infinity, alignment: .center)
-            }
-            // What the record store holds above the live window: a recorded message
-            // is still a message, so it goes through the same row renderers.
+            // What the record store holds above the live window: a recorded message is still a
+            // message, so it goes through the same row renderers. Windowed like the Mac's — the
+            // rows near the viewport are views, the rest their heights — and read further back as
+            // the reader scrolls up, with no button; its first row is the line saying where it
+            // starts. The phone's old stopping point, a thousand rows, is gone with the button.
             // ponytail: folds are computed per list, so a run straddling the history/live
-            // seam draws as two folds — the Mac's trade too, for the same scroll-anchor reason.
-            let recorded = recordedRows
-            let recordedFolds = folds(in: recorded)
+            // seam draws as two folds — the Mac's trade too: they are two layouts.
+            let recorded = recordedEntries
             let liveFolds = folds(in: conversation.items)
-            ForEach(recorded) { item in
-                foldedRow(for: item, in: recorded, folds: recordedFolds).id(item.id)
+            HistoryRegion(
+                model: history.region,
+                edge: historyEdge,
+                note: conversation.shared ? "Shared with another window — both windows' messages are shown" : nil,
+                entries: recorded,
+                gap: 14,
+                edgeFont: Type.caption
+            ) { row in
+                recordedRow(row)
             }
             ForEach(conversation.items) { item in
                 foldedRow(for: item, in: conversation.items, folds: liveFolds).id(item.id)
@@ -103,99 +99,133 @@ struct ConversationStack: View {
             multiSelections = [:]
             questionTexts = [:]
         }
+        // A long message the daemon cut to its tail is read whole as it arrives, rather than
+        // behind "Show the rest".
+        .onChange(of: cutLive, initial: true) { _, rows in
+            history.wantWhole(rows.map { ($0.id, $0.text) })
+        }
     }
 
-    /// What the reader is told about everything above the live window: that older
-    /// messages can be asked for, that they are coming, that only part of the session
-    /// was recorded, that a read failed — or that nothing is being recorded at all.
-    ///
-    /// Each of those is a different answer to "why does this conversation start here",
-    /// and an empty conversation is another. They must not all read as the same shrug.
-    @ViewBuilder
-    private var historyHeader: some View {
-        VStack(spacing: 6) {
-            switch history.paging.status {
-            case .off:
-                // Not an error, and not an empty session: nothing is being recorded,
-                // and there is exactly one thing to do about it.
-                Text(HistoryNotice.off)
-            case .loading:
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text("Loading earlier messages…")
-                }
-            case let .failed(message):
-                VStack(spacing: 4) {
-                    Text(message)
-                    Button("Retry") { history.retry() }
-                        .font(Type.caption.weight(.semibold))
-                        .foregroundStyle(Palette.micOpen)
-                        .buttonStyle(.plain)
-                }
-            case .idle:
-                if history.paging.canLoadOlder {
-                    Button("Load earlier messages") { loadOlder() }
-                        .font(Type.caption.weight(.semibold))
-                        .foregroundStyle(Palette.micOpen)
-                        .buttonStyle(.plain)
-                } else if history.paging.isAtCap {
-                    // Held as much as this phone will. The record goes further back.
-                    Text(HistoryNotice.cap)
-                } else if conversation.truncated, history.paging.items.isEmpty {
-                    Text("Earlier messages not shown")
-                }
-            }
-            if let note = HistoryNotice.coverage(
-                history.paging.coverage,
-                reachedStart: history.paging.reachedStart,
-                oldest: oldestRecorded,
-                sharedBranch: history.paging.sharedBranch
-            ) {
-                Text(note)
-            }
-        }
-        .font(Type.caption)
-        .foregroundStyle(Palette.textFaint)
-        .multilineTextAlignment(.center)
-        .frame(maxWidth: .infinity, alignment: .center)
+    /// What the top of the recorded history says: nothing while more is coming, a spinner once
+    /// a read is actually slow, "Start of the conversation" at the true start, and the plain
+    /// sentence where history genuinely is not there (`HistoryEdge`, the Mac's rule). No button:
+    /// scrolling up reads further back, and a failed read tries again on its own.
+    private var historyEdge: HistoryEdge {
+        HistoryEdge.of(
+            history.paging,
+            liveIsWhole: !conversation.truncated && !conversation.items.isEmpty,
+            slow: true,
+            oldest: oldestRecorded
+        )
     }
 
     /// When the record starts, in the reader's own locale — the view's job, not the
     /// state machine's, which would otherwise hold a string that reads differently in
     /// every timezone it is tested from.
     private var oldestRecorded: String? {
-        guard let at = history.paging.items.first?.at else { return nil }
+        guard let at = history.paging.oldestAt else { return nil }
         return Date(timeIntervalSince1970: at / 1_000)
             .formatted(date: .abbreviated, time: .shortened)
     }
 
-    /// The recorded rows that belong above the live window.
-    private var recordedRows: [ConversationItem] {
+    /// One row of recorded history as the region draws it: an item, or the fold it heads.
+    private struct RecordedRow {
+        let item: HistoryItem
+        let run: ToolRun?
+        let steps: [HistoryItem]
+    }
+
+    /// The recorded rows that belong above the live window, as the region lays them out: an id
+    /// and an estimate each, and the row itself built only when it is near the viewport.
+    private var recordedEntries: [HistoryEntry<RecordedRow>] {
         // Undecorated, because the snapshot and the record name the same message
         // differently: `tool:call_7` here is `call_7` there.
         let live = Set(conversation.items.map { HistorySnapshot.nativeId(forSnapshotItem: $0.id) })
-        return HistorySnapshot.older(
-            history.paging.items,
+        let rows = HistorySnapshot.older(
+            rows: history.paging.rows,
             thanSnapshot: live,
             startingAt: conversation.items.first?.at
-        ).compactMap { recorded in
-            let body = history.body(for: recorded.id)
-            let whole = body?.isComplete == true ? body?.text : nil
-            return ConversationItem(recorded: recorded, text: whole ?? recorded.preview)
+        )
+        let runs = ToolFolding.runs(for: rows.map { (id: $0.id, isTool: $0.item.map(Self.isToolStep) ?? false, at: $0.item?.at) })
+        var heads: [String: ToolRun] = [:]
+        var members: Set<String> = []
+        for run in runs {
+            heads[run.id] = run
+            members.formUnion(run.itemIDs.dropFirst())
+        }
+        let items = members.isEmpty ? [:] : Dictionary(
+            rows.compactMap { row in row.item.map { (row.id, $0) } },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let estimate = HistoryEstimate.phone
+        let width = history.region.width > 0 ? history.region.width : 350
+        return rows.compactMap { row in
+            guard !members.contains(row.id) else { return nil }
+            guard let item = row.item else { return HistoryEntry(id: row.id, estimate: 0, payload: nil) }
+            if let run = heads[row.id] {
+                return HistoryEntry(
+                    id: row.id,
+                    estimate: estimate.toolRow + estimate.gap,
+                    payload: RecordedRow(item: item, run: run, steps: run.itemIDs.compactMap { items[$0] })
+                )
+            }
+            return HistoryEntry(
+                id: row.id,
+                estimate: estimate.height(kind: item.kind, role: item.role, characters: max(item.bodyBytes, item.preview.count), width: width),
+                payload: RecordedRow(item: item, run: nil, steps: [])
+            )
         }
     }
 
-    /// Ask for the page before the oldest row on screen, remembering where the reader
-    /// is so the view can put that row back under the eye afterwards.
-    private func loadOlder() {
-        guard history.paging.canLoadOlder else { return }
-        history.loadOlder(anchor: recordedRows.first?.id ?? conversation.items.first?.id)
+    private static func isToolStep(_ item: HistoryItem) -> Bool {
+        item.kind == "tool_call" || item.kind == "tool_result"
     }
 
-    /// The row's text: the record store's whole version when it has been read, else the
-    /// snapshot's — which for a long message is its tail rather than all of it.
+    @ViewBuilder
+    private func recordedRow(_ recorded: RecordedRow) -> some View {
+        if let run = recorded.run {
+            runView(run, steps: recorded.steps.compactMap(conversationItem(recorded:)))
+        } else if let item = conversationItem(recorded: recorded.item) {
+            row(item)
+        }
+    }
+
+    /// A recorded item as a row: its whole body once read — as it comes near the viewport — and
+    /// its preview until then, marked as cut where there is more.
+    private func conversationItem(recorded: HistoryItem) -> ConversationItem? {
+        let body = history.body(for: recorded.id)
+        let whole = body?.isComplete == true ? body?.text : nil
+        return ConversationItem(recorded: recorded, text: whole ?? (recorded.hasFullBody ? recorded.preview + "…" : recorded.preview))
+    }
+
+    /// Ask for the page before the oldest row held. The region asks as the reader scrolls up;
+    /// `HistoryStore.follow` asks once on arrival.
+    private func loadOlder() {
+        guard history.paging.canLoadOlder else { return }
+        history.loadOlder(anchor: history.paging.rows.first?.id ?? conversation.items.first?.id)
+    }
+
+    /// A live message the daemon cut to its tail, and the text it was cut to.
+    private struct CutRow: Equatable {
+        let id: String
+        let rev: Int
+        let text: String
+
+        static func == (a: Self, b: Self) -> Bool { a.id == b.id && a.rev == b.rev }
+    }
+
+    /// The live window's messages the daemon cut to their tail, read whole as they appear.
+    private var cutLive: [CutRow] {
+        conversation.items
+            .filter { ($0.kind == "assistant" || $0.kind == "user") && $0.text.hasPrefix("…") }
+            .map { CutRow(id: $0.id, rev: $0.rev, text: $0.text) }
+    }
+
+    /// The row's text: the whole message once the record has it, joined to the snapshot's own
+    /// tail where the record is still behind; the snapshot's text until then.
     private func text(of item: ConversationItem) -> String {
-        history.fullText(forSnapshotItem: item.id) ?? item.text
+        guard let full = history.fullText(forSnapshotItem: item.id) else { return item.text }
+        return HistorySnapshot.whole(record: full, cut: item.text) ?? item.text
     }
 
     /// Whether the snapshot cut this row, and so whether the store has more of it.
@@ -204,30 +234,15 @@ struct ConversationStack: View {
         return HistorySnapshot.wasCut(item.text, cap: Self.messageCap)
     }
 
+    /// A tool row's whole output, read when it is opened: the live row's from the record behind
+    /// it, a recorded row's from its own body.
     private func loadFullBody(of item: ConversationItem) {
+        history.loadRecordedBody(item.id)
         guard wasCut(item), history.fullText(forSnapshotItem: item.id) == nil else { return }
         history.loadFullBodies(forSnapshotItems: [item.id])
     }
 
-    /// A cut message ends in an offer to read the rest of it.
-    @ViewBuilder
-    private func cutTail(_ item: ConversationItem) -> some View {
-        if wasCut(item), history.fullText(forSnapshotItem: item.id) == nil {
-            if expandedToolIDs.contains(item.id) {
-                fullBodyStatus(for: item)
-            } else {
-                Button("Show the rest") {
-                    expandedToolIDs.insert(item.id)
-                    loadFullBody(of: item)
-                }
-                .font(Type.caption.weight(.semibold))
-                .foregroundStyle(Palette.micOpen)
-                .buttonStyle(.plain)
-            }
-        }
-    }
-
-    /// How a body read is going, under the row waiting for it.
+    /// How a body read is going, under the tool output waiting for it.
     @ViewBuilder
     private func fullBodyStatus(for item: ConversationItem) -> some View {
         let native = HistorySnapshot.nativeId(forSnapshotItem: item.id)
@@ -292,44 +307,49 @@ struct ConversationStack: View {
     @ViewBuilder
     private func foldedRow(for item: ConversationItem, in items: [ConversationItem], folds: FoldIndex) -> some View {
         if let run = folds.heads[item.id] {
-            let open = openRunIDs.contains(run.id)
-            VStack(alignment: .leading, spacing: 8) {
-                Button {
-                    if open { openRunIDs.remove(run.id) } else { openRunIDs.insert(run.id) }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: open ? "chevron.down" : "chevron.right")
-                            .font(Type.caption.weight(.semibold))
-                            .foregroundStyle(Palette.textFaint)
-                            .frame(width: 16)
-                        Text(run.summary)
-                            .font(Type.caption.weight(.medium))
-                            .foregroundStyle(Palette.textDim)
-                        Spacer(minLength: 0)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityHint(open ? "Hides these steps" : "Shows these steps")
-                if open {
-                    let members = Set(run.itemIDs)
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(items.filter { members.contains($0.id) }) { step in
-                            row(step)
-                        }
-                    }
-                    .padding(.leading, 10)
-                    .overlay(alignment: .leading) {
-                        Rectangle().fill(Palette.divider).frame(width: 1)
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            let members = Set(run.itemIDs)
+            runView(run, steps: items.filter { members.contains($0.id) })
         } else if folds.memberOf[item.id] != nil {
             EmptyView()
         } else {
             row(item)
         }
+    }
+
+    /// A run of steps as one line, and the steps themselves once it is opened.
+    private func runView(_ run: ToolRun, steps: [ConversationItem]) -> some View {
+        let open = openRunIDs.contains(run.id)
+        return VStack(alignment: .leading, spacing: 8) {
+            Button {
+                if open { openRunIDs.remove(run.id) } else { openRunIDs.insert(run.id) }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: open ? "chevron.down" : "chevron.right")
+                        .font(Type.caption.weight(.semibold))
+                        .foregroundStyle(Palette.textFaint)
+                        .frame(width: 16)
+                    Text(run.summary)
+                        .font(Type.caption.weight(.medium))
+                        .foregroundStyle(Palette.textDim)
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint(open ? "Hides these steps" : "Shows these steps")
+            if open {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(steps) { step in
+                        row(step)
+                    }
+                }
+                .padding(.leading, 10)
+                .overlay(alignment: .leading) {
+                    Rectangle().fill(Palette.divider).frame(width: 1)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
@@ -347,7 +367,8 @@ struct ConversationStack: View {
                 // own words read the same whether they are sent or still being said.
                 HStack {
                     Spacer(minLength: 40)
-                    Text(inlineMarkdown(item.text))
+                    // Whole: a long paste the daemon cut to its tail is read back from the record.
+                    Text(inlineMarkdown(text(of: item)))
                         .font(Type.body)
                         .foregroundStyle(Palette.textPrimary)
                         .padding(.horizontal, 12)
@@ -397,11 +418,10 @@ struct ConversationStack: View {
         case "material":
             MaterialRow(bridge: bridge, material: item.material, fallback: item.text, sessionId: conversation.sessionId)
         default:
-            VStack(alignment: .leading, spacing: 4) {
-                MarkdownView(text: text(of: item))
-                    .foregroundStyle(Palette.textPrimary)
-                cutTail(item)
-            }
+            // Whole, always: a reply the daemon cut, or a recorded one past its preview, is read
+            // from the record as it arrives or comes near the viewport. "Show the rest" is gone.
+            MarkdownView(text: text(of: item))
+                .foregroundStyle(Palette.textPrimary)
         }
     }
 
@@ -1039,6 +1059,11 @@ private struct MaterialRow: View {
     }
 
     private var sourceID: String { material?.path ?? material?.dataUrl ?? "" }
+
+    /// Decoded at the size it is drawn, never larger: the row is at most 320 pt tall across a
+    /// phone's width, so its longest side needs no more than a 430 pt screen at 3x. At 2,048 a
+    /// screenshot held twice the pixels anyone could see, for as long as the row was built.
+    nonisolated private static let maxPixelSize = 1_300
     private var detail: String { material?.detail ?? fallback }
 
     private var symbol: String {
@@ -1080,7 +1105,7 @@ private struct MaterialRow: View {
             let preview = await ImageDownsampler.filePreview(
                 at: url,
                 maxBytes: 32 * 1024 * 1024,
-                maxPixelSize: 2048
+                maxPixelSize: Self.maxPixelSize
             )
             guard !Task.isCancelled else { return }
             if case let .image(decoded) = preview { image = UIImage(cgImage: decoded) }
@@ -1094,7 +1119,7 @@ private struct MaterialRow: View {
         else { return }
         let preview = await Task.detached(priority: .userInitiated) {
             guard let source = ImageDownsampler.source(data: data),
-                  let decoded = ImageDownsampler.thumbnail(source: source, maxPixelSize: 2048)
+                  let decoded = ImageDownsampler.thumbnail(source: source, maxPixelSize: Self.maxPixelSize)
             else { return ImageDownsampler.FilePreview.unreadable }
             return ImageDownsampler.FilePreview.image(decoded)
         }.value

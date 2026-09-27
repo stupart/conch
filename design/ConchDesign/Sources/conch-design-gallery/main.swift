@@ -2263,3 +2263,161 @@ try render("fluid-filmstrip-reduce-motion", width: 1520) {
 
 // First-run setup (OnboardingGallery.swift).
 try MainActor.assumeIsolated { try renderOnboarding() }
+
+// MARK: - Infinite scroll
+
+// The top of a conversation's recorded history, in every state it can be in. Tyler: "Why do I keep seeing 'show all'
+// or 'show more' in the convo … those should just smooth infinite scroll". So none of these has a button: scrolling
+// up reads further back, a long message is read whole as it nears the viewport, and the top says only what is true.
+
+/// A transcript row as the Mac draws it: your turn in a fill bubble, a reply as a document, a tool step as a line.
+struct ScrollGalleryRow: View {
+    enum Kind { case you, reply, tool }
+    let kind: Kind
+    let text: String
+
+    var body: some View {
+        switch kind {
+        case .you:
+            HStack {
+                Spacer(minLength: 48)
+                Text(text).font(ConchType.readingBody).lineSpacing(ConchType.readingLineSpacing)
+                    .foregroundStyle(ConchColor.textPrimary)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(ConchColor.fill, in: RoundedRectangle(cornerRadius: ConchRadius.large))
+            }
+        case .reply:
+            MarkdownView(text: text).lineSpacing(ConchType.readingLineSpacing)
+                .foregroundStyle(ConchColor.textPrimary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        case .tool:
+            HStack(spacing: 8) {
+                Image(systemName: "chevron.right").font(.system(size: 8)).foregroundStyle(ConchColor.textTertiary)
+                Text(text).font(.system(size: 11, weight: .medium)).foregroundStyle(ConchColor.textSecondary)
+            }
+        }
+    }
+}
+
+struct ScrollGalleryEntry {
+    let kind: ScrollGalleryRow.Kind
+    let text: String
+}
+
+/// The conversation panel's column: the history region, then a live row, on the stage's surface.
+struct ScrollGalleryPanel: View {
+    let edge: HistoryEdge
+    var note: String? = nil
+    let rows: [ScrollGalleryEntry]
+    var live: [ScrollGalleryEntry] = []
+    var width: CGFloat = 700
+    var gap: CGFloat = 22
+    var edgeFont: Font = .system(size: 11)
+    @StateObject private var model = HistoryRegionModel()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: gap) {
+            HistoryRegion(
+                model: model,
+                edge: edge,
+                note: note,
+                entries: rows.enumerated().map { HistoryEntry(id: "row-\($0.offset)", estimate: 0, payload: $0.element) },
+                gap: gap,
+                edgeFont: edgeFont
+            ) { entry in
+                ScrollGalleryRow(kind: entry.kind, text: entry.text)
+            }
+            ForEach(Array(live.enumerated()), id: \.offset) { _, entry in
+                ScrollGalleryRow(kind: entry.kind, text: entry.text)
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+        .frame(width: width, alignment: .leading)
+        .background(ConchColor.surface, in: RoundedRectangle(cornerRadius: ConchRadius.large))
+        .overlay(RoundedRectangle(cornerRadius: ConchRadius.large).strokeBorder(ConchColor.hairline, lineWidth: 1))
+    }
+}
+
+let scrollReplies: [ScrollGalleryEntry] = [
+    .init(kind: .you, text: "Can the phone read a whole session now, or does it still stop somewhere?"),
+    .init(kind: .reply, text: "It reads the whole session. The phone used to stop at a thousand rows because every row it held was also laid out; now only the rows near the screen are views, so it keeps going."),
+    .init(kind: .tool, text: "Worked 42s · 6 steps"),
+    .init(kind: .reply, text: "What it **holds** is still bounded: past a thousand items the pages farthest from you are let go, and read again with their own cursor if you scroll back to them."),
+]
+
+func scrollPaging(pages: Int, previous: String?, coverage: HistoryCoverage, status: HistoryFailure? = nil, loading: Bool = false) -> HistoryPaging {
+    var paging = HistoryPaging(session: "gallery")
+    for page in 0..<pages {
+        let items = (0..<3).map { HistoryItem(id: "p\(page)-\($0)", preview: "x") }
+        paging.apply(page: HistoryPage(items: items, previousCursor: page == pages - 1 ? previous : "c\(page)", epoch: "e", coverage: coverage),
+                     generation: paging.beginLoad())
+    }
+    if let status { paging.apply(failure: status, generation: paging.beginLoad()) }
+    if loading { paging.beginLoad() }
+    return paging
+}
+
+let complete = HistoryCoverage(sources: 1, statuses: ["complete": 1], indexedBytes: 10, observedBytes: 10)
+
+try render("scroll-1-top-of-history", width: 800) {
+    Heading(title: "Scrolling up, more above", note: "The page before was asked for a screen and a half ago and has not been needed yet. Nothing is said: no button, no spinner. The line at the top keeps its height, so what arrives above never moves what you are reading.")
+    ScrollGalleryPanel(edge: HistoryEdge.of(scrollPaging(pages: 2, previous: "more", coverage: complete), liveIsWhole: false, slow: false),
+                       rows: scrollReplies)
+}
+
+try render("scroll-2-mid-fetch", width: 800) {
+    Heading(title: "A read that is slow", note: "Only after 300 ms does a quiet spinner show, in the line's own height. A long reply further down is still arriving whole: its preview ends in an ellipsis rather than mid-word until the rest lands, a screen or two before it is seen.")
+    ScrollGalleryPanel(edge: HistoryEdge.of(scrollPaging(pages: 2, previous: "more", coverage: complete, loading: true), liveIsWhole: false, slow: true),
+                       rows: [scrollReplies[0], .init(kind: .reply, text: "The record keeps the whole of every message and the snapshot keeps its newest part, so a reply the daemon cut is joined back together: the record supplies the head and the snapshot the tail, where they overlap, and a message still being written is read again every few seconds until it can be…"), scrollReplies[2]])
+}
+
+try render("scroll-3-start", width: 800) {
+    Heading(title: "The start of the conversation", note: "Read back to the first item, with nothing missing: a subtle line, and the first things said.")
+    ScrollGalleryPanel(edge: HistoryEdge.of(scrollPaging(pages: 1, previous: nil, coverage: complete), liveIsWhole: false, slow: false),
+                       rows: [.init(kind: .you, text: "Let's make the conversation scroll forever."), .init(kind: .reply, text: "Starting with where the reader is, and what moves when a page lands above them.")])
+}
+
+try render("scroll-4-unavailable", width: 800) {
+    Heading(title: "Where history genuinely is not there", note: "Said once, at the top, in the plain sentences the record store already had. No buttons: there is nothing to press that would change them, except turning records on.")
+    VStack(alignment: .leading, spacing: 18) {
+        Caption("The record answered and holds nothing for this session, while the live window says there was more")
+        ScrollGalleryPanel(edge: HistoryEdge.of({ var p = HistoryPaging(session: "g"); p.apply(page: HistoryPage(items: [], previousCursor: nil, epoch: "e", coverage: complete), generation: p.beginLoad()); return p }(), liveIsWhole: false, slow: false),
+                           rows: [], live: [scrollReplies[1]])
+        Caption("Recorded, but not from the start")
+        ScrollGalleryPanel(edge: HistoryEdge.of(scrollPaging(pages: 1, previous: nil, coverage: HistoryCoverage(sources: 1, statuses: ["complete": 1], indexedBytes: 5, observedBytes: 9)),
+                                                liveIsWhole: false, slow: false, oldest: "12 Sep 2026 at 09:14"),
+                           rows: [scrollReplies[0]])
+        Caption("A branch conch can't place, and the record still reading")
+        ScrollGalleryPanel(edge: HistoryEdge(mark: .none, notes: [HistoryNotice.allBranches, "Still reading this session's history — earlier messages may appear."]),
+                           rows: [scrollReplies[0]])
+        Caption("Records off")
+        ScrollGalleryPanel(edge: HistoryEdge.of({ var p = HistoryPaging(session: "g"); p.apply(failure: .off, generation: p.beginLoad()); return p }(), liveIsWhole: false, slow: false),
+                           rows: [], live: [scrollReplies[1]])
+        Caption("A read that failed: said while it tries again on its own")
+        ScrollGalleryPanel(edge: HistoryEdge.of(scrollPaging(pages: 1, previous: "more", coverage: complete, status: .message("conch's record store is busy."), loading: true), liveIsWhole: false, slow: true),
+                           rows: [scrollReplies[0]])
+    }
+}
+
+let scrollLongReply: String = {
+    let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Tests/ConchDesignTests/Fixtures/migration-plan.md")
+    let whole = (try? String(contentsOf: url, encoding: .utf8)) ?? String(repeating: "A long reply. ", count: 700)
+    // Past the 4,000-character cut with room to spare; the whole document is a picture too tall to encode.
+    let head = whole.prefix(8_500)
+    return String(head[..<(head.range(of: "\n\n", options: .backwards)?.lowerBound ?? head.endIndex)])
+}()
+
+try render("scroll-5-long-message-whole", width: 800) {
+    Heading(title: "A long message, whole", note: "\(scrollLongReply.count) characters — past the daemon's 4,000-character cut — read back from the record and drawn whole. Where \"Show the rest\" was, there is the rest. Its parse is cached by text, so scrolling away and back does not parse it again.")
+    ScrollGalleryPanel(edge: HistoryEdge(mark: .none), rows: [.init(kind: .you, text: "Write up the migration plan."), .init(kind: .reply, text: scrollLongReply)])
+}
+
+try render("scroll-6-phone", width: 900) {
+    Heading(title: "The phone", note: "The same region and the same top line, at the phone's measure and 14 between rows.")
+    HStack(alignment: .top, spacing: 24) {
+        ScrollGalleryPanel(edge: HistoryEdge(mark: .loading), rows: Array(scrollReplies.prefix(2)), width: 390, gap: 14, edgeFont: .system(size: 13))
+        ScrollGalleryPanel(edge: HistoryEdge(mark: .start), rows: Array(scrollReplies.prefix(2)), width: 390, gap: 14, edgeFont: .system(size: 13))
+    }
+}

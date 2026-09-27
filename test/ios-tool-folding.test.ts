@@ -40,9 +40,14 @@ describe("the phone folds a run of tool steps", () => {
   });
 
   test("both lists fold, so recorded history reads the same as the live window", () => {
-    const body = stack.slice(stack.indexOf("var body: some View {"), stack.indexOf("private var historyHeader"));
+    const body = stack.slice(stack.indexOf("var body: some View {"), stack.indexOf("private var historyEdge"));
     expect(body.length).toBeGreaterThan(400);
-    expect(body).toContain("foldedRow(for: item, in: recorded, folds: recordedFolds).id(item.id)");
+    // The recorded rows are the history region's, and a run there is the same run view.
+    expect(body).toContain("recordedRow(row)");
+    expect(fn("private func recordedRow(_ recorded: RecordedRow) -> some View {")).toContain(
+      "runView(run, steps: recorded.steps.compactMap(conversationItem(recorded:)))",
+    );
+    expect(stack).toContain("let runs = ToolFolding.runs(for: rows.map { (id: $0.id, isTool: $0.item.map(Self.isToolStep) ?? false, at: $0.item?.at) })");
     expect(body).toContain("foldedRow(for: item, in: conversation.items, folds: liveFolds).id(item.id)");
     // No loop draws a bare row any more.
     expect(body).not.toContain("row(item).id(item.id)");
@@ -50,11 +55,12 @@ describe("the phone folds a run of tool steps", () => {
 
   test("the fold draws the summary, hides its members, and opens on its own state", () => {
     const folded = fn("private func foldedRow(for item: ConversationItem, in items: [ConversationItem], folds: FoldIndex) -> some View {");
-    expect(folded.length).toBeGreaterThan(600);
-    expect(folded).toContain("Text(run.summary)");
     expect(folded).toContain("} else if folds.memberOf[item.id] != nil {\n            EmptyView()");
+    const run = fn("private func runView(_ run: ToolRun, steps: [ConversationItem]) -> some View {");
+    expect(run.length).toBeGreaterThan(600);
+    expect(run).toContain("Text(run.summary)");
     // A run is named by its first step. Opening it must not also open that step's output.
-    expect(folded).toContain("openRunIDs");
-    expect(folded).not.toContain("expandedToolIDs");
+    expect(run).toContain("openRunIDs");
+    expect(run).not.toContain("expandedToolIDs");
   });
 });
