@@ -406,10 +406,7 @@ struct ComposerView: View {
         // never even lit, which is why it read as "doesn't seem to work" rather than as an
         // error. `.image` is the whole tree (png, jpeg, tiff, heic, gif conform to it), the
         // same way the file picker asks for `.image` rather than listing extensions.
-        .onDrop(of: [.fileURL, .image], isTargeted: $isTargetedForDrop) { providers in
-            load(providers)
-            return true
-        }
+        .modifier(ComposerDropTarget(live: !rendersStatically, isTargeted: $isTargetedForDrop, load: load))
         .onChange(of: focusRequest) { _, _ in
             // Somewhere else asked for the cursor — the "Something else…" row
             // on a question, today. Ignore the initial value so opening a
@@ -814,6 +811,27 @@ private struct ComposerCard: ViewModifier {
 
 /// The window composer's card, as AppKit has it: where on screen it is and in which window, for the swoop to leave from
 /// and land on. Asked when needed rather than reported, so a window moved or resized since is still measured right.
+/// Drops onto the composer, left out of the swoop's picture. `.onDrop` is backed by an AppKit view, which ImageRenderer
+/// can't draw: it draws its placeholder instead, a yellow box with a no-entry sign, and as the drop target is the whole
+/// composer, the whole input box flew yellow for the half second of each swoop (Tyler: "the input box itself turned
+/// yellow"; it never showed in a screenshot because taking one ends the flight).
+private struct ComposerDropTarget: ViewModifier {
+    let live: Bool
+    @Binding var isTargeted: Bool
+    let load: ([NSItemProvider]) -> Void
+
+    func body(content: Content) -> some View {
+        if live {
+            content.onDrop(of: [.fileURL, .image], isTargeted: $isTargeted) { providers in
+                load(providers)
+                return true
+            }
+        } else {
+            content
+        }
+    }
+}
+
 private struct ComposerCardAnchor: NSViewRepresentable {
     final class Anchor: NSView {
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
