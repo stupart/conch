@@ -92,6 +92,7 @@ function fixture(over: Partial<SetupDependencies> = {}, binaries: AgentBinary[] 
       calls.speak.push([voice, text]);
       return true;
     },
+    audioElsewhere: () => null,
     mic: {
       hold: async () => ({ release: () => { calls.releases++; } }),
       record: () => ({ exited: Promise.resolve(0), stop: () => { calls.stops++; } }),
@@ -554,6 +555,7 @@ describe("over the control socket", () => {
         emit({ kind: "mic-level", level: 0.6 });
         return { kind: "mic-check-done", heard: "hello", silent: false, recognition: "ready", peak: 0.6 };
       },
+      close: () => {},
     };
     const server = createControlServer({
       socketPath,

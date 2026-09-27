@@ -317,8 +317,10 @@ public enum OnboardingReports {
     // MARK: The iPhone
 
     /// The phone's half of setup, from the published `phone` block's parts (Wave B's contract): nil while no phone is
-    /// paired. A phone paired without a setup to report (paired before setup existed, or an app without one) has nothing
-    /// more to do, so it is finished.
+    /// paired. A phone paired without a setup to report (paired before setup existed, an app without one, or one
+    /// reinstalled without its setup) has nothing more to do, so it is finished. The daemon says so itself once such a
+    /// phone has connected and stayed quiet (`PHONE_SETUP_REPORT_GRACE_MS`, src/phone-setup.ts): paired, no name,
+    /// finished (`phoneHasNothingToMirror`).
     public static func phoneHandoff(paired: Bool, device: String?, stage: String?, declined: [String]) -> PhoneHandoff? {
         let reported = stage.flatMap(PhoneSetupStage.init(rawValue:))
         guard paired || (reported ?? .waiting) > .waiting else { return nil }
@@ -327,6 +329,13 @@ public enum OnboardingReports {
             return PhoneHandoff(device: device, stage: .finished, declined: refused)
         }
         return PhoneHandoff(device: device, stage: reported, declined: refused)
+    }
+
+    /// A paired phone with nothing of its own setup to show: it never said its name, so it never reported a stage, and
+    /// it is done. The iPhone step shows it paired, with no rows to tick (it asked for no microphone and toured nothing
+    /// the Mac knows of), and moves on. While a phone that has just connected may still report, it isn't this yet.
+    public static func phoneHasNothingToMirror(_ handoff: PhoneHandoff) -> Bool {
+        handoff.device == nil && handoff.stage == .finished
     }
 
     /// Whether this Mac has a phone set up, for setup's readiness (Welcome back, the menu's count, the rail). The daemon's

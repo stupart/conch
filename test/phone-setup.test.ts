@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPhoneBridgeApplication, mintPairingCode, type PhoneSetupHooks } from "../src/phone-bridge.ts";
 import {
+  ComputerName,
   decodeSetupStage,
   PHONE_DEVICE_MAX_CHARS,
   PHONE_SETUP_MAX_DEVICES,
+  PHONE_SETUP_REPORT_GRACE_MS,
   PHONE_SETUP_STAGES,
   PhoneSetup,
   phoneSetupPath,
@@ -154,12 +156,12 @@ describe("the phone's setup, as the Mac holds it", () => {
     expect(new PhoneSetup({ path: unpaired }).published(true).setup.stage).toBe("waiting");
   });
 
-  test("a phone that paired and said nothing more is still paired after a restart", () => {
+  test("a phone that paired and said nothing more is still paired after a restart, with nothing to mirror (#28)", () => {
     const path = scratch();
     const first = new PhoneSetup({ path });
     first.exchange("started");
     first.exchange("completed");
-    expect(new PhoneSetup({ path }).published(true)).toEqual({ enabled: true, paired: true, device: null, setup: { stage: "paired", declined: [] } });
+    expect(new PhoneSetup({ path }).published(true)).toEqual({ enabled: true, paired: true, device: null, setup: { stage: "finished", declined: [] } });
   });
 
   test("a damaged file starts afresh and says so; a hand-edited stage is dropped", () => {
@@ -172,7 +174,8 @@ describe("the phone's setup, as the Mac holds it", () => {
       version: 1, paired: true, device: "iPhone",
       devices: { iPhone: { stage: "sideways", declined: [], at: 1 }, Other: { stage: "tour", declined: ["tour"], at: 2 } },
     }));
-    expect(new PhoneSetup({ path }).published(true)).toEqual({ enabled: true, paired: true, device: null, setup: { stage: "paired", declined: [] } });
+    // Paired, and nothing sound reported: nothing to mirror.
+    expect(new PhoneSetup({ path }).published(true)).toEqual({ enabled: true, paired: true, device: null, setup: { stage: "finished", declined: [] } });
   });
 
   test(`at most ${PHONE_SETUP_MAX_DEVICES} phones are remembered, the oldest forgotten`, () => {
@@ -180,9 +183,9 @@ describe("the phone's setup, as the Mac holds it", () => {
     let now = 0;
     const setup = new PhoneSetup({ path, now: () => ++now });
     for (let index = 0; index <= PHONE_SETUP_MAX_DEVICES; index += 1) setup.report(decoded(report("tour", [], `iPhone ${index}`)));
-    const devices = Object.keys(JSON.parse(readFileSync(path, "utf8")).devices);
-    expect(devices).toHaveLength(PHONE_SETUP_MAX_DEVICES);
-    expect(devices).not.toContain("iPhone 0");
+    const phones = Object.keys(JSON.parse(readFileSync(path, "utf8")).phones);
+    expect(phones).toHaveLength(PHONE_SETUP_MAX_DEVICES);
+    expect(phones).not.toContain("name:iPhone 0");
     // Forgotten means a fresh start for that phone, not a refusal.
     expect(setup.report(decoded(report("paired", [], "iPhone 0")))).toEqual({ stage: "paired", moved: true });
   });
@@ -305,5 +308,195 @@ describe("POST /setup-stage on the phone bridge", () => {
     expect(store.published(true).paired).toBe(false);
     expect((await pair(code.code)).status).toBe(200);
     expect(store.published(true)).toMatchObject({ paired: true, setup: { stage: "paired" } });
+  });
+});
+
+/** Two installs of the app, as iOS 16 names every phone: "iPhone". */
+const FIRST = "6F1C2B3A-0D4E-4F5A-8B9C-0D1E2F3A4B5C";
+const SECOND = "A0B1C2D3-E4F5-4A6B-8C7D-9E0F1A2B3C4D";
+const installed = (stage: string, install: string, declined: string[] = [], device = "iPhone") => decoded({ ...report(stage, declined, device), install });
+
+describe("each install keeps its own progress; the name is only shown (#27)", () => {
+  test("a report may carry its install id: a short plain id, else refused; without one it is still taken", () => {
+    expect(decodeSetupStage({ ...report("paired"), install: FIRST })).toEqual({
+      ok: true, value: { stage: "paired", declined: [], device: "Tyler's iPhone", install: FIRST },
+    });
+    expect(decoded(report("paired"))).not.toHaveProperty("install");
+    for (const install of ["", "short", "x".repeat(65), "has space in it", "slash/es-here", 42, null, ["id"]]) {
+      expect(decodeSetupStage({ ...report("paired"), install }), JSON.stringify(install)).toEqual({ ok: false, err: "install must be the app's install id" });
+    }
+  });
+
+  test("a second phone with the same name starts its own setup: not finished from its first report, no refusal it didn't make", () => {
+    const setup = new PhoneSetup({ path: scratch() });
+    setup.report(installed("tour", FIRST, ["microphone"]));
+    setup.report(installed("finished", FIRST, ["microphone"]));
+    expect(setup.report(installed("paired", SECOND))).toEqual({ stage: "paired", moved: true });
+    expect(setup.published(true)).toEqual({ enabled: true, paired: true, device: "iPhone", setup: { stage: "paired", declined: [] } });
+    expect(setup.report(installed("microphone", SECOND))).toEqual({ stage: "microphone", moved: true });
+    expect(setup.published(true).setup).toEqual({ stage: "microphone", declined: [] });
+  });
+
+  test("this phone reinstalled (a new install id, a lower stage) starts afresh, and a rename is shown by its new name", () => {
+    const path = scratch();
+    const setup = new PhoneSetup({ path });
+    setup.report(installed("finished", FIRST, ["microphone"], "Tyler's iPhone"));
+    expect(setup.report(installed("paired", SECOND, [], "Tyler's iPhone"))).toEqual({ stage: "paired", moved: true });
+    expect(setup.published(true)).toMatchObject({ device: "Tyler's iPhone", setup: { stage: "paired", declined: [] } });
+    setup.report(installed("paired", SECOND, [], "Tyler's other iPhone"));
+    expect(setup.published(true).device).toBe("Tyler's other iPhone");
+    // On disk by install, each with its name; nothing else about the phone.
+    const file = JSON.parse(readFileSync(path, "utf8"));
+    expect(Object.keys(file.phones).sort()).toEqual([`install:${FIRST}`, `install:${SECOND}`]);
+    expect(file.phones[`install:${SECOND}`].name).toBe("Tyler's other iPhone");
+    expect(file.current).toBe(`install:${SECOND}`);
+  });
+
+  test("the first setup build's reports, without an install id, are kept by name, and its file is read", () => {
+    const path = scratch();
+    writeFileSync(path, JSON.stringify({
+      version: 1, paired: true, device: "Tyler's iPhone",
+      devices: { "Tyler's iPhone": { stage: "tour", declined: ["microphone"], at: 5 } },
+    }));
+    const setup = new PhoneSetup({ path });
+    expect(setup.published(true)).toEqual({ enabled: true, paired: true, device: "Tyler's iPhone", setup: { stage: "tour", declined: ["microphone"] } });
+    expect(setup.report(decoded(report("finished")))).toEqual({ stage: "finished", moved: true });
+    expect(Object.keys(JSON.parse(readFileSync(path, "utf8")).phones)).toEqual(["name:Tyler's iPhone"]);
+    // The same phone updated to an app with install ids: its own record from now on.
+    expect(setup.report(installed("finished", FIRST, [], "Tyler's iPhone"))).toEqual({ stage: "finished", moved: true });
+  });
+
+  test("the published block keeps its contract: the name, never the install id", () => {
+    const setup = new PhoneSetup({ path: scratch() });
+    setup.report(installed("tour", FIRST, ["microphone"], "Tyler's iPhone"));
+    const phone = setup.published(true);
+    expect(Object.keys(phone).sort()).toEqual(["device", "enabled", "paired", "setup"]);
+    expect(Object.keys(phone.setup).sort()).toEqual(["declined", "stage"]);
+    expect(JSON.stringify(phone)).not.toContain(FIRST);
+  });
+});
+
+describe("a paired phone that never reports doesn't leave the Mac waiting on it (#28)", () => {
+  function clocked(path = scratch()) {
+    let now = 1_000_000;
+    const timers: Array<{ run: () => void; due: number; cleared: boolean }> = [];
+    const changes: PublishedPhone[] = [];
+    const setup: PhoneSetup = new PhoneSetup({
+      path,
+      now: () => now,
+      onChange: () => changes.push(setup.published(true)),
+      setTimer: (run, ms) => {
+        const timer = { run, due: now + ms, cleared: false };
+        timers.push(timer);
+        return { clear: () => { timer.cleared = true; } };
+      },
+    });
+    /** Time passes, and the timers due in it fire. */
+    const pass = (ms: number) => {
+      now += ms;
+      for (const timer of [...timers]) {
+        if (!timer.cleared && timer.due <= now) {
+          timer.cleared = true;
+          timer.run();
+        }
+      }
+    };
+    return { setup, changes, pass, path };
+  }
+
+  test("paired by a key exchange and silent: paired while it may still report, then finished with nothing to mirror", () => {
+    const { setup, changes, pass } = clocked();
+    setup.exchange("started");
+    setup.exchange("completed");
+    expect(setup.published(true)).toEqual({ enabled: true, paired: true, device: null, setup: { stage: "paired", declined: [] } });
+    pass(PHONE_SETUP_REPORT_GRACE_MS - 1_000);
+    expect(setup.published(true).setup.stage).toBe("paired");
+    pass(2_000);
+    expect(setup.published(true)).toEqual({ enabled: true, paired: true, device: null, setup: { stage: "finished", declined: [] } });
+    // Said, without anything else happening: the Mac's step moves on by itself.
+    expect(changes.at(-1)).toEqual({ enabled: true, paired: true, device: null, setup: { stage: "finished", declined: [] } });
+  });
+
+  test("a phone that reports in time is followed as before, and the wait's end changes nothing", () => {
+    const { setup, changes, pass } = clocked();
+    setup.exchange("started");
+    setup.exchange("completed");
+    pass(1_000);
+    setup.report(installed("paired", FIRST));
+    pass(PHONE_SETUP_REPORT_GRACE_MS);
+    expect(setup.published(true)).toEqual({ enabled: true, paired: true, device: "iPhone", setup: { stage: "paired", declined: [] } });
+    expect(changes.map((phone) => `${phone.setup.stage} ${phone.device}`)).toEqual(["connecting null", "paired null", "paired iPhone"]);
+  });
+
+  test("an earlier install's record, stopped part way, isn't shown for a phone that connects and says nothing", () => {
+    const path = scratch();
+    const before = new PhoneSetup({ path });
+    before.report(installed("tour", FIRST, ["microphone"]));
+    // Reinstalled: the pairing survived in the Keychain, the setup didn't, so the app says nothing.
+    const { setup, pass } = clocked(path);
+    expect(setup.published(true).setup.stage).toBe("tour");
+    setup.exchange("started");
+    setup.exchange("completed");
+    expect(setup.published(true).setup.stage).toBe("tour");
+    pass(PHONE_SETUP_REPORT_GRACE_MS + 1);
+    expect(setup.published(true)).toEqual({ enabled: true, paired: true, device: null, setup: { stage: "finished", declined: [] } });
+    // It reports after all: its own progress, from its own start.
+    setup.report(installed("paired", SECOND));
+    expect(setup.published(true)).toEqual({ enabled: true, paired: true, device: "iPhone", setup: { stage: "paired", declined: [] } });
+  });
+
+  test("a phone part way through that reconnects and says where it is stays followed", () => {
+    const { setup, pass } = clocked();
+    setup.report(installed("microphone", FIRST));
+    setup.exchange("started");
+    setup.exchange("completed");
+    pass(500);
+    expect(setup.report(installed("microphone", FIRST))).toEqual({ stage: "microphone", moved: false });
+    pass(PHONE_SETUP_REPORT_GRACE_MS + 1);
+    expect(setup.published(true).setup.stage).toBe("microphone");
+  });
+
+  test("a finished phone that reconnects saying nothing is still finished, by its name", () => {
+    const { setup, pass } = clocked();
+    setup.report(installed("finished", FIRST, [], "Tyler's iPhone"));
+    setup.exchange("started");
+    setup.exchange("completed");
+    pass(PHONE_SETUP_REPORT_GRACE_MS + 1);
+    expect(setup.published(true)).toMatchObject({ device: "Tyler's iPhone", setup: { stage: "finished" } });
+  });
+
+});
+
+describe("the Mac's name is known before any phone asks, and asking never holds the daemon (D7)", () => {
+  test("before it has been asked: the host name, from what's known", () => {
+    const name = new ComputerName(() => "tylers-mbp");
+    expect(name.current()).toBe("tylers-mbp");
+  });
+
+  test("asked once, off the request path: its answer is kept, and asked again it isn't re-asked", async () => {
+    let asked = 0;
+    const name = new ComputerName(() => "tylers-mbp");
+    const ask = async () => { asked++; return "Tyler's MacBook Pro\n"; };
+    expect(await name.resolve({ ask })).toBe("Tyler's MacBook Pro");
+    expect(await name.resolve({ ask })).toBe("Tyler's MacBook Pro");
+    expect(name.current()).toBe("Tyler's MacBook Pro");
+    expect(asked).toBe(1);
+  });
+
+  test("an answer that never comes, fails, or is empty: the host name, within the timeout", async () => {
+    const hangs = new ComputerName(() => "tylers-mbp");
+    const started = Date.now();
+    expect(await hangs.resolve({ timeoutMs: 40, ask: () => new Promise(() => {}) })).toBe("tylers-mbp");
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(await new ComputerName(() => "tylers-mbp").resolve({ ask: async () => { throw new Error("no scutil"); } })).toBe("tylers-mbp");
+    expect(await new ComputerName(() => "tylers-mbp").resolve({ ask: async () => "  " })).toBe("tylers-mbp");
+    expect((await new ComputerName(() => "h").resolve({ ask: async () => "M".repeat(200) })).length).toBe(PHONE_DEVICE_MAX_CHARS);
+  });
+
+  test("nothing blocking in phone-setup.ts; the daemon asks at start, and the phone's route reads what's known", () => {
+    expect(read("src/phone-setup.ts")).not.toContain("spawnSync");
+    const daemon = read("src/daemon.ts");
+    expect(daemon).toContain("void resolveComputerName();");
+    expect(daemon.indexOf("void resolveComputerName();")).toBeLessThan(daemon.indexOf("macName: computerName,"));
   });
 });

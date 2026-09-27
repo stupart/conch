@@ -19,7 +19,9 @@ final class PhoneSetupStore: ObservableObject {
     @Published private(set) var flow: PhoneSetupFlow?
     /// Nil in a DEBUG preview: nothing is kept.
     private let defaults: UserDefaults?
-    private var syncing = false
+    /// The reports being sent, one at a time; asked for again while it runs, it runs again after (`sync`).
+    private var draining: Task<Void, Never>?
+    private var drainAgain = false
     private var linking = false
 
     init(defaults: UserDefaults? = .standard, flow: PhoneSetupFlow? = nil) {
@@ -43,8 +45,20 @@ final class PhoneSetupStore: ObservableObject {
     /// Setup shows instead of the ledger: a pairing started it and "Open conch" hasn't ended it.
     var showing: Bool { flow?.showing ?? false }
 
-    /// This phone's name as the Mac shows it.
+    /// This phone's name as the Mac shows it, and nothing more: on iOS 16 and later it is "iPhone" on every phone.
     static var device: String { UIDevice.current.name }
+
+    /// Where this install's id is kept: UserDefaults, which a reinstall empties, so a reinstall is a new install.
+    static let installKey = "conch.install-id.v1"
+
+    /// This install of the app, which the Mac keeps this phone's setup by (a second phone, or this one reinstalled,
+    /// starts its own): a random id, made once and kept. A DEBUG preview keeps nothing, so its id lives as long as it does.
+    private(set) lazy var install: String = {
+        if let kept = defaults?.string(forKey: Self.installKey), !kept.isEmpty { return kept }
+        let made = UUID().uuidString
+        defaults?.set(made, forKey: Self.installKey)
+        return made
+    }()
 
     // MARK: Moving through
 
@@ -74,30 +88,52 @@ final class PhoneSetupStore: ObservableObject {
 
     // MARK: Telling the Mac
 
-    /// The link to the Mac is up. On Connecting the Mac is told first, so Connected already carries its name; then
-    /// whatever it hasn't heard.
+    /// The link to the Mac is up. On Connecting the Mac is told first, so Connected already carries its name. Past it, the
+    /// Mac is told again where this phone is: after a restart, or having last heard from another install, it follows this
+    /// one rather than deciding this phone has nothing to report. Then whatever it hasn't heard.
     func linkUp(_ bridge: BridgeClient) async {
         guard !linking else { return }
         linking = true
         defer { linking = false }
         if flow?.screen == .connecting {
-            apply(await bridge.reportSetup(stage: .paired, declined: [], device: Self.device, within: .seconds(4)), for: .paired, bridge: bridge)
+            apply(await bridge.reportSetup(stage: .paired, declined: [], device: Self.device, install: install, within: .seconds(4)), for: .paired, bridge: bridge)
             update { $0.linked() }
+        } else if let flow, let stage = flow.reportable {
+            apply(await bridge.reportSetup(stage: stage, declined: flow.declined, device: Self.device, install: install), for: stage, bridge: bridge)
         }
         await sync(bridge)
     }
 
-    /// Tell the Mac whatever it hasn't heard, one report at a time; a stage reached meanwhile goes next. A report
-    /// that isn't heard waits for the link to come back (`linkUp`, or the app's own reconnect).
+    /// Tell the Mac whatever it hasn't heard, one report at a time; a stage reached meanwhile goes next. Asked while a run
+    /// is under way, it runs again once that one ends, so a report asked for then (a new screen, the link back) is never
+    /// dropped. A report that isn't heard while the link is still up is sent again, a little later each time; one that
+    /// isn't heard because the link went waits for it to come back (`linkUp`, or the app's own reconnect).
     func sync(_ bridge: BridgeClient) async {
-        guard !syncing else { return }
-        syncing = true
-        defer { syncing = false }
-        while bridge.isConnected, let flow, let stage = flow.unreported {
-            let outcome = await bridge.reportSetup(stage: stage, declined: flow.declined, device: Self.device)
-            if outcome == .unheard { return }
-            apply(outcome, for: stage, bridge: bridge)
+        guard draining == nil else {
+            drainAgain = true
+            return
         }
+        // Its own task, not the caller's: a screen's `.task` is cancelled when the screen changes, and a run cut short
+        // there would drop what it was sending.
+        draining = Task { [weak self] in await self?.drain(bridge) }
+    }
+
+    private func drain(_ bridge: BridgeClient) async {
+        defer { draining = nil }
+        var pause: Duration = .seconds(1)
+        repeat {
+            drainAgain = false
+            while bridge.isConnected, let flow, let stage = flow.unreported {
+                let outcome = await bridge.reportSetup(stage: stage, declined: flow.declined, device: Self.device, install: install)
+                if outcome == .unheard {
+                    try? await Task.sleep(for: pause)
+                    pause = min(pause * 2, .seconds(30))
+                    continue
+                }
+                pause = .seconds(1)
+                apply(outcome, for: stage, bridge: bridge)
+            }
+        } while drainAgain
     }
 
     private func apply(_ outcome: BridgeClient.SetupReportOutcome, for stage: PhoneSetupStage, bridge: BridgeClient) {
@@ -150,8 +186,14 @@ struct SetupFlow: View {
     @ObservedObject var store: PhoneSetupStore
     /// Cancel, or "Scan a different Mac": the pairing goes, and the welcome comes back.
     let onCancel: () -> Void
+    /// A new code, scanned or typed from the expired-code screen: it replaces the pairing the Mac refused.
+    let onRepaired: (BridgeClient.Pairing) -> Void
 
     @State private var trouble: PhonePairingProblem.Problem?
+    /// The expired-code screen's "Scan again": the scanner, for the fresh code the Mac is showing.
+    @State private var rescanning = false
+    /// Its "Enter a code instead": the typed code, with this pairing left as it is until a new one works.
+    @State private var enteringCode = false
     /// The link has been down a while, somewhere past Connecting.
     @State private var reconnecting = false
     @State private var attempt = 0
@@ -163,10 +205,12 @@ struct SetupFlow: View {
     /// A drop shorter than this is a blip, not news.
     static let quietBeforeSaying: Duration = .seconds(3)
 
-    init(bridge: BridgeClient, store: PhoneSetupStore, trouble: PhonePairingProblem.Problem? = nil, onCancel: @escaping () -> Void) {
+    init(bridge: BridgeClient, store: PhoneSetupStore, trouble: PhonePairingProblem.Problem? = nil,
+         onCancel: @escaping () -> Void, onRepaired: @escaping (BridgeClient.Pairing) -> Void) {
         self.bridge = bridge
         self.store = store
         self.onCancel = onCancel
+        self.onRepaired = onRepaired
         _trouble = State(initialValue: trouble)
     }
 
@@ -210,12 +254,49 @@ struct SetupFlow: View {
         .onChange(of: bridge.pairingRejected) { _, rejected in
             if rejected, flow.screen == .connecting { trouble = .expired }
         }
+        .fullScreenCover(isPresented: $rescanning) {
+            SetupScanner(
+                onCode: rescanned,
+                onEnterCode: {
+                    rescanning = false
+                    enteringCode = true
+                },
+                onClose: { rescanning = false }
+            )
+        }
+        .fullScreenCover(isPresented: $enteringCode) {
+            PairingView(startingAt: .code, onBack: { enteringCode = false }) { newPairing in
+                enteringCode = false
+                repaired(newPairing)
+            }
+        }
+    }
+
+    /// A code scanned from the expired-code screen: only one that decodes reaches here (`SetupScanner`), and it pairs.
+    private func rescanned(_ scanned: String) {
+        guard let relay = try? RelayPairingPayload.decodePairingCode(scanned) else { return }
+        rescanning = false
+        repaired(.relay(relay))
+    }
+
+    /// The new pairing replaces the refused one, and Connecting starts over on it, with its own patience.
+    private func repaired(_ pairing: BridgeClient.Pairing) {
+        trouble = nil
+        attempt += 1
+        onRepaired(pairing)
     }
 
     @ViewBuilder
     private var page: some View {
         if let trouble {
-            PhonePairingProblem(trouble, onPrimary: retry, onSecondary: onCancel)
+            switch trouble {
+            case .expired:
+                // The code the Mac refused won't work again: "Scan again" scans the fresh one it's showing, and "Enter a
+                // code instead" types one, leaving this pairing until a new one works. Neither retries the refused one.
+                PhonePairingProblem(trouble, onPrimary: { rescanning = true }, onSecondary: { enteringCode = true })
+            case .macNotAnswering, .relayUnreachable:
+                PhonePairingProblem(trouble, onPrimary: retry, onSecondary: onCancel)
+            }
         } else {
             switch flow.screen {
             case .connecting, .connected:
@@ -340,6 +421,7 @@ struct SetupPreview: View {
         case "code": PairingView(startingAt: .code) { _ in }
         case "scanner": PhoneScanner(onClose: {})
         case "scanner-denied": PhoneScanner(denied: true, onClose: {})
+        case "scanner-unreadable": PhoneScanner(message: PhoneScanner.unreadableCode, onClose: {})
         case "getmac": GetMacSheet()
         default: flowScreen
         }
@@ -377,7 +459,7 @@ private struct SetupPreviewHost: View {
     let trouble: PhonePairingProblem.Problem?
 
     var body: some View {
-        SetupFlow(bridge: bridge, store: store, trouble: trouble, onCancel: {})
+        SetupFlow(bridge: bridge, store: store, trouble: trouble, onCancel: {}, onRepaired: { _ in })
     }
 }
 #endif

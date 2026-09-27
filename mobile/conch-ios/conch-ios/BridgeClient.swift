@@ -544,10 +544,13 @@ final class BridgeClient: ObservableObject {
 
     /// Tell the Mac how far this phone's own setup has got, so a Mac waiting on its iPhone step follows along and moves
     /// on at `finished`. The same authenticated route as everything else the phone sends, sealed on the relay.
+    /// `install` is this install of the app (`PhoneSetupStore.install`), which the Mac keeps the progress by; `device` is
+    /// only the name it shows.
     func reportSetup(
         stage: PhoneSetupStage,
         declined: Set<PhoneSetupStage>,
         device: String,
+        install: String,
         within limit: Duration = .seconds(8)
     ) async -> SetupReportOutcome {
         let message: [String: Any] = [
@@ -555,6 +558,7 @@ final class BridgeClient: ObservableObject {
             "stage": stage.rawValue,
             "declined": PhoneSetupStage.allCases.filter(declined.contains).map(\.rawValue),
             "device": device,
+            "install": install,
         ]
         guard let body = try? JSONSerialization.data(withJSONObject: message) else { return .refused("unencodable") }
         let response: BridgeResponse

@@ -242,7 +242,7 @@ describe("a cold launch draws the last state the Mac sent", () => {
     expect(transport).toContain("case let .lan(host, token): DirectHTTPTransport(host: host, token: token)");
     expect(transport).toContain("case let .relay(payload): RelayTransport(pairing: payload)");
     expect(between(app, "private func unpair() {", "\n    }\n")).toContain("LastStateTransport.forget()");
-    expect(between(app, "PairingView { newPairing in", "PairingStore.save(newPairing)")).toContain("LastStateTransport.forget()");
+    expect(between(app, "private func adopt(_ newPairing: BridgeClient.Pairing) {", "PairingStore.save(newPairing)")).toContain("LastStateTransport.forget()");
     // Transcripts: never backed up, unreadable while locked.
     expect(app).toContain("[.atomic, .completeFileProtection]");
     // The ledger draws a saved state as stale, with its age.

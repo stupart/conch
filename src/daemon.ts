@@ -181,7 +181,7 @@ import {
   type PhoneRelayHandle,
   type RelayPairing,
 } from "./phone-relay.ts";
-import { computerName, PhoneSetup } from "./phone-setup.ts";
+import { computerName, PhoneSetup, resolveComputerName } from "./phone-setup.ts";
 import { breadcrumb, loopWatchdogEnabled, startLoopWatchdog } from "./loop-watchdog.ts";
 import {
   transcribeWavSegments,
@@ -1466,6 +1466,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   let lastPhoneSummary = "";
   /** The phone's first-run setup, as the Mac's setup window follows it: published as `phone` (`phone-setup.ts`). */
   const phoneSetup = new PhoneSetup({ onChange: () => publishPhoneSetup(), log });
+  // The Mac's name for the phone's setup screens, asked once now and never on a phone's request (`ComputerName`).
+  void resolveComputerName();
   function publishPhoneSetup(): void {
     breadcrumb("phone setup: publishing");
     if (!lastPublishedPanelState) return;
@@ -2765,8 +2767,12 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     shellHas: loginShellHas,
     runInstaller: runInstallerInLoginShell,
     voices: () => cfg.ttsVoices,
-    // A sample waits its turn like an audition does, and goes through `speak`'s own gate: never over an open mic.
-    speak: (voiceId, text) => eventQueue.exclusive(() => voice.speak({ ...cfg, ttsVoices: [voiceId] }, text, "", true)),
+    // A sample waits its turn like an audition does, and goes through `speak`'s own gate: never over an open mic. The
+    // audio moving to the phone or another Mac meanwhile: nothing is sent there (setup then says where it is).
+    speak: (voiceId, text) => eventQueue.exclusive(() => (audioLease.isPhone() || !audioHolder.isLocal()
+      ? Promise.resolve()
+      : voice.speak({ ...cfg, ttsVoices: [voiceId] }, text, "", true))),
+    audioElsewhere: () => (audioLease.isPhone() ? "phone" : audioHolder.isLocal() ? null : "another-mac"),
     mic: {
       hold: (stop) => voice.holdNarration(MIC_CHECK_QUIET_WITHIN_MS, stop, "Microphone check"),
       record: (wav, seconds) => {
@@ -2790,13 +2796,14 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     // Only the worker speaks with the natural voices; `say` and a server of the person's own are what they are.
     naturalVoicesReady: () => cfg.ttsEngine !== "worker" || naturalVoices?.state === "ready",
     voice: cfg.ttsVoices[0],
-    turn: ({ line, systemVoice, stillWanted, onSpoken }) => voice.practice({
+    turn: ({ line, systemVoice, stillWanted, onLine, onSpoken }) => voice.practice({
       label: PRACTICE_LABEL,
       ...(line ? { line } : {}),
       // A ring voice; the Mac's own while the natural voices aren't ready, asked for as itself so a download still
       // going reports nothing as a failure.
       speechCfg: systemVoice ? { ...cfg, ttsEngine: "say" } : { ...cfg, ttsVoices: cfg.ttsVoices.slice(0, 1) },
       stillWanted,
+      onLine,
       onSpoken,
     }),
     hush: () => speech.cancelCurrent(),
@@ -2863,6 +2870,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     shuttingDown = true;
     // The practice session and its card go with the daemon: nothing of it is left for the next one.
     practice?.stop("conch is closing");
+    // An agent's installer still running goes too, its whole process group: nothing is left installing unwatched.
+    setup.close();
     panelRefresh.close();
     transcriptWatch.stop();
     onLiveDataChange(null);

@@ -1373,25 +1373,31 @@ public struct OnboardingPhoneStep: View {
     }
 
     private func mirror(_ handoff: PhoneHandoff) -> some View {
-        HStack(alignment: .top, spacing: 28) {
+        // A phone that paired and reported nothing: paired is all the Mac knows, so that is all it says (#28).
+        let nothingToMirror = OnboardingReports.phoneHasNothingToMirror(handoff)
+        return HStack(alignment: .top, spacing: 28) {
             PhoneOutline(done: handoff.stage == .finished)
                 .frame(width: 216, height: 216)
             VStack(alignment: .leading, spacing: 0) {
                 Text(handoff.device ?? "Your iPhone")
                     .font(.system(size: 17, weight: .semibold)).foregroundStyle(ConchColor.textPrimary)
-                Text(handoff.stage == .finished
+                Text(nothingToMirror
+                     ? "Paired with this Mac. Carrying on here."
+                     : handoff.stage == .finished
                      ? "All set on your iPhone. Carrying on here."
                      : "Setting itself up. Follow along on your iPhone; this Mac carries on by itself.")
                     .font(.system(size: 13)).foregroundStyle(ConchColor.textSecondary)
                     .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 4)
-                VStack(alignment: .leading, spacing: 11) {
-                    ForEach(PhoneSetupStage.mirrored, id: \.self) { stage in
-                        MirrorLine(stage: stage, handoff: handoff)
+                if !nothingToMirror {
+                    VStack(alignment: .leading, spacing: 11) {
+                        ForEach(PhoneSetupStage.mirrored, id: \.self) { stage in
+                            MirrorLine(stage: stage, handoff: handoff)
+                        }
                     }
+                    .padding(.top, 18)
                 }
-                .padding(.top, 18)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }

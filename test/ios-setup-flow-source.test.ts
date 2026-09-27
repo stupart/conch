@@ -41,9 +41,14 @@ describe("the app routes through setup", () => {
     inOrder(content, [
       "if let pairing {",
       "if setup.showing {",
-      "SetupFlow(bridge: bridgeClient(for: pairing), store: setup, onCancel: unpair)",
+      "SetupFlow(bridge: bridgeClient(for: pairing), store: setup, onCancel: unpair, onRepaired: adopt)",
       "LedgerView(",
-      "PairingView { newPairing in",
+      "PairingView(onPaired: adopt)",
+    ]);
+    // A new pairing, from the way in or from setup's expired-code screen, replaces the old one's link first.
+    inOrder(between(app, "private func adopt(_ newPairing: BridgeClient.Pairing) {", "\n    }\n"), [
+      "bridge?.stop()",
+      "bridge = nil",
       "LastStateTransport.forget()",
       "PairingStore.save(newPairing)",
       "setup.paired()",
@@ -89,7 +94,7 @@ describe("unpaired, the phone-first welcome comes first, with the scanner one ta
     const scanner = between(pairing, "struct SetupScanner: View {", "struct GetMacSheet: View {");
     expect(scanner).toContain("PhoneScanner(");
     expect(scanner).toContain("denied: access == .denied || access == .restricted");
-    expect(scanner).toContain("AnyView(RelayQRScanner(onCode: onCode))");
+    expect(scanner).toContain("AnyView(RelayQRScanner(onCode: accept))");
     expect(scanner).toContain("UIApplication.openSettingsURLString");
   });
 
@@ -147,7 +152,7 @@ describe("the screens, as designed, each telling the Mac", () => {
     const linkUp = between(store, "func linkUp(_ bridge: BridgeClient) async {", "func sync(_ bridge: BridgeClient) async {");
     inOrder(linkUp, ["if flow?.screen == .connecting {", "bridge.reportSetup(stage: .paired", "update { $0.linked() }", "await sync(bridge)"]);
     const sync = between(store, "func sync(_ bridge: BridgeClient) async {", "private func apply(");
-    inOrder(sync, ["while bridge.isConnected, let flow, let stage = flow.unreported {", "if outcome == .unheard { return }", "apply(outcome, for: stage, bridge: bridge)"]);
+    inOrder(sync, ["while bridge.isConnected, let flow, let stage = flow.unreported {", "if outcome == .unheard {", "apply(outcome, for: stage, bridge: bridge)"]);
     expect(flow).toContain(".task(id: flow.screen) { await store.sync(bridge) }");
     expect(store).toContain("static var device: String { UIDevice.current.name }");
     // Where the phone is survives a relaunch.
@@ -160,6 +165,7 @@ describe("the screens, as designed, each telling the Mac", () => {
     expect(report).toContain('"kind": "setup-stage"');
     expect(report).toContain('"stage": stage.rawValue');
     expect(report).toContain('"device": device');
+    expect(report).toContain('"install": install');
     expect(report).toContain('authorizedRequest(method: "POST", path: "/setup-stage", body: body)');
     // An older Mac without the route is not a failure to retry forever.
     expect(report).toContain("case 404:\n            return .notFollowed");

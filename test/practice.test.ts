@@ -324,12 +324,56 @@ describe("gone cleanly", () => {
     const p = practiceWith();
     await p.practice.handle({ kind: "practice-start" });
     await until("the turn", () => p.turns.length === 1);
+    // The loop holds the queue for it and has started its line.
+    p.turns[0]!.options.onLine();
     p.practice.stop("test");
     expect(p.hushed()).toBe(1);
     p.turns[0]!.finish({ heard: "late words" });
     await Bun.sleep(5);
     expect(p.practice.published()).toBeNull();
     expect(existsSync(join(p.dir, WELCOME_FILE))).toBe(false);
+  });
+
+  // D4 (review 2026-09-28): Start while another session is being read, then Skip tour. The practice was `speaking` and
+  // busy while its turn waited behind that session's (VoiceLoop.practice's queue wait), and the stop's hush
+  // (`speech.cancelCurrent()`) cut the other session off.
+  test("stopped while its turn waits behind another session's: nothing is cut off, since what's playing isn't its own", async () => {
+    const p = practiceWith();
+    await p.practice.handle({ kind: "practice-start" });
+    await until("the turn", () => p.turns.length === 1);
+    expect(p.practice.published()?.stage).toBe("speaking");
+    p.practice.stop("the tour was skipped");
+    expect(p.hushed()).toBe(0);
+    expect(p.turns[0]!.options.stillWanted()).toBe(false);
+    p.turns[0]!.finish({ heard: null, interrupted: true });
+    await Bun.sleep(5);
+    expect(p.hushed()).toBe(0);
+  });
+
+  test("its line played through, then its mic window: a stop then cuts nothing either", async () => {
+    const p = practiceWith();
+    await p.practice.handle({ kind: "practice-start" });
+    await until("the turn", () => p.turns.length === 1);
+    p.turns[0]!.options.onLine();
+    p.turns[0]!.options.onSpoken();
+    p.practice.stop("test");
+    expect(p.hushed()).toBe(0);
+  });
+
+  test("another go's line: what a refused go left says nothing, and once started it is its own, and a stop cuts it", async () => {
+    const p = practiceWith();
+    await p.practice.handle({ kind: "practice-start" });
+    await until("the turn", () => p.turns.length === 1);
+    // The loop started the line, then the phone claimed the audio: refused, and the line is no longer playing here.
+    p.turns[0]!.options.onLine();
+    p.turns[0]!.finish({ refused: "phone" });
+    await until("the problem", () => p.practice.published()?.problem !== undefined);
+    expect(await p.practice.handle({ kind: "practice-listen" })).toEqual({ kind: "practice-listening" });
+    await until("the second turn", () => p.turns.length === 2);
+    expect(p.turns[1]!.options.line).toBe(PRACTICE_LINE);
+    p.turns[1]!.options.onLine();
+    p.practice.stop("mid-line");
+    expect(p.hushed()).toBe(1);
   });
 
   test("the app that started it goes away (its connection, the lease): stopped", async () => {
@@ -518,7 +562,7 @@ describe("the daemon's wiring (runDaemon runs in no test: its text is the gate)"
   test("spoken and heard by the voice loop's own practice turn; the Mac's own voice while the natural voices aren't ready", () => {
     const made = between("practice = createPractice({", "const practiceTurns = practice;");
     expect(made).toContain('dir: join(conchHome(), ".cache/conch/practice"),');
-    expect(made).toContain("turn: ({ line, systemVoice, stillWanted, onSpoken }) => voice.practice({");
+    expect(made).toContain("turn: ({ line, systemVoice, stillWanted, onLine, onSpoken }) => voice.practice({");
     expect(made).toContain('speechCfg: systemVoice ? { ...cfg, ttsEngine: "say" } : { ...cfg, ttsVoices: cfg.ttsVoices.slice(0, 1) },');
     expect(made).toContain('audioElsewhere: () => (audioLease.isPhone() ? "phone" : audioHolder.isLocal() ? null : "another-mac"),');
     expect(made).toContain('recognitionReady: () => speechEngineStatus?.state === "ready",');

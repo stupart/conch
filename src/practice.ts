@@ -76,13 +76,14 @@ export type PracticeReply =
   | { kind: "practice-stopped"; removed: boolean }
   | { kind: "practice-error"; reason: PracticeRefusal; error: string };
 
-const PRACTICE_KINDS = new Set(["practice-start", "practice-listen", "practice-stop"]);
+/** Every kind `decodePracticeRequest` takes: the Mac app's alone (the phone bridge refuses each, `isMacAppOnlyRequest`). */
+export const PRACTICE_REQUEST_KINDS: ReadonlySet<string> = new Set(["practice-start", "practice-listen", "practice-stop"]);
 
 /** A practice request, or null for anything that isn't one. */
 export function decodePracticeRequest(body: unknown): PracticeRequest | null {
   if (typeof body !== "object" || body === null || Array.isArray(body)) return null;
   const kind = (body as { kind?: unknown }).kind;
-  return typeof kind === "string" && PRACTICE_KINDS.has(kind) ? { kind } as PracticeRequest : null;
+  return typeof kind === "string" && PRACTICE_REQUEST_KINDS.has(kind) ? { kind } as PracticeRequest : null;
 }
 
 /** Each refusal in words a person can act on. The phone's names what to do; nothing here takes the audio back. */
@@ -118,8 +119,8 @@ export interface PracticeDependencies {
   /** The natural voices are ready; else the line is read with the Mac's own voice. */
   naturalVoicesReady(): boolean;
   /** The voice loop's practice turn (`VoiceLoop.practice`), with the daemon's config. */
-  turn(options: { line?: string; systemVoice: boolean; stillWanted(): boolean; onSpoken(): void }): Promise<PracticeTurnOutcome>;
-  /** The line cut short: the practice stopped while it was being read. */
+  turn(options: { line?: string; systemVoice: boolean; stillWanted(): boolean; onLine(): void; onSpoken(): void }): Promise<PracticeTurnOutcome>;
+  /** The line cut short: the practice stopped while its own line was playing (`onLine` until `onSpoken`), never before. */
   hush(): void;
   /** A composer dictation's words, back to the composer that asked (`publishDictation`). */
   dictated(text: string): void;
@@ -138,6 +139,12 @@ interface Run {
   spoken: boolean;
   /** A line or a mic window is running now. */
   busy: boolean;
+  /**
+   * Its own line is playing: the voice loop holds the queue for it and has started it (`onLine`), and it hasn't finished
+   * (`onSpoken`). A practice waiting behind another session's turn is `speaking` and `busy` without this: what is playing
+   * then is that session's, and stopping the practice must not cut it off.
+   */
+  linePlaying: boolean;
   listening: boolean;
   heard?: string;
   silent: boolean;
@@ -228,7 +235,11 @@ export function createPractice(deps: PracticeDependencies): Practice {
         ...(line ? { line } : {}),
         systemVoice: run.systemVoice,
         stillWanted: () => current === run,
+        onLine: () => {
+          if (current === run) run.linePlaying = true;
+        },
         onSpoken: () => {
+          run.linePlaying = false;
           if (current !== run) return;
           run.spoken ||= Boolean(line);
           if (run.stage === "speaking") run.stage = "listening";
@@ -241,6 +252,7 @@ export function createPractice(deps: PracticeDependencies): Practice {
       outcome = { heard: null, interrupted: true };
     }
     run.busy = false;
+    run.linePlaying = false;
     run.listening = false;
     if (current !== run) return;
     if ("refused" in outcome) {
@@ -264,7 +276,9 @@ export function createPractice(deps: PracticeDependencies): Practice {
     if (!run) return false;
     current = null;
     run.timer?.clear();
-    if (run.stage === "speaking" && run.busy) deps.hush();
+    // Only its own line: queued behind another session's turn, what is playing is that session's.
+    if (run.linePlaying) deps.hush();
+    run.linePlaying = false;
     clearFolder(deps.dir);
     deps.log(`practice: stopped (${why})`);
     deps.changed();
@@ -280,7 +294,7 @@ export function createPractice(deps: PracticeDependencies): Practice {
     if (current) stop("started again");
     clearFolder(deps.dir);
     const run: Run = {
-      startedAt: deps.now(), stage: "speaking", spoken: false, busy: false, listening: false, silent: false,
+      startedAt: deps.now(), stage: "speaking", spoken: false, busy: false, linePlaying: false, listening: false, silent: false,
       systemVoice: false, items: [], answers: 0, replied: false,
     };
     item(run, "practice-line", "assistant", PRACTICE_LINE);
