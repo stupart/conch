@@ -36,6 +36,9 @@ describe("only one input is ever in use", () => {
     // Every change of place goes through the pure rule (ComposerPlacementTests), never a second judgement here.
     const update = member(dock, "func update() {");
     expect(update).toContain("let next = ComposerPlacement.place(situation, current: place)");
+    // The panel moving, growing or folding arrives only as an update with the same place: the reply line still follows it.
+    expect(update).toContain("guard next != place else { return follow() }");
+    expect(dock).toContain(".sink { [weak self] _ in MainActor.assumeIsolated { self?.update() } }");
     expect(dock.match(/place = next/g)?.length).toBe(1);
     expect(member(dock, "private func move(to next: ComposerPlace) {")).toContain("place = next");
   });
