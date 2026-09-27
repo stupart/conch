@@ -78,10 +78,16 @@ public final class HistoryRegionModel: ObservableObject {
     }
 
     /// A row was drawn: from here on it is laid out at exactly this height.
+    ///
+    /// Recorded even when it is the height the row is already laid out at. A row drawn at its
+    /// estimate and never recorded as drawn is one the next estimate moves — and the row, whose
+    /// own height did not change, never says so again.
     func measured(_ id: String, height: CGFloat) {
-        guard window.height(of: id).map({ abs($0 - height) >= 0.5 }) == true else { return }
+        guard let laidOut = window.height(of: id) else { return }
         let total = window.total
-        shifted(by: window.measure(id, height: height), from: total)
+        let shift = window.measure(id, height: height)
+        guard abs(laidOut - height) >= 0.5 else { return }
+        shifted(by: shift, from: total)
         if window.reframe() { scheduleShown() }
         scheduleGrowth()
         objectWillChange.send()
