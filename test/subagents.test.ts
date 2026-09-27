@@ -360,7 +360,7 @@ describe("the daemon and the Mac app wire it up", () => {
     expect(group).not.toContain("expanded");
     expect(group).toContain("Button { onSelect(agent) } label: {");
     const ledger = read("mobile/conch-ios/conch-ios/LedgerView.swift");
-    expect(ledger).toMatch(/if row\.parentSessionId != nil \{\s*AgentRowView\(row: row\)\s*\} else \{\s*SessionRowView\(row: row\)/);
+    expect(ledger).toMatch(/if row\.parentSessionId != nil \{\s*AgentRowView\(row: row\)\s*\} else \{\s*SessionRowView\(\s*row: row\b/);
   });
 
   test("the Mac decodes parentSessionId and the subagent link with a default of none", () => {

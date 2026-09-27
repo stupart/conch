@@ -1392,7 +1392,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       }
       if (controlledTurn || event.ntype === "idle_prompt") ledger.lastTurn = event;
       if (controlDisposition === "session-paused") {
-        return log(`⏸ "${event.label}" is manual — park it and press p for auto`);
+        return log(`quiet: holding "${event.label}"'s latest turn — it plays when you let it speak`);
       }
       void renderSessionPanel();
       return log(`manual — holding "${event.label}" (${pending.size} waiting)`);

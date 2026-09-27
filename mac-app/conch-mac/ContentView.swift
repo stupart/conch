@@ -22,6 +22,9 @@ struct ContentView: View {
     @State private var isShowingKeyboardShortcuts = false
     @State private var isShowingSessionStart = false
     @State private var isShowingCommandPalette = false
+    /// What the last P did, said for a moment (`pauseOrResume`).
+    @State private var quietToast: QuietToast?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// SwiftUI's own way to open the Settings scene. Doing it by sending
     /// showSettingsWindow: to nil is the usual hack and breaks between
     /// releases; this is the supported route on macOS 14+.
@@ -99,6 +102,7 @@ struct ContentView: View {
                     onShowCommandPalette: showCommandPalette,
                     onTalkOrStop: talkOrStop,
                     onPauseOrResume: pauseOrResume,
+                    onToggleQuiet: { toggleQuiet($0) },
                     onRecite: recite,
                     onMoveUp: { moveSelection(by: -1) },
                     onMoveDown: { moveSelection(by: 1) },
@@ -106,6 +110,16 @@ struct ContentView: View {
                 )
             )
         }
+        // Over the top of the work, under the title strip, and never in the way of a click.
+        .overlay(alignment: .top) {
+            if let quietToast {
+                QuietToastView(toast: quietToast)
+                    .padding(.top, 40)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    .allowsHitTesting(false)
+            }
+        }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: quietToast)
         .background(ConchPalette.bg)
         .environmentObject(workspace)
         .background(
@@ -238,6 +252,12 @@ struct ContentView: View {
         store.send(.stop())
     }
 
+    /// P, and the header's Manual/Auto: the selected session, or every session when none is.
+    ///
+    /// A bare P is easy to hit — Tyler quieted a session without meaning to and asked "how do I
+    /// resume?" — so every press says what it did and how to undo it, for a moment
+    /// (`SessionVoice.toggledToast`). The key already reaches here only when nothing typeable has
+    /// focus (`DashboardInputMonitor`), and a held key does not repeat it.
     private func pauseOrResume() {
         let globallyPaused = store.state?.mode.paused ?? false
         // While conch is paused globally, a per-session resume cannot lift it:
@@ -253,6 +273,9 @@ struct ContentView: View {
         // unscoped press means.
         if globallyPaused, selectedRow == nil {
             store.send(.global(.resume))
+            // The ones quieted by name stay quiet: the daemon remembers them through a global quiet.
+            let stillQuiet = store.state?.rows.filter(\.paused).count ?? 0
+            showQuietToast(SessionVoice.toggledAllToast(nowQuiet: false, stillQuiet: stillQuiet), mark: .speaks)
             return
         }
 
@@ -271,19 +294,35 @@ struct ContentView: View {
             // whose label never changed because `isManual` had the same blind
             // spot (see above).
             //
-            // Same rule as `isManual`: manual toggles to auto, auto (whether
-            // by exemption or an un-paused conch) toggles to manual.
-            let sessionIsManual = selectedRow.paused || (globallyPaused && !selectedRow.pauseExempt)
-            store.send(
-                .scoped(
-                    sessionIsManual ? .resume : .pause,
-                    sessionId: selectedRow.id,
-                    label: selectedRow.label
-                )
-            )
+            // Same rule as `isManual`, now one rule (`SessionVoice.isQuiet`): quiet
+            // toggles to speaking, speaking (whether by exemption or an un-paused
+            // conch) toggles to quiet.
+            toggleQuiet(selectedRow, announcing: true)
             return
         }
         store.send(.global(.pause))
+        showQuietToast(SessionVoice.toggledAllToast(nowQuiet: true, stillQuiet: 0), mark: .quiet)
+    }
+
+    /// One session quiet, or speaking again. From P and the header button (`announcing`), and from
+    /// the row's own quiet mark and menu, which change what is under the pointer and need no toast.
+    private func toggleQuiet(_ row: SessionRow, announcing: Bool = false) {
+        let voice = row.voice(everythingQuiet: store.state?.mode.paused ?? false)
+        store.send(.scoped(voice.togglesToQuiet ? .pause : .resume, sessionId: row.id, label: row.label))
+        guard announcing else { return }
+        showQuietToast(voice.toggledToast(label: row.label), mark: voice.togglesToQuiet ? .quiet : .speaks)
+    }
+
+    /// Said for 2.6 s, and to VoiceOver. A newer toast replaces an older one, which then does not
+    /// clear it early.
+    private func showQuietToast(_ text: String, mark: SessionVoice.Mark) {
+        let toast = QuietToast(text: text, mark: mark)
+        quietToast = toast
+        AccessibilityNotification.Announcement(text).post()
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_600_000_000)
+            if quietToast?.id == toast.id { quietToast = nil }
+        }
     }
 
     private func recite() {
@@ -861,6 +900,37 @@ private struct StartSessionSheet: View {
     }
 }
 
+/// What P just did, and how to undo it (`SessionVoice.toggledToast`).
+private struct QuietToast: Equatable {
+    let id = UUID()
+    let text: String
+    let mark: SessionVoice.Mark
+}
+
+/// A small raised capsule under the title strip: the mark P left behind, and the sentence.
+private struct QuietToastView: View {
+    let toast: QuietToast
+
+    var body: some View {
+        HStack(spacing: 7) {
+            SessionVoiceGlyph(toast.mark, pointSize: 10.5)
+            Text(toast.text)
+                .font(ConchTypography.font(size: 12, weight: .medium))
+                .foregroundStyle(ConchPalette.textPrimary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 28)
+        .background(Capsule(style: .continuous).fill(ConchPalette.raised))
+        .overlay(Capsule(style: .continuous).strokeBorder(ConchPalette.hairlineStrong, lineWidth: 1))
+        .conchElevation(.floating)
+        .frame(maxWidth: 520)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(toast.text)
+    }
+}
+
 extension Notification.Name {
     static let showKeyboardShortcuts = Notification.Name(
         "com.conch.mac.show-keyboard-shortcuts"
@@ -871,9 +941,10 @@ private struct KeyboardShortcutsSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     private let keyRows = [
-        // Space stops and never starts (`talkOrStop`); P is Talk and Quiet, as the menu bar and the control bar name them.
+        // Space stops and never starts (`talkOrStop`). P quiets one session or lets it speak, and
+        // every session when none is selected (`pauseOrResume`).
         ShortcutHelpRow(command: "Space", result: "Stop speaking or listening"),
-        ShortcutHelpRow(command: "P", result: "Talk / Quiet"),
+        ShortcutHelpRow(command: "P", result: "Quiet / speak for the selected session (all, if none)"),
         ShortcutHelpRow(command: "R", result: "Recite"),
         ShortcutHelpRow(command: "↑ / ↓", result: "Select"),
         ShortcutHelpRow(command: "Esc", result: "Release selection / close"),
@@ -994,7 +1065,10 @@ private struct LedgerLegendSection: View {
         Entry(symbol: "circle.inset.filled", color: ConchPalette.statusWaiting, meaning: "Ready for you — its turn is over"),
         Entry(symbol: "exclamationmark.circle.fill", color: ConchPalette.statusNeeds, meaning: "Blocked — needs an answer"),
         Entry(symbol: "checkmark.circle.fill", color: ConchPalette.statusReview, meaning: "Ready for you — work to look at"),
-        Entry(symbol: "pause.fill", color: ConchPalette.textDim, meaning: "Manual — turns held for later"),
+        // Quiet is not a status: it sits beside the age while the status mark keeps saying what
+        // the session is doing (`SessionVoice`).
+        Entry(symbol: SessionVoice.Mark.quiet.symbol, color: ConchPalette.textDim, meaning: SessionVoice.Mark.quiet.meaning),
+        Entry(symbol: SessionVoice.Mark.speaks.symbol, color: ConchPalette.textDim, meaning: SessionVoice.Mark.speaks.meaning),
         Entry(symbol: "record.circle.fill", color: ConchPalette.statusMicOpen, meaning: "Recording your reply"),
         Entry(symbol: "play.fill", color: ConchPalette.statusQuiet, meaning: "Reading a reply aloud"),
         Entry(symbol: "ellipsis", color: ConchPalette.statusActive, meaning: "Transcribing what you said — it goes in next"),

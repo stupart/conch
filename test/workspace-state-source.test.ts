@@ -323,21 +323,26 @@ describe("new work does not replace what you are reading", () => {
   test("the mode button toggles, and an exempt session reads as auto", () => {
     const mode = dashboard.slice(
       dashboard.indexOf("private var isManual: Bool {"),
-      dashboard.indexOf("private var modeScope: String {"),
+      dashboard.indexOf("private var modeHelp: String {"),
     );
     expect(mode.length).toBeGreaterThan(60);
-    // Order matters: an explicitly paused row is manual even if it also carries the flag.
-    expect(mode).toContain("if selectedRow.paused { return true }");
-    expect(mode).toContain("if selectedRow.pauseExempt { return false }");
+    // The boolean is ConchDesign's `SessionVoice.isQuiet` now, where an XCTest holds it
+    // (SessionVoiceTests: quieted by name wins, an exemption speaks through a global quiet).
+    expect(mode).toContain("return selectedRow.voice(everythingQuiet: state?.mode.paused == true).isQuiet");
     // No selection means the scope is everything, so the row must not be consulted.
     expect(mode).toContain("guard let selectedRow else { return state?.mode.paused == true }");
-
-    // The PRESS has to agree with the label, or the button lies about what it will do.
-    const content = read("mac-app/conch-mac/ContentView.swift");
-    expect(content).toContain(
-      "let sessionIsManual = selectedRow.paused || (globallyPaused && !selectedRow.pauseExempt)",
+    expect(read("mac-app/conch-mac/Models.swift")).toContain(
+      "SessionVoice(sessionQuiet: paused, exempt: pauseExempt, everythingQuiet: everythingQuiet)",
     );
-    expect(content).toContain("sessionIsManual ? .resume : .pause");
+
+    // The PRESS has to agree with the label, or the button lies about what it will do: the
+    // same rule, read from the same flags, decides what is sent.
+    const content = read("mac-app/conch-mac/ContentView.swift");
+    const toggle = content.slice(content.indexOf("private func toggleQuiet("), content.indexOf("private func showQuietToast("));
+    expect(toggle.length).toBeGreaterThan(100);
+    expect(toggle).toContain("let voice = row.voice(everythingQuiet: store.state?.mode.paused ?? false)");
+    expect(toggle).toContain("voice.togglesToQuiet ? .pause : .resume");
+    expect(content).toContain("toggleQuiet(selectedRow, announcing: true)");
   });
 
   test("the split is dragged, reaches both edges, and is remembered", () => {
@@ -409,8 +414,10 @@ describe("new work does not replace what you are reading", () => {
     expect(review).not.toContain("struct ExpandedReviewView");
     expect(content).not.toContain("ExpandedReviewView");
     expect(content).not.toContain("expandedReviewID");
-    // The dashboard is never switched off now, because nothing covers it.
-    expect(content).not.toContain("allowsHitTesting");
+    // The dashboard is never switched off now, because nothing covers it. The one hit-test
+    // setting left is the P toast's, which lets every click through to the work beneath it.
+    expect(content.match(/allowsHitTesting/g) ?? []).toHaveLength(1);
+    expect(content).toMatch(/QuietToastView\(toast: quietToast\)[^}]*\.allowsHitTesting\(false\)/);
 
     // Esc steps back to the conversation before it releases the session: on the deliverable
     // there is a page behind you, and letting go of the session instead answers a smaller

@@ -1220,6 +1220,12 @@ extension SessionRow {
         /// False where conch can't press keys at the agent's dialog (Codex's).
         let answerable: Bool?
     }
+
+    /// Whether conch reads this session aloud, from its own two flags and the global mode: the
+    /// one rule the Manual/Auto button, P, the row's quiet mark and the palette all read.
+    func voice(everythingQuiet: Bool) -> SessionVoice {
+        SessionVoice(sessionQuiet: paused, exempt: pauseExempt, everythingQuiet: everythingQuiet)
+    }
 }
 
 struct SessionContext: Decodable, Equatable, Sendable {

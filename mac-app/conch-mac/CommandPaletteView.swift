@@ -1,3 +1,4 @@
+import ConchDesign
 import SwiftUI
 
 /// One thing the palette can do to the selected session (B4).
@@ -114,15 +115,20 @@ enum PaletteCatalog {
     }
 
     private static func conch(_ row: SessionRow, globallyPaused: Bool) -> [PaletteCommand] {
-        let paused = globallyPaused || row.paused
+        // The one rule P and the row's mark read (`SessionVoice`). `globallyPaused || row.paused`
+        // said Resume on a session already let speak through a global quiet, and re-sent the
+        // resume it already had.
+        let voice = row.voice(everythingQuiet: globallyPaused)
         var out = [
             PaletteCommand(
                 id: "pause", section: .conch,
-                title: paused ? "Resume \(row.label)" : "Pause \(row.label)",
-                detail: paused
-                    ? "Announce this session's turns and listen for replies again"
-                    : "Manual for this session: turns are not read aloud and the mic stays shut; it keeps running",
-                action: paused ? .resume : .pause
+                title: voice.togglesToQuiet ? "Quiet \(row.label)" : "Let \(row.label) speak",
+                detail: voice.togglesToQuiet
+                    ? "Stop reading its turns aloud; it keeps working, and its latest turn waits for you"
+                    : globallyPaused
+                        ? "Read its turns aloud again while every other session stays quiet"
+                        : "Read its turns aloud again",
+                action: voice.togglesToQuiet ? .pause : .resume
             ),
             PaletteCommand(id: "wake", section: .conch, title: "Wake", detail: "Open the mic to reply to \(row.label)", action: .wake),
             PaletteCommand(id: "recite", section: .conch, title: "Recite", detail: "Read \(row.label)'s latest reply aloud again", action: .recite),

@@ -33,6 +33,8 @@ struct DashboardActions {
     let onShowCommandPalette: () -> Void
     let onTalkOrStop: () -> Void
     let onPauseOrResume: () -> Void
+    /// A row's quiet mark, or its context menu: quiet that one session, or let it speak.
+    let onToggleQuiet: (SessionRow) -> Void
     let onRecite: () -> Void
     let onMoveUp: () -> Void
     let onMoveDown: () -> Void
@@ -243,19 +245,26 @@ private struct DashboardHeader: View {
     /// which is why this reads the global state as well as the row's — UNLESS
     /// it holds `pauseExempt`, the one thing that changes the answer: a scoped
     /// resume issued while the conch was globally paused, exempting just that
-    /// session. `paused` and `pauseExempt` are never both true.
+    /// session. That rule is `SessionVoice.isQuiet` (ConchDesign), the one the
+    /// press in ContentView and the row's quiet mark read too, so the label
+    /// and what a click sends cannot disagree.
     ///
     /// No selection means the scope is everything, so the row is not
     /// consulted at all — a global press must read and act on global state.
     private var isManual: Bool {
         guard let selectedRow else { return state?.mode.paused == true }
-        if selectedRow.paused { return true }
-        if selectedRow.pauseExempt { return false }
-        return state?.mode.paused == true
+        return selectedRow.voice(everythingQuiet: state?.mode.paused == true).isQuiet
     }
 
-    private var modeScope: String {
-        selectedRow == nil ? "everything" : "this session"
+    /// Which sessions a click reaches, said in the tooltip: this one, or all of them. The label
+    /// alone could not say it, and a press that quieted one session read as though the whole
+    /// app had paused.
+    private var modeHelp: String {
+        let everythingQuiet = state?.mode.paused == true
+        guard let selectedRow else {
+            return SessionVoice.modeHelp(everythingQuiet: everythingQuiet, on: .mac)
+        }
+        return selectedRow.voice(everythingQuiet: everythingQuiet).modeHelp(label: selectedRow.label)
     }
 
     /// What conch is DOING, which is not the same as what mode it is in.
@@ -358,7 +367,7 @@ private struct DashboardHeader: View {
             // title-bar strip, so the wordmark costs no height at all.
             HeaderControls(
                 isManual: isManual,
-                modeScope: modeScope,
+                modeHelp: modeHelp,
                 isLogDrawerOpen: isLogDrawerOpen,
                 audioHeldElsewhere: state?.audioControl.isLocal == false,
                 actions: actions
@@ -376,7 +385,7 @@ private struct DashboardHeader: View {
 /// than on one session.
 private struct HeaderControls: View {
     let isManual: Bool
-    let modeScope: String
+    let modeHelp: String
     let isLogDrawerOpen: Bool
     /// C9b Cut B: another Mac holds the audio, so auto/manual is not this window's to set.
     let audioHeldElsewhere: Bool
@@ -387,7 +396,7 @@ private struct HeaderControls: View {
             // One control, two modes, and the word for the mode you are IN.
             ModeToggle(
                 isManual: isManual,
-                scope: modeScope,
+                scopeHelp: modeHelp,
                 isDisabled: audioHeldElsewhere,
                 action: actions.onPauseOrResume
             )
@@ -621,7 +630,10 @@ private struct SessionLedger: View {
                                                 isRenaming: renamingSessionID == row.id,
                                                 renameDraft: $renameDraft,
                                                 rowMessage: rowMessages[row.id],
+                                                // Everything quiet subsumes one quiet row (`SessionVoice.mark`).
+                                                everythingQuiet: state.mode.paused,
                                                 onSelect: { actions.onSelectSession(row) },
+                                                onToggleQuiet: { actions.onToggleQuiet(row) },
                                                 onBeginRename: { actions.onBeginRename(row) },
                                                 onCommitRename: { actions.onCommitRename(row) },
                                                 onCancelRename: actions.onCancelRename,
@@ -843,7 +855,11 @@ private struct DashboardRow: View {
     let isRenaming: Bool
     @Binding var renameDraft: String
     let rowMessage: String?
+    /// conch is in manual: no session is read aloud, so no row carries its own quiet mark.
+    let everythingQuiet: Bool
     let onSelect: () -> Void
+    /// Its quiet mark was clicked, or Make Quiet / Let It Speak was chosen from its menu.
+    let onToggleQuiet: () -> Void
     let onBeginRename: () -> Void
     let onCommitRename: () -> Void
     let onCancelRename: () -> Void
@@ -862,8 +878,12 @@ private struct DashboardRow: View {
         ReviewItem(row: row)?.id
     }
 
-    private var isDimmed: Bool {
-        row.paused
+    /// Quiet, not paused: a quiet session keeps working, so its row is drawn at full strength with
+    /// its real status, and a small mark by the age says conch won't read it aloud. The row used to
+    /// dim and swap its status for a pause glyph, which read as stopped — Tyler: "it's not paused
+    /// like not working — it's still working — it's just not speaking aloud."
+    private var voice: SessionVoice {
+        row.voice(everythingQuiet: everythingQuiet)
     }
 
     private var isLiveSession: Bool {
@@ -930,6 +950,7 @@ private struct DashboardRow: View {
         .onTapGesture(count: 2, perform: onBeginRename)
         .contextMenu {
             Button("Rename", action: onBeginRename)
+            Button(voice.togglesToQuiet ? "Make Quiet" : "Let It Speak", action: onToggleQuiet)
             Button("Dismiss", action: onDismiss)
         }
         .onHover { hovering in
@@ -982,10 +1003,9 @@ private struct DashboardRow: View {
             // question this list answers: which of these needs me?
             //
             // `.mk{width:16px;height:16px}` — the 16 pt slot is unchanged, and so is every
-            // colour and size: the glyph is deliberately NOT dimmed with the rest of the row,
-            // because dimming a manual row once dropped its verdict to 2.45:1, and the pixel
-            // answering "why is this one silent?" must not be the least legible thing on a
-            // screen in a product whose failure mode IS silence.
+            // colour and size. It is never dimmed and never swapped for a mode: dimming a manual
+            // row once dropped its verdict to 2.45:1, and a pause glyph in its place hid that a
+            // quiet session was still working. Quiet is its own mark, by the age.
             DashboardStatusGlyph(visual: LedgerVisual(row: row))
                 .frame(width: 16)
 
@@ -1044,7 +1064,6 @@ private struct DashboardRow: View {
                     // own fixedSize + priority, not by capping this.
                     .frame(minWidth: 54, alignment: .leading)
                     .layoutPriority(1)
-                    .opacity(isDimmed ? 0.58 : 1)
             }
 
             // A session another session started (C15): say by whom, in the
@@ -1057,7 +1076,6 @@ private struct DashboardRow: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .accessibilityLabel("Started by \(startedByLabel)")
-                    .opacity(isDimmed ? 0.58 : 1)
             }
 
             if row.prioritized {
@@ -1094,13 +1112,29 @@ private struct DashboardRow: View {
                     .layoutPriority(rowMessage == nil ? 1 : 5)
                     .accessibilityLabel(inlineDetail)
                     .help(inlineDetail)
-                    .opacity(isDimmed ? 0.58 : 1)
             }
 
             // Always trails, so the age and glyph stay hard right whether or not
             // this row has a summary.
             Spacer(minLength: 0)
 
+            // Quiet: conch won't read it aloud. Beside the age rather than in place of the status,
+            // and a button, because the way back has to be where the state is shown — Tyler had
+            // quieted a session with P and asked "how do I resume?". Clicking it is the undo.
+            // While everything is quiet no row carries one; the session let speak through it
+            // carries `speaks` instead (`SessionVoice.mark`).
+            if let mark = voice.mark, !isRenaming {
+                Button(action: onToggleQuiet) {
+                    SessionVoiceGlyph(mark, pointSize: 9.5)
+                        .frame(width: 16, height: 16)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .fixedSize()
+                .layoutPriority(4)
+                .help(mark.help(on: .mac))
+                .accessibilityLabel(mark.help(on: .mac))
+            }
 
             if let age {
                 Text(age)
@@ -1117,7 +1151,6 @@ private struct DashboardRow: View {
                     .truncationMode(.tail)
                     .fixedSize(horizontal: true, vertical: false)
                     .layoutPriority(4)
-                    .opacity(isDimmed ? 0.58 : 1)
             }
 
         }
@@ -1356,7 +1389,6 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
     case waiting
     case needs
     case review
-    case manual
     case speaking
     case listening
     case recording
@@ -1398,14 +1430,9 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
             self = .agentPaused
             return
         }
-        // A mode glyph must not hide work waiting on the person. The row's dimmed
-        // label already carries manual mode; waiting and needs-response keep the
-        // more consequential glyph.
-        let wantsUser = row.status == .waiting || row.status == .needs
-        if row.paused, !wantsUser {
-            self = .manual
-            return
-        }
+        // No mode here. Quiet (manual for this session) is its own mark beside the age
+        // (`SessionVoice`), so this glyph always says what the session is DOING: a quiet
+        // session still working is still blue.
         switch row.live {
         case "speaking":
             self = .speaking
@@ -1451,8 +1478,6 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
             // ✓"; the star was the app's own invention, and it read as
             // "favourite" on the one surface scanned most.
             return "checkmark.circle.fill"
-        case .manual:
-            return "pause.fill"
         case .speaking:
             return "play.fill"
         case .recording:
@@ -1470,7 +1495,7 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
         switch self {
         case .needs, .review, .recording:
             return 10.5
-        case .manual, .speaking, .waitingOnAgents:
+        case .speaking, .waitingOnAgents:
             return 9
         case .transcribing:
             return 11
@@ -1517,10 +1542,6 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
             return ConchPalette.statusActive
         case .idle:
             return ConchPalette.textFaint
-        case .manual:
-            // "Why is this one silent?" is a question the user actually asks;
-            // textFaint answered it at 2.63:1, below AA.
-            return ConchPalette.textDim
         case .agentPaused:
             // Faint, as idle is: nothing to do and nothing to look at.
             return ConchPalette.textFaint
@@ -1542,8 +1563,6 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
             return "Needs a response"
         case .review:
             return "Ready for you — work to look at"
-        case .manual:
-            return "Manual"
         case .speaking:
             return "Speaking"
         case .listening:
@@ -2945,7 +2964,7 @@ private struct AllSessionsRow: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("Act on every session — pause and mode apply to all")
+            .help("Act on every session: P and Manual/Auto quiet or speak them all")
 
             // A plus where the count was.
             //
@@ -2990,7 +3009,8 @@ private struct AllSessionsRow: View {
 /// Auto ⇄ manual. Named for what conch is doing, not for what the button does.
 private struct ModeToggle: View {
     let isManual: Bool
-    let scope: String
+    /// What a click does and to which sessions: every one, or the selected one (`SessionVoice`).
+    let scopeHelp: String
     var isDisabled = false
     let action: () -> Void
 
@@ -2998,9 +3018,7 @@ private struct ModeToggle: View {
 
     private var help: String {
         if isDisabled { return "Controlled by another Mac — press Take it to switch modes here." }
-        return isManual
-            ? "Manual — conch stays quiet and waits. Switch \(scope) to auto."
-            : "Auto — finished turns read aloud and the mic opens itself. Switch \(scope) to manual."
+        return scopeHelp
     }
 
     private var symbol: String {

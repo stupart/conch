@@ -155,7 +155,11 @@ struct PublishedState: Decodable, Equatable {
         var detail: String?
         var at: Double = 0
         var live: String?
+        /// Quieted by name: conch won't read it aloud, and it keeps working (`SessionVoice`).
         var paused = false
+        /// Let speak by name while every session is quiet. Never true alongside `paused`; older
+        /// daemons never send it, which reads as false.
+        var pauseExempt = false
         var review: Review?
         /// Every deliverable the session still holds, oldest first; `review` is the last.
         var reviews: [Review]?
@@ -253,7 +257,7 @@ struct PublishedState: Decodable, Equatable {
         }
 
         private enum CodingKeys: String, CodingKey {
-            case id, label, status, backend, context, detail, at, live, paused, review, reviews, noTerminal, attachable
+            case id, label, status, backend, context, detail, at, live, paused, pauseExempt, review, reviews, noTerminal, attachable
             case cwd, workDirs, parentSessionId, startedBySessionId, waitingOnAgents, approval
         }
 
@@ -272,6 +276,7 @@ struct PublishedState: Decodable, Equatable {
             at = (try? c.decodeIfPresent(Double.self, forKey: .at)) ?? 0
             live = try? c.decodeIfPresent(String.self, forKey: .live)
             paused = (try? c.decodeIfPresent(Bool.self, forKey: .paused)) ?? false
+            pauseExempt = (try? c.decodeIfPresent(Bool.self, forKey: .pauseExempt)) ?? false
             review = try? c.decodeIfPresent(Review.self, forKey: .review)
             reviews = try? c.decodeIfPresent([Review].self, forKey: .reviews)
             noTerminal = try? c.decodeIfPresent(String.self, forKey: .noTerminal)
@@ -380,13 +385,22 @@ struct PublishedState: Decodable, Equatable {
 
 private struct AnyIgnored: Decodable {}
 
+extension PublishedState.Row {
+    /// Whether conch reads this session aloud: the Mac's rule, from the same two flags and the global mode.
+    func voice(everythingQuiet: Bool) -> SessionVoice {
+        SessionVoice(sessionQuiet: paused, exempt: pauseExempt, everythingQuiet: everythingQuiet)
+    }
+}
+
 /// The Mac ledger's glyph vocabulary, one for one.
+///
+/// No mode among them. A quiet session (manual for that one) keeps working, so its mark says what it is doing and a
+/// small speaker mark beside its name says conch won't read it aloud (`SessionVoice`), as on the Mac.
 enum StatusMark {
-    /// `agentPaused` is a sub-agent that is not running (C4); `paused` is a session in manual mode.
-    case working, waitingOnAgents, waiting, needs, review, paused, micOpen, speaking, idle, agentPaused
+    /// `agentPaused` is a sub-agent that is not running (C4).
+    case working, waitingOnAgents, waiting, needs, review, micOpen, speaking, idle, agentPaused
 
     init(row: PublishedState.Row) {
-        let wantsUser = row.status == "waiting" || row.status == "needs"
         // The deliverable stays on a working row; the mark means it is waiting for you, and one you have looked at,
         // here or on the Mac, isn't (`ReadyForYou`, the Mac's rule): that row reads as its status.
         let held = row.reviews.flatMap { $0.isEmpty ? nil : $0 } ?? row.review.map { [$0] } ?? []
@@ -395,7 +409,6 @@ enum StatusMark {
         // Codex helper between turns is not "waiting for you", and waiting's colour was wrong on
         // it. Only a question it is blocked on still asks something of you.
         if row.parentSessionId != nil, row.status != "working", row.status != "needs" { self = .agentPaused; return }
-        if row.paused, !wantsUser { self = .paused; return }
         switch row.live {
         case "listening", "recording": self = .micOpen
         case "speaking": self = .speaking
@@ -421,7 +434,6 @@ enum StatusMark {
         case .waiting: "circle.inset.filled"
         case .needs: "exclamationmark.circle.fill"
         case .review: "checkmark.circle.fill"
-        case .paused: "pause.fill"
         case .micOpen: "mic.fill"
         case .speaking: "play.fill"
         case .idle: "circle.dotted"
@@ -439,7 +451,6 @@ enum StatusMark {
         case .waiting, .waitingOnAgents: Palette.waiting
         case .needs: Palette.needs
         case .review: Palette.review
-        case .paused: Palette.textDim
         case .micOpen: Palette.micOpen
         case .idle, .agentPaused: Palette.textFaint
         }
@@ -454,7 +465,7 @@ enum StatusMark {
     var showsMeaningInLedger: Bool {
         switch self {
         case .working, .idle, .agentPaused: false
-        case .waitingOnAgents, .waiting, .needs, .review, .micOpen, .speaking, .paused: true
+        case .waitingOnAgents, .waiting, .needs, .review, .micOpen, .speaking: true
         }
     }
 
@@ -476,7 +487,6 @@ enum StatusMark {
         case .waiting: "Ready for you — its turn is over"
         case .needs: "Needs an answer"
         case .review: "Ready for you — work to look at"
-        case .paused: "Manual"
         case .micOpen: "Mic open"
         case .speaking: "Reading aloud"
         case .idle: "Idle"
