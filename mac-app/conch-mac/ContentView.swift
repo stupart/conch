@@ -154,6 +154,10 @@ struct ContentView: View {
         ) { _ in
             showKeyboardShortcuts()
         }
+        // Setup's "Start a session": the New session sheet.
+        .onReceive(NotificationCenter.default.publisher(for: .showSessionStart)) { _ in
+            isShowingSessionStart = true
+        }
         .onReceive(
             NotificationCenter.default.publisher(for: .selectSessionFromStatusItem)
         ) { note in

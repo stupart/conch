@@ -150,6 +150,36 @@ enum ConchSocketRequestOutcome: Equatable, Sendable {
     case timeout
 }
 
+/// A streamed request's socket, shut from another thread when its task is cancelled: the blocking read then ends.
+final class StreamConnection: @unchecked Sendable {
+    private let lock = NSLock()
+    private var descriptor: Int32 = -1
+    private var cancelled = false
+
+    /// False when it was cancelled before it connected.
+    func adopt(_ descriptor: Int32) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !cancelled else { return false }
+        self.descriptor = descriptor
+        return true
+    }
+
+    func shutdown() {
+        lock.lock()
+        defer { lock.unlock() }
+        cancelled = true
+        if descriptor >= 0 { Darwin.shutdown(descriptor, SHUT_RDWR) }
+    }
+
+    func close() {
+        lock.lock()
+        defer { lock.unlock() }
+        if descriptor >= 0 { Darwin.close(descriptor) }
+        descriptor = -1
+    }
+}
+
 struct ConchGetConfigRequest: Encodable, Sendable {
     let kind = "get-config"
 }
@@ -597,6 +627,47 @@ struct ConchSocketClient: Sendable {
             }
             return (line, descriptor)
         }.value
+    }
+
+    /// A request answered in lines, the last of them the reply: setup's microphone check streams its levels first, an
+    /// agent's installer its last words (src/setup.ts). `onLine` gets each line before the last as it arrives. Cancelling
+    /// the task closes the connection, which the daemon reads as the asker gone: a microphone check stops and lets go.
+    func stream<Request: Encodable>(
+        _ request: Request,
+        timeout: TimeInterval,
+        onLine: @escaping @Sendable (Data) -> Void
+    ) async -> ConchSocketRequestOutcome {
+        guard var payload = try? JSONEncoder().encode(request) else { return .connectFailed }
+        payload.append(0x0A)
+        let socketPath = socketPath
+        let deadline = Self.makeDeadline(after: Self.nanoseconds(for: timeout))
+        let connection = StreamConnection()
+        return await withTaskCancellationHandler {
+            await Task.detached(priority: .userInitiated) {
+                guard let descriptor = Self.connectedSocket(to: socketPath, deadline: deadline) else { return .connectFailed }
+                _ = Darwin.fcntl(descriptor, F_SETFD, FD_CLOEXEC)
+                guard connection.adopt(descriptor) else {
+                    Darwin.close(descriptor)
+                    return .timeout
+                }
+                defer { connection.close() }
+                guard Self.write(payload, to: descriptor, deadline: deadline) == .complete else { return .timeout }
+                var buffered = Data()
+                var last: Data?
+                while true {
+                    switch Self.readReplyLine(from: descriptor, deadline: deadline, buffered: &buffered) {
+                    case let .reply(line):
+                        if let previous = last { onLine(previous) }
+                        last = line
+                    case .timeout, .connectFailed:
+                        // The daemon ends the connection after its reply: the last line is the answer.
+                        return last.map { .reply($0) } ?? .timeout
+                    }
+                }
+            }.value
+        } onCancel: {
+            connection.shutdown()
+        }
     }
 
     /// Reporting cannot itself become another user-visible failure. A daemon

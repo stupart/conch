@@ -272,7 +272,7 @@ struct OnbScreens {
                       downloads: [OnboardingDownload] = dlDone) -> some View {
         OnbMacWindow {
             OnboardingWindow(progress: progress(.voice, done: [.agents], later: [.permissions]), downloads: downloads) {
-                OnboardingVoiceStep(ring: ring, mic: mic)
+                OnboardingVoiceStep(ring: ring, mic: mic, devices: ["MacBook Pro Microphone", "Studio Display Microphone"])
             }
         }
     }
@@ -348,17 +348,7 @@ struct OnbScreens {
                         .padding(.vertical, 12)
                     OnboardingDivider(leading: 54)
                     // Drawn as the permission row above is: the icon bare, the words, the one button.
-                    HStack(alignment: .center, spacing: ConchSpace.x4) {
-                        Image(systemName: "iphone").font(.system(size: 15)).foregroundStyle(ConchColor.textSecondary).frame(width: 22)
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text("Your iPhone").font(ConchType.uiEmphasis).foregroundStyle(ConchColor.textPrimary)
-                            Text("New: hear your agents and answer them from anywhere.").font(ConchType.secondary).foregroundStyle(ConchColor.textSecondary)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        OnboardingButton("Pair", style: .action)
-                    }
-                    .padding(.horizontal, ConchSpace.x4)
-                    .padding(.vertical, 14)
+                    OnboardingActionRow.phone()
                 }
             }
         }
@@ -987,4 +977,5 @@ func renderOnboarding() throws {
     try renderOnboardingStates()
     try renderOnboardingPhone()
     try renderOnboardingFilms()
+    try renderOnboardingHosted()
 }

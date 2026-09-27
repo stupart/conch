@@ -229,7 +229,7 @@ final class ConchPairingStore: ObservableObject {
                     return
                 }
                 pairing = opened
-                qrImage = opened.relay.flatMap(Self.qr(for:))
+                qrImage = opened.relay.flatMap { Self.qr(for: $0) }
             } catch {
                 // A refusal is a different shape from a pairing, and it failed to
                 // decode as one for weeks — a fresh install has `phone` off, and
@@ -275,13 +275,14 @@ final class ConchPairingStore: ObservableObject {
         return "conch-relay-v1:\(base64URL)"
     }
 
-    static func qr(for relay: ConchRelayPairing) -> NSImage? {
+    /// `correction` is M here; setup passes H, which survives conch's icon over the code's middle (`PairingCode`).
+    static func qr(for relay: ConchRelayPairing, correction: String = "M") -> NSImage? {
         guard let code = pairingCode(for: relay) else { return nil }
         let filter = CIFilter.qrCodeGenerator()
         filter.message = Data(code.utf8)
         // M: the payload is ~200 bytes and the code is read off a bright screen
         // at close range, so correction beyond this only shrinks the modules.
-        filter.correctionLevel = "M"
+        filter.correctionLevel = correction
         guard let output = filter.outputImage else { return nil }
         let scaled = output.transformed(by: CGAffineTransform(scaleX: 10, y: 10))
         let context = CIContext()

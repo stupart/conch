@@ -82,6 +82,8 @@ describe("installing conch leaves the user's own instruction files alone", () =>
       '"/opt/homebrew/Cellar/bun/1.4.0/bin/bun" "/Users/t/Projects/Conch/src/cli.ts" hook',
       '"/usr/local/bin/conch" hook',
       "conch hook",
+      // The Mac app's own daemon, which setup wires from the app.
+      '"/Applications/conch.app/Contents/Helpers/conch-daemon" hook',
     ]) expect(isConchHookCommand(mine)).toBe(true);
     for (const other of ['"/usr/local/bin/other" hook', "node my-hooks.js", '"/x/cli.ts" hooks', undefined]) {
       expect(isConchHookCommand(other)).toBe(false);

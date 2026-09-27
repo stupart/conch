@@ -143,7 +143,7 @@ func renderOnboardingStates() throws {
         HStack(alignment: .top, spacing: 24) {
             VStack(alignment: .leading, spacing: 8) {
                 Caption("Voices still setting up")
-                OnbDesk(padding: 0) { OnbScreens.voice(ring: .settingUp(fraction: 0.64), mic: MicCheck(device: "MacBook Pro Microphone", state: .listening, levels: micLevels), downloads: dlLate) }
+                OnbDesk(padding: 0) { OnbScreens.voice(ring: .settingUp("Step 3 of 4"), mic: MicCheck(device: "MacBook Pro Microphone", state: .listening, levels: micLevels), downloads: dlLate) }
                     .scaleEffect(0.62, anchor: .topLeading).frame(width: 880 * 0.62, height: 620 * 0.62, alignment: .topLeading)
             }
             VStack(alignment: .leading, spacing: 8) {

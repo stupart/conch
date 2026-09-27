@@ -129,7 +129,8 @@ describe("Mac Phase 2 questions and error reporting", () => {
     expect(socket).toContain('let source = "mac"');
     expect(socket).toContain("let state: [String: String]");
     expect(socket).toMatch(/func reportAppError\([\s\S]*_ = await request\(/);
-    expect(macApp).toContain('operation: "login-item.register"');
+    // Opening at login is setup's switch now (`LoginItem`, OnboardingSupport.swift), and reports the same way.
+    expect(app("OnboardingSupport.swift")).toContain('operation: on ? "login-item.register" : "login-item.unregister"');
     expect(app("StateStore.swift")).toContain("private var errorStateSnapshot: [String: String]");
   });
 });

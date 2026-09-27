@@ -40,18 +40,49 @@ public struct OnboardingAgent: Identifiable, Equatable, Sendable {
         case twoCopies(conch: String, shell: String)
     }
 
+    /// Two installs that disagree, as `conch doctor` finds them: the one conch resolves and the one the person's shell
+    /// runs, each "version  path". Shown under the row whatever its state.
+    public struct Copies: Equatable, Sendable {
+        public let conch: String
+        public let shell: String
+
+        public init(conch: String, shell: String) {
+            self.conch = conch
+            self.shell = shell
+        }
+    }
+
     public let kind: Kind
     public var state: State
     /// Sessions already open that read their hooks only at start: each needs `/hooks` once.
     public var openSessions: Int
+    /// One more line under the row, in the row's words: what conch is waiting for, or why it can't yet.
+    public var note: String?
+    public var copies: Copies?
 
     public var id: Kind { kind }
 
-    public init(_ kind: Kind, _ state: State, openSessions: Int = 0) {
+    public init(_ kind: Kind, _ state: State, openSessions: Int = 0, note: String? = nil, copies: Copies? = nil) {
         self.kind = kind
         self.state = state
         self.openSessions = openSessions
+        self.note = note
+        self.copies = copies
     }
+}
+
+/// The one thing an agent's row can do.
+public enum OnboardingAgentAction: Equatable, Sendable {
+    /// Write conch's hooks and plugin into the agent's own settings.
+    case connect
+    /// Run the agent's own installer.
+    case install
+    /// The last install or connect failed: the same again.
+    case retry
+    /// Open Terminal on the agent's sign-in.
+    case signIn
+    /// Put this command on the clipboard.
+    case copy(String)
 }
 
 /// A permission asked the first time its feature is used rather than in setup: setup says when, and offers it early.
@@ -100,12 +131,15 @@ public struct OnboardingDownload: Identifiable, Equatable, Sendable {
     /// What it's for, in a few words.
     public let purpose: String
     public var state: State
+    /// A failure a Retry can help: not one that retries by itself, or one no retry fixes (an Intel Mac).
+    public var canRetry: Bool
 
-    public init(id: String, title: String, purpose: String, state: State) {
+    public init(id: String, title: String, purpose: String, state: State, canRetry: Bool = true) {
         self.id = id
         self.title = title
         self.purpose = purpose
         self.state = state
+        self.canRetry = canRetry
     }
 
     public var fraction: Double? {
@@ -208,6 +242,29 @@ public struct OnboardingButton: View {
         self.action = action
     }
 
+    public var body: some View {
+        Button(action: action) {
+            OnboardingButtonLabel(title, systemImage: systemImage, style: style, size: size)
+        }
+        .buttonStyle(OnboardingPress())
+        .accessibilityLabel(title)
+    }
+}
+
+/// How a setup button looks, apart from what it does: for a menu that has to look like one of them (Change).
+public struct OnboardingButtonLabel: View {
+    let title: String
+    let systemImage: String?
+    let style: OnboardingButton.Style
+    let size: OnboardingButton.Size
+
+    public init(_ title: String, systemImage: String? = nil, style: OnboardingButton.Style = .primary, size: OnboardingButton.Size = .regular) {
+        self.title = title
+        self.systemImage = systemImage
+        self.style = style
+        self.size = size
+    }
+
     private var font: Font {
         switch (size, style) {
         case (.phone, .quiet): OnboardingType.Phone.body
@@ -228,41 +285,38 @@ public struct OnboardingButton: View {
     }
 
     public var body: some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                Text(title)
-                if let systemImage {
-                    Image(systemName: systemImage).font(.system(size: size == .phone ? 13 : 10, weight: .bold))
-                }
+        HStack(spacing: 5) {
+            Text(title)
+            if let systemImage {
+                Image(systemName: systemImage).font(.system(size: size == .phone ? 13 : 10, weight: .bold))
             }
-            .font(font)
-            .lineLimit(size == .phone ? 3 : 1)
-            .multilineTextAlignment(.center)
-            .fixedSize(horizontal: size != .phone, vertical: true)
-            .foregroundStyle(style == .primary || style == .action ? AnyShapeStyle(ConchColor.onAccent) : style == .row ? AnyShapeStyle(ConchColor.textPrimary) : AnyShapeStyle(ConchColor.textSecondary))
-            .padding(.horizontal, style == .quiet ? 4 : size == .large ? 26 : size == .phone ? 20 : style == .action ? 11 : style == .row ? 12 : 16)
-            .frame(maxWidth: size == .phone && style != .quiet ? .infinity : nil)
-            .padding(.vertical, size == .phone ? 8 : 0)
-            .frame(minHeight: height, maxHeight: size == .phone ? nil : height)
-            .background {
-                switch style {
-                case .primary, .action:
-                    if size == .phone {
-                        RoundedRectangle(cornerRadius: 16, style: .continuous).fill(ConchColor.accent)
-                    } else {
-                        Capsule().fill(ConchColor.accent)
-                    }
-                case .row:
-                    Capsule().fill(ConchColor.fill)
-                        .overlay(Capsule().strokeBorder(ConchColor.hairline, lineWidth: 0.5))
-                case .quiet:
-                    EmptyView()
-                }
-            }
-            .contentShape(Rectangle())
         }
-        .buttonStyle(OnboardingPress())
-        .accessibilityLabel(title)
+        .font(font)
+        // On the iPhone a label wraps at large text sizes rather than truncating; on the Mac it stays one line.
+        .lineLimit(size == .phone ? 3 : 1)
+        .multilineTextAlignment(.center)
+        .fixedSize(horizontal: size != .phone, vertical: true)
+        .foregroundStyle(style == .primary || style == .action ? AnyShapeStyle(ConchColor.onAccent) : style == .row ? AnyShapeStyle(ConchColor.textPrimary) : AnyShapeStyle(ConchColor.textSecondary))
+        .padding(.horizontal, style == .quiet ? 4 : size == .large ? 26 : size == .phone ? 20 : style == .action ? 11 : style == .row ? 12 : 16)
+        .frame(maxWidth: size == .phone && style != .quiet ? .infinity : nil)
+        .padding(.vertical, size == .phone ? 8 : 0)
+        .frame(minHeight: height, maxHeight: size == .phone ? nil : height)
+        .background {
+            switch style {
+            case .primary, .action:
+                if size == .phone {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous).fill(ConchColor.accent)
+                } else {
+                    Capsule().fill(ConchColor.accent)
+                }
+            case .row:
+                Capsule().fill(ConchColor.fill)
+                    .overlay(Capsule().strokeBorder(ConchColor.hairline, lineWidth: 0.5))
+            case .quiet:
+                EmptyView()
+            }
+        }
+        .contentShape(Rectangle())
     }
 }
 

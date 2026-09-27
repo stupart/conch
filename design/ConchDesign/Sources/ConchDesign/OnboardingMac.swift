@@ -20,23 +20,29 @@ public enum OnboardingWindowMetrics {
 /// Setup's window: the rail and the step. The window's own buttons sit over the rail's top, as a sidebar's do.
 public struct OnboardingWindow<Content: View>: View {
     let progress: OnboardingProgress
+    let steps: [OnboardingStep]
     let downloads: [OnboardingDownload]
     let details: [OnboardingStep: String]
     let onOpen: (OnboardingStep) -> Void
+    let onRetry: ((OnboardingDownload) -> Void)?
     let content: Content
 
-    public init(progress: OnboardingProgress, downloads: [OnboardingDownload], details: [OnboardingStep: String] = [:],
-                onOpen: @escaping (OnboardingStep) -> Void = { _ in }, @ViewBuilder content: () -> Content) {
+    /// `steps` is the rail this Mac shows (`OnboardingReadiness.rail`): no Try it until the practice turn is built.
+    public init(progress: OnboardingProgress, steps: [OnboardingStep] = OnboardingStep.rail, downloads: [OnboardingDownload],
+                details: [OnboardingStep: String] = [:], onOpen: @escaping (OnboardingStep) -> Void = { _ in },
+                onRetry: ((OnboardingDownload) -> Void)? = nil, @ViewBuilder content: () -> Content) {
         self.progress = progress
+        self.steps = steps
         self.downloads = downloads
         self.details = details
         self.onOpen = onOpen
+        self.onRetry = onRetry
         self.content = content()
     }
 
     public var body: some View {
         HStack(spacing: 0) {
-            OnboardingRail(progress: progress, downloads: downloads, details: details, onOpen: onOpen)
+            OnboardingRail(progress: progress, steps: steps, downloads: downloads, details: details, onOpen: onOpen, onRetry: onRetry)
                 .padding(OnboardingWindowMetrics.railInset)
                 .padding(.trailing, -OnboardingWindowMetrics.railInset / 2)
             content
@@ -71,9 +77,11 @@ extension EnvironmentValues {
 /// The steps, where each stands, and the downloads under them.
 public struct OnboardingRail: View {
     let progress: OnboardingProgress
+    let steps: [OnboardingStep]
     let downloads: [OnboardingDownload]
     let details: [OnboardingStep: String]
     let onOpen: (OnboardingStep) -> Void
+    let onRetry: ((OnboardingDownload) -> Void)?
     @Environment(\.conchAppIcon) private var icon
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.onboardingRailMove) private var move
@@ -82,12 +90,15 @@ public struct OnboardingRail: View {
     /// A row's height and the gap between rows.
     static let rowPitch: CGFloat = 36
 
-    public init(progress: OnboardingProgress, downloads: [OnboardingDownload], details: [OnboardingStep: String] = [:],
-                onOpen: @escaping (OnboardingStep) -> Void = { _ in }) {
+    public init(progress: OnboardingProgress, steps: [OnboardingStep] = OnboardingStep.rail, downloads: [OnboardingDownload],
+                details: [OnboardingStep: String] = [:], onOpen: @escaping (OnboardingStep) -> Void = { _ in },
+                onRetry: ((OnboardingDownload) -> Void)? = nil) {
         self.progress = progress
+        self.steps = steps
         self.downloads = downloads
         self.details = details
         self.onOpen = onOpen
+        self.onRetry = onRetry
     }
 
     public var body: some View {
@@ -104,12 +115,12 @@ public struct OnboardingRail: View {
             .padding(.bottom, 18)
 
             VStack(spacing: 2) {
-                ForEach(Array(OnboardingStep.rail.enumerated()), id: \.element) { index, step in
+                ForEach(Array(steps.enumerated()), id: \.element) { index, step in
                     stepRow(step, number: index + 1)
                 }
             }
             .background(alignment: .top) {
-                if let move, let from = OnboardingStep.rail.firstIndex(of: move.from), let to = OnboardingStep.rail.firstIndex(of: progress.step) {
+                if let move, let from = steps.firstIndex(of: move.from), let to = steps.firstIndex(of: progress.step) {
                     RoundedRectangle(cornerRadius: 9, style: .continuous)
                         .fill(ConchColor.fillSelected)
                         .conchElevation(.raised)
@@ -120,7 +131,7 @@ public struct OnboardingRail: View {
 
             Spacer(minLength: 12)
             if !downloads.isEmpty {
-                DownloadsTray(downloads: downloads)
+                DownloadsTray(downloads: downloads, onRetry: onRetry)
             }
         }
         .padding(10)
@@ -228,8 +239,13 @@ public struct AppIconView: View {
 /// What's downloading, under the steps. It says how much is left and never asks for anything unless something fails.
 public struct DownloadsTray: View {
     let downloads: [OnboardingDownload]
+    let onRetry: ((OnboardingDownload) -> Void)?
 
-    public init(downloads: [OnboardingDownload]) { self.downloads = downloads }
+    /// `onRetry`, when given, makes a failed download's Retry a button; without it a failure only says when it tries again.
+    public init(downloads: [OnboardingDownload], onRetry: ((OnboardingDownload) -> Void)? = nil) {
+        self.downloads = downloads
+        self.onRetry = onRetry
+    }
 
     /// How many are ready: only speech recognition knows its bytes (the voices are built in steps), so a byte total
     /// across both would be a guess.
@@ -246,7 +262,7 @@ public struct DownloadsTray: View {
                 Spacer()
                 Text(summary).font(.system(size: 11)).foregroundStyle(ConchColor.textTertiary).monospacedDigit()
             }
-            ForEach(downloads) { item in DownloadLine(item: item) }
+            ForEach(downloads) { item in DownloadLine(item: item, onRetry: onRetry) }
         }
         .padding(.horizontal, 8)
         .padding(.bottom, 6)
@@ -257,6 +273,7 @@ struct DownloadLine: View {
     let item: OnboardingDownload
     /// Off where the row beside it already names the download (Settings › Setup).
     var showsTitle = true
+    var onRetry: ((OnboardingDownload) -> Void)?
 
     var body: some View {
         VStack(alignment: showsTitle ? .leading : .trailing, spacing: 5) {
@@ -295,8 +312,17 @@ struct DownloadLine: View {
         case .ready:
             OnboardingCheck(size: 14)
         case .failed, .noSpace:
-            Text("Retry").font(.system(size: 11, weight: .semibold)).foregroundStyle(ConchColor.textPrimary)
-                .padding(.horizontal, 8).frame(height: 20).background(Capsule().fill(ConchColor.surface))
+            if let onRetry, item.canRetry {
+                Button { onRetry(item) } label: {
+                    Text("Retry").font(.system(size: 11, weight: .semibold)).foregroundStyle(ConchColor.textPrimary)
+                        .padding(.horizontal, 8).frame(height: 20).background(Capsule().fill(ConchColor.surface))
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(OnboardingPress())
+                .accessibilityLabel("Retry \(item.title)")
+            } else {
+                Image(systemName: "exclamationmark.circle").font(.system(size: 11, weight: .semibold)).foregroundStyle(ConchColor.attention)
+            }
         case .offline:
             Image(systemName: "wifi.slash").font(.system(size: 10, weight: .semibold)).foregroundStyle(ConchColor.textTertiary)
         }
@@ -376,7 +402,9 @@ public struct OnboardingPage<Content: View>: View {
                 Spacer(minLength: 0)
                 if let secondary { OnboardingButton(secondary, style: .quiet, action: onSecondary) }
                 if let primary {
+                    // Return is the step's one way on.
                     OnboardingButton(primary, action: onPrimary)
+                        .keyboardShortcut(.defaultAction)
                         .opacity(primaryEnabled ? 1 : 0.32)
                         .disabled(!primaryEnabled)
                 }
@@ -384,6 +412,31 @@ public struct OnboardingPage<Content: View>: View {
         }
         .padding(OnboardingWindowMetrics.pagePadding)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+/// A page giving way to the next on `swap`: the old one leaves soft and a touch large, the new one arrives from a touch
+/// small. Reduce Motion keeps the timing and only fades.
+public struct OnboardingSwap: ViewModifier {
+    let scale: CGFloat
+    let blur: CGFloat
+    let opacity: Double
+
+    public func body(content: Content) -> some View {
+        content.scaleEffect(scale).blur(radius: blur).opacity(opacity)
+    }
+}
+
+extension AnyTransition {
+    /// One setup page giving way to the next (`ConchMotion.swap`); pair it with `ConchMotion.swap.animation(reduceMotion:)`.
+    public static func onboardingSwap(reduceMotion: Bool) -> AnyTransition {
+        if reduceMotion { return .opacity }
+        return .asymmetric(
+            insertion: .modifier(active: OnboardingSwap(scale: ConchMotion.swapScale, blur: ConchMotion.swapBlur, opacity: 0),
+                                 identity: OnboardingSwap(scale: 1, blur: 0, opacity: 1)),
+            removal: .modifier(active: OnboardingSwap(scale: 1 / ConchMotion.swapScale, blur: ConchMotion.swapBlur, opacity: 0),
+                               identity: OnboardingSwap(scale: 1, blur: 0, opacity: 1))
+        )
     }
 }
 
@@ -432,6 +485,7 @@ public struct OnboardingWelcome: View {
                     .frame(maxWidth: 480)
                     .padding(.top, 14)
                 OnboardingButton("Set up conch", size: .large, action: onBegin)
+                    .keyboardShortcut(.defaultAction)
                     .padding(.top, 30)
                 Text("About three minutes. Voices and speech recognition (2.2 GB) download as you go, and run on this Mac.")
                     .font(.system(size: 12))
@@ -528,18 +582,25 @@ struct ShoreLine: Shape {
 
 public struct OnboardingAgentsStep: View {
     let agents: [OnboardingAgent]
+    /// Said in place of the rows when there are none to show: the daemon hasn't answered.
+    let problem: String?
+    let onAction: (OnboardingAgent.Kind, OnboardingAgentAction) -> Void
     let onContinue: () -> Void
     let onSkip: () -> Void
 
-    public init(agents: [OnboardingAgent], onContinue: @escaping () -> Void = {}, onSkip: @escaping () -> Void = {}) {
+    public init(agents: [OnboardingAgent], problem: String? = nil,
+                onAction: @escaping (OnboardingAgent.Kind, OnboardingAgentAction) -> Void = { _, _ in },
+                onContinue: @escaping () -> Void = {}, onSkip: @escaping () -> Void = {}) {
         self.agents = agents
+        self.problem = problem
+        self.onAction = onAction
         self.onContinue = onContinue
         self.onSkip = onSkip
     }
 
     /// None on this Mac yet (or only on its way): the page offers to install rather than reporting what it found.
     private var noneYet: Bool {
-        agents.allSatisfy { agent in
+        !agents.isEmpty && agents.allSatisfy { agent in
             switch agent.state {
             case .missing, .installing, .failed: true
             default: false
@@ -560,10 +621,24 @@ public struct OnboardingAgentsStep: View {
             onPrimary: onContinue,
             onSecondary: onSkip
         ) {
-            OnboardingCard {
-                ForEach(Array(agents.enumerated()), id: \.element.id) { index, agent in
-                    if index > 0 { OnboardingDivider() }
-                    OnboardingAgentRow(agent: agent)
+            if agents.isEmpty {
+                HStack(spacing: 10) {
+                    if let problem {
+                        Image(systemName: "exclamationmark.circle").font(.system(size: 13)).foregroundStyle(ConchColor.attention)
+                        Text(problem).font(OnboardingType.rowDetail).foregroundStyle(ConchColor.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        OnboardingSpinner(size: 13)
+                        Text("Looking for your agents…").font(OnboardingType.rowDetail).foregroundStyle(ConchColor.textSecondary)
+                    }
+                }
+                .padding(.top, 4)
+            } else {
+                OnboardingCard {
+                    ForEach(Array(agents.enumerated()), id: \.element.id) { index, agent in
+                        if index > 0 { OnboardingDivider() }
+                        OnboardingAgentRow(agent: agent) { onAction(agent.kind, $0) }
+                    }
                 }
             }
         }
@@ -573,9 +648,13 @@ public struct OnboardingAgentsStep: View {
 /// One agent: where it stands, and the one thing to press. The same row sits in Settings › Setup.
 public struct OnboardingAgentRow: View {
     let agent: OnboardingAgent
+    let onAction: (OnboardingAgentAction) -> Void
     @Environment(\.conchAgentMarks) private var marks
 
-    public init(agent: OnboardingAgent) { self.agent = agent }
+    public init(agent: OnboardingAgent, onAction: @escaping (OnboardingAgentAction) -> Void = { _ in }) {
+        self.agent = agent
+        self.onAction = onAction
+    }
 
     public var body: some View {
         OnboardingRow(
@@ -598,7 +677,7 @@ public struct OnboardingAgentRow: View {
 
     private var detail: String {
         switch agent.state {
-        case let .connected(version, from), let .found(version, from), let .connecting(version, from): "Version \(version) · \(from)"
+        case let .connected(version, from), let .found(version, from), let .connecting(version, from): from.isEmpty ? "Version \(version)" : "Version \(version) · \(from)"
         case let .signIn(version): "Version \(version) · not signed in yet, so it can't start a session"
         case .missing: agent.kind == .claude ? "Anthropic's coding agent, in your terminal." : "OpenAI's coding agent, in your terminal."
         case .installing: "Installing with its own installer…"
@@ -610,12 +689,12 @@ public struct OnboardingAgentRow: View {
     @ViewBuilder private var trailing: some View {
         switch agent.state {
         case .connected: OnboardingStatus(.done, "Connected")
-        case .found: OnboardingButton("Connect", style: .action)
+        case .found: OnboardingButton("Connect", style: .action) { onAction(.connect) }
         case .connecting: OnboardingStatus(.working, "Connecting")
-        case .signIn: OnboardingButton("Sign in", systemImage: "arrow.up.forward", style: .action)
-        case .missing: OnboardingButton("Install", style: .action)
+        case .signIn: OnboardingButton("Sign in", systemImage: "arrow.up.forward", style: .action) { onAction(.signIn) }
+        case .missing: OnboardingButton("Install", style: .action) { onAction(.install) }
         case .installing: OnboardingSpinner(size: 14)
-        case .failed: OnboardingButton("Try again", style: .action)
+        case .failed: OnboardingButton("Try again", style: .action) { onAction(.retry) }
         case .twoCopies: OnboardingButton("Use the newer one", style: .action)
         }
     }
@@ -629,21 +708,37 @@ public struct OnboardingAgentRow: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .padding(.top, 4)
-        case let .failed(_, command):
-            CopyableCommand(command).padding(.top, 6)
+        case let .failed(_, command) where !command.isEmpty:
+            CopyableCommand(command) { onAction(.copy(command)) }.padding(.top, 6)
         case let .twoCopies(conch, shell):
-            VStack(alignment: .leading, spacing: 3) {
-                Text("conch runs \(conch)")
-                Text("your shell runs \(shell)")
-            }
-            .font(.system(size: 11, design: .monospaced))
-            .foregroundStyle(ConchColor.textSecondary)
-            .padding(.top, 4)
-        case .connected where agent.openSessions > 0:
+            Self.copiesLines(conch: conch, shell: shell)
+        case .connected where agent.openSessions > 0, .connecting where agent.openSessions > 0:
             HooksNote(count: agent.openSessions).padding(.top, 6)
         default:
             EmptyView()
         }
+        if let note = agent.note {
+            Text(note)
+                .font(.system(size: 12))
+                .foregroundStyle(ConchColor.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 4)
+        }
+        if let copies = agent.copies {
+            Self.copiesLines(conch: copies.conch, shell: copies.shell)
+        }
+    }
+
+    private static func copiesLines(conch: String, shell: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("conch runs \(conch)")
+            Text("your shell runs \(shell)")
+        }
+        .font(.system(size: 11, design: .monospaced))
+        .foregroundStyle(ConchColor.textSecondary)
+        .lineLimit(1)
+        .truncationMode(.middle)
+        .padding(.top, 4)
     }
 }
 
@@ -666,8 +761,13 @@ struct HooksNote: View {
 /// A command to run by hand, with a Copy.
 struct CopyableCommand: View {
     let command: String
+    let onCopy: () -> Void
+    @State private var copied = false
 
-    init(_ command: String) { self.command = command }
+    init(_ command: String, onCopy: @escaping () -> Void = {}) {
+        self.command = command
+        self.onCopy = onCopy
+    }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -676,8 +776,17 @@ struct CopyableCommand: View {
                 .foregroundStyle(ConchColor.textPrimary)
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .textSelection(.enabled)
             Spacer(minLength: 4)
-            Text("Copy").font(.system(size: 11, weight: .semibold)).foregroundStyle(ConchColor.textSecondary)
+            Button {
+                onCopy()
+                copied = true
+            } label: {
+                Text(copied ? "Copied" : "Copy").font(.system(size: 11, weight: .semibold)).foregroundStyle(ConchColor.textSecondary)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(OnboardingPress())
+            .accessibilityLabel("Copy the command")
         }
         .padding(.horizontal, 10)
         .frame(height: 26)
@@ -693,18 +802,23 @@ public struct OnboardingPermissionsStep: View {
     let whenNeeded: [OnboardingDeferredAsk]
     /// The permission whose System Settings list is open right now, which conch is watching.
     let waitingOn: ConchPermission?
+    /// What went wrong doing a row's one thing (`PermissionCenter.notes`), said under it.
+    let notes: [ConchPermission: String]
+    /// Where each deferred ask stands, by its id: allowed already, or a reopen away.
+    let deferred: [String: ConchPermissionStatus]
     let onAction: (ConchPermission, ConchPermissionAction) -> Void
     let onAllowNow: (OnboardingDeferredAsk) -> Void
     let onContinue: () -> Void
     let onSkip: () -> Void
 
     /// The three the voice loop needs, in the order it needs them: hearing you, then typing your reply into Terminal.
-    public static let loop: [ConchPermission] = [.microphone, .accessibility, .automation]
+    public static let loop: [ConchPermission] = OnboardingReadiness.setupAsks
 
     /// `now` are Settings' own rows (`ConchPermissionRow`), asked here; `whenNeeded` are asked by the feature that uses
     /// them, the first time it does, and can be allowed early from here.
     public init(statuses: [ConchPermission: ConchPermissionStatus], now: [ConchPermission] = Self.loop,
                 whenNeeded: [OnboardingDeferredAsk] = [.screenRecording, .notifications], waitingOn: ConchPermission? = nil,
+                notes: [ConchPermission: String] = [:], deferred: [String: ConchPermissionStatus] = [:],
                 onAction: @escaping (ConchPermission, ConchPermissionAction) -> Void = { _, _ in },
                 onAllowNow: @escaping (OnboardingDeferredAsk) -> Void = { _ in },
                 onContinue: @escaping () -> Void = {}, onSkip: @escaping () -> Void = {}) {
@@ -712,6 +826,8 @@ public struct OnboardingPermissionsStep: View {
         self.now = now
         self.whenNeeded = whenNeeded
         self.waitingOn = waitingOn
+        self.notes = notes
+        self.deferred = deferred
         self.onAction = onAction
         self.onAllowNow = onAllowNow
         self.onContinue = onContinue
@@ -737,6 +853,7 @@ public struct OnboardingPermissionsStep: View {
                             permission: permission,
                             status: permission == waitingOn && statuses[permission] != .granted
                                 ? .unknown(Self.waitingLine) : statuses[permission] ?? .unknown("Checking…"),
+                            note: notes[permission],
                             onAction: { onAction(permission, $0) }
                         )
                         .padding(.horizontal, ConchSpace.x4)
@@ -752,7 +869,7 @@ public struct OnboardingPermissionsStep: View {
                     OnboardingCard {
                         ForEach(Array(whenNeeded.enumerated()), id: \.element.id) { index, ask in
                             if index > 0 { OnboardingDivider(leading: 54) }
-                            DeferredAskRow(ask: ask) { onAllowNow(ask) }
+                            DeferredAskRow(ask: ask, status: deferred[ask.id]) { onAllowNow(ask) }
                         }
                     }
                 }
@@ -764,10 +881,13 @@ public struct OnboardingPermissionsStep: View {
 /// One line for a permission asked later: what, when, and a quiet way to allow it now.
 public struct DeferredAskRow: View {
     let ask: OnboardingDeferredAsk
+    /// Allowed already says so instead of offering it; a reopen away offers the reopen.
+    let status: ConchPermissionStatus?
     let onAllowNow: () -> Void
 
-    public init(ask: OnboardingDeferredAsk, onAllowNow: @escaping () -> Void = {}) {
+    public init(ask: OnboardingDeferredAsk, status: ConchPermissionStatus? = nil, onAllowNow: @escaping () -> Void = {}) {
         self.ask = ask
+        self.status = status
         self.onAllowNow = onAllowNow
     }
 
@@ -782,10 +902,17 @@ public struct DeferredAskRow: View {
                 Text(ask.when).font(ConchType.secondary).foregroundStyle(ConchColor.textSecondary).lineLimit(1)
             }
             Spacer(minLength: 8)
-            OnboardingButton("Allow now", style: .quiet, action: onAllowNow)
+            switch status {
+            case .granted?: OnboardingStatus(.done, "Allowed")
+            case .needsRelaunch?: OnboardingButton(ConchPermissionAction.reopen.title, style: .quiet, action: onAllowNow)
+            case .restricted?: OnboardingStatus(.note, ConchPermissionStatus.restricted.label)
+            default: OnboardingButton("Allow now", style: .quiet, action: onAllowNow)
+            }
         }
         .padding(.horizontal, ConchSpace.x4)
         .frame(height: 52)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(ask.title): \(status == .granted ? "allowed" : ask.when)")
     }
 }
 
@@ -794,10 +921,15 @@ public struct DeferredAskRow: View {
 public struct PermissionGuide: View {
     let permission: ConchPermission
     let granted: Bool
+    /// The running app as a file, for the tile's drag: exactly this conch goes into the list.
+    let dragItem: (() -> NSItemProvider)?
+    let onClose: () -> Void
 
-    public init(permission: ConchPermission, granted: Bool = false) {
+    public init(permission: ConchPermission, granted: Bool = false, dragItem: (() -> NSItemProvider)? = nil, onClose: @escaping () -> Void = {}) {
         self.permission = permission
         self.granted = granted
+        self.dragItem = dragItem
+        self.onClose = onClose
     }
 
     public var body: some View {
@@ -819,6 +951,9 @@ public struct PermissionGuide: View {
                 .frame(height: 42)
                 .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(ConchColor.surface).conchElevation(.floating))
                 .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(ConchColor.hairlineStrong, lineWidth: 0.5))
+                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .onDrag { dragItem?() ?? NSItemProvider() }
+                .accessibilityLabel("conch, drag into the list")
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 5) {
                         Image(systemName: "arrow.up").font(.system(size: 11, weight: .bold))
@@ -829,21 +964,28 @@ public struct PermissionGuide: View {
                 }
             }
             Spacer(minLength: 8)
-            Image(systemName: "xmark").font(.system(size: 10, weight: .bold)).foregroundStyle(ConchColor.textTertiary)
+            Button(action: onClose) {
+                Image(systemName: "xmark").font(.system(size: 10, weight: .bold)).foregroundStyle(ConchColor.textTertiary)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(OnboardingPress())
+            .accessibilityLabel("Close")
         }
         .padding(.horizontal, 14)
         .frame(width: 420, height: 64)
         .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(ConchColor.surfaceRaised))
         .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(ConchColor.hairlineStrong, lineWidth: 0.5))
         .conchElevation(.overlay)
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel(granted ? "conch is on in \(permission.title)" : "Drag conch into the \(permission.title) list above")
     }
 }
 
-/// A switch as System Settings draws one, for pictures of it.
+/// A switch as System Settings draws one. Drawn rather than AppKit's, so a render shows it as the window does.
 struct MiniSwitch: View {
     let on: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Capsule()
@@ -852,6 +994,7 @@ struct MiniSwitch: View {
             .overlay(alignment: on ? .trailing : .leading) {
                 Circle().fill(Color.white).shadow(color: .black.opacity(0.2), radius: 1, y: 0.5).padding(2)
             }
+            .animation(ConchMotion.pop.animation(reduceMotion: reduceMotion), value: on)
     }
 }
 
@@ -861,7 +1004,8 @@ struct MiniSwitch: View {
 public enum VoiceRing: Equatable, Sendable {
     /// Ready; `playing` is the voice speaking its sample.
     case ready(playing: Int?)
-    case settingUp(fraction: Double)
+    /// Being built, and where it is: "Step 3 of 4". The voices are built in steps, not bytes, so there is no percent.
+    case settingUp(String)
     /// Needs Apple silicon, or turned off: the Mac's own voice.
     case unavailable(String)
 }
@@ -876,6 +1020,8 @@ public struct MicCheck: Equatable, Sendable {
         case silent
         /// The level works; the words wait for speech recognition to finish downloading.
         case waitingForRecognition(Double)
+        /// The check couldn't run, in words a person can act on.
+        case problem(String)
     }
 
     public var device: String
@@ -893,15 +1039,27 @@ public struct MicCheck: Equatable, Sendable {
 public struct OnboardingVoiceStep: View {
     let ring: VoiceRing
     let mic: MicCheck
+    @Environment(\.conchRendersStatically) private var statically
+    /// The Mac's inputs, for Change; picking one makes it the Mac's input.
+    let devices: [String]
+    let onHear: (Int) -> Void
+    let onPickDevice: (String) -> Void
+    let onAllowMicrophone: () -> Void
     let onContinue: () -> Void
     let onSkip: () -> Void
 
     /// conch's ring of voices (CONCH_TTS_VOICES), by the names Kokoro gives them.
     public static let voices = ["Heart", "Michael", "Emma", "Adam", "Nova", "George", "Bella", "Sky"]
 
-    public init(ring: VoiceRing, mic: MicCheck, onContinue: @escaping () -> Void = {}, onSkip: @escaping () -> Void = {}) {
+    public init(ring: VoiceRing, mic: MicCheck, devices: [String] = [], onHear: @escaping (Int) -> Void = { _ in },
+                onPickDevice: @escaping (String) -> Void = { _ in }, onAllowMicrophone: @escaping () -> Void = {},
+                onContinue: @escaping () -> Void = {}, onSkip: @escaping () -> Void = {}) {
         self.ring = ring
         self.mic = mic
+        self.devices = devices
+        self.onHear = onHear
+        self.onPickDevice = onPickDevice
+        self.onAllowMicrophone = onAllowMicrophone
         self.onContinue = onContinue
         self.onSkip = onSkip
     }
@@ -945,23 +1103,37 @@ public struct OnboardingVoiceStep: View {
                     Text(ringDetail).font(OnboardingType.rowDetail).foregroundStyle(ConchColor.textSecondary)
                 }
                 Spacer()
-                if ready { OnboardingButton("Hear one", systemImage: "play.fill", style: .row) }
-            }
-            // The ring, one chip a voice, across the card's full width so all eight sit on one line.
-            OnboardingFlowLayout(spacing: 6) {
-                ForEach(Array(Self.voices.enumerated()), id: \.offset) { index, name in
-                    VoiceChip(name: name, playing: ring == .ready(playing: index), enabled: ready)
+                if ready {
+                    // The next voice round the ring each press, so Hear one walks all eight.
+                    OnboardingButton("Hear one", systemImage: "play.fill", style: .row) { onHear(nextToHear) }
                 }
             }
-            if case let .settingUp(fraction) = ring {
-                HStack(spacing: 10) {
-                    OnboardingProgressBar(fraction, height: 3).frame(width: 96)
-                    Text("\(Int((fraction * 100).rounded()))% · until then, conch speaks with the Mac's own voice.")
+            // The ring, one chip a voice, across the card's full width so all eight sit on one line. A chip plays its own.
+            OnboardingFlowLayout(spacing: 6) {
+                ForEach(Array(Self.voices.enumerated()), id: \.offset) { index, name in
+                    Button { onHear(index) } label: {
+                        VoiceChip(name: name, playing: ring == .ready(playing: index), enabled: ready)
+                    }
+                    .buttonStyle(OnboardingPress())
+                    .disabled(!ready)
+                    .accessibilityLabel("Hear \(name)")
+                }
+            }
+            if case let .settingUp(step) = ring {
+                HStack(spacing: 8) {
+                    OnboardingSpinner(size: 11)
+                    Text("\(step) · until then, conch speaks with the Mac's own voice.")
                         .font(.system(size: 11)).foregroundStyle(ConchColor.textTertiary)
                 }
             }
         }
         .padding(ConchSpace.x4)
+    }
+
+    /// The voice after the one playing, or the first.
+    private var nextToHear: Int {
+        if case let .ready(playing?) = ring { return (playing + 1) % Self.voices.count }
+        return 0
     }
 
     private var ringDetail: String {
@@ -982,9 +1154,23 @@ public struct OnboardingVoiceStep: View {
                 }
                 Spacer()
                 if mic.state == .needsPermission {
-                    OnboardingButton("Allow…", style: .action)
-                } else {
-                    OnboardingButton("Change", systemImage: "chevron.up.chevron.down", style: .row)
+                    OnboardingButton(ConchPermissionAction.ask.title, style: .action, action: onAllowMicrophone)
+                } else if devices.count > 1, statically {
+                    // A menu is an AppKit control, which a render can't draw: its label stands in.
+                    OnboardingButtonLabel("Change", systemImage: "chevron.up.chevron.down", style: .row)
+                } else if devices.count > 1 {
+                    Menu {
+                        ForEach(devices, id: \.self) { device in
+                            Button(device) { onPickDevice(device) }
+                        }
+                    } label: {
+                        OnboardingButtonLabel("Change", systemImage: "chevron.up.chevron.down", style: .row)
+                    }
+                    .menuStyle(.button)
+                    .buttonStyle(.plain)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .accessibilityLabel("Change the microphone")
                 }
             }
             if mic.state != .needsPermission {
@@ -1016,6 +1202,10 @@ public struct OnboardingVoiceStep: View {
         case let .waitingForRecognition(fraction):
             Text("conch can hear you. Your words show here once speech recognition is ready (\(Int((fraction * 100).rounded()))%).")
                 .font(.system(size: 12)).foregroundStyle(ConchColor.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        case let .problem(words):
+            Text(words)
+                .font(.system(size: 12)).foregroundStyle(ConchColor.attention)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -1074,20 +1264,46 @@ public enum PhoneStepState: Equatable, Sendable {
     case failed(String)
 }
 
+/// What the code on screen is, which decides what the steps beside it say.
+public enum PairingCodeKind: Sendable {
+    /// A link the system Camera opens (conch, or the App Store without it).
+    case link
+    /// conch's own code, `conch-relay-v1:`, which only conch's scanner on the iPhone reads.
+    case inApp
+}
+
 public struct OnboardingPhoneStep: View {
     let state: PhoneStepState
     let qr: Image?
+    let kind: PairingCodeKind
     let lanCode: String
+    /// Where the iPhone types to reach this Mac without a relay ("192.168.1.20:8674").
+    let lanHost: String?
+    let onNewCode: () -> Void
     let onContinue: () -> Void
     let onSkip: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    public init(state: PhoneStepState, qr: Image?, lanCode: String = "482 193", onContinue: @escaping () -> Void = {}, onSkip: @escaping () -> Void = {}) {
+    public init(state: PhoneStepState, qr: Image?, kind: PairingCodeKind = .link, lanCode: String = "482 193", lanHost: String? = nil,
+                onNewCode: @escaping () -> Void = {}, onContinue: @escaping () -> Void = {}, onSkip: @escaping () -> Void = {}) {
         self.state = state
         self.qr = qr
+        self.kind = kind
         self.lanCode = lanCode
+        self.lanHost = lanHost
+        self.onNewCode = onNewCode
         self.onContinue = onContinue
         self.onSkip = onSkip
+    }
+
+    /// The three steps beside the code, for the code it is. Without a relay there is no code to scan in the app: the
+    /// iPhone types this Mac's address and the short code instead.
+    public static func steps(for kind: PairingCodeKind, relay: Bool = true) -> [String] {
+        switch (kind, relay) {
+        case (.link, _): ["Open the Camera on your iPhone.", "Point it at the code.", "Tap the conch banner that appears."]
+        case (.inApp, true): ["Open conch on your iPhone.", "Tap Scan the code on my Mac.", "Point it at this code."]
+        case (.inApp, false): ["Open conch on your iPhone.", "Tap Scan the code on my Mac, then Enter a code instead.", "Type the address and code below."]
+        }
     }
 
     private var finished: Bool {
@@ -1116,21 +1332,34 @@ public struct OnboardingPhoneStep: View {
 
     private func scan(relay: Bool, dimmed: Bool) -> some View {
         HStack(alignment: .top, spacing: 28) {
-            PairingCode(qr: qr, dimmed: dimmed)
+            // The in-app code carries the relay: without one there is nothing to scan, so no empty card.
+            if relay || kind == .link { PairingCode(qr: qr, dimmed: dimmed) }
             VStack(alignment: .leading, spacing: 14) {
-                NumberedLine(1, "Open the Camera on your iPhone.")
-                NumberedLine(2, "Point it at the code.")
-                NumberedLine(3, "Tap the conch banner that appears.")
+                ForEach(Array(Self.steps(for: kind, relay: relay).enumerated()), id: \.offset) { index, line in
+                    NumberedLine(index + 1, line)
+                }
                 Text(relay
-                     ? "No conch on your iPhone yet? The same code opens it in the App Store."
-                     : "Your iPhone needs to be on this Wi-Fi. Or type this code in conch on your iPhone:")
+                     ? (kind == .link
+                        ? "No conch on your iPhone yet? The same code opens it in the App Store."
+                        : "No conch on your iPhone yet? Install it, then scan this code.")
+                     : kind == .link
+                        ? "Your iPhone needs to be on this Wi-Fi. Or type this code in conch on your iPhone:"
+                        : "Your iPhone needs to be on this Wi-Fi.")
                     .font(.system(size: 12))
                     .foregroundStyle(ConchColor.textSecondary)
                     .lineSpacing(1.5)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 4)
                 if !relay {
-                    Text(lanCode).font(.system(size: 22, weight: .semibold, design: .monospaced)).foregroundStyle(ConchColor.textPrimary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        if let lanHost {
+                            Text(lanHost).font(.system(size: 13, design: .monospaced)).foregroundStyle(ConchColor.textSecondary)
+                                .textSelection(.enabled)
+                        }
+                        Text(lanCode).font(.system(size: 22, weight: .semibold, design: .monospaced)).foregroundStyle(ConchColor.textPrimary)
+                            .textSelection(.enabled)
+                            .accessibilityLabel("Code \(lanCode.map(String.init).joined(separator: " "))")
+                    }
                 }
                 Spacer(minLength: 0)
                 HStack(spacing: 8) {
@@ -1175,7 +1404,7 @@ public struct OnboardingPhoneStep: View {
                 Text("Couldn't pair").font(.system(size: 15, weight: .semibold)).foregroundStyle(ConchColor.textPrimary)
                 Text(reason).font(.system(size: 13)).foregroundStyle(ConchColor.textSecondary)
                     .lineSpacing(2).fixedSize(horizontal: false, vertical: true)
-                OnboardingButton("New code", systemImage: "arrow.clockwise", style: .action).padding(.top, 4)
+                OnboardingButton("New code", systemImage: "arrow.clockwise", style: .action, action: onNewCode).padding(.top, 4)
             }
         }
     }
@@ -1504,14 +1733,20 @@ public struct OnboardingDoneStep: View {
     let summary: [OnboardingSummaryLine]
     let actions: [OnboardingFirstAction]
     let openAtLogin: Bool
+    /// Why the switch didn't take, or what macOS still wants, in place of the notice beside it.
+    let loginNote: String?
+    let onToggleLogin: (Bool) -> Void
     let onAction: (String) -> Void
     let onClose: () -> Void
 
-    public init(summary: [OnboardingSummaryLine], actions: [OnboardingFirstAction], openAtLogin: Bool = true,
+    public init(summary: [OnboardingSummaryLine], actions: [OnboardingFirstAction], openAtLogin: Bool = true, loginNote: String? = nil,
+                onToggleLogin: @escaping (Bool) -> Void = { _ in },
                 onAction: @escaping (String) -> Void = { _ in }, onClose: @escaping () -> Void = {}) {
         self.summary = summary
         self.actions = actions
         self.openAtLogin = openAtLogin
+        self.loginNote = loginNote
+        self.onToggleLogin = onToggleLogin
         self.onAction = onAction
         self.onClose = onClose
     }
@@ -1544,6 +1779,8 @@ public struct OnboardingDoneStep: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(OnboardingPress())
+                        .accessibilityLabel(action.title)
+                        .accessibilityHint(action.detail)
                     }
                 }
                 // What's set, in one line each: the detail lives in Settings › Setup.
@@ -1559,12 +1796,23 @@ public struct OnboardingDoneStep: View {
                         }
                     }
                 }
-                HStack(spacing: 10) {
-                    MiniSwitch(on: openAtLogin)
-                    Text("Open conch when you log in").font(.system(size: 12, weight: .medium)).foregroundStyle(ConchColor.textPrimary)
-                    Text("macOS will say it added a background item. That's this.").font(.system(size: 11)).foregroundStyle(ConchColor.textTertiary)
+                Button { onToggleLogin(!openAtLogin) } label: {
+                    HStack(spacing: 10) {
+                        MiniSwitch(on: openAtLogin)
+                        Text("Open conch when you log in").font(.system(size: 12, weight: .medium)).foregroundStyle(ConchColor.textPrimary)
+                        Text(loginNote ?? "macOS will say it added a background item. That's this.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(loginNote == nil ? ConchColor.textTertiary : ConchColor.attention)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
                 .padding(.top, 2)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Open conch when you log in")
+                .accessibilityValue(openAtLogin ? "On" : "Off")
+                .accessibilityAddTraits(.isToggle)
             }
         }
     }
@@ -1600,25 +1848,78 @@ public struct MenuBarHint: View {
 
 /// Launched on a Mac that already had conch: what's set, and only what's missing.
 public struct OnboardingWelcomeBack<Rows: View>: View {
+    let count: Int
     let rows: Rows
     let onDone: () -> Void
+    let onNotNow: () -> Void
 
-    public init(onDone: @escaping () -> Void = {}, @ViewBuilder rows: () -> Rows) {
+    /// `count` is how many rows follow, for the line that introduces them.
+    public init(count: Int = 2, onDone: @escaping () -> Void = {}, onNotNow: @escaping () -> Void = {}, @ViewBuilder rows: () -> Rows) {
+        self.count = count
         self.rows = rows()
         self.onDone = onDone
+        self.onNotNow = onNotNow
+    }
+
+    /// "Two things are new since you set it up, or still off."
+    public static func lede(count: Int) -> String {
+        let words = ["No", "One", "Two", "Three", "Four", "Five"]
+        let number = count < words.count ? words[count] : "\(count)"
+        return "conch already knows your agents and can hear you. \(number) \(count == 1 ? "thing is" : "things are") new since you set it up, or still off."
     }
 
     public var body: some View {
         OnboardingPage(
             title: "Welcome back",
-            lede: "conch already knows your agents and can hear you. Two things are new since you set it up, or still off.",
+            lede: Self.lede(count: count),
             note: "Nothing else changed. Settings › Setup has the rest.",
             primary: "Done",
             secondary: "Not now",
-            onPrimary: onDone
+            onPrimary: onDone,
+            onSecondary: onNotNow
         ) {
             OnboardingCard { rows }
         }
+    }
+}
+
+/// A row Welcome back and Settings share for something that isn't a permission: drawn as the permission rows are, the
+/// icon bare, the words, and the one button.
+public struct OnboardingActionRow: View {
+    let symbol: String
+    let title: String
+    let detail: String
+    let button: String
+    let action: () -> Void
+
+    public init(symbol: String, title: String, detail: String, button: String, action: @escaping () -> Void = {}) {
+        self.symbol = symbol
+        self.title = title
+        self.detail = detail
+        self.button = button
+        self.action = action
+    }
+
+    /// Welcome back's iPhone row, for a Mac that has never paired one.
+    public static func phone(action: @escaping () -> Void = {}) -> OnboardingActionRow {
+        OnboardingActionRow(symbol: "iphone", title: "Your iPhone", detail: "New: hear your agents and answer them from anywhere.", button: "Pair", action: action)
+    }
+
+    public var body: some View {
+        HStack(alignment: .center, spacing: ConchSpace.x4) {
+            Image(systemName: symbol).font(.system(size: 15)).foregroundStyle(ConchColor.textSecondary).frame(width: 22)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(title).font(ConchType.uiEmphasis).foregroundStyle(ConchColor.textPrimary)
+                Text(detail).font(ConchType.secondary).foregroundStyle(ConchColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            OnboardingButton(button, style: .action, action: action)
+        }
+        .padding(.horizontal, ConchSpace.x4)
+        .padding(.vertical, 12)
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -1628,11 +1929,16 @@ public struct OnboardingWelcomeBack<Rows: View>: View {
 public struct OnboardingSettingsPane: View {
     let lines: [OnboardingSummaryLine]
     let downloads: [OnboardingDownload]
+    let onAction: (OnboardingStep) -> Void
+    let onRetry: ((OnboardingDownload) -> Void)?
     let onRunAgain: () -> Void
 
-    public init(lines: [OnboardingSummaryLine], downloads: [OnboardingDownload], onRunAgain: @escaping () -> Void = {}) {
+    public init(lines: [OnboardingSummaryLine], downloads: [OnboardingDownload], onAction: @escaping (OnboardingStep) -> Void = { _ in },
+                onRetry: ((OnboardingDownload) -> Void)? = nil, onRunAgain: @escaping () -> Void = {}) {
         self.lines = lines
         self.downloads = downloads
+        self.onAction = onAction
+        self.onRetry = onRetry
         self.onRunAgain = onRunAgain
     }
 
@@ -1656,7 +1962,11 @@ public struct OnboardingSettingsPane: View {
                             Text(line.detail).font(.system(size: 12)).foregroundStyle(ConchColor.textSecondary).lineLimit(1)
                         }
                         Spacer(minLength: 8)
-                        if line.done { OnboardingStatus(.done, line.status) } else { OnboardingButton(line.status, style: .action) }
+                        if line.done {
+                            OnboardingStatus(.done, line.status)
+                        } else {
+                            OnboardingButton(line.status, style: .action) { onAction(line.step) }
+                        }
                     }
                     .padding(.horizontal, ConchSpace.x4)
                     .frame(height: 54)
@@ -1672,7 +1982,7 @@ public struct OnboardingSettingsPane: View {
                             Text(item.purpose).font(.system(size: 12)).foregroundStyle(ConchColor.textSecondary)
                         }
                         Spacer()
-                        DownloadLine(item: item, showsTitle: false).frame(width: 190)
+                        DownloadLine(item: item, showsTitle: false, onRetry: onRetry).frame(width: 190)
                     }
                     .padding(.horizontal, ConchSpace.x4)
                     .padding(.vertical, 12)
