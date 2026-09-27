@@ -1302,6 +1302,10 @@ public struct ConversationFog: View {
     let switcherSelection: String?
     /// The reply line; off, the transcript takes its room (the menu bar's Show Reply Line).
     let showsReply: Bool
+    /// The reply line is the host's own composer, laid over this room from a window of its own (the Mac's `ComposerDock`):
+    /// the fog draws no line of its own and keeps the room, this tall. The room opens and closes on the grow spring as the
+    /// input comes and goes, 0 giving it back. Nil, the fog's own line (`InlineReplyLine`).
+    let heldReply: CGFloat?
     /// Full screen, the deliverable the panel is on, under the button row in place of the words; the reply line floats at
     /// its foot. Docked, the words as ever.
     let content: FogContent?
@@ -1349,6 +1353,7 @@ public struct ConversationFog: View {
         isSwitching: Binding<Bool> = .constant(false),
         switcherSelection: String? = nil,
         showsReply: Bool = true,
+        heldReply: CGFloat? = nil,
         content: FogContent? = nil,
         notice: String? = nil,
         empty: String? = nil,
@@ -1381,6 +1386,7 @@ public struct ConversationFog: View {
         _isSwitching = isSwitching
         self.switcherSelection = switcherSelection
         self.showsReply = showsReply
+        self.heldReply = heldReply
         self.content = content
         self.notice = notice
         self.empty = empty
@@ -1497,10 +1503,12 @@ public struct ConversationFog: View {
     /// Full screen on a deliverable, where it sits: under the button row, as wide as the row runs, down to a one-line
     /// reply capsule and the gap above it, or with the reply line off to the foot; and above the newest reply's line when
     /// there is one (`showsNewest`). A reply that grows past one line floats up over it.
-    public static func contentFrame(in size: CGSize, insets: EdgeInsets, showsReply: Bool, showsNewest: Bool = false) -> CGRect {
+    public static func contentFrame(in size: CGSize, insets: EdgeInsets, showsReply: Bool, showsNewest: Bool = false, held: CGFloat? = nil) -> CGRect {
         let top = buttonsY(in: size, corner: .topLeading, insets: buttonInsets(insets), fullScreen: true) + buttonSize + ConchSpace.x3
         let fontSize = replyFontSize(fullScreen: false)
-        let reply = showsReply ? FogReply.lineHeight(fontSize) + 2 * FogReply.padding(fontSize) + 2 * floatingReplyPadding + FogReply.gap : 0
+        // Held by the host, the room is its composer's, which carries its own glass: no capsule around it.
+        let line = held ?? FogReply.lineHeight(fontSize) + 2 * FogReply.padding(fontSize) + 2 * floatingReplyPadding
+        let reply = showsReply ? line + FogReply.gap : 0
         let newest = showsNewest ? newestLineHeight + newestLineGap + (showsReply ? 0 : FogReply.gap) : 0
         let leading = insets.leading + padding
         return CGRect(
@@ -1509,6 +1517,29 @@ public struct ConversationFog: View {
             width: max(0, size.width - leading - insets.trailing - padding),
             height: max(0, size.height - insets.bottom - padding - reply - newest - top)
         )
+    }
+
+    /// Where the reply line's room is, in the fog's own space (top left, inside its glass), for a host that lays its own
+    /// composer over it (`heldReply`): across the words' column at its foot, or at its head when the fog hangs from a top
+    /// corner; full screen on a deliverable, the floating capsule's place, centred at the panel's foot. `height` is the
+    /// composer's, and `notice` the room a failed send's sentence takes under it (`FogTextState.noticeRoom`).
+    public static func replySlot(
+        in size: CGSize,
+        corner: FogCorner,
+        insets: EdgeInsets,
+        fullScreen: Bool,
+        showsContent: Bool,
+        magnet: EdgeInsets? = nil,
+        height: CGFloat,
+        notice: CGFloat = 0
+    ) -> CGRect {
+        if fullScreen, showsContent {
+            let width = floatingReplyWidth(in: size)
+            return CGRect(x: (size.width - width) / 2, y: size.height - insets.bottom - padding - height, width: width, height: height)
+        }
+        let frame = textFrame(in: size, corner: corner, insets: insets, fullScreen: fullScreen, magnet: magnet)
+        let y = newestAtTop(corner: corner, fullScreen: fullScreen) ? frame.minY : frame.maxY - notice - height
+        return CGRect(x: frame.minX, y: y, width: frame.width, height: height)
     }
 
     public var body: some View {
@@ -1522,10 +1553,14 @@ public struct ConversationFog: View {
             let lineWidth = shown == nil ? frame.width : Self.floatingReplyWidth(in: proxy.size) - 2 * Self.floatingReplyPadding
             // The notice under the reply line takes its room from the transcript, never from the reply.
             let noticeRoom = notice == nil || !showsReply ? 0 : noticeHeight + ConchSpace.x1
-            let target = text.replyTarget(for: draft, width: max(0, lineWidth - Self.micSpace), fontSize: fontSize, in: frame.height - noticeRoom)
+            // Held by the host, the room is its composer's height, never more than the words have.
+            let target = heldReply.map { min($0, max(0, frame.height - noticeRoom)) }
+                ?? text.replyTarget(for: draft, width: max(0, lineWidth - Self.micSpace), fontSize: fontSize, in: frame.height - noticeRoom)
             let reply = rendersStatically ? target : text.replyHeight
-            let overflows = CGFloat(text.replyLines) * FogReply.lineHeight(fontSize) + 2 * FogReply.padding(fontSize) > target + 0.5
-            let box = showsReply ? max(0, frame.height - FogReply.gap - reply - noticeRoom) : frame.height
+            let overflows = heldReply == nil && CGFloat(text.replyLines) * FogReply.lineHeight(fontSize) + 2 * FogReply.padding(fontSize) > target + 0.5
+            // The gap before a held room closes with it, so a room given back leaves no seam behind.
+            let gap = heldReply == nil ? FogReply.gap : FogReply.gap * min(1, reply / FogReply.gap)
+            let box = showsReply ? max(0, frame.height - gap - reply - noticeRoom) : frame.height
             // With the words stepped aside for a deliverable, the newest reply still shows, as one line.
             let newest = shown == nil ? nil : turns.last { !$0.fromYou }
             ZStack(alignment: .topLeading) {
@@ -1533,7 +1568,7 @@ public struct ConversationFog: View {
                     if session == nil, turns.isEmpty, let empty {
                         emptyState(empty, in: frame)
                     } else {
-                        VStack(alignment: .leading, spacing: FogReply.gap) {
+                        VStack(alignment: .leading, spacing: gap) {
                             if top {
                                 if showsReply { replyLine(fontSize: fontSize, height: reply, top: true, overflows: overflows) }
                                 words(width: frame.width, height: box, top: true, fontSize: fontSize)
@@ -1556,9 +1591,10 @@ public struct ConversationFog: View {
                         .offset(x: frame.minX, y: frame.minY)
                     }
                 }
-                deliverable(shown, frame: Self.contentFrame(in: proxy.size, insets: insets, showsReply: showsReply, showsNewest: newest != nil))
+                deliverable(shown, frame: Self.contentFrame(in: proxy.size, insets: insets, showsReply: showsReply, showsNewest: newest != nil, held: heldReply == nil ? nil : reply))
                 if let newest {
-                    let foot = proxy.size.height - insets.bottom - Self.padding - (showsReply ? reply + noticeRoom + 2 * Self.floatingReplyPadding + Self.newestLineGap : 0)
+                    let capsule = heldReply == nil ? 2 * Self.floatingReplyPadding : 0
+                    let foot = proxy.size.height - insets.bottom - Self.padding - (showsReply ? reply + noticeRoom + capsule + Self.newestLineGap : 0)
                     newestLine(newest, width: Self.floatingReplyWidth(in: proxy.size), room: proxy.size.height * 0.4)
                         .frame(width: proxy.size.width, height: max(0, foot), alignment: .bottom)
                 }
@@ -1595,6 +1631,8 @@ public struct ConversationFog: View {
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
             .onChange(of: target, initial: true) { _, target in text.grow(to: target) }
+            // Where a host's composer lies depends on it (`replySlot`), and it goes when the notice does.
+            .onChange(of: noticeRoom, initial: true) { _, room in text.noticed(room) }
             // Another reply is its own line again, folded.
             .onChange(of: newest?.id) { _, _ in newestOpen = false }
         }
@@ -1606,9 +1644,7 @@ public struct ConversationFog: View {
     /// while the reader is scrolled away, the pill back to the newest line beside it, on the transcript's side.
     private func replyLine(fontSize: CGFloat, height: CGFloat, top: Bool, overflows: Bool) -> some View {
         VStack(alignment: .leading, spacing: ConchSpace.x1) {
-            InlineReplyLine(text: $draft, isListening: isListening, placeholder: Self.placeholder(for: session), fontSize: fontSize, alignsTop: top, overflows: overflows, onMic: onMic, onSend: onSend, onLeave: onLeaveReply)
-                .frame(height: height, alignment: top ? .top : .bottom)
-                .fogControl()
+            ownOrHeldLine(fontSize: fontSize, height: height, top: top, overflows: overflows)
                 .overlay(alignment: top ? .bottomLeading : .topLeading) {
                     if !text.scroll.pinned {
                         pill(top: top)
@@ -1619,6 +1655,19 @@ public struct ConversationFog: View {
                 }
                 .animation(ConchMotion.pop.animation(reduceMotion: reduceMotion), value: text.scroll.pinned)
             if let notice { noticeLine(notice) }
+        }
+    }
+
+    /// The fog's own reply line; or, held by the host, only its room: the host's composer lies over it from its own window,
+    /// so a press there is the composer's, never the fog's, and once the room is given back it is the fog's again.
+    @ViewBuilder
+    private func ownOrHeldLine(fontSize: CGFloat, height: CGFloat, top: Bool, overflows: Bool) -> some View {
+        if heldReply != nil {
+            Color.clear.frame(height: height)
+        } else {
+            InlineReplyLine(text: $draft, isListening: isListening, placeholder: Self.placeholder(for: session), fontSize: fontSize, alignsTop: top, overflows: overflows, onMic: onMic, onSend: onSend, onLeave: onLeaveReply)
+                .frame(height: height, alignment: top ? .top : .bottom)
+                .fogControl()
         }
     }
 
@@ -1635,7 +1684,8 @@ public struct ConversationFog: View {
                 .lineLimit(3)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(.leading, Self.micSpace)
+        // Held, in line with the host composer's words, 16 in from its edge.
+        .padding(.leading, heldReply == nil ? Self.micSpace : ConchSpace.x4)
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { noticeHeight = $0 }
         .accessibilityElement(children: .combine)
     }
@@ -1683,7 +1733,13 @@ public struct ConversationFog: View {
     /// Full screen on a deliverable, the reply line in a capsule centred at the panel's foot (panel-lab's full-screen
     /// `.reply`), in the overlay's glass so the deliverable under it never ghosts through. Past one line it grows up over
     /// the deliverable.
+    @ViewBuilder
     private func floatingReply(in size: CGSize, fontSize: CGFloat, height: CGFloat, overflows: Bool) -> some View {
+        // Held by the host, its composer is the capsule, glass and all: nothing to draw here.
+        if heldReply == nil { ownFloatingReply(in: size, fontSize: fontSize, height: height, overflows: overflows) }
+    }
+
+    private func ownFloatingReply(in size: CGSize, fontSize: CGFloat, height: CGFloat, overflows: Bool) -> some View {
         let width = Self.floatingReplyWidth(in: size)
         let shape = RoundedRectangle(cornerRadius: ConchRadius.panel, style: .continuous)
         return VStack(alignment: .leading, spacing: ConchSpace.x1) {
@@ -2021,7 +2077,8 @@ extension View {
     /// A small piece of the overlay over whatever is under it — the switcher, the Newest pill, the floating reply, the
     /// collapsed handle: the system blur, the overlay's strong glass and a hairline, raised. The canvas's tool pill is
     /// the same recipe. Without the blur, the words under the switcher read through its rows.
-    func overlayGlass<S: InsettableShape>(_ shape: S) -> some View {
+    /// Public for the Mac's floating composer, which wears it as the panel's reply line (`ComposerChrome.panel`).
+    public func overlayGlass<S: InsettableShape>(_ shape: S) -> some View {
         background {
             ZStack {
                 shape.fill(.ultraThinMaterial)

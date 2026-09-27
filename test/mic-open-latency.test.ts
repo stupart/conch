@@ -69,9 +69,16 @@ test("a stop with nothing running is logged, not swallowed", () => {
  * that can disagree with itself about what pressing it does.
  */
 test("the composer's mic is scoped to the row it belongs to", () => {
+  // The composer's one construction, the window's and the panel's reply line alike (`SessionComposer`).
+  const source = read("mac-app/conch-mac/ComposerView.swift");
+  const at = source.indexOf("struct SessionComposer: View {");
+  expect(at).toBeGreaterThan(-1);
+  const body = source.slice(at, source.indexOf("\n}\n", at));
+  expect(body.length).toBeGreaterThan(1_000);
+  // And the window builds that, not a composer of its own.
   const dashboard = read("mac-app/conch-mac/DashboardView.swift");
-  const composer = dashboard.slice(dashboard.indexOf("private func composer(for row: SessionRow)"));
-  const body = composer.slice(0, composer.indexOf("\n    }"));
+  expect(dashboard).toContain("SessionComposer(");
+  expect(dashboard).not.toContain("ComposerView(");
 
   expect(body).toContain("voiceState: voiceState(for: row)");
   expect(body).toContain("LiveState.isExchangeActive(voiceState(for: row))");

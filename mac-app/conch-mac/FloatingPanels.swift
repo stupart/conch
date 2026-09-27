@@ -10,11 +10,15 @@ final class FloatingPanel: NSPanel {
     var takesKeys = false
     /// The panel's own keys, seen before whatever view has the keyboard: true when it was one of them (`PanelKeys`).
     var onKey: ((NSEvent) -> Bool)?
+    /// A press, seen before the view under it: the floating composer takes the keys when its field is clicked
+    /// (`ComposerDock.pressed`).
+    var onPress: ((NSEvent) -> Void)?
     override var canBecomeKey: Bool { takesKeys }
     override var canBecomeMain: Bool { false }
 
     override func sendEvent(_ event: NSEvent) {
         if event.type == .keyDown, let onKey, onKey(event) { return }
+        if event.type == .leftMouseDown { onPress?(event) }
         super.sendEvent(event)
     }
 }
@@ -232,8 +236,14 @@ final class FloatingPanels: ObservableObject {
     @Published var switching = false {
         didSet { if switching != oldValue { switchingChanged() } }
     }
-    /// The reply line shows (`ConchStatusItem.showReplyLineKey`).
+    /// The reply line shows (`ConchStatusItem.showReplyLineKey`): the input may come to the panel (ComposerDock).
     @Published private(set) var showsReply = true
+    /// The input's room in the reply line: the composer's height while the input is in the panel or on its way there, 0
+    /// anywhere else (ComposerDock, which lays the composer over it from its own window). The words make the room, and
+    /// give it back, on the grow spring, so the panel opens a place for the input as it swoops in.
+    @Published private(set) var heldReply: CGFloat = 0
+    /// Full screen, a deliverable shows in the panel: the reply line is the capsule at its foot (`ConversationFog.replySlot`).
+    @Published var contentShown = false
     /// Full screen, docked or collapsed on the morph spring: the frame it left and the frame it is going to, the glass in
     /// each, the form it lands as, whether the words have come back for it, and how far along it is.
     private var morphing: (from: NSRect, to: NSRect, glassFrom: PanelGlass.Geometry, glassTo: PanelGlass.Geometry, form: Form, arrived: Bool, progress: CGFloat, velocity: CGFloat)?
@@ -497,6 +507,85 @@ final class FloatingPanels: ObservableObject {
         return fog.screen ?? NSScreen.main ?? NSScreen.screens.first
     }
 
+    // MARK: The input's room
+
+    /// Room for the input, `height` tall, or 0 to give it back.
+    func holdReply(_ height: CGFloat) {
+        guard height != heldReply else { return }
+        heldReply = height
+        container.run(true)
+    }
+
+    /// The room is open, or still closing behind an input that has left.
+    var replyRoomOpen: Bool { heldReply > 0 || text.replyHeight > 0.5 }
+
+    /// The session the panel is on, by the one rule (`ConversationFogHost.session`).
+    var session: SessionRow? { ConversationFogHost.session(store?.state, staged: staged) }
+
+    /// The panel's words show: on screen, landed, and not stepping aside for a morph. The input in its room shows with them.
+    var wordsShown: Bool { fog.isVisible && revealed && morphing == nil && form != .collapsed }
+
+    /// How faint the panel is, mid-throw; the input in its room goes with it.
+    var alpha: CGFloat { fog.alphaValue }
+
+    /// The panel's level: over the canvas's glass while the pen is down and it is docked (`overGlass`).
+    var level: NSWindow.Level { fog.level }
+
+    /// The panel is on screen, open or folded.
+    var isOnScreen: Bool { fog.isVisible }
+
+    /// The screen the panel is on, or would be: where the reply line alone goes when the panel is off.
+    var screenForReply: NSScreen? { screen() }
+
+    /// Where the input's room is on screen, for ComposerDock to lay the composer over: at the reply line's place in the
+    /// words' column, for the form the panel landed in (`ConversationFog.replySlot`), inside its glass. Nil while there is
+    /// none: hidden, folded, or mid-morph.
+    func replySlot(height: CGFloat) -> NSRect? {
+        guard fog.isVisible, form != .collapsed, morphing == nil else { return nil }
+        let window = fog.frame
+        let inset = laidGlass.insets
+        let size = CGSize(width: window.width - inset.leading - inset.trailing, height: window.height - inset.top - inset.bottom)
+        let slot = ConversationFog.replySlot(
+            in: size,
+            corner: corner,
+            insets: laidInsets.less(inset),
+            fullScreen: form == .fullScreen,
+            showsContent: contentShown,
+            magnet: look.magnet,
+            height: height,
+            notice: text.noticeRoom
+        )
+        // The fog lays out top left; the screen is y up.
+        return NSRect(x: window.minX + inset.leading + slot.minX, y: window.maxY - inset.top - slot.maxY, width: slot.width, height: slot.height)
+    }
+
+    /// The panel's own keys pressed in its reply line, which is the composer in a window of its own (ComposerDock): ⌘↩,
+    /// ⌘. and ⌥⌘← → work while typing there, as they did in the panel's own line. Return, Esc and the arrows stay the
+    /// composer's (`PanelKeys`, typing).
+    func replyKey(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags
+        switch PanelKeys.action(
+            key: event.keyCode,
+            command: flags.contains(.command),
+            option: flags.contains(.option),
+            control: flags.contains(.control),
+            shift: flags.contains(.shift),
+            switching: false,
+            fullScreen: isFullScreen,
+            typing: true
+        ) {
+        case .fullScreen?, .collapse?, .previous?, .next?: return key(event)
+        default: return false
+        }
+    }
+
+    /// The keys back to the panel, full screen, when the input in its room lets them go (Esc): the panel is what is on
+    /// screen then, and Esc again leaves full screen.
+    func takeKeysBack() {
+        guard isFullScreen else { return }
+        takeKeys()
+    }
+
     // MARK: Collapsing and full screen
 
     /// The fog's collapse button and its handle both flip the default; `showWhatIsOn` does the rest.
@@ -720,13 +809,6 @@ final class FloatingPanels: ObservableObject {
         fog.orderFrontRegardless()
     }
 
-    /// Esc in the reply line, once the field has let go: docked, the keys go back to the app in front, so the next ones
-    /// reach it rather than a panel with nothing to type into. Full screen, or with the switcher open, the panel keeps them.
-    func replyLeft() {
-        guard !isFullScreen, !switching else { return }
-        giveKeysBack()
-    }
-
     /// The switcher opened or closed. Open, it has the keys, the row on screen picked out, and a click in any other app
     /// closes it; closed, the keys go back unless full screen or a reply being typed still wants them.
     private func switchingChanged() {
@@ -770,7 +852,7 @@ final class FloatingPanels: ObservableObject {
         var next = FogLook(motion, insets: insets)
         (next.resizeHover, next.darkness, next.tint, next.colour, next.scrim) = (resizeHover, darkness, look.tint, look.colour, look.scrim)
         // With no reply line, the look thickens behind the newest words themselves.
-        next.replyHeight = showsReply ? text.replyHeight : 0
+        next.replyHeight = replyRoomOpen ? text.replyHeight : 0
         setLook(next)
         // The glass ends at its own rounded edge and the window's shadow is drawn from that shape, so the window is
         // exactly the fog: no margin to reach into, and nothing for the saved frame to grow by on the next launch.
@@ -1198,7 +1280,8 @@ private struct ConversationFogHost: View {
                     turns: turns,
                     draft: row.map { drafts.textBinding(for: $0.id) } ?? .constant(""),
                     text: panels.text,
-                    isListening: row.map { ["listening", "recording"].contains(voice(for: $0)) } ?? false,
+                    // Its own reply line's mic, which the Mac never draws (`heldReply`).
+                    isListening: false,
                     // The store's own working state, not a timer: "Thinking" after your message until the reply comes.
                     isWorking: row?.status == .working,
                     isFullScreen: panels.form == .fullScreen,
@@ -1212,8 +1295,10 @@ private struct ConversationFogHost: View {
                     sessions: panels.switching ? Self.sessions(store.state, staged: panels.staged, lastStaged: queue.lastStaged) : [],
                     isSwitching: $panels.switching,
                     switcherSelection: panels.switcherSelection,
-                    // No session, nothing to reply to: no line to type into that goes nowhere.
-                    showsReply: panels.showsReply && row != nil,
+                    // The reply line is the composer itself, laid over this room from its own window while the input is
+                    // here (ComposerDock): one input, never a second one drawn by the panel. No session, no room.
+                    showsReply: panels.replyRoomOpen && row != nil,
+                    heldReply: panels.heldReply,
                     content: panels.form == .fullScreen ? row.flatMap(content(of:)) : nil,
                     // What the store says of this session's last send: why a reply didn't go (`ConchSendFailure`).
                     notice: row.flatMap { store.rowMessages[$0.id] },
@@ -1222,9 +1307,9 @@ private struct ConversationFogHost: View {
                     onPick: { queue.pick($0, store: store, panels: panels) },
                     onPrevious: walks ? { queue.walk(backward: true, from: .panel, store: store, panels: panels) } : nil,
                     onNext: walks ? { queue.walk(from: .panel, store: store, panels: panels) } : nil,
-                    onMic: { if let row { mic(row) } },
-                    onSend: { if let row { send(row) } },
-                    onLeaveReply: { panels.replyLeft() },
+                    // The composer sends and dictates for itself (`SessionComposer`); the fog has no line of its own here.
+                    onMic: {},
+                    onSend: {},
                     onCollapse: { panels.toggleCollapsed() },
                     onFullScreen: { panels.toggleFullScreen() },
                     onCanvas: { canvas.toggle() },
@@ -1257,6 +1342,10 @@ private struct ConversationFogHost: View {
         // new session's words is a separate thing from reading that session whole.
         .onChange(of: row?.id) { _, _ in if panels.isFullScreen { readWhole(row) } }
         .onChange(of: panels.isFullScreen) { _, full in if full { readWhole(row) } }
+        // Where the input's room is, full screen: the capsule's place when a deliverable shows (`replySlot`).
+        .onChange(of: panels.form == .fullScreen && row.flatMap(content(of:)) != nil, initial: true) { _, shown in
+            if panels.contentShown != shown { panels.contentShown = shown }
+        }
         .onChange(of: turns, initial: true) { _, turns in panels.text.update(turns: turns, now: ProcessInfo.processInfo.systemUptime) }
         // A newer version of the item the panel is on, published again as the same artifact, is followed to: the queue's
         // walk, and with it the header, full screen and the agent's marks (`AgentInkController`). Not while Tyler has marks
@@ -1378,39 +1467,6 @@ private struct ConversationFogHost: View {
         history.loadFullBodies(forSnapshotItems: cut)
     }
 
-    /// The live voice state when it is this session's, by identity — the rule the dashboard's composer reads too.
-    private func voice(for row: SessionRow) -> String {
-        guard let state = store.state, WorkspaceFocus.isAddressed(row.id, in: Workspace(state)) else { return "" }
-        return state.live.state
-    }
-
-    /// The composer's mic: stop what is running, or dictate into this session's draft.
-    private func mic(_ row: SessionRow) {
-        if LiveState.isExchangeActive(voice(for: row)) {
-            store.send(.stop())
-        } else {
-            store.send(.dictate(sessionId: row.id, label: row.label))
-        }
-    }
-
-    /// Typed into the session through the inject event, which waits for delivery and then hands the front
-    /// back to the app the fog was over (StateStore.send).
-    private func send(_ row: SessionRow) {
-        let draft = drafts.textBinding(for: row.id)
-        let text = draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        let delivery = store.send(.inject(sessionId: row.id, label: row.label, text: text))
-        // It shows at once, flying in from the reply line, until the daemon's copy takes its place.
-        let fog = panels.text
-        fog.send(text)
-        draft.wrappedValue = ""
-        Task {
-            guard !(await delivery.value) else { return }
-            fog.sendFailed()
-            // A reply that didn't go comes back to the line, unless something new was typed meanwhile.
-            if draft.wrappedValue.isEmpty { draft.wrappedValue = text }
-        }
-    }
 }
 
 /// A deliverable inside the conversation panel, full screen, in the side panel's own renderer (`InlineReviewView`), so a

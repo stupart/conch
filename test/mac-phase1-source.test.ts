@@ -267,8 +267,12 @@ describe("the Mac composer belongs to one session", () => {
     expect(composer).not.toMatch(/@State private var (draft|attachments)/);
     expect(composer).toContain("static let shared = ComposerDraftStore()");
     expect(dashboard).toMatch(/@ObservedObject private var composerDrafts = ComposerDraftStore\.shared/);
-    expect(dashboard).toContain("draft: composerDrafts.textBinding(for: row.id)");
-    expect(dashboard).toContain("attachments: composerDrafts.attachmentsBinding(for: row.id)");
+    // Bound in the composer's one construction (`SessionComposer`), the window's and the panel's, to the session's
+    // entry in the one store: wherever the input is, it is the same draft.
+    const session = composer.slice(composer.indexOf("struct SessionComposer: View {"));
+    expect(session).toMatch(/@ObservedObject private var composerDrafts = ComposerDraftStore\.shared/);
+    expect(session).toContain("draft: composerDrafts.textBinding(for: row.id)");
+    expect(session).toContain("attachments: composerDrafts.attachmentsBinding(for: row.id)");
   });
 
   test("an attachment claims the session just as typing does", () => {

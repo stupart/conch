@@ -30,6 +30,9 @@ final class ComposerDraftStore: ObservableObject {
     static let shared = ComposerDraftStore()
 
     @Published private var drafts: [String: Entry]
+    /// Sessions with a send on its way. The session's rather than a view's: the input can leave the window mid-send
+    /// (ComposerDock), and the composer it lands as must still know not to send the same words again.
+    @Published private(set) var sending: Set<String> = []
     /// The last dictation applied. State republishes several times a second, so without this the same
     /// spoken sentence would be appended over and over.
     private var appliedDictationID: Int
@@ -79,6 +82,12 @@ final class ComposerDraftStore: ObservableObject {
                 self?.update(sessionID) { $0.attachments = attachments }
             }
         )
+    }
+
+    func isSending(_ sessionID: String) -> Bool { sending.contains(sessionID) }
+
+    func setSending(_ sessionID: String, _ on: Bool) {
+        if on { sending.insert(sessionID) } else { sending.remove(sessionID) }
     }
 
     /// Screenshot automation needs non-empty text to exercise field layout. It
@@ -150,6 +159,13 @@ final class ComposerDraftStore: ObservableObject {
     }
 }
 
+/// Where the composer is drawn (ComposerDock). There is one input, and it is in one place at a time: its card under the
+/// conversation in conch's window; the panel's glass, as the conversation panel's reply line or as the reply line alone;
+/// or bare, only what is on it, for the swoop's pictures of it (`ComposerSwoop`), which draws the glass itself.
+enum ComposerChrome {
+    case window, panel, bare
+}
+
 /// Type to a session from the Mac, with images.
 ///
 /// conch could speak to an agent and the phone could type to one, but the Mac
@@ -203,9 +219,12 @@ struct ComposerView: View {
     /// else…" row, today. A counter rather than a Bool because the request is
     /// an event, and the same request can arrive twice in a row.
     var focusRequest: Int = 0
+    var chrome: ComposerChrome = .window
 
     @State private var isTargetedForDrop = false
-    @State private var isSending = false
+    /// Drawn for a picture (`ComposerSwoop`, through ImageRenderer): the text view, the scroll view and the bridges are
+    /// AppKit's, which a picture cannot draw, so their words are drawn as they would sit.
+    @Environment(\.conchRendersStatically) private var rendersStatically
     /// The field's real width, so height can be measured rather than guessed.
     @State private var fieldWidth: CGFloat = 0
     @FocusState private var fieldFocused: Bool
@@ -378,40 +397,7 @@ struct ComposerView: View {
         // .cbox in the lab: 6 all round. This was 14/8, which with the inner box that
         // just went is where the composer's dead height came from.
         .padding(6)
-        // §3: the composer floats 14 above the bottom, at the width of the measure, radius 18,
-        // floating elevation.
-        //
-        // It was a full-width bar pinned to the frame with a hairline over it, so the
-        // transcript was set to a 700 pt column while the field you answer it in was twice
-        // that and touching the edge — the reply and the thing being replied to did not share
-        // a column. Same constant as the transcript, so they cannot drift apart.
-        .background(
-            ConchPalette.surface,
-            in: RoundedRectangle(cornerRadius: ConchRadius.large, style: .continuous)
-        )
-        // `--shFloat` is two shadows: a 0.5 px hairline ring AND the soft drop. §3 names the
-        // hairline explicitly; conchElevation carries only the drop, so the ring is drawn here.
-        .overlay(
-            RoundedRectangle(cornerRadius: ConchRadius.large, style: .continuous)
-                .strokeBorder(ConchPalette.divider, lineWidth: 0.5)
-        )
-        // `.cbox.drop{box-shadow:0 0 0 2px #0A84FF,var(--shFloat)}` — 2 pt, the system drop
-        // blue, on the CARD. It was a 1.5 pt cyan rect at radius 8, drawn after the card's
-        // own 16 pt padding, so it floated off the edge at the wrong corner radius and in the
-        // colour this app uses for the microphone. Tyler: "process was kinda weird, and idk
-        // if it worked or not" — a drop target has one job, which is to say "here".
-        .overlay {
-            if isTargetedForDrop {
-                RoundedRectangle(cornerRadius: ConchRadius.large, style: .continuous)
-                    .strokeBorder(ConchPalette.dropTarget, lineWidth: 2)
-            }
-        }
-        // The token rather than a hand-rolled shadow: §3 names this elevation, and a literal
-        // that happens to look right is how the design system and the app come apart.
-        .conchElevation(.floating)
-        .frame(maxWidth: ConversationTextView.composerMeasure)
-        .padding(.horizontal, 16)
-        .padding(.bottom, 14)
+        .modifier(ComposerCard(chrome: chrome, isTargetedForDrop: isTargetedForDrop))
         // Dropping a screenshot straight onto the window is how anyone actually
         // shares one, so it must work without opening a file picker first.
         // `.image` as well as `.fileURL`. A drag out of Finder carries a file URL and always
@@ -451,6 +437,19 @@ struct ComposerView: View {
                     // state-colour decision rather than a measurement.
                     .font(ConchType.readingBody)
                     .foregroundStyle(ConchPalette.brandCyan)
+                    .padding(.top, Self.fieldInsetTop)
+                    .padding(.bottom, Self.fieldInsetBottom)
+                    .padding(.horizontal, Self.fieldInsetX)
+            } else if rendersStatically {
+                // The field for the swoop's picture: its words where the editor lays them, in its type, leading and
+                // insets, or what it says when empty. A picture of the text view itself would be blank.
+                Text(draft.isEmpty ? (noTerminal ?? "Message \(sessionLabel)") : draft)
+                    .font(ConchType.readingBody)
+                    .lineSpacing(ConchType.readingLineSpacing)
+                    .foregroundStyle(draft.isEmpty ? ConchPalette.textDim : ConchPalette.textPrimary)
+                    .lineLimit(8)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, minHeight: Self.lineHeight, alignment: .topLeading)
                     .padding(.top, Self.fieldInsetTop)
                     .padding(.bottom, Self.fieldInsetBottom)
                     .padding(.horizontal, Self.fieldInsetX)
@@ -606,6 +605,9 @@ struct ComposerView: View {
         !composed.isEmpty && !isSending && noTerminal == nil
     }
 
+    /// A send of this session's on its way, pressed here or wherever the input was when it was pressed.
+    private var isSending: Bool { ComposerDraftStore.shared.isSending(sessionID) }
+
     /// One shared inset, applied identically to the editor and the placeholder
     /// so a line of text sits in exactly the same place whether or not you have
     /// started typing.
@@ -677,11 +679,12 @@ struct ComposerView: View {
         guard noTerminal == nil, !payload.isEmpty else { return }
         let submittedDraft = draft
         let submittedAttachments = attachments
-        isSending = true
+        let session = sessionID
+        ComposerDraftStore.shared.setSending(session, true)
         let delivery = onSend(payload)
         Task { @MainActor in
             let delivered = await delivery.value
-            isSending = false
+            ComposerDraftStore.shared.setSending(session, false)
             fieldFocused = true
             guard delivered else { return }
 
@@ -702,6 +705,11 @@ struct ComposerView: View {
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.allowedContentTypes = [.image, .pdf, .plainText]
+        // A modal picker brings conch forward, which would call the input home to the window (ComposerDock): it is held
+        // where it is while the picker is up, and from the panel the app Tyler was in gets the front back after.
+        let previous = chrome == .panel ? NSWorkspace.shared.frontmostApplication : nil
+        ComposerDock.shared.hold()
+        defer { ComposerDock.shared.release(handingBackTo: previous) }
         guard panel.runModal() == .OK else { return }
         attach(panel.urls)
     }
@@ -744,26 +752,192 @@ struct ComposerView: View {
     }
 }
 
+/// The composer's card, for where it is (`ComposerChrome`).
+private struct ComposerCard: ViewModifier {
+    let chrome: ComposerChrome
+    let isTargetedForDrop: Bool
+
+    func body(content: Content) -> some View {
+        switch chrome {
+        case .window:
+            content
+                // §3: the composer floats 14 above the bottom, at the width of the measure, radius 18,
+                // floating elevation.
+                //
+                // It was a full-width bar pinned to the frame with a hairline over it, so the
+                // transcript was set to a 700 pt column while the field you answer it in was twice
+                // that and touching the edge — the reply and the thing being replied to did not share
+                // a column. Same constant as the transcript, so they cannot drift apart.
+                .background(
+                    ConchPalette.surface,
+                    in: RoundedRectangle(cornerRadius: ConchRadius.large, style: .continuous)
+                )
+                // `--shFloat` is two shadows: a 0.5 px hairline ring AND the soft drop. §3 names the
+                // hairline explicitly; conchElevation carries only the drop, so the ring is drawn here.
+                .overlay(
+                    RoundedRectangle(cornerRadius: ConchRadius.large, style: .continuous)
+                        .strokeBorder(ConchPalette.divider, lineWidth: 0.5)
+                )
+                .overlay { dropRing(radius: ConchRadius.large) }
+                // Where the card is, for the swoop to leave from and land on (ComposerDock).
+                .background(ComposerCardAnchor())
+                // The token rather than a hand-rolled shadow: §3 names this elevation, and a literal
+                // that happens to look right is how the design system and the app come apart.
+                .conchElevation(.floating)
+                .frame(maxWidth: ConversationTextView.composerMeasure)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 14)
+        case .panel:
+            // The panel's reply line: the overlay's own glass, in the panel's corner, like the reply capsule it replaces.
+            content
+                .overlayGlass(RoundedRectangle(cornerRadius: ConchRadius.panel, style: .continuous))
+                .overlay { dropRing(radius: ConchRadius.panel) }
+        case .bare:
+            // The swoop draws the glass, morphing from one of those to the other; the picture is only what is on it.
+            content
+        }
+    }
+
+    /// `.cbox.drop{box-shadow:0 0 0 2px #0A84FF,var(--shFloat)}` — 2 pt, the system drop
+    /// blue, on the CARD. It was a 1.5 pt cyan rect at radius 8, drawn after the card's
+    /// own 16 pt padding, so it floated off the edge at the wrong corner radius and in the
+    /// colour this app uses for the microphone. Tyler: "process was kinda weird, and idk
+    /// if it worked or not" — a drop target has one job, which is to say "here".
+    @ViewBuilder
+    private func dropRing(radius: CGFloat) -> some View {
+        if isTargetedForDrop {
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .strokeBorder(ConchPalette.dropTarget, lineWidth: 2)
+        }
+    }
+}
+
+/// The window composer's card, as AppKit has it: where on screen it is and in which window, for the swoop to leave from
+/// and land on. Asked when needed rather than reported, so a window moved or resized since is still measured right.
+private struct ComposerCardAnchor: NSViewRepresentable {
+    final class Anchor: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            MainActor.assumeIsolated { ComposerDock.shared.windowCard(self, laidOut: window != nil) }
+        }
+        override func setFrameSize(_ newSize: NSSize) {
+            super.setFrameSize(newSize)
+            MainActor.assumeIsolated { ComposerDock.shared.windowCardMoved(self) }
+        }
+        override func setFrameOrigin(_ newOrigin: NSPoint) {
+            super.setFrameOrigin(newOrigin)
+            MainActor.assumeIsolated { ComposerDock.shared.windowCardMoved(self) }
+        }
+    }
+
+    func makeNSView(context: Context) -> Anchor { Anchor(frame: .zero) }
+    func updateNSView(_ nsView: Anchor, context: Context) {}
+    static func dismantleNSView(_ nsView: Anchor, coordinator: ()) {
+        MainActor.assumeIsolated { ComposerDock.shared.windowCard(nsView, laidOut: false) }
+    }
+}
+
+/// The one composer for a session, wired to the store. conch's window builds it under the conversation, and the panel
+/// builds the same one as its reply line (ComposerDock): one construction, so the draft, the attachments, the mic and
+/// send cannot come to behave differently in the two places. It is never in both at once.
+struct SessionComposer: View {
+    let row: SessionRow
+    let state: PublishedState?
+    let store: StateStore
+    var chrome: ComposerChrome = .window
+    var focusRequest = 0
+    /// The first character or file: a claim on this session, so whatever shows it stops following the busiest session.
+    let onDraftStarted: () -> Void
+    /// Sent, as it goes, with the delivery: the panel flies it into its transcript and takes it back if it didn't go.
+    var onSent: ((String, Task<Bool, Never>) -> Void)? = nil
+    /// Shared with the conversation fog (M3): one draft per session wherever it is typed.
+    @ObservedObject private var composerDrafts = ComposerDraftStore.shared
+
+    /// What the mic is doing FOR THIS ROW, by identity (`WorkspaceModel.voiceState`): a row the voice is not on reports
+    /// nothing, or every composer would mirror the same words.
+    private func voiceState(for row: SessionRow) -> String {
+        WorkspaceModel.voiceState(of: row, in: state)
+    }
+
+    var body: some View {
+        ComposerView(
+            sessionID: row.id,
+            sessionLabel: row.label,
+            backend: row.backend,
+            draft: composerDrafts.textBinding(for: row.id),
+            attachments: composerDrafts.attachmentsBinding(for: row.id),
+            dictation: WorkspaceModel.dictation(of: row, in: state),
+            isWorking: row.status == .working,
+            voiceState: voiceState(for: row),
+            voiceLevel: WorkspaceModel.voiceLevel(of: row, in: state),
+            audioHeldElsewhere: state?.audioControl.isLocal == false,
+            noTerminal: row.noTerminal,
+            onOpenInTerminal: row.attachable ? { store.openInTerminal(row) } : nil,
+            onSend: { text in
+                let delivery = store.send(.inject(sessionId: row.id, label: row.label, text: text))
+                onSent?(text, delivery)
+                return delivery
+            },
+            onInterrupt: {
+                store.send(.interrupt(sessionId: row.id, label: row.label))
+            },
+            onTalk: {
+                // The same button both ways. It showed a live waveform and
+                // still only ever OPENED the mic, so the one control that
+                // looks like it is running had no way to stop the thing it
+                // was showing — you had to find the spacebar, which a text
+                // field now swallows anyway.
+                if LiveState.isExchangeActive(voiceState(for: row)) {
+                    store.send(.stop())
+                } else {
+                    // The mic BESIDE a text field fills that field. It used to
+                    // send the spoken half straight past the composer into the
+                    // session, so what you typed and what you said could not be
+                    // one message.
+                    store.send(.dictate(sessionId: row.id, label: row.label))
+                }
+            },
+            onRecite: {
+                store.send(.recite(sessionId: row.id, label: row.label))
+            },
+            onDraftStarted: onDraftStarted,
+            focusRequest: focusRequest,
+            chrome: chrome
+        )
+    }
+}
+
 /// Attached images preview as images; other supported files keep the compact
 /// filename treatment. The path remains available as hover help for both.
 private struct AttachmentStrip: View {
     let attachments: [URL]
     let onRemove: (URL) -> Void
+    @Environment(\.conchRendersStatically) private var rendersStatically
 
     var body: some View {
         // `#cAtt{display:flex;gap:6px;padding:6px 6px 2px}`. The strip was capped at
         // `maxHeight: 48` around tiles the lab draws 52 tall, so every attachment was
         // clipped by its own container.
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                ForEach(attachments, id: \.self) { url in
-                    AttachmentPreview(url: url) { onRemove(url) }
-                }
+        Group {
+            if rendersStatically {
+                // A picture can't draw a scroll view: the tiles as they sit at its start.
+                tiles.fixedSize().frame(maxWidth: .infinity, alignment: .leading).clipped()
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) { tiles }
             }
         }
         .padding(.top, 6)
         .padding(.horizontal, 6)
         .padding(.bottom, 2)
+    }
+
+    private var tiles: some View {
+        HStack(spacing: 6) {
+            ForEach(attachments, id: \.self) { url in
+                AttachmentPreview(url: url) { onRemove(url) }
+            }
+        }
     }
 }
 

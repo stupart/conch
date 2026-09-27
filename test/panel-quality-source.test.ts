@@ -106,8 +106,9 @@ test("collapsing shrinks the glass into the handle and expanding grows it back, 
 });
 
 test("the panel's keys: Esc, Command-Return, Previous and Next, Collapse, and the switcher's arrows, only while it has them", () => {
-  // Seen before whatever view has the keyboard, so Command-Return works whether or not a reply is being typed.
-  expect(panels).toContain("override func sendEvent(_ event: NSEvent) {\n        if event.type == .keyDown, let onKey, onKey(event) { return }\n        super.sendEvent(event)");
+  // Seen before whatever view has the keyboard, so Command-Return works whether or not a reply is being typed. A press
+  // is seen first too, for the floating composer's field to take the keys (`ComposerDock.pressed`); it never swallows it.
+  expect(panels).toContain("override func sendEvent(_ event: NSEvent) {\n        if event.type == .keyDown, let onKey, onKey(event) { return }\n        if event.type == .leftMouseDown { onPress?(event) }\n        super.sendEvent(event)");
   expect(panels).toContain("fog.onKey = { [weak self] event in MainActor.assumeIsolated { self?.key(event) ?? false } }");
   const key = member(panels, "private func key(_ event: NSEvent) -> Bool {");
   expect(key).toContain("typing: fog.firstResponder is NSTextView");
@@ -125,17 +126,24 @@ test("the panel's keys: Esc, Command-Return, Previous and Next, Collapse, and th
   const toggle = member(panels, "func toggleFullScreen() {");
   expect(toggle.indexOf("takeKeys()")).toBeGreaterThan(toggle.indexOf("isFullScreen = true"));
   expect(toggle.indexOf("giveKeysBack()")).toBeLessThan(toggle.indexOf("} else {"));
-  expect(panels.match(/takeKeys\(\)/g)?.length).toBe(3); // the definition, full screen, the switcher
+  // The definition, full screen, the switcher, and full screen again when the input in its room lets them go.
+  expect(panels.match(/takeKeys\(\)/g)?.length).toBe(4);
+  expect(member(panels, "func takeKeysBack() {")).toContain("guard isFullScreen else { return }\n        takeKeys()");
   const switching = member(panels, "private func switchingChanged() {");
   expect(switching).toContain("takeKeys()");
   expect(switching).toContain("if !isFullScreen, !(fog.firstResponder is NSTextView) { giveKeysBack() }");
   // The canvas's way of handing the keys back, never activating anything.
   expect(member(panels, "private func giveKeysBack() {")).toContain("fog.orderOut(nil)\n        fog.orderFrontRegardless()");
   // Esc in the reply line hands the keys back too, docked; it used to leave the panel key and swallow the next keys.
+  // The fog's own line still does (the gallery's, the phone's); on the Mac the reply line is the composer, whose window
+  // does the same: docked or alone, back to the app in front; full screen, to the panel.
   expect(components).toContain("view.window?.makeFirstResponder(nil)\n                // Left, the field no longer wants the keys; the host decides whether the panel keeps them.\n                field.onLeave?()");
   expect(fog.match(/onLeave: onLeaveReply\)/g)?.length).toBe(2);
-  expect(panels).toContain("onLeaveReply: { panels.replyLeft() },");
-  expect(member(panels, "func replyLeft() {")).toContain("guard !isFullScreen, !switching else { return }\n        giveKeysBack()");
+  const esc = member(read("mac-app/conch-mac/ComposerDock.swift"), "private func key(_ event: NSEvent) -> Bool {");
+  expect(esc).toContain("guard event.keyCode == 53, floating.firstResponder is NSTextView else { return false }");
+  expect(esc).toContain("floating.makeFirstResponder(nil)");
+  expect(esc).toContain("panels?.takeKeysBack()");
+  expect(esc).toContain("floating.orderOut(nil)\n            floating.orderFrontRegardless()");
 });
 
 test("the switcher closes on Esc, a click in another app, or the keys going elsewhere, and its rows walk by keyboard", () => {
@@ -188,7 +196,10 @@ test("the panel follows a newer version of the item it is on, and the queue and 
 test("the panel says when there is nothing, why a reply didn't go, whom it replies to, and what the voice is reading", () => {
   const host = member(panels, "var body: some View {\n        let row = Self.session(store.state, staged: panels.staged)");
   expect(host).toContain("empty: row == nil ? Self.empty(store.liveness) : nil,");
-  expect(host).toContain("showsReply: panels.showsReply && row != nil,");
+  // The room for the input (ComposerDock's composer, laid over it): open while the input is here or leaving, never
+  // without a session to reply to.
+  expect(host).toContain("showsReply: panels.replyRoomOpen && row != nil,");
+  expect(host).toContain("heldReply: panels.heldReply,");
   expect(host).toContain("notice: row.flatMap { store.rowMessages[$0.id] },");
   expect(host).toContain("speaking: Self.speaking(store.state, besides: row?.id),");
   const empty = member(panels, "static func empty(_ liveness: DaemonLiveness) -> String? {");
@@ -206,7 +217,9 @@ test("the panel says when there is nothing, why a reply didn't go, whom it repli
 test("the switcher, the Newest pill, the floating reply and the handle are glass that blurs what is under it", () => {
   const recipe = member(components, "func overlayGlass<S: InsettableShape>(_ shape: S) -> some View {");
   expect(recipe).toContain("shape.fill(.ultraThinMaterial)\n                shape.fill(ConchColor.overlayGlassStrong)");
-  expect(member(components, "private func floatingReply(in size: CGSize, fontSize: CGFloat, height: CGFloat, overflows: Bool) -> some View {")).toContain(".overlayGlass(shape)");
+  // The fog's own floating reply; held by the host, its composer wears the same recipe (`ComposerChrome.panel`).
+  expect(member(components, "private func ownFloatingReply(in size: CGSize, fontSize: CGFloat, height: CGFloat, overflows: Bool) -> some View {")).toContain(".overlayGlass(shape)");
+  expect(read("mac-app/conch-mac/ComposerView.swift")).toContain(".overlayGlass(RoundedRectangle(cornerRadius: ConchRadius.panel, style: .continuous))");
   expect(member(components, "private func pill(top: Bool) -> some View {")).toContain(".overlayGlass(Capsule())");
   expect(type(components, "private struct FogSwitcher: View {")).toContain(".overlayGlass(shape)");
   // Nothing in the panel paints the strong glass on its own, without the blur under it: only the recipe does.

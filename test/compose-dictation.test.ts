@@ -56,13 +56,13 @@ test("dictation goes to the session that asked, not the one now focused", () => 
   expect(dashboard).toContain(".onChange(of: state?.live.dictated?.id)");
   expect(dashboard).toContain("composerDrafts.apply(state?.live.dictated)");
   expect(dashboard).not.toContain("appendDictation(spoken, to: row.id)");
-  // The composer's own mic must ask for the composer.
-  expect(dashboard).toContain(".dictate(sessionId: row.id, label: row.label)");
-
   const composer = readFileSync(
     join(import.meta.dir, "../mac-app/conch-mac/ComposerView.swift"),
     "utf8",
   );
+  // The composer's own mic must ask for the composer: in its one construction (`SessionComposer`), which the window
+  // and the panel's reply line both build.
+  expect(composer).toContain(".dictate(sessionId: row.id, label: row.label)");
   // Applied once by id in the shared draft store, which the dashboard and the fog both call.
   expect(composer).toContain("guard let dictated, dictated.id != appliedDictationID else { return }");
   // The applied id must OUTLIVE the process. `live.dictated` is sticky on the daemon's side and deliberately never

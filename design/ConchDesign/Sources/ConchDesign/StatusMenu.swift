@@ -9,7 +9,7 @@ import Foundation
 public enum StatusMenu {
     /// What choosing an item does.
     public enum Command: Equatable, Sendable {
-        case talk, quiet, stop, controlBar, conversation, replyLine, draw, openConch
+        case talk, quiet, stop, controlBar, conversation, replyLine, replyLineAlone, draw, openConch
         /// A ready session's next item, opened the way the Ready pill opens one.
         case openItem(session: String)
         /// conch's window on a session: a working one, or a ready one with ⌥ held.
@@ -40,6 +40,8 @@ public enum StatusMenu {
         /// Shown in place of the item before it while ⌥ is held.
         public var alternate = false
         public var dot: Dot?
+        /// Under the item before it, a step in: a setting that belongs to it.
+        public var indent = 0
     }
 
     public enum Modifier: String, Equatable, Sendable { case control = "⌃", option = "⌥", command = "⌘" }
@@ -73,13 +75,15 @@ public enum StatusMenu {
         public var conversation: Bool
         public var collapsed: Bool
         public var replyLine: Bool
+        /// Leaving conch with the panel off or folded brings the reply line up alone (`ComposerPlacement`).
+        public var replyLineAlone: Bool
         public var drawing: Bool
         public var ready: [Session]
         public var working: [Session]
 
         public init(
             voice: VoiceState, quiet: Bool, exchangeActive: Bool, controlBar: Bool, conversation: Bool, collapsed: Bool,
-            replyLine: Bool, drawing: Bool, ready: [Session], working: [Session]
+            replyLine: Bool, replyLineAlone: Bool = true, drawing: Bool, ready: [Session], working: [Session]
         ) {
             self.voice = voice
             self.quiet = quiet
@@ -88,6 +92,7 @@ public enum StatusMenu {
             self.conversation = conversation
             self.collapsed = collapsed
             self.replyLine = replyLine
+            self.replyLineAlone = replyLineAlone
             self.drawing = drawing
             self.ready = ready
             self.working = working
@@ -105,6 +110,9 @@ public enum StatusMenu {
         rows.append(.item(Item(title: "Control Bar", command: .controlBar, mark: input.controlBar ? .on : .off)))
         rows.append(.item(Item(title: "Conversation Panel", command: .conversation, mark: conversationMark(on: input.conversation, collapsed: input.collapsed))))
         rows.append(.item(Item(title: "Reply Line", command: .replyLine, mark: input.replyLine ? .on : .off)))
+        // Leaving conch takes the input with you, into the panel's reply line; this is whether it comes when the panel is
+        // off too, as the reply line alone. Only means anything while the reply line does.
+        rows.append(.item(Item(title: "With Panel Off", command: .replyLineAlone, mark: input.replyLineAlone ? .on : .off, enabled: input.replyLine, indent: 1)))
         // The pen, with its hotkey (`CanvasHotKey`).
         rows.append(.item(Item(title: "Draw on Screen", command: .draw, mark: input.drawing ? .on : .off, key: "p", modifiers: [.control, .option, .command])))
         if !input.ready.isEmpty || !input.working.isEmpty { rows.append(.separator) }

@@ -151,7 +151,8 @@ final class ReadyTests: XCTestCase {
     /// screen recording's word.
     func testTheMenuNamesEachSurfaceOnceInTitleCase() {
         let titles = items(StatusMenu.rows(input())).map(\.title)
-        XCTAssertEqual(titles, ["Talk", "Quiet", "Stop Speaking", "Control Bar", "Conversation Panel", "Reply Line", "Draw on Screen", "Open conch"])
+        // With Panel Off is Reply Line's own setting, a step in under it (ComposerPlacementTests).
+        XCTAssertEqual(titles, ["Talk", "Quiet", "Stop Speaking", "Control Bar", "Conversation Panel", "Reply Line", "With Panel Off", "Draw on Screen", "Open conch"])
         XCTAssertFalse(titles.contains { $0.hasPrefix("Show") })
         let draw = items(StatusMenu.rows(input())).first { $0.command == .draw }
         XCTAssertEqual(draw?.key, "p")

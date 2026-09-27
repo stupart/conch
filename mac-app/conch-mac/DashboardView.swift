@@ -1589,6 +1589,8 @@ private struct ConversationPane: View {
     @StateObject private var transcriptContent = TranscriptContentModel()
     /// Shared with the conversation fog (M3): one draft per session wherever it is typed.
     @ObservedObject private var composerDrafts = ComposerDraftStore.shared
+    /// Where the one input is: this window lays its composer out only while it is here (ComposerDock).
+    @ObservedObject private var dock = ComposerDock.shared
     /// `.ib:hover` for the session-actions menu, which a `Menu` label does not get for free.
     @State private var isHoveringActions = false
     @State private var sessionPendingClose: SessionRow?
@@ -1624,26 +1626,6 @@ private struct ConversationPane: View {
     /// preview inline in the conversation, which is how it asks to be looked at.
     private func stage(for row: SessionRow?) -> StageMode {
         workspace.presentation(for: row?.id).stage
-    }
-
-    /// What the mic is doing FOR THIS ROW, by identity.
-    ///
-    /// The composer is built per row, and its mic both draws from this and acts on it — so a
-    /// row the voice is not on must report nothing, or every open composer mirrors the same
-    /// words, which reads as though conch is about to send them everywhere. Which session the
-    /// voice is on comes from the daemon's published live state rather than from a name: a
-    /// label can be changed, and two sessions can share one.
-    private func voiceState(for row: SessionRow) -> String {
-        workspace.voiceState(of: row, in: state)
-    }
-
-    private func voiceLevel(for row: SessionRow) -> Double {
-        workspace.voiceLevel(of: row, in: state)
-    }
-
-    /// The words being transcribed, in the composer they were spoken into and nowhere else.
-    private func dictation(for row: SessionRow) -> String {
-        workspace.dictation(of: row, in: state)
     }
 
     /// The session the reader PICKED, which can be a subagent the daemon no longer lists.
@@ -2064,6 +2046,17 @@ private struct ConversationPane: View {
         }
         .task(id: TranscriptWatchID(row: watchesTranscriptForRow)) {
             await transcriptContent.monitor(row: watchesTranscriptForRow)
+        }
+        // The session this window's composer addresses, and whether Tyler picked it here: the input takes it along when
+        // it goes with him, and brings its own back (ComposerDock). A subagent has no composer, so it addresses nothing.
+        .onChange(
+            of: ComposerDock.Address(
+                session: focusedRow.flatMap { $0.parentSessionId == nil ? $0.id : nil },
+                picked: workspace.viewing
+            ),
+            initial: true
+        ) { _, address in
+            dock.windowAddress = address
         }
         .onChange(of: state?.live.dictated?.id) { _, _ in
             // Spoken words land in the composer, added to whatever was typed.
@@ -2513,65 +2506,43 @@ private struct ConversationPane: View {
     /// control bar already reports its size this way (`ControlBarSize`), and assigning state
     /// inside a layout pass is how SwiftUI gets told a view changed while it is drawing it.
     /// Rounded up to whole points so a fractional height cannot oscillate the inset.
+    ///
+    /// Only while the input is in this window (ComposerDock). Tyler: "we literally remove it from the Mac app UI until
+    /// they go back to the app and it swoops back into the UI." Away with him it is not built at all, so nothing here can
+    /// be typed into, focused or sent from; on its way back it is laid out unseen and untouchable, for the swoop to land
+    /// on, and shows the moment it does. The room it takes stays behind it (`composerHeight` keeps its last height), so
+    /// nothing in the window jumps as it goes, and it comes back to the place it left.
     private func floatingComposer(for row: SessionRow) -> some View {
-        composer(for: row)
-            .background(
-                GeometryReader { proxy in
-                    Color.clear.preference(key: ComposerHeight.self, value: proxy.size.height.rounded(.up))
+        if dock.place == .window {
+            composer(for: row)
+                .opacity(dock.shown ? 1 : 0)
+                .allowsHitTesting(dock.shown)
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear.preference(key: ComposerHeight.self, value: proxy.size.height.rounded(.up))
+                    }
+                )
+                .onPreferenceChange(ComposerHeight.self) { height in
+                    guard composerHeight != height else { return }
+                    composerHeight = height
                 }
-            )
-            .onPreferenceChange(ComposerHeight.self) { height in
-                guard composerHeight != height else { return }
-                composerHeight = height
-            }
+        }
     }
 
     private func composer(for row: SessionRow) -> some View {
-        ComposerView(
-            sessionID: row.id,
-            sessionLabel: row.label,
-            backend: row.backend,
-            draft: composerDrafts.textBinding(for: row.id),
-            attachments: composerDrafts.attachmentsBinding(for: row.id),
-            dictation: dictation(for: row),
-            isWorking: row.status == .working,
-            voiceState: voiceState(for: row),
-            voiceLevel: voiceLevel(for: row),
-            audioHeldElsewhere: state?.audioControl.isLocal == false,
-            noTerminal: row.noTerminal,
-            onOpenInTerminal: row.attachable ? { store.openInTerminal(row) } : nil,
-            onSend: { text in
-                store.send(.inject(sessionId: row.id, label: row.label, text: text))
-            },
-            onInterrupt: {
-                store.send(.interrupt(sessionId: row.id, label: row.label))
-            },
-            onTalk: {
-                // The same button both ways. It showed a live waveform and
-                // still only ever OPENED the mic, so the one control that
-                // looks like it is running had no way to stop the thing it
-                // was showing — you had to find the spacebar, which a text
-                // field now swallows anyway.
-                if LiveState.isExchangeActive(voiceState(for: row)) {
-                    store.send(.stop())
-                } else {
-                    // The mic BESIDE a text field fills that field. It used to
-                    // send the spoken half straight past the composer into the
-                    // session, so what you typed and what you said could not be
-                    // one message.
-                    store.send(.dictate(sessionId: row.id, label: row.label))
-                }
-            },
-            onRecite: {
-                store.send(.recite(sessionId: row.id, label: row.label))
-            },
+        // The one construction of a session's composer, the panel's reply line included (`SessionComposer`).
+        SessionComposer(
+            row: row,
+            state: state,
+            store: store,
+            // A question's "Something else…" row, or the input landing back here with the keyboard it left with.
+            focusRequest: composerFocusRequest + dock.focusRequests,
             onDraftStarted: {
                 // Selecting is what pins the pane: `focusedRow` prefers an
                 // explicit selection over the live session, so this is the
                 // existing mechanism rather than a new one.
                 onSelectSession(row)
-            },
-            focusRequest: composerFocusRequest
+            }
         )
         .onAppear {
             composerDrafts.claimPreviewSeed(for: row.id)

@@ -21,8 +21,12 @@ extension Notification.Name {
 final class ConchStatusItem: NSObject, NSMenuDelegate {
     static let showControlBarKey = "conch.showControlBar"
     static let showConversationKey = "conch.showConversation"
-    /// The conversation panel's reply line; off, the panel only shows the words.
+    /// The conversation panel's reply line; off, the panel only shows the words. On, leaving conch takes the input with
+    /// you into it (ComposerDock).
     static let showReplyLineKey = "conch.showReplyLine"
+    /// With Panel Off, under Reply Line: leaving conch with the panel off or folded still takes the input with you, as the
+    /// reply line alone in the panel's corner. On until turned off (`ComposerPlacement`).
+    static let replyLineAloneKey = "conch.replyLineAlone"
     /// A first open from the Ready pill or the menu has turned the conversation panel on (`open`): once, so a panel
     /// turned off after that stays off.
     static let panelTurnedOnByOpenKey = "conch.conversationTurnedOnByOpen"
@@ -36,6 +40,8 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         FloatingPanels.install(store: store)
         // After the panels, whose staged item it follows.
         CanvasController.shared.install(store: store)
+        // After the panels and the canvas: the input rides over both when it leaves conch's window.
+        ComposerDock.shared.install(store: store)
     }
 
     private let store: StateStore
@@ -53,6 +59,7 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
             Self.showControlBarKey: true,
             Self.showConversationKey: false,
             Self.showReplyLineKey: true,
+            Self.replyLineAloneKey: true,
         ])
         item.autosaveName = "conch"
         let menu = NSMenu()
@@ -125,6 +132,7 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
             conversation: defaults.bool(forKey: Self.showConversationKey),
             collapsed: defaults.bool(forKey: FloatingPanels.conversationCollapsedKey),
             replyLine: defaults.bool(forKey: Self.showReplyLineKey),
+            replyLineAlone: defaults.bool(forKey: Self.replyLineAloneKey),
             drawing: CanvasController.shared.armed,
             ready: Self.readyRows(state).map { StatusMenu.Session(id: $0.id, label: $0.label) },
             working: Self.workingRows(state).map { StatusMenu.Session(id: $0.id, label: $0.label) }
@@ -180,6 +188,7 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         })
         entry.isAlternate = item.alternate
         entry.isEnabled = item.enabled
+        entry.indentationLevel = item.indent
         switch item.command {
         case let .openItem(session), let .openSession(session): entry.representedObject = session
         default: break
@@ -196,6 +205,7 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         case .controlBar: #selector(toggleControlBar)
         case .conversation: #selector(toggleConversation)
         case .replyLine: #selector(toggleReplyLine)
+        case .replyLineAlone: #selector(toggleReplyLineAlone)
         case .draw: #selector(toggleCanvas)
         case .openItem: #selector(openItem(_:))
         case .openSession: #selector(openSession(_:))
@@ -232,6 +242,7 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
     @objc private func toggleControlBar() { toggle(Self.showControlBarKey) }
     @objc private func toggleCanvas() { CanvasController.shared.toggle() }
     @objc private func toggleReplyLine() { toggle(Self.showReplyLineKey) }
+    @objc private func toggleReplyLineAlone() { toggle(Self.replyLineAloneKey) }
     @objc private func toggleConversation() {
         // Turned on from the menu, the conversation opens full size, not as its collapsed handle; folded to its handle,
         // choosing it opens it rather than hiding a panel nobody could see (`StatusMenu.conversationToggle`).

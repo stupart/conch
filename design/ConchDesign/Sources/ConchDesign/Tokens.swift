@@ -432,6 +432,10 @@ public enum ConchMotion {
     public static let popLead: Double = 0.04
     public static let popStagger: Double = 0.018
 
+    /// The input with nowhere to come from, or nowhere to go (`ComposerFlight`): it appears from, or leaves to, this much of
+    /// its size about its middle, fading as it does. Never from nothing.
+    public static let appearScale: CGFloat = 0.9
+
     /// A thrown view mid-air: a little smaller, softer and fainter, whole again as it lands.
     public static let flightScale: CGFloat = 0.97
     public static let flightBlur: CGFloat = 3

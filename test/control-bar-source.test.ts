@@ -162,17 +162,24 @@ test("M3: both panels keep their frames, and the fog goes full screen on Command
   expect(member(panels, "private func landed() {")).toContain("if !isFullScreen, !isCollapsed { fog.setFrameAutosaveName(Self.conversationFrameName) }");
 });
 
-test("M3: the fog replies through inject and dictates through the composer's dictate", () => {
-  const send = member(panels, "private func send(_ row: SessionRow) {");
-  expect(send).toContain("store.send(.inject(sessionId: row.id, label: row.label, text: text))");
+test("M3: the panel replies through the composer: inject, and the composer's dictate", () => {
+  // The panel's reply line IS the composer (ComposerDock lays it over the panel's room), built by the composer's one
+  // construction: no second composer with its own send and mic to drift from the window's.
+  const dock = read("mac-app/conch-mac/ComposerDock.swift");
+  const composer = read("mac-app/conch-mac/ComposerView.swift");
+  const session = composer.slice(composer.indexOf("struct SessionComposer: View {"), composer.indexOf("private struct AttachmentStrip"));
+  expect(session.length).toBeGreaterThan(1_000);
+  expect(dock).toMatch(/SessionComposer\(\s*row: row,\s*state: store\.state,\s*store: store,\s*chrome: \.panel,/);
+  expect(session).toContain("store.send(.inject(sessionId: row.id, label: row.label, text: text))");
   expect(read("mac-app/conch-mac/ConchSocketClient.swift")).toContain(
     "Self(type: .inject, sessionId: sessionId, label: label, announce: text, awaitDelivery: true, answers: answers, questionId: questionId, approve: approve)",
   );
-  const mic = member(panels, "private func mic(_ row: SessionRow) {");
-  expect(mic).toContain("store.send(.dictate(sessionId: row.id, label: row.label))");
-  expect(mic).toContain("store.send(.stop())");
-  expect(panels).toContain("onMic: { if let row { mic(row) } }");
-  expect(panels).toContain("onSend: { if let row { send(row) } }");
+  expect(session).toContain("store.send(.dictate(sessionId: row.id, label: row.label))");
+  expect(session).toContain("store.send(.stop())");
+  expect(panels).not.toContain("private func send(_ row: SessionRow)");
+  expect(panels).not.toContain("private func mic(_ row: SessionRow)");
+  expect(panels).toContain("onMic: {},");
+  expect(panels).toContain("onSend: {},");
   // The spoken words come back into the same shared draft, once.
   expect(panels).toContain("drafts.apply(store.state?.live.dictated)");
   expect(panels).toContain("@ObservedObject private var drafts = ComposerDraftStore.shared");
@@ -628,19 +635,20 @@ test("M3: the overlay's text is the lab's: pinned by the reader alone, words at 
   expect(step).toContain("let now = ProcessInfo.processInfo.systemUptime\n        let words = text.step(dt: dt, now: now, reduceMotion: motion.reduceMotion)");
   expect(step.indexOf("text.step(")).toBeLessThan(step.indexOf("apply()"));
   expect(panels).toContain("text.wake = { [weak self] in MainActor.assumeIsolated { self?.container.run(true) } }");
-  expect(member(panels, "private func apply() {")).toContain("next.replyHeight = showsReply ? text.replyHeight : 0");
+  expect(member(panels, "private func apply() {")).toContain("next.replyHeight = replyRoomOpen ? text.replyHeight : 0");
   expect(panels).toContain("isWorking: row?.status == .working,");
   expect(panels).toContain(".onChange(of: turns, initial: true) { _, turns in panels.text.update(turns: turns, now: ProcessInfo.processInfo.systemUptime) }");
   expect(panels).toContain(".onChange(of: row?.id) { _, _ in panels.text.session() }");
   for (const fake of ["asyncAfter", "Task.sleep", "Timer("]) expect(text).not.toContain(fake);
   expect(components).toContain("if isWorking, lines.last?.fromYou == true { lines.append(.thinking) }");
-  // Sent: shown at once and flown in, the daemon's copy taking its place; dropped if it never arrives,
-  // and then the words come back to the reply line instead of being lost.
-  const send = member(panels, "private func send(_ row: SessionRow) {");
-  expect(send.indexOf("fog.send(text)")).toBeLessThan(send.indexOf('draft.wrappedValue = ""'));
-  expect(send).toContain("guard !(await delivery.value) else { return }");
-  expect(send.indexOf("fog.sendFailed()")).toBeLessThan(send.indexOf("if draft.wrappedValue.isEmpty { draft.wrappedValue = text }"));
-  expect(send).toContain("if draft.wrappedValue.isEmpty { draft.wrappedValue = text }");
+  // Sent from the panel's reply line (the composer): shown at once and flown in, the daemon's copy taking its place;
+  // dropped if it never arrives. The words are never lost: the composer keeps the draft until the send is delivered.
+  const sent = member(read("mac-app/conch-mac/ComposerDock.swift"), "func sent(_ text: String, _ delivery: Task<Bool, Never>) {");
+  expect(sent).toContain("guard place == .panel, let fog = panels?.text else { return }");
+  expect(sent.indexOf("fog.send(text)")).toBeLessThan(sent.indexOf("guard !(await delivery.value) else { return }"));
+  expect(sent.indexOf("guard !(await delivery.value) else { return }")).toBeLessThan(sent.indexOf("fog.sendFailed()"));
+  const composerSend = member(read("mac-app/conch-mac/ComposerView.swift"), "private func send() {");
+  expect(composerSend.indexOf("guard delivered else { return }")).toBeLessThan(composerSend.indexOf('draft = ""'));
   // Reveal: 13 words a second with breaths at punctuation, each fading up out of a 4 pt blur, any backlog in within 3 s.
   expect(text).toContain("public static let longest: Double = 3");
   expect(text).toContain("return 1 / ConchMotion.wordsPerSecond + pause");
@@ -960,11 +968,15 @@ test("Reply Line hides the panel's reply line, from the menu bar, remembered", (
   expect(item).toContain("case .replyLine: #selector(toggleReplyLine)");
   expect(item).toContain("@objc private func toggleReplyLine() { toggle(Self.showReplyLineKey) }");
   expect(member(panels, "private func showWhatIsOn() {")).toContain("let reply = defaults.bool(forKey: ConchStatusItem.showReplyLineKey)");
-  expect(panels).toContain("showsReply: panels.showsReply && row != nil,");
+  // Reply Line is what lets the input come to the panel at all (`ComposerPlacement`); the panel's room for it is open
+  // only while the input is there or leaving it.
+  expect(read("mac-app/conch-mac/ComposerDock.swift")).toContain("replyLine: defaults.bool(forKey: ConchStatusItem.showReplyLineKey),");
+  expect(panels).toContain("showsReply: panels.replyRoomOpen && row != nil,");
   // Off, the transcript takes the reply line's room, and the look thickens behind the newest words instead.
-  expect(components).toContain("let box = showsReply ? max(0, frame.height - FogReply.gap - reply - noticeRoom) : frame.height");
+  expect(components).toContain("let box = showsReply ? max(0, frame.height - gap - reply - noticeRoom) : frame.height");
+  expect(components).toContain("let gap = heldReply == nil ? FogReply.gap : FogReply.gap * min(1, reply / FogReply.gap)");
   expect(components.match(/if showsReply \{ replyLine\(/g)?.length).toBe(2);
-  expect(member(panels, "private func apply() {")).toContain("next.replyHeight = showsReply ? text.replyHeight : 0");
+  expect(member(panels, "private func apply() {")).toContain("next.replyHeight = replyRoomOpen ? text.replyHeight : 0");
 });
 
 /** A hidden blur's mask is never drawn: on Liquid Glass the blur is hidden but for full screen, and a drag redrew it every frame. */
@@ -1133,7 +1145,9 @@ test("the deliverable in the panel crossfades in place, the words step aside, an
   expect(card).toContain(".clipShape(shape)\n                .overlay(shape.strokeBorder(ConchColor.overlayLine, lineWidth: 0.5))\n                .fogControl()");
   // Only full screen; the words only while nothing shows; the capsule only with the reply line on.
   expect(components).toContain("let shown = isFullScreen ? content : nil");
-  expect(components).toContain("if shown == nil {\n                    if session == nil, turns.isEmpty, let empty {\n                        emptyState(empty, in: frame)\n                    } else {\n                        VStack(alignment: .leading, spacing: FogReply.gap) {");
+  expect(components).toContain("if shown == nil {\n                    if session == nil, turns.isEmpty, let empty {\n                        emptyState(empty, in: frame)\n                    } else {\n                        VStack(alignment: .leading, spacing: gap) {");
   expect(components).toContain("if shown != nil, showsReply { floatingReply(in: proxy.size, fontSize: fontSize, height: reply, overflows: overflows) }");
-  expect(member(components, "private func floatingReply(in size: CGSize, fontSize: CGFloat, height: CGFloat, overflows: Bool) -> some View {")).toContain(".fogControl()");
+  expect(member(components, "private func ownFloatingReply(in size: CGSize, fontSize: CGFloat, height: CGFloat, overflows: Bool) -> some View {")).toContain(".fogControl()");
+  // Held by the host, the capsule is the host's composer: the fog draws none of its own.
+  expect(member(components, "private func floatingReply(in size: CGSize, fontSize: CGFloat, height: CGFloat, overflows: Bool) -> some View {")).toContain("if heldReply == nil { ownFloatingReply(");
 });

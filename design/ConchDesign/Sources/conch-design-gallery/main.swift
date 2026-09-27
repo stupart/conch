@@ -11,8 +11,13 @@ let outDir = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "ga
 let onlyPages = CommandLine.arguments.dropFirst(2).first
 try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
 
+/// `CONCH_GALLERY_ONLY=<prefix>` renders only the sheets whose names start with it (the fluid composer's, say), so a
+/// review folder holds what it is for.
+let galleryOnly = ProcessInfo.processInfo.environment["CONCH_GALLERY_ONLY"].flatMap { $0.isEmpty ? nil : $0 }
+
 // Top-level code here is not main-actor isolated, but it does run on the main thread, which ImageRenderer needs.
 func render<Content: View>(_ name: String, width: CGFloat = 960, @ViewBuilder _ content: () -> Content) throws {
+    if let galleryOnly, !name.hasPrefix(galleryOnly) { return }
     try MainActor.assumeIsolated { try renderOnMain(name, width: width, content) }
 }
 
@@ -594,7 +599,7 @@ struct MenuPicture: View {
                         if let dot = item.dot {
                             Image(systemName: dot.symbol).font(.system(size: 7)).foregroundStyle(dot.colour)
                         }
-                        Text(item.title).font(.system(size: 13))
+                        Text(item.title).font(.system(size: 13)).padding(.leading, CGFloat(item.indent) * 12)
                         Spacer(minLength: 16)
                         Text(keys(item)).font(.system(size: 13)).opacity(0.5)
                     }
@@ -765,6 +770,7 @@ func bitmap(_ size: CGSize, _ draw: (CGContext) -> Void) -> CGImage? {
 }
 
 func writePNG(_ image: CGImage, _ name: String) throws {
+    if let galleryOnly, !name.hasPrefix(galleryOnly) { return }
     let file = outDir.appendingPathComponent(name)
     try NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])!.write(to: file)
     print(file.path)
@@ -1798,4 +1804,458 @@ try render("qp-panel-contrast", width: 1100) {
             }
         }
     }
+}
+
+// MARK: - The fluid composer (ComposerDock)
+
+// One input, in one place: in conch's window while conch is in front, out with Tyler (the panel's reply line, or the
+// reply line alone) while he is elsewhere, and a swoop between them. The flight is the app's own model
+// (`ComposerFlight`), stepped at 120 Hz exactly as the Mac's swoop steps it; the glass is `ComposerGlass`, the colours the
+// swoop draws. The composer's face is a stand-in (the Mac's ComposerView lives in the app, not this package), drawn to the
+// lab's numbers: 6 of padding, a 22 pt line in 15 pt type inset 8/10/4, a 34 pt bar of 28 and 30 pt controls.
+
+/// The screen for the fluid sheets: y down, top left, as SwiftUI lays it out.
+let fluidScreen = CGSize(width: 1440, height: 900)
+/// conch's window, on the right of the screen.
+let fluidWindow = CGRect(x: 600, y: 96, width: 800, height: 620)
+let fluidSidebar: CGFloat = 220
+/// The panel, docked bottom left, smaller than its default so the window beside it stays in view.
+let fluidPanel = CGRect(x: 0, y: fluidScreen.height - 470, width: 600, height: 470)
+let fluidComposerHeight: CGFloat = 80
+let fluidDraft = "Make Join a touch larger, and keep the email check"
+
+/// The window composer's card: centred in the conversation column at the measure, 14 above the window's foot.
+let fluidWindowCard: CGRect = {
+    let column = CGRect(x: fluidWindow.minX + fluidSidebar, y: fluidWindow.minY, width: fluidWindow.width - fluidSidebar, height: fluidWindow.height)
+    let width = min(580, column.width - 32)
+    return CGRect(x: column.midX - width / 2, y: column.maxY - 14 - fluidComposerHeight, width: width, height: fluidComposerHeight)
+}()
+
+/// The panel's room for the input, on screen: `ConversationFog.replySlot` inside the glass, as FloatingPanels places it.
+let fluidPanelCard: CGRect = {
+    let inset = PanelGlass.Geometry.docked.insets
+    let size = CGSize(width: fluidPanel.width - inset.leading - inset.trailing, height: fluidPanel.height - inset.top - inset.bottom)
+    let slot = ConversationFog.replySlot(in: size, corner: .bottomLeading, insets: EdgeInsets(), fullScreen: false, showsContent: false, height: fluidComposerHeight)
+    return slot.offsetBy(dx: fluidPanel.minX + inset.leading, dy: fluidPanel.minY + inset.top)
+}()
+
+/// The reply line alone, the panel off: `ComposerDockGeometry.replyLineFrame`, on the screen's visible frame (y up there,
+/// turned y down here).
+let fluidReplyLineCard: CGRect = {
+    let visible = CGRect(x: 0, y: 0, width: fluidScreen.width, height: fluidScreen.height - panelMenuBar)
+    let width = ComposerDockGeometry.replyLineWidth(measure: 580, in: visible)
+    let up = ComposerDockGeometry.replyLineFrame(size: CGSize(width: width, height: fluidComposerHeight), corner: .bottomLeading, in: visible, besideHandle: false)
+    return CGRect(x: up.minX, y: fluidScreen.height - up.maxY, width: up.width, height: up.height)
+}()
+
+/// The composer's face, a stand-in for ComposerView to the lab's numbers: the field, then the bar under it.
+struct ComposerFaceStandIn: View {
+    var draft = fluidDraft
+    var listening = false
+    var label = "Arch invite page"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(draft.isEmpty ? "Message \(label)" : draft)
+                .font(ConchType.readingBody)
+                .foregroundStyle(draft.isEmpty ? ConchColor.textSecondary : ConchColor.textPrimary)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, minHeight: 22, alignment: .topLeading)
+                .padding(.top, 8).padding(.bottom, 4).padding(.horizontal, 10)
+            HStack(spacing: 4) {
+                Image(systemName: "plus").font(.system(size: 13, weight: .medium)).frame(width: 28, height: 28).foregroundStyle(ConchColor.textSecondary)
+                Image(systemName: listening ? "waveform" : "mic.fill").font(.system(size: 12, weight: .medium))
+                    .frame(width: 30, height: 30)
+                    .background(Circle().fill(listening ? AnyShapeStyle(Color(red: 0.2, green: 0.78, blue: 0.86)) : AnyShapeStyle(ConchColor.fill)))
+                    .foregroundStyle(listening ? AnyShapeStyle(Color.black) : AnyShapeStyle(ConchColor.textSecondary))
+                if listening {
+                    Text("listening").font(.system(size: 12, weight: .medium)).foregroundStyle(Color(red: 0.2, green: 0.7, blue: 0.8))
+                }
+                HStack(spacing: 5) {
+                    Image(systemName: "asterisk").font(.system(size: 10, weight: .bold))
+                    Text(label).lineLimit(1)
+                }
+                .font(.system(size: 12)).foregroundStyle(ConchColor.textTertiary).padding(.leading, 8)
+                Spacer(minLength: 8)
+                Image(systemName: "speaker.wave.2.circle").font(.system(size: 13, weight: .medium)).frame(width: 28, height: 28).foregroundStyle(ConchColor.textSecondary)
+                Image(systemName: "arrow.up").font(.system(size: 13, weight: .semibold)).frame(width: 30, height: 30)
+                    .background(Circle().fill(draft.isEmpty ? AnyShapeStyle(ConchColor.fill) : AnyShapeStyle(ConchColor.accent)))
+                    .foregroundStyle(draft.isEmpty ? AnyShapeStyle(ConchColor.textTertiary) : AnyShapeStyle(ConchColor.onAccent))
+            }
+            .frame(height: 34)
+            .padding(.leading, 2)
+        }
+        .padding(6)
+    }
+}
+
+/// The composer at rest: the window's card (surface, 18, hairline, floating) or the panel's glass (the overlay's strong
+/// glass, 30, its line, floating), as ComposerView's two chromes draw it.
+struct RestingComposer: View {
+    let rect: CGRect
+    let floats: Bool
+    var listening = false
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        let glass = ComposerGlass(chrome: floats ? 1 : 0, dark: scheme == .dark)
+        let shape = RoundedRectangle(cornerRadius: floats ? ConchRadius.panel : ConchRadius.large, style: .continuous)
+        ComposerFaceStandIn(listening: listening)
+            .frame(width: rect.width, height: rect.height)
+            .background(shape.fill(fluidColor(glass.fill)))
+            .overlay(shape.strokeBorder(fluidColor(glass.line), lineWidth: 0.5))
+            .shadow(color: .black.opacity(glass.shadowOpacity), radius: glass.shadowRadius, y: glass.shadowY)
+            .position(x: rect.midX, y: rect.midY)
+    }
+}
+
+func fluidColor(_ rgba: SIMD4<Double>) -> Color { Color(.sRGB, red: rgba.x, green: rgba.y, blue: rgba.z, opacity: rgba.w) }
+
+/// One card of the swoop, as the Mac's `SwoopCard` layers it: the shadow, the glass, and on it the look it left and the
+/// look it lands as, each in the pieces its layout moves as (`ComposerFlight.slices`), never scaled, crossfaded, clipped to
+/// its corner.
+struct FlyingCard: View {
+    let card: ComposerFlight.Card
+    /// The widths each look was laid out at: where it left and where it lands.
+    let leavingWidth: CGFloat
+    let arrivingWidth: CGFloat
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        let rect = card.shape.rect
+        let glass = ComposerGlass(chrome: card.shape.chrome, lift: card.lift, dark: scheme == .dark)
+        let shape = RoundedRectangle(cornerRadius: min(card.shape.radius, min(rect.width, rect.height) / 2), style: .continuous)
+        ZStack {
+            shape.fill(fluidColor(glass.fill))
+            face(width: leavingWidth, in: rect).opacity(card.leaving)
+            face(width: arrivingWidth, in: rect).opacity(card.arriving)
+        }
+        .frame(width: rect.width, height: rect.height)
+        .clipShape(shape)
+        .overlay(shape.strokeBorder(fluidColor(glass.line), lineWidth: 0.5))
+        // Faded as one, as the Mac's glass is (`allowsGroupOpacity`).
+        .compositingGroup()
+        .shadow(color: .black.opacity(glass.shadowOpacity * card.opacity), radius: glass.shadowRadius, y: glass.shadowY)
+        .opacity(card.opacity)
+        .position(x: rect.midX, y: rect.midY)
+    }
+
+    private func face(width: CGFloat, in rect: CGRect) -> some View {
+        let picture = CGSize(width: width, height: fluidComposerHeight)
+        return ZStack(alignment: .topLeading) {
+            ForEach(Array(ComposerFlight.slices(picture: picture, in: rect.size).enumerated()), id: \.offset) { _, slice in
+                ComposerFaceStandIn()
+                    .frame(width: picture.width, height: picture.height)
+                    .offset(x: -slice.from.minX, y: -slice.from.minY)
+                    .frame(width: slice.from.width, height: slice.from.height, alignment: .topLeading)
+                    .clipped()
+                    .offset(x: slice.to.minX, y: slice.to.minY)
+            }
+        }
+        .frame(width: rect.width, height: rect.height, alignment: .topLeading)
+    }
+}
+
+/// conch's window, standing in: a title strip, the sidebar, the transcript in its column, and the room the composer
+/// takes at its foot, which stays when the composer is away. Greyed lights while another app is in front.
+struct ConchWindowStandIn: View {
+    var active: Bool
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 7) {
+                    ForEach(0..<3, id: \.self) { index in
+                        Circle().fill(active ? [Color(red: 1, green: 0.37, blue: 0.34), Color(red: 1, green: 0.74, blue: 0.18), Color(red: 0.16, green: 0.79, blue: 0.25)][index] : ConchColor.fill.color(scheme))
+                            .frame(width: 12, height: 12)
+                    }
+                }
+                .padding(.bottom, 14)
+                ForEach(["Arch invite page", "Dayloop invite", "Parser refactor", "Invite tests"], id: \.self) { name in
+                    Text(name).font(ConchType.uiBody)
+                        .foregroundStyle(name == "Arch invite page" ? ConchColor.textPrimary : ConchColor.textSecondary)
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(RoundedRectangle(cornerRadius: 6).fill(name == "Arch invite page" ? ConchColor.rowSelected.color(scheme) : .clear))
+                }
+                Spacer()
+            }
+            .padding(14)
+            .frame(width: fluidSidebar)
+            .background(ConchColor.ground)
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Arch invite page").font(ConchType.heading).foregroundStyle(ConchColor.textPrimary)
+                ForEach(sampleTurns) { turn in
+                    VStack(alignment: .leading, spacing: 4) {
+                        if turn.fromYou { Text("You").font(ConchType.meta).foregroundStyle(ConchColor.textTertiary) }
+                        Text(turn.text.replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "`", with: "")).font(ConchType.readingBody).foregroundStyle(ConchColor.textPrimary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Spacer(minLength: fluidComposerHeight + 14)
+            }
+            .padding(.horizontal, 36).padding(.top, 18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(ConchColor.surface)
+        }
+        .frame(width: fluidWindow.width, height: fluidWindow.height)
+        .clipShape(shape)
+        .overlay(shape.strokeBorder(ConchColor.hairlineStrong, lineWidth: 0.5))
+        .shadow(color: .black.opacity(scheme == .dark ? 0.55 : 0.28), radius: 30, y: 16)
+        .position(x: fluidWindow.midX, y: fluidWindow.midY)
+    }
+}
+
+/// A frame of the fluid composer: the screen, conch's window, the panel (its words, and its room for the input open to
+/// `room`), the composer at rest wherever it is, and the swoop's cards over all of it.
+struct FluidScene: View {
+    var active = false
+    var panelOn = true
+    /// How far open the panel's room for the input is: the grow spring's height, 0 to the composer's.
+    var room: CGFloat = 0
+    /// The composer at rest: in the window, in the panel's room, or alone.
+    var resting: ComposerPlace? = nil
+    var listening = false
+    var cards: [ComposerFlight.Card] = []
+    var leavingWidth: CGFloat = fluidWindowCard.width
+    var arrivingWidth: CGFloat = fluidPanelCard.width
+    /// Another app's window over conch's composer, for the flight that fades in as it leaves.
+    var covered = false
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        let dark: Double = scheme == .dark ? 1 : 0
+        let inset = PanelGlass.Geometry.docked.insets
+        let glass = CGRect(x: fluidPanel.minX + inset.leading, y: fluidPanel.minY + inset.top, width: fluidPanel.width - inset.leading - inset.trailing, height: fluidPanel.height - inset.top - inset.bottom)
+        let shape = RoundedRectangle(cornerRadius: ConchRadius.panel, style: .continuous)
+        // The drawn page rather than the lab's real screen, which has a conch window of its own in it.
+        let backdrop = panelBackdrops.first { $0.name == (scheme == .dark ? "gradient, dark" : "gradient, light") } ?? panelBackdrop
+        ZStack(alignment: .topLeading) {
+            Image(decorative: backdrop.page, scale: 1)
+            ConchWindowStandIn(active: active)
+            if resting == .window { RestingComposer(rect: fluidWindowCard, floats: false, listening: listening) }
+            if covered {
+                // The app Tyler went to, over conch's window.
+                RoundedRectangle(cornerRadius: 12, style: .continuous).fill(ConchColor.surfaceRaised)
+                    .overlay(Text("Browser").font(ConchType.title).foregroundStyle(ConchColor.textTertiary))
+                    .frame(width: 760, height: 560)
+                    .shadow(color: .black.opacity(0.3), radius: 30, y: 16)
+                    .position(x: fluidWindow.midX - 60, y: fluidWindow.midY + 70)
+            }
+            if panelOn {
+                ZStack(alignment: .topLeading) {
+                    Image(decorative: backdrop.soft, scale: 1).offset(x: -glass.minX, y: -glass.minY)
+                    PanelGlass.standIn(darkness: dark).color
+                }
+                .frame(width: glass.width, height: glass.height, alignment: .topLeading)
+                .clipShape(shape)
+                .shadow(color: .black.opacity(0.42), radius: 35, y: 30)
+                .offset(x: glass.minX, y: glass.minY)
+                ConchGlassPanel(darkness: dark, voice: .talk, radius: ConchRadius.panel)
+                    .frame(width: glass.width, height: glass.height)
+                    .offset(x: glass.minX, y: glass.minY)
+                ConversationFog(
+                    turns: sampleTurns,
+                    draft: .constant(""),
+                    text: FogTextState(),
+                    isListening: false,
+                    isFullScreen: false,
+                    session: panelSession,
+                    showsReply: room > 0.5,
+                    heldReply: room,
+                    onMic: {},
+                    onSend: {},
+                    onCollapse: {},
+                    onFullScreen: {}
+                )
+                .padding(inset)
+                .frame(width: fluidPanel.width, height: fluidPanel.height)
+                .offset(x: fluidPanel.minX, y: fluidPanel.minY)
+            }
+            if resting == .panel { RestingComposer(rect: fluidPanelCard, floats: true, listening: listening) }
+            if resting == .replyLine { RestingComposer(rect: fluidReplyLineCard, floats: true, listening: listening) }
+            ForEach(Array(cards.enumerated()), id: \.offset) { _, card in
+                FlyingCard(card: card, leavingWidth: leavingWidth, arrivingWidth: arrivingWidth)
+            }
+        }
+        .frame(width: fluidScreen.width, height: fluidScreen.height, alignment: .topLeading)
+        .clipped()
+        .environment(\.conchDarkness, dark)
+        .clipShape(RoundedRectangle(cornerRadius: ConchRadius.large))
+    }
+}
+
+/// A flight stepped as the Mac steps it, frame by frame at 120 Hz; with the panel's room on the grow spring beside it,
+/// opening as the input comes and closing as it goes. `turn` turns it round at that time, back where it came from.
+struct FluidFrame {
+    let time: Double
+    let cards: [ComposerFlight.Card]
+    let room: CGFloat
+    let arrived: Bool
+    let from: ComposerPlace
+    let to: ComposerPlace
+}
+
+func fluidFrames(_ start: ComposerFlight, roomFrom: CGFloat, roomTo: CGFloat, turn: (at: Double, place: ComposerPlace, shape: ComposerFlight.Shape)? = nil, times: [Double]) -> [FluidFrame] {
+    var flight = start
+    var room = roomFrom, roomVelocity: CGFloat = 0, roomTarget = roomTo
+    var frames: [FluidFrame] = []
+    var time = 0.0
+    var turned = false
+    let dt = 1.0 / 120
+    for mark in times {
+        while time + 1e-9 < mark {
+            if let turn, !turned, time >= turn.at {
+                flight.retarget(to: turn.place, at: turn.shape)
+                roomTarget = turn.place == .panel ? fluidComposerHeight : 0
+                turned = true
+            }
+            flight.step(dt: dt)
+            ConchMotion.grow.step(&room, velocity: &roomVelocity, to: roomTarget, dt: dt, epsilon: 0.05)
+            time += dt
+        }
+        frames.append(FluidFrame(time: mark, cards: flight.cards, room: max(0, room), arrived: flight.arrived, from: flight.from, to: flight.to))
+    }
+    return frames
+}
+
+let leaveFlight = ComposerFlight(from: .window, at: .window(fluidWindowCard), to: .panel, at: .floating(fluidPanelCard))
+let leaveTimes: [Double] = [0, 0.033, 0.067, 0.1, 0.133, 0.167, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.7]
+
+/// When a flight arrives (the live composer shows under the glass) and lands (the hand-off done), stepped at 120 Hz.
+func fluidTimes(_ start: ComposerFlight) -> (arrives: Double, lands: Double) {
+    var flight = start, time = 0.0, arrives = 0.0
+    while !flight.step(dt: 1.0 / 120) {
+        time += 1.0 / 120
+        if flight.arrived, arrives == 0 { arrives = time }
+    }
+    return (arrives, time)
+}
+
+let leaveTiming = fluidTimes(leaveFlight)
+print(String(format: "fluid: leaving arrives at %.0f ms, lands at %.0f ms", leaveTiming.arrives * 1000, leaveTiming.lands * 1000))
+
+/// The band of the screen the flights cross: the window composer's foot to the panel's.
+let fluidBand = CGRect(x: 0, y: 520, width: fluidScreen.width, height: fluidScreen.height - 520)
+
+/// A frame with its time and what the input is doing: the band the flight crosses, or `crop` of the screen, at `scale`.
+struct FilmFrame: View {
+    let frame: FluidFrame
+    var active = false
+    var covered = false
+    var leavingWidth: CGFloat = fluidWindowCard.width
+    var arrivingWidth: CGFloat = fluidPanelCard.width
+    var restingAtEnd: ComposerPlace?
+    var panelOn = true
+    var crop = fluidBand
+    var scale: CGFloat = 0.5
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            FluidScene(
+                active: active,
+                panelOn: panelOn,
+                room: frame.room,
+                // Arrived, the live input shows under the glass as it hands off.
+                resting: frame.arrived ? restingAtEnd ?? frame.to : nil,
+                cards: frame.cards,
+                leavingWidth: frame.from == .window ? leavingWidth : arrivingWidth,
+                arrivingWidth: frame.to == .window ? leavingWidth : arrivingWidth,
+                covered: covered
+            )
+            .offset(x: -crop.minX, y: -crop.minY)
+            .frame(width: crop.width, height: crop.height, alignment: .topLeading)
+            .clipped()
+            .scaleEffect(scale, anchor: .topLeading)
+            .frame(width: crop.width * scale, height: crop.height * scale, alignment: .topLeading)
+            Caption(String(format: "%.0f ms", frame.time * 1000) + (frame.arrived ? " · arrived, handing off" : ""))
+        }
+    }
+}
+
+func filmstrip(_ frames: [FluidFrame], active: Bool = false, covered: Bool = false, arriving: CGFloat = fluidPanelCard.width, panelOn: Bool = true) -> some View {
+    VStack(alignment: .leading, spacing: 14) {
+        ForEach(0..<((frames.count + 1) / 2), id: \.self) { row in
+            HStack(alignment: .top, spacing: 12) {
+                ForEach(frames[(row * 2)..<min(frames.count, row * 2 + 2)], id: \.time) { frame in
+                    FilmFrame(frame: frame, active: active, covered: covered, arrivingWidth: arriving, panelOn: panelOn)
+                }
+            }
+        }
+    }
+}
+
+let fluidNote = "Stand-ins: the glass is panel-lab's (ImageRenderer can't draw Liquid Glass); the composer's face is drawn to ComposerView's numbers. The flight is ComposerFlight itself, stepped at 120 Hz; the glass colours are ComposerGlass, what the Mac's swoop draws."
+
+try render("fluid-states", width: 1520) {
+    Heading(title: "One input, one place", note: "Tyler: \"the input box is leaving the Mac app and coming with you — we literally remove it from the Mac app UI until they go back to the app and it swoops back into the UI.\" " + fluidNote)
+    Caption("conch in front: the composer is in the window, and the panel has no reply line.")
+    FluidScene(active: true, resting: .window)
+    Caption("Tyler leaves conch: the composer leaves the window's layout (its room stays, so nothing jumps) and swoops to the panel, whose words make room for it.")
+    let frames = fluidFrames(leaveFlight, roomFrom: 0, roomTo: fluidComposerHeight, times: [0.067, 0.1, 0.133, 0.2])
+    filmstrip(frames)
+    Caption("Out with him: the panel's reply line is the composer itself, same draft, same mic, same send. The window keeps an empty room where it was.")
+    FluidScene(room: fluidComposerHeight, resting: .panel)
+    Caption("Dictating while away: the mic's state is the daemon's, so it reads the same wherever the input is.")
+    FluidScene(room: fluidComposerHeight, resting: .panel, listening: true)
+    Caption("The panel off (the default, With Panel Off): the reply line alone, in the panel's corner.")
+    FluidScene(panelOn: false, resting: .replyLine)
+    Caption("Back to conch: it swoops home into its room, and the panel's room closes behind it.")
+    let back = fluidFrames(ComposerFlight(from: .panel, at: .floating(fluidPanelCard), to: .window, at: .window(fluidWindowCard)), roomFrom: fluidComposerHeight, roomTo: 0, times: [0.067, 0.1, 0.133, 0.2])
+    filmstrip(back, active: true)
+}
+
+try render("fluid-closeup", width: 1520) {
+    Heading(title: "Close up, full size: the glass mid-flight", note: "Where the looks trade places: the panel glass's look comes in over the window card's, whole by the middle, and only then does the card's go, so every word stays at full strength. Each look is placed as the composer lays itself out (the field from the top leading corner, the bar's clusters from the bottom corners), never scaled, so the two coincide. The corner and the chrome ease between the two. " + fluidNote)
+    let times: [Double] = [0.03, 0.06, 0.08, 0.1, 0.12, 0.15]
+    let frames = fluidFrames(leaveFlight, roomFrom: 0, roomTo: fluidComposerHeight, times: times)
+    VStack(alignment: .leading, spacing: 14) {
+        ForEach(frames, id: \.time) { frame in
+            let rect = frame.cards.first?.shape.rect ?? fluidWindowCard
+            let crop = CGRect(x: max(0, rect.midX - 360), y: rect.midY - 80, width: 720, height: 160)
+            let card = frame.cards.first
+            VStack(alignment: .leading, spacing: 4) {
+                FilmFrame(frame: frame, crop: crop, scale: 1)
+                if let card {
+                    Caption(String(format: "corner %.1f · chrome %.2f · left %.2f · lands %.2f · lift %.2f · %.0f × %.0f", card.shape.radius, card.shape.chrome, card.leaving, card.arriving, card.lift, card.shape.rect.width, card.shape.rect.height))
+                }
+            }
+        }
+    }
+}
+
+try render("fluid-filmstrip-leave", width: 1520) {
+    Heading(title: "The swoop, leaving: window to panel", note: "Every frame is ComposerFlight at that time: the frame, corner (18 → 30) and chrome (card → glass) on ConchMotion.morph from its middle; the panel's look comes in over the window's through the middle of the flight, one of them always whole, neither ever scaled; it lifts mid-air (shadow); once it has come to rest the live composer shows under it and the glass hands off on liftOff. " + fluidNote)
+    filmstrip(fluidFrames(leaveFlight, roomFrom: 0, roomTo: fluidComposerHeight, times: leaveTimes))
+}
+
+try render("fluid-filmstrip-return", width: 1520) {
+    Heading(title: "The swoop, returning: panel to window", note: "conch comes forward; the input lands back in its room in the window, and the panel's room closes behind it. " + fluidNote)
+    let back = ComposerFlight(from: .panel, at: .floating(fluidPanelCard), to: .window, at: .window(fluidWindowCard))
+    filmstrip(fluidFrames(back, roomFrom: fluidComposerHeight, roomTo: 0, times: leaveTimes), active: true, arriving: fluidPanelCard.width)
+}
+
+try render("fluid-filmstrip-turnback", width: 1520) {
+    Heading(title: "Cmd-Tab back mid-flight", note: "Leaving, then conch comes forward again 100 ms in: the same glass turns round from where it is, keeping its speed for a moment, and the crossfade runs back from where it had got to. Nothing queues. " + fluidNote)
+    filmstrip(fluidFrames(leaveFlight, roomFrom: 0, roomTo: fluidComposerHeight, turn: (0.1, .window, .window(fluidWindowCard)), times: leaveTimes), active: true)
+}
+
+try render("fluid-filmstrip-reply-line", width: 1520) {
+    Heading(title: "The panel off: to the reply line alone", note: "With the panel off (With Panel Off, on by default) the input still comes with him, as the reply line alone in the panel's corner, the window composer's width, so the flight is a move and a change of glass rather than a resize. " + fluidNote)
+    let alone = ComposerFlight(from: .window, at: .window(fluidWindowCard), to: .replyLine, at: .floating(fluidReplyLineCard))
+    filmstrip(fluidFrames(alone, roomFrom: 0, roomTo: 0, times: leaveTimes), arriving: fluidReplyLineCard.width, panelOn: false)
+}
+
+try render("fluid-filmstrip-covered", width: 1520) {
+    Heading(title: "Leaving from under another app", note: "The app Tyler went to covers conch's composer: the glass fades in as it leaves (liftOff) rather than appearing on top of that app. " + fluidNote)
+    let covered = ComposerFlight(from: .window, at: .window(fluidWindowCard), to: .panel, at: .floating(fluidPanelCard), emerges: true)
+    filmstrip(fluidFrames(covered, roomFrom: 0, roomTo: fluidComposerHeight, times: Array(leaveTimes.prefix(12))), covered: true)
+}
+
+try render("fluid-filmstrip-reduce-motion", width: 1520) {
+    Heading(title: "Reduce Motion: a crossfade in place", note: "Nothing travels: the composer fades out where it was and in where it goes, on the morph's timing with no overshoot. " + fluidNote)
+    let calm = ComposerFlight(from: .window, at: .window(fluidWindowCard), to: .panel, at: .floating(fluidPanelCard), reduceMotion: true)
+    filmstrip(fluidFrames(calm, roomFrom: 0, roomTo: fluidComposerHeight, times: Array(leaveTimes.prefix(12))))
 }

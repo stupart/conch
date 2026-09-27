@@ -308,15 +308,16 @@ describe("Cut B Swift, by site", () => {
       "} else if !audio.takeableHosts.isEmpty {",
       'Button("Take it", action: audio.takeIt)',
     );
-    expect(dashboard).toContain("audioHeldElsewhere: state?.audioControl.isLocal == false,");
+    // Wired in the composer's one construction (`SessionComposer`), which the window and the panel both build.
+    expect(composer).toContain("audioHeldElsewhere: state?.audioControl.isLocal == false,");
     expect(dashboard).toContain("isDisabled: audioHeldElsewhere,");
     const toggle = section(dashboard, "private struct ModeToggle: View {", "\n}\n");
     ordered(toggle, ".disabled(isDisabled)", ".opacity(isDisabled ? 0.35 : 1)");
     const mic = section(composer, "Button(action: onTalk) {", "Button(action: onRecite) {");
     ordered(mic, ".disabled(audioHeldElsewhere)", ".opacity(audioHeldElsewhere ? 0.35 : 1)");
     // Nothing else in the composer is gated on it: sending, attaching and reciting keep working.
-    expect(count(composer, "audioHeldElsewhere")).toBe(5);
-    expect(count(dashboard, "audioHeldElsewhere")).toBe(4);
+    expect(count(composer, "audioHeldElsewhere")).toBe(6);
+    expect(count(dashboard, "audioHeldElsewhere")).toBe(3);
     // Drawn from the peer's document only while it is online.
     const banners = section(holder, "private func refreshBanners() {", "\n}\n");
     expect(banners).toContain("online.contains($0.id) && documents[$0.id]?.audioControl.holder == localOwner");

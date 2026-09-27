@@ -46,7 +46,9 @@ describe("one owner", () => {
 
   /** A missing `import ConchDesign` has slipped through twice; CI builds neither app. */
   test("every file that reads the model imports the design system", () => {
-    for (const source of [content, dashboard, adapter, stack, panels, app]) {
+    // The composer and its dock read the model too, wherever the input is (`SessionComposer`, `ComposerDock`).
+    const composerFiles = ["ComposerView.swift", "ComposerDock.swift"].map((file) => read(`mac-app/conch-mac/${file}`));
+    for (const source of [content, dashboard, adapter, stack, panels, app, ...composerFiles]) {
       expect(source).toContain("import ConchDesign");
     }
     expect(project).toContain("/* Workspace.swift in Sources */ = {isa = PBXBuildFile;");
@@ -57,8 +59,16 @@ describe("one owner", () => {
     // What I am looking at, which session the voice is on, and where a message goes: three
     // answers that are allowed to differ, from one place, never from a label.
     expect(pane).toContain("workspace.viewedRow(in: state)");
-    expect(pane).toContain("workspace.voiceState(of: row, in: state)");
-    expect(pane).toContain("workspace.dictation(of: row, in: state)");
+    // The composer asks for its row's voice and dictation by the model's own rule, wherever it is: the window's and the
+    // panel's reply line are one construction (`SessionComposer`), and the panel has no workspace object of its own.
+    const composer = read("mac-app/conch-mac/ComposerView.swift");
+    expect(composer).toContain("WorkspaceModel.voiceState(of: row, in: state)");
+    expect(composer).toContain("WorkspaceModel.dictation(of: row, in: state)");
+    // One rule, whichever way it is asked: the model's own answers go through the same functions.
+    const model = read("mac-app/conch-mac/Workspace.swift");
+    expect(model).toContain("func voiceState(of row: SessionRow, in state: PublishedState?) -> String {\n        Self.voiceState(of: row, in: state)");
+    expect(model).toContain("func dictation(of row: SessionRow?, in state: PublishedState?) -> String {\n        Self.dictation(of: row, in: state)");
+    expect(model.match(/WorkspaceFocus\.isAddressed\(row\.id, in: Workspace\(state\)\)/g)?.length).toBe(4);
     expect(content).toContain("workspace.targetRow(in: store.state)");
     // Which session the voice is on comes from the state the daemon published ON THE ROW,
     // never from the live label beside it: a label is renameable and two rows can share one.
@@ -83,7 +93,10 @@ describe("the same decision, not a second copy of it", () => {
     // Its staged pin (#222) stays where it is — the overlay is allowed to be on another
     // session; it is the RULE that must not be written twice.
     expect(panels).toContain("@Published var staged: SessionRow.ID?");
-    expect(panels).toContain("WorkspaceFocus.isAddressed(row.id, in: Workspace(state))");
+    // Which session the voice is on, for the panel's reply line, is the composer's own reading (`SessionComposer`), so
+    // the panel keeps no copy of that rule; the speaking chip asks the same focus rules by identity.
+    expect(panels).not.toContain("private func voice(for row: SessionRow)");
+    expect(panels).toContain("WorkspaceFocus.addressed(in: Workspace(state))");
     // One translation from the daemon's rows to the rules, used by all of them.
     expect(adapter).toContain("extension Workspace {");
     // The ledger's scroll target is the same question, so it asks the same rule — it used to

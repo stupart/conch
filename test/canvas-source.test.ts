@@ -311,7 +311,7 @@ describe("Send", () => {
     expect(sendBody).toContain("let event = ConchDaemonEvent.inject(sessionId: row.id, label: row.label, text: prompt)");
     expect(sendBody).toContain("let delivery = store.send(event, overApp: true)");
     expect(sendBody.indexOf("store.send(event")).toBeLessThan(sendBody.indexOf("clear()"));
-    expect(read("mac-app/conch-mac/DashboardView.swift")).toContain("store.send(.inject(sessionId: row.id, label: row.label, text: text))");
+    expect(read("mac-app/conch-mac/ComposerView.swift")).toContain("store.send(.inject(sessionId: row.id, label: row.label, text: text))");
   });
 
   test("kept in conch's cache for Tyler alone, the flat picture no longer than 1568 px", () => {
