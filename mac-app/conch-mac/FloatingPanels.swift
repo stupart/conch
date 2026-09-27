@@ -226,6 +226,9 @@ final class FloatingPanels: ObservableObject {
     /// The session the Ready pill last brought forward. The conversation stays on it, whatever the voice does, until the
     /// pill is clicked again or another session is picked (`picked`).
     @Published var staged: SessionRow.ID?
+    /// The session a reply being written in the reply line holds the panel on, whatever the voice does
+    /// (`ComposerDock.pinReply`); what Tyler stages himself comes first.
+    @Published var replyPin: SessionRow.ID?
     /// Where the Ready pill and the panel's Previous and Next are in what is ready: one walk, so they agree.
     let queue = ReviewQueue()
     /// How many times the person has moved the panel: dragged or thrown it, resized it, filled the screen with it, folded
@@ -525,7 +528,7 @@ final class FloatingPanels: ObservableObject {
     var replyRoomOpen: Bool { heldReply > 0 || text.replyHeight > 0.5 }
 
     /// The session the panel is on, by the one rule (`ConversationFogHost.session`).
-    var session: SessionRow? { ConversationFogHost.session(store?.state, staged: staged) }
+    var session: SessionRow? { ConversationFogHost.session(store?.state, staged: staged ?? replyPin) }
 
     /// The panel's words show: on screen, landed, and not stepping aside for a morph. The input in its room shows with them.
     var wordsShown: Bool { fog.isVisible && revealed && morphing == nil && form != .collapsed }
@@ -820,7 +823,7 @@ final class FloatingPanels: ObservableObject {
     /// closes it; closed, the keys go back unless full screen or a reply being typed still wants them.
     private func switchingChanged() {
         if switching {
-            switcherSelection = ConversationFogHost.session(store?.state, staged: staged)?.id
+            switcherSelection = ConversationFogHost.session(store?.state, staged: staged ?? replyPin)?.id
             takeKeys()
             outsideClicks = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
                 MainActor.assumeIsolated { self?.switching = false }
@@ -1279,7 +1282,7 @@ private struct ConversationFogHost: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let row = Self.session(store.state, staged: panels.staged)
+        let row = Self.session(store.state, staged: panels.staged ?? panels.replyPin)
         let turns = row.map { Self.turns(store.state, $0, whole: history.fullBodies) } ?? []
         // Previous and Next only while something is held to walk to, looked at or not: with nothing they would do nothing.
         let walks = !ConchStatusItem.heldRows(store.state).isEmpty

@@ -169,26 +169,26 @@ test("the Mac app reads the ack, then waits for session-delivered before taking 
   expect(client).toContain("reply = Data(reply[reply.index(after: newline)...])");
 
   const store = read("mac-app/conch-mac/StateStore.swift");
-  const helper = member(store, "private static func refocusWhenDelivered() -> (@Sendable () async -> Void)? {");
+  const helper = member(store, "private static func refocusWhenDelivered() -> SteeredDelivery? {");
   const front = helper.indexOf("guard NSApp.isActive else { return nil }");
-  const back = helper.indexOf("return { await StateStore.refocusAfterDelivery() }");
+  const back = helper.indexOf("return SteeredDelivery(steer: steer, whenDelivered: { await StateStore.refocusAfterDelivery(releasing: steer) })");
   expect(front).toBeGreaterThan(-1);
   expect(back).toBeGreaterThan(front);
 
   // Read at the press: before the request exists, let alone the raise.
   const setModel = member(store, "func setModel(id: SessionRow.ID, model: String) async -> String {");
-  const pressed = setModel.indexOf("let whenDelivered = Self.refocusWhenDelivered()");
-  const sent = setModel.indexOf("switch await socketClient.request(request, whenDelivered: whenDelivered) {");
+  const pressed = setModel.indexOf("let steered = Self.refocusWhenDelivered()");
+  const sent = setModel.indexOf("let outcome = await socketClient.request(request, whenDelivered: steered?.whenDelivered)");
   expect(pressed).toBeGreaterThan(-1);
   expect(sent).toBeGreaterThan(pressed);
-  expect(setModel).toContain("awaitDelivery: whenDelivered == nil ? nil : true");
+  expect(setModel).toContain("awaitDelivery: steered == nil ? nil : true");
 
   const rename = member(store, "func renameSession(id: SessionRow.ID, label: String) {");
   expect(rename).toContain("command: .rename,");
-  expect(rename).toContain("whenDelivered: Self.refocusWhenDelivered()");
+  expect(rename).toContain("steered: Self.refocusWhenDelivered()");
   const enqueue = member(store, "private func enqueueSessionCommand(");
-  expect(enqueue).toContain("awaitDelivery: whenDelivered == nil ? nil : true");
-  expect(enqueue).toContain("let outcome = await socketClient.request(request, whenDelivered: whenDelivered)");
+  expect(enqueue).toContain("awaitDelivery: steered == nil ? nil : true");
+  expect(enqueue).toContain("let outcome = await socketClient.request(request, whenDelivered: steered?.whenDelivered)");
   // Dismiss and restore share the queue but type nothing, so they never ask.
   for (const marker of ["func dismissSession(_ row: SessionRow) {", "func restoreSession(id: SessionRow.ID, label: String) {"]) {
     const body = member(store, marker);

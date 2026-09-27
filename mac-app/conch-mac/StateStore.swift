@@ -173,6 +173,9 @@ final class StateStore: ObservableObject {
         // Read at the press, before the daemon raises anything: a send that
         // did not start with conch in front has no front to hand back.
         let refocus = event.awaitDelivery == true && NSApp.isActive
+        // conch steers the screen for it: Terminal comes forward to type and conch takes the front back. The input holds
+        // where it is meanwhile, rather than flying out to the panel and straight back (`ComposerSteering`).
+        let steer = refocus ? ComposerDock.shared.beginSteering() : nil
         // The conversation fog (FloatingPanels) types over another app without
         // activating conch, so that app is the front to hand back.
         let underFog = event.awaitDelivery == true && !refocus && (overApp || NSApp.keyWindow is FloatingPanel)
@@ -181,8 +184,8 @@ final class StateStore: ObservableObject {
         // if/else, not a ternary: `cond ? { closure } : nil` crashes the type
         // checker here ("failed to produce diagnostic").
         let whenDelivered: (@Sendable () async -> Void)?
-        if refocus {
-            whenDelivered = { await StateStore.refocusAfterDelivery() }
+        if let steer {
+            whenDelivered = { await StateStore.refocusAfterDelivery(releasing: steer) }
         } else if let underFog {
             whenDelivered = { await StateStore.handBack(to: underFog) }
         } else {
@@ -237,8 +240,13 @@ final class StateStore: ObservableObject {
             // waits far longer than ordering ever needs and then proceeds. The
             // previous delivery is NOT cancelled; it finishes on its own.
             await Self.awaitDelivery(previousDelivery, within: .milliseconds(250))
-            guard !Task.isCancelled else { return false }
+            guard !Task.isCancelled else {
+                if let steer { ComposerDock.shared.endSteering(steer) }
+                return false
+            }
             let delivered = await socketClient.send(event, whenDelivered: whenDelivered, whenNotDelivered: whenNotDelivered)
+            // Never written: nothing will steer, and no answer will come to let the input go.
+            if !delivered, let steer { ComposerDock.shared.endSteering(steer) }
             if let self, !delivered {
                 if controlSequence == sequence {
                     forceLivenessProbe()
@@ -282,9 +290,15 @@ final class StateStore: ObservableObject {
     /// Activating restores conch's key window as it was — a sheet keeps its
     /// field, the selected session is untouched.
     // ponytail: a Cmd-Tab to Terminal by hand mid-send looks identical and is handed back too; watch NSWorkspace activations if that ever bites.
-    private static func refocusAfterDelivery() {
+    ///
+    /// `releasing`: the input's hold for this send (`ComposerDock.beginSteering`), which lasts until conch is in front
+    /// again when it takes the front back, and ends now when it does not.
+    private static func refocusAfterDelivery(releasing steer: ComposerSteering.ID) {
         guard !NSApp.isActive,
-              NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.Terminal" else { return }
+              NSWorkspace.shared.frontmostApplication?.bundleIdentifier == ComposerSteering.terminal else {
+            return ComposerDock.shared.steered(steer, refocusing: false)
+        }
+        ComposerDock.shared.steered(steer, refocusing: true)
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -302,9 +316,26 @@ final class StateStore: ObservableObject {
     /// the `/rename` sync), which raises Terminal just as a send does. Read at
     /// the press, before the daemon raises anything; nil when conch was not in
     /// front, and then the command does not ask to hear about delivery at all.
-    private static func refocusWhenDelivered() -> (@Sendable () async -> Void)? {
+    /// The input holds where it is meanwhile, as for a send (`ComposerSteering`).
+    private static func refocusWhenDelivered() -> SteeredDelivery? {
         guard NSApp.isActive else { return nil }
-        return { await StateStore.refocusAfterDelivery() }
+        let steer = ComposerDock.shared.beginSteering()
+        return SteeredDelivery(steer: steer, whenDelivered: { await StateStore.refocusAfterDelivery(releasing: steer) })
+    }
+
+    /// A typed session command's hand-back, and the input's hold that ends with it.
+    private struct SteeredDelivery: Sendable {
+        let steer: ComposerSteering.ID
+        let whenDelivered: @Sendable () async -> Void
+
+        /// The daemon's answer to the command: acknowledged, the typing follows and `whenDelivered` ends the hold; anything
+        /// else (refused, no daemon, no answer) means nothing will be typed, so it ends now.
+        @MainActor
+        func settled(by outcome: ConchSocketRequestOutcome) {
+            if case let .reply(data) = outcome,
+               case .acknowledgement? = try? JSONDecoder().decode(ConchSessionCommandReply.self, from: data) { return }
+            ComposerDock.shared.endSteering(steer)
+        }
     }
 
     /// Tell the daemon the machine woke.
@@ -345,7 +376,7 @@ final class StateStore: ObservableObject {
             command: .rename,
             label: label,
             fallbackDismissedRow: nil,
-            whenDelivered: Self.refocusWhenDelivered()
+            steered: Self.refocusWhenDelivered()
         )
     }
 
@@ -522,14 +553,16 @@ final class StateStore: ObservableObject {
     /// the daemon's answer in its own words, because the inspector shows it
     /// verbatim rather than pretending to know what the agent did with it.
     func setModel(id: SessionRow.ID, model: String) async -> String {
-        let whenDelivered = Self.refocusWhenDelivered()
+        let steered = Self.refocusWhenDelivered()
         let request = ConchSessionCommandRequest(
             sessionId: id,
             command: .setModel,
             model: model,
-            awaitDelivery: whenDelivered == nil ? nil : true
+            awaitDelivery: steered == nil ? nil : true
         )
-        switch await socketClient.request(request, whenDelivered: whenDelivered) {
+        let outcome = await socketClient.request(request, whenDelivered: steered?.whenDelivered)
+        steered?.settled(by: outcome)
+        switch outcome {
         case let .reply(data):
             guard let reply = try? JSONDecoder().decode(ConchSessionCommandReply.self, from: data) else {
                 return "invalid reply from daemon"
@@ -879,7 +912,7 @@ final class StateStore: ObservableObject {
         command: ConchSessionCommand,
         label: String?,
         fallbackDismissedRow: DismissedSessionRow?,
-        whenDelivered: (@Sendable () async -> Void)? = nil
+        steered: SteeredDelivery? = nil
     ) -> SessionCommandContext {
         let generation = (commandGenerations[id] ?? 0) &+ 1
         commandGenerations[id] = generation
@@ -889,7 +922,7 @@ final class StateStore: ObservableObject {
             sessionId: id,
             command: command,
             label: label,
-            awaitDelivery: whenDelivered == nil ? nil : true
+            awaitDelivery: steered == nil ? nil : true
         )
         let context = SessionCommandContext(
             id: id,
@@ -911,8 +944,12 @@ final class StateStore: ObservableObject {
 
         sessionCommandTask = Task { @MainActor [weak self] in
             await previousCommand?.value
-            guard !Task.isCancelled else { return }
-            let outcome = await socketClient.request(request, whenDelivered: whenDelivered)
+            guard !Task.isCancelled else {
+                steered?.settled(by: .connectFailed)
+                return
+            }
+            let outcome = await socketClient.request(request, whenDelivered: steered?.whenDelivered)
+            steered?.settled(by: outcome)
             guard let self else { return }
             finishSessionCommand(context, outcome: outcome)
         }

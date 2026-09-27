@@ -41,7 +41,9 @@ test("a Mac-app send takes the front back only after the daemon says delivery fi
   expect(captured).toBeGreaterThan(-1);
   // Captured at the press, not inside the task that runs after the raise.
   expect(captured).toBeLessThan(send.indexOf("let task = Task {"));
-  expect(send).toContain("if refocus {\n            whenDelivered = { await StateStore.refocusAfterDelivery() }\n        } else if let underFog {\n            whenDelivered = { await StateStore.handBack(to: underFog) }\n        } else {\n            whenDelivered = nil\n        }");
+  // The input holds where it is while conch steers the screen for the send (ComposerSteering; composer-review-fixes).
+  expect(send).toContain("let steer = refocus ? ComposerDock.shared.beginSteering() : nil");
+  expect(send).toContain("if let steer {\n            whenDelivered = { await StateStore.refocusAfterDelivery(releasing: steer) }\n        } else if let underFog {\n            whenDelivered = { await StateStore.handBack(to: underFog) }\n        } else {\n            whenDelivered = nil\n        }");
   // M3: a reply typed in the conversation fog, over another app, hands that app back.
   const fog = send.indexOf("let underFog = event.awaitDelivery == true && !refocus && (overApp || NSApp.keyWindow is FloatingPanel)");
   expect(fog).toBeGreaterThan(captured);
@@ -82,7 +84,8 @@ test("only an inject, and the session commands conch types, ask to hear about de
   expect(client.split("awaitDelivery: true").length - 1).toBe(1);
   // One definition, two callers: send's inject path, and the hand-back that
   // `/model` and `/rename` take (refocus-after-session-command.test.ts).
-  expect(store.split("refocusAfterDelivery()").length - 1).toBe(3);
+  expect(store.split("private static func refocusAfterDelivery(releasing steer: ComposerSteering.ID) {").length - 1).toBe(1);
+  expect(store.split("await StateStore.refocusAfterDelivery(releasing: steer)").length - 1).toBe(2);
   expect(store.split("Self.refocusWhenDelivered()").length - 1).toBe(2);
 });
 
@@ -119,11 +122,12 @@ test("reveal, Open in Terminal and close never take the front back", () => {
 });
 
 test("the front comes back only from the Terminal conch raised, without touching focus or selection", () => {
-  const helper = member(store, "private static func refocusAfterDelivery() {");
+  const helper = member(store, "private static func refocusAfterDelivery(releasing steer: ComposerSteering.ID) {");
   const inactive = helper.indexOf("guard !NSApp.isActive,");
   const terminal = helper.indexOf(
-    'NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.Terminal" else { return }',
+    "NSWorkspace.shared.frontmostApplication?.bundleIdentifier == ComposerSteering.terminal else {",
   );
+  expect(read("design/ConchDesign/Sources/ConchDesign/ComposerPlacement.swift")).toContain('public static let terminal = "com.apple.Terminal"');
   const activate = helper.indexOf("NSApp.activate(ignoringOtherApps: true)");
   expect(inactive).toBeGreaterThan(-1);
   expect(terminal).toBeGreaterThan(inactive);

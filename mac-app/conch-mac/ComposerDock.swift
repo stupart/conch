@@ -72,11 +72,22 @@ final class ComposerDock: ObservableObject {
     /// Something the input opened is up (its file picker): it stays where it is.
     private var holds = 0
     private var holdUntil: TimeInterval = 0
+    /// Sends conch is steering the screen for (Terminal forward to type, the front taken back after): the input stays
+    /// where it is until each is done (`beginSteering`).
+    private var steering = ComposerSteering()
     /// The field had the keyboard where the input last was: it takes it again when it lands in the window.
     private var wantsFocus = false
-    /// The selection it carries.
-    private var caret: NSRange?
+    /// The selection it carries, and the session whose draft it is in: it goes only onto that session's text.
+    private var caret: (range: NSRange, session: SessionRow.ID?)?
+    /// The session whose composer the input lands as.
+    private var landing: SessionRow.ID?
+    /// Out of sight for a moment of conch's own making while its field has the keyboard (`veil`): see-through and
+    /// click-through, but still on screen and key.
+    private var veiled = false
     private var installed = false
+    /// So long after launch the input stays in the window, for the window to be registered and conch to come forward:
+    /// without it, the first look found no window yet and sent the input to the reply line, to swoop straight back.
+    private static let launchGrace: TimeInterval = 1
 
     private init() {}
 
@@ -122,17 +133,35 @@ final class ComposerDock: ObservableObject {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
                 MainActor.assumeIsolated {
                     // Hiding takes the windows away after this: the input leaves from where it is while it still is.
-                    if note.name == NSApplication.willHideNotification { self?.hiding = true }
+                    // Tyler's own doing, so no send conch is steering holds it back.
+                    if note.name == NSApplication.willHideNotification {
+                        self?.hiding = true
+                        self?.steering.endAll()
+                    }
                     if note.name == NSApplication.didUnhideNotification { self?.hiding = false }
+                    // conch has the front back: the sends that were waiting for it are done.
+                    if note.name == NSApplication.didBecomeActiveNotification { self?.steering.landed() }
                     self?.update()
                 }
             })
         }
-        // conch's own window: minimised, back, closing, or a new one made key.
+        // Another app in front that conch did not steer to: Tyler went there, and the input goes with him now rather than
+        // once the send conch was steering for is done.
+        observers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] note in
+            let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            MainActor.assumeIsolated {
+                guard let self, let app, app != .current, app.bundleIdentifier != ComposerSteering.terminal else { return }
+                self.steering.endAll()
+                self.update()
+            }
+        })
+        // conch's own window: minimised, back, closing, or a new one made key; and the floating composer's field taking
+        // the keyboard and letting it go.
         let window: [Notification.Name] = [
             NSWindow.willMiniaturizeNotification, NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification,
             NSWindow.willCloseNotification,
-            NSWindow.didBecomeKeyNotification, NSWindow.didChangeOcclusionStateNotification, NSWindow.didMoveNotification,
+            NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
+            NSWindow.didChangeOcclusionStateNotification, NSWindow.didMoveNotification,
         ]
         for name in window {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
@@ -153,17 +182,30 @@ final class ComposerDock: ObservableObject {
                 .receive(on: RunLoop.main)
                 .sink { [weak self] _ in MainActor.assumeIsolated { self?.update() } }
                 .store(in: &subscriptions)
-            // Another session in the panel: the floating composer is that session's.
+            // Another session in the panel: the floating composer is that session's, and a reply held on the one before
+            // lets go of it.
             panels.$staged
                 .receive(on: RunLoop.main)
-                .sink { [weak self] _ in MainActor.assumeIsolated { self?.layout.objectWillChange.send() } }
+                .sink { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        self?.layout.objectWillChange.send()
+                        self?.pinReply()
+                    }
+                }
                 .store(in: &subscriptions)
         }
+        // A draft begun, sent or cleared: whether the reply line holds the panel on its session.
+        ComposerDraftStore.shared.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in MainActor.assumeIsolated { self?.pinReply() } }
+            .store(in: &subscriptions)
         // The pen down: over the canvas's glass with the panel.
         CanvasController.shared.$armed
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in MainActor.assumeIsolated { self?.follow() } }
             .store(in: &subscriptions)
+        holdUntil = ProcessInfo.processInfo.systemUptime + Self.launchGrace
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.launchGrace + 0.05) { [weak self] in self?.update() }
         update()
     }
 
@@ -190,6 +232,7 @@ final class ComposerDock: ObservableObject {
             replyLine: defaults.bool(forKey: ConchStatusItem.showReplyLineKey),
             withPanelOff: defaults.bool(forKey: ConchStatusItem.replyLineAloneKey),
             held: holds > 0 || NSApp.modalWindow != nil || ProcessInfo.processInfo.systemUptime < holdUntil
+                || steering.held(at: ProcessInfo.processInfo.systemUptime)
         )
     }
 
@@ -214,16 +257,65 @@ final class ComposerDock: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.65) { [weak self] in self?.update() }
     }
 
+    // MARK: conch steering the screen
+
+    /// A send conch steers for is pressed (`StateStore.send`, and the session commands that type): Terminal is about to
+    /// come forward for the daemon to type, and conch to take the front back after. Tyler: "We don't need the input box
+    /// to leave the ui and come back when its the app temporarily steering the ui to do a paste into a terminal." The
+    /// input stays where it is until `steered` or `endSteering`, or the failsafe.
+    func beginSteering() -> ComposerSteering.ID {
+        let id = steering.begin(at: ProcessInfo.processInfo.systemUptime)
+        lookWhenSteeringEnds()
+        return id
+    }
+
+    /// The keys are in. `refocusing`: conch is taking the front back, and the input stays put until it has it; else the
+    /// input goes wherever the screen now says, with Tyler if he went elsewhere meanwhile.
+    func steered(_ id: ComposerSteering.ID, refocusing: Bool) {
+        steering.delivered(id, refocusing: refocusing, at: ProcessInfo.processInfo.systemUptime)
+        lookWhenSteeringEnds()
+        update()
+    }
+
+    /// The send did not go: nothing will steer.
+    func endSteering(_ id: ComposerSteering.ID) {
+        steering.end(id)
+        update()
+    }
+
+    /// A look at where the input should be as the next hold runs out, however it ends.
+    private func lookWhenSteeringEnds() {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard let expiry = steering.expiry(after: now) else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + (expiry - now) + 0.05) { [weak self] in self?.update() }
+    }
+
     private func windowChanged(_ note: Notification) {
         guard let window = note.object as? NSWindow else { return }
         if window === floating {
-            // Clicked into: its field has the keyboard, and takes it home with it.
-            if note.name == NSWindow.didBecomeKeyNotification { wantsFocus = true }
+            switch note.name {
+            case NSWindow.didBecomeKeyNotification:
+                // Clicked into: its field has the keyboard, and takes it home with it.
+                wantsFocus = true
+            case NSWindow.didResignKeyNotification:
+                // Given to another app's window, the keyboard is Tyler's there: coming back to conch later does not
+                // take it for the composer. Given to conch coming forward, it still goes home with the input. Looked at
+                // once the key change has settled: the panel's own keys hand it straight back (`keepKeys`).
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, !NSApp.isActive, !self.floating.isKeyWindow else { return }
+                    self.wantsFocus = false
+                }
+            default: break
+            }
+            pinReply()
             return
         }
         guard window === dashboard || (note.name == NSWindow.didBecomeKeyNotification && window.canBecomeMain) else { return }
         switch note.name {
-        case NSWindow.willCloseNotification, NSWindow.willMiniaturizeNotification: closing = window
+        case NSWindow.willCloseNotification, NSWindow.willMiniaturizeNotification:
+            closing = window
+            // Tyler's own doing: no send conch is steering holds the input in a window that is going.
+            steering.endAll()
         case NSWindow.didBecomeKeyNotification, NSWindow.didDeminiaturizeNotification: if closing === window { closing = nil }
         case NSWindow.didMoveNotification: if let card = windowCard { windowCardMoved(card) }
         default: break
@@ -236,23 +328,31 @@ final class ComposerDock: ObservableObject {
     /// another.
     private func move(to next: ComposerPlace) {
         let from = place
-        let row = carry(from: from, to: next)
+        let rows = carry(from: from, to: next)
+        landing = rows.landing?.id
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         let dark = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
 
         // Where it is now: the glass in flight if it is flying, else the live input where it was.
         let source = swoop.flight?.current ?? shape(of: from)
         let covered = from == .window && sourceUnseen()
-        let sourceFace = swoop.isFlying ? nil : face(of: row, width: source?.rect.width, dark: dark)
+        // The look it leaves as is the composer where it was; the look it lands as, the one that will be there: another
+        // session's when the panel keeps to its own.
+        let sourceFace = swoop.isFlying ? nil : face(of: rows.leaving, width: source?.rect.width, dark: dark)
 
-        // It leaves at once: out of the window's layout, or out of the panel's room.
+        // It leaves at once: out of the window's layout, or out of the panel's room. From the panel to the reply line
+        // alone with its field being typed in, it goes out of sight but keeps the keyboard.
         place = next
         shown = false
-        if from.floats { floating.orderOut(nil) }
+        if from.floats {
+            if next.floats, typing { veil() } else { hideFloating() }
+        }
+        // A draft carried out of the window, as the same session's reply line, is still being written.
+        pinReply(writing: from == .window && rows.leaving != nil && rows.leaving?.id == rows.landing?.id)
         follow()
 
         let target = shape(of: next)
-        let targetFace = face(of: row, width: target?.rect.width, dark: dark)
+        let targetFace = face(of: rows.landing, width: target?.rect.width, dark: dark)
         if swoop.isFlying {
             if let target {
                 swoop.retarget(to: next, at: target, face: targetFace)
@@ -300,41 +400,50 @@ final class ComposerDock: ObservableObject {
             if !((window.firstResponder as? NSTextView)?.isEditable ?? false) { window.makeFirstResponder(field) }
         }
         focusOnArrival = false
-        if let caret, let field, NSMaxRange(caret) <= (field.string as NSString).length {
-            field.setSelectedRange(caret)
+        // Only onto the draft it was taken from: another session's composer landing here keeps its own caret.
+        if let caret, caret.session == landing, let field, NSMaxRange(caret.range) <= (field.string as NSString).length {
+            field.setSelectedRange(caret.range)
         }
+        pinReply()
     }
 
     /// What goes with the input: the conversation it is in, and its keyboard and caret. Leaving the window with a session
     /// Tyler picked there, the panel goes to it, unless the canvas holds marks a new item would clear; coming back from the
-    /// panel, the window goes to the panel's. The session whose composer it is, for the swoop's pictures.
-    private func carry(from: ComposerPlace, to: ComposerPlace) -> SessionRow? {
-        let field = field(at: from)
-        if let field {
-            caret = field.selectedRange()
+    /// panel, the window goes to the panel's. The sessions whose composer it is where it leaves and where it lands, for
+    /// the swoop's pictures: not the same one when the panel keeps to another session than the window's.
+    private func carry(from: ComposerPlace, to: ComposerPlace) -> (leaving: SessionRow?, landing: SessionRow?) {
+        guard let store, let panels else { return (nil, nil) }
+        let leaving = from == .window ? store.state?.row(windowAddress.session) : floatingRow(store.state)
+        // The caret and the keyboard are read only where the input had landed. Mid-flight, the field where it was going
+        // never had either: turned back by a quick Cmd-Tab out and in, it would put the caret at that field's end.
+        if shown, let field = field(at: from) {
+            caret = (field.selectedRange(), leaving?.id)
             if from == .window { wantsFocus = field.window?.firstResponder === field }
         }
-        guard let store, let panels else { return nil }
         if from == .window, to.floats {
             if let picked = windowAddress.picked, picked == windowAddress.session, panels.session?.id != picked,
                CanvasController.shared.document?.has(.you) != true {
                 panels.staged = picked
             }
-            return store.state?.row(windowAddress.session) ?? panels.session
+            return (leaving ?? floatingRow(store.state), floatingRow(store.state))
         }
         if from.floats, to == .window {
             let session = panels.session
-            if let session, session.parentSessionId == nil, session.id != windowAddress.session {
-                // As a click on its row does: the window shows the conversation the input comes back from.
-                NotificationCenter.default.post(name: .selectSessionFromStatusItem, object: session.id)
+            var lands = store.state?.row(windowAddress.session)
+            if let session, session.parentSessionId == nil {
+                lands = store.state?.row(session.id) ?? session
+                if session.id != windowAddress.session {
+                    // As a click on its row does: the window shows the conversation the input comes back from.
+                    NotificationCenter.default.post(name: .selectSessionFromStatusItem, object: session.id)
+                }
             }
             if wantsFocus {
                 focusOnArrival = true
                 requestFocusOnLanding()
             }
-            return session
+            return (leaving, lands)
         }
-        return panels.session
+        return (leaving, to == .window ? store.state?.row(windowAddress.session) : floatingRow(store.state))
     }
 
     /// The window's composer is laid out again, unseen, as the swoop sets off: the keyboard goes to it now, so nothing typed
@@ -359,8 +468,48 @@ final class ComposerDock: ObservableObject {
     /// Typing in the floating composer claims its session, as typing in the window pins the pane: the panel stays on it
     /// whatever the voice does. Not over marks on the canvas, which a new item in the panel would clear.
     func claim(_ row: SessionRow) {
+        // Held first, whatever the canvas holds: the pin is not staging, and clears no marks.
+        pinReply(writing: true)
         guard let panels, panels.staged != row.id, CanvasController.shared.document?.has(.you) != true else { return }
         panels.staged = row.id
+    }
+
+    /// A reply being written in the floating composer holds the panel on the session it is writing to
+    /// (`FloatingPanels.replyPin`). It takes hold when Tyler writes there (`writing`: the keyboard in its field, a draft
+    /// begun in it, or one carried out of the window as that session's reply line) and holds while that session has a draft
+    /// or the keyboard is in the field. However the panel got there (the voice, the window's session carried out, the
+    /// Ready pill) and with marks on the canvas or not, the voice moving on never swaps the session under the words
+    /// being typed; sent or cleared, with the keyboard gone, the panel follows again. A draft left from another day
+    /// does not hold it on its own. It only ever keeps the panel where it is: it is always the session the panel is on
+    /// as it takes hold, and it is not staging, so the canvas keeps its marks.
+    private func pinReply(writing: Bool = false) {
+        guard let panels else { return }
+        var pin: SessionRow.ID?
+        if place.floats, let row = floatingRow(store?.state) {
+            let draft = ComposerDraftStore.shared.hasDraft(row.id)
+            if typing || (draft && (writing || panels.replyPin == row.id)) { pin = row.id }
+        }
+        if panels.replyPin != pin { panels.replyPin = pin }
+    }
+
+    /// The floating composer's field has the keyboard.
+    private var typing: Bool {
+        floating.isKeyWindow && (floating.firstResponder as? NSTextView)?.isEditable == true
+    }
+
+    /// Out of sight for a moment of conch's own making (the panel morphing, the input on its way from the panel to the
+    /// reply line alone) while its field has the keyboard: see-through and click-through, but on screen and key, so what
+    /// is typed meanwhile lands in it. Ordered out, it dropped the keyboard: after ⌘↩ typing went to the panel and was
+    /// lost, after ⌘. to the app in front. It shows again where it lands (`follow`).
+    private func veil() {
+        veiled = true
+        floating.ignoresMouseEvents = true
+        floating.alphaValue = 0
+    }
+
+    private func hideFloating() {
+        veiled = false
+        floating.orderOut(nil)
     }
 
     /// Sent from the panel's reply line: it flies into the panel's words, and comes back out of them if it didn't go.
@@ -387,7 +536,7 @@ final class ComposerDock: ObservableObject {
         guard installed else { return }
         panels?.holdReply(place == .panel ? floatingHeight : 0)
         guard let card = floatingCard(for: place) else {
-            if floating.isVisible { floating.orderOut(nil) }
+            if place.floats, typing { veil() } else if floating.isVisible { hideFloating() }
             return
         }
         if abs(card.width - layout.width) > 0.5 { layout.width = card.width }
@@ -400,8 +549,11 @@ final class ComposerDock: ObservableObject {
         if floating.level != level { floating.level = level }
         if shown {
             let alpha = place == .panel ? ((panels?.wordsShown ?? true) ? (panels?.alpha ?? 1) : 0) : 1
-            if !floating.isVisible {
+            if !floating.isVisible || veiled {
                 // The glass has just handed off to it here: straight in at the panel's own opacity, not faded in again.
+                // Veiled, it never left the screen, and still has the keyboard it kept.
+                veiled = false
+                floating.ignoresMouseEvents = false
                 floating.alphaValue = alpha
                 floating.orderFrontRegardless()
             }
@@ -474,10 +626,17 @@ final class ComposerDock: ObservableObject {
     /// field sees them, which would send on ⌘↩. Esc lets go of the field: docked or alone, the keys go back to the app in
     /// front; full screen, to the panel, which is what is on screen then.
     private func key(_ event: NSEvent) -> Bool {
-        if place == .panel, panels?.replyKey(event) == true { return true }
+        if place == .panel {
+            let field = typing ? floating.firstResponder as? NSTextView : nil
+            if panels?.replyKey(event) == true {
+                keepKeys(field)
+                return true
+            }
+        }
         guard event.keyCode == 53, floating.firstResponder is NSTextView else { return false }
         floating.makeFirstResponder(nil)
         wantsFocus = false
+        pinReply()
         if place == .panel, panels?.isFullScreen == true {
             panels?.takeKeysBack()
         } else {
@@ -487,6 +646,15 @@ final class ComposerDock: ObservableObject {
             floating.orderFrontRegardless()
         }
         return true
+    }
+
+    /// The panel's own key, pressed while typing in its reply line (⌘↩ full screen, ⌘. fold, ⌥⌘← →), is not Tyler
+    /// letting go of the field: full screen takes the keys for the panel, and they come straight back to the field that had
+    /// them a moment ago. Nothing is taken from another app, and conch is never activated.
+    private func keepKeys(_ field: NSTextView?) {
+        guard let field, field.window === floating, !(floating.isKeyWindow && floating.firstResponder === field) else { return }
+        floating.makeKey()
+        floating.makeFirstResponder(field)
     }
 
     // MARK: The window's card

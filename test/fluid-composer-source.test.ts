@@ -63,7 +63,7 @@ describe("only one input is ever in use", () => {
   });
 
   test("the panel draws no reply line of its own: its reply line is the composer, laid over its room", () => {
-    const host = member(panels, "var body: some View {\n        let row = Self.session(store.state, staged: panels.staged)");
+    const host = member(panels, "var body: some View {\n        let row = Self.session(store.state, staged: panels.staged ?? panels.replyPin)");
     expect(host).toContain("heldReply: panels.heldReply,");
     expect(host).toContain("onMic: {},");
     expect(host).toContain("onSend: {},");
@@ -98,8 +98,12 @@ describe("the input is removed from the window's layout, not hidden in it", () =
 
 describe("leaving never takes the keyboard from the app Tyler went to", () => {
   test("the floating composer's window is key only when its field is clicked", () => {
-    // One makeKey in the whole dock, in the press handler, behind the field check.
-    expect(dock.match(/makeKey\(/g)?.length).toBe(1);
+    // Two makeKeys in the whole dock: the press handler, behind the field check; and the field keeping the keys it
+    // already had when the panel's own key (⌘↩) took them for the panel (`keepKeys`, composer-review-fixes).
+    expect(dock.match(/makeKey\(/g)?.length).toBe(2);
+    const keep = member(dock, "private func keepKeys(_ field: NSTextView?) {");
+    expect(keep).toContain("guard let field, field.window === floating, !(floating.isKeyWindow && floating.firstResponder === field) else { return }");
+    expect(keep).toContain("floating.makeKey()");
     const pressed = member(dock, "private func pressed(_ event: NSEvent) {");
     expect(pressed).toContain("guard !floating.isKeyWindow, let hit = floating.contentView?.hitTest(event.locationInWindow), Self.isField(hit) else { return }");
     expect(pressed).toContain("floating.makeKey()");
@@ -128,7 +132,8 @@ describe("leaving never takes the keyboard from the app Tyler went to", () => {
   test("the panel's own keys still reach it while typing in its reply line; Esc lets go of the field", () => {
     const key = member(dock, "private func key(_ event: NSEvent) -> Bool {");
     // ⌘↩ and the rest go to the panel first, or the composer's Return would send on ⌘↩. Present, then first.
-    const forwarded = key.indexOf("if place == .panel, panels?.replyKey(event) == true { return true }");
+    const forwarded = key.indexOf("if panels?.replyKey(event) == true {\n                keepKeys(field)\n                return true\n            }");
+    expect(key).toContain("if place == .panel {\n            let field = typing ? floating.firstResponder as? NSTextView : nil");
     const escape = key.indexOf("guard event.keyCode == 53");
     expect(forwarded).toBeGreaterThan(-1);
     expect(escape).toBeGreaterThan(-1);

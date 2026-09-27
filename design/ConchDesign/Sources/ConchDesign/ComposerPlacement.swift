@@ -66,6 +66,77 @@ public enum ComposerPlacement {
     }
 }
 
+// MARK: - conch steering the screen
+
+/// conch steering the screen for a send: the daemon brings Terminal forward to type into a session's window, and conch
+/// takes the front back once the keys are in (`StateStore.send`, and the session commands that type). Tyler: "We don't
+/// need the input box to leave the ui and come back when its the app temporarily steering the ui to do a paste into a
+/// terminal." So while one is under way the input holds where it is (`ComposerSituation.held`): from the press, until
+/// conch has the front back or the send did not go, and never past `failsafe`. Anything Tyler does himself lets go at
+/// once (another app coming forward, conch's window closed, minimised or hidden), and the next look at where the input
+/// should be moves it.
+public struct ComposerSteering: Equatable, Sendable {
+    public typealias ID = Int
+
+    /// The app conch steers to type: the daemon activates it for a session's tab (`focusSessionWindow`), and conch takes
+    /// the front back from it and from nothing else.
+    public static let terminal = "com.apple.Terminal"
+    /// The longest a send holds the input with the daemon silent. A delivery answers within a second or two; one still
+    /// going after this lets the input follow wherever the screen is by then.
+    public static let failsafe: TimeInterval = 10
+    /// Asked for the front back: the longest to wait for conch to have it.
+    public static let landing: TimeInterval = 1.5
+
+    private struct Hold: Equatable, Sendable {
+        var until: TimeInterval
+        var refocusing = false
+    }
+
+    private var holds: [ID: Hold] = [:]
+    private var last: ID = 0
+
+    public init() {}
+
+    /// A send conch steers for, pressed now: the input holds until it is done.
+    public mutating func begin(at now: TimeInterval) -> ID {
+        holds = holds.filter { $0.value.until > now }
+        last &+= 1
+        holds[last] = Hold(until: now + Self.failsafe)
+        return last
+    }
+
+    /// Its keys are in. `refocusing`: conch asked for the front back, and holds until it is in front (`landed`), a moment
+    /// at most; else it lets go now, and the input goes wherever the screen says.
+    public mutating func delivered(_ id: ID, refocusing: Bool, at now: TimeInterval) {
+        guard holds[id] != nil else { return }
+        holds[id] = refocusing ? Hold(until: now + Self.landing, refocusing: true) : nil
+    }
+
+    /// It did not go (no daemon, the write failed): nothing will steer, so it lets go.
+    public mutating func end(_ id: ID) {
+        holds[id] = nil
+    }
+
+    /// conch is in front again: every send that was waiting for that is done. One still typing holds on.
+    public mutating func landed() {
+        holds = holds.filter { !$0.value.refocusing }
+    }
+
+    /// Tyler went somewhere himself: nothing conch steers holds the input any longer.
+    public mutating func endAll() {
+        holds.removeAll()
+    }
+
+    public func held(at now: TimeInterval) -> Bool {
+        holds.values.contains { now < $0.until }
+    }
+
+    /// When the next hold runs out, for another look then.
+    public func expiry(after now: TimeInterval) -> TimeInterval? {
+        holds.values.map(\.until).filter { $0 > now }.min()
+    }
+}
+
 // MARK: - The swoop
 
 /// The input's glass on its way from one place to another. Its frame, its corner and its chrome (the window's card to the
