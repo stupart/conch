@@ -153,7 +153,7 @@ test("the switcher closes on Esc, a click in another app, or the keys going else
   expect(switching).toContain("outsideClicks = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown])");
   expect(switching).toContain("MainActor.assumeIsolated { self?.switching = false }");
   expect(switching).toContain("if let outsideClicks { NSEvent.removeMonitor(outsideClicks) }");
-  expect(switching).toContain("switcherSelection = ConversationFogHost.session(store?.state, staged: staged)?.id");
+  expect(switching).toContain("switcherSelection = ConversationFogHost.session(store?.state, staged: staged ?? replyPin)?.id");
   expect(panels).toContain("didSet { if switching != oldValue { switchingChanged() } }");
   expect(panels).toContain("forName: NSWindow.didResignKeyNotification,\n            object: fog,");
   expect(panels).toContain("self?.released(cancelled: true)\n                self?.switching = false");
@@ -194,7 +194,7 @@ test("the panel follows a newer version of the item it is on, and the queue and 
 });
 
 test("the panel says when there is nothing, why a reply didn't go, whom it replies to, and what the voice is reading", () => {
-  const host = member(panels, "var body: some View {\n        let row = Self.session(store.state, staged: panels.staged)");
+  const host = member(panels, "var body: some View {\n        let row = Self.session(store.state, staged: panels.staged ?? panels.replyPin)");
   expect(host).toContain("empty: row == nil ? Self.empty(store.liveness) : nil,");
   // The room for the input (ComposerDock's composer, laid over it): open while the input is here or leaving, never
   // without a session to reply to.

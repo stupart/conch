@@ -105,7 +105,8 @@ test("the Mac shows a no-terminal row's reason and offers no send, stop or close
 
   const composer = read("mac-app/conch-mac/ComposerView.swift");
   expect(composer).toContain("!composed.isEmpty && !isSending && noTerminal == nil");
-  expect(composer).toContain("guard noTerminal == nil, !payload.isEmpty else { return }");
+  // Return asks the button's whole gate, a send in flight included.
+  expect(composer).toContain("private func send() {\n        // Return reaches here without the button, so the button's own gate is asked again here, all of it: with a send\n        // still on its way, Return sent the same words a second time.\n        guard canSend else { return }");
   const stop = composer.indexOf("Button(action: onInterrupt) {");
   expect(stop).toBeGreaterThan(-1);
   const stopEnd = composer.indexOf("Button(action: send) {", stop);

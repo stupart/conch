@@ -86,6 +86,9 @@ final class ComposerDraftStore: ObservableObject {
 
     func isSending(_ sessionID: String) -> Bool { sending.contains(sessionID) }
 
+    /// Words or files waiting to go to this session: a reply in progress (`ComposerDock.pinReply`).
+    func hasDraft(_ sessionID: String) -> Bool { drafts[sessionID] != nil }
+
     func setSending(_ sessionID: String, _ on: Bool) {
         if on { sending.insert(sessionID) } else { sending.remove(sessionID) }
     }
@@ -671,9 +674,10 @@ struct ComposerView: View {
     }
 
     private func send() {
+        // Return reaches here without the button, so the button's own gate is asked again here, all of it: with a send
+        // still on its way, Return sent the same words a second time.
+        guard canSend else { return }
         let payload = composed
-        // Return reaches here without the button, so the button's gate is not enough.
-        guard noTerminal == nil, !payload.isEmpty else { return }
         let submittedDraft = draft
         let submittedAttachments = attachments
         let session = sessionID

@@ -86,6 +86,78 @@ final class ComposerPlacementTests: XCTestCase {
         } } } }
     }
 
+    // MARK: conch steering the screen
+
+    /// Tyler: "We don't need the input box to leave the ui and come back when its the app temporarily steering the ui to do
+    /// a paste into a terminal." A send conch steers holds the input from the press, through Terminal coming forward, until
+    /// conch is back in front; the placement rule keeps it where it is all that while.
+    func testASteeredSendHoldsTheInputUntilConchIsBackInFront() {
+        var steering = ComposerSteering()
+        XCTAssertFalse(steering.held(at: 100))
+        let send = steering.begin(at: 100)
+        XCTAssertTrue(steering.held(at: 100))
+        // Terminal in front, typing: conch is not the app in front, and the input still does not move.
+        XCTAssertTrue(steering.held(at: 101))
+        XCTAssertEqual(place(active: false, held: steering.held(at: 101), current: .window), .window)
+        // Typed; conch asks for the front back and holds until it has it.
+        steering.delivered(send, refocusing: true, at: 101.2)
+        XCTAssertTrue(steering.held(at: 101.3))
+        steering.landed()
+        XCTAssertFalse(steering.held(at: 101.3))
+        XCTAssertNil(steering.expiry(after: 101.3))
+    }
+
+    /// Typed with Tyler somewhere else by then: conch does not take the front, the hold lets go at once, and the next look
+    /// moves the input with him.
+    func testDeliveredWithoutRefocusLetsGoAtOnce() {
+        var steering = ComposerSteering()
+        let send = steering.begin(at: 10)
+        steering.delivered(send, refocusing: false, at: 11)
+        XCTAssertFalse(steering.held(at: 11))
+        XCTAssertEqual(place(active: false, held: steering.held(at: 11), current: .window), .panel)
+    }
+
+    /// A send that did not go lets go; one whose answer never comes lets go at the failsafe; asked for the front back, it
+    /// waits only a moment for it.
+    func testEverySteeredHoldEnds() {
+        var steering = ComposerSteering()
+        let failed = steering.begin(at: 0)
+        steering.end(failed)
+        XCTAssertFalse(steering.held(at: 0))
+
+        let silent = steering.begin(at: 0)
+        XCTAssertTrue(steering.held(at: ComposerSteering.failsafe - 0.01))
+        XCTAssertFalse(steering.held(at: ComposerSteering.failsafe))
+        XCTAssertEqual(steering.expiry(after: 0), ComposerSteering.failsafe)
+        steering.end(silent)
+
+        let refocusing = steering.begin(at: 0)
+        steering.delivered(refocusing, refocusing: true, at: 2)
+        XCTAssertTrue(steering.held(at: 2 + ComposerSteering.landing - 0.01))
+        XCTAssertFalse(steering.held(at: 2 + ComposerSteering.landing))
+        XCTAssertEqual(steering.expiry(after: 2), 2 + ComposerSteering.landing)
+    }
+
+    /// conch back in front ends only the sends waiting for it: one still typing holds on. Tyler going elsewhere ends them all.
+    func testLandingEndsOnlyTheSendsWaitingForIt() {
+        var steering = ComposerSteering()
+        let first = steering.begin(at: 0)
+        let second = steering.begin(at: 0.5)
+        XCTAssertNotEqual(first, second)
+        steering.delivered(first, refocusing: true, at: 1)
+        steering.landed()
+        XCTAssertTrue(steering.held(at: 1), "the second is still typing")
+        // A late answer for a hold already gone changes nothing.
+        steering.delivered(first, refocusing: true, at: 1)
+        steering.delivered(second, refocusing: false, at: 1.2)
+        XCTAssertFalse(steering.held(at: 1.2))
+
+        _ = steering.begin(at: 2)
+        _ = steering.begin(at: 2)
+        steering.endAll()
+        XCTAssertFalse(steering.held(at: 2))
+    }
+
     // MARK: The swoop
 
     private let windowCard = CGRect(x: 820, y: 104, width: 580, height: 80)
