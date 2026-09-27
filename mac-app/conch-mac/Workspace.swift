@@ -60,17 +60,31 @@ extension WorkspaceModel {
     /// row the voice is not on must report nothing: otherwise every open composer mirrors
     /// the same words, which reads as though conch is about to send them everywhere.
     func voiceState(of row: SessionRow, in state: PublishedState?) -> String {
-        guard let state, WorkspaceFocus.isAddressed(row.id, in: Workspace(state)) else { return "" }
-        return state.live.state
+        Self.voiceState(of: row, in: state)
     }
 
     func voiceLevel(of row: SessionRow, in state: PublishedState?) -> Double {
-        guard let state, WorkspaceFocus.isAddressed(row.id, in: Workspace(state)) else { return 0 }
-        return state.live.level
+        Self.voiceLevel(of: row, in: state)
     }
 
     /// The words being transcribed, shown only in the composer they were spoken into.
     func dictation(of row: SessionRow?, in state: PublishedState?) -> String {
+        Self.dictation(of: row, in: state)
+    }
+
+    // The same three, for the composer wherever it is (`SessionComposer`): the panel's has no workspace of its own, and
+    // must not answer "is the voice on this row" by any other rule.
+    static func voiceState(of row: SessionRow, in state: PublishedState?) -> String {
+        guard let state, WorkspaceFocus.isAddressed(row.id, in: Workspace(state)) else { return "" }
+        return state.live.state
+    }
+
+    static func voiceLevel(of row: SessionRow, in state: PublishedState?) -> Double {
+        guard let state, WorkspaceFocus.isAddressed(row.id, in: Workspace(state)) else { return 0 }
+        return state.live.level
+    }
+
+    static func dictation(of row: SessionRow?, in state: PublishedState?) -> String {
         guard let row, let state,
               WorkspaceFocus.isAddressed(row.id, in: Workspace(state)) else { return "" }
         return state.live.partial

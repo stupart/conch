@@ -298,6 +298,17 @@ public final class FogTextState: ObservableObject {
     /// The reply's line count, as last measured, to six.
     public var replyLines: Int { lines?.count ?? 1 }
 
+    /// The room a failed send's sentence takes under the reply line, as the fog last laid it out: a host that lays its own
+    /// composer over the reply line's room needs it to find the room (`ConversationFog.replySlot`).
+    public private(set) var noticeRoom: CGFloat = 0
+
+    /// The fog measured the notice under the reply line; 0 once it has gone.
+    public func noticed(_ room: CGFloat) {
+        guard room != noticeRoom else { return }
+        noticeRoom = room
+        changed()
+    }
+
     /// The reply line grows or shrinks toward `target`, on the grow spring.
     public func grow(to target: CGFloat) {
         guard target != replyTarget else { return }

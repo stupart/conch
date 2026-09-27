@@ -194,7 +194,8 @@ describe("the Mac app reads recorded history", () => {
     expect(panels).toContain("ConversationFogHost(store: store, panels: self, queue: queue, history: store.overlayHistory)");
     const turns = sliceFrom(panels, "static func turns(", "/// Full screen is where");
     expect(turns).toContain("whole[HistorySnapshot.nativeId(forSnapshotItem: $0.id)] ?? $0.text");
-    const whole = sliceFrom(panels, "private func readWhole(", "/// The live voice state");
+    // Sliced to the function's own end: it used to stop at the next function's doc comment, which left with it.
+    const whole = sliceFrom(panels, "private func readWhole(", "\n    }\n");
     expect(whole).toContain("history.select(session: row.id, branchTip: HistorySnapshot.branchTip(");
     expect(whole).toContain("HistorySnapshot.wasCut($0.text, cap: 4_000)");
     expect(whole).toContain("history.loadFullBodies(forSnapshotItems: cut)");

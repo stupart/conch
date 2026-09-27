@@ -73,8 +73,10 @@ test("every state the daemon publishes is classified by the app", () => {
 test("the button asks the shared predicate, not its own inline guess", () => {
   const dashboard = read("mac-app/conch-mac/DashboardView.swift");
   // Scoped to the composer's own row, not the focused one — see
-  // "the composer's mic is scoped to the row it belongs to".
-  expect(dashboard).toContain("if LiveState.isExchangeActive(voiceState(for: row)) {");
+  // "the composer's mic is scoped to the row it belongs to". The composer's one construction
+  // (`SessionComposer`, the window's and the panel's alike) is where the button's action lives.
+  const composer = read("mac-app/conch-mac/ComposerView.swift");
+  expect(composer).toContain("if LiveState.isExchangeActive(voiceState(for: row)) {");
   // The denylist that caused this, in either spelling.
   expect(dashboard).not.toContain('voiceStateForFocusedRow.isEmpty || voiceStateForFocusedRow == "idle"');
 

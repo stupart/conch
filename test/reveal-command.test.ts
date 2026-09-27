@@ -100,7 +100,8 @@ test("the Mac shows a no-terminal row's reason and offers no send, stop or close
   const closeEnd = dashboard.indexOf("} label: {", close);
   expect(closeEnd).toBeGreaterThan(close);
   expect(dashboard.slice(close, closeEnd)).toContain(".disabled(row.noTerminal != nil && !row.attachable)");
-  expect(dashboard).toContain("noTerminal: row.noTerminal,\n            onOpenInTerminal:");
+  // The composer's one construction (`SessionComposer`), which the window and the panel both build.
+  expect(read("mac-app/conch-mac/ComposerView.swift")).toContain("noTerminal: row.noTerminal,\n            onOpenInTerminal:");
 
   const composer = read("mac-app/conch-mac/ComposerView.swift");
   expect(composer).toContain("!composed.isEmpty && !isSending && noTerminal == nil");

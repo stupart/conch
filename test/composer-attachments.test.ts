@@ -110,10 +110,14 @@ test("the strip is not shorter than the tiles it holds", () => {
 test("the drop ring is on the card, at the card's radius, in the drop colour", () => {
   expect(composer).toContain("if isTargetedForDrop {");
   expect(composer).toContain(".strokeBorder(ConchPalette.dropTarget, lineWidth: 2)");
-  // The ring and the card must be the same shape, or it reads as a second object.
+  // The ring and the card must be the same shape, or it reads as a second object: the window's card at its radius,
+  // the panel's glass at its own.
   const ring = composer.slice(composer.indexOf("if isTargetedForDrop {"));
   const body = ring.slice(0, ring.indexOf("\n        }"));
-  expect(body).toContain("RoundedRectangle(cornerRadius: ConchRadius.large, style: .continuous)");
+  expect(body).toContain("RoundedRectangle(cornerRadius: radius, style: .continuous)");
+  expect(composer).toContain(".overlay { dropRing(radius: ConchRadius.large) }");
+  expect(composer).toContain(".overlay { dropRing(radius: ConchRadius.panel) }");
+  expect(composer).toContain(".overlayGlass(RoundedRectangle(cornerRadius: ConchRadius.panel, style: .continuous))");
   expect(composer).not.toContain(".strokeBorder(ConchPalette.brandCyan, lineWidth: 1.5)");
   // #0A84FF, hard-coded in the lab rather than following the system accent: a drop target
   // that changes colour per person is not a signal.
