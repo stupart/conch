@@ -60,18 +60,55 @@ test("a frozen daemon is detached, stopped by its pid, and replaced within both 
   expect(detach).toBeGreaterThan(-1);
   expect(stop).toBeGreaterThan(detach);
   expect(recover).toContain('recoveryNotice = "conch\'s background service stopped responding and was restarted."');
-  // The existing backoff and give-up (restartAttempts), and the frozen-restart budget on top.
+  // The frozen-restart budget (3 in 10 minutes, `health.recover`) decides a freeze's restart; the crash budget never
+  // counts it, or freezes and exits added up to "kept stopping" (#442 review, finding 8).
   expect(recover).toContain("case .restart:");
-  expect(recover).toContain("scheduleRestart()");
+  expect(recover).toContain("scheduleRestart(after: 2)");
+  expect(recover).not.toContain("crashes.");
   expect(recover).toContain("case .giveUp:");
   expect(recover).toContain('state = .failed("conch\'s background service kept freezing, so it was stopped. Check the log, then start it again.")');
-  const schedule = body("private func scheduleRestart() {");
-  expect(schedule).toContain("restartAttempts += 1");
-  expect(schedule).toContain("guard restartAttempts <= 5 else {");
-  expect(body("private func handleExit(_ finished: Process) {")).toContain("scheduleRestart()");
-  // A start by hand after giving up is a fresh budget.
-  expect(body("func start() {")).toContain("if case .failed = state { health.forgetRestarts() }");
+  // An exit is the crash budget's: backoff and give-up from DaemonHealth.CrashBudget (DaemonHealthTests pins the numbers).
+  const exit = body("private func handleExit(_ finished: Process) {");
+  expect(exit).toContain("switch crashes.exited() {");
+  expect(exit).toContain("scheduleRestart(after: delay)");
+  expect(exit).toContain('state = .failed("The daemon kept stopping. Check the log, then start it again.")');
+  expect(host).toContain("private var crashes = DaemonHealth.CrashBudget()");
+  // A start by hand after giving up is a fresh budget, both of them.
+  const start = body("func start() {");
+  expect(start).toContain("health.forgetRestarts()");
+  expect(start).toContain("crashes = DaemonHealth.CrashBudget()");
   expect(host).not.toMatch(/pkill|killall/);
+});
+
+test("answering steadily forgives the exits before it; printing doesn't (a headless daemon prints nothing)", () => {
+  const check = body("private func checkHealth() async {");
+  const observed = check.indexOf("crashes.observed(verdict, at: Date())");
+  expect(observed).toBeGreaterThan(check.indexOf("guard let verdict = await health.check() else { return }"));
+  expect(observed).toBeLessThan(check.indexOf("switch verdict {"));
+  // The only other writers: a person's stop, or start after a failure. Never the daemon's output.
+  expect(host.match(/^\s+crashes = DaemonHealth\.CrashBudget\(\)$/gm)?.length).toBe(2);
+  expect(body("func stop() {")).toContain("crashes = DaemonHealth.CrashBudget()");
+  expect(body("private func appendOutput(_ text: String) {")).not.toMatch(/crashes|restartAttempts/);
+  expect(host).not.toContain("restartAttempts");
+});
+
+test("a daemon stopped in a terminal or a debugger is paused: never signalled, and said so until it answers again", () => {
+  const check = body("private func checkHealth() async {");
+  const paused = check.slice(check.indexOf("case .paused:"), check.indexOf("case .gone:"));
+  expect(paused).toContain("guard !paused else { return }");
+  expect(paused).toContain("recoveryNotice = Self.pausedWords");
+  expect(paused).not.toMatch(/recoverFrozenDaemon|health\.recover|kill\(|signal\(|stop\(\)|start\(\)/);
+  expect(host).toContain(`static let pausedWords = "conch's background service is paused (stopped in a terminal or debugger)."`);
+  // Continued, the words go with the pause.
+  expect(check).toContain("if recoveryNotice == Self.pausedWords { recoveryNotice = nil }");
+  // The comment tells the truth: adopted is replaced when frozen, and never signalled when paused.
+  const adopted = host.slice(host.indexOf("        case adopted") - 700, host.indexOf("        case adopted"));
+  expect(adopted).toContain("running and not answering, it is frozen and is");
+  expect(adopted).toContain("stopped (Ctrl-Z, a debugger), it was paused on");
+  expect(adopted).not.toContain("leave it be");
+  // Settings says it too.
+  const settings = readFileSync(join(import.meta.dir, "..", "mac-app", "conch-mac", "SettingsView.swift"), "utf8");
+  expect(settings).toContain("if daemon.paused { return \"Paused — stopped in a terminal or debugger. conch leaves it alone until it's continued.\" }");
 });
 
 test("a socket that refuses while its identity names a live daemon is adopted, not raced", () => {

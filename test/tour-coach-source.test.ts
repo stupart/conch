@@ -117,6 +117,30 @@ describe("the events it listens for", () => {
     expect(member(coach, "private func beatBegan() {")).toContain("panels.bringOut()");
   });
 
+  test("the tour puts the panel back as it found it: shown or not, folded or not", () => {
+    // Putting the panel out for its beat, or the welcome card's first open, isn't the person turning it on (#445 review).
+    const start = member(coach, "func start(store: StateStore, onClose: @escaping (TourProgress.Outcome) -> Void) {");
+    const found = start.indexOf("panelFound = FloatingPanels.Setting.current");
+    expect(found).toBeGreaterThan(-1);
+    expect(found).toBeLessThan(start.indexOf("showCard()"));
+    const close = member(coach, "private func close(_ outcome: TourProgress.Outcome) {");
+    const putBack = close.indexOf("if let found = panelFound { FloatingPanels.installed?.putBack(found) }");
+    expect(putBack).toBeGreaterThan(close.indexOf("subscriptions.removeAll()"));
+    expect(putBack).toBeLessThan(close.indexOf("done?(outcome)"));
+    // Whatever the outcome: finished, skipped, or ended under the person.
+    expect(close.slice(0, putBack)).not.toContain("if outcome");
+    const current = member(panels, "@MainActor static var current: Setting {", 8);
+    for (const key of ["ConchStatusItem.showConversationKey", "FloatingPanels.conversationCollapsedKey", "ConchStatusItem.panelTurnedOnByOpenKey"]) {
+      expect(current, key).toContain(`defaults.bool(forKey: ${key})`);
+    }
+    const back = member(panels, "func putBack(_ setting: Setting) {");
+    expect(back).toContain("defaults.set(setting.shown, forKey: ConchStatusItem.showConversationKey)");
+    expect(back).toContain("defaults.set(setting.collapsed, forKey: Self.conversationCollapsedKey)");
+    expect(back).toContain("defaults.set(setting.turnedOnByOpen, forKey: ConchStatusItem.panelTurnedOnByOpenKey)");
+    expect(back).toContain("if !setting.shown, isFullScreen { toggleFullScreen() }");
+    expect(back.trimEnd().endsWith("showWhatIsOn()")).toBe(true);
+  });
+
   test("the canvas counts ⌃⌥⌘P and each finished mark, and says where its tools are", () => {
     expect(member(canvas, "func hotKeyPressed() {")).toContain("hotKeyPresses += 1");
     expect(canvas).toContain("MainActor.assumeIsolated { CanvasController.shared.hotKeyPressed() }");
@@ -159,7 +183,8 @@ describe("Try it, in setup's window", () => {
 
   test("Start waits on the microphone and speech recognition, by the rule, and says why", () => {
     expect(controller).toContain("OnboardingReports.practiceStart(microphone: PermissionCenter.shared.statuses[.microphone], speech: published.speech,");
-    expect(controller).toContain("OnboardingPracticeStep(state: model.practiceStart, onStart: model.startPractice, onSkip: { model.apply(.skip) },");
+    expect(controller).toContain("OnboardingPracticeStep(state: model.practiceAvailability == nil ? .problem(SetupDaemon.notAnswering) : model.practiceStart,");
+    expect(controller).toContain("onStart: model.startPractice, onSkip: { model.apply(.skip) }, onAction: model.practiceAction) {");
     const action = member(controller, "func practiceAction() {");
     expect(action).toContain("permissionAction(.microphone, PermissionCenter.shared.statuses[.microphone]?.action ?? .ask)");
     expect(action).toContain("handBack()");

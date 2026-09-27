@@ -75,15 +75,19 @@ enum SetupDaemon {
         }
     }
 
-    /// A request whose lines stream before its reply (`mic-check`, `setup-install`). Cancelling the task ends it.
+    /// A request whose lines stream before its reply (`mic-check`, `setup-install`). Cancelling the task ends it. The
+    /// reply is told from the lines by its kind (`OnboardingReports.isStreamReply`): a stream the daemon drops part way,
+    /// restarting, is "try again", never an older daemon.
     static func stream(_ request: SetupDaemonRequest, timeout: TimeInterval, expecting: String,
                        onLine: @escaping @Sendable (SetupDaemonMessage) -> Void) async -> Result<SetupDaemonMessage, SetupDaemonFailure> {
-        let outcome = await client.stream(request, timeout: timeout) { data in
+        let outcome = await client.stream(request, timeout: timeout, isReply: { OnboardingReports.isStreamReply(kind: decode($0)?.kind) }) { data in
             if let message = decode(data) { onLine(message) }
         }
         switch outcome {
         case let .reply(data):
             return verdict(data, expecting: expecting)
+        case .dropped:
+            return .failure(.dropped)
         case .connectFailed:
             return .failure(.notAnswering)
         case .timeout:
@@ -98,6 +102,8 @@ enum SetupDaemonFailure: Error, Equatable {
     case unreadable
     /// A daemon from before setup, which doesn't know the question.
     case olderDaemon
+    /// The daemon ended a streamed request before its reply: it restarted part way, or quit.
+    case dropped
     /// The daemon's own words, a reason code for the window to act on, and a command to copy when there is one.
     case said(String, reason: String?, command: String?)
 
@@ -108,6 +114,7 @@ enum SetupDaemonFailure: Error, Equatable {
         case .timedOut: "conch's background service took too long to answer. Try again."
         case .unreadable: "conch's background service gave an answer this version of conch can't read. Update conch."
         case .olderDaemon: "conch's background service is an older version. Quit conch and open it again to update it."
+        case .dropped: "conch's background service restarted part way through. Try again."
         case let .said(words, _, _): words
         }
     }

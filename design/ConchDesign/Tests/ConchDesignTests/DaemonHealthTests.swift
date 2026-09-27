@@ -115,6 +115,115 @@ final class DaemonHealthTests: XCTestCase {
                        .unresponsive(pid: 4242))
     }
 
+    // MARK: - Paused on purpose
+
+    /// A daemon stopped with Ctrl-Z or `kill -STOP`, or held by a debugger, can't answer: that is a pause someone chose,
+    /// not a freeze. It is never stopped, however long it's silent, ours or adopted, and continued it counts from nothing.
+    func testAPausedDaemonIsNeverStoppedAndCountsForNothing() {
+        let adopted = DaemonHealth.Target(pid: 4242)
+        for target in [ours, adopted] {
+            var failures = 0
+            for _ in 0..<10 {
+                let (next, verdict) = DaemonHealth.decide(failures: failures, probe: .silent(peerPID: 4242), target: target, alive: true,
+                                                          pausedPID: 4242, now: now)
+                failures = next
+                XCTAssertEqual(verdict, .paused(pid: 4242))
+                XCTAssertEqual(failures, 0)
+            }
+            // A full backlog while paused is the same pause.
+            XCTAssertEqual(DaemonHealth.decide(failures: 2, probe: .unreachable, target: target, alive: true, pausedPID: 4242, now: now).verdict,
+                           .paused(pid: 4242))
+            // Continued, and silent again: that's counted from the start, and a running daemon that stays silent is frozen.
+            var after = 0
+            var last: DaemonHealth.Verdict = .healthy
+            for _ in 0..<3 {
+                (after, last) = DaemonHealth.decide(failures: after, probe: .silent(peerPID: 4242), target: target, alive: true, now: now)
+            }
+            XCTAssertEqual(last, .unresponsive(pid: 4242), "running and silent: frozen, adopted or ours")
+        }
+        // With no identity, a paused listener is still said to be paused, not "stopped responding".
+        XCTAssertEqual(DaemonHealth.decide(failures: 4, probe: .silent(peerPID: 777), target: nil, alive: false, pausedPID: 777, now: now).verdict,
+                       .paused(pid: 777))
+        // A paused process that exited is gone.
+        XCTAssertEqual(DaemonHealth.decide(failures: 0, probe: .unreachable, target: ours, alive: false, pausedPID: 4242, now: now).verdict, .gone)
+    }
+
+    func testPausedIsTheKernelsStoppedStateOrADebuggersHold() {
+        XCTAssertTrue(DaemonHealth.isPaused(stat: Int32(SSTOP), flags: 0))
+        XCTAssertTrue(DaemonHealth.isPaused(stat: Int32(SRUN), flags: P_TRACED))
+        XCTAssertFalse(DaemonHealth.isPaused(stat: Int32(SRUN), flags: 0))
+        XCTAssertFalse(DaemonHealth.isPaused(stat: Int32(SSLEEP), flags: 0))
+    }
+
+    func testAStoppedProcessReadsAsPausedUntilItIsContinued() throws {
+        let child = try spawnSleep()
+        let pid = child.processIdentifier
+        defer { if child.isRunning { kill(pid, SIGKILL); kill(pid, SIGCONT) } }
+        XCTAssertFalse(DaemonHealth.isPaused(pid))
+        XCTAssertEqual(kill(pid, SIGSTOP), 0)
+        let stoppedBy = Date().addingTimeInterval(3)
+        while !DaemonHealth.isPaused(pid), Date() < stoppedBy { usleep(20_000) }
+        XCTAssertTrue(DaemonHealth.isPaused(pid))
+        XCTAssertTrue(DaemonHealth.isAlive(pid), "paused is alive")
+        XCTAssertEqual(kill(pid, SIGCONT), 0)
+        let continuedBy = Date().addingTimeInterval(3)
+        while DaemonHealth.isPaused(pid), Date() < continuedBy { usleep(20_000) }
+        XCTAssertFalse(DaemonHealth.isPaused(pid))
+        XCTAssertFalse(DaemonHealth.isPaused(-1))
+    }
+
+    // MARK: - The crash budget
+
+    /// A daemon of the app's own that exits is restarted after 2, 4, 8, 16 and 30 s; the sixth exit in a row gives up.
+    func testTheCrashBudgetBacksOffAndGivesUpAfterFiveInARow() {
+        var budget = DaemonHealth.CrashBudget()
+        var plans: [DaemonHealth.CrashBudget.Plan] = []
+        for _ in 0..<6 { plans.append(budget.exited()) }
+        XCTAssertEqual(plans, [.restart(after: 2), .restart(after: 4), .restart(after: 8), .restart(after: 16), .restart(after: 30), .giveUp])
+    }
+
+    /// "In a row" means it: a daemon that answered every ping for two minutes ran, so the next exit starts the count and
+    /// the backoff again. A headless daemon prints nothing, so answers are what say so.
+    func testTwoMinutesOfAnswersForgiveTheRestartsBefore() {
+        var budget = DaemonHealth.CrashBudget()
+        for _ in 0..<4 { _ = budget.exited() }
+        var clock = now
+        for _ in 0...24 {
+            budget.observed(.healthy, at: clock)
+            clock = clock.addingTimeInterval(5)
+        }
+        XCTAssertEqual(budget.restarts, 0)
+        XCTAssertEqual(budget.exited(), .restart(after: 2), "the backoff starts again too")
+        // Over a long session, exits that each follow a steady run never add up to giving up.
+        for _ in 0..<10 {
+            for step in 0...24 { budget.observed(.healthy, at: clock.addingTimeInterval(Double(step) * 5)) }
+            clock = clock.addingTimeInterval(200)
+            XCTAssertEqual(budget.exited(), .restart(after: 2))
+        }
+    }
+
+    func testAnswersThatDontLastDontForgive() {
+        var budget = DaemonHealth.CrashBudget()
+        for _ in 0..<4 { _ = budget.exited() }
+        // Answering, but for less than two minutes before each miss: still in a row.
+        var clock = now
+        for _ in 0..<5 {
+            for step in 0..<20 { budget.observed(.healthy, at: clock.addingTimeInterval(Double(step) * 5)) }
+            budget.observed(.suspect(failures: 1), at: clock.addingTimeInterval(100))
+            clock = clock.addingTimeInterval(105)
+        }
+        XCTAssertEqual(budget.restarts, 4)
+        XCTAssertEqual(budget.exited(), .restart(after: 30))
+        XCTAssertEqual(budget.exited(), .giveUp)
+        // An exit breaks a run: answers before it don't carry over to the next daemon's.
+        var fresh = DaemonHealth.CrashBudget()
+        fresh.observed(.healthy, at: now)
+        _ = fresh.exited()
+        fresh.observed(.healthy, at: now.addingTimeInterval(150))
+        XCTAssertEqual(fresh.restarts, 1)
+        XCTAssertEqual(fresh.answeringSince, now.addingTimeInterval(150))
+    }
+
     func testTheRestartBudget() {
         XCTAssertEqual(DaemonHealth.restartPlan(previousRestarts: [], now: now), .restart)
         let two = [now.addingTimeInterval(-300), now.addingTimeInterval(-60)]
@@ -211,12 +320,10 @@ final class DaemonHealthTests: XCTestCase {
 
     func testAProcessThatCannotActOnSIGTERMIsKilledAfterTheGrace() async throws {
         // A frozen daemon has a SIGTERM handler that never gets to run (it is JavaScript, on the stuck thread). Here:
-        // SIGTERM ignored outright, and the process stopped as well, as `kill -STOP` leaves a daemon in the e2e check.
+        // SIGTERM ignored outright. (Running: a stopped process is paused, and never gets here.)
         let child = try spawnSleep(ignoringSIGTERM: true)
         let pid = child.processIdentifier
-        // Whatever happens below, this child does not outlive the test: a stopped process never exits by itself.
-        defer { if child.isRunning { kill(pid, SIGKILL); kill(pid, SIGCONT) } }
-        XCTAssertEqual(kill(pid, SIGSTOP), 0)
+        defer { if child.isRunning { kill(pid, SIGKILL) } }
         let fast = DaemonHealth.Policy(interval: 1, timeout: 1, failuresBeforeRestart: 3, startupGrace: 0, terminateGrace: 0.5, killWait: 3, restartLimit: 3, restartWindow: 600)
         let started = Date()
         let ended = await DaemonHealth.terminate(pid: pid, policy: fast)
@@ -265,6 +372,7 @@ final class DaemonHealthTests: XCTestCase {
             target: { DaemonHealth.Target(pid: 4242) },
             ping: { _, _ in probes.next() },
             isAlive: { signals.alive($0) },
+            isPaused: { _ in false },
             signal: { signals.send($0, $1) },
             log: { lines.append($0) }
         ))
@@ -293,6 +401,7 @@ final class DaemonHealthTests: XCTestCase {
             target: { DaemonHealth.Target(pid: 4242) },
             ping: { _, _ in .silent(peerPID: nil) },
             isAlive: { signals.alive($0) },
+            isPaused: { _ in false },
             signal: { signals.send($0, $1) },
             log: { lines.append($0) },
             now: { clock }
@@ -320,6 +429,7 @@ final class DaemonHealthTests: XCTestCase {
             target: { DaemonHealth.Target(pid: daemon.pid) },
             ping: { _, _ in daemon.pinged(); return .silent(peerPID: nil) },
             isAlive: { _ in true },
+            isPaused: { _ in false },
             signal: { _, _ in XCTFail("nothing should be signalled") },
             log: { _ in }
         ))
@@ -344,6 +454,7 @@ final class DaemonHealthTests: XCTestCase {
             target: { nil },
             ping: { _, _ in .silent(peerPID: 777) },
             isAlive: { _ in true },
+            isPaused: { _ in false },
             signal: { _, _ in XCTFail("an unidentified daemon must never be signalled") },
             log: { lines.append($0) }
         ))
@@ -352,6 +463,45 @@ final class DaemonHealthTests: XCTestCase {
         XCTAssertEqual(verdicts.last, .unidentified(failures: 5))
         XCTAssertEqual(lines.count, 1)
         XCTAssertTrue(lines[0].contains("connected to pid 777, no answer"))
+    }
+
+    /// The monitor asks the kernel whether the daemon it would stop is paused: a stopped daemon, whoever started it, is
+    /// never signalled and never recovered, and is said once; continued and answering, it is healthy again.
+    @MainActor
+    func testTheMonitorNeverSignalsAPausedDaemonAndSaysSoOnce() async {
+        let stopped = Flag(true)
+        var lines: [String] = []
+        let answers = Flag(false)
+        for target in [DaemonHealth.Target(pid: 4242, launchedAt: now.addingTimeInterval(-3_600)), DaemonHealth.Target(pid: 4242)] {
+            lines = []
+            stopped.set(true)
+            answers.set(false)
+            let monitor = DaemonHealthMonitor(policy: fastPolicy(), hooks: .init(
+                socketPath: "/unused",
+                target: { target },
+                ping: { _, _ in answers.value ? .answered(pid: 4242) : .silent(peerPID: 4242) },
+                isAlive: { _ in true },
+                isPaused: { $0 == 4242 && stopped.value },
+                signal: { _, _ in XCTFail("a paused daemon must never be signalled") },
+                log: { lines.append($0) }
+            ))
+            var verdicts: [DaemonHealth.Verdict?] = []
+            for _ in 0..<6 { verdicts.append(await monitor.check()) }
+            XCTAssertEqual(verdicts, Array(repeating: .paused(pid: 4242), count: 6))
+            XCTAssertEqual(monitor.failures, 0)
+            XCTAssertEqual(lines.count, 1)
+            XCTAssertTrue(lines[0].contains("(pid 4242) is stopped") && lines[0].contains("leaving it alone"), lines[0])
+            // Continued: it answers, and a later pause is said again.
+            stopped.set(false)
+            answers.set(true)
+            let healthy = await monitor.check()
+            XCTAssertEqual(healthy, .healthy)
+            stopped.set(true)
+            answers.set(false)
+            let pausedAgain = await monitor.check()
+            XCTAssertEqual(pausedAgain, .paused(pid: 4242))
+            XCTAssertEqual(lines.count, 2)
+        }
     }
 
     // MARK: - Helpers
@@ -463,6 +613,15 @@ private final class Signals: @unchecked Sendable {
     }
     func revive() { lock.lock(); living = true; lock.unlock() }
 }
+/// A switch the test flips while the monitor reads it.
+private final class Flag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var on: Bool
+    init(_ on: Bool) { self.on = on }
+    var value: Bool { lock.lock(); defer { lock.unlock() }; return on }
+    func set(_ next: Bool) { lock.lock(); on = next; lock.unlock() }
+}
+
 /// A daemon whose pid can change while a ping is out.
 private final class Daemon: @unchecked Sendable {
     private let lock = NSLock()

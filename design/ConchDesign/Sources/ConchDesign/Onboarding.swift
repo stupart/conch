@@ -217,15 +217,18 @@ public struct OnboardingProgress: Codable, Equatable, Sendable {
     public var step: OnboardingStep
     public var marks: [OnboardingStep: OnboardingMark]
     public var phone: PhoneHandoff
-    /// Reached the end at least once.
+    /// Reached the end at least once. Running setup again doesn't undo it: nothing reminds about a Mac set up already.
     public var finished: Bool
     /// The window was closed part way: the menu says "Finish setting up" instead of the window coming back.
     public var putAway: Bool
     /// conch quit to reopen for a grant, and should come straight back to this step.
     public var reopening: Bool
+    /// Set up before, by hand or by an older conch (`welcomingBack`): Welcome back asks only what is missing, never the
+    /// practice turn, so the menu never counts Try it as left for it. False in progress saved before it was kept.
+    public var returning: Bool
 
     public init(step: OnboardingStep = .welcome, marks: [OnboardingStep: OnboardingMark] = [:], phone: PhoneHandoff = .init(),
-                finished: Bool = false, putAway: Bool = false, reopening: Bool = false) {
+                finished: Bool = false, putAway: Bool = false, reopening: Bool = false, returning: Bool = false) {
         self.version = Self.currentVersion
         self.step = step
         self.marks = marks
@@ -233,20 +236,36 @@ public struct OnboardingProgress: Codable, Equatable, Sendable {
         self.finished = finished
         self.putAway = putAway
         self.reopening = reopening
+        self.returning = returning
+    }
+
+    /// Read leniently: a field added since (`returning`) is absent from progress an older conch wrote, and that progress
+    /// must still read back, or a set-up Mac would be walked through setup again.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decode(Int.self, forKey: .version)
+        step = try container.decode(OnboardingStep.self, forKey: .step)
+        marks = try container.decode([OnboardingStep: OnboardingMark].self, forKey: .marks)
+        phone = try container.decode(PhoneHandoff.self, forKey: .phone)
+        finished = try container.decode(Bool.self, forKey: .finished)
+        putAway = try container.decode(Bool.self, forKey: .putAway)
+        reopening = try container.decode(Bool.self, forKey: .reopening)
+        returning = try container.decodeIfPresent(Bool.self, forKey: .returning) ?? false
     }
 
     public func mark(_ step: OnboardingStep) -> OnboardingMark { marks[step] ?? .todo }
 
     /// Rail steps left for later or not yet done, and not true on this Mac by now: the menu's "Finish setting up conch ·
-    /// 2 left: Permissions, iPhone". A permission skipped here and allowed later in System Settings is not left.
+    /// 2 left: Permissions, iPhone". A permission skipped here and allowed later in System Settings is not left. Try it
+    /// is offered to a returning Mac, never owed by it.
     public func remaining(_ readiness: OnboardingReadiness) -> [OnboardingStep] {
-        readiness.rail.filter { mark($0) != .done && !readiness.satisfies($0) }
+        readiness.rail.filter { mark($0) != .done && !readiness.satisfies($0) && !(returning && $0 == .practice) }
     }
 
     /// Where Welcome back starts: on the first thing missing, with everything it isn't asking about ticked (a returning
     /// Mac's agents among them: one is wired, which is what set up means). Never the practice turn.
     public static func welcomingBack(missing: [OnboardingStep], readiness: OnboardingReadiness) -> OnboardingProgress {
-        var progress = OnboardingProgress(step: missing.first ?? .done)
+        var progress = OnboardingProgress(step: missing.first ?? .done, returning: true)
         for step in readiness.rail where !missing.contains(step) && step != .practice {
             progress.marks[step] = .done
         }
@@ -301,7 +320,9 @@ public struct OnboardingProgress: Codable, Equatable, Sendable {
         case .close:
             if !next.finished { next.putAway = true }
         case .restart:
-            next = OnboardingProgress(phone: phone)
+            // From the start, keeping what doesn't change by running it again: the phone, and whether this Mac has
+            // finished setup (or was set up before it), so putting a rerun away part way reminds about nothing.
+            next = OnboardingProgress(phone: phone, finished: finished, returning: returning)
             next.step = .agents
         case .finish:
             next.putAway = false
@@ -318,11 +339,13 @@ public struct OnboardingProgress: Codable, Equatable, Sendable {
     }
 
     /// The next rail step after `step` that still wants the person: not done, and not already true on this Mac.
-    /// Already-true steps are ticked on the way past. Nothing left is the end.
+    /// Already-true steps are ticked on the way past. Nothing left is the end. After is in the rail's whole order, so a
+    /// step this Mac's rail doesn't list (Try it, with a daemon that can't run it) still moves on, never back to the
+    /// start.
     private mutating func firstOpen(after step: OnboardingStep?, readiness: OnboardingReadiness) -> OnboardingStep {
-        let rail = readiness.rail
-        let start = step.flatMap { rail.firstIndex(of: $0) }.map { $0 + 1 } ?? 0
-        for candidate in rail[min(start, rail.count)...] {
+        let order = OnboardingStep.rail
+        let start = step.flatMap { order.firstIndex(of: $0) }.map { $0 + 1 } ?? 0
+        for candidate in order[min(start, order.count)...] where readiness.rail.contains(candidate) {
             if mark(candidate) == .done { continue }
             if readiness.satisfies(candidate), mark(candidate) != .later {
                 marks[candidate] = .done
@@ -336,3 +359,13 @@ public struct OnboardingProgress: Codable, Equatable, Sendable {
 
 // Marks keyed by step name on disk (`"permissions": "later"`), not an array of pairs.
 extension OnboardingStep: CodingKeyRepresentable {}
+
+/// How often the Mac app reads the published state for setup (the downloads, the phone's reports): every second while
+/// something on screen shows them, setup's window or Settings › Setup; every five while setup is unfinished, so the
+/// phone's reports reach the rule with the window closed; otherwise not at all (nil).
+public enum OnboardingWatch {
+    public static func interval(windowShown: Bool, settingsShown: Bool, unfinished: Bool) -> TimeInterval? {
+        if windowShown || settingsShown { return 1 }
+        return unfinished ? 5 : nil
+    }
+}

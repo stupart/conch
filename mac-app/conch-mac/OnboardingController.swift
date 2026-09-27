@@ -55,7 +55,11 @@ final class OnboardingController: NSObject, NSWindowDelegate {
         if progress == nil {
             // Never set up here: what the Mac already has decides between the whole flow, welcome back, and nothing.
             // Unknown is never missing: a daemon still starting must not walk a set-up Mac through setup again.
-            guard let seen = await model.settleForLaunch() else {
+            let seen = await model.settleForLaunch()
+            // Setup opened while the launch waited (Help, Settings › Setup): what the person has done since stands, and
+            // the launch's choice, made for a Mac with nothing on record, is no longer the one to open over it.
+            guard model.progress == nil else { return }
+            guard let seen else {
                 if PermissionCenter.shared.statuses[.microphone] != .granted { open(entry: .firstRun) }
                 return
             }
@@ -253,6 +257,8 @@ final class OnboardingStore: ObservableObject {
     @Published private(set) var agentProblem: String?
     @Published private(set) var activity: [OnboardingAgent.Kind: AgentActivity] = [:]
     @Published private(set) var published = SetupPublished(phoneKnown: false)
+    /// The daemon's state has been read at least once this launch: until then what it can do is unknown, not absent.
+    @Published private(set) var publishedSeen = false
     @Published private(set) var secondsLeft: Int?
     @Published private(set) var notifications: ConchPermissionStatus?
 
@@ -294,6 +300,8 @@ final class OnboardingStore: ObservableObject {
     private var pairingTask: Task<Void, Never>?
     private var phoneTurnedOn = false
     private var visible = false
+    /// Settings › Setup on screen, counted: its downloads move while it shows (`watchWhileSettingsShown`).
+    private var settingsShowing = 0
     /// When setup's window first opened this launch: what "while you were setting up" means.
     private var openedAt: Date?
     private var stepTasksFor: OnboardingStep?
@@ -301,10 +309,14 @@ final class OnboardingStore: ObservableObject {
 
     init() {
         progress = Self.loadProgress()
-        published = SetupPublished.read() ?? published
+        if let read = SetupPublished.read() {
+            published = read
+            publishedSeen = true
+        }
         // A grant landing while setup is open: the voice step starts listening, the guide says "conch is on".
-        permissionsWatch = PermissionCenter.shared.$statuses.dropFirst().sink { [weak self] _ in
-            MainActor.assumeIsolated { self?.permissionsChanged() }
+        // `@Published` sends the new value before the store holds it, so this reads the value it is sent.
+        permissionsWatch = PermissionCenter.shared.$statuses.dropFirst().sink { [weak self] statuses in
+            MainActor.assumeIsolated { self?.permissionsChanged(statuses) }
         }
     }
 
@@ -313,8 +325,14 @@ final class OnboardingStore: ObservableObject {
     var readiness: OnboardingReadiness {
         OnboardingReports.readiness(agents: agents, permissions: PermissionCenter.shared.statuses, speech: published.speech,
                                     voices: published.voices, phonePaired: phoneSetUp,
-                                    // Only a daemon that says it can: an older one keeps Try it off the rail.
-                                    practiceAvailable: OnboardingReports.practiceAvailable(feature: published.practiceFeature))
+                                    // Only a daemon that says it can: an older one keeps Try it off the rail. Before the
+                                    // daemon has said anything, Try it stays on the rail while it is the step on screen.
+                                    practiceAvailable: practiceAvailability ?? (progress?.step == .practice))
+    }
+
+    /// Whether the daemon can run the practice turn: nil until it has published its state this launch.
+    var practiceAvailability: Bool? {
+        OnboardingReports.practiceAvailability(feature: published.practiceFeature, published: publishedSeen)
     }
 
     /// A phone is set up here: paired by the daemon's record, or set up before it kept one (`OnboardingReports.phoneSetUp`).
@@ -334,7 +352,10 @@ final class OnboardingStore: ObservableObject {
         let deadline = Date().addingTimeInterval(30)
         while Date() < deadline {
             if agents == nil { await refreshAgents() }
-            published = SetupPublished.read() ?? published
+            if let read = SetupPublished.read() {
+                published = read
+                publishedSeen = true
+            }
             let speechChecked = published.speech.map { $0.state != "checking" } ?? false
             let voicesChecked = published.voices.map { $0.state != "checking" } ?? true
             if agents != nil, speechChecked, voicesChecked { break }
@@ -342,8 +363,8 @@ final class OnboardingStore: ObservableObject {
         }
         guard agents != nil else { return nil }
         var seen = readiness
-        let speechChecked = published.speech.map { $0.state != "checking" } ?? false
-        if !speechChecked || published.voices?.state == "checking" { seen.engineReady = true }
+        // A download or a voices rebuild under way is conch's to finish, not a step missing (`engineReadyAtLaunch`).
+        seen.engineReady = OnboardingReports.engineReadyAtLaunch(speech: published.speech, voices: published.voices)
         // A daemon that doesn't publish the phone can't say whether one is paired.
         if !published.phoneKnown { seen.phonePaired = true }
         return seen
@@ -419,13 +440,15 @@ final class OnboardingStore: ObservableObject {
     func windowClosed() {
         visible = false
         stopStepWork()
+        // The guide under System Settings belongs to setup's window: closed, conch stops waiting there.
+        stopWaiting()
         if let progress, !progress.finished { apply(.close) }
         welcomeBack = nil
         stepTasksFor = nil
     }
 
-    /// The published state, read while setup is on screen (often) or unfinished (now and then), so the downloads move
-    /// and the phone's reports reach the rule even with the window closed.
+    /// The published state, read while setup's window or Settings › Setup is on screen (often) or setup is unfinished
+    /// (now and then), so the downloads move and the phone's reports reach the rule even with the window closed.
     func watchInBackground() {
         guard watcher == nil else { return }
         watcher = Task { [weak self] in
@@ -433,14 +456,25 @@ final class OnboardingStore: ObservableObject {
                 guard let self else { return }
                 self.readPublished()
                 let unfinished = self.progress.map { !$0.finished } ?? false
-                if !self.visible, !unfinished { self.watcher = nil; return }
-                try? await Task.sleep(for: .seconds(self.visible ? 1 : 5))
+                guard let every = OnboardingWatch.interval(windowShown: self.visible, settingsShown: self.settingsShowing > 0,
+                                                           unfinished: unfinished) else { self.watcher = nil; return }
+                try? await Task.sleep(for: .seconds(every))
             }
         }
     }
 
+    /// Settings › Setup, for as long as it is on screen: its downloads move as setup's window's do, on a finished Mac too.
+    func watchWhileSettingsShown() async {
+        settingsShowing += 1
+        defer { settingsShowing -= 1 }
+        watchInBackground()
+        await refreshAgents()
+        while !Task.isCancelled { try? await Task.sleep(for: .seconds(60)) }
+    }
+
     private func readPublished() {
         guard let next = SetupPublished.read() else { return }
+        if !publishedSeen { publishedSeen = true }
         if let progress = next.speech?.progress, next.speech?.state == "downloading", next.speech?.problem == nil {
             secondsLeft = clock.secondsLeft(bytes: progress.bytes, total: progress.total)
         } else {
@@ -482,7 +516,7 @@ final class OnboardingStore: ObservableObject {
         stepTasksFor = step
         switch step {
         case .agents?: watchAgents()
-        case .voice?: startVoice()
+        case .voice?: startVoice(microphone: PermissionCenter.shared.statuses[.microphone])
         case .phone?: startPhone()
         case .done?:
             loginNote = LoginItem.applyDefault()
@@ -680,16 +714,17 @@ final class OnboardingStore: ObservableObject {
         OnboardingController.shared.closeGuide()
     }
 
-    private func permissionsChanged() {
-        if stepTasksFor == .voice, mic.state == .needsPermission, PermissionCenter.shared.statuses[.microphone] == .granted { startVoice() }
+    /// `statuses` is the publisher's new value: in its sink `PermissionCenter.shared.statuses` is still the old one.
+    private func permissionsChanged(_ statuses: [ConchPermission: ConchPermissionStatus]) {
+        if stepTasksFor == .voice, mic.state == .needsPermission, statuses[.microphone] == .granted { startVoice(microphone: .granted) }
     }
 
     // MARK: Voice
 
-    private func startVoice() {
+    private func startVoice(microphone: ConchPermissionStatus?) {
         devices = AudioInputs.names()
         mic.device = AudioInputs.current() ?? "Microphone"
-        guard PermissionCenter.shared.statuses[.microphone] == .granted else {
+        guard microphone == .granted else {
             mic.state = .needsPermission
             mic.levels = []
             return
@@ -930,11 +965,13 @@ final class OnboardingStore: ObservableObject {
     }
 
     /// A session that needs an answer, or finished a turn while setup was open: offered first. Not every idle
-    /// session: only one that finished since the window opened.
+    /// session: only one that finished since the window opened. Never the practice turn: it goes with the tour, which
+    /// You're set follows, so its row is on its way out and there's nothing to answer.
     var waitingSession: SessionRow? {
         let since = (openedAt ?? Date()).timeIntervalSince1970 * 1000
-        return stateStore?.state?.rows.first { $0.needsResponse || $0.status == .needs }
-            ?? stateStore?.state?.rows.first { $0.status == .waiting && $0.parentSessionId == nil && ($0.at ?? 0) >= since }
+        let rows = (stateStore?.state?.rows ?? []).filter { $0.id != TourCoach.practiceSessionId }
+        return rows.first { $0.needsResponse || $0.status == .needs }
+            ?? rows.first { $0.status == .waiting && $0.parentSessionId == nil && ($0.at ?? 0) >= since }
     }
 
     func firstAction(_ id: String) {
@@ -1072,14 +1109,15 @@ struct OnboardingRootView: View {
                 OnboardingPhoneStep(state: model.phoneState, qr: model.phoneQR, kind: .inApp, lanCode: model.lanCode, lanHost: model.lanHost,
                                     onNewCode: model.newCode, onContinue: { model.apply(.next) }, onSkip: { model.apply(.skip) })
             case .practice:
-                if model.readiness.practiceAvailable {
-                    OnboardingPracticeStep(state: model.practiceStart, onStart: model.startPractice, onSkip: { model.apply(.skip) },
-                                           onAction: model.practiceAction) {
+                if model.practiceAvailability == false {
+                    // A daemon that says it can't run it (an older one): never on the rail, and straight on.
+                    Color.clear.onAppear { model.apply(.skip) }
+                } else {
+                    // Unknown until the daemon has published (after a reboot, a moment): the page waits, and says why.
+                    OnboardingPracticeStep(state: model.practiceAvailability == nil ? .problem(SetupDaemon.notAnswering) : model.practiceStart,
+                                           onStart: model.startPractice, onSkip: { model.apply(.skip) }, onAction: model.practiceAction) {
                         PracticePreview()
                     }
-                } else {
-                    // A daemon that can't run it (an older one): never on the rail, and straight on.
-                    Color.clear.onAppear { model.apply(.skip) }
                 }
             case .done:
                 OnboardingDoneStep(summary: summary, actions: firstActions, openAtLogin: model.openAtLogin, loginNote: model.loginNote,
@@ -1169,10 +1207,7 @@ struct SetupSettingsTab: View {
         }
         .background(ConchColor.ground)
         .environment(\.conchAppIcon, Image(nsImage: NSApp.applicationIconImage))
-        .task {
-            model.watchInBackground()
-            await model.refreshAgents()
-        }
+        .task { await model.watchWhileSettingsShown() }
     }
 
     private var lines: [OnboardingSummaryLine] {

@@ -28,6 +28,12 @@ import Foundation
 ///   starting, but a login-time launch on a busy Mac can be slower. A daemon that is listening and silent counts from
 ///   the start;
 /// - at most 3 frozen-daemon restarts in 10 minutes, then the app stops and says so.
+///
+/// Frozen is a process that is running and does not answer. A process in the stopped state (SSTOP: `kill -STOP`, Ctrl-Z
+/// in the terminal that started it) or held by a debugger (traced) was paused on purpose, and is never signalled,
+/// whoever started it: it is said to be paused, and it answers again once it is continued. A running daemon that does
+/// not answer is replaced whoever started it, the app, a terminal or launchd: Tyler's is usually adopted, since every
+/// app rebuild relaunches the app while the daemon lives on.
 public enum DaemonHealth {
     public struct Policy: Equatable, Sendable {
         /// Between pings.
@@ -117,16 +123,21 @@ public enum DaemonHealth {
         /// Not answering for long enough, but there is no pid the app may signal: no identity, or the socket's
         /// listener is not the process the app would kill.
         case unidentified(failures: Int)
+        /// Not answering because the process is stopped (SSTOP) or held by a debugger: paused on purpose, and never
+        /// signalled. It answers again once continued.
+        case paused(pid: Int32)
         /// No process there to stop: it exited, or nothing is listening and nothing names a daemon.
         case gone
     }
 
-    /// Fold one ping into the running count of failures.
+    /// Fold one ping into the running count of failures. `pausedPID` is the daemon's process (the target, or with none
+    /// the socket's listener) when it is stopped or held by a debugger (`isPaused`).
     public static func decide(
         failures: Int,
         probe: Probe,
         target: Target?,
         alive: Bool,
+        pausedPID: Int32? = nil,
         now: Date,
         policy: Policy = .standard
     ) -> (failures: Int, verdict: Verdict) {
@@ -134,10 +145,13 @@ public enum DaemonHealth {
         guard let target else {
             // Nothing listening and nothing naming a daemon: nothing is there, and the caller starts its own.
             if case .unreachable = probe { return (0, .gone) }
+            if let pausedPID { return (0, .paused(pid: pausedPID)) }
             let next = failures + 1
             return (next, next >= policy.failuresBeforeRestart ? .unidentified(failures: next) : .suspect(failures: next))
         }
         guard alive else { return (0, .gone) }
+        // Paused on purpose: its silence is not a fault, and it counts for nothing once it is continued.
+        if pausedPID == target.pid { return (0, .paused(pid: target.pid)) }
         if case .unreachable = probe, let launchedAt = target.launchedAt,
            now.timeIntervalSince(launchedAt) < policy.startupGrace {
             // Still starting: not listening yet is what a daemon does for its first moments.
@@ -156,6 +170,49 @@ public enum DaemonHealth {
         case restart
         /// Too many frozen-daemon restarts in the window: stop, and say so.
         case giveUp(restarts: Int)
+    }
+
+    /// The app's budget for restarting a daemon of its own that exited (`DaemonHost.handleExit`): a backoff of 2,
+    /// 4, 8, 16 and then 30 s, and after `limit` restarts in a row, stop and say so, so a daemon that cannot start is
+    /// not a restart loop that makes the machine worse. "In a row" means what it says: a daemon that has answered every
+    /// ping for `steadyAfter` has run, and the next exit starts the count, and the backoff, again. Its output can't be
+    /// what says it ran: launched by the app it is headless and prints nothing, and one that prints and exits is the
+    /// loop this stops. A frozen daemon replaced is the freeze budget's (`restartPlan`), never this one's.
+    public struct CrashBudget: Equatable, Sendable {
+        public enum Plan: Equatable, Sendable {
+            case restart(after: TimeInterval)
+            case giveUp
+        }
+
+        public static let limit = 5
+        public static let longestWait: TimeInterval = 30
+        public static let steadyAfter: TimeInterval = 120
+
+        /// Restarts since the last daemon that ran steadily.
+        public private(set) var restarts = 0
+        /// When the run of answers the daemon is on began; nil after anything but an answer.
+        public private(set) var answeringSince: Date?
+
+        public init() {}
+
+        /// The daemon exited: start another after the backoff, or give up.
+        public mutating func exited() -> Plan {
+            answeringSince = nil
+            restarts += 1
+            guard restarts <= Self.limit else { return .giveUp }
+            return .restart(after: min(Self.longestWait, Double(1 << min(restarts, 16))))
+        }
+
+        /// One health check's verdict: answers in a row for `steadyAfter` forgive the restarts before them.
+        public mutating func observed(_ verdict: Verdict, at now: Date) {
+            guard case .healthy = verdict else {
+                answeringSince = nil
+                return
+            }
+            let since = answeringSince ?? now
+            answeringSince = since
+            if now.timeIntervalSince(since) >= Self.steadyAfter { restarts = 0 }
+        }
     }
 
     /// May a frozen daemon be replaced again, given when the last ones were?
@@ -180,6 +237,17 @@ public enum DaemonHealth {
         guard kill(pid, 0) == 0 || errno == EPERM else { return false }
         guard let info = processInfo(pid) else { return false }
         return Int32(info.kp_proc.p_stat) != SZOMB
+    }
+
+    /// Stopped (SSTOP: `kill -STOP`, Ctrl-Z) or held by a debugger (traced): paused on purpose, never frozen.
+    public static func isPaused(_ pid: Int32) -> Bool {
+        guard pid > 0, let info = processInfo(pid) else { return false }
+        return isPaused(stat: Int32(info.kp_proc.p_stat), flags: info.kp_proc.p_flag)
+    }
+
+    /// The same, from the kernel's `p_stat` and `p_flag`.
+    public static func isPaused(stat: Int32, flags: Int32) -> Bool {
+        stat == SSTOP || flags & P_TRACED != 0
     }
 
     /// When the process at `pid` started, from the kernel.
@@ -384,6 +452,8 @@ public final class DaemonHealthMonitor {
         public var target: @MainActor () -> DaemonHealth.Target?
         public var ping: @Sendable (String, TimeInterval) async -> DaemonHealth.Probe
         public var isAlive: @Sendable (Int32) -> Bool
+        /// Stopped or held by a debugger (`DaemonHealth.isPaused`): never signalled.
+        public var isPaused: @Sendable (Int32) -> Bool
         public var signal: @Sendable (Int32, Int32) -> Void
         /// A line for the daemon log.
         public var log: (String) -> Void
@@ -394,6 +464,7 @@ public final class DaemonHealthMonitor {
             target: @escaping @MainActor () -> DaemonHealth.Target?,
             ping: @escaping @Sendable (String, TimeInterval) async -> DaemonHealth.Probe = { await DaemonHealth.ping(socketPath: $0, timeout: $1) },
             isAlive: @escaping @Sendable (Int32) -> Bool = { DaemonHealth.isAlive($0) },
+            isPaused: @escaping @Sendable (Int32) -> Bool = { DaemonHealth.isPaused($0) },
             signal: @escaping @Sendable (Int32, Int32) -> Void = { _ = kill($0, $1) },
             log: @escaping (String) -> Void,
             now: @escaping () -> Date = Date.init
@@ -402,6 +473,7 @@ public final class DaemonHealthMonitor {
             self.target = target
             self.ping = ping
             self.isAlive = isAlive
+            self.isPaused = isPaused
             self.signal = signal
             self.log = log
             self.now = now
@@ -421,6 +493,7 @@ public final class DaemonHealthMonitor {
     private var checking = false
     private var lastTarget: DaemonHealth.Target?
     private var toldUnidentified = false
+    private var toldPaused = false
 
     public init(policy: DaemonHealth.Policy = .standard, hooks: Hooks) {
         self.policy = policy
@@ -436,17 +509,28 @@ public final class DaemonHealthMonitor {
         if target != lastTarget {
             failures = 0
             toldUnidentified = false
+            toldPaused = false
             lastTarget = target
         }
         let probe = await hooks.ping(hooks.socketPath, policy.timeout)
         // Stopped, restarted or adopted while the ping was out: this answer is about a daemon that is not there now.
         guard hooks.target() == target else { return nil }
         let alive = target.map { hooks.isAlive($0.pid) } ?? false
+        // The process that would be named: the target, or with none, whoever listens on the socket.
+        var named = target?.pid
+        if named == nil, case let .silent(peer?) = probe { named = peer }
+        let pausedPID = named.flatMap { hooks.isPaused($0) ? $0 : nil }
         let (next, verdict) = DaemonHealth.decide(
-            failures: failures, probe: probe, target: target, alive: alive, now: hooks.now(), policy: policy
+            failures: failures, probe: probe, target: target, alive: alive, pausedPID: pausedPID, now: hooks.now(), policy: policy
         )
         failures = next
+        if case .paused = verdict {} else { toldPaused = false }
         switch verdict {
+        case .paused(let pid):
+            if !toldPaused {
+                toldPaused = true
+                hooks.log("the daemon (pid \(pid)) is stopped (Ctrl-Z, kill -STOP or a debugger) — paused on purpose, so leaving it alone")
+            }
         case .healthy, .gone:
             toldUnidentified = false
         case .unidentified(let count):

@@ -42,6 +42,9 @@ final class TourCoach: ObservableObject {
     private var subscriptions: Set<AnyCancellable> = []
     private var tipObserver: NSObjectProtocol?
     private var sawPractice = false
+    /// The conversation panel as the tour found it: put back when it closes, since putting the panel out for a beat, or
+    /// the welcome card's first open, isn't the person turning it on (`FloatingPanels.putBack`).
+    private var panelFound: FloatingPanels.Setting?
     private var settling: Task<Void, Never>?
     /// The card follows what it hangs from on the dock spring: where it is, where it's going, and how fast.
     private var follow: Timer?
@@ -66,6 +69,7 @@ final class TourCoach: ObservableObject {
         running = true
         progress = TourProgress()
         sawPractice = false
+        panelFound = FloatingPanels.Setting.current
         hideTip()
         subscriptions.removeAll()
         store.$state
@@ -167,6 +171,8 @@ final class TourCoach: ObservableObject {
         card?.orderOut(nil)
         card = nil
         origin = nil
+        if let found = panelFound { FloatingPanels.installed?.putBack(found) }
+        panelFound = nil
         let done = onClose
         onClose = nil
         done?(outcome)

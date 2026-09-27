@@ -63,7 +63,8 @@ describe("the window", () => {
     expect(controller).toContain("steps: model.readiness.rail");
     // Never switched on by the app itself: the daemon's `features.practice`, and an older daemon keeps it hidden.
     expect(controller).not.toMatch(/practiceAvailable:\s*true/);
-    expect(controller).toContain("practiceAvailable: OnboardingReports.practiceAvailable(feature: published.practiceFeature))");
+    expect(controller).toContain("practiceAvailable: practiceAvailability ?? (progress?.step == .practice))");
+    expect(controller).toContain("OnboardingReports.practiceAvailability(feature: published.practiceFeature, published: publishedSeen)");
     expect(support).toContain('practiceFeature: (object["features"] as? [String: Any])?["practice"] as? Int');
     expect(read("design/ConchDesign/Sources/ConchDesign/OnboardingReports.swift")).toContain("practiceAvailable: Bool = false");
   });
@@ -97,7 +98,8 @@ describe("what opens at launch", () => {
   test("unknown is never missing: a silent or older daemon never walks a set-up Mac through setup", () => {
     const settle = member(controller, "func settleForLaunch() async -> OnboardingReadiness? {");
     expect(settle).toContain("guard agents != nil else { return nil }");
-    expect(settle).toContain("if !speechChecked || published.voices?.state == \"checking\" { seen.engineReady = true }");
+    // A download or a voices rebuild under way is not missing either (OnboardingReportsTests pins the rule).
+    expect(settle).toContain("seen.engineReady = OnboardingReports.engineReadyAtLaunch(speech: published.speech, voices: published.voices)");
     expect(settle).toContain("if !published.phoneKnown { seen.phonePaired = true }");
     const launch = member(controller, "private func launch() async {");
     expect(launch).toContain("if PermissionCenter.shared.statuses[.microphone] != .granted { open(entry: .firstRun) }");
@@ -229,6 +231,87 @@ describe("notifications are asked the first time they're needed", () => {
     expect(post).toContain("guard isQuiet() else { break }");
     expect(app.match(/center\.requestAuthorization\(/g)?.length).toBe(3); // first need, one waiting at launch, Allow now
     expect(app).toContain("ReviewNotifications.shared.isQuiet = { MainActor.assumeIsolated { store.state?.mode.paused == true } }");
+  });
+});
+
+/** The app review of 28 Sep (#441, #445): what the rules can't show, pinned where the app wires them. */
+describe("setup's window, as reviewed", () => {
+  test("a microphone allowed from the Voice step starts its check: the grant is read from what the publisher sends", () => {
+    // `@Published` sends in willSet: read from the store there, the grant is still `.notAsked`, and the check never starts.
+    expect(controller).toContain("PermissionCenter.shared.$statuses.dropFirst().sink { [weak self] statuses in");
+    expect(controller).toContain("MainActor.assumeIsolated { self?.permissionsChanged(statuses) }");
+    const changed = member(controller, "private func permissionsChanged(_ statuses: [ConchPermission: ConchPermissionStatus]) {");
+    expect(changed).toContain("statuses[.microphone] == .granted { startVoice(microphone: .granted) }");
+    expect(changed).not.toContain("PermissionCenter.shared.statuses");
+    const voice = member(controller, "private func startVoice(microphone: ConchPermissionStatus?) {");
+    expect(voice).toContain("guard microphone == .granted else {");
+    expect(voice).not.toContain("PermissionCenter.shared.statuses");
+  });
+
+  test("Try it waits while the daemon hasn't said whether it can run it, and skips only on its no", () => {
+    const page = controller.slice(controller.indexOf("case .practice:\n"), controller.indexOf("case .done:\n"));
+    const skip = page.indexOf("Color.clear.onAppear { model.apply(.skip) }");
+    expect(skip).toBeGreaterThan(-1);
+    expect(page.slice(0, skip)).toContain("if model.practiceAvailability == false {");
+    // Unknown until the daemon's state has been read this launch.
+    expect(controller.match(/publishedSeen = true/g)?.length).toBe(3);
+    expect(member(controller, "private func readPublished() {")).toContain("if !publishedSeen { publishedSeen = true }");
+  });
+
+  test("You're set never offers to answer the practice turn", () => {
+    const waiting = member(controller, "var waitingSession: SessionRow? {");
+    expect(waiting).toContain(".filter { $0.id != TourCoach.practiceSessionId }");
+    expect(waiting).not.toContain("stateStore?.state?.rows.first");
+  });
+
+  test("closing setup's window stops waiting on System Settings, and its guide with it", () => {
+    expect(member(controller, "func windowClosed() {")).toContain("stopWaiting()");
+    const stop = member(controller, "func stopWaiting() {");
+    expect(stop).toContain("waiting?.cancel()");
+  });
+
+  test("a stream the daemon drops part way is \"try again\", never \"older version\": its reply is known by kind", () => {
+    const stream = member(support, "static func stream(_ request: SetupDaemonRequest, timeout: TimeInterval, expecting: String,");
+    expect(stream).toContain("isReply: { OnboardingReports.isStreamReply(kind: decode($0)?.kind) }");
+    expect(stream).toContain("case .dropped:\n            return .failure(.dropped)");
+    expect(support).toContain(`case .dropped: "conch's background service restarted part way through. Try again."`);
+    const client = code(read("mac-app/conch-mac/ConchSocketClient.swift"));
+    const read_ = client.slice(client.indexOf("func stream<Request: Encodable>("), client.indexOf("func reportAppError("));
+    expect(read_).toContain("if isReply(line) { return .reply(line) }");
+    expect(read_).toContain("return DispatchTime.now().uptimeNanoseconds < deadline ? .dropped : .timeout");
+    // Never the last line read as the reply.
+    expect(read_).not.toMatch(/var last\b|last\.map/);
+    // The streamed kinds are the daemon's own (src/setup.ts `SetupLine`).
+    const setup = read("src/setup.ts");
+    const lineAt = setup.indexOf("export type SetupLine =");
+    expect(lineAt).toBeGreaterThan(-1);
+    const lineType = setup.slice(lineAt, setup.indexOf("};\n", lineAt) + 2);
+    const kinds = [...lineType.matchAll(/kind: "([a-z-]+)"/g)].map((m) => m[1]).sort();
+    expect(kinds).toEqual(["mic-level", "setup-install-line"]);
+    const reports = read("design/ConchDesign/Sources/ConchDesign/OnboardingReports.swift");
+    expect(reports).toContain(`public static let streamedKinds: Set<String> = [${kinds.map((k) => `"${k}"`).join(", ")}]`);
+  });
+
+  test("what setup did while the launch waited stands: the launch's choice is only for a Mac still with nothing on record", () => {
+    const launch = member(controller, "private func launch() async {");
+    const waited = launch.indexOf("let seen = await model.settleForLaunch()");
+    const guard = launch.indexOf("guard model.progress == nil else { return }");
+    expect(waited).toBeGreaterThan(-1);
+    expect(guard).toBeGreaterThan(waited);
+    expect(guard).toBeLessThan(launch.indexOf("open(entry: .firstRun)"));
+    expect(guard).toBeLessThan(launch.indexOf("readiness = seen"));
+  });
+
+  test("Settings › Setup keeps its downloads moving for as long as it shows, on a finished Mac too", () => {
+    const watch = member(controller, "func watchInBackground() {");
+    expect(watch).toContain("OnboardingWatch.interval(windowShown: self.visible, settingsShown: self.settingsShowing > 0,");
+    expect(watch).not.toContain("if !self.visible, !unfinished");
+    const shown = member(controller, "func watchWhileSettingsShown() async {");
+    expect(shown).toContain("settingsShowing += 1");
+    expect(shown).toContain("defer { settingsShowing -= 1 }");
+    expect(shown).toContain("watchInBackground()");
+    expect(shown).toContain("while !Task.isCancelled {");
+    expect(member(controller, "struct SetupSettingsTab: View {", 0)).toContain(".task { await model.watchWhileSettingsShown() }");
   });
 });
 

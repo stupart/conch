@@ -171,6 +171,54 @@ final class OnboardingReportsTests: XCTestCase {
         XCTAssertEqual(OnboardingReports.readiness(agents: nil, permissions: [:], speech: nil, voices: nil, phonePaired: false).agentsFound, 0)
     }
 
+    /// A set-up Mac with no setup on record (set up by hand, or before setup existed) at launch: a download or a voices
+    /// rebuild under way (after an update) is conch's to finish, so it doesn't bring up Welcome back for the voice step.
+    /// Only speech recognition off, or the voices off for a reason setup changes, counts as missing.
+    func testADownloadUnderWayAtLaunchIsNotMissing() {
+        let agents = [AgentSetupReport(agent: "claude", found: true, hooksWired: true, pluginInstalled: true)]
+        let permissions: [ConchPermission: ConchPermissionStatus] = [.microphone: .granted, .accessibility: .granted, .automation: .granted]
+        func entry(speech: SpeechEngineReport?, voices: NaturalVoicesReport?) -> OnboardingEntry {
+            var readiness = OnboardingReports.readiness(agents: agents, permissions: permissions, speech: speech, voices: voices, phonePaired: true)
+            readiness.engineReady = OnboardingReports.engineReadyAtLaunch(speech: speech, voices: voices)
+            return OnboardingProgress.entry(nil, readiness: readiness)
+        }
+        XCTAssertEqual(entry(speech: .init(state: "downloading", progress: .init(bytes: 5, total: 10)), voices: .init(state: "ready")), .none,
+                       "speech recognition fetched again")
+        XCTAssertEqual(entry(speech: .init(state: "ready"), voices: .init(state: "setting-up", step: 2, steps: 4)), .none, "voices rebuilt")
+        XCTAssertEqual(entry(speech: .init(state: "downloading", retryAt: 5), voices: .init(state: "setting-up", stage: "prefetch")), .none)
+        XCTAssertEqual(entry(speech: .init(state: "checking"), voices: .init(state: "checking")), .none)
+        XCTAssertEqual(entry(speech: nil, voices: nil), .none, "unknown is never missing")
+        XCTAssertEqual(entry(speech: .init(state: "ready"), voices: .init(state: "off", reason: "needs Apple silicon")), .none)
+        // What setup can do something about still counts.
+        XCTAssertEqual(entry(speech: .init(state: "off", reason: "download failed"), voices: .init(state: "ready")), .welcomeBack(missing: [.voice]))
+        XCTAssertEqual(entry(speech: .init(state: "ready"), voices: .init(state: "off", reason: "build failed")), .welcomeBack(missing: [.voice]))
+    }
+
+    // MARK: Try it
+
+    /// Whether the daemon runs the practice turn is unknown until it has published its state (after a reboot `/tmp` is
+    /// empty until it has): unknown is nil, never "no", so Try it waits rather than skipping itself.
+    func testTryItIsUnknownUntilTheDaemonHasPublished() {
+        XCTAssertNil(OnboardingReports.practiceAvailability(feature: nil, published: false))
+        XCTAssertNil(OnboardingReports.practiceAvailability(feature: 1, published: false))
+        XCTAssertEqual(OnboardingReports.practiceAvailability(feature: nil, published: true), false, "an older daemon")
+        XCTAssertEqual(OnboardingReports.practiceAvailability(feature: 1, published: true), true)
+    }
+
+    // MARK: Streamed requests
+
+    /// A streamed request's reply is told from its streamed lines by kind, so a stream the daemon drops part way through
+    /// (it restarted) never has a microphone level or an installer's line read as its reply, which read as "older version".
+    func testAStreamsReplyIsKnownByItsKind() {
+        XCTAssertEqual(OnboardingReports.streamedKinds, ["mic-level", "setup-install-line"])
+        XCTAssertFalse(OnboardingReports.isStreamReply(kind: "mic-level"))
+        XCTAssertFalse(OnboardingReports.isStreamReply(kind: "setup-install-line"))
+        for reply in ["mic-check-done", "setup-installed", "setup-error", "session-error"] {
+            XCTAssertTrue(OnboardingReports.isStreamReply(kind: reply), reply)
+        }
+        XCTAssertTrue(OnboardingReports.isStreamReply(kind: nil), "a line this app can't read ends the stream, as unreadable")
+    }
+
     func testTheReportsDecodeAsTheDaemonWritesThem() throws {
         let status = try JSONDecoder().decode(AgentSetupReport.self, from: Data("""
         {"agent":"claude","found":true,"path":"/opt/homebrew/bin/claude","version":"2.1.280","source":"Homebrew","hooksWired":true,
