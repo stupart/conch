@@ -11,10 +11,13 @@ import ConchDesign
 /// goes to `StateStore.reportFrontWindow`, whose gate drops repeats: while nothing changes,
 /// nothing is sent.
 ///
-/// Accessibility is only checked, with `AXIsProcessTrusted()`, which never prompts; onboarding is
-/// what will ask for it. Without it a reading is the app alone: its bundle id, and the kind that
-/// implies. With it, the front window's document (Preview, QuickTime, an editor: `AXDocument`) or a
-/// browser's page (Safari: `AXURL` on the page; Chrome: its address field). There is no
+/// Accessibility is only checked, with `AXIsProcessTrusted()`, which never prompts; Settings ›
+/// Permissions asks for it on a press (`PermissionCenter`), and so will onboarding. Without it a
+/// reading is the app alone: its bundle id, and the kind that implies, and the window says so
+/// (`ConchPermissionTrouble.screenContext`). The check is made afresh at every reading, so a grant
+/// switches pages and documents on while conch runs, with no relaunch. With it, the front
+/// window's document (Preview, QuickTime, an editor: `AXDocument`) or a browser's page (Safari:
+/// `AXURL` on the page; Chrome: its address field). There is no
 /// AppleScript here, so no Automation prompt either, and Terminal's tab, which only Terminal's
 /// AppleScript names, stays unknown.
 ///
@@ -24,6 +27,7 @@ import ConchDesign
 final class FrontWindowObserver {
     private let report: (ConchScreenSurface, ConchScreenApp) -> Void
     private var activation: NSObjectProtocol?
+    private var accessibilityChange: NSObjectProtocol?
     private var poll: Timer?
     private var reading: Task<Void, Never>?
 
@@ -47,6 +51,13 @@ final class FrontWindowObserver {
         poll.tolerance = 1
         RunLoop.main.add(poll, forMode: .common)
         self.poll = poll
+        // Accessibility turned on while conch runs: read the page or document now, not at the next poll. macOS posts
+        // this a moment before the change is readable.
+        accessibilityChange = DistributedNotificationCenter.default().addObserver(
+            forName: PermissionCenter.accessibilityListChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.read(after: .milliseconds(500)) }
+        }
         read(after: .zero)
     }
 

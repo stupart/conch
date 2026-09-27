@@ -145,6 +145,8 @@ interface Options {
   dictationSession?: () => RuntimeDictationSession;
   /** The ledger to run over: a restarted daemon's, restored from its reviews file. */
   ledger?: SessionLedger;
+  /** What macOS says of the daemon's Accessibility; absent means the loop is never told, as before. */
+  accessibilityTrusted?: boolean;
 }
 
 function harness(options: Options = {}) {
@@ -266,6 +268,7 @@ function harness(options: Options = {}) {
     reportError: (...args) => void errors.push(args),
     prewarmEar: () => void order.push("prewarm"),
     control: async () => {},
+    ...(options.accessibilityTrusted === undefined ? {} : { accessibilityTrusted: () => options.accessibilityTrusted! }),
     terminal: {
       injectText: async (_cfg, pid, text, beforeInject) => {
         texts.push(text);
@@ -852,6 +855,60 @@ describe("an inject says whether it landed", () => {
     expect(events.filter(({ kind }) => kind === "delivery").at(-1)?.code).toBe("system-dialog-blocking");
     // The daemon log names it too — it used to read "phone inject into … failed" and stop there.
     expect(h.logs).toContain('phone inject into "alpha" failed (system-dialog-blocking)');
+  });
+});
+
+/**
+ * A send macOS refused for want of a permission says which one, on the phone, in the Mac app and aloud: the apps put
+ * an Open Settings beside `accessibility-permission-denied` (`ConchPermissionTrouble`), where "the Mac wouldn't let
+ * conch type" sent Tyler nowhere.
+ */
+describe("a send stopped by a missing permission names it", () => {
+  test("keystrokes System Events refused for Accessibility: the reason, and the line, are Accessibility's", async () => {
+    const h = harness({ inject: () => ({ via: "clipboard", reason: "accessibility-permission-denied" }) });
+    expect(await h.voice.handle(inject("words")))
+      .toEqual({ delivered: false, reason: "accessibility-permission-denied", onClipboard: true });
+    expect(h.said).toEqual(["macOS is blocking conch from typing into Terminal. Turn conch on under Privacy and Security, Accessibility."]);
+  });
+
+  test("a refusal osascript gave no words for is Accessibility's when macOS says conch isn't trusted", async () => {
+    const untrusted = harness({ accessibilityTrusted: false, inject: () => ({ via: "none", failed: true, reason: "automation-failed" }) });
+    expect(await untrusted.voice.handle(inject("words"))).toEqual({ delivered: false, reason: "accessibility-permission-denied" });
+    expect(untrusted.said).toEqual(["macOS is blocking conch from typing into Terminal. Turn conch on under Privacy and Security, Accessibility. Your words are in the draft."]);
+    // Trusted, or never asked, it stays what inject said: nothing is blamed on a grant conch holds.
+    for (const trusted of [true, undefined]) {
+      const h = harness({ accessibilityTrusted: trusted, inject: () => ({ via: "none", failed: true, reason: "automation-failed" }) });
+      expect(await h.voice.handle(inject("words"))).toEqual({ delivered: false, reason: "automation-failed" });
+      expect(h.said).toEqual(["Couldn't deliver that. Your words are in the draft. Review them before trying again."]);
+    }
+    const clipped = harness({ accessibilityTrusted: false, inject: () => ({ via: "clipboard", reason: "automation-failed" }) });
+    expect(await clipped.voice.handle(inject("words"))).toEqual({ delivered: false, reason: "accessibility-permission-denied", onClipboard: true });
+  });
+
+  test("typed, never taken, and conch isn't trusted: the keys went nowhere, and Accessibility is why", async () => {
+    const path = transcript(user({ type: "text", text: "prior" }));
+    try {
+      const h = harness({ accessibilityTrusted: false, inject: () => ({ via: "osascript-focused" }) });
+      expect(await h.voice.handle(inject("words", { transcriptPath: path })))
+        .toEqual({ delivered: false, reason: "accessibility-permission-denied", onClipboard: true });
+      expect(h.clipboard).toEqual(["words"]);
+      expect(h.said.at(-1)).toBe("macOS is blocking conch from typing into Terminal. Turn conch on under Privacy and Security, Accessibility. Your words are on the clipboard.");
+      // Trusted, the same send is only unconfirmed.
+      const trusted = harness({ accessibilityTrusted: true, inject: () => ({ via: "osascript-focused" }) });
+      expect(await trusted.voice.handle(inject("words", { transcriptPath: path })))
+        .toEqual({ delivered: false, reason: "delivery-unconfirmed", onClipboard: true });
+      // tmux keys never pass through Accessibility, so nothing about them is blamed on it.
+      const tmux = harness({ accessibilityTrusted: false, inject: () => ({ via: "tmux" }) });
+      expect(await tmux.voice.handle(inject("words", { transcriptPath: path })))
+        .toEqual({ delivered: false, reason: "delivery-unconfirmed", onClipboard: true });
+    } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
+  });
+
+  test("Automation's refusal keeps its own words", async () => {
+    const h = harness({ accessibilityTrusted: false, inject: () => ({ via: "clipboard", reason: "automation-permission-denied" }) });
+    expect(await h.voice.handle(inject("words")))
+      .toEqual({ delivered: false, reason: "automation-permission-denied", onClipboard: true });
+    expect(h.said).toEqual(["macOS is blocking conch from controlling Terminal. Turn conch on under Privacy and Security, Automation."]);
   });
 });
 
@@ -1746,6 +1803,8 @@ describe("the daemon's wiring of the loop", () => {
       "raiseWindow,",
       "reportError: recordDaemonError,",
       "prewarmEar: () => whisperSupervisor?.prewarm(),",
+      // The real Mac's answer, asked per send: a refused keystroke is then named for the permission that fixes it.
+      "accessibilityTrusted,",
       "control: handleControl,",
     ]) expect(wiring).toContain(line);
     expect(wiring).not.toContain("\n    terminal:");

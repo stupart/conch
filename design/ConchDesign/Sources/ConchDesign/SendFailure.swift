@@ -1,7 +1,7 @@
 /// Why a send didn't land, in words the person who sent it can act on.
 ///
 /// The daemon always knew exactly why (`src/inject.ts`): a modal dialog swallowing every
-/// AppleScript call, a revoked Automation permission, a window it could not reach. It kept
+/// AppleScript call, a revoked Automation or Accessibility permission, a window it could not reach. It kept
 /// that to itself — it spoke the reason aloud on the Mac and told the phone only "failed".
 /// On 2026-09-16 a dialog was open on Tyler's Mac and ate three sends from his phone; all he
 /// saw was a generic failure, and his words sat on a clipboard he was nowhere near.
@@ -28,6 +28,9 @@ public enum ConchSendFailure {
             "a dialog is open on your Mac and it's blocking conch. Dismiss it and send again."
         case "automation-permission-denied":
             "macOS is blocking conch from controlling Terminal. Turn conch on under Privacy & Security → Automation."
+        // The keystrokes themselves were refused: conch isn't allowed in Accessibility (`ConchPermissionTrouble.typing`).
+        case "accessibility-permission-denied":
+            "conch can't type into Terminal: allow conch in Accessibility."
         // conch never found, or never held, the window to type into.
         case "window-not-focusable", "clipboard-fallback":
             "couldn't reach that session's window."

@@ -40,7 +40,10 @@ describe("never sent, or recorded, without saying so", () => {
     inOrder(sendBody, "guard marksOnly || CanvasCapture.granted() else {", "CanvasCapture.still(");
     const ask = sendBody.slice(sendBody.indexOf("guard marksOnly || CanvasCapture.granted() else {"), sendBody.indexOf("let row = route.row"));
     // The pen comes up for the system's own prompt; the pill asks, and nothing is sent.
-    inOrder(ask, "lift()", "return say(settingsOpened ? .reopen(marks: true) : .noScreen(marks: true))");
+    inOrder(ask, "lift()", "return say(screenAwaitsReopen ? .reopen(marks: true) : .noScreen(marks: true))");
+    // A reopen away however the grant was turned on: from the pill's Open Settings, or anywhere macOS says so of a new
+    // process of conch's (`PermissionCenter`, Permissions.swift).
+    expect(member(send, "var screenAwaitsReopen: Bool {")).toContain("settingsOpened || PermissionCenter.shared.statuses[.screenRecording] == .needsRelaunch");
     expect(ask).not.toContain("store.send");
     expect(sendBody).toContain("let screen = marksOnly ? nil : await CanvasCapture.still(of: document.anchor.id, leavingOut: conch)");
   });

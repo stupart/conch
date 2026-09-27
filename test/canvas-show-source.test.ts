@@ -77,9 +77,14 @@ describe("the recording", () => {
     expect(record).toContain("configuration.capturesAudio = false");
     expect(filesWith("captureMicrophone")).toEqual(["CanvasShow.swift"]);
     expect(show).not.toMatch(/captureMicrophone = true|capturesAudio = true|microphoneCaptureDeviceID/);
-    for (const mic of ["AVCaptureDevice", "AVAudioEngine", "AVAudioRecorder", "AVCaptureSession"]) {
+    for (const mic of ["AVAudioEngine", "AVAudioRecorder", "AVCaptureSession", "AVCaptureDeviceInput", "AVCaptureDevice.default"]) {
       expect(filesWith(mic), mic).toEqual([]);
     }
+    // The one mention of the mic is Settings' row: its grant read, and asked for on a press. Neither opens it.
+    expect(filesWith("AVCaptureDevice")).toEqual(["Permissions.swift"]);
+    const permissions = read("mac-app/conch-mac/Permissions.swift").replace(/\/\/.*$/gm, "");
+    expect([...permissions.matchAll(/AVCaptureDevice\.(\w+)/g)].map((match) => match[1]).sort())
+      .toEqual(["authorizationStatus", "authorizationStatus", "requestAccess"]);
     // What narration the app has is three socket requests; the daemon records.
     expect(filesWith('"narration-start"')).toEqual(["CanvasShow.swift"]);
     expect(filesWith("sox")).toEqual([]);
@@ -211,7 +216,7 @@ describe("only on an explicit Show", () => {
     const toggle = member(show, "    func toggleShow() {");
     inOrder(toggle, "guard CanvasCapture.granted() else {", "CanvasRecorder.start(");
     // Without it, the pill says so and stays up: the pen coming up used to hide the pill, and the word with it.
-    expect(toggle).toContain("guard CanvasCapture.granted() else {\n            return say(settingsOpened ? .reopen(marks: false) : .noScreen(marks: false))\n        }");
+    expect(toggle).toContain("guard CanvasCapture.granted() else {\n            return say(screenAwaitsReopen ? .reopen(marks: false) : .noScreen(marks: false))\n        }");
     expect(canvas).toContain("CanvasToolPill.mode(armed: armed, yourInk: document?.has(.you) == true, agentInk: document?.has(.agent) == true, show: recorder != nil, notice: notice != nil)");
   });
 

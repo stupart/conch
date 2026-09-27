@@ -1225,6 +1225,8 @@ final class StateStore: ObservableObject {
                 reason: outcome.reason,
                 onClipboard: outcome.onClipboard ?? false
             )
+            // Refused for a permission: the window's notice says which, with the button that opens it.
+            if let trouble = ConchPermissionTrouble(sendFailure: outcome.reason) { PermissionCenter.shared.note(trouble) }
         }
     }
 

@@ -57,7 +57,7 @@ extension CanvasController {
         guard marksOnly || CanvasCapture.granted() else {
             // The pen comes up, so the system's own prompt, when it asks, isn't under the glass.
             lift()
-            return say(settingsOpened ? .reopen(marks: true) : .noScreen(marks: true))
+            return say(screenAwaitsReopen ? .reopen(marks: true) : .noScreen(marks: true))
         }
         let row = route.row
         notice = nil
@@ -115,6 +115,12 @@ extension CanvasController {
             try? await Task.sleep(for: .milliseconds(500))
         }
         return nil
+    }
+
+    /// Screen Recording is a reopen away: System Settings was opened for it from the pill, or macOS says it is on and
+    /// reaches conch once conch opens again (`PermissionCenter`), whichever way it was turned on.
+    var screenAwaitsReopen: Bool {
+        settingsOpened || PermissionCenter.shared.statuses[.screenRecording] == .needsRelaunch
     }
 
     /// One of the pill's notice's buttons. Settings and Finder open through the store's one door (`openLink`), which

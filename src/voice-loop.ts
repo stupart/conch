@@ -368,6 +368,15 @@ const CUE_SOUND = {
   sent: "/System/Library/Sounds/Pop.aiff", // dictation submitted
 };
 
+/**
+ * What conch says aloud when macOS stopped a send for want of a permission: the one it lacks, and where to turn it on.
+ * The apps show the same cause (`ConchSendFailure`), with the button that opens the place.
+ */
+export const PERMISSION_LINES: Readonly<Record<string, string>> = {
+  "automation-permission-denied": "macOS is blocking conch from controlling Terminal. Turn conch on under Privacy and Security, Automation.",
+  "accessibility-permission-denied": "macOS is blocking conch from typing into Terminal. Turn conch on under Privacy and Security, Accessibility.",
+};
+
 export interface VoiceLoopDeps {
   observeRecords?: RecordObserver;
   cfg: Config;
@@ -399,6 +408,11 @@ export interface VoiceLoopDeps {
   reportError(operation: string, message: string, sessionId?: string, state?: Record<string, unknown>): void;
   /** Reload an idle-unloaded whisper-server under whatever plays before the mic opens. */
   prewarmEar(): void;
+  /**
+   * Whether macOS lets the daemon's keystrokes land (`src/accessibility.ts`), asked, never prompted for. Optional so a
+   * test that doesn't give it never reads the real Mac's answer: a send is then judged by what inject reported alone.
+   */
+  accessibilityTrusted?: () => boolean | null;
   /** Pause, resume and an explicit speak, called after the loop's per-event reset. */
   control(event: TurnEvent): Promise<void>;
   terminal?: {
@@ -1907,7 +1921,12 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         // and a failed delivery keeps them as the recovered draft.
         log(`heard → "${event.label}" (${text.length} chars)`);
       };
+      // A refused keystroke that osascript gave no words for is Accessibility's when macOS says conch isn't trusted:
+      // the reason the apps then show is the one with a fix (`accessibility-permission-denied`), not "wouldn't let".
+      const permissionReason = (reason?: string): string | undefined =>
+        reason === "automation-failed" && deps.accessibilityTrusted?.() === false ? "accessibility-permission-denied" : reason;
       const failedDelivery = async (reason?: string): Promise<false> => {
+        reason = permissionReason(reason);
         receiptCode = reason ?? "delivery-failed";
         // A failed retry cannot disprove that the original submission landed.
         uncertain ||= reason === "transport-error" || reason === "submit-error";
@@ -1915,7 +1934,9 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         log(`delivery to "${event.label}" failed${reason ? ` (${reason})` : ""}`);
         reportSend("Could not deliver the prompt. Review the recovered draft before retrying.");
         if (!beforeInject || await beforeInject()) {
-          await speak(cfg, "Couldn't deliver that. Your words are in the draft. Review them before trying again.", event.label, false, event.sessionId);
+          await speak(cfg, reason && PERMISSION_LINES[reason]
+            ? `${PERMISSION_LINES[reason]} Your words are in the draft.`
+            : "Couldn't deliver that. Your words are in the draft. Review them before trying again.", event.label, false, event.sessionId);
         }
         return false;
       };
@@ -1975,25 +1996,26 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       }
 
       if (via === "clipboard") {
-        receiptCode = reason ?? "clipboard-fallback";
+        const named = permissionReason(reason);
+        receiptCode = named ?? "clipboard-fallback";
         onClipboard = true;
         publishDictation(text, event.sessionId);
         // Name the cause: "keystroke-fallback-off" means the session isn't in a
         // tmux pane AND typing is disabled, so EVERY utterance lands here — a
         // config problem, not a transient one. Without this the log line is
         // identical either way and the real cause takes an hour to find.
-        log(`injected into "${event.label}" via ${via}${reason ? ` (${reason})` : ""}`);
+        log(`injected into "${event.label}" via ${via}${named ? ` (${named})` : ""}`);
         recordTelemetry("inject", {
           route: via,
           confirmed: false,
           chars: text.length,
-          ...(reason ? { reason } : {}),
+          ...(named ? { reason: named } : {}),
         });
         const failure = clipboardFallbackError({
           sessionId: event.sessionId,
           label: event.label,
           cwd: event.cwd,
-          reason,
+          reason: named,
         });
         recordDaemonError(
           failure.operation,
@@ -2009,11 +2031,10 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         // a fixable minute and a baffling one.
         await speak(
           cfg,
-          reason === "automation-permission-denied"
-            ? "macOS is blocking conch from controlling Terminal. Turn conch on under Privacy and Security, Automation."
-            : reason === "system-dialog-blocking"
+          PERMISSION_LINES[receiptCode]
+            ?? (receiptCode === "system-dialog-blocking"
               ? "A system dialog is open on the Mac and it's blocking me. Dismiss it and send again."
-              : "Couldn't reach the session's window — your words are on the clipboard, just paste.",
+              : "Couldn't reach the session's window — your words are on the clipboard, just paste."),
           event.label,
           false,
           event.sessionId,
@@ -2148,7 +2169,11 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         await speak(cfg, "Couldn't confirm that landed. Another window shares this session. Check it before sending again.", event.label, false, event.sessionId);
         return false;
       }
-      log(`⚠ inject into "${event.label}" via ${via} NOT confirmed — words placed on clipboard`);
+      // Keystrokes from a process macOS doesn't trust can vanish without an error: typed, by osascript's account, and
+      // never there. When Accessibility is off, that is the cause, and the one thing to say.
+      const untrusted = via === "osascript-focused" && deps.accessibilityTrusted?.() === false;
+      if (untrusted) receiptCode = "accessibility-permission-denied";
+      log(`⚠ inject into "${event.label}" via ${via} NOT confirmed — words placed on clipboard${untrusted ? " (accessibility-permission-denied)" : ""}`);
       recordTelemetry("inject", {
         route: via,
         confirmed: false,
@@ -2164,9 +2189,11 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       await toClipboard(text);
       onClipboard = true;
       if (beforeInject && !(await beforeInject())) return false;
-      await speak(cfg, stuckInBox
-        ? "I typed that but it didn't send. It's still in the session's input box — press return there."
-        : "I typed that but it didn't send. Your words are on the clipboard — just paste and press return.", event.label, false, event.sessionId);
+      await speak(cfg, untrusted
+        ? `${PERMISSION_LINES["accessibility-permission-denied"]} Your words are on the clipboard.`
+        : stuckInBox
+          ? "I typed that but it didn't send. It's still in the session's input box — press return there."
+          : "I typed that but it didn't send. Your words are on the clipboard — just paste and press return.", event.label, false, event.sessionId);
       // Three attempts and the transcript never grew, so the text is sitting
       // unsent in an input box at best. 15 of Tyler's sends landed here today
       // against 57 confirmed — a 21% failure rate reported to him as success.

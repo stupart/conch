@@ -247,7 +247,8 @@ describe("Send", () => {
     expect(filesWith("CanvasCapture.still(")).toEqual(["CanvasSend.swift"]);
     // Show is the other capture, on its own explicit press (canvas-show-source.test.ts).
     expect(filesWith("SCShareableContent")).toEqual(["CanvasSend.swift", "CanvasShow.swift", "WindowPreview.swift"]);
-    expect(filesWith("CGPreflightScreenCaptureAccess")).toEqual(["CanvasSend.swift", "WindowPreview.swift"]);
+    // Settings' Screen Recording row checks too (Permissions.swift): a check, which neither captures nor asks.
+    expect(filesWith("CGPreflightScreenCaptureAccess")).toEqual(["CanvasSend.swift", "Permissions.swift", "WindowPreview.swift"]);
     // The grant is asked for in one place, for a Send and a Show alike (`CanvasCapture.granted`).
     expect(filesWith("CGRequestScreenCaptureAccess")).toEqual(["CanvasSend.swift"]);
     expect(send.match(/CGRequestScreenCaptureAccess\(\)/g)?.length).toBe(1);

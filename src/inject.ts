@@ -18,6 +18,8 @@ export interface InjectTextResult {
     | "system-dialog-blocking"
     /** macOS is refusing to let conch drive other apps. Needs a person. */
     | "automation-permission-denied"
+    /** macOS is refusing conch's keystrokes: conch isn't allowed in Accessibility. Needs a person. */
+    | "accessibility-permission-denied"
     /** Something else came to the front between the raise and the typing. */
     | "front-window-changed"
     | "automation-failed"
@@ -203,10 +205,18 @@ const osaSucceeded = (result: OsaResult): boolean => !result.timedOut && (result
   && !["front-window-changed", "clipboard-changed"].includes(result.text.trim());
 function osaFailure(result: OsaResult): NonNullable<InjectTextResult["reason"]> {
   if (result.timedOut) return "system-dialog-blocking";
+  if (ACCESSIBILITY_REFUSED.test(result.stderr ?? "")) return "accessibility-permission-denied";
   if (/-1743|not authori[sz]ed|Not allowed to send Apple events/i.test(result.stderr ?? "")) return "automation-permission-denied";
   if (result.text.trim() === "front-window-changed") return "front-window-changed";
   return result.text.trim() === "clipboard-changed" ? "clipboard-changed" : "automation-failed";
 }
+/**
+ * System Events refusing a keystroke, or a UI element, because conch isn't allowed in Accessibility: "osascript is not
+ * allowed to send keystrokes. (1002)", "osascript is not allowed assistive access. (-1719)", or Accessibility's own
+ * `kAXErrorAPIDisabled` (-25211). By its words, not by -1719 alone: that code is also AppleScript's "Invalid index", which
+ * Terminal answers when it has no window to look in.
+ */
+export const ACCESSIBILITY_REFUSED = /not allowed assistive access|not allowed to send keystrokes|-25211/i;
 function safeOsa(run: OsaRunner): OsaRunner {
   return async (lines, argv) => {
     try { return await run(lines, argv); }

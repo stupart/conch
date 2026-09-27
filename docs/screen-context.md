@@ -185,11 +185,14 @@ what that app shows.
   AppleScript says, and that would need the Automation grant. The booted
   Simulator device: no resolver would use it yet.
 - **The permission.** It only checks `AXIsProcessTrusted()`, which never
-  prompts. It never calls `AXIsProcessTrustedWithOptions` with the prompt
-  option and never uses AppleScript, so it can't raise the Accessibility or the
-  Automation dialog. Without the grant every report is app-level. Onboarding
-  will ask for the grant; granting it later takes effect on the next reading,
-  with no relaunch.
+  prompts, afresh at every reading. It never calls
+  `AXIsProcessTrustedWithOptions` with the prompt option and never uses
+  AppleScript, so it can't raise the Accessibility or the Automation dialog.
+  Without the grant every report is app-level, and conch's window says so, with
+  Open Settings. Settings › Permissions asks for the grant on a press, and
+  onboarding will. Granting it takes effect on the next reading, with no
+  relaunch: at once when macOS posts Accessibility's change, else within the
+  3 s poll.
 - **Staging still wins** (`ScreenReportGate` in ConchDesign, which both
   observers go through in `StateStore`):
   - A report that repeats the last one said, from either observer, isn't sent.

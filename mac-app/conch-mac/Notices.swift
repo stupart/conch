@@ -81,6 +81,10 @@ struct WorkspaceNotices: View {
             .frame(height: 1)
     }
 
+    // Whatever stopped for want of a macOS permission, with the button that fixes it: a refused keystroke, the mic
+    // turned off, the front window read as the app alone (`PermissionNoticeLine`).
+    PermissionNoticeLine()
+
     // C9b Cut B. Another Mac holds this one's voice and ear: say so,
     // and offer the one control that changes it. Typed sends and
     // everything else keep working; only the mic and the mode

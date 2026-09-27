@@ -1,5 +1,5 @@
 // Renders every token and component, light and dark, to PNGs, so the design is checked by picture
-// without opening an app window:  swift run conch-design-gallery <outdir>
+// without opening an app window:  swift run conch-design-gallery <outdir> [name prefix]
 import AppKit
 import ConchDesign
 import CoreImage
@@ -7,6 +7,8 @@ import ImageIO
 import SwiftUI
 
 let outDir = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "gallery", isDirectory: true)
+/// Only the pages whose names start with this, when given: one area's pictures without the whole gallery's.
+let onlyPages = CommandLine.arguments.dropFirst(2).first
 try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
 
 // Top-level code here is not main-actor isolated, but it does run on the main thread, which ImageRenderer needs.
@@ -16,6 +18,7 @@ func render<Content: View>(_ name: String, width: CGFloat = 960, @ViewBuilder _ 
 
 @MainActor
 func renderOnMain<Content: View>(_ name: String, width: CGFloat, _ content: () -> Content) throws {
+    if let onlyPages, !name.hasPrefix(onlyPages) { return }
     for scheme in [ColorScheme.light, .dark] {
         let sheet = VStack(alignment: .leading, spacing: 28) { content() }
             .padding(40)
@@ -1164,6 +1167,97 @@ struct SidebarColumn<Content: View>: View {
                 .overlay(RoundedRectangle(cornerRadius: ConchRadius.medium).strokeBorder(ConchColor.hairlineStrong, lineWidth: 1))
         }
     }
+}
+
+// conch's macOS permissions (2026-09-27): Settings › Permissions, one row each, and the line conch's window shows where a
+// feature stopped for want of one. Drawn in the Settings window's own type, Helvetica Neue at its sizes, as the app does.
+func settingsFont(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font { .custom("Helvetica Neue", size: size).weight(weight) }
+
+func permissionsTab(_ statuses: [ConchPermission: ConchPermissionStatus], notes: [ConchPermission: String] = [:], caution: String? = nil, launchd: Bool = false) -> some View {
+    VStack(spacing: 0) {
+        HStack {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Permissions").font(settingsFont(18, .semibold)).foregroundStyle(ConchColor.textPrimary)
+                Text("macOS asks once for each. One grant to conch covers everything that needs it.")
+                    .font(settingsFont(12)).foregroundStyle(ConchColor.textSecondary)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 16)
+        Rectangle().fill(ConchColor.hairline).frame(height: 1)
+        ConchPermissionList(
+            statuses: statuses, notes: notes, caution: caution,
+            cautionAction: launchd ? (title: "Let the app own it", run: {}) : nil,
+            titleFont: settingsFont(14, .medium), detailFont: settingsFont(12), statusFont: settingsFont(11), inset: 22,
+            onAction: { _, _ in }
+        )
+        .padding(.bottom, 12)
+    }
+    .frame(width: 680)
+    .background(ConchColor.ground)
+    .clipShape(RoundedRectangle(cornerRadius: ConchRadius.medium))
+    .overlay(RoundedRectangle(cornerRadius: ConchRadius.medium).strokeBorder(ConchColor.hairlineStrong, lineWidth: 1))
+}
+
+let allAllowed = Dictionary(uniqueKeysWithValues: ConchPermission.allCases.map { ($0, ConchPermissionStatus.granted) })
+
+try render("permissions-settings", width: 780) {
+    Heading(title: "Settings › Permissions", note: "Each of the four, where it stands, and its one button. Read silently at launch, on coming back to conch, and on opening Settings.")
+    Caption("Mixed: one allowed, one macOS hasn't asked, one a reopen away, one off")
+    permissionsTab([
+        .accessibility: .granted,
+        .automation: .notAsked,
+        .screenRecording: .needsRelaunch,
+        .microphone: .denied,
+    ])
+    Caption("All allowed: nothing to do, so no buttons")
+    permissionsTab(allAllowed)
+}
+
+try render("permissions-settings-cautions", width: 780) {
+    Heading(title: "Settings › Permissions, when conch can't speak for itself", note: "A daemon started from a terminal answers to that terminal; Terminal closed leaves Automation open; a button's own failure is said under its row.")
+    Caption("The daemon was started from a terminal")
+    permissionsTab([
+        .accessibility: .denied,
+        .automation: ConchPermissionReading.automation([("Terminal", ConchPermissionReading.procNotFound), ("System Events", 0)]),
+        .screenRecording: .denied,
+        .microphone: .restricted,
+    ], notes: [.accessibility: "Couldn't open System Settings. It is under Privacy & Security › Accessibility."], caution: ConchPermissionHost.caution(startedBy: "terminal"))
+    Caption("The launchd service owns the daemon: the handover the app already has")
+    permissionsTab(allAllowed, caution: ConchPermissionHost.caution(startedBy: "launchd"), launchd: true)
+}
+
+try render("permissions-notices", width: 1040) {
+    Heading(title: "Where a feature stopped for want of a permission", note: "One line in conch's window, the first that applies, with the button that fixes it; × puts it away until it happens again.")
+    let denied = Dictionary(uniqueKeysWithValues: ConchPermission.allCases.map { ($0, ConchPermissionStatus.denied) })
+    ForEach(Array([
+        ("A keystroke System Events refused (the daemon's accessibility-permission-denied)", ConchPermissionNotice(trouble: .typing, status: .denied)),
+        ("Apple Events to Terminal refused, never asked", ConchPermissionNotice(trouble: .controlling, status: .notAsked)),
+        ("Apple Events to Terminal refused", ConchPermissionNotice(trouble: .controlling, status: .denied)),
+        ("The microphone off for conch: every listen hears silence", ConchPermissionNotice(trouble: .hearing, status: .denied)),
+        ("The phone's snapshot refused, and Screen Recording turned on since launch", ConchPermissionNotice(trouble: .screen, status: .needsRelaunch)),
+        ("No Accessibility: the front window read as the app alone", ConchPermissionNotice.current(noted: [], statuses: denied.merging([.microphone: .granted]) { $1 }, daemonIsConchs: true)!),
+    ].enumerated()), id: \.offset) { _, item in
+        VStack(alignment: .leading, spacing: 6) {
+            Caption(item.0)
+            VStack(spacing: 0) {
+                ConchPermissionNoticeBar(notice: item.1, font: settingsFont(11.5), onAction: { _ in }, onDismiss: {})
+                Rectangle().fill(ConchColor.hairline).frame(height: 1)
+                Rectangle().fill(ConchColor.ground).frame(height: 28)
+            }
+            .frame(width: 900)
+            .clipShape(RoundedRectangle(cornerRadius: ConchRadius.small))
+            .overlay(RoundedRectangle(cornerRadius: ConchRadius.small).strokeBorder(ConchColor.hairlineStrong, lineWidth: 1))
+        }
+    }
+    Caption("The same send, as the conversation panel and the phone say it")
+    Text(ConchSendFailure.sentence(reason: "accessibility-permission-denied", onClipboard: true))
+        .font(ConchType.secondary)
+        .foregroundStyle(ConchColor.attention)
+    Caption("The canvas's own Screen Recording notices, whose words and buttons these share")
+    canvasPill(armed: false, notice: .noScreen(marks: true))
+    canvasPill(armed: false, notice: .reopen(marks: true))
 }
 
 try render("ledger-marks", width: 1240) {
