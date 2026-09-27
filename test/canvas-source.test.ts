@@ -166,7 +166,9 @@ describe("turning it on", () => {
     expect(canvas).toContain("static let modifiers = UInt32(controlKey | optionKey | cmdKey)");
     expect(canvas.match(/RegisterEventHotKey\(/g)?.length).toBe(1);
     expect(canvas).toContain("RegisterEventHotKey(key, modifiers,");
-    expect(canvas).toContain("MainActor.assumeIsolated { CanvasController.shared.toggle() }");
+    // Counted for the tour's canvas beat (TourCoach), then the pen down or up as ever.
+    expect(canvas).toContain("MainActor.assumeIsolated { CanvasController.shared.hotKeyPressed() }");
+    expect(canvas).toContain("func hotKeyPressed() {\n        hotKeyPresses += 1\n        toggle()\n    }");
     // A global monitor needs Accessibility and an event tap Input Monitoring: neither is used.
     for (const needsPermission of ["addGlobalMonitorForEvents", "CGEvent.tapCreate", "tapCreate("]) {
       expect(canvas).not.toContain(needsPermission);

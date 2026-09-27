@@ -541,9 +541,8 @@ enum Tour {
     static func pill() -> some View {
         TourScene(
             bar: ControlBar(state: .talk, detail: "Practice turn", mode: .constant(.talk), news: "About to speak"),
-            card: CoachCard(beat: 1, of: 5, title: "This is the pill",
-                            text: "It sits at the top of your screen and says who's talking and what's ready. Talk reads each finished turn aloud; Quiet holds them until you ask.",
-                            pointer: .up),
+            // Each card is the tour's own (`TourCard`): the words the app shows, from the rule it follows.
+            card: CoachCard(TourCard(.pill)),
             cardAt: pillCard
         )
     }
@@ -551,9 +550,7 @@ enum Tour {
     static func answer() -> some View {
         TourScene(
             bar: ControlBar(state: .listening, detail: "Practice turn", mode: .constant(.talk)),
-            card: CoachCard(beat: 2, of: 5, title: "Answer out loud",
-                            text: "conch read the practice turn, then opened the mic. Say anything, then pause. Your words go to whoever just spoke.",
-                            heard: "Show me what you made.", pointer: .up),
+            card: CoachCard(TourCard(.answer, heard: "Show me what you made.")),
             cardAt: CGPoint(x: pillCard.x, y: pillCard.y + 24),
             voice: .listening
         )
@@ -562,9 +559,7 @@ enum Tour {
     static func ready() -> some View {
         TourScene(
             bar: ControlBar(state: .talk, detail: "", mode: .constant(.talk), ready: ControlBar.Ready(label: "Welcome to conch", position: 1, count: 1), onTap: {}),
-            card: CoachCard(beat: 3, of: 5, title: "Green means ready",
-                            text: "An agent finished something for you. Click the pill and conch opens it where it lives: the page, the app, the file.",
-                            pointer: .up, primary: "Open it"),
+            card: CoachCard(TourCard(.ready)),
             cardAt: pillCard,
             voice: .ready
         )
@@ -573,9 +568,7 @@ enum Tour {
     static func panel() -> some View {
         TourScene(
             bar: ControlBar(state: .talk, detail: "Practice turn", mode: .constant(.talk)),
-            card: CoachCard(beat: 4, of: 5, title: "The panel",
-                            text: "The conversation, and a line to answer in. Drag it to any corner. ⌘↩ fills the screen, and ⌘. folds it away.",
-                            chord: "⌘↩", pointer: .left),
+            card: CoachCard(TourCard(.panel)),
             cardAt: CGPoint(x: dockedWindow.maxX + 190, y: dockedWindow.minY + 150),
             panel: true
         )
@@ -585,9 +578,7 @@ enum Tour {
         let pillY = panelMenuBar + 10 + 48 + 14 + 21
         return TourScene(
             bar: ControlBar(state: .talk, detail: "Practice turn", mode: .constant(.talk)),
-            card: CoachCard(beat: 5, of: 5, title: "Draw on anything",
-                            text: "Mark up whatever's on screen and Send it to the agent. With the pen down, ⇧R records a Show instead. Agents draw too; theirs are violet.",
-                            chord: "⌃⌥⌘P", chordLit: true, pointer: .left, primary: "Finish"),
+            card: CoachCard(TourCard(.canvas, chordLit: true)),
             cardAt: CGPoint(x: tourScreen.width / 2 + 250 + 24 + 150, y: pillY - 40 + 104)
         ) {
             CanvasInkPreview(marks: tourMarks, size: tourScreen)

@@ -59,9 +59,12 @@ describe("the window", () => {
     expect(closed).toContain("if let progress, !progress.finished { apply(.close) }");
   });
 
-  test("the rail shows this Mac's steps: no Try it until the practice turn exists", () => {
+  test("the rail shows this Mac's steps: Try it only with a daemon that says it can run the practice turn", () => {
     expect(controller).toContain("steps: model.readiness.rail");
+    // Never switched on by the app itself: the daemon's `features.practice`, and an older daemon keeps it hidden.
     expect(controller).not.toMatch(/practiceAvailable:\s*true/);
+    expect(controller).toContain("practiceAvailable: OnboardingReports.practiceAvailable(feature: published.practiceFeature))");
+    expect(support).toContain('practiceFeature: (object["features"] as? [String: Any])?["practice"] as? Int');
     expect(read("design/ConchDesign/Sources/ConchDesign/OnboardingReports.swift")).toContain("practiceAvailable: Bool = false");
   });
 

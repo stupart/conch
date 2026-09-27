@@ -377,6 +377,29 @@ export const PERMISSION_LINES: Readonly<Record<string, string>> = {
   "accessibility-permission-denied": "macOS is blocking conch from typing into Terminal. Turn conch on under Privacy and Security, Accessibility.",
 };
 
+/** Setup's practice turn (practice.ts), as the voice loop runs it. */
+export interface PracticeTurn {
+  /** What the live state and the published row call it. */
+  label: string;
+  /** The scripted line, spoken first; absent for another mic window on the same practice. */
+  line?: string;
+  /** How the line is spoken: a ring voice, or the Mac's own while the natural voices aren't ready. */
+  speechCfg: Config;
+  /** False once the practice is stopped: the line and the mic end with it. */
+  stillWanted(): boolean;
+  /** The line has finished playing (or there was none) and the mic is about to open. */
+  onSpoken?(): void;
+  /** How long it waits for another session's exchange to finish before it says conch is busy. */
+  queueWithinMs?: number;
+}
+
+export type PracticeTurnOutcome =
+  | { heard: string | null; interrupted?: true }
+  | { refused: "phone" | "another-mac" | "busy" | "mic-open" | "closing" };
+
+/** How long a practice turn waits for a session being read aloud to finish. */
+export const PRACTICE_QUEUE_WITHIN_MS = 20_000;
+
 export interface VoiceLoopDeps {
   observeRecords?: RecordObserver;
   cfg: Config;
@@ -451,6 +474,11 @@ export interface VoiceLoop {
    * `stopRecorder`.
    */
   holdNarration(quietWithinMs: number, stopRecorder: () => void, label?: string): Promise<{ release(): void } | { refused: string }>;
+  /**
+   * Setup's practice turn (practice.ts): its line through `speak`, then one mic window through the one reservation.
+   * What it heard comes back; it is never delivered, typed or pasted anywhere.
+   */
+  practice(turn: PracticeTurn): Promise<PracticeTurnOutcome>;
   /**
    * Why a request is turned away at the door rather than queued, or null. A
    * dictation asked for while Show's narration has the mic would wait behind it
@@ -638,6 +666,58 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     if (!reserved) return { refused: shuttingDown ? "conch is shutting down" : elsewhere() };
     return { refused: "conch is speaking" };
   };
+
+  /**
+   * Setup's practice turn (practice.ts): conch's own scripted line, then one mic window, with every gate a turn has.
+   *
+   * - The line goes through `speak`, the funnel every line takes: the open-mic check, the phone's and the other Mac's
+   *   holds, and the speech manager's gate. `volunteered`, because a person pressed Start: manual mode is conch not
+   *   speaking first, and this is the answer to a button, as a recite is.
+   * - The mic is `oneMicWindow`, whose reservation waits on `speech.quiescent()`: it opens once the line has finished
+   *   playing, never over it, and a cue or a canary still sounding holds it shut too.
+   * - The queue is held for the whole exchange, as a turn's is, so no announcement starts between the line and the mic.
+   * - The ear elsewhere (the phone, another Mac) refuses it, with why: the practice never takes the audio back.
+   * What it heard is returned, and nothing else happens to it.
+   */
+  const practice = async (turn: PracticeTurn): Promise<PracticeTurnOutcome> => {
+    if (shuttingDown) return { refused: "closing" };
+    if (audioLease.isPhone()) return { refused: "phone" };
+    if (!audioHolder.isLocal()) return { refused: "another-mac" };
+    const deadline = Date.now() + (turn.queueWithinMs ?? PRACTICE_QUEUE_WITHIN_MS);
+    // A session being read, or its reply listened for, holds the queue: the practice waits its turn.
+    while (eventQueue.busy() && !normalMicOpen() && turn.stillWanted() && Date.now() < deadline) await Bun.sleep(50);
+    if (normalMicOpen()) return { refused: "mic-open" };
+    if (!turn.stillWanted()) return { heard: null, interrupted: true };
+    let outcome: PracticeTurnOutcome = { refused: "busy" };
+    const taken = await eventQueue.exclusive(async () => {
+      outcome = await practiceExchange(turn);
+    });
+    return taken ? outcome : { refused: "busy" };
+  };
+
+  async function practiceExchange(turn: PracticeTurn): Promise<PracticeTurnOutcome> {
+    const pauseGeneration = pause.capture();
+    const wanted = (): boolean => !shuttingDown && !pause.interrupted(pauseGeneration) && turn.stillWanted();
+    // A stale press from a past exchange must not skip this one.
+    stopKey = false;
+    // D2: the mic will open once the line is read, so an idle-unloaded whisper-server reloads under it.
+    prewarmEar();
+    if (turn.line) {
+      resetReadingProgress();
+      await speak(turn.speechCfg, turn.line, turn.label, true);
+      if (!wanted() || consumeStopKey()) return { heard: null, interrupted: true };
+      // The phone may have claimed the audio while conch spoke: its ear, then, not this Mac's.
+      if (audioLease.isPhone()) return { refused: "phone" };
+      if (!audioHolder.isLocal()) return { refused: "another-mac" };
+    }
+    turn.onSpoken?.();
+    const heard = await oneMicWindow(turn.label, wanted, "practice", `listening → "${turn.label}" (practice: it goes nowhere)...`);
+    if (!wanted()) return { heard: null, interrupted: true };
+    const text = (heard ?? []).join(" ").replace(/\s+/g, " ").trim();
+    // Its length, never the words, as every heard line is logged.
+    log(text ? `practice heard ${text.length} chars` : "practice heard nothing");
+    return { heard: text || null };
+  }
 
   /**
    * Why `speak` would drop a line right now, or null when it will reach the
@@ -3578,33 +3658,43 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
   }
 
   /** One mic window for a permission answer: what was heard, or null when the window closed with nothing to decide (interrupted, spacebar, error, silence). */
-  async function listenForApproval(event: TurnEvent, stillPending: () => boolean): Promise<string[] | null> {
+  function listenForApproval(event: TurnEvent, stillPending: () => boolean): Promise<string[] | null> {
+    return oneMicWindow(event.label, stillPending, "permission", "listening for yes, always, or no...");
+  }
+
+  /**
+   * One mic window that belongs to no delivery: a permission answer's, or setup's practice turn's. Its cue, then the one
+   * reservation every capture uses (`reserveNormalMic`, which waits on `speech.quiescent()`), then a dictation session
+   * until the first words, a Stop, an error or silence. What was heard comes back to the caller, which decides what it
+   * is; nothing here types, pastes or delivers. `tag` names the window in its traces and barriers.
+   */
+  async function oneMicWindow(label: string, stillPending: () => boolean, tag: "permission" | "practice", announce: string): Promise<string[] | null> {
     const pauseGeneration = pause.capture();
     const interruptedByPause = (): boolean => pause.interrupted(pauseGeneration);
     if (shuttingDown || !stillPending()) return null;
     await micCue(cfg, "open");
     if (shuttingDown || interruptedByPause() || !stillPending()) return null;
-    log("listening for yes, always, or no...");
+    log(announce);
     const session = createDictationSession(
       cfg,
-      listenHooks(event.label, () => ""),
-      { tag: "permission" },
+      listenHooks(label, () => ""),
+      { tag },
     );
     const texts: string[] = [];
     const diagnosticIds: string[] = [];
     let closing = false;
     let externalReason: ExternalDictationAction | undefined;
     let listenError: string | undefined;
-    let resolvePermissionDone!: () => void;
-    const permissionDone = new Promise<void>((resolve) => {
-      resolvePermissionDone = resolve;
+    let resolveWindowDone!: () => void;
+    const windowDone = new Promise<void>((resolve) => {
+      resolveWindowDone = resolve;
     });
 
     const requestExternal = (action: ExternalDictationAction, barrierReason?: string): void => {
       externalReason ??= action;
       if (closing) return;
       closing = true;
-      session.requestBarrier(barrierReason ?? `permission-${action}`);
+      session.requestBarrier(barrierReason ?? `${tag}-${action}`);
     };
 
     if (shuttingDown || !stillPending()) return null;
@@ -3617,7 +3707,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       normalMicReserved = false;
       consumeStopKey();
       await micCue(cfg, "close");
-      log("⏹ spacebar — closed the permission mic");
+      log(`⏹ spacebar — closed the ${tag} mic`);
       return null;
     }
     micOpen = true;
@@ -3629,13 +3719,13 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     } finally {
       normalMicReserved = false;
     }
-    activeDictation = { session, requestExternal, done: permissionDone };
+    activeDictation = { session, requestExternal, done: windowDone };
     // Keyboard resolution may produce no microphone event. Close promptly,
     // then drain normally; an in-flight transcript cannot revive this ask.
     const pendingWatch = setInterval(() => {
       if (!stillPending() && !closing) {
         closing = true;
-        session.requestBarrier("permission-stale");
+        session.requestBarrier(`${tag}-stale`);
       }
     }, 120);
     try {
@@ -3666,13 +3756,13 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
           if (controllerEvent.text) texts.push(controllerEvent.text);
           if (controllerEvent.text && !closing) {
             closing = true;
-            session.requestBarrier("permission-decision");
+            session.requestBarrier(`${tag}-decision`);
           }
           continue;
         }
         if (controllerEvent.kind === "short") {
           emitRecorderTrace(controllerEvent.diagnosticId, {
-            intent: controllerEvent.cause === "timeout" ? "permission-timeout" : "false-start",
+            intent: controllerEvent.cause === "timeout" ? `${tag}-timeout` : "false-start",
             bufferCountAfterReduction: 0,
           });
           continue;
@@ -3683,10 +3773,10 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         }
         if (controllerEvent.kind === "error") {
           listenError ??= controllerEvent.error;
-          emitRecorderTrace(controllerEvent.diagnosticId, { intent: "permission-error", bufferCountAfterReduction: 0 });
+          emitRecorderTrace(controllerEvent.diagnosticId, { intent: `${tag}-error`, bufferCountAfterReduction: 0 });
           if (!closing) {
             closing = true;
-            session.requestBarrier("permission-error");
+            session.requestBarrier(`${tag}-error`);
           }
           continue;
         }
@@ -3696,7 +3786,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     } finally {
       clearInterval(pendingWatch);
       if (session.state === "running" || session.state === "draining") {
-        const ticket = session.requestBarrier("permission-exit");
+        const ticket = session.requestBarrier(`${tag}-exit`);
         let exitBarrierReached = false;
         while (true) {
           const pendingEvent = await session.nextEvent();
@@ -3704,9 +3794,9 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
             diagnosticIds.push(pendingEvent.diagnosticId);
             if (pendingEvent.text) texts.push(pendingEvent.text);
           } else if (pendingEvent.kind === "short") {
-            emitRecorderTrace(pendingEvent.diagnosticId, { intent: "permission-exit-short", bufferCountAfterReduction: 0 });
+            emitRecorderTrace(pendingEvent.diagnosticId, { intent: `${tag}-exit-short`, bufferCountAfterReduction: 0 });
           } else if (pendingEvent.kind === "error") {
-            emitRecorderTrace(pendingEvent.diagnosticId, { intent: "permission-error", bufferCountAfterReduction: 0 });
+            emitRecorderTrace(pendingEvent.diagnosticId, { intent: `${tag}-error`, bufferCountAfterReduction: 0 });
           } else if (pendingEvent.kind === "barrier") {
             session.acknowledge(pendingEvent);
             if (pendingEvent.id === ticket.id) exitBarrierReached = true;
@@ -3717,7 +3807,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       }
       activeDictation = null;
       micOpen = false;
-      resolvePermissionDone();
+      resolveWindowDone();
     }
 
     if (interruptedByPause()) {
@@ -3725,29 +3815,29 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       return null;
     }
     if (!stillPending()) {
-      emitRecorderTraces(diagnosticIds, { intent: "permission-stale", bufferCountAfterReduction: 0 });
+      emitRecorderTraces(diagnosticIds, { intent: `${tag}-stale`, bufferCountAfterReduction: 0 });
       return null;
     }
     if (externalReason) {
-      emitRecorderTraces(diagnosticIds, { intent: `permission-${externalReason}`, bufferCountAfterReduction: 0 });
+      emitRecorderTraces(diagnosticIds, { intent: `${tag}-${externalReason}`, bufferCountAfterReduction: 0 });
       if (externalReason === "spacebar") consumeStopKey();
       if (shuttingDown || !stillPending()) return null;
       await micCue(cfg, "close");
-      log("⏹ closed the permission mic");
+      log(`⏹ closed the ${tag} mic`);
       return null;
     }
     if (listenError) {
-      emitRecorderTraces(diagnosticIds, { intent: "permission-error", bufferCountAfterReduction: 0 });
+      emitRecorderTraces(diagnosticIds, { intent: `${tag}-error`, bufferCountAfterReduction: 0 });
       log(`listen error: ${listenError}`);
       return null;
     }
     if (!texts.length) {
-      emitRecorderTraces(diagnosticIds, { intent: "permission-timeout", bufferCountAfterReduction: 0 });
+      emitRecorderTraces(diagnosticIds, { intent: `${tag}-timeout`, bufferCountAfterReduction: 0 });
       await micCue(cfg, "close");
       log("no speech — back to idle");
       return null;
     }
-    emitRecorderTraces(diagnosticIds, { intent: "permission-answer", bufferCountAfterReduction: 0 });
+    emitRecorderTraces(diagnosticIds, { intent: `${tag}-answer`, bufferCountAfterReduction: 0 });
     return texts;
   }
 
@@ -3798,6 +3888,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     speakBlocker,
     capturing: normalMicOpen,
     holdNarration,
+    practice,
     refusal: (event) => (event.type === "wake" && narrating ? "Show's narration has the mic" : null),
     pendingApprovalFor: (sessionId, transcriptPath) => approvalShowing(sessionId, transcriptPath),
     heldQuestionFor: (sessionId) => heldQuestionShowing(sessionId),

@@ -2,11 +2,12 @@ import ConchDesign
 import SwiftUI
 
 // Setup as the Mac app hosts it (OnboardingController.swift): the pages with the words and rows the app gives them,
-// where they differ from the design sheets. The rail without Try it until the practice turn exists; a row waiting to hear
-// from its agent; the in-app pairing code; Welcome back asking only the three setup permissions; the tray's own words.
+// where they differ from the design sheets. A row waiting to hear from its agent; the in-app pairing code; Welcome back
+// asking only the three setup permissions; the tray's own words; Try it with what holds Start, and the tour's cards as
+// the rule gives them (TourCoach.swift).
 
-/// The rail the app shows today: no Try it (`OnboardingReadiness.practiceAvailable` is false).
-let hostedRail = OnboardingReadiness.fresh.rail
+/// The rail the app shows with a daemon that runs the practice turn (`features.practice`): Try it is on it.
+let hostedRail = OnboardingReadiness(practiceAvailable: true).rail
 
 @MainActor
 struct OnbHosted {
@@ -69,9 +70,18 @@ struct OnbHosted {
         }
     }
 
+    /// Try it as the app hosts it: its own preview, and the status line under it when something holds Start.
+    static func practice(_ state: PracticeStartState, downloads: [OnboardingDownload] = dlDone) -> some View {
+        OnbMacWindow {
+            OnboardingWindow(progress: progress(.practice, done: [.agents, .voice, .phone], later: [.permissions]), steps: hostedRail, downloads: downloads) {
+                OnboardingPracticeStep(state: state) { PracticePreview() }
+            }
+        }
+    }
+
     static func done() -> some View {
         OnbMacWindow {
-            OnboardingWindow(progress: progress(.done, done: [.agents, .voice, .phone], later: [.permissions]), steps: hostedRail, downloads: dlDone) {
+            OnboardingWindow(progress: progress(.done, done: [.agents, .voice, .phone, .practice], later: [.permissions]), steps: hostedRail, downloads: dlDone) {
                 OnboardingDoneStep(
                     summary: [
                         OnboardingSummaryLine(step: .agents, detail: "Claude Code and Codex connected", status: "", done: true),
@@ -90,6 +100,17 @@ struct OnbHosted {
                 )
             }
         }
+    }
+}
+
+/// One of the tour's cards as TourCoach hosts it: the rule's card, over a soft ground.
+func tourCard(_ caption: String, _ tour: TourProgress, pointer: CoachCard.Pointer? = nil) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+        Caption(caption)
+        CoachCard(tour.card!, pointer: pointer)
+            .padding(26)
+            .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(LinearGradient(
+                colors: [Color(red: 0.80, green: 0.86, blue: 0.94), Color(red: 0.86, green: 0.82, blue: 0.93)], startPoint: .topLeading, endPoint: .bottomTrailing)))
     }
 }
 
@@ -117,7 +138,7 @@ func renderOnboardingHosted() throws {
     }
 
     try onb("onb-hosted-agents", width: windowPage) {
-        Heading(title: "Hosted · Agents", note: "As the app shows it: wired is not green. A row turns Connected on the agent's first hook event. The rail has no Try it until the practice turn exists.")
+        Heading(title: "Hosted · Agents", note: "As the app shows it: wired is not green. A row turns Connected on the agent's first hook event. Try it is on the rail with a daemon that can run the practice turn.")
         OnbDesk { OnbHosted.agents() }
     }
     try onb("onb-hosted-permissions", width: windowPage) {
@@ -145,6 +166,51 @@ func renderOnboardingHosted() throws {
         HStack(alignment: .top, spacing: 24) {
             small("Welcome back") { OnbHosted.welcomeBack() }
             small("You're set, conch outside Applications") { OnbHosted.done() }
+        }
+    }
+    try onb("onb-hosted-try", width: windowPage) {
+        Heading(title: "Hosted · Try it", note: "As the app shows it: conch's own preview of the pill reading the practice turn. Start asks the daemon (practice-start), holds its lease, and the window steps aside for the tour.")
+        OnbDesk { OnbHosted.practice(.ready) }
+    }
+    try onb("onb-hosted-try-states", width: half) {
+        Heading(title: "Hosted · Try it, when Start has to wait", note: "Each in plain words, with the one thing to do: the microphone off for conch, speech recognition still downloading, the iPhone holding the audio (Hand it back, only when pressed), and the practice stopping under the tour.")
+        VStack(alignment: .leading, spacing: 24) {
+            HStack(alignment: .top, spacing: 24) {
+                small("The microphone is off for conch") { OnbHosted.practice(OnboardingReports.practiceStart(microphone: .denied, speech: SpeechEngineReport(state: "ready"))) }
+                small("Speech recognition still downloading") {
+                    OnbHosted.practice(OnboardingReports.practiceStart(microphone: .granted, speech: SpeechEngineReport(state: "downloading", progress: .init(bytes: 425e6, total: 574e6))),
+                                       downloads: downloads(stt: .downloading(done: 425e6, total: 574e6, secondsLeft: 40), voices: .ready))
+                }
+            }
+            HStack(alignment: .top, spacing: 24) {
+                small("The iPhone has the audio") {
+                    OnbHosted.practice(OnboardingReports.practiceStart(microphone: .granted, speech: SpeechEngineReport(state: "ready"), refusal: .init(
+                        reason: "phone", words: "Your iPhone has conch's audio right now. Hand it back to this Mac to try it here.")))
+                }
+                small("The practice stopped under the tour") {
+                    OnbHosted.practice(OnboardingReports.practiceStart(microphone: .granted, speech: SpeechEngineReport(state: "ready"), refusal: .init(
+                        reason: "ended", words: "The practice turn stopped before the tour was done. Start it again, or skip it.")))
+                }
+            }
+        }
+    }
+    try onb("onb-hosted-tour-states", width: 300 * 4 + 52 * 4 + 24 * 3 + 80) {
+        Heading(title: "Hosted · The tour's cards, as the rule gives them", note: "Answer out loud with what was sent; with nothing heard, and Listen again; the canvas's keys lit on the press; beside a panel docked on the right, pointing right. Then the one tip left by the pill, until the pill is first used.")
+        HStack(alignment: .top, spacing: 24) {
+            tourCard("Answer out loud: sent", TourProgress().applying(.spoken).applying(.heard("Show me what you made.")))
+            tourCard("Nothing heard yet", TourProgress().applying(.spoken).applying(.silent))
+            tourCard("Draw on anything: ⌃⌥⌘P pressed", TourProgress().applying(.next).applying(.next).applying(.next).applying(.next).applying(.hotKey))
+            tourCard("The panel, docked on the right", TourProgress().applying(.next).applying(.next).applying(.next), pointer: .right)
+        }
+        VStack(alignment: .leading, spacing: 8) {
+            Caption("After the tour: the one tip, under the pill")
+            VStack(spacing: 6) {
+                ControlBar(state: .talk, detail: "", mode: .constant(.talk), ready: ControlBar.Ready(label: "dayloop", position: 1, count: 1), onTap: {})
+                PillTipView()
+            }
+            .padding(28)
+            .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(LinearGradient(
+                colors: [Color(red: 0.80, green: 0.86, blue: 0.94), Color(red: 0.93, green: 0.86, blue: 0.84)], startPoint: .topLeading, endPoint: .bottomTrailing)))
         }
     }
     try onb("onb-hosted-downloads", width: (OnboardingWindowMetrics.railWidth + 24) * 4 + 80) {

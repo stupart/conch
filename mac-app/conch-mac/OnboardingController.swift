@@ -161,6 +161,17 @@ final class OnboardingController: NSObject, NSWindowDelegate {
         window?.performClose(nil)
     }
 
+    /// Try it's Start: the window steps aside for the tour (hidden, not closed: nothing is put away), and `show` brings it
+    /// back for You're set.
+    func stepAside() {
+        window?.orderOut(nil)
+    }
+
+    /// Help › Take the tour: Try it, where Start runs the practice turn and the tour again.
+    func takeTheTour() {
+        open(step: .practice)
+    }
+
     func windowWillClose(_ notification: Notification) {
         closeGuide()
         model.windowClosed()
@@ -262,6 +273,14 @@ final class OnboardingStore: ObservableObject {
     @Published private(set) var phoneQR: Image?
     @Published private(set) var phoneFailure: String?
 
+    // Try it.
+    /// What the daemon last said when Start asked, or why the tour came back early.
+    @Published private(set) var practiceRefusal: PracticeReport.Problem?
+    @Published private(set) var practiceStarting = false
+    /// The practice turn's lease: the connection `practice-start` holds open (src/practice.ts). conch quitting or crashing
+    /// closes it, and the daemon takes the practice session away with it.
+    private var practiceLease: Int32?
+
     // You're set.
     @Published private(set) var openAtLogin = true
     @Published private(set) var loginNote: String?
@@ -293,7 +312,9 @@ final class OnboardingStore: ObservableObject {
 
     var readiness: OnboardingReadiness {
         OnboardingReports.readiness(agents: agents, permissions: PermissionCenter.shared.statuses, speech: published.speech,
-                                    voices: published.voices, phonePaired: phoneSetUp)
+                                    voices: published.voices, phonePaired: phoneSetUp,
+                                    // Only a daemon that says it can: an older one keeps Try it off the rail.
+                                    practiceAvailable: OnboardingReports.practiceAvailable(feature: published.practiceFeature))
     }
 
     /// A phone is set up here: paired by the daemon's record, or set up before it kept one (`OnboardingReports.phoneSetUp`).
@@ -817,6 +838,90 @@ final class OnboardingStore: ObservableObject {
         return "\(host):\(pairing.port)"
     }
 
+    // MARK: Try it
+
+    /// Where Try it stands before Start: the microphone, speech recognition, and what the daemon last said.
+    var practiceStart: PracticeStartState {
+        OnboardingReports.practiceStart(microphone: PermissionCenter.shared.statuses[.microphone], speech: published.speech,
+                                        refusal: practiceRefusal, starting: practiceStarting)
+    }
+
+    /// Start: the daemon's practice turn, held by its lease; then the window steps aside and the tour runs.
+    func startPractice() {
+        guard let stateStore, !practiceStarting, practiceLease == nil else { return }
+        switch practiceStart {
+        case .needsMicrophone, .waitingForRecognition, .starting: return
+        case .ready, .audioElsewhere, .problem: break
+        }
+        practiceRefusal = nil
+        practiceStarting = true
+        Task {
+            let opened = await SetupDaemon.client.open(SetupDaemonRequest(kind: "practice-start"), timeout: 5)
+            practiceStarting = false
+            guard let opened else {
+                practiceRefusal = PracticeReport.Problem(reason: "unanswered", words: SetupDaemon.notAnswering)
+                return
+            }
+            let reply = SetupDaemon.decode(opened.reply)
+            guard reply?.kind == "practice-started" else {
+                Darwin.close(opened.descriptor)
+                practiceRefusal = PracticeReport.Problem(reason: reply?.reason ?? "unknown",
+                                                         words: reply?.error ?? SetupDaemonFailure.olderDaemon.words)
+                return
+            }
+            practiceLease = opened.descriptor
+            OnboardingController.shared.stepAside()
+            TourCoach.shared.start(store: stateStore) { outcome in self.tourClosed(outcome) }
+        }
+    }
+
+    /// Try it's status line button: Allow… for a microphone that's off, Hand it back for audio that's elsewhere.
+    func practiceAction() {
+        switch practiceStart {
+        case .needsMicrophone:
+            permissionAction(.microphone, PermissionCenter.shared.statuses[.microphone]?.action ?? .ask)
+        case .audioElsewhere:
+            handBack()
+        default:
+            break
+        }
+    }
+
+    /// "Hand it back": the audio back to this Mac with the phone's own hand-back (`audio-sink`), pressed by the person and
+    /// never done for them, then Start again. The phone takes it again the next time conch comes forward on it.
+    private func handBack() {
+        Task {
+            _ = await SetupDaemon.client.request(AudioSinkRequest(sink: "mac"), timeout: 5)
+            practiceRefusal = nil
+            startPractice()
+        }
+    }
+
+    /// The tour closed: the practice turn goes, and the window comes back, on You're set unless the practice went away
+    /// under the tour.
+    private func tourClosed(_ outcome: TourProgress.Outcome) {
+        endPractice()
+        switch outcome {
+        case .finished, .skipped:
+            // Words reached the practice turn: that's conch hearing you too.
+            if TourCoach.shared.progress.heard != nil { heardYou = true }
+            apply(.next)
+        case .ended:
+            practiceRefusal = PracticeReport.Problem(reason: "ended", words: "The practice turn stopped before the tour was done. Start it again, or skip it.")
+        }
+        OnboardingController.shared.show()
+    }
+
+    /// The practice turn stopped in the daemon, and its lease let go.
+    func endPractice() {
+        guard let lease = practiceLease else { return }
+        practiceLease = nil
+        Task {
+            _ = await SetupDaemon.client.request(SetupDaemonRequest(kind: "practice-stop"), timeout: 5)
+            Darwin.close(lease)
+        }
+    }
+
     // MARK: You're set
 
     func toggleLogin(_ on: Bool) {
@@ -967,8 +1072,15 @@ struct OnboardingRootView: View {
                 OnboardingPhoneStep(state: model.phoneState, qr: model.phoneQR, kind: .inApp, lanCode: model.lanCode, lanHost: model.lanHost,
                                     onNewCode: model.newCode, onContinue: { model.apply(.next) }, onSkip: { model.apply(.skip) })
             case .practice:
-                // Not built yet, and never on the rail until it is (`practiceAvailable`): straight on.
-                Color.clear.onAppear { model.apply(.skip) }
+                if model.readiness.practiceAvailable {
+                    OnboardingPracticeStep(state: model.practiceStart, onStart: model.startPractice, onSkip: { model.apply(.skip) },
+                                           onAction: model.practiceAction) {
+                        PracticePreview()
+                    }
+                } else {
+                    // A daemon that can't run it (an older one): never on the rail, and straight on.
+                    Color.clear.onAppear { model.apply(.skip) }
+                }
             case .done:
                 OnboardingDoneStep(summary: summary, actions: firstActions, openAtLogin: model.openAtLogin, loginNote: model.loginNote,
                                    onToggleLogin: model.toggleLogin, onAction: model.firstAction, onClose: { controller.close() })

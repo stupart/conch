@@ -14,6 +14,14 @@ struct PublishedState: Decodable, Equatable, Sendable {
     struct Features: Decodable, Equatable, Sendable {
         let deliverables: Int?
         let viewedState: Int?
+        /// Setup's practice turn (src/practice.ts): Try it and the tour. Absent from a daemon without one.
+        let practice: Int?
+
+        init(deliverables: Int? = nil, viewedState: Int? = nil, practice: Int? = nil) {
+            self.deliverables = deliverables
+            self.viewedState = viewedState
+            self.practice = practice
+        }
     }
 
     let ownerDeviceId: String
@@ -42,6 +50,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
     /// Window snapshots the daemon is waiting on this app to take, for the phone (`WindowPreviewer`). Absent from an
     /// older daemon, and whenever none is waiting.
     let previewRequests: [PreviewRequest]
+    /// Setup's practice turn while one runs (src/practice.ts): where it is and what it heard, for the tour.
+    let practice: PracticeReport?
 
     struct PreviewRequest: Decodable, Equatable, Sendable {
         let id: String
@@ -96,6 +106,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         case audioOutbox
         case showing
         case previewRequests
+        case practice
     }
 
     init(
@@ -116,7 +127,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
         deliveries: [DeliveryOutcome] = [],
         features: Features? = nil,
         showing: Showing? = nil,
-        previewRequests: [PreviewRequest] = []
+        previewRequests: [PreviewRequest] = [],
+        practice: PracticeReport? = nil
     ) {
         self.v = v
         self.ownerDeviceId = ownerDeviceId
@@ -137,6 +149,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         self.features = features
         self.showing = showing
         self.previewRequests = previewRequests
+        self.practice = practice
     }
 
     init(from decoder: Decoder) throws {
@@ -178,6 +191,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         deliveries = Self.decodeLossyArray(DeliveryOutcome.self, from: container, forKey: .deliveries)
         showing = try? container.decodeIfPresent(Showing.self, forKey: .showing)
         previewRequests = Self.decodeLossyArray(PreviewRequest.self, from: container, forKey: .previewRequests)
+        practice = try? container.decodeIfPresent(PracticeReport.self, forKey: .practice)
     }
 
     private static func decodeLossyArray<Element: Decodable>(
@@ -217,6 +231,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
             && showing == other.showing
             // What the daemon can do (Remove, viewed receipts): a daemon upgrade flips it alone.
             && features == other.features
+            // The practice turn moving on moves the tour.
+            && practice == other.practice
     }
 }
 

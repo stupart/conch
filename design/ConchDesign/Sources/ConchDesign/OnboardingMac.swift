@@ -1541,15 +1541,36 @@ public struct PhoneOutline: View {
 
 // MARK: - Try it
 
+/// Where Try it stands before the tour: ready to start, or why not yet, in words a person can act on.
+public enum PracticeStartState: Equatable, Sendable {
+    case ready
+    /// Asked the daemon; the window steps aside once it answers.
+    case starting
+    /// The microphone is off for conch: asked for here, as the voice step asks. `action` is the row's own button.
+    case needsMicrophone(action: String)
+    /// Speech recognition is still downloading: Start waits for it.
+    case waitingForRecognition(Double)
+    /// The phone, or another Mac, has conch's audio: the daemon's words, and Hand it back.
+    case audioElsewhere(String)
+    /// It couldn't start, or stopped: why.
+    case problem(String)
+}
+
 public struct OnboardingPracticeStep<Preview: View>: View {
     let preview: Preview
+    let state: PracticeStartState
     let onStart: () -> Void
     let onSkip: () -> Void
+    /// The status line's button: Allow… for the microphone, Hand it back for the audio.
+    let onAction: () -> Void
 
-    public init(onStart: @escaping () -> Void = {}, onSkip: @escaping () -> Void = {}, @ViewBuilder preview: () -> Preview) {
+    public init(state: PracticeStartState = .ready, onStart: @escaping () -> Void = {}, onSkip: @escaping () -> Void = {},
+                onAction: @escaping () -> Void = {}, @ViewBuilder preview: () -> Preview) {
         self.preview = preview()
+        self.state = state
         self.onStart = onStart
         self.onSkip = onSkip
+        self.onAction = onAction
     }
 
     public var body: some View {
@@ -1559,24 +1580,111 @@ public struct OnboardingPracticeStep<Preview: View>: View {
             note: "This window steps aside while you try it.",
             primary: "Start",
             secondary: "Skip",
+            primaryEnabled: startable,
             onPrimary: onStart,
             onSecondary: onSkip
         ) {
-            preview
-                .frame(maxWidth: .infinity)
-                .frame(height: 236)
-                .clipShape(RoundedRectangle(cornerRadius: ConchRadius.medium, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: ConchRadius.medium, style: .continuous).strokeBorder(ConchColor.hairline, lineWidth: 1))
+            VStack(alignment: .leading, spacing: 14) {
+                preview
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 236)
+                    .clipShape(RoundedRectangle(cornerRadius: ConchRadius.medium, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: ConchRadius.medium, style: .continuous).strokeBorder(ConchColor.hairline, lineWidth: 0.5))
+                    .accessibilityHidden(true)
+                status
+            }
+        }
+    }
+
+    /// Start waits on what only the person, or the download, can change.
+    private var startable: Bool {
+        switch state {
+        case .ready, .audioElsewhere, .problem: true
+        case .starting, .needsMicrophone, .waitingForRecognition: false
+        }
+    }
+
+    @ViewBuilder private var status: some View {
+        switch state {
+        case .ready:
+            EmptyView()
+        case .starting:
+            HStack(spacing: 8) {
+                OnboardingSpinner(size: 12)
+                Text("Starting the practice turn…").font(.system(size: 12)).foregroundStyle(ConchColor.textSecondary)
+            }
+        case let .needsMicrophone(action):
+            statusLine("conch can't hear you yet: the microphone is off for conch.", tone: ConchColor.attention, button: action)
+        case let .waitingForRecognition(fraction):
+            HStack(spacing: 10) {
+                OnboardingSpinner(size: 12)
+                Text("Speech recognition is still downloading (\(Int((fraction * 100).rounded()))%). Start works once it's here.")
+                    .font(.system(size: 12)).foregroundStyle(ConchColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        case let .audioElsewhere(words):
+            statusLine(words, tone: ConchColor.textSecondary, button: "Hand it back")
+        case let .problem(words):
+            statusLine(words, tone: ConchColor.attention, button: nil)
+        }
+    }
+
+    private func statusLine(_ words: String, tone: ConchColorToken, button: String?) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            Text(words)
+                .font(.system(size: 12))
+                .foregroundStyle(tone)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            if let button { OnboardingButton(button, style: .action, action: onAction) }
         }
     }
 }
 
-/// The tour's card, beside whatever it points at: which beat, what it is, and what to try.
+/// Try it's picture of what's coming: the pill reading the practice turn, and its line, over a soft ground. Light, as
+/// the design draws it, in either appearance.
+public struct PracticePreview: View {
+    public init() {}
+
+    public var body: some View {
+        ZStack(alignment: .top) {
+            LinearGradient(colors: [Color(red: 0.80, green: 0.86, blue: 0.94), Color(red: 0.93, green: 0.86, blue: 0.84), Color(red: 0.86, green: 0.82, blue: 0.93)],
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.white.opacity(0.7))
+                .padding(.horizontal, 44)
+                .padding(.top, 46)
+                .padding(.bottom, -20)
+                .blur(radius: 1.5)
+            VStack(spacing: 18) {
+                ControlBar(state: .speaking, detail: "Practice turn", mode: .constant(.talk))
+                (Text("Hi, I'm conch. When an agent finishes, ")
+                    + Text("I read you what it did. Try answering me.").foregroundColor(Color.black.opacity(0.32)))
+                    .font(.system(size: 17, weight: .medium))
+                    .tracking(-0.2)
+                    .foregroundStyle(Color.black.opacity(0.85))
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 380)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 14)
+                    .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.white.opacity(0.82)))
+                    .conchElevation(.floating)
+            }
+            .padding(.top, 20)
+        }
+        .environment(\.colorScheme, .light)
+    }
+}
+
+/// The tour's card, beside whatever it points at: which beat, what it is, and what to try. Its button moves the tour on
+/// when the thing itself didn't happen; Skip tour is there at every beat.
 public struct CoachCard: View {
     public enum Pointer: Sendable {
         case up
         case down
         case left
+        /// Pointing right: the card to the left of what it's about, when there's no room on its right.
+        case right
         case none
     }
 
@@ -1588,10 +1696,19 @@ public struct CoachCard: View {
     /// The chord held down right now: its keys light, and the beat moves on by itself.
     let chordLit: Bool
     let heard: String?
+    /// A plain word when something didn't happen, and a quieter button to try again.
+    let note: String?
+    let retry: String?
     let pointer: Pointer
     let primary: String
+    let onPrimary: () -> Void
+    let onSkip: () -> Void
+    let onRetry: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    public init(beat: Int, of: Int, title: String, text: String, chord: String? = nil, chordLit: Bool = false, heard: String? = nil, pointer: Pointer = .none, primary: String = "Next") {
+    public init(beat: Int, of: Int, title: String, text: String, chord: String? = nil, chordLit: Bool = false, heard: String? = nil,
+                note: String? = nil, retry: String? = nil, pointer: Pointer = .none, primary: String = "Next",
+                onPrimary: @escaping () -> Void = {}, onSkip: @escaping () -> Void = {}, onRetry: @escaping () -> Void = {}) {
         self.chordLit = chordLit
         self.beat = beat
         self.of = of
@@ -1599,8 +1716,21 @@ public struct CoachCard: View {
         self.text = text
         self.chord = chord
         self.heard = heard
+        self.note = note
+        self.retry = retry
         self.pointer = pointer
         self.primary = primary
+        self.onPrimary = onPrimary
+        self.onSkip = onSkip
+        self.onRetry = onRetry
+    }
+
+    /// A beat's card, as the tour's rule says it (`TourCard`), pointing where it hangs.
+    public init(_ card: TourCard, pointer: Pointer? = nil, onPrimary: @escaping () -> Void = {}, onSkip: @escaping () -> Void = {},
+                onRetry: @escaping () -> Void = {}) {
+        self.init(beat: card.beat.rawValue, of: TourCard.count, title: card.title, text: card.text, chord: card.chord, chordLit: card.chordLit,
+                  heard: card.heard, note: card.note, retry: card.retry, pointer: pointer ?? card.pointer, primary: card.primary,
+                  onPrimary: onPrimary, onSkip: onSkip, onRetry: onRetry)
     }
 
     public var body: some View {
@@ -1611,13 +1741,20 @@ public struct CoachCard: View {
                         .fill(index == beat ? AnyShapeStyle(ConchColor.textPrimary) : AnyShapeStyle(ConchColor.textTertiary.opacity(0.35)))
                         .frame(width: index == beat ? 14 : 5, height: 5)
                 }
+                .accessibilityHidden(true)
                 Spacer()
-                Text("Skip tour").font(.system(size: 11, weight: .medium)).foregroundStyle(ConchColor.textTertiary)
+                Button(action: onSkip) {
+                    Text("Skip tour").font(.system(size: 11, weight: .medium)).foregroundStyle(ConchColor.textTertiary)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Skip tour")
             }
             Text(title)
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(ConchColor.textPrimary)
                 .padding(.top, 12)
+                .accessibilityAddTraits(.isHeader)
             Text(text)
                 .font(.system(size: 13))
                 .foregroundStyle(ConchColor.textSecondary)
@@ -1627,12 +1764,22 @@ public struct CoachCard: View {
             if let heard {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text("“\(heard)”").font(.system(size: 13, weight: .medium)).foregroundStyle(ConchColor.textPrimary)
+                        .lineLimit(3)
                     Spacer(minLength: 4)
                     OnboardingStatus(.done, "Sent")
                 }
                 .padding(10)
                 .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(ConchColor.fill))
                 .padding(.top, 10)
+                .transition(.opacity.combined(with: .scale(scale: reduceMotion ? 1 : ConchMotion.popScale)))
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Sent: \(heard)")
+            } else if let note {
+                Text(note)
+                    .font(.system(size: 12))
+                    .foregroundStyle(ConchColor.attention)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 10)
             }
             HStack(spacing: 8) {
                 if let chord {
@@ -1641,7 +1788,8 @@ public struct CoachCard: View {
                         .foregroundStyle(chordLit ? ConchColor.textPrimary : ConchColor.textTertiary)
                 }
                 Spacer()
-                OnboardingButton(primary)
+                if let retry { OnboardingButton(retry, style: .quiet, action: onRetry) }
+                OnboardingButton(primary, action: onPrimary)
             }
             .padding(.top, 14)
         }
@@ -1651,6 +1799,49 @@ public struct CoachCard: View {
         .overlay(CoachShape(pointer: pointer).stroke(ConchColor.hairlineStrong, lineWidth: 0.5))
         .compositingGroup()
         .conchElevation(.overlay)
+        .animation(ConchMotion.pop.animation(reduceMotion: reduceMotion), value: heard)
+        .animation(ConchMotion.pop.animation(reduceMotion: reduceMotion), value: chordLit)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Tour, \(beat) of \(of): \(title)")
+    }
+}
+
+/// The one tip the tour leaves behind (`PillTip`), hanging from the pill: its words, in the pill's ready green, and a way
+/// to close it. It goes the first time the pill is used.
+public struct PillTipView: View {
+    let onClose: () -> Void
+
+    public init(onClose: @escaping () -> Void = {}) {
+        self.onClose = onClose
+    }
+
+    public var body: some View {
+        HStack(alignment: .center, spacing: 9) {
+            Circle().fill(VoiceOrb.readyFill.color).frame(width: 8, height: 8)
+                .accessibilityHidden(true)
+            Text(PillTip.text)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(ConchColor.textPrimary)
+                .fixedSize()
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(ConchColor.textTertiary)
+                    .frame(width: 18, height: 18)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close tip")
+        }
+        .padding(.leading, 12)
+        .padding(.trailing, 7)
+        .padding(.vertical, 8)
+        .background(CoachShape(pointer: .up, radius: 12, size: 7).fill(ConchColor.surfaceRaised))
+        .overlay(CoachShape(pointer: .up, radius: 12, size: 7).stroke(ConchColor.hairlineStrong, lineWidth: 0.5))
+        .compositingGroup()
+        .conchElevation(.overlay)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Tip: \(PillTip.text)")
     }
 }
 
@@ -1673,6 +1864,9 @@ struct CoachShape: Shape {
         case .left:
             let y = rect.minY + 40
             tip = (CGPoint(x: rect.minX + 0.5, y: y - size), CGPoint(x: rect.minX - size, y: y), CGPoint(x: rect.minX + 0.5, y: y + size))
+        case .right:
+            let y = rect.minY + 40
+            tip = (CGPoint(x: rect.maxX - 0.5, y: y - size), CGPoint(x: rect.maxX + size, y: y), CGPoint(x: rect.maxX - 0.5, y: y + size))
         case .none:
             tip = nil
         }

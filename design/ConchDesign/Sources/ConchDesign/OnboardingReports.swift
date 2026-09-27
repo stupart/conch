@@ -117,6 +117,53 @@ public struct AgentSetupReport: Decodable, Equatable, Sendable {
     public var connected: Bool { hooksWired && pluginInstalled }
 }
 
+/// Setup's practice turn as published (`PublishedPractice`, src/practice.ts), while one runs.
+public struct PracticeReport: Decodable, Equatable, Sendable {
+    public struct Problem: Decodable, Equatable, Sendable {
+        /// "phone" | "another-mac" | "recognition" | "busy" | "mic-open" | "closing" | "none" | "unavailable"
+        public let reason: String
+        /// The daemon's own words, shown as they are.
+        public let words: String
+
+        public init(reason: String, words: String) {
+            self.reason = reason
+            self.words = words
+        }
+    }
+
+    public let sessionId: String
+    /// "speaking" | "listening" | "ready" | "viewed"
+    public let stage: String
+    public let heard: String?
+    public let silent: Bool?
+    public let listening: Bool?
+    public let problem: Problem?
+    public let systemVoice: Bool?
+
+    public init(sessionId: String = "conch-practice", stage: String, heard: String? = nil, silent: Bool? = nil, listening: Bool? = nil,
+                problem: Problem? = nil, systemVoice: Bool? = nil) {
+        self.sessionId = sessionId
+        self.stage = stage
+        self.heard = heard
+        self.silent = silent
+        self.listening = listening
+        self.problem = problem
+        self.systemVoice = systemVoice
+    }
+
+    /// What the tour learns from it: every fact it states, each harmless to hear twice (`TourProgress.applying`).
+    public var tourEvents: [TourEvent] {
+        var events: [TourEvent] = []
+        if stage != "speaking" { events.append(.spoken) }
+        if let heard, !heard.isEmpty { events.append(.heard(heard)) }
+        if silent == true, listening != true { events.append(.silent) }
+        // Always said, so a go that's under way again clears what the last one couldn't do.
+        events.append(.problem(problem?.words))
+        if stage == "viewed" { events.append(.readyOpened) }
+        return events
+    }
+}
+
 /// What the setup window is doing with an agent right now, which the daemon's report can't know.
 public enum AgentActivity: Equatable, Sendable {
     case connecting
@@ -303,6 +350,43 @@ public enum OnboardingReports {
         }
         if let failure { return .failed(failure) }
         return .waiting(relay: relay)
+    }
+
+    // MARK: Try it
+
+    /// The daemon can run the practice turn: it publishes `features.practice` (src/practice.ts). An older daemon doesn't,
+    /// and neither does one that isn't answering: Try it stays off the rail.
+    public static func practiceAvailable(feature: Int?) -> Bool {
+        (feature ?? 0) >= 1
+    }
+
+    /// Where Try it stands before Start does anything: the microphone, speech recognition, then what the daemon last said
+    /// about starting. Unknown is never a no: a microphone macOS hasn't answered for yet doesn't hold Start.
+    public static func practiceStart(microphone: ConchPermissionStatus?, speech: SpeechEngineReport?, refusal: PracticeReport.Problem? = nil,
+                                     starting: Bool = false) -> PracticeStartState {
+        if starting { return .starting }
+        switch microphone {
+        case .denied?, .notAsked?, .needsRelaunch?:
+            return .needsMicrophone(action: (microphone?.action ?? .ask).title)
+        case .restricted?:
+            return .problem("Whoever manages this Mac has turned the microphone off for conch.")
+        case .granted?, .unknown?, nil:
+            break
+        }
+        switch speech?.state {
+        case "ready"?:
+            break
+        case "off"?:
+            return .problem("Speech recognition isn't working, so conch can't hear you. Settings › Setup says why.")
+        default:
+            let fraction = speech?.progress.map { $0.total > 0 ? $0.bytes / $0.total : 0 } ?? 0
+            return .waitingForRecognition(fraction)
+        }
+        guard let refusal else { return .ready }
+        switch refusal.reason {
+        case "phone", "another-mac": return .audioElsewhere(refusal.words)
+        default: return .problem(refusal.words)
+        }
     }
 
     // MARK: Readiness

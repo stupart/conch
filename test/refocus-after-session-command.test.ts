@@ -144,8 +144,9 @@ test("the daemon hands back the /rename sync it types, and the wiring passes it 
   expect(synced).toBeGreaterThan(-1);
   expect(handed).toBeGreaterThan(synced);
   expect(controller).toContain("rename: (target, label, delivered) => {");
+  // Through the practice's door first (practice.ts), which answers only for its own session.
   expect(daemonSource).toContain(
-    "session: (message, delivered) => applySessionCommand(message, sessionCommandDispatchOptions, delivered),",
+    ": applySessionCommand(message, sessionCommandDispatchOptions, delivered)),",
   );
 });
 
