@@ -120,8 +120,10 @@ describe("Mac Phase 2 questions and error reporting", () => {
     expect(models).toContain("let material: Material?");
     expect(conversation).toContain("case .material:");
     expect(conversation).toContain("MaterialRow(material: item.material, fallback: item.text)");
-    // Decoded at the size the row draws it, never whole (ConchDesign/ImageDecode.swift).
-    expect(conversation).toContain("ConchImage.thumbnail(atPath: path, maxPixelSize: Self.maxPixelSize)");
+    // Decoded at the size the row draws it, never whole, and off the main thread
+    // (ConchDesign/ImageDecode.swift; the review of #443, finding 24).
+    expect(conversation).toContain("private static let maxPixelSize = 1_400");
+    expect(conversation).toContain("ConchImage.decode(picture, maxPixelSize: size)");
     expect(conversation).toContain("Image(nsImage: image)");
   });
 

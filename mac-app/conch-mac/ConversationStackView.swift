@@ -1474,66 +1474,96 @@ private struct SentReceiptBubble: View {
 private struct MaterialRow: View {
     let material: ConversationItem.Material?
     let fallback: String
+    /// The picture, decoded off the main thread, under the key it was decoded for. A nil image
+    /// is one that would not decode: the row says what it is instead.
+    @State private var decoded: Decoded?
 
-    /// The picture decoded for the row it is drawn in, never whole: this row is at most 320 pt
-    /// tall in a 700 pt column, so its longest side needs 1,400 pixels at 2x. `NSImage(contentsOfFile:)`
-    /// decoded a 2880 × 1800 screenshot whole, twenty megabytes held for as long as the row was.
-    private var image: NSImage? {
-        guard material?.kind == .image else { return nil }
-        if let path = material?.path,
-           let image = ConchImage.cached(path, maxPixelSize: Self.maxPixelSize, decode: {
-               ConchImage.thumbnail(atPath: path, maxPixelSize: Self.maxPixelSize)
-           }) {
-            return NSImage(cgImage: image, size: .zero)
-        }
-        guard let dataUrl = material?.dataUrl,
-              let comma = dataUrl.firstIndex(of: ",")
-        else { return nil }
-        let key = "data:\(dataUrl.count):\(dataUrl.hashValue)"
-        return ConchImage.cached(key, maxPixelSize: Self.maxPixelSize, decode: {
-            Data(base64Encoded: String(dataUrl[dataUrl.index(after: comma)...]))
-                .flatMap { ConchImage.thumbnail(data: $0, maxPixelSize: Self.maxPixelSize) }
-        }).map { NSImage(cgImage: $0, size: .zero) }
+    private struct Decoded {
+        let key: String
+        let image: NSImage?
     }
 
+    /// The picture this row draws, named and shaped without decoding it: the file at its path
+    /// while there is one, else the attachment inline. Named by the file's modification time and
+    /// size as well as its path (`ConchImage.key(forPath:)`), so a picture rewritten where it was
+    /// is drawn as it is now, not as it was first decoded.
+    private var picture: ConchImage.Picture? {
+        guard material?.kind == .image else { return nil }
+        if let path = material?.path, let picture = ConchImage.picture(atPath: path) { return picture }
+        return material?.dataUrl.flatMap(ConchImage.picture(dataURL:))
+    }
+
+    /// Decoded for the row it is drawn in, never whole: this row is at most 320 pt tall in a
+    /// 700 pt column, so its longest side needs 1,400 pixels at 2x. `NSImage(contentsOfFile:)`
+    /// decoded a 2880 × 1800 screenshot whole, twenty megabytes held for as long as the row was.
     private static let maxPixelSize = 1_400
 
     var body: some View {
-        if let image {
-            Image(nsImage: image)
-                .resizable()
-                .scaledToFit()
-                .frame(maxWidth: .infinity, maxHeight: 320, alignment: .leading)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(ConchPalette.divider, lineWidth: 0.5)
-                }
-                .help(material?.path ?? material?.title ?? "Image")
+        if let picture, !(decoded?.key == picture.key && decoded?.image == nil) {
+            pictureView(picture)
         } else {
-            HStack(alignment: .top, spacing: 8) {
-                Image(systemName: symbol)
-                    .font(.system(size: 11))
-                    .foregroundStyle(tint)
-                    .frame(width: 16)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(material?.title ?? "Material")
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(ConchPalette.textDim)
-                    if !detail.isEmpty {
-                        Text(detail)
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(ConchPalette.textFaint)
-                            .lineLimit(3)
-                            .textSelection(.enabled)
-                    }
+            detailRow
+        }
+    }
+
+    /// The picture, or its shape while it is decoded — the same size either way, so nothing
+    /// moves when it lands. Decoded in a task, off the main thread: in `body` it was tens of
+    /// milliseconds a screenshot, on the main thread, in the frame the row came into view. One
+    /// already decoded is drawn at once.
+    private func pictureView(_ picture: ConchImage.Picture) -> some View {
+        let image = decoded?.key == picture.key
+            ? decoded?.image
+            : ConchImage.decoded(picture, maxPixelSize: Self.maxPixelSize).map { NSImage(cgImage: $0, size: .zero) }
+        return Group {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+            } else {
+                Color.clear.aspectRatio(picture.aspect, contentMode: .fit)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: 320, alignment: .leading)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(ConchPalette.divider, lineWidth: 0.5)
+        }
+        .help(material?.path ?? material?.title ?? "Image")
+        .task(id: picture.key) {
+            guard decoded?.key != picture.key else { return }
+            let size = Self.maxPixelSize
+            let image = await Task.detached(priority: .userInitiated) {
+                ConchImage.decode(picture, maxPixelSize: size)
+            }.value
+            guard !Task.isCancelled else { return }
+            decoded = Decoded(key: picture.key, image: image.map { NSImage(cgImage: $0, size: .zero) })
+        }
+    }
+
+    private var detailRow: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: symbol)
+                .font(.system(size: 11))
+                .foregroundStyle(tint)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(material?.title ?? "Material")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(ConchPalette.textDim)
+                if !detail.isEmpty {
+                    Text(detail)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(ConchPalette.textFaint)
+                        .lineLimit(3)
+                        .textSelection(.enabled)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background(ConchPalette.raised.opacity(0.58), in: RoundedRectangle(cornerRadius: 8))
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(ConchPalette.raised.opacity(0.58), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var detail: String { material?.detail ?? fallback }

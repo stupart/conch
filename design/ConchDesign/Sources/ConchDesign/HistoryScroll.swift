@@ -43,6 +43,91 @@ public enum HistoryRetry {
     }
 }
 
+/// A read a reader makes besides the page before, each paused on its own after it fails.
+public enum HistoryRead: Hashable, Sendable {
+    /// A recorded item's body, by record id.
+    case body(String)
+    /// A released page, read again.
+    case page(Int)
+    /// The record item behind a live row, looked for by the provider's id (`HistoryWanted`).
+    case find(String)
+}
+
+/// Failed reads, each on its own pause: 1, 2, 4, 8, 16, then 30 s (`HistoryRetry`), and once
+/// those are spent, not again on its own — only when the reader comes back to it (scrolls it
+/// into view again) or asks for it.
+///
+/// Per read, because each failed alone and was tried again alone. A body that failed is neither
+/// held nor being read, so the next pass over the rows on screen asked for it again at once: with
+/// the daemon down or restarting, its reads coming back `busy`, or the phone offline, that was up
+/// to three tight loops per reader, each publishing twice and redrawing the whole stack, filling
+/// the daemon's eight-read limiter so that page reads failed too. And a released page whose read
+/// failed was asked for again only when the reader next scrolled, so it stayed a spinner.
+public struct HistoryBackoff: Equatable, Sendable {
+    private var failures: [HistoryRead: Int] = [:]
+    /// No read before this; `.distantFuture` once its tries are spent.
+    private var notBefore: [HistoryRead: Date] = [:]
+
+    public init() {}
+
+    public func failures(of read: HistoryRead) -> Int { failures[read] ?? 0 }
+
+    /// Whether `read` may be made at `now`: it never failed, or its pause is over.
+    public func allows(_ read: HistoryRead, at now: Date) -> Bool {
+        notBefore[read].map { now >= $0 } ?? true
+    }
+
+    /// Its tries are spent: it waits for the reader to come back to it.
+    public func isSpent(_ read: HistoryRead) -> Bool { notBefore[read] == .distantFuture }
+
+    /// The bodies paused at `now`, by record id: what `HistoryDemand.bodies` must not pick.
+    public func pausedBodies(at now: Date) -> Set<String> {
+        Set(notBefore.compactMap { read, until in
+            if case let .body(id) = read, now < until { return id }
+            return nil
+        })
+    }
+
+    /// `read` failed at `now`. Returns when it may be tried again on its own, or nil once its tries
+    /// are spent.
+    @discardableResult
+    public mutating func failed(_ read: HistoryRead, at now: Date) -> Date? {
+        let count = failures(of: read) + 1
+        failures[read] = count
+        guard let delay = HistoryRetry.delay(afterFailures: count) else {
+            notBefore[read] = .distantFuture
+            return nil
+        }
+        let until = now.addingTimeInterval(delay)
+        notBefore[read] = until
+        return until
+    }
+
+    /// `read` succeeded: it starts again from no failures.
+    public mutating func succeeded(_ read: HistoryRead) {
+        failures[read] = nil
+        notBefore[read] = nil
+    }
+
+    /// The reader came back to it — scrolled it into view again: one more try, if its tries were
+    /// spent. One still pausing keeps its pause; that pause ends on its own.
+    public mutating func revisit(_ read: HistoryRead) {
+        if isSpent(read) { notBefore[read] = nil }
+    }
+
+    /// Someone asked for it — opened it, or pressed Retry: tried now, whatever its pause. Its
+    /// failures still count, so a read that fails again pauses longer.
+    public mutating func lift(_ read: HistoryRead) {
+        notBefore[read] = nil
+    }
+
+    /// When the soonest pause after `now` ends: when the reader looks again. Nil when nothing is
+    /// pausing, spent reads included — nothing wakes for those.
+    public func nextWake(after now: Date) -> Date? {
+        notBefore.values.filter { $0 > now && $0 != .distantFuture }.min()
+    }
+}
+
 // MARK: - What the top of the conversation says
 
 /// The one line above the oldest message on screen.
@@ -233,10 +318,20 @@ public struct HistoryWindow: Equatable, Sendable {
         return resize(i, to: height)
     }
 
-    /// Everything drawn was drawn at another width: keep the heights as estimates until each
-    /// row is drawn again.
+    /// Everything drawn was drawn at another width.
+    ///
+    /// A row that is a real view keeps the height it was drawn at. If the new width changes it,
+    /// the row says so as it is laid out again; if not, that height is still exactly right. Every
+    /// other row goes back to its estimate for the new width, and is measured again the moment it
+    /// becomes a view — which is the only way it is ever seen.
+    ///
+    /// Not every row back to its estimate: a row whose height does not depend on the width — a
+    /// tool line, a picture, a short reply — reports nothing when the width changes, so a real row
+    /// reset to its estimate stayed there, drawn at its own height over its neighbours (a 984 pt
+    /// reply held at 196 pt after Side by Side, a window resize or a phone's rotation).
     public mutating func forgetMeasurements() {
-        measured = [:]
+        let real = Set(ids[materialised])
+        measured = measured.filter { real.contains($0.key) }
     }
 
     /// The reader moved, or the viewport changed size. Returns whether a different set of rows
@@ -476,12 +571,15 @@ public enum HistoryDemand {
     /// Which recorded messages to read whole, nearest the middle of the viewport first.
     ///
     /// Only a message the 240-character preview cuts short: a tool row keeps its output behind
-    /// its own disclosure, and anything already held or on its way is not asked for twice.
+    /// its own disclosure, and anything already held or on its way is not asked for twice. Nor is
+    /// one whose last read failed, until its pause is over (`HistoryBackoff`): it is neither held
+    /// nor being read, so without `paused` it is picked again the moment its read ends.
     public static func bodies(
         for rows: [HistoryItem],
         around center: Int,
         held: Set<String>,
         reading: Set<String>,
+        paused: Set<String> = [],
         limit: Int = concurrentBodies
     ) -> [String] {
         let room = limit - reading.count
@@ -489,10 +587,107 @@ public enum HistoryDemand {
         return rows.enumerated()
             .filter { _, item in
                 item.kind == "message" && item.hasFullBody && !held.contains(item.id) && !reading.contains(item.id)
+                    && !paused.contains(item.id)
             }
             .sorted { abs($0.offset - center) < abs($1.offset - center) }
             .prefix(room)
             .map(\.element.id)
+    }
+}
+
+// MARK: - The record item behind a live row
+
+/// The live rows waiting for their whole body, by the provider's id, and how each is reached.
+///
+/// A live row knows its message by the provider's id; a body is read by the record's own item
+/// id, and only a page names that. The pages a reader holds are the session's newest when it
+/// opened, and older ones — so a reply over 4,000 characters that arrived after that is in none
+/// of them, and the record pages backwards only. Asking only the held pages, it was never shown
+/// whole: #443 took away "Show the rest", the only other way to reach it.
+///
+/// So a row no held page names is looked for: the newest page of its own branch, read with the
+/// row's own id as the tip, where that message is the newest thing there is. One look at a time,
+/// for the newest row still unnamed. One the record has not reached yet pauses like any failed
+/// read (`HistoryBackoff`), and the next look is for another.
+public struct HistoryWanted: Equatable, Sendable {
+    /// Wanted provider ids, oldest first: the live window's order.
+    public private(set) var natives: [String] = []
+    /// The record item each provider id is read by, once a page has named it.
+    public private(set) var records: [String: String] = [:]
+
+    public init() {}
+
+    public var isEmpty: Bool { natives.isEmpty }
+
+    public struct Named: Equatable, Sendable {
+        public let record: String
+        public let native: String
+
+        public init(record: String, native: String) {
+            self.record = record
+            self.native = native
+        }
+    }
+
+    public struct Plan: Equatable, Sendable {
+        /// Bodies to read now.
+        public let read: [Named]
+        /// The row to look for, if one is unnamed and its own last look is not pausing.
+        public let find: String?
+    }
+
+    /// Wanted, in the order the rows are drawn. One already wanted keeps its place.
+    public mutating func want(_ ids: [String]) {
+        for id in ids where !natives.contains(id) { natives.append(id) }
+    }
+
+    /// Its body is held whole: no longer waiting. Until then it stays wanted, so a read that
+    /// failed is made again when its pause ends rather than when the row next changes.
+    public mutating func remove(_ id: String) {
+        natives.removeAll { $0 == id }
+    }
+
+    /// What to do now, given the items the held pages name and the bodies being read.
+    ///
+    /// A held page's name is used first, as it always was; a look's, where no held page has one.
+    /// A named row whose body is being read waits for it, and one whose read is pausing waits
+    /// for the pause to end.
+    public mutating func plan(held items: [HistoryItem], reading: Set<String>, backoff: HistoryBackoff, now: Date) -> Plan {
+        guard !natives.isEmpty else { return Plan(read: [], find: nil) }
+        let wanted = Set(natives)
+        var held: [String: String] = [:]
+        for item in items {
+            guard let native = item.nativeId, wanted.contains(native), item.hasFullBody, held[native] == nil else { continue }
+            held[native] = item.id
+        }
+        records.merge(held) { _, fromHeld in fromHeld }
+        var read: [Named] = []
+        var unnamed: [String] = []
+        for native in natives {
+            guard let record = records[native] else {
+                unnamed.append(native)
+                continue
+            }
+            if !reading.contains(record), backoff.allows(.body(record), at: now) {
+                read.append(Named(record: record, native: native))
+            }
+        }
+        return Plan(read: read, find: unnamed.last { backoff.allows(.find($0), at: now) })
+    }
+
+    /// A look came back with these items: the wanted rows they name, read by those ids from here
+    /// on. Only an item with more than its preview names one: a record holding 240 characters of a
+    /// reply the snapshot cut at 4,000 has not reached it yet.
+    @discardableResult
+    public mutating func found(in items: [HistoryItem]) -> [String] {
+        let wanted = Set(natives)
+        var named: [String] = []
+        for item in items {
+            guard let native = item.nativeId, wanted.contains(native), item.hasFullBody, records[native] == nil else { continue }
+            records[native] = item.id
+            named.append(native)
+        }
+        return named
     }
 }
 
@@ -541,4 +736,44 @@ extension HistorySnapshot {
         if record.contains(tail) { return record }
         return nil
     }
+
+    /// How often a message still being written is read again from the record.
+    public static let refreshInterval: TimeInterval = 3
+
+    /// Whether to read a cut live row's body again because the record is behind it.
+    ///
+    /// Asked whenever the row changes, and again when the answer's time comes. Asked only when
+    /// the row changed, a reply whose last change came inside `refreshInterval` of its last read
+    /// — the end of a stream, or while a read was in flight — was never read again: the record
+    /// caught up, nothing on screen changed to ask, and it stayed cut.
+    ///
+    /// `tries` is how many times it was read again for this very cut. While the snapshot keeps
+    /// changing the row that starts again, so a streaming reply is read every `refreshInterval`;
+    /// once it stops, the pause doubles (`refreshPause`) until the tries are spent.
+    public static func refresh(record: String, cut: String, lastRead: Date?, tries: Int, now: Date) -> HistoryRefresh {
+        guard whole(record: record, cut: cut) == nil else { return .whole }
+        guard let pause = refreshPause(afterTries: tries) else { return .spent }
+        guard let lastRead else { return .now }
+        let due = lastRead.addingTimeInterval(pause)
+        return now >= due ? .now : .at(due)
+    }
+
+    /// The pause before reading again a cut the record is still behind: `refreshInterval` while
+    /// the row is changing, then 3, 3, 4, 8, 16 and 30 s as the same cut stays behind, then nil.
+    public static func refreshPause(afterTries tries: Int) -> TimeInterval? {
+        guard tries > 0 else { return refreshInterval }
+        return HistoryRetry.delay(afterFailures: tries).map { max(refreshInterval, $0) }
+    }
+}
+
+/// What to do about a live row the snapshot cut, whose body the record has (`HistorySnapshot.refresh`).
+public enum HistoryRefresh: Equatable, Sendable {
+    /// The record's copy and the snapshot's tail join: the row is whole.
+    case whole
+    /// The record is behind: read the body again now.
+    case now
+    /// Behind, and read too recently: ask again then.
+    case at(Date)
+    /// Read again as often as it will be for this cut: nothing more until the row changes.
+    case spent
 }
