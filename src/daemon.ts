@@ -201,6 +201,7 @@ import {
   onLiveDataChange,
   openTheaterReview,
   LEGACY_REVIEWS_FILE,
+  publishDictation,
   publishSessionsFile,
   REVIEWS_FILE,
   renderPanel,
@@ -314,6 +315,8 @@ import { resolveAgentInstall } from "./agent-install.ts";
 import { accessibilityTrusted } from "./accessibility.ts";
 // First-run setup's requests (setup.ts), over what `conch doctor`, `conch install` and `install-plugin` already do.
 import { createSetup, loginShellHas, MIC_CHECK_QUIET_WITHIN_MS, runInstallerInLoginShell } from "./setup.ts";
+// Setup's practice turn (practice.ts): conch's own session, spoken and heard through the voice loop, echoed, never delivered.
+import { createPractice, practiceGate, PRACTICE_LABEL, PRACTICE_SESSION_ID, type Practice } from "./practice.ts";
 import { resolveAgentBinaries } from "./doctor-checks.ts";
 import { codexHooksAreWiredAt, isConchHookCommand, runCodexInstall, runInstall } from "./install.ts";
 import { pluginInstalledFor, runInstallPlugin } from "./plugin-install.ts";
@@ -1199,6 +1202,9 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   function enqueue(incoming: TurnEvent): void | Promise<SocketTurnOutcome> {
     if (shuttingDown) return;
     const event = incoming;
+    // Setup's practice session is conch's own (practice.ts): anything naming it is the practice's to answer, and never
+    // reaches the queue, the voice loop or a terminal, whichever door it came in by.
+    if (event.sessionId === PRACTICE_SESSION_ID) return practice?.turn(event);
     breadcrumb(`hook: ${event.type} for "${event.label}"`);
     // Turned away rather than queued: a dictation while Show's narration has the mic (`VoiceLoop.refusal`).
     const refused = voice.refusal(event);
@@ -1309,6 +1315,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   }, { debounceMs: 50 });
   let lastPublishedPanelState: PublishedState | null = null;
   let lastPanelModel: PanelModel | null = null;
+  /** Setup's practice turn (practice.ts), made once the voice loop is: its session merged into every published state. */
+  let practice: Practice | null = null;
   /**
    * What is on screen and which session owns it (docs/screen-context.md). Resolved against the
    * last published rows — their folders and held deliverables — so it names only sessions the
@@ -1727,6 +1735,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       (voice.current().reciting ?? ledger.lastTurn)?.sessionId ?? null,
       Date.now(),
     );
+    // The practice row's voice follows the live state, which moved.
+    if (practice) lastPublishedPanelState = practice.publish(lastPublishedPanelState);
     publishedStateWriter.request();
   }
 
@@ -2018,6 +2028,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         speechEngineStatus,
       );
       lastPublishedPanelState.phone = phoneSetup.published(cfg.phoneEnabled);
+      // Setup's practice session, first among the rows while it runs, and `features.practice` always (practice.ts).
+      if (practice) lastPublishedPanelState = practice.publish(lastPublishedPanelState);
       publishedStateWriter.request();
       if (theaterMode) theaterNavigation.commitFrame(nextActiveSessionId, navSelectedId);
     }
@@ -2767,6 +2779,35 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     },
     retry: (what) => (what === "speech" ? speechEngine.retry() : voiceEnv?.retry() ?? false),
   });
+  // Setup's practice turn (practice.ts): the voice loop speaks its line and opens its mic through its own gates; what it
+  // hears is echoed into the practice session's conversation. Its card lives in conch's own folder, emptied at start.
+  practice = createPractice({
+    dir: join(conchHome(), ".cache/conch/practice"),
+    now: Date.now,
+    log,
+    audioElsewhere: () => (audioLease.isPhone() ? "phone" : audioHolder.isLocal() ? null : "another-mac"),
+    recognitionReady: () => speechEngineStatus?.state === "ready",
+    // Only the worker speaks with the natural voices; `say` and a server of the person's own are what they are.
+    naturalVoicesReady: () => cfg.ttsEngine !== "worker" || naturalVoices?.state === "ready",
+    voice: cfg.ttsVoices[0],
+    turn: ({ line, systemVoice, stillWanted, onSpoken }) => voice.practice({
+      label: PRACTICE_LABEL,
+      ...(line ? { line } : {}),
+      // A ring voice; the Mac's own while the natural voices aren't ready, asked for as itself so a download still
+      // going reports nothing as a failure.
+      speechCfg: systemVoice ? { ...cfg, ttsEngine: "say" } : { ...cfg, ttsVoices: cfg.ttsVoices.slice(0, 1) },
+      stillWanted,
+      onSpoken,
+    }),
+    hush: () => speech.cancelCurrent(),
+    dictated: (text) => publishDictation(text, PRACTICE_SESSION_ID),
+    changed: () => {
+      if (!lastPublishedPanelState) return; // the first render publishes it
+      lastPublishedPanelState = practice!.publish({ ...lastPublishedPanelState, ts: Date.now() });
+      publishedStateWriter.request();
+    },
+  });
+  const practiceTurns = practice;
   const controlServer = createControlServer({
     ownership,
     socketPath: cfg.socketPath,
@@ -2793,9 +2834,12 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         set: writeSetting,
         unset: unsetSetting,
       }),
-      session: (message, delivered) => applySessionCommand(message, sessionCommandDispatchOptions, delivered),
+      session: (message, delivered) => (practiceTurns.owns(message.sessionId)
+        ? practiceTurns.sessionCommand(message)
+        : applySessionCommand(message, sessionCommandDispatchOptions, delivered)),
       runtime: (message) => applyRuntimeControlMessage(message, runtimeControlDispatchOptions),
-      turn: (event) => dispatchSocketTurnEvent(event, socketTurnCallbacks),
+      // The practice session's events stop at the practice (practice.ts), before anything else reads them.
+      turn: practiceGate(practiceTurns, (event) => dispatchSocketTurnEvent(event, socketTurnCallbacks)),
       device: deviceCommand,
     },
     onDelivery: rememberDelivery,
@@ -2804,6 +2848,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     narration,
     onReviewPreview: (message) => windowPreviews.answer(message),
     setup,
+    practice: practiceTurns,
   });
 
   let shutdownStarted = false;
@@ -2816,6 +2861,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     rendererLifecycle.restore();
     theaterNavigation.dispose();
     shuttingDown = true;
+    // The practice session and its card go with the daemon: nothing of it is left for the next one.
+    practice?.stop("conch is closing");
     panelRefresh.close();
     transcriptWatch.stop();
     onLiveDataChange(null);

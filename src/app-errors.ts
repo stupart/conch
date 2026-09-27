@@ -31,7 +31,7 @@ export interface DaemonStateDigest {
   rows: Array<{
     id: string;
     label: string;
-    backend?: "claude" | "codex";
+    backend?: "claude" | "codex" | "conch";
     status: SessionStatus | null;
     active: boolean;
     paused: boolean;

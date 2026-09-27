@@ -42,6 +42,8 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         CanvasController.shared.install(store: store)
         // After the panels and the canvas: the input rides over both when it leaves conch's window.
         ComposerDock.shared.install(store: store)
+        // After the panels: a tip the tour left by the pill shows again until it's used.
+        TourCoach.shared.install(store: store)
     }
 
     private let store: StateStore

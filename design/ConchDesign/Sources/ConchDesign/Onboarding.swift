@@ -15,7 +15,7 @@ public enum OnboardingStep: String, CaseIterable, Codable, Sendable {
     case done
 
     /// Every step the rail can list, in order. Welcome and the end are not steps a person does. Which of them a Mac shows
-    /// is `OnboardingReadiness.rail`: Try it only once the practice turn is built.
+    /// is `OnboardingReadiness.rail`: Try it only with a daemon that can run the practice turn.
     public static let rail: [OnboardingStep] = [.agents, .permissions, .voice, .phone, .practice]
 
     public var title: String {
@@ -105,7 +105,8 @@ public struct OnboardingReadiness: Equatable, Sendable {
     /// Speech recognition and the natural voices are on this Mac and working.
     public var engineReady: Bool
     public var phonePaired: Bool
-    /// The practice turn and the tour are built. Until they are, the rail has no Try it and You're set follows iPhone:
+    /// The daemon can run the practice turn (it publishes `features.practice`, `OnboardingReports.practiceAvailable`).
+    /// With one that can't (an older daemon, or none answering), the rail has no Try it and You're set follows iPhone:
     /// setup never shows a step that does nothing.
     public var practiceAvailable: Bool
 

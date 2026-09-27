@@ -50,6 +50,9 @@ final class CanvasController: ObservableObject {
     @Published var recorder: CanvasRecorder?
     /// The pill's mic: a Show narrates, recorded by the daemon (`CanvasNarration`). Off until Tyler turns it on.
     @Published var narrate = false
+    /// ⌃⌥⌘P presses, and marks finished: the tour's canvas beat moves on from these (`TourCoach`).
+    @Published private(set) var hotKeyPresses = 0
+    @Published private(set) var marksDrawn = 0
 
     /// In use: the pen is down, ink is showing, or there is a Show. The glass shows only then.
     var inUse: Bool { armed || document?.isEmpty == false || recorder != nil }
@@ -128,6 +131,12 @@ final class CanvasController: ObservableObject {
         armed ? lift() : arm()
     }
 
+    /// ⌃⌥⌘P, from anywhere (`CanvasHotKey`): counted, then the pen down or up.
+    func hotKeyPressed() {
+        hotKeyPresses += 1
+        toggle()
+    }
+
     /// The pen down: the glass takes the pointer, and the one under the pointer the keys, without bringing conch forward.
     func arm() {
         guard !armed, !sending, store != nil else { return }
@@ -203,6 +212,7 @@ final class CanvasController: ObservableObject {
             document = CanvasDocument(anchor: CanvasAnchor(id: ink.display, frame: ink.window?.frame ?? ink.bounds))
         }
         document?.add(mark)
+        marksDrawn += 1
         notice = nil
         apply()
     }
@@ -423,6 +433,15 @@ final class CanvasController: ObservableObject {
 
     /// The pill hangs from what is above it, and says things under itself (`CanvasPillPlacement.Spot`).
     @Published private(set) var hangs = true
+
+    /// Where the pill itself is on screen while it shows, without the room its window keeps round it: what the tour's
+    /// card hangs beside (`TourCoach`).
+    var pillFrame: NSRect? {
+        guard pill.isVisible, pillMode != .hidden, pillSize.width > 0 else { return nil }
+        let frame = pill.frame
+        let margin = CanvasPillHost.margin
+        return NSRect(x: frame.midX - pillSize.width / 2, y: frame.minY + margin, width: pillSize.width, height: pillSize.height)
+    }
 
     /// Where the full-screen panel's header row ends: under its buttons and the session's name, where its deliverable
     /// begins (`ConversationFog.contentFrame`, in the full-screen glass: 12 pt in, and under the menu bar).
@@ -1125,7 +1144,7 @@ enum CanvasHotKey {
         guard registered == nil else { return }
         var pressed = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
-            MainActor.assumeIsolated { CanvasController.shared.toggle() }
+            MainActor.assumeIsolated { CanvasController.shared.hotKeyPressed() }
             return noErr
         }, 1, &pressed, nil, nil)
         // "cnch", 1: conch's only hot key.

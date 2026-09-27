@@ -11,6 +11,7 @@ import type { PublishedShowing } from "./screen-context.ts";
 import type { NaturalVoicesStatus } from "./voice-env.ts";
 import type { SpeechEngineStatus } from "./speech-engine.ts";
 import type { PublishedPhone } from "./phone-setup.ts";
+import type { PublishedPractice } from "./practice.ts";
 
 export type PanelConchState = "idle" | "muted" | "paused" | "speaking" | "listening" | "recording" | "transcribing";
 
@@ -256,7 +257,8 @@ export interface PublishedSessionRow {
    * phone that assumes one ceiling either wastes bytes or throws away detail
    * the model would have used.
    */
-  backend?: "claude" | "codex";
+  /** `conch` is conch's own practice session (`practice.ts`), which has no agent and no terminal. */
+  backend?: "claude" | "codex" | "conch";
   /**
    * Present on a subagent row: the session it runs inside. A viewer indents
    * it under that row and never treats it as a session of its own — it has
@@ -381,7 +383,12 @@ export interface PublishedState {
    * honest latest-deliverable-only view rather than presenting local guesses as shared truth.
    * Unknown means unknown.
    */
-  features: { deliverables: 4; viewedState: 1 };
+  features: {
+    deliverables: 4;
+    viewedState: 1;
+    /** Setup's practice turn (`practice.ts`): `practice-start`, `-listen`, `-stop`. Absent from a daemon without one. */
+    practice?: 1;
+  };
   /** Stable identity of the daemon installation that owns every local session key. */
   ownerDeviceId: string;
   ts: number;
@@ -445,6 +452,11 @@ export interface PublishedState {
    * natural voices; onboarding reads it as setup status. Absent from older daemons.
    */
   speechEngine?: SpeechEngineStatus;
+  /**
+   * Setup's practice turn while one runs (`practice.ts`): where it is, what it heard, and why a go didn't run. Its
+   * session is the first row. Absent with none running, and from older daemons.
+   */
+  practice?: PublishedPractice;
 }
 
 const MAX_PUBLISHED_CONVERSATION_CHARS = 4_000;

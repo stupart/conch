@@ -228,6 +228,11 @@ final class FloatingPanels: ObservableObject {
     @Published var staged: SessionRow.ID?
     /// Where the Ready pill and the panel's Previous and Next are in what is ready: one walk, so they agree.
     let queue = ReviewQueue()
+    /// How many times the person has moved the panel: dragged or thrown it, resized it, filled the screen with it, folded
+    /// or opened it. The tour's panel beat moves on from this (`TourCoach`); conch putting the panel out never counts.
+    @Published private(set) var moves = 0
+    /// Where a press on the fog began, so a click that moved nothing isn't a move.
+    private var pressedAt: NSPoint?
     /// Told when the fog starts or stops covering the screen (`coverChanged`).
     private weak var store: StateStore?
     /// The panel's session switcher is open. Here rather than in the view, so a press anywhere else on the fog, which is
@@ -590,6 +595,7 @@ final class FloatingPanels: ObservableObject {
 
     /// The fog's collapse button and its handle both flip the default; `showWhatIsOn` does the rest.
     func toggleCollapsed() {
+        moves += 1
         UserDefaults.standard.set(!isCollapsed, forKey: Self.conversationCollapsedKey)
     }
 
@@ -630,6 +636,7 @@ final class FloatingPanels: ObservableObject {
     /// 12 pt from the screen's edges (`PanelGlass.Geometry`), and the words come back laid out for where it landed.
     func toggleFullScreen() {
         guard !isCollapsed, let screen = screen() else { return }
+        moves += 1
         dock(corner, on: screen)
         switching = false
         if isFullScreen {
@@ -944,6 +951,7 @@ final class FloatingPanels: ObservableObject {
         // A press anywhere but the switcher closes it, as a click outside a menu does.
         if switching { switching = false }
         guard morphing == nil, form != .collapsed else { return }
+        pressedAt = NSEvent.mouseLocation
         motion.press(at: NSEvent.mouseLocation, time: ProcessInfo.processInfo.systemUptime)
         container.run(true)
     }
@@ -956,6 +964,9 @@ final class FloatingPanels: ObservableObject {
     /// momentum if `cancelled`; a resize springs back inside its limits.
     func released(cancelled: Bool = false) {
         guard motion.isGesturing else { return }
+        // Dragged, thrown or resized by more than a click's wobble: the person moved it.
+        if let from = pressedAt, hypot(NSEvent.mouseLocation.x - from.x, NSEvent.mouseLocation.y - from.y) > 4 { moves += 1 }
+        pressedAt = nil
         let screen = screen(containing: NSEvent.mouseLocation)?.frame ?? motion.screen
         motion.release(at: ProcessInfo.processInfo.systemUptime, in: screen, cancelled: cancelled)
     }
@@ -1102,6 +1113,8 @@ final class ReviewQueue: ObservableObject {
     /// A click on the Ready pill, or on the panel's Previous or Next. The version is taken at the click, and found again
     /// when its turn comes: still that version, and still held.
     func walk(backward: Bool = false, from origin: ConchStatusItem.OpenFrom, store: StateStore, panels: FloatingPanels) {
+        // The pill used: the tip the tour left by it goes (`TourCoach`).
+        if origin == .pill { NotificationCenter.default.post(name: .readyPillClicked, object: nil) }
         let held = Self.held(store.state)
         let key = backward
             ? ReviewScene.previous(before: lastStaged, in: held.map { (key: $0.id, at: $0.reviewedAt ?? 0) })
@@ -1395,6 +1408,10 @@ private struct ConversationFogHost: View {
     }
 
     static func fogSession(_ row: SessionRow, item: String?, standing: FogSession.Standing = .other) -> FogSession {
+        // Setup's practice session is conch's own (src/practice.ts): its name, and no agent's mark.
+        if row.backend?.lowercased() == "conch" {
+            return FogSession(id: row.id, label: row.label, agent: "conch", mark: nil, item: item, standing: standing)
+        }
         // ponytail: the session list's two marks (AgentBadge); a third backend gets Claude's until it has its own asset.
         let codex = row.backend?.lowercased() == "codex"
         return FogSession(id: row.id, label: row.label, agent: codex ? "Codex" : "Claude", mark: codex ? "AgentCodex" : "AgentClaude", item: item, standing: standing)

@@ -102,6 +102,7 @@ struct ConchMacApp: App {
             }
             CommandGroup(after: .help) {
                 Button("Set up conch…") { OnboardingController.shared.openFromHelp() }
+                Button("Take the tour") { OnboardingController.shared.takeTheTour() }
                 Button("Keyboard Shortcuts") {
                     NotificationCenter.default.post(
                         name: .showKeyboardShortcuts,

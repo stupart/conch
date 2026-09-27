@@ -151,7 +151,8 @@ describe("daemon listen status hooks", () => {
       "() => reducer.snapshot.buffer.map((segment) => segment.text).join(\" \")",
     );
     expect(conversationWiring).not.toContain("theaterMode");
-    expect(voiceSource).toContain('listenHooks(event.label, () => "")');
+    // A permission answer's window (and the practice turn's) is `oneMicWindow`, with no committed prefix of its own.
+    expect(voiceSource).toContain('listenHooks(label, () => "")');
   });
 
   test("published conversation production and controllers are not theater-gated", () => {

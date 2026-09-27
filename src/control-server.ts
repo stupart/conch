@@ -26,6 +26,7 @@ import { decodeNarrationRequest, type Narration, type NarrationReply } from "./n
 import type { AgentInstall } from "./agent-install.ts";
 import { applyPlan, planToggle, rollbackFile, type ConfigWriteHomes, type ConfigWriteIo } from "./config-write.ts";
 import { decodeSetupRequest, type Setup, type SetupReply } from "./setup.ts";
+import { decodePracticeRequest, practiceRefusal, type Practice, type PracticeReply } from "./practice.ts";
 import { breadcrumb } from "./loop-watchdog.ts";
 import {
   isControlMessageCandidate,
@@ -1122,6 +1123,8 @@ export interface ControlServerOptions {
   onReviewPreview?(message: { request?: unknown; path?: unknown; error?: unknown }): Promise<{ ok: true } | { ok: false; error: string }>;
   /** First-run setup's requests (setup.ts): agents found and connected, a voice sample, the microphone check. */
   setup?: Setup;
+  /** Setup's practice turn (practice.ts): a `practice-start` that is taken keeps its connection open, as the lease. */
+  practice?: Practice;
   ownership?: SocketOwnership;
 }
 
@@ -1320,6 +1323,29 @@ export function createControlServer(options: ControlServerOptions): ControlServe
             reply = await options.setup.handle(setupRequest, (line) => {
               if (!sock.destroyed) sock.write(JSON.stringify(line) + "\n");
             }, closed);
+          }
+          sock.end(JSON.stringify(reply) + "\n");
+          return;
+        }
+        // Setup's practice turn (practice.ts) names no session the app picked: conch's own. A start that is taken answers
+        // and stays open, as a narration's does: the app holds this connection for as long as its tour runs, and its going
+        // away (a quit, a crash) ends the practice and removes it.
+        const practiceRequest = decodePracticeRequest(body);
+        if (practiceRequest) {
+          let reply: PracticeReply;
+          if (!options.practice) reply = { kind: "practice-error", reason: "unavailable", error: practiceRefusal("unavailable") };
+          else if (practiceRequest.kind === "practice-start") {
+            const closed = new Promise<void>((resolve) => {
+              sock.once("end", () => resolve());
+              sock.once("close", () => resolve());
+            });
+            reply = await options.practice.handle(practiceRequest, { closed, end: () => void sock.end() });
+            if (reply.kind === "practice-started") {
+              sock.write(JSON.stringify(reply) + "\n");
+              return;
+            }
+          } else {
+            reply = await options.practice.handle(practiceRequest);
           }
           sock.end(JSON.stringify(reply) + "\n");
           return;

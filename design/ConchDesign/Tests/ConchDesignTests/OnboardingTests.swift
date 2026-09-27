@@ -5,7 +5,7 @@ import XCTest
 /// nothing lost when the window closes or conch reopens for a grant.
 final class OnboardingTests: XCTestCase {
     private let fresh = OnboardingReadiness.fresh
-    /// A fresh Mac once the practice turn and tour are built: the rail has Try it.
+    /// A fresh Mac with a daemon that runs the practice turn (`features.practice`): the rail has Try it.
     private let freshWithPractice = OnboardingReadiness(practiceAvailable: true)
     /// Claude Code wired, Codex found and not, the microphone allowed, two others off.
     private let partway = OnboardingReadiness(agentsFound: 2, agentsConnected: 1, microphone: true, permissionsMissing: 2)
@@ -87,9 +87,10 @@ final class OnboardingTests: XCTestCase {
         XCTAssertFalse(OnboardingReadiness(microphone: false, permissionsMissing: 0).satisfies(.permissions), "the microphone is one of the three")
     }
 
-    // MARK: Try it, before it is built
+    // MARK: Try it, only with a daemon that runs it
 
-    /// Until the practice turn and tour exist the rail has no Try it: You're set follows iPhone, and nothing counts it.
+    /// With a daemon that can't run the practice turn the rail has no Try it: You're set follows iPhone, and nothing counts
+    /// it. With one that can, Try it follows iPhone, and You're set follows Try it.
     func testWithoutThePracticeTurnTheRailEndsAtIPhone() {
         XCTAssertEqual(fresh.rail, [.agents, .permissions, .voice, .phone])
         XCTAssertEqual(freshWithPractice.rail, [.agents, .permissions, .voice, .phone, .practice])
@@ -99,8 +100,31 @@ final class OnboardingTests: XCTestCase {
         XCTAssertEqual(atPhone.applying(.next, readiness: freshWithPractice).step, .practice)
         XCTAssertEqual(atPhone.remaining(fresh), [.phone])
         XCTAssertEqual(atPhone.remaining(freshWithPractice), [.phone, .practice])
-        // The phone handing back moves a waiting Mac to the end.
+        // The phone handing back moves a waiting Mac to the end, or to Try it.
         XCTAssertEqual(atPhone.applying(.phone(.init(device: "Tyler's iPhone", stage: .finished)), readiness: fresh).step, .done)
+        XCTAssertEqual(atPhone.applying(.phone(.init(device: "Tyler's iPhone", stage: .finished)), readiness: freshWithPractice).step, .practice)
+    }
+
+    /// The tour closing is Try it's Continue: done, and You're set. Its own Skip leaves it for later, which the menu counts;
+    /// Try it is never already true, so it is never ticked on the way past.
+    func testTryItEndsOnYoureSetOrIsLeftForLater() {
+        let atTry = run([.begin, .next, .next, .next, .next], readiness: freshWithPractice)
+        XCTAssertEqual(atTry.step, .practice)
+        let toured = atTry.applying(.next, readiness: freshWithPractice)
+        XCTAssertEqual(toured.step, .done)
+        XCTAssertEqual(toured.mark(.practice), .done)
+        XCTAssertTrue(toured.finished)
+        let skipped = atTry.applying(.skip, readiness: freshWithPractice)
+        XCTAssertEqual(skipped.step, .done)
+        XCTAssertEqual(skipped.mark(.practice), .later)
+        XCTAssertEqual(skipped.remaining(freshWithPractice), [.practice])
+        let everythingTrue = OnboardingReadiness(agentsFound: 1, agentsConnected: 1, microphone: true, permissionsMissing: 0,
+                                                 engineReady: true, phonePaired: true, practiceAvailable: true)
+        XCTAssertEqual(run([.begin], readiness: everythingTrue).step, .practice, "the one step a set-up Mac still shows")
+        // Help › Take the tour after setup: Try it again, and its Continue ends where it began.
+        let again = toured.applying(.open(.practice), readiness: freshWithPractice)
+        XCTAssertEqual(again.step, .practice)
+        XCTAssertEqual(again.applying(.next, readiness: freshWithPractice).step, .done)
     }
 
     func testAnInterruptedSetupResumesWhereItWas() {

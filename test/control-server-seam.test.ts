@@ -21,9 +21,10 @@ test("the daemon wires all five control-server entries to their owners", () => {
   expect(at).toBeGreaterThan(-1);
   const wiring = daemon.slice(at, daemon.indexOf("\n  });", at));
   expect(wiring).toContain("configuration: (message) => applyConfigControlMessage(message, configController, {");
-  expect(wiring).toContain("session: (message, delivered) => applySessionCommand(message, sessionCommandDispatchOptions, delivered),");
+  // Setup's practice session is answered by the practice before either owner sees it (practice.ts).
+  expect(wiring).toContain("session: (message, delivered) => (practiceTurns.owns(message.sessionId)\n        ? practiceTurns.sessionCommand(message)\n        : applySessionCommand(message, sessionCommandDispatchOptions, delivered)),");
   expect(wiring).toContain("runtime: (message) => applyRuntimeControlMessage(message, runtimeControlDispatchOptions),");
-  expect(wiring).toContain("turn: (event) => dispatchSocketTurnEvent(event, socketTurnCallbacks),");
+  expect(wiring).toContain("turn: practiceGate(practiceTurns, (event) => dispatchSocketTurnEvent(event, socketTurnCallbacks)),");
   expect(wiring).toContain("device: deviceCommand,");
   // Local reads: address translation and the published-row check that
   // authorises an inject. Both must come from the daemon's own state.
