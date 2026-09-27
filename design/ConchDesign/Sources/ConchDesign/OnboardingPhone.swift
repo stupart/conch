@@ -5,6 +5,130 @@ import SwiftUI
 // get the way to the Mac before anything else. Every screen reports its stage to the Mac through the pairing
 // (`PhoneSetupStage`), which is how the Mac follows along.
 
+// MARK: - The flow
+
+/// One screen of the phone's own setup, in order. There is no notifications screen: the iPhone app sends no
+/// notifications yet, and asking for them before it does would be dishonest (decision 11).
+public enum PhoneSetupScreen: String, CaseIterable, Codable, Sendable {
+    /// Scanned: the key exchange with the Mac is under way.
+    case connecting
+    /// Paired, with the Mac's name and a Continue.
+    case connected
+    case microphone
+    case tour
+    /// Back to the Mac.
+    case done
+
+    /// What the Mac is told on reaching this screen. Connecting it sees for itself, from the key exchange.
+    public var reports: PhoneSetupStage? {
+        switch self {
+        case .connecting: nil
+        case .connected: .paired
+        case .microphone: .microphone
+        case .tour: .tour
+        case .done: .finished
+        }
+    }
+}
+
+/// The phone's setup as it goes: which screen, what was turned down, and how much of it the Mac has heard. The app keeps
+/// it in UserDefaults, so a relaunch comes back to the same screen, and a dropped link catches the Mac up once it's back.
+public struct PhoneSetupFlow: Codable, Equatable, Sendable {
+    public static let tourPages = 3
+
+    public var screen: PhoneSetupScreen
+    public var tourPage: Int
+    /// Permissions said no to on the way, as the Mac's `declined`.
+    public var declined: Set<PhoneSetupStage>
+    /// The microphone was allowed and speech recognition wasn't: Talk still can't work, so it's a no to the step.
+    public var speechDeclined: Bool
+    /// "Open conch" was tapped: from now on the app opens to the ledger.
+    public var finished: Bool
+    /// The Mac's own name, once it has said it ("Tyler's MacBook Pro").
+    public var mac: String?
+    /// The furthest stage the Mac has answered for this pairing. Anything past it is still to tell.
+    public var acknowledged: PhoneSetupStage?
+
+    public init(screen: PhoneSetupScreen = .connecting, tourPage: Int = 0, declined: Set<PhoneSetupStage> = [], speechDeclined: Bool = false,
+                finished: Bool = false, mac: String? = nil, acknowledged: PhoneSetupStage? = nil) {
+        self.screen = screen
+        self.tourPage = tourPage
+        self.declined = declined
+        self.speechDeclined = speechDeclined
+        self.finished = finished
+        self.mac = mac
+        self.acknowledged = acknowledged
+    }
+
+    /// Setup shows instead of the ledger until "Open conch".
+    public var showing: Bool { !finished }
+
+    /// The Mac's name for the screens, or what to call it before it has said: in a sentence, and to start one.
+    public var macName: String { mac ?? "your Mac" }
+    public var macNameStartingASentence: String { mac ?? "Your Mac" }
+
+    /// A code was scanned or typed. A phone that set itself up before goes straight to the app and only tells this Mac
+    /// it's done, so a Mac waiting on its iPhone step moves on; otherwise setup starts at Connecting.
+    public mutating func paired() {
+        mac = nil
+        acknowledged = nil
+        guard !finished else { return }
+        self = PhoneSetupFlow()
+    }
+
+    /// The link to the Mac is up: Connecting gives way to Connected. Any later screen stays where it is.
+    public mutating func linked() {
+        if screen == .connecting { screen = .connected }
+    }
+
+    /// The screen's Continue, Next or Done.
+    public mutating func next() {
+        switch screen {
+        case .connecting: break
+        case .connected: screen = .microphone
+        case .microphone: screen = .tour
+        case .tour:
+            if tourPage + 1 < Self.tourPages { tourPage += 1 } else { screen = .done }
+        case .done: finished = true
+        }
+    }
+
+    /// The tour's Skip, on any page.
+    public mutating func skipTour() {
+        if screen == .tour { screen = .done }
+    }
+
+    /// The microphone step's answer from iOS: the microphone, then speech recognition. Either no is a no to Talk.
+    public mutating func answeredMicrophone(microphone: Bool, speech: Bool) {
+        if microphone && speech {
+            declined.remove(.microphone)
+        } else {
+            declined.insert(.microphone)
+        }
+        speechDeclined = microphone && !speech
+        next()
+    }
+
+    /// What to tell the Mac now, if anything: this screen's stage, once, until the Mac has answered it.
+    public var unreported: PhoneSetupStage? {
+        guard let stage = finished ? .finished : screen.reports else { return nil }
+        if let acknowledged, acknowledged >= stage { return nil }
+        return stage
+    }
+
+    /// The Mac answered a report of `stage`, and said its name.
+    public mutating func acknowledge(_ stage: PhoneSetupStage, mac: String?) {
+        if acknowledged.map({ $0 < stage }) ?? true { acknowledged = stage }
+        if let mac, !mac.isEmpty { self.mac = mac }
+    }
+
+    /// The done screen's footnote: what was turned down, one sentence each.
+    public var declinedSentences: [String] {
+        guard declined.contains(.microphone) else { return [] }
+        return [speechDeclined ? "Speech recognition is off, so Talk is too." : "The microphone is off."]
+    }
+}
+
 /// A phone screen's frame: the art at the top, the words, and the buttons within the thumb's reach.
 public struct PhoneSetupPage<Art: View>: View {
     let title: String
@@ -29,47 +153,104 @@ public struct PhoneSetupPage<Art: View>: View {
     }
 
     public var body: some View {
-        VStack(spacing: 0) {
-            Color.clear.frame(height: 56)
-            art
-                .frame(maxWidth: .infinity)
-                .frame(height: 300)
-            VStack(spacing: 10) {
-                Text(title)
-                    .font(OnboardingType.Phone.title)
-                    .tracking(-0.4)
-                    .foregroundStyle(ConchColor.textPrimary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityAddTraits(.isHeader)
-                Text(text)
-                    .font(OnboardingType.Phone.body)
-                    .foregroundStyle(ConchColor.textSecondary)
-                    .multilineTextAlignment(.center)
-                    .lineSpacing(2)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(.horizontal, 32)
-            .padding(.top, 28)
-            Spacer(minLength: 0)
-            VStack(spacing: 6) {
-                if let footnote {
-                    Text(footnote)
-                        .font(OnboardingType.Phone.footnote)
-                        .foregroundStyle(ConchColor.textTertiary)
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 10)
-                }
-                if let primary { OnboardingButton(primary, size: .phone, action: onPrimary) }
-                if let secondary { OnboardingButton(secondary, style: .quiet, size: .phone, action: onSecondary).frame(height: 44) }
-            }
-            .padding(.horizontal, 24)
-            .padding(.bottom, secondary == nil ? 22 : 8)
+        #if os(iOS)
+        // At the larger text sizes the words outgrow the screen: then the art shrinks and the words scroll, and the
+        // buttons stay where the thumb is.
+        ViewThatFits(in: .vertical) {
+            fitted
+            scrolling
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(ConchColor.ground)
+        #else
+        fitted
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(ConchColor.ground)
+        #endif
+    }
+
+    /// As designed: the art in the top half, the words under it, the buttons at the foot.
+    private var fitted: some View {
+        VStack(spacing: 0) {
+            Color.clear.frame(height: 56)
+            artwork.frame(height: 300)
+            words.padding(.top, 28)
+            Spacer(minLength: 0)
+            buttons
+        }
+    }
+
+    /// The words outgrew the screen: the art at its own height, the words and the footnote scrolling, and only the
+    /// buttons held at the foot.
+    private var scrolling: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                artwork.fixedSize(horizontal: false, vertical: true).padding(.top, 12)
+                words.padding(.top, 20)
+                if let footnote { note(footnote).padding(.top, 16) }
+            }
+            .padding(.bottom, 20)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            actions.padding(.top, 8).background(ConchColor.ground)
+        }
+    }
+
+    /// The art shows what the words say; VoiceOver reads the words.
+    private var artwork: some View {
+        art
+            .frame(maxWidth: .infinity)
+            .accessibilityHidden(true)
+    }
+
+    private var words: some View {
+        VStack(spacing: 10) {
+            Text(title)
+                .font(OnboardingType.Phone.title)
+                .tracking(-0.4)
+                .foregroundStyle(ConchColor.textPrimary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityAddTraits(.isHeader)
+            Text(text)
+                .font(OnboardingType.Phone.body)
+                .foregroundStyle(ConchColor.textSecondary)
+                .multilineTextAlignment(.center)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 32)
+    }
+
+    private var buttons: some View {
+        VStack(spacing: 6) {
+            if let footnote { note(footnote).padding(.bottom, 10) }
+            actionButtons
+        }
+        .padding(.horizontal, 24)
+        .padding(.bottom, secondary == nil ? 22 : 8)
+    }
+
+    private var actions: some View {
+        VStack(spacing: 6) { actionButtons }
+            .padding(.horizontal, 24)
+            .padding(.bottom, secondary == nil ? 22 : 8)
+    }
+
+    @ViewBuilder
+    private var actionButtons: some View {
+        if let primary { OnboardingButton(primary, size: .phone, action: onPrimary) }
+        if let secondary { OnboardingButton(secondary, style: .quiet, size: .phone, action: onSecondary).frame(minHeight: 44) }
+    }
+
+    private func note(_ text: String) -> some View {
+        Text(text)
+            .font(OnboardingType.Phone.footnote)
+            .foregroundStyle(ConchColor.textTertiary)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 16)
     }
 }
 
@@ -80,11 +261,13 @@ public struct PhoneConnecting: View {
     let mac: String
     let connected: Bool
     let onContinue: () -> Void
+    let onCancel: () -> Void
 
-    public init(mac: String, connected: Bool, onContinue: @escaping () -> Void = {}) {
+    public init(mac: String, connected: Bool, onContinue: @escaping () -> Void = {}, onCancel: @escaping () -> Void = {}) {
         self.mac = mac
         self.connected = connected
         self.onContinue = onContinue
+        self.onCancel = onCancel
     }
 
     public var body: some View {
@@ -95,7 +278,8 @@ public struct PhoneConnecting: View {
                 : "Checking the code and setting up an encrypted link. Keep conch open on your Mac.",
             primary: connected ? "Continue" : nil,
             secondary: connected ? nil : "Cancel",
-            onPrimary: onContinue
+            onPrimary: onContinue,
+            onSecondary: onCancel
         ) {
             VStack(spacing: 28) {
                 PairedDevices(connected: connected)
@@ -481,46 +665,103 @@ public struct PhoneFirstWelcome: View {
     }
 }
 
-/// The scanner: the camera, a frame to aim with, and a way round it.
+/// The scanner: the camera, a frame to aim with, and a way round it. The app puts its live camera behind this; drawn
+/// alone (the gallery, or a phone with no camera) it is the dark ground the camera would fill.
 public struct PhoneScanner: View {
     let denied: Bool
+    let camera: AnyView?
+    let onEnterCode: () -> Void
+    let onOpenSettings: () -> Void
+    let onClose: (() -> Void)?
 
-    public init(denied: Bool = false) { self.denied = denied }
+    public init(denied: Bool = false, camera: AnyView? = nil, onEnterCode: @escaping () -> Void = {},
+                onOpenSettings: @escaping () -> Void = {}, onClose: (() -> Void)? = nil) {
+        self.denied = denied
+        self.camera = camera
+        self.onEnterCode = onEnterCode
+        self.onOpenSettings = onOpenSettings
+        self.onClose = onClose
+    }
 
     public var body: some View {
         ZStack {
             LinearGradient(colors: [Color(red: 0.13, green: 0.14, blue: 0.16), Color(red: 0.05, green: 0.05, blue: 0.06)], startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea()
+            if let camera, !denied {
+                camera.ignoresSafeArea().accessibilityHidden(true)
+                // Enough shade that the words read over whatever the camera sees.
+                LinearGradient(colors: [.black.opacity(0.55), .black.opacity(0.1), .black.opacity(0.1), .black.opacity(0.55)], startPoint: .top, endPoint: .bottom)
+                    .ignoresSafeArea()
+                    .accessibilityHidden(true)
+            }
             if denied {
                 VStack(spacing: 14) {
                     Image(systemName: "camera").font(.system(size: 34, weight: .light)).foregroundStyle(.white.opacity(0.85))
-                    Text("conch can't use the camera").font(.system(size: 20, weight: .semibold)).foregroundStyle(.white)
+                        .accessibilityHidden(true)
+                    Text("conch can't use the camera").font(OnboardingType.Phone.title3).foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+                        .accessibilityAddTraits(.isHeader)
                     Text("It's only for reading the code on your Mac. Turn it on in Settings, or type the code instead.")
-                        .font(.system(size: 16)).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center)
+                        .font(OnboardingType.Phone.callout).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
                         .padding(.horizontal, 36)
-                    Text("Open Settings").font(.system(size: 17, weight: .semibold)).foregroundStyle(Color(red: 0.11, green: 0.11, blue: 0.12))
-                        .padding(.horizontal, 22).frame(height: 44).background(Capsule().fill(.white)).padding(.top, 6)
+                    Button(action: onOpenSettings) {
+                        Text("Open Settings").font(OnboardingType.Phone.button).foregroundStyle(Color(red: 0.11, green: 0.11, blue: 0.12))
+                            .padding(.horizontal, 22).frame(minHeight: 44).background(Capsule().fill(.white))
+                    }
+                    .buttonStyle(OnboardingPress())
+                    .padding(.top, 6)
                 }
             } else {
                 VStack(spacing: 0) {
                     Text("Scan the code in conch on your Mac")
-                        .font(.system(size: 20, weight: .semibold)).foregroundStyle(.white)
+                        .font(OnboardingType.Phone.title3).foregroundStyle(.white)
                         .multilineTextAlignment(.center)
+                        .accessibilityAddTraits(.isHeader)
                         .padding(.top, 90)
+                        .padding(.horizontal, 24)
                     Text("It's in Settings › iPhone, and in setup.")
-                        .font(.system(size: 15)).foregroundStyle(.white.opacity(0.7))
+                        .font(OnboardingType.Phone.subheadline).foregroundStyle(.white.opacity(0.7))
+                        .multilineTextAlignment(.center)
                         .padding(.top, 6)
+                        .padding(.horizontal, 24)
                     Spacer()
-                    Viewfinder().frame(width: 250, height: 250)
+                    Viewfinder().frame(width: 250, height: 250).accessibilityHidden(true)
                     Spacer()
                 }
             }
             VStack {
                 Spacer()
-                Text("Enter a code instead").font(.system(size: 17, weight: .medium)).foregroundStyle(.white)
-                    .padding(.horizontal, 20).frame(height: 46).background(Capsule().fill(.white.opacity(0.16)))
-                    .padding(.bottom, 44)
+                Button(action: onEnterCode) {
+                    Text("Enter a code instead").font(OnboardingType.Phone.buttonMedium).foregroundStyle(.white)
+                        .padding(.horizontal, 20).frame(minHeight: 46).background(Capsule().fill(.white.opacity(0.16)))
+                }
+                .buttonStyle(OnboardingPress())
+                .padding(.bottom, 44)
+            }
+            if let onClose {
+                VStack {
+                    HStack {
+                        Button(action: onClose) {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .frame(width: 36, height: 36)
+                                .background(Circle().fill(.white.opacity(0.16)))
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(OnboardingPress())
+                        .accessibilityLabel("Close")
+                        Spacer()
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
             }
         }
+        .environment(\.colorScheme, .dark)
+        .dynamicTypeSize(...DynamicTypeSize.accessibility1)
     }
 }
 
@@ -548,7 +789,20 @@ struct Viewfinder: View {
 
 /// No Mac yet: the link, to send to the Mac however is easiest.
 public struct PhoneGetMac: View {
-    public init() {}
+    let link: URL
+    let onShare: () -> Void
+    let onCopy: () -> Void
+
+    public init(link: URL = URL(string: "https://conch.app/mac")!, onShare: @escaping () -> Void = {}, onCopy: @escaping () -> Void = {}) {
+        self.link = link
+        self.onShare = onShare
+        self.onCopy = onCopy
+    }
+
+    /// The link as people write it: no scheme, no trailing slash.
+    private var shown: String {
+        ((link.host ?? "") + link.path).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
 
     public var body: some View {
         PhoneSetupPage(
@@ -557,14 +811,14 @@ public struct PhoneGetMac: View {
             primary: "Share the link",
             secondary: "Copy link",
             footnote: "AirDrop, Messages or Mail all work.",
-            onPrimary: {},
-            onSecondary: {}
+            onPrimary: onShare,
+            onSecondary: onCopy
         ) {
             VStack(spacing: 16) {
                 AppIconView(size: 84, lifted: true)
                 HStack(spacing: 8) {
                     Image(systemName: "link").font(.system(size: 14, weight: .semibold))
-                    Text("conch.app/mac").font(.system(size: 17, weight: .semibold))
+                    Text(shown).font(.system(size: 17, weight: .semibold))
                 }
                 .foregroundStyle(ConchColor.textPrimary)
                 .padding(.horizontal, 18)
@@ -578,14 +832,23 @@ public struct PhoneGetMac: View {
 
 /// Pairing didn't work: what happened, and the one thing to do.
 public struct PhonePairingProblem: View {
-    public enum Problem: Sendable {
+    public enum Problem: Equatable, Sendable {
         case expired
         case macNotAnswering(String)
+        /// The relay, which carries the link to the Mac, didn't answer this phone at all: this phone's connection, or the
+        /// relay itself, not the Mac. The host is the relay's, from the scanned code.
+        case relayUnreachable(String)
     }
 
     let problem: Problem
+    let onPrimary: () -> Void
+    let onSecondary: () -> Void
 
-    public init(_ problem: Problem) { self.problem = problem }
+    public init(_ problem: Problem, onPrimary: @escaping () -> Void = {}, onSecondary: @escaping () -> Void = {}) {
+        self.problem = problem
+        self.onPrimary = onPrimary
+        self.onSecondary = onSecondary
+    }
 
     public var body: some View {
         switch problem {
@@ -594,15 +857,28 @@ public struct PhonePairingProblem: View {
                 title: "That code has run out",
                 text: "Your Mac has a fresh one waiting on the same screen. Scan it again.",
                 primary: "Scan again",
-                secondary: "Enter a code instead"
+                secondary: "Enter a code instead",
+                onPrimary: onPrimary,
+                onSecondary: onSecondary
             ) { DeviceBadge(symbol: "qrcode") }
         case let .macNotAnswering(mac):
             PhoneSetupPage(
                 title: "\(mac) isn't answering",
                 text: "Is conch open on it? It needs to be running for this iPhone to pair. conch keeps trying.",
                 primary: "Try again",
-                secondary: "Scan a different Mac"
+                secondary: "Scan a different Mac",
+                onPrimary: onPrimary,
+                onSecondary: onSecondary
             ) { DeviceBadge(symbol: "laptopcomputer.trianglebadge.exclamationmark") }
+        case let .relayUnreachable(host):
+            PhoneSetupPage(
+                title: "Can't reach conch's relay",
+                text: "This iPhone reaches your Mac through \(host), and it isn't answering. Check this iPhone is online. conch keeps trying.",
+                primary: "Try again",
+                secondary: "Scan a different Mac",
+                onPrimary: onPrimary,
+                onSecondary: onSecondary
+            ) { DeviceBadge(symbol: "wifi.exclamationmark") }
         }
     }
 }

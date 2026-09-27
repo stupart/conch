@@ -149,6 +149,7 @@ public enum OnboardingType {
         #if os(iOS)
         public static let largeTitle = Font.largeTitle.weight(.bold)
         public static let title = Font.title.weight(.bold)
+        public static let title3 = Font.title3.weight(.semibold)
         public static let headline = Font.headline
         public static let body = Font.body
         public static let callout = Font.callout
@@ -156,9 +157,11 @@ public enum OnboardingType {
         public static let footnote = Font.footnote
         public static let caption = Font.caption
         public static let button = Font.headline
+        public static let buttonMedium = Font.body.weight(.medium)
         #else
         public static let largeTitle = Font.system(size: 34, weight: .bold)
         public static let title = Font.system(size: 28, weight: .bold)
+        public static let title3 = Font.system(size: 20, weight: .semibold)
         public static let headline = Font.system(size: 17, weight: .semibold)
         public static let body = Font.system(size: 17)
         public static let callout = Font.system(size: 16)
@@ -166,6 +169,7 @@ public enum OnboardingType {
         public static let footnote = Font.system(size: 13)
         public static let caption = Font.system(size: 12)
         public static let button = Font.system(size: 17, weight: .semibold)
+        public static let buttonMedium = Font.system(size: 17, weight: .medium)
         #endif
     }
 }
@@ -217,7 +221,7 @@ public struct OnboardingButton: View {
 
     private var height: CGFloat {
         switch size {
-        case .phone: 52
+        case .phone: style == .quiet ? 44 : 52
         case .large: 40
         case .regular: style == .row || style == .action ? 26 : 30
         }
@@ -232,12 +236,14 @@ public struct OnboardingButton: View {
                 }
             }
             .font(font)
-            .lineLimit(1)
-            .fixedSize()
+            .lineLimit(size == .phone ? 3 : 1)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: size != .phone, vertical: true)
             .foregroundStyle(style == .primary || style == .action ? AnyShapeStyle(ConchColor.onAccent) : style == .row ? AnyShapeStyle(ConchColor.textPrimary) : AnyShapeStyle(ConchColor.textSecondary))
             .padding(.horizontal, style == .quiet ? 4 : size == .large ? 26 : size == .phone ? 20 : style == .action ? 11 : style == .row ? 12 : 16)
             .frame(maxWidth: size == .phone && style != .quiet ? .infinity : nil)
-            .frame(height: height)
+            .padding(.vertical, size == .phone ? 8 : 0)
+            .frame(minHeight: height, maxHeight: size == .phone ? nil : height)
             .background {
                 switch style {
                 case .primary, .action:

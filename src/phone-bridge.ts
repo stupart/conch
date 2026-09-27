@@ -12,6 +12,13 @@ import { decodeNarrationRequest } from "./narration.ts";
 import { checkLocalFile } from "./snippet.ts";
 import type { PreviewAnswer } from "./review-preview.ts";
 import { localhostPort, resolveScreen, SCREEN_RESOLVERS, screenContextFromPublished, type PortListener } from "./screen-context.ts";
+import {
+  decodeSetupStage,
+  PHONE_SETUP_BODY_MAX_BYTES,
+  type KeyExchangeEvent,
+  type SetupStageAnswer,
+  type SetupStageReport,
+} from "./phone-setup.ts";
 
 /**
  * The phone's transport into conch.
@@ -83,7 +90,17 @@ export interface PhoneBridgeDependencies {
   requestPreview?(sessionId: string, reviewId: string): Promise<PreviewAnswer>;
   /** A recording's words, each with when it was said (`transcribeWavSegments`), for `/transcript`. */
   transcribe?(wavPath: string): Promise<{ segments: Array<{ start: number; end: number; text: string }>; error?: string }>;
+  /** The phone's first-run setup (`phone-setup.ts`). Without it `/setup-stage` is unknown, as on an older Mac. */
+  setup?: PhoneSetupHooks;
   log(message: string): void;
+}
+
+/** Where the phone's setup reports and the transports' key exchanges go. */
+export interface PhoneSetupHooks {
+  report(report: SetupStageReport): SetupStageAnswer;
+  exchange(event: KeyExchangeEvent): void;
+  /** This Mac's name, which the phone shows while it sets itself up. */
+  macName(): string;
 }
 
 export interface PhoneBridgeHandle {
@@ -303,6 +320,35 @@ export async function readPairingBody(
   }
 }
 
+/** A small JSON body, buffered only up to `maxBytes`, chunked requests included. */
+export async function readBoundedJSON(
+  req: Request,
+  maxBytes: number,
+): Promise<{ ok: true; value: unknown } | { ok: false; tooLarge: boolean; error: string }> {
+  const declared = Number(req.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) return { ok: false, tooLarge: true, error: "request is too large" };
+  const reader = req.body?.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  if (reader) {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {});
+        return { ok: false, tooLarge: true, error: "request is too large" };
+      }
+      chunks.push(value);
+    }
+  }
+  try {
+    return { ok: true, value: JSON.parse(new TextDecoder().decode(Buffer.concat(chunks, total))) };
+  } catch {
+    return { ok: false, tooLarge: false, error: "request is not JSON" };
+  }
+}
+
 /**
  * The phone-facing application protocol, independent of how requests arrive.
  *
@@ -328,6 +374,14 @@ export class PhoneBridgeApplication {
 
   offerPairingCode(code: PairingCode): void {
     this.#pairing.offer(code);
+  }
+
+  /**
+   * A transport's key exchange with a phone: under way, done, or dropped before it was. The LAN's is one request, so
+   * it only ever says done; the relay's spans the phone's hello and its first frame under the new keys.
+   */
+  keyExchange(event: KeyExchangeEvent): void {
+    this.#dependencies.setup?.exchange(event);
   }
 
   /** Register a successfully authenticated state stream and send its snapshot. */
@@ -428,12 +482,29 @@ export class PhoneBridgeApplication {
           return Response.json({ error: "That code didn't match." }, { status: 401 });
         }
         this.#dependencies.log("phone paired");
+        this.keyExchange("completed");
         return Response.json({ token: this.#token });
       })();
     }
 
     if (!tokenMatches(presentedToken(req), context.expectedToken ?? this.#token)) {
       return new Response("unauthorized", { status: 401 });
+    }
+
+    // The phone's first-run setup reaching a stage (`phone-setup.ts`): the Mac follows it, and moves on when it's done.
+    if (url.pathname === "/setup-stage" && req.method === "POST") {
+      const setup = this.#dependencies.setup;
+      if (!setup) return new Response("not found", { status: 404 });
+      return (async () => {
+        const body = await readBoundedJSON(req, PHONE_SETUP_BODY_MAX_BYTES);
+        if (!body.ok) {
+          return Response.json({ kind: "setup-stage-error", error: body.error }, { status: body.tooLarge ? 413 : 400 });
+        }
+        const decoded = decodeSetupStage(body.value);
+        if (!decoded.ok) return Response.json({ kind: "setup-stage-error", error: decoded.err }, { status: 400 });
+        const answer = setup.report(decoded.value);
+        return Response.json({ kind: "setup-stage-ack", ...answer, mac: setup.macName() });
+      })();
     }
 
     if (url.pathname === "/ws") {

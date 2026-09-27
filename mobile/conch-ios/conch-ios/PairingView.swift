@@ -1,9 +1,24 @@
 import AVFoundation
+import ConchDesign
 import SwiftUI
+import UIKit
 
-/// Two fields, once. `conch pair` on the Mac prints exactly these.
+/// The way in, for a phone paired with no Mac: the welcome first (conch lives on the Mac, so the way there comes
+/// first), the scanner one tap away, and the two typed fields `conch pair` prints behind "Enter a code instead". Every
+/// route reaches `onPaired` through `commit`, and scanning goes straight on to it: no second tap.
 struct PairingView: View {
     let onPaired: (BridgeClient.Pairing) -> Void
+
+    /// Which of the two screens: the welcome, or the typed code. The scanner covers either.
+    enum Entry { case welcome, code }
+    @State private var entry: Entry = .welcome
+    @State private var gettingMac = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(startingAt entry: Entry = .welcome, onPaired: @escaping (BridgeClient.Pairing) -> Void) {
+        self.onPaired = onPaired
+        _entry = State(initialValue: entry)
+    }
 
     @State private var host = ""
     @State private var code = ""
@@ -45,6 +60,59 @@ struct PairingView: View {
     }
 
     var body: some View {
+        ZStack {
+            switch entry {
+            case .welcome:
+                PhoneFirstWelcome(onScan: { scanningRelay = true }, onGetMac: { gettingMac = true })
+                    .transition(SetupSwap.transition(reduceMotion: reduceMotion))
+            case .code:
+                codeForm
+                    .transition(SetupSwap.transition(reduceMotion: reduceMotion))
+            }
+        }
+        .animation(ConchMotion.swap.animation(reduceMotion: reduceMotion), value: entry)
+        .fullScreenCover(isPresented: $scanningRelay) {
+            SetupScanner(
+                onCode: { scanned in
+                    scanningRelay = false
+                    code = scanned
+                    problem = nil
+                    // Scanning IS the decision. A QR carries the endpoint, the
+                    // room and the secret — there is nothing left to fill in and
+                    // nothing to confirm, so asking for a second tap only adds a
+                    // step that can be missed. Tyler: "once u scan it should just
+                    // go into the app paired like you shouldn't have to then click
+                    // pair after scanning." Typing a host still needs Connect,
+                    // because a typed host can be wrong.
+                    connect()
+                },
+                onEnterCode: {
+                    scanningRelay = false
+                    entry = .code
+                },
+                onClose: { scanningRelay = false }
+            )
+        }
+        .sheet(isPresented: $gettingMac) { GetMacSheet() }
+        .confirmationDialog(
+            Text("Replace \(replacement?.current.displayHost ?? "the current Mac")?"),
+            isPresented: Binding(
+                get: { replacement != nil },
+                set: { if !$0 { replacement = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: replacement
+        ) { pending in
+            Button("Replace", role: .destructive) { onPaired(pending.candidate) }
+            Button("Keep current", role: .cancel) {}
+        } message: { pending in
+            Text("This phone pairs with one Mac at a time. "
+                 + "Replacing forgets \(pending.current.displayHost).")
+        }
+    }
+
+    /// Typed: the host and six-digit code `conch pair` prints, or a pasted relay code.
+    private var codeForm: some View {
         VStack(spacing: 0) {
             Spacer()
 
@@ -82,7 +150,7 @@ struct PairingView: View {
                 VStack(spacing: 6) {
                     Label("Relay pairing scanned", systemImage: "checkmark.circle.fill")
                         .font(Type.label(15, weight: .medium))
-                        .foregroundStyle(Palette.micOpen)
+                        .foregroundStyle(Palette.review)
                     Text(relayEndpointSummary ?? "Ready to connect from anywhere.")
                         .font(Type.caption)
                         .foregroundStyle(Palette.textDim)
@@ -132,7 +200,7 @@ struct PairingView: View {
                     .frame(maxWidth: .infinity)
                     .frame(height: 54)
                     .background(
-                        canPair ? Palette.micOpen : Palette.raised,
+                        canPair ? Palette.textPrimary : Palette.raised,
                         in: RoundedRectangle(cornerRadius: 14)
                     )
                     .foregroundStyle(canPair ? Palette.bg : Palette.textFaint)
@@ -148,36 +216,20 @@ struct PairingView: View {
         }
         .background(Palette.bg)
         .onAppear { focused = .host }
-        .sheet(isPresented: $scanningRelay) {
-            RelayQRScanner { scanned in
-                scanningRelay = false
-                code = scanned
-                problem = nil
-                // Scanning IS the decision. A QR carries the endpoint, the
-                // room and the secret — there is nothing left to fill in and
-                // nothing to confirm, so asking for a second tap only adds a
-                // step that can be missed. Tyler: "once u scan it should just
-                // go into the app paired like you shouldn't have to then click
-                // pair after scanning." Typing a host still needs Connect,
-                // because a typed host can be wrong.
-                connect()
+        .overlay(alignment: .topLeading) {
+            Button {
+                focused = nil
+                entry = .welcome
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(Palette.textDim)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
-            .ignoresSafeArea()
-        }
-        .confirmationDialog(
-            Text("Replace \(replacement?.current.displayHost ?? "the current Mac")?"),
-            isPresented: Binding(
-                get: { replacement != nil },
-                set: { if !$0 { replacement = nil } }
-            ),
-            titleVisibility: .visible,
-            presenting: replacement
-        ) { pending in
-            Button("Replace", role: .destructive) { onPaired(pending.candidate) }
-            Button("Keep current", role: .cancel) {}
-        } message: { pending in
-            Text("This phone pairs with one Mac at a time. "
-                 + "Replacing forgets \(pending.current.displayHost).")
+            .buttonStyle(.plain)
+            .accessibilityLabel("Back")
+            .padding(.leading, 8)
         }
     }
 
@@ -259,7 +311,92 @@ struct PairingView: View {
 /// In-app scanning keeps the relay secret out of a custom URL scheme that any
 /// other installed app could claim. The QR is decoded locally and never leaves
 /// the phone before its encrypted connection to the Mac.
-private struct RelayQRScanner: UIViewControllerRepresentable {
+/// The live camera for a `conch-relay-v1:` code, under the designed scanner (`PhoneScanner`): its words, its frame, and
+/// the way round it. Camera access is asked for here, the first time, and a no says so rather than showing black.
+struct SetupScanner: View {
+    let onCode: (String) -> Void
+    let onEnterCode: () -> Void
+    let onClose: () -> Void
+    @State private var access = AVCaptureDevice.authorizationStatus(for: .video)
+    @State private var failure: String?
+
+    var body: some View {
+        PhoneScanner(
+            denied: access == .denied || access == .restricted,
+            camera: access == .authorized && AVCaptureDevice.default(for: .video) != nil
+                ? AnyView(RelayQRScanner(onCode: onCode))
+                : nil,
+            onEnterCode: onEnterCode,
+            onOpenSettings: {
+                guard let settings = URL(string: UIApplication.openSettingsURLString) else { return }
+                BridgeClient.openUnpaired(settings) { failure = $0 }
+            },
+            onClose: onClose
+        )
+        .alert(failure ?? "", isPresented: Binding(get: { failure != nil }, set: { if !$0 { failure = nil } })) {
+            Button("OK", role: .cancel) {}
+        }
+        .task {
+            guard access == .notDetermined else { return }
+            _ = await AVCaptureDevice.requestAccess(for: .video)
+            access = AVCaptureDevice.authorizationStatus(for: .video)
+        }
+    }
+}
+
+/// No Mac yet: the link to conch for Mac, shared or copied.
+struct GetMacSheet: View {
+    /// Where conch for Mac is today. The design's `conch.app/mac` is a placeholder until conch has a domain.
+    static let link = URL(string: "https://github.com/stupart/conch#install")!
+    @State private var sharing = false
+    @State private var copied = false
+
+    var body: some View {
+        PhoneGetMac(
+            link: Self.link,
+            onShare: { sharing = true },
+            onCopy: {
+                UIPasteboard.general.url = Self.link
+                copied = true
+            }
+        )
+        .overlay(alignment: .top) {
+            if copied {
+                Label("Copied", systemImage: "checkmark")
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.horizontal, 14)
+                    .frame(minHeight: 36)
+                    .background(Capsule().fill(Palette.raised))
+                    .padding(.top, 12)
+                    .transition(.opacity)
+                    .accessibilityAddTraits(.updatesFrequently)
+            }
+        }
+        .animation(.easeOut(duration: ConchMotion.quick), value: copied)
+        .sheet(isPresented: $sharing) {
+            ShareSheet(items: [Self.link])
+                .presentationDetents([.medium, .large])
+        }
+        .task(id: copied) {
+            guard copied else { return }
+            try? await Task.sleep(for: .seconds(1.6))
+            copied = false
+        }
+    }
+}
+
+/// iOS's own share sheet: AirDrop, Messages, Mail.
+struct ShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
+}
+
+struct RelayQRScanner: UIViewControllerRepresentable {
     let onCode: (String) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(onCode: onCode) }
@@ -294,7 +431,7 @@ private struct RelayQRScanner: UIViewControllerRepresentable {
     }
 }
 
-private final class ScannerViewController: UIViewController {
+final class ScannerViewController: UIViewController {
     private let session = AVCaptureSession()
     private var preview: AVCaptureVideoPreviewLayer?
 

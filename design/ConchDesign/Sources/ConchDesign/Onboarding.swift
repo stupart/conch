@@ -52,8 +52,9 @@ public enum PhoneSetupStage: String, CaseIterable, Codable, Sendable, Comparable
     case tour
     case finished
 
-    /// The rows the Mac shows while the phone sets itself up.
-    public static let mirrored: [PhoneSetupStage] = [.paired, .notifications, .microphone, .tour]
+    /// The rows the Mac shows while the phone sets itself up. No notifications row: the iPhone app sends none yet, so its
+    /// setup doesn't ask for them (decision 11); `notifications` stays in the enum for when it does.
+    public static let mirrored: [PhoneSetupStage] = [.paired, .microphone, .tour]
 
     public var title: String {
         switch self {
