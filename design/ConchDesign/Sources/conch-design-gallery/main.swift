@@ -771,6 +771,7 @@ func bitmap(_ size: CGSize, _ draw: (CGContext) -> Void) -> CGImage? {
 
 func writePNG(_ image: CGImage, _ name: String) throws {
     if let galleryOnly, !name.hasPrefix(galleryOnly) { return }
+    if let onlyPages, !name.hasPrefix(onlyPages) { return }
     let file = outDir.appendingPathComponent(name)
     try NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])!.write(to: file)
     print(file.path)
@@ -2259,3 +2260,6 @@ try render("fluid-filmstrip-reduce-motion", width: 1520) {
     let calm = ComposerFlight(from: .window, at: .window(fluidWindowCard), to: .panel, at: .floating(fluidPanelCard), reduceMotion: true)
     filmstrip(fluidFrames(calm, roomFrom: 0, roomTo: fluidComposerHeight, times: Array(leaveTimes.prefix(12))))
 }
+
+// First-run setup (OnboardingGallery.swift).
+try MainActor.assumeIsolated { try renderOnboarding() }
