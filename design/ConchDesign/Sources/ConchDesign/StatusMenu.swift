@@ -14,6 +14,8 @@ public enum StatusMenu {
         case openItem(session: String)
         /// conch's window on a session: a working one, or a ready one with ⌥ held.
         case openSession(String)
+        /// Setup's window, where it was left.
+        case finishSetup
     }
 
     /// A toggle's tick. `mixed` is on but not showing: the conversation panel folded to its handle, which ticked read
@@ -42,6 +44,8 @@ public enum StatusMenu {
         public var dot: Dot?
         /// Under the item before it, a step in: a setting that belongs to it.
         public var indent = 0
+        /// A second line under the title.
+        public var detail: String?
     }
 
     public enum Modifier: String, Equatable, Sendable { case control = "⌃", option = "⌥", command = "⌘" }
@@ -80,10 +84,13 @@ public enum StatusMenu {
         public var drawing: Bool
         public var ready: [Session]
         public var working: [Session]
+        /// Setup put away with steps still left, by name (`OnboardingProgress.remaining`); empty when there is nothing to
+        /// finish.
+        public var setupLeft: [String]
 
         public init(
             voice: VoiceState, quiet: Bool, exchangeActive: Bool, controlBar: Bool, conversation: Bool, collapsed: Bool,
-            replyLine: Bool, replyLineAlone: Bool = true, drawing: Bool, ready: [Session], working: [Session]
+            replyLine: Bool, replyLineAlone: Bool = true, drawing: Bool, ready: [Session], working: [Session], setupLeft: [String] = []
         ) {
             self.voice = voice
             self.quiet = quiet
@@ -96,11 +103,15 @@ public enum StatusMenu {
             self.drawing = drawing
             self.ready = ready
             self.working = working
+            self.setupLeft = setupLeft
         }
     }
 
     public static func rows(_ input: Input) -> [Row] {
-        var rows: [Row] = [.header, .separator]
+        var rows: [Row] = []
+        // Setup put away part way: a quiet reminder at the top until it's done, never the window reopening by itself.
+        if let setup = setupItem(left: input.setupLeft) { rows += [.item(setup), .separator] }
+        rows += [.header, .separator]
         rows.append(.item(Item(title: "Talk", command: .talk, mark: input.quiet ? .off : .on)))
         rows.append(.item(Item(title: "Quiet", command: .quiet, mark: input.quiet ? .on : .off)))
         rows.append(.separator)
@@ -133,6 +144,12 @@ public enum StatusMenu {
         rows.append(.separator)
         rows.append(.item(Item(title: "Open conch", command: .openConch)))
         return rows
+    }
+
+    /// "Finish setting up conch", and what is left: "2 left: Permissions, iPhone". Nil with nothing left.
+    public static func setupItem(left: [String]) -> Item? {
+        guard !left.isEmpty else { return nil }
+        return Item(title: "Finish setting up conch", command: .finishSetup, detail: "\(left.count) left: \(left.joined(separator: ", "))")
     }
 
     /// Folded to its handle, the panel is on but nothing of it shows.

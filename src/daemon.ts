@@ -66,6 +66,7 @@ import { currentTurnText } from "./transcript-turn.ts";
 import {
   existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { loadDeviceId } from "./device-identity.ts";
 import { clearIdentity, writeIdentity } from "./daemon-identity.ts";
 import {
@@ -309,6 +310,11 @@ import {
 } from "./agent-capabilities.ts";
 import { resolveAgentInstall } from "./agent-install.ts";
 import { accessibilityTrusted } from "./accessibility.ts";
+// First-run setup's requests (setup.ts), over what `conch doctor`, `conch install` and `install-plugin` already do.
+import { createSetup, loginShellHas, MIC_CHECK_QUIET_WITHIN_MS, runInstallerInLoginShell } from "./setup.ts";
+import { resolveAgentBinaries } from "./doctor-checks.ts";
+import { codexHooksAreWiredAt, isConchHookCommand, runCodexInstall, runInstall } from "./install.ts";
+import { pluginInstalledFor, runInstallPlugin } from "./plugin-install.ts";
 
 /**
  * The turn-based voice loop.
@@ -2695,6 +2701,43 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     root: join(conchHome(), ".cache/conch/canvas"),
     log,
   });
+  const codexDir = join(conchHome(), ".codex");
+  const setup = createSetup({
+    claudeDir: cfg.claudeDir,
+    codexDir,
+    configDir: dirname(daemonSettingsPath),
+    home: conchHome(),
+    tmpDir: tmpdir(),
+    now: Date.now,
+    log,
+    resolveAgents: () => resolveAgentBinaries(),
+    isConchHook: isConchHookCommand,
+    codexHooksWired: codexHooksAreWiredAt,
+    pluginInstalled: (agent) => pluginInstalledFor(agent, { claudeDir: cfg.claudeDir, codexDir }),
+    backendOf: (sessionId) => {
+      const session = panelSessions.get(sessionId);
+      return session ? session.backend ?? "claude" : undefined;
+    },
+    liveSessions: () => [...panelSessions.values()],
+    connectHooks: (agent) => (agent === "claude" ? runInstall(cfg) : runCodexInstall(codexDir)),
+    installPlugin: (agent) => runInstallPlugin(process.execPath, join(import.meta.dir, "cli.ts"), process.env, { agents: [agent], smoke: false }),
+    shellHas: loginShellHas,
+    runInstaller: runInstallerInLoginShell,
+    voices: () => cfg.ttsVoices,
+    // A sample waits its turn like an audition does, and goes through `speak`'s own gate: never over an open mic.
+    speak: (voiceId, text) => eventQueue.exclusive(() => voice.speak({ ...cfg, ttsVoices: [voiceId] }, text, "", true)),
+    mic: {
+      hold: (stop) => voice.holdNarration(MIC_CHECK_QUIET_WITHIN_MS, stop, "Microphone check"),
+      record: (wav, seconds) => {
+        const proc = spawnNarrationRecorder(cfg, wav, seconds);
+        return { exited: proc.exited, stop: () => stopSoxProcess(proc) };
+      },
+      transcribe: (wav) => transcribeWavSegments(cfg, wav)
+        .then(({ segments }) => segments.map((segment) => segment.text).join(" ").trim() || null),
+      recognitionReady: () => speechEngineStatus?.state === "ready",
+    },
+    retry: (what) => (what === "speech" ? speechEngine.retry() : voiceEnv?.retry() ?? false),
+  });
   const controlServer = createControlServer({
     ownership,
     socketPath: cfg.socketPath,
@@ -2731,6 +2774,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     onScreenObservation: (observation) => void screen.observe(observation).catch((error) => log(`screen: ${error}`)),
     narration,
     onReviewPreview: (message) => windowPreviews.answer(message),
+    setup,
   });
 
   let shutdownStarted = false;

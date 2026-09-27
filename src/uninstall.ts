@@ -182,7 +182,8 @@ export function isConchHookCommand(
   const action = kind === "claude" ? "hook" : "codex-hook";
 
   if (words.length === 2) {
-    return basename(words[0]!) === "conch" && words[1] === action;
+    // `conch`, or the Mac app's own daemon (`…/conch.app/Contents/Helpers/conch-daemon`), which setup wires from the app.
+    return (basename(words[0]!) === "conch" || basename(words[0]!) === "conch-daemon") && words[1] === action;
   }
   if (words.length === 3) {
     return basename(words[0]!).startsWith("bun")

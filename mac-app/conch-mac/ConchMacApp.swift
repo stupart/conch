@@ -1,7 +1,6 @@
 import SwiftUI
 import AppKit
 import ConchDesign
-import ServiceManagement
 import UserNotifications
 
 @main
@@ -20,6 +19,10 @@ struct ConchMacApp: App {
         _audio = StateObject(wrappedValue: AudioHolderStore(local: store, remotes: remotes))
         // The menu bar mark (M2), a turn later: a status item wants the application running.
         Task { @MainActor in ConchStatusItem.install(store: store) }
+        // Setup opens at launch only when its rule says to (OnboardingController).
+        Task { @MainActor in OnboardingController.shared.attach(store: store) }
+        // The notifications ask waits for its first need: something ready while conch is Quiet.
+        ReviewNotifications.shared.isQuiet = { MainActor.assumeIsolated { store.state?.mode.paused == true } }
     }
 
     var body: some Scene {
@@ -98,6 +101,7 @@ struct ConchMacApp: App {
                 .keyboardShortcut("3", modifiers: .command)
             }
             CommandGroup(after: .help) {
+                Button("Set up conch…") { OnboardingController.shared.openFromHelp() }
                 Button("Keyboard Shortcuts") {
                     NotificationCenter.default.post(
                         name: .showKeyboardShortcuts,
@@ -122,6 +126,9 @@ struct ConchMacApp: App {
                 // settings: those vanish when the daemon is down, and these are the app's.
                 ConchPermissionsView()
                     .tabItem { Label("Permissions", systemImage: "hand.raised") }
+                // Setup, kept: each step's status and its one button, the downloads, and Run setup again.
+                SetupSettingsTab()
+                    .tabItem { Label("Setup", systemImage: "checklist") }
             }
             // A Settings window sizes to its content and does NOT scroll, so
             // an ideal height taller than a laptop screen simply overflows.
@@ -154,10 +161,12 @@ private final class ConchAppDelegate: NSObject,
     func applicationDidFinishLaunching(_ notification: Notification) {
         let center = UNUserNotificationCenter.current()
         center.delegate = self
-        registerLoginItemIfNeeded()
-        ReviewNotifications.shared.requestAuthorizationAtLaunch()
+        // Opening at login is setup's switch now (`LoginItem`), and notifications are asked when first needed: launch
+        // reads what macOS already has and asks nothing.
+        ReviewNotifications.shared.readAuthorizationAtLaunch()
         // Adopts an already-listening daemon rather than starting a rival one.
         daemon.start()
+        OnboardingController.shared.appDidFinishLaunching()
     }
 
     /// Quitting conch stops conch. That is the whole point of folding the
@@ -192,27 +201,6 @@ private final class ConchAppDelegate: NSObject,
         return true
     }
 
-    private func registerLoginItemIfNeeded() {
-        guard Bundle.main.bundlePath.hasPrefix("/Applications/") else { return }
-
-        let loginItem = SMAppService.mainApp
-        guard loginItem.status == .notRegistered else { return }
-
-        do {
-            try loginItem.register()
-        } catch {
-            NSLog("Conch login item registration failed: %@", error.localizedDescription)
-            let message = error.localizedDescription
-            Task {
-                await ConchSocketClient().reportAppError(
-                    operation: "login-item.register",
-                    message: message,
-                    state: ["bundlePath": Bundle.main.bundlePath]
-                )
-            }
-        }
-    }
-
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
@@ -228,9 +216,15 @@ final class ReviewNotifications {
 
     private enum DeliveryState {
         case resolvingAuthorization
+        /// macOS hasn't asked: the ask waits for the first time something is ready while conch is Quiet, or setup's
+        /// Allow now.
+        case notAsked
         case authorized
         case denied
     }
+
+    /// Whether conch is Quiet now, so nothing ready is read aloud and a notification is the only way to hear of it.
+    var isQuiet: () -> Bool = { false }
 
     private let center = UNUserNotificationCenter.current()
     private var deliveryState = DeliveryState.resolvingAuthorization
@@ -242,7 +236,8 @@ final class ReviewNotifications {
 
     private init() {}
 
-    func requestAuthorizationAtLaunch() {
+    /// At launch, silently: what macOS already has. It never asks here.
+    func readAuthorizationAtLaunch() {
         precondition(Thread.isMainThread)
         guard !didStartAuthorization else { return }
         didStartAuthorization = true
@@ -251,6 +246,31 @@ final class ReviewNotifications {
             DispatchQueue.main.async {
                 self?.handleAuthorizationStatus(settings.authorizationStatus)
             }
+        }
+    }
+
+    /// Setup's Allow now: macOS's own ask, and whether it was allowed.
+    func requestNow(_ done: @escaping (Bool) -> Void) {
+        precondition(Thread.isMainThread)
+        deliveryState = .resolvingAuthorization
+        center.requestAuthorization(options: [.alert]) { [weak self] granted, _ in
+            DispatchQueue.main.async {
+                self?.completeAuthorization(isAuthorized: granted)
+                done(granted)
+            }
+        }
+    }
+
+    /// Where notifications stand for conch, read silently, in the words setup's rows use.
+    func authorization(_ done: @escaping (ConchPermissionStatus) -> Void) {
+        center.getNotificationSettings { settings in
+            let status: ConchPermissionStatus = switch settings.authorizationStatus {
+            case .authorized, .provisional, .ephemeral: .granted
+            case .denied: .denied
+            case .notDetermined: .notAsked
+            @unknown default: .unknown("macOS gave an answer conch doesn't know.")
+            }
+            DispatchQueue.main.async { done(status) }
         }
     }
 
@@ -287,6 +307,17 @@ final class ReviewNotifications {
         switch deliveryState {
         case .resolvingAuthorization:
             queuedRequests.append(request)
+        case .notAsked:
+            // The first need: something is ready while conch is Quiet, so it won't be read aloud. Ask now, and send
+            // this one once allowed. In Talk it is read aloud and the window comes up, so there is nothing to ask for.
+            guard isQuiet() else { break }
+            queuedRequests.append(request)
+            deliveryState = .resolvingAuthorization
+            center.requestAuthorization(options: [.alert]) { [weak self] granted, _ in
+                DispatchQueue.main.async {
+                    self?.completeAuthorization(isAuthorized: granted)
+                }
+            }
         case .authorized:
             center.add(request)
         case .denied:
@@ -299,6 +330,14 @@ final class ReviewNotifications {
         case .authorized, .provisional:
             completeAuthorization(isAuthorized: true)
         case .notDetermined:
+            // Not asked at launch: the ask waits for its first need (`postOnce` while Quiet) or setup's Allow now. One
+            // that arrived while this was being read is that need, if conch is Quiet.
+            deliveryState = .notAsked
+            let waiting = queuedRequests
+            queuedRequests.removeAll()
+            guard isQuiet(), !waiting.isEmpty else { return }
+            queuedRequests = waiting
+            deliveryState = .resolvingAuthorization
             center.requestAuthorization(options: [.alert]) { [weak self] granted, _ in
                 DispatchQueue.main.async {
                     self?.completeAuthorization(isAuthorized: granted)

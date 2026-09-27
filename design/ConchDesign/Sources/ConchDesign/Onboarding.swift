@@ -14,7 +14,8 @@ public enum OnboardingStep: String, CaseIterable, Codable, Sendable {
     case practice
     case done
 
-    /// The steps the rail lists, in order. Welcome and the end are not steps a person does.
+    /// Every step the rail can list, in order. Welcome and the end are not steps a person does. Which of them a Mac shows
+    /// is `OnboardingReadiness.rail`: Try it only once the practice turn is built.
     public static let rail: [OnboardingStep] = [.agents, .permissions, .voice, .phone, .practice]
 
     public var title: String {
@@ -98,24 +99,55 @@ public struct OnboardingReadiness: Equatable, Sendable {
     public var agentsConnected: Int
     /// The one permission voice can't work without.
     public var microphone: Bool
-    /// The others (Accessibility, Automation, Notifications, Screen Recording) still off.
+    /// Of the three setup asks for (`setupAsks`), how many still want the person. Screen Recording and Notifications are
+    /// asked the first time something needs them, never in setup, so they never count here.
     public var permissionsMissing: Int
     /// Speech recognition and the natural voices are on this Mac and working.
     public var engineReady: Bool
     public var phonePaired: Bool
+    /// The practice turn and the tour are built. Until they are, the rail has no Try it and You're set follows iPhone:
+    /// setup never shows a step that does nothing.
+    public var practiceAvailable: Bool
 
-    public init(agentsFound: Int = 0, agentsConnected: Int = 0, microphone: Bool = false, permissionsMissing: Int = 5,
-                engineReady: Bool = false, phonePaired: Bool = false) {
+    public init(agentsFound: Int = 0, agentsConnected: Int = 0, microphone: Bool = false, permissionsMissing: Int = 3,
+                engineReady: Bool = false, phonePaired: Bool = false, practiceAvailable: Bool = false) {
         self.agentsFound = agentsFound
         self.agentsConnected = agentsConnected
         self.microphone = microphone
         self.permissionsMissing = permissionsMissing
         self.engineReady = engineReady
         self.phonePaired = phonePaired
+        self.practiceAvailable = practiceAvailable
     }
 
     /// A fresh Mac: nothing found, nothing granted.
     public static let fresh = OnboardingReadiness()
+
+    /// What setup asks for: the three the voice loop needs, in the order it needs them (hearing you, then typing your
+    /// reply into Terminal). The two people skip are asked in context instead.
+    public static let setupAsks: [ConchPermission] = [.microphone, .accessibility, .automation]
+
+    /// How many of `setupAsks` still want the person: off, never asked, or on but a reopen away. Allowed is done; set by
+    /// whoever manages the Mac is nothing the person can do; and an answer macOS can't give yet (Automation while Terminal
+    /// is closed, or not read yet) is not called off.
+    public static func permissionsMissing(_ statuses: [ConchPermission: ConchPermissionStatus]) -> Int {
+        missingAsks(statuses).count
+    }
+
+    /// Which of `setupAsks` still want the person, in order: what Welcome back lists.
+    public static func missingAsks(_ statuses: [ConchPermission: ConchPermissionStatus]) -> [ConchPermission] {
+        setupAsks.filter { permission in
+            switch statuses[permission] {
+            case .denied?, .notAsked?, .needsRelaunch?: true
+            case .granted?, .restricted?, .unknown?, nil: false
+            }
+        }
+    }
+
+    /// The steps this Mac's rail lists.
+    public var rail: [OnboardingStep] {
+        OnboardingStep.rail.filter { $0 != .practice || practiceAvailable }
+    }
 
     /// Whether a step needs nothing more from the person. Trying it is never already done: it is the part that shows.
     public func satisfies(_ step: OnboardingStep) -> Bool {
@@ -131,6 +163,12 @@ public struct OnboardingReadiness: Equatable, Sendable {
     /// conch has been set up on this Mac before, by hand or by an older version: an agent is wired and the microphone
     /// allowed. Someone like that gets "Welcome back" and only what is missing.
     public var isReturning: Bool { agentsConnected > 0 && microphone }
+
+    /// What "Welcome back" asks about. A returning Mac already has an agent wired, and which others it wires was its own
+    /// choice, so agents are never missing; the practice turn is never missing either.
+    public var missingForReturning: [OnboardingStep] {
+        rail.filter { $0 != .agents && $0 != .practice && !satisfies($0) }
+    }
 }
 
 /// What opens when conch launches.
@@ -165,6 +203,9 @@ public enum OnboardingEvent: Equatable, Sendable {
     case close
     /// Settings › Setup › Run setup again.
     case restart
+    /// Welcome back's Done: finished with what it asked. What is still off stays in Settings › Setup, and nothing
+    /// reminds.
+    case finish
 }
 
 /// Where a person is in setup. Persisted as JSON (`~/.config/conch/onboarding.json`), and read back at launch.
@@ -195,14 +236,27 @@ public struct OnboardingProgress: Codable, Equatable, Sendable {
 
     public func mark(_ step: OnboardingStep) -> OnboardingMark { marks[step] ?? .todo }
 
-    /// Rail steps left for later or not yet done: the menu's "Finish setting up (2 left)".
-    public var left: Int { OnboardingStep.rail.filter { mark($0) != .done }.count }
+    /// Rail steps left for later or not yet done, and not true on this Mac by now: the menu's "Finish setting up conch ·
+    /// 2 left: Permissions, iPhone". A permission skipped here and allowed later in System Settings is not left.
+    public func remaining(_ readiness: OnboardingReadiness) -> [OnboardingStep] {
+        readiness.rail.filter { mark($0) != .done && !readiness.satisfies($0) }
+    }
+
+    /// Where Welcome back starts: on the first thing missing, with everything it isn't asking about ticked (a returning
+    /// Mac's agents among them: one is wired, which is what set up means). Never the practice turn.
+    public static func welcomingBack(missing: [OnboardingStep], readiness: OnboardingReadiness) -> OnboardingProgress {
+        var progress = OnboardingProgress(step: missing.first ?? .done)
+        for step in readiness.rail where !missing.contains(step) && step != .practice {
+            progress.marks[step] = .done
+        }
+        return progress
+    }
 
     /// What to open at launch, from what setup recorded (nil: never started) and what the Mac can see now.
     public static func entry(_ progress: OnboardingProgress?, readiness: OnboardingReadiness) -> OnboardingEntry {
         guard let progress else {
             guard readiness.isReturning else { return .firstRun }
-            let missing = OnboardingStep.rail.filter { $0 != .practice && !readiness.satisfies($0) }
+            let missing = readiness.missingForReturning
             return missing.isEmpty ? .none : .welcomeBack(missing: missing)
         }
         if progress.reopening { return .resume(progress.step) }
@@ -218,9 +272,12 @@ public struct OnboardingProgress: Codable, Equatable, Sendable {
             next.putAway = false
             next.step = next.firstOpen(after: nil, readiness: readiness)
         case .next:
+            // Only a rail step moves on: a stray Continue at the end must not wind setup back to something left for later.
+            guard OnboardingStep.rail.contains(step) else { break }
             next.settle(step, as: .done)
             next.step = next.firstOpen(after: step, readiness: readiness)
         case .skip:
+            guard OnboardingStep.rail.contains(step) else { break }
             next.settle(step, as: .later)
             next.step = next.firstOpen(after: step, readiness: readiness)
         case let .open(target):
@@ -245,6 +302,9 @@ public struct OnboardingProgress: Codable, Equatable, Sendable {
         case .restart:
             next = OnboardingProgress(phone: phone)
             next.step = .agents
+        case .finish:
+            next.putAway = false
+            next.step = .done
         }
         if next.step == .done { next.finished = true }
         return next
@@ -259,7 +319,7 @@ public struct OnboardingProgress: Codable, Equatable, Sendable {
     /// The next rail step after `step` that still wants the person: not done, and not already true on this Mac.
     /// Already-true steps are ticked on the way past. Nothing left is the end.
     private mutating func firstOpen(after step: OnboardingStep?, readiness: OnboardingReadiness) -> OnboardingStep {
-        let rail = OnboardingStep.rail
+        let rail = readiness.rail
         let start = step.flatMap { rail.firstIndex(of: $0) }.map { $0 + 1 } ?? 0
         for candidate in rail[min(start, rail.count)...] {
             if mark(candidate) == .done { continue }

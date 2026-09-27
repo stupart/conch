@@ -450,7 +450,7 @@ export interface VoiceLoop {
    * it, or why not. Released once its recorder is gone; a Stop meanwhile calls
    * `stopRecorder`.
    */
-  holdNarration(quietWithinMs: number, stopRecorder: () => void): Promise<{ release(): void } | { refused: string }>;
+  holdNarration(quietWithinMs: number, stopRecorder: () => void, label?: string): Promise<{ release(): void } | { refused: string }>;
   /**
    * Why a request is turned away at the door rather than queued, or null. A
    * dictation asked for while Show's narration has the mic would wait behind it
@@ -584,7 +584,8 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
    * for a line to finish, not a whole reply. Held, it shows as a dictation's
    * mic does ("recording"), and a Stop ends it through `stopRecorder`.
    */
-  const holdNarration = async (quietWithinMs: number, stopRecorder: () => void): Promise<{ release(): void } | { refused: string }> => {
+  // `label` is what the open mic shows as: "Show" for a Show's narration, "Microphone check" for setup's (setup.ts).
+  const holdNarration = async (quietWithinMs: number, stopRecorder: () => void, label = "Show"): Promise<{ release(): void } | { refused: string }> => {
     const elsewhere = (): string => (audioLease.isPhone() ? "the phone has the audio" : "another Mac has the audio");
     if (audioLease.isPhone() || !audioHolder.isLocal()) return { refused: elsewhere() };
     const deadline = Date.now() + quietWithinMs;
@@ -617,7 +618,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       stopNarration = stopRecorder;
       // An open mic, shown as a dictation's is: the menu bar and the phone say it is recording. The queue's idle
       // puts the state back at rest once it is released.
-      setState("recording", "Show");
+      setState("recording", label);
       let held = true;
       return {
         release: () => {

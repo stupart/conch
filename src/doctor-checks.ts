@@ -433,6 +433,44 @@ export async function checkTts(
   }
 }
 
+/** One agent's binaries: the one conch resolves on its own PATH, and the one the person's login shell runs. */
+export interface AgentBinary {
+  agent: "claude" | "codex";
+  /** What conch itself runs (`which` on the daemon's PATH); empty when it resolves nothing. */
+  used: string;
+  /** `used --version`'s first line; empty without `used`. */
+  version: string;
+  /** What the person's login shell resolves (zsh, else sh); empty when the shell couldn't say. */
+  shell: string;
+  /** `shell --version`'s first line, asked only when it differs from `used`. */
+  shellVersion: string;
+}
+
+/**
+ * Where `claude` and `codex` are, as conch and as the person's shell see them: the facts `checkAgentBinaries` reports on
+ * and setup (setup.ts) shows. Both sides are injected, so nothing here depends on this machine's installs.
+ */
+export async function resolveAgentBinaries(
+  run: (argv: string[]) => Promise<{ stdout: string; ok: boolean }> = defaultRun,
+  which: (agent: string) => string | null = (agent) => Bun.which(agent),
+): Promise<AgentBinary[]> {
+  const firstLine = async (binary: string): Promise<string> =>
+    (await run([binary, "--version"])).stdout.trim().split("\n")[0] ?? "";
+  const binaries: AgentBinary[] = [];
+  for (const agent of ["claude", "codex"] as const) {
+    const mine = (await run(["/bin/sh", "-lc", `command -v ${agent}`])).stdout.trim();
+    const zsh = (await run(["/bin/zsh", "-lc", `command -v ${agent}`])).stdout.trim();
+    // The interactive shell is the comparison that matters: it is what the
+    // person means by "the one I use".
+    const shell = zsh || mine;
+    const used = which(agent) ?? "";
+    const version = used ? await firstLine(used) : "";
+    const shellVersion = shell && shell !== used ? await firstLine(shell) : "";
+    binaries.push({ agent, used, version, shell, shellVersion });
+  }
+  return binaries;
+}
+
 /** One ready-to-print advisory line; intentionally uses a warning, never a fatal cross. */
 /**
  * Which `claude` and `codex` conch will actually launch, and whether that is
@@ -463,23 +501,15 @@ export async function checkAgentBinaries(
   const lines: string[] = [];
   let divergent = false;
 
-  for (const agent of ["claude", "codex"] as const) {
-    const mine = (await run(["/bin/sh", "-lc", `command -v ${agent}`])).stdout.trim();
-    const shell = (await run(["/bin/zsh", "-lc", `command -v ${agent}`])).stdout.trim();
-    const used = which(agent) ?? "";
+  for (const { agent, used, version, shell, shellVersion } of await resolveAgentBinaries(run, which)) {
     if (!used) {
       lines.push(`${agent}: not on conch's PATH`);
       divergent = true;
       continue;
     }
-    const version = (await run([used, "--version"])).stdout.trim().split("\n")[0] ?? "";
-    // The interactive shell is the comparison that matters: it is what the
-    // person means by "the one I use".
-    const theirs = shell || mine;
-    if (theirs && theirs !== used) {
-      const theirVersion = (await run([theirs, "--version"])).stdout.trim().split("\n")[0] ?? "";
+    if (shell && shell !== used) {
       lines.push(`${agent}: conch runs ${version} (${used})`);
-      lines.push(`${" ".repeat(agent.length)}  your shell runs ${theirVersion} (${theirs})`);
+      lines.push(`${" ".repeat(agent.length)}  your shell runs ${shellVersion} (${shell})`);
       divergent = true;
     } else {
       lines.push(`${agent}: ${version}`);

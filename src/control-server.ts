@@ -25,6 +25,7 @@ import type { AgentCapabilitiesRead } from "./agent-capabilities.ts";
 import { decodeNarrationRequest, type Narration, type NarrationReply } from "./narration.ts";
 import type { AgentInstall } from "./agent-install.ts";
 import { applyPlan, planToggle, rollbackFile, type ConfigWriteHomes, type ConfigWriteIo } from "./config-write.ts";
+import { decodeSetupRequest, type Setup, type SetupReply } from "./setup.ts";
 import {
   isControlMessageCandidate,
   validateControlMessage,
@@ -1118,6 +1119,8 @@ export interface ControlServerOptions {
   narration?: Narration;
   /** The Mac app's answer to a window snapshot the daemon asked for (`review-preview`, review-preview.ts). */
   onReviewPreview?(message: { request?: unknown; path?: unknown; error?: unknown }): Promise<{ ok: true } | { ok: false; error: string }>;
+  /** First-run setup's requests (setup.ts): agents found and connected, a voice sample, the microphone check. */
+  setup?: Setup;
   ownership?: SocketOwnership;
 }
 
@@ -1277,6 +1280,26 @@ export function createControlServer(options: ControlServerOptions): ControlServe
           sock.end(JSON.stringify(answered.ok ? { kind: "preview-ack" } : { kind: "preview-error", error: answered.error }) + "\n");
           return;
         }
+        // First-run setup (setup.ts) names an agent or the microphone, never a session. Its long requests stream lines
+        // before the reply (an installer's last words, the microphone's level), and a microphone check stops when the
+        // app that asked goes away, as a narration's lease does.
+        const setupRequest = decodeSetupRequest(body);
+        if (setupRequest) {
+          let reply: SetupReply;
+          if ("error" in setupRequest) reply = { kind: "setup-error", error: setupRequest.error };
+          else if (!options.setup) reply = { kind: "setup-error", error: "setup is unavailable" };
+          else {
+            const closed = new Promise<void>((resolve) => {
+              sock.once("end", () => resolve());
+              sock.once("close", () => resolve());
+            });
+            reply = await options.setup.handle(setupRequest, (line) => {
+              if (!sock.destroyed) sock.write(JSON.stringify(line) + "\n");
+            }, closed);
+          }
+          sock.end(JSON.stringify(reply) + "\n");
+          return;
+        }
         const value = await sessions.resolve(body);
         // Retain the legacy runtime-first async boundary even for other kinds.
         const runtime = await dispatchRuntimeRequest(value, (message) => application.runtime(message));
@@ -1330,6 +1353,8 @@ export function createControlServer(options: ControlServerOptions): ControlServe
               log(`ignoring malformed event: ${turn.err}`);
               response = { kind: "session-error", error: turn.err };
             } else {
+              // A hook's event is how setup hears from an agent for the first time (setup.ts).
+              options.setup?.noteTurn(turn.value);
               const work = application.turn(turn.value);
               // The Mac app and the phone ask to hear when the keystrokes are
               // DONE: the app to take the front back from the Terminal window

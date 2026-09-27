@@ -85,6 +85,8 @@ describe("never a prompt at launch: every answer is read silently, and asked for
     const calls = Object.entries(macSources).flatMap(([name, source]) =>
       (code(source).match(/[\w.]*\.perform\([^)]*\)|\bperform\(\.[a-zA-Z]+/g) ?? []).map((call) => `${name}: ${call}`));
     expect(calls.sort()).toEqual([
+      // Setup's permission rows and its guide, through the same one door (OnboardingController.swift).
+      "OnboardingController.swift: PermissionCenter.shared.perform(action, for: permission, store: stateStore)",
       "Permissions.swift: center.perform($0, for: notice.permission, store: store)",
       "Permissions.swift: center.perform(action, for: permission, store: store)",
       "Permissions.swift: perform(.openSettings",

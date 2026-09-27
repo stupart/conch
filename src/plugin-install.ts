@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   renameSync,
   rmSync,
   statSync,
@@ -268,17 +269,31 @@ function conciseOutput(stdout: string, stderr: string): string {
   return combined.at(-1) ?? "";
 }
 
+/** One plugin command, run: its output and exit code. Throws ENOENT when the agent isn't installed. */
+export type PluginCommandRunner = (command: string[]) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
+
+const spawnPluginCommand: PluginCommandRunner = async (command) => {
+  const proc = Bun.spawn(command, {
+    stdin: "inherit",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  return { stdout, stderr, exitCode };
+};
+
 async function runCommand(
   command: string[],
   mode: CommandMode,
+  runner: PluginCommandRunner = spawnPluginCommand,
 ): Promise<CommandOutcome> {
-  let proc: Bun.ReadableSubprocess;
+  let ran: { stdout: string; stderr: string; exitCode: number };
   try {
-    proc = Bun.spawn(command, {
-      stdin: "inherit",
-      stdout: "pipe",
-      stderr: "pipe",
-    });
+    ran = await runner(command);
   } catch (error) {
     if (errorCode(error) === "ENOENT") {
       return { status: "not-found", command };
@@ -290,11 +305,7 @@ async function runCommand(
     };
   }
 
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
+  const { stdout, stderr, exitCode } = ran;
   const output = `${stdout}\n${stderr}`;
   const already = mode === "install"
     ? ALREADY_PRESENT.test(output)
@@ -377,7 +388,9 @@ async function runInstallSequence(
   label: string,
   installCommands: string[][],
   uninstallCommands: string[][],
+  runner?: PluginCommandRunner,
 ): Promise<SequenceOutcome> {
+  const runCommand = (command: string[], mode: CommandMode) => runCommandWith(command, mode, runner);
   const [marketplaceAdd, pluginAdd] = installCommands;
   const [pluginRemove, marketplaceRemove] = uninstallCommands;
   if (!marketplaceAdd || !pluginAdd || !pluginRemove || !marketplaceRemove) {
@@ -430,6 +443,8 @@ async function runInstallSequence(
 
   return { ok: true };
 }
+
+const runCommandWith = runCommand;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -580,11 +595,22 @@ async function smokeTest(invocation: McpInvocation): Promise<SmokeResult> {
   return { ok: true };
 }
 
+/** What setup narrows an install to: one agent, a runner that touches nothing in tests, and no MCP smoke test. */
+export interface InstallPluginOptions {
+  /** Register with these agents only; both by default. */
+  agents?: ReadonlyArray<"claude" | "codex">;
+  runner?: PluginCommandRunner;
+  /** Start the MCP server once to count its tools (default true). */
+  smoke?: boolean;
+}
+
 export async function runInstallPlugin(
   absBun: string,
   absCli: string,
   env: Readonly<Record<string, string | undefined>> = process.env,
+  options: InstallPluginOptions = {},
 ): Promise<boolean> {
+  const agents = options.agents ?? ["claude", "codex"];
   // Bun exposes bundled module URLs under /$bunfs in a compiled executable,
   // but they are not ordinary files that cpSync can walk. The existence check
   // also covers future Bun URL layouts without coupling to that prefix alone.
@@ -610,34 +636,54 @@ export async function runInstallPlugin(
 
   const commands = buildInstallCommands(distDir);
   const uninstallCommands = buildUninstallCommands();
-  const claude = await runInstallSequence(
-    "Claude Code",
-    commands.claude,
-    uninstallCommands.claude,
-  );
-  const codex = await runInstallSequence(
-    "Codex",
-    commands.codex,
-    uninstallCommands.codex,
-  );
+  const claude = agents.includes("claude")
+    ? await runInstallSequence("Claude Code", commands.claude, uninstallCommands.claude, options.runner)
+    : { ok: true };
+  const codex = agents.includes("codex")
+    ? await runInstallSequence("Codex", commands.codex, uninstallCommands.codex, options.runner)
+    : { ok: true };
 
-  const invocation = buildMcpInvocation(absBun, absCli, compiled);
-  const smoke = await smokeTest(invocation);
-  if (smoke.ok) {
-    console.log(`MCP smoke test: passed — ${EXPECTED_MCP_TOOL_COUNT} tools`);
-  } else {
-    console.error(
-      `⚠️  WARNING: MCP smoke test failed — ${smoke.error ?? "unknown error"}`,
-    );
-    console.error(
-      `Check: ${formatCommand([invocation.command, ...invocation.args])}`,
-    );
+  // Setup's install skips it: the agent's own record is its check, and the first session loads the tools.
+  if (options.smoke !== false) {
+    const invocation = buildMcpInvocation(absBun, absCli, compiled);
+    const smoke = await smokeTest(invocation);
+    if (smoke.ok) {
+      console.log(`MCP smoke test: passed — ${EXPECTED_MCP_TOOL_COUNT} tools`);
+    } else {
+      console.error(
+        `⚠️  WARNING: MCP smoke test failed — ${smoke.error ?? "unknown error"}`,
+      );
+      console.error(
+        `Check: ${formatCommand([invocation.command, ...invocation.args])}`,
+      );
+    }
   }
 
   console.log(
     "Start a NEW Claude Code / Codex session — the conch-control skill and conch_* tools are now available.",
   );
   return claude.ok && codex.ok;
+}
+
+/**
+ * Whether an agent has conch's plugin, from the agent's own record of it: Claude Code's installation ledger
+ * (`plugins/installed_plugins.json`, a `conch@…` entry) or Codex's config (`[plugins."conch@…"]`). Read only.
+ */
+export function pluginInstalledFor(
+  agent: "claude" | "codex",
+  homes: { claudeDir: string; codexDir: string },
+): boolean {
+  try {
+    if (agent === "claude") {
+      const ledger = JSON.parse(readFileSync(join(homes.claudeDir, "plugins", "installed_plugins.json"), "utf8")) as { plugins?: unknown };
+      const plugins = ledger.plugins;
+      return Boolean(plugins && typeof plugins === "object"
+        && Object.entries(plugins).some(([id, installs]) => id.startsWith("conch@") && Array.isArray(installs) && installs.length > 0));
+    }
+    return /^\[plugins\."conch@[^"]+"\]/m.test(readFileSync(join(homes.codexDir, "config.toml"), "utf8"));
+  } catch {
+    return false;
+  }
 }
 
 export async function runUninstallPlugin(

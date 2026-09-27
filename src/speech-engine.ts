@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, openSync, closeSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, statfsSync, unlinkSync, writeFileSync, openSync, closeSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { conchHome } from "./home.ts";
@@ -376,6 +376,40 @@ export function clearFetchFailures(path: string, sha256: string): void {
   writeFailures(path, (all) => { delete all[sha256]; });
 }
 
+/** Why a download stopped, when it is one of the two a person can do something about. */
+export type FetchProblem = { kind: "offline" } | { kind: "no-space"; needs: number; free: number };
+
+/**
+ * A failed attempt's error, as setup says it: the Mac is offline (the connection never came up, or dropped and stalled),
+ * the disk is full, or neither (a server error, a checksum). Only the words decide it, so an unknown error stays unknown.
+ */
+export function classifyFetchFailure(message: string): FetchProblem["kind"] | null {
+  if (/ENOSPC|no space left|not enough free space/i.test(message)) return "no-space";
+  if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ENETUNREACH|EHOSTUNREACH|ETIMEDOUT|unable to connect|network|socket connection was closed|stalled|fetch failed/i.test(message)) {
+    return "offline";
+  }
+  return null;
+}
+
+/** Bytes free on the volume holding `path` or its nearest existing parent; null when it can't be read. */
+export function freeBytesNear(path: string): number | null {
+  let at = path;
+  for (let i = 0; i < 16; i++) {
+    try {
+      const stats = statfsSync(at);
+      return Number(stats.bavail) * Number(stats.bsize);
+    } catch {
+      const parent = dirname(at);
+      if (parent === at) return null;
+      at = parent;
+    }
+  }
+  return null;
+}
+
+/** Room kept beside a model's own bytes, so the download never takes the disk to its last megabyte. */
+export const MODEL_FETCH_HEADROOM_BYTES = 200_000_000;
+
 function pidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -421,8 +455,12 @@ export interface SpeechEngineStatus {
   reason?: string;
   /** One sentence a person can act on. */
   detail: string;
-  /** While a model downloads: bytes so far of the pinned total. */
+  /** While a model downloads: bytes so far of the pinned total. Kept while a failed attempt waits to try again. */
   progress?: { bytes: number; total: number };
+  /** What stopped the last attempt, when it is offline or out of room: setup says it in those words. */
+  problem?: FetchProblem;
+  /** While waiting to try again: when (epoch ms). */
+  retryAt?: number;
   /** Where each part came from, for Settings, onboarding and the doctor. */
   parts: {
     whisper: { source: EngineSource; path: string };
@@ -457,6 +495,8 @@ export interface SpeechEngineManagerOptions {
   watchMs?: number;
   /** Minimum gap between two progress publications. */
   progressEveryMs?: number;
+  /** Bytes free beside a model's destination (`freeBytesNear`); null when unknown, which never blocks a download. */
+  freeBytes?: (path: string) => number | null;
 }
 
 export function speechEngineStatusPath(home = conchHome()): string {
@@ -501,6 +541,8 @@ export class SpeechEngineManager {
   private lastProgressAt = 0;
   private watchTimer: ReturnType<typeof setInterval> | null = null;
   private readyWaiters: Array<(ready: boolean) => void> = [];
+  /** What stopped the last attempt, when it is offline or out of room (`classifyFetchFailure`). */
+  private lastProblem: FetchProblem | null = null;
   private settledReady: boolean | null = null;
   private readonly lifecycle = new AbortController();
   private readonly whisperPin: PinnedModel;
@@ -554,7 +596,7 @@ export class SpeechEngineManager {
     for (const waiter of this.readyWaiters.splice(0)) waiter(ready);
   }
 
-  private compose(head: Pick<SpeechEngineStatus, "state" | "detail"> & Partial<Pick<SpeechEngineStatus, "reason" | "progress">>): SpeechEngineStatus {
+  private compose(head: Pick<SpeechEngineStatus, "state" | "detail"> & Partial<Pick<SpeechEngineStatus, "reason" | "progress" | "problem" | "retryAt">>): SpeechEngineStatus {
     const engine = this.options.engine;
     const tmux = (this.options.tmux ?? (() => Bun.which("tmux")))();
     return {
@@ -562,6 +604,8 @@ export class SpeechEngineManager {
       ...(head.reason ? { reason: head.reason } : {}),
       detail: head.detail,
       ...(head.progress ? { progress: head.progress } : {}),
+      ...(head.problem ? { problem: head.problem } : {}),
+      ...(head.retryAt ? { retryAt: head.retryAt } : {}),
       parts: {
         whisper: { source: engine.whisperCli.source, path: engine.whisperCli.path },
         server: { source: engine.whisperServer.source, path: engine.whisperServer.path },
@@ -654,7 +698,16 @@ export class SpeechEngineManager {
         return false;
       }
       if (attempts > 0) {
-        this.setStatus({ state: "downloading", detail: `retrying the ${pin.label} model (${size}) in ${Math.round(delays[attempts]! / 1000)}s — ${failures?.lastError ?? "the last attempt failed"}` });
+        // What the last attempt got, so the bar holds its place while it waits, and why it stopped when that is one a
+        // person can act on.
+        const partial = partBytes(dest);
+        this.setStatus({
+          state: "downloading",
+          detail: `retrying the ${pin.label} model (${size}) in ${Math.round(delays[attempts]! / 1000)}s — ${failures?.lastError ?? "the last attempt failed"}`,
+          ...(partial > 0 ? { progress: { bytes: partial, total: pin.bytes } } : {}),
+          ...(this.lastProblem ? { problem: this.lastProblem } : {}),
+          retryAt: now() + delays[attempts]!,
+        });
       }
       if (!(await sleep(delays[attempts]!, signal))) return false;
       this.attemptsThisRun.set(pin.sha256, attempts + 1);
@@ -676,8 +729,16 @@ export class SpeechEngineManager {
 
       this.options.log(`speech engine: downloading the ${pin.label} model (${size}) to ${dest}, attempt ${attempts + 1}`);
       this.lastProgressAt = 0;
-      this.setStatus({ state: "downloading", detail: `downloading the ${pin.label} model (${size})`, progress: { bytes: 0, total: pin.bytes } });
+      const resumed = partBytes(dest);
+      this.setStatus({ state: "downloading", detail: `downloading the ${pin.label} model (${size})`, progress: { bytes: resumed, total: pin.bytes } });
+      // Room first: a download that fills the disk fails at the end, having taken everything on the way.
+      const needs = pin.bytes - resumed + MODEL_FETCH_HEADROOM_BYTES;
+      const free = (this.options.freeBytes ?? freeBytesNear)(dirname(dest));
       try {
+        if (free !== null && free < needs) {
+          this.lastProblem = { kind: "no-space", needs, free };
+          throw new Error(`not enough free space: needs ${megabytes(needs)}, this Mac has ${megabytes(free)}`);
+        }
         await (this.options.fetchModel ?? fetchPinnedModel)(pin, dest, {
           signal,
           onProgress: (bytes, total) => this.progress(pin, size, bytes, total),
@@ -686,11 +747,16 @@ export class SpeechEngineManager {
         held.release();
         if (signal.aborted) return false;
         const why = errorText(error);
+        const kind = classifyFetchFailure(why);
+        if (kind === "offline") this.lastProblem = { kind };
+        else if (kind === "no-space") this.lastProblem = { kind, needs, free: free ?? 0 };
+        else this.lastProblem = null;
         const count = recordFetchFailure(failuresPath, pin.sha256, why, now());
         this.options.log(`speech engine: downloading the ${pin.label} model failed (${count} in the last day): ${why}`);
         continue;
       }
       held.release();
+      this.lastProblem = null;
       clearFetchFailures(failuresPath, pin.sha256);
       this.options.log(`speech engine: the ${pin.label} model is in place (sha256 verified)`);
       return true;
@@ -708,7 +774,7 @@ export class SpeechEngineManager {
   /** Bounded out: say why, and — for a model — notice one placed by `conch setup` in a terminal. */
   private giveUp(reason: string, detail: string, watch: boolean, dest?: string): void {
     this.options.log(`speech engine: ${detail}`);
-    this.setStatus({ state: "off", reason, detail });
+    this.setStatus({ state: "off", reason, detail, ...(this.lastProblem ? { problem: this.lastProblem } : {}) });
     if (!watch || !dest) {
       this.settleReady(false);
       return;
@@ -727,6 +793,27 @@ export class SpeechEngineManager {
     if (this.watchTimer) clearInterval(this.watchTimer);
     this.watchTimer = null;
   }
+
+  /**
+   * Setup's Retry, for a download that gave up: this run's attempts and the day's failure record are forgotten, and the
+   * engine is resolved again, resuming any `.part` on disk. Nothing happens unless it gave up on a download.
+   */
+  retry(): boolean {
+    if (this.lifecycle.signal.aborted || this.status.state !== "off" || this.status.reason !== "download failed") return false;
+    for (const [part, pin] of [[this.options.engine.vadModel, this.vadPin], [this.options.engine.whisperModel, this.whisperPin]] as const) {
+      clearFetchFailures(this.options.failuresPath ?? join(dirname(part.path), "fetch-failures.json"), pin.sha256);
+    }
+    this.attemptsThisRun.clear();
+    this.lastProblem = null;
+    this.stopWatching();
+    void this.enqueue(() => this.resolve());
+    return true;
+  }
+}
+
+/** Bytes a resumable download already has in its `.part`. */
+function partBytes(dest: string): number {
+  try { return statSync(`${dest}.part`).size; } catch { return 0; }
 }
 
 // MARK: - Outside the daemon (`conch doctor`)

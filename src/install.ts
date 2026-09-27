@@ -628,9 +628,10 @@ export interface CodexHooksBuildResult {
   addedEvents: string[];
 }
 
+/** Any case: a source checkout at ~/Projects/Conch writes `"<bun>" "…/Conch/src/cli.ts" codex-hook`, as Claude's side found. */
 function isConchCodexHook(command: unknown): boolean {
   return typeof command === "string"
-    && command.includes("conch")
+    && /conch|cli\.ts/i.test(command)
     && command.includes("codex-hook");
 }
 
@@ -680,7 +681,7 @@ export function buildCodexHooksSettings(
     const already = entries.some((entry) =>
       entry.hooks?.some((hook) =>
         hook.command === command
-        || (hook.command?.includes("conch") && hook.command?.includes("codex-hook"))
+        || isConchCodexHook(hook.command)
       )
     );
     if (already) continue;
@@ -696,9 +697,16 @@ export function buildCodexHooksSettings(
  * the review handoff contract in ~/.codex/AGENTS.md. Existing content in both
  * files is preserved; backups are written only for files that actually change.
  */
+/** What an install wrote: whether the agent's file changed, the file, and where the old one was backed up. */
+export interface HooksInstallResult {
+  changed: boolean;
+  file: string;
+  backup: string | null;
+}
+
 export async function runCodexInstall(
   codexDir = join(conchHome(), ".codex"),
-): Promise<void> {
+): Promise<HooksInstallResult> {
   const hooksPath = join(codexDir, "hooks.json");
   const command = `${conchInvocation()} codex-hook`;
 
@@ -716,10 +724,11 @@ export async function runCodexInstall(
     }
   }
 
+  let backup: string | null = null;
   if (result.changed) {
     mkdirSync(dirname(hooksPath), { recursive: true });
     if (existsSync(hooksPath)) {
-      const backup = `${hooksPath}.conch-backup-${Date.now()}`;
+      backup = `${hooksPath}.conch-backup-${Date.now()}`;
       await Bun.write(backup, await Bun.file(hooksPath).text());
       console.log(`backed up hooks to ${backup}`);
     }
@@ -735,6 +744,7 @@ Verify Codex hook activation:
   hooks file: ${hooksPath}
   first run: The first \`codex\` run shows Codex's hook trust-review screen; the conch hooks must be approved there.
   confirm: After Codex starts, run \`conch sessions\` and check that the Codex session is listed.`);
+  return { changed: result.changed, file: hooksPath, backup };
 }
 
 /** Said only when hooks were actually written: an unchanged install has nothing for open sessions to reload. */
@@ -754,9 +764,12 @@ export const HOOKS_WIRED_LINE =
  */
 export const CLAUDE_HOOK_EVENTS = ["Stop", "Notification", "UserPromptSubmit", "PermissionRequest", "SessionStart"] as const;
 
-/** A hook command that runs conch's hook: `"<bun>" "<…>/src/cli.ts" hook` or `"<…>/conch" hook`. */
+/**
+ * A hook command that runs conch's hook: `"<bun>" "<…>/src/cli.ts" hook`, `"<…>/conch" hook`, or the Mac app's own
+ * daemon, `"<…>/conch.app/Contents/Helpers/conch-daemon" hook`, which is what setup writes from the app.
+ */
 export function isConchHookCommand(command: string | undefined): boolean {
-  return /(?:conch|cli\.ts)"?\s+hook\s*$/i.test(command ?? "");
+  return /(?:conch(?:-daemon)?|cli\.ts)"?\s+hook\s*$/i.test(command ?? "");
 }
 
 /**
@@ -764,7 +777,7 @@ export function isConchHookCommand(command: string | undefined): boolean {
  * contract in global CLAUDE.md. Existing content in both files is preserved;
  * backups are written only for files that actually change.
  */
-export async function runInstall(cfg: Config): Promise<void> {
+export async function runInstall(cfg: Pick<Config, "claudeDir">): Promise<HooksInstallResult> {
   const settingsPath = join(cfg.claudeDir, "settings.json");
   // Paths are quoted so an install dir containing spaces still yields a runnable
   // hook command. Resolves to `"conch" hook` (compiled) or `"bun" "…/cli.ts" hook`.
@@ -797,11 +810,12 @@ export async function runInstall(cfg: Config): Promise<void> {
     console.log(`${event}: wired -> ${command}`);
   }
 
+  let backup: string | null = null;
   if (changed) {
     // Back up only when we're actually about to modify — the old code wrote a
     // fresh timestamped backup on every run, even "Nothing to do", piling up.
     if (existsSync(settingsPath)) {
-      const backup = `${settingsPath}.conch-backup-${Date.now()}`;
+      backup = `${settingsPath}.conch-backup-${Date.now()}`;
       await Bun.write(backup, await Bun.file(settingsPath).text());
       console.log(`backed up settings to ${backup}`);
     }
@@ -815,6 +829,7 @@ export async function runInstall(cfg: Config): Promise<void> {
   } else {
     console.log("\nNothing to do.");
   }
+  return { changed, file: settingsPath, backup };
 }
 
 /** Sanity-check every external dependency conch shells out to. */

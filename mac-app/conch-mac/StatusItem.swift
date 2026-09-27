@@ -135,7 +135,9 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
             replyLineAlone: defaults.bool(forKey: Self.replyLineAloneKey),
             drawing: CanvasController.shared.armed,
             ready: Self.readyRows(state).map { StatusMenu.Session(id: $0.id, label: $0.label) },
-            working: Self.workingRows(state).map { StatusMenu.Session(id: $0.id, label: $0.label) }
+            working: Self.workingRows(state).map { StatusMenu.Session(id: $0.id, label: $0.label) },
+            // Setup put away with steps left: a reminder at the top until it's done.
+            setupLeft: OnboardingController.shared.menuReminder()
         )
         for row in StatusMenu.rows(input) {
             switch row {
@@ -194,7 +196,22 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         default: break
         }
         if let dot = item.dot { entry.image = Self.dot(dot) }
+        if item.command == .finishSetup { Self.dressSetupReminder(entry, detail: item.detail) }
         return entry
+    }
+
+    /// "Finish setting up conch", with conch's icon and what's left under it: the menu's own second line where macOS
+    /// has one, else after the title.
+    private static func dressSetupReminder(_ entry: NSMenuItem, detail: String?) {
+        let icon = NSApp.applicationIconImage.copy() as? NSImage
+        icon?.size = NSSize(width: 26, height: 26)
+        entry.image = icon
+        guard let detail else { return }
+        if #available(macOS 14.4, *) {
+            entry.subtitle = detail
+        } else {
+            entry.title = "\(entry.title) · \(detail)"
+        }
     }
 
     private func action(_ command: StatusMenu.Command) -> Selector {
@@ -210,6 +227,7 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         case .openItem: #selector(openItem(_:))
         case .openSession: #selector(openSession(_:))
         case .openConch: #selector(openConch)
+        case .finishSetup: #selector(finishSetup)
         }
     }
 
@@ -279,6 +297,11 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
 
     @objc private func openConch() {
         Self.bringConchForward()
+    }
+
+    /// Setup's window, where it was left.
+    @objc private func finishSetup() {
+        OnboardingController.shared.finishSettingUp()
     }
 
     /// Where an open came from: the Ready pill and the menu's Ready for you rows open from outside the conversation

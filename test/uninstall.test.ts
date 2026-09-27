@@ -312,4 +312,8 @@ test("a hook command from a capitalised source checkout is still conch's", () =>
   // `conch uninstall` from that checkout left its own hooks in place.
   expect(isConchHookCommand('"/opt/homebrew/bin/bun" "/Users/t/Projects/Conch/src/cli.ts" hook', "claude")).toBe(true);
   expect(isConchHookCommand('"/opt/homebrew/bin/bun" "/Users/t/Projects/Other/src/cli.ts" hook', "claude")).toBe(false);
+  // The Mac app's own daemon writes these from setup; uninstall takes them out too.
+  expect(isConchHookCommand('"/Applications/conch.app/Contents/Helpers/conch-daemon" hook', "claude")).toBe(true);
+  expect(isConchHookCommand('"/Applications/conch.app/Contents/Helpers/conch-daemon" codex-hook', "codex")).toBe(true);
+  expect(isConchHookCommand('"/Applications/other.app/Contents/Helpers/other-daemon" hook', "claude")).toBe(false);
 });

@@ -41,6 +41,7 @@ import {
   renameSync,
   rmSync,
   statSync,
+  statfsSync,
   unlinkSync,
   writeFileSync,
   appendFileSync,
@@ -433,6 +434,27 @@ export const VOICE_SETUP_STEPS = 4;
  * the env's files — deleting it freed 21 MB — so the disk really holds ~1.3 GB.
  */
 export const VOICE_ENV_SIZE_HINT = "about 1.3 GB, once";
+/**
+ * Free space a build needs before it starts: the env (1.3 GB), its Python and uv's cache headroom while it unpacks, and
+ * Kokoro's model (~360 MB) after it. Below this a build fails part way with ENOSPC, so it waits instead, and says so.
+ */
+export const VOICE_ENV_NEEDS_BYTES = 1_700_000_000;
+
+/** Bytes free on the volume holding `path` (or its nearest existing parent); null when it can't be read. */
+export function freeBytesAt(path: string): number | null {
+  let at = path;
+  for (let i = 0; i < 16; i++) {
+    try {
+      const stats = statfsSync(at);
+      return Number(stats.bavail) * Number(stats.bsize);
+    } catch {
+      const parent = dirname(at);
+      if (parent === at) return null;
+      at = parent;
+    }
+  }
+  return null;
+}
 
 export class VoiceSetupError extends Error {
   constructor(readonly step: string, reason: string) {
@@ -447,8 +469,8 @@ export interface BuildVoiceEnvOptions {
   lock?: VoiceLock;
   lockText?: string;
   run?: StepRunner;
-  /** Called with a person-readable step, `(n/4)`, as each one starts. */
-  progress?: (step: string) => void;
+  /** Called with a person-readable step, `(n/4)`, as each one starts, and which step it is. */
+  progress?: (step: string, at: { step: number; steps: number }) => void;
   signal?: AbortSignal;
   baseEnv?: Readonly<Record<string, string | undefined>>;
 }
@@ -475,7 +497,7 @@ export async function buildVoiceEnv(options: BuildVoiceEnvOptions): Promise<{ py
   appendLog(paths, `\n=== ${new Date().toISOString()} building conch's voice environment (lock ${lock.id}) with ${uv}`);
 
   const step = async (n: number, label: string, argv: string[], timeoutMs: number): Promise<void> => {
-    options.progress?.(`${label} (${n}/${VOICE_SETUP_STEPS})`);
+    options.progress?.(`${label} (${n}/${VOICE_SETUP_STEPS})`, { step: n, steps: VOICE_SETUP_STEPS });
     appendLog(paths, `--- ${n}/${VOICE_SETUP_STEPS} ${label}: ${argv.join(" ")}`);
     if (options.signal?.aborted) throw new VoiceSetupError(label, "cancelled");
     let result: StepResult;
@@ -519,7 +541,7 @@ export async function buildVoiceEnv(options: BuildVoiceEnvOptions): Promise<{ py
   renameSync(paths.staging, paths.env);
   rmSync(retired, { recursive: true, force: true });
 
-  options.progress?.(`checking it (4/${VOICE_SETUP_STEPS})`);
+  options.progress?.(`checking it (4/${VOICE_SETUP_STEPS})`, { step: 4, steps: VOICE_SETUP_STEPS });
   const verdict = judgeVoiceProbe(
     await probeVoicePython(paths.python, { run, signal: options.signal, timeoutMs: 10 * 60_000 }),
     "exact",
@@ -719,6 +741,16 @@ export interface NaturalVoicesStatus {
   /** One sentence a person can act on. */
   detail: string;
   source?: VoicePythonSource;
+  /**
+   * While setting up, which build step (1 to `steps`), so setup's tray says "step 3 of 4" without reading `detail`.
+   * Absent outside the build: fetching the voices after it (`stage: "prefetch"`), or another conch building them
+   * (`stage: "elsewhere"`).
+   */
+  step?: number;
+  steps?: number;
+  stage?: "prefetch" | "elsewhere";
+  /** The build is waiting for room: what it needs and what the disk has, in bytes. */
+  space?: { needs: number; free: number };
 }
 
 export interface VoiceEnvManagerOptions {
@@ -742,7 +774,9 @@ export interface VoiceEnvManagerOptions {
   resolveExplicit?: (explicit: string) => string | null;
   resolveLegacy?: () => string | null;
   probe?: (python: string, signal: AbortSignal) => Promise<VoiceProbeOutcome>;
-  build?: (uv: string, progress: (step: string) => void, signal: AbortSignal) => Promise<void>;
+  build?: (uv: string, progress: (step: string, at?: { step: number; steps: number }) => void, signal: AbortSignal) => Promise<void>;
+  /** Bytes free where the env is built (`freeBytesAt`); null when unknown, which never blocks a build. */
+  freeBytes?: (path: string) => number | null;
   prefetch?: (python: string, signal: AbortSignal) => Promise<void>;
   retryDelaysMs?: readonly number[];
   maxFailures?: number;
@@ -775,6 +809,11 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** "1.7 GB", "900 MB": the way Finder writes them. */
+function gigabytes(bytes: number): string {
+  return bytes >= 1_000_000_000 ? `${(bytes / 1_000_000_000).toFixed(1)} GB` : `${Math.round(bytes / 1_000_000)} MB`;
+}
+
 /**
  * Owns which Python the Kokoro worker runs, and conch's environment behind it:
  * the check at start, the background build when it is missing or wrong, the
@@ -789,6 +828,8 @@ export class VoiceEnvManager {
   private buildsThisRun = 0;
   /** The last failure this run, for when the on-disk record cannot be written (a full disk). */
   private lastBuildError: string | null = null;
+  /** The room the last attempt waited for, kept on the status while it gives up. */
+  private lastSpace: { needs: number; free: number } | null = null;
   private lastRecheckAt = Number.NEGATIVE_INFINITY;
   private watchTimer: ReturnType<typeof setInterval> | null = null;
   private readonly lifecycle = new AbortController();
@@ -954,6 +995,7 @@ export class VoiceEnvManager {
       this.setStatus({
         state: "setting-up",
         detail: `downloading and trying the Kokoro voices (~360 MB, once) — ${this.meanwhile()}`,
+        stage: "prefetch",
       });
       try {
         const prefetch = this.options.prefetch ?? ((python, signal) => prefetchVoiceModel({
@@ -1001,7 +1043,7 @@ export class VoiceEnvManager {
 
       const held = acquireSetupLock(this.paths);
       if ("heldBy" in held) {
-        this.setStatus({ state: "setting-up", detail: `being set up by another conch process (pid ${held.heldBy}) — ${this.meanwhile()}` });
+        this.setStatus({ state: "setting-up", detail: `being set up by another conch process (pid ${held.heldBy}) — ${this.meanwhile()}`, stage: "elsewhere" });
         while (!signal.aborted && existsSync(this.paths.lock)) {
           if (!(await (this.options.sleep ?? abortableSleep)(5_000, signal))) return;
           const again = acquireSetupLock(this.paths);
@@ -1019,14 +1061,28 @@ export class VoiceEnvManager {
         continue;
       }
 
+      // Room first: a build that runs out of disk half way fails in a way nobody can read. Waiting for room is an
+      // attempt like any other, so it is bounded, retried, and said.
+      const free = (this.options.freeBytes ?? freeBytesAt)(this.paths.root);
+      if (free !== null && free < VOICE_ENV_NEEDS_BYTES) {
+        held.release();
+        const why = `not enough free space: needs ${gigabytes(VOICE_ENV_NEEDS_BYTES)}, this Mac has ${gigabytes(free)}`;
+        this.lastBuildError = why;
+        this.lastSpace = { needs: VOICE_ENV_NEEDS_BYTES, free };
+        recordSetupFailure(this.paths, why, now(), this.lock);
+        this.options.log(`natural voices: ${why} — waiting before trying again`);
+        this.setStatus({ state: "setting-up", detail: `${why} — ${this.meanwhile()}`, space: this.lastSpace });
+        continue;
+      }
+      this.lastSpace = null;
       try {
         this.options.log(`natural voices: building conch's environment with ${uv.path} (from ${uv.source}), attempt ${this.buildsThisRun}`);
         const build = this.options.build ?? ((uvPath, progress, abort) => buildVoiceEnv({
           paths: this.paths, uv: uvPath, lock: this.lock, progress, signal: abort,
         }).then(() => {}));
-        await build(uv.path, (step) => {
+        await build(uv.path, (step, at) => {
           this.options.log(`natural voices: ${step}`);
-          this.setStatus({ state: "setting-up", detail: `${step} — ${this.meanwhile()}` });
+          this.setStatus({ state: "setting-up", detail: `${step} — ${this.meanwhile()}`, ...(at ? { step: at.step, steps: at.steps } : {}) });
         }, signal);
       } catch (error) {
         held.release();
@@ -1059,9 +1115,24 @@ export class VoiceEnvManager {
     if (this.source === "legacy" && this.python) {
       this.setStatus({ state: "ready", detail: `your mlx-audio install (${this.python}); conch's own ${detail}`, source: "legacy" });
     } else {
-      this.setStatus({ state: "off", reason, detail });
+      this.setStatus({ state: "off", reason, detail, ...(this.lastSpace ? { space: this.lastSpace } : {}) });
     }
     this.watchForSetupElsewhere();
+  }
+
+  /**
+   * Setup's Retry, for voices that gave up: this run's attempts and the day's failure record are forgotten, and the
+   * voices are resolved again from the start. Nothing happens while they are ready, or still being set up.
+   */
+  retry(): boolean {
+    if (this.lifecycle.signal.aborted || this.status.state !== "off" || this.status.reason === "needs Apple silicon") return false;
+    clearSetupFailures(this.paths);
+    this.buildsThisRun = 0;
+    this.lastBuildError = null;
+    this.lastSpace = null;
+    this.stopWatching();
+    void this.enqueue(() => this.resolve());
+    return true;
   }
 
   /** `conch voices setup` in a terminal can finish what the daemon gave up on; notice its record. */
