@@ -10,6 +10,7 @@ import type { PendingApproval } from "./approval.ts";
 import type { PublishedShowing } from "./screen-context.ts";
 import type { NaturalVoicesStatus } from "./voice-env.ts";
 import type { SpeechEngineStatus } from "./speech-engine.ts";
+import type { PublishedPhone } from "./phone-setup.ts";
 
 export type PanelConchState = "idle" | "muted" | "paused" | "speaking" | "listening" | "recording" | "transcribing";
 
@@ -426,6 +427,11 @@ export interface PublishedState {
   audioOutbox?: AudioOutboxItem[];
   /** What is on screen and whose it is (`screen-context.ts`). Absent until something was observed. */
   showing?: PublishedShowing;
+  /**
+   * The phone, for setup (`phone-setup.ts`): the setting, whether one has paired, and how far its own setup got, which
+   * the Mac's setup window mirrors. Absent from older daemons.
+   */
+  phone?: PublishedPhone;
   /**
    * Where the natural voices stand (`voice-env.ts`): checking, setting up, ready, or off and why.
    * The Mac app's Settings shows it beside the session voices. Absent from older daemons and in

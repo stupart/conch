@@ -180,6 +180,7 @@ import {
   type PhoneRelayHandle,
   type RelayPairing,
 } from "./phone-relay.ts";
+import { computerName, PhoneSetup } from "./phone-setup.ts";
 import {
   transcribeWavSegments,
   whisperServerClient,
@@ -1434,6 +1435,13 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   let activeRelayEndpoint = "";
   let activeRelayPairing: RelayPairing | null = null;
   let lastPhoneSummary = "";
+  /** The phone's first-run setup, as the Mac's setup window follows it: published as `phone` (`phone-setup.ts`). */
+  const phoneSetup = new PhoneSetup({ onChange: () => publishPhoneSetup(), log });
+  function publishPhoneSetup(): void {
+    if (!lastPublishedPanelState) return;
+    lastPublishedPanelState = { ...lastPublishedPanelState, ts: Date.now(), phone: phoneSetup.published(cfg.phoneEnabled) };
+    publishedStateWriter.request();
+  }
   /**
    * Which phone transports are actually live, in one line.
    *
@@ -1461,6 +1469,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   function syncPhoneBridge(): void {
     applyPhoneTransports();
     logPhoneTransports();
+    publishPhoneSetup();
   }
 
   function applyPhoneTransports(): void {
@@ -1520,6 +1529,11 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
           // A snapshot of a deliverable the phone can't draw, put on the held review like `viewedAt`.
           // The words of a video the phone is sending, timed, from its recording (`/transcript`).
           transcribe: (wavPath) => transcribeWavSegments(cfg, wavPath),
+          setup: {
+            report: (report) => phoneSetup.report(report),
+            exchange: (event) => phoneSetup.exchange(event),
+            macName: computerName,
+          },
           requestPreview: createPreviewRequester({
             held: (sessionId) => {
               const state = ledger.sessionStates.get(sessionId);
@@ -1969,6 +1983,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         naturalVoices,
         speechEngineStatus,
       );
+      lastPublishedPanelState.phone = phoneSetup.published(cfg.phoneEnabled);
       publishedStateWriter.request();
       if (theaterMode) theaterNavigation.commitFrame(nextActiveSessionId, navSelectedId);
     }

@@ -284,6 +284,12 @@ final class BridgeClient: ObservableObject {
     /// disconnection can honestly be blamed on.
     var isRelayPaired: Bool { pairing.isRelay }
 
+    /// The relay a relay pairing reaches the Mac through, so setup can say when it's the relay that isn't answering.
+    var relayEndpoint: URL? {
+        if case let .relay(payload) = pairing { return payload.endpointURL }
+        return nil
+    }
+
     /// Has this pairing EVER connected?
     ///
     /// "Looking for your Mac…" is right the first time and misleading every
@@ -468,8 +474,12 @@ final class BridgeClient: ObservableObject {
     /// once, which is worse than either alone.
     @discardableResult
     func claimAudio(_ mine: Bool) async -> Bool {
-        await post(control: ["kind": "audio-sink", "sink": mine ? "phone" : "mac"])
+        await post(control: ["kind": "audio-sink", "sink": mine && !leavesAudioOnMac ? "phone" : "mac"])
     }
+
+    /// While this phone sets itself up the voice stays on the Mac: the phone isn't where you listen yet, and the Mac's
+    /// own setup speaks next (its practice turn). A claim made meanwhile leaves it there; "Open conch" takes it.
+    var leavesAudioOnMac = false
 
     /// Tell the Mac which session THIS phone is reading, and when it stops.
     ///
@@ -518,6 +528,53 @@ final class BridgeClient: ObservableObject {
             "text": String(text.prefix(200)),
             "reason": reason,
         ])
+    }
+
+    /// What the Mac made of a report of this phone's setup (`reportSetup`).
+    enum SetupReportOutcome: Equatable {
+        /// Heard: the furthest stage the Mac now holds for this phone, and the Mac's own name.
+        case answered(stage: PhoneSetupStage, mac: String?)
+        /// A Mac from before setup has no route for it, and nothing that follows along.
+        case notFollowed
+        /// The Mac said no to the report itself. Sending it again won't change that.
+        case refused(String)
+        /// Not heard: no link, or no answer in time. Sent again once the link is back.
+        case unheard
+    }
+
+    /// Tell the Mac how far this phone's own setup has got, so a Mac waiting on its iPhone step follows along and moves
+    /// on at `finished`. The same authenticated route as everything else the phone sends, sealed on the relay.
+    func reportSetup(
+        stage: PhoneSetupStage,
+        declined: Set<PhoneSetupStage>,
+        device: String,
+        within limit: Duration = .seconds(8)
+    ) async -> SetupReportOutcome {
+        let message: [String: Any] = [
+            "kind": "setup-stage",
+            "stage": stage.rawValue,
+            "declined": PhoneSetupStage.allCases.filter(declined.contains).map(\.rawValue),
+            "device": device,
+        ]
+        guard let body = try? JSONSerialization.data(withJSONObject: message) else { return .refused("unencodable") }
+        let response: BridgeResponse
+        do {
+            response = try await perform(authorizedRequest(method: "POST", path: "/setup-stage", body: body), within: limit)
+        } catch {
+            return .unheard
+        }
+        let reply = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any]
+        switch response.status {
+        case 200:
+            guard let raw = reply?["stage"] as? String, let held = PhoneSetupStage(rawValue: raw) else { return .unheard }
+            return .answered(stage: held, mac: reply?["mac"] as? String)
+        case 404:
+            return .notFollowed
+        case 400, 413:
+            return .refused((reply?["error"] as? String) ?? "HTTP \(response.status)")
+        default:
+            return .unheard
+        }
     }
 
     /// `pause` or `resume`: every session, or with `sessionId` just that one — quiet it, or let it
@@ -775,6 +832,14 @@ final class BridgeClient: ObservableObject {
             UIApplication.shared.open(url) { opened in
                 if !opened { fail("iPhone couldn't open \(url.absoluteString)") }
             }
+        }
+    }
+
+    /// The same door with no Mac yet to tell: an unpaired phone opening its own Settings for the camera. A failure is
+    /// still said, on the phone.
+    static func openUnpaired(_ url: URL, onFailure: @escaping @MainActor (String) -> Void) {
+        UIApplication.shared.open(url) { opened in
+            if !opened { Task { @MainActor in onFailure("iPhone couldn't open \(url.absoluteString)") } }
         }
     }
 

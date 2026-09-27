@@ -1,3 +1,4 @@
+import ConchDesign
 import SwiftUI
 
 @main
@@ -8,6 +9,8 @@ struct ConchApp: App {
     /// UserDefaults' volatile argument domain, so nothing persists.
     static let fixtureURL = UserDefaults.standard.string(forKey: "conchFixture")
         .map { URL(fileURLWithPath: $0) }
+    /// `-conchSetupScreen <name>`: one setup screen and nothing else (`SetupPreview`).
+    static let setupPreview = UserDefaults.standard.string(forKey: "conchSetupScreen")
     #endif
 
     // The env override exists for the screenshot/audit harness: a simulator
@@ -27,6 +30,8 @@ struct ConchApp: App {
         return PairingStore.load()
     }()
     @State private var bridge: BridgeClient?
+    /// The phone's own setup (SetupFlow.swift): shown after a pairing until "Open conch".
+    @StateObject private var setup = PhoneSetupStore()
     @StateObject private var speech = SpeechController()
     /// Your words outlive the screen showing them.
     ///
@@ -45,20 +50,28 @@ struct ConchApp: App {
     var body: some Scene {
         WindowGroup {
             Group {
-                if let pairing {
-                    LedgerView(
-                        bridge: bridgeClient(for: pairing),
-                        onUnpair: unpair,
-                        speech: speech,
-                        talk: talk
+                #if DEBUG
+                if let preview = Self.setupPreview {
+                    SetupPreview(
+                        name: preview,
+                        mac: UserDefaults.standard.string(forKey: "conchSetupMac"),
+                        fixture: Self.fixtureURL
                     )
                 } else {
-                    PairingView { newPairing in
-                        LastStateTransport.forget()
-                        PairingStore.save(newPairing)
-                        pairing = newPairing
-                    }
+                    content
                 }
+                #else
+                content
+                #endif
+            }
+            // The icon the setup screens show, from the app's own art.
+            .environment(\.conchAppIcon, Image("SetupIcon"))
+            .animation(ConchMotion.swap.animation(reduceMotion: false), value: setup.showing)
+            // "Open conch": setup hands over to the ledger, and this phone takes the voice as the ledger always has.
+            .onChange(of: setup.showing) { _, showing in
+                guard !showing, let bridge else { return }
+                bridge.leavesAudioOnMac = false
+                Task { await bridge.claimAudio(true) }
             }
             .background(Palette.bg)
             // Speaking and recording share one AVAudioSession. Wiring this in
@@ -164,6 +177,32 @@ struct ConchApp: App {
         }
     }
 
+    /// Paired: setup until "Open conch" (only after a pairing made with setup), then the ledger. Unpaired: the way in.
+    @ViewBuilder
+    private var content: some View {
+        if let pairing {
+            if setup.showing {
+                SetupFlow(bridge: bridgeClient(for: pairing), store: setup, onCancel: unpair)
+                    .transition(.opacity)
+            } else {
+                LedgerView(
+                    bridge: bridgeClient(for: pairing),
+                    onUnpair: unpair,
+                    speech: speech,
+                    talk: talk
+                )
+                .transition(.opacity)
+            }
+        } else {
+            PairingView { newPairing in
+                LastStateTransport.forget()
+                PairingStore.save(newPairing)
+                setup.paired()
+                pairing = newPairing
+            }
+        }
+    }
+
     private func bridgeClient(for pairing: BridgeClient.Pairing) -> BridgeClient {
         if let bridge { return bridge }
         #if DEBUG
@@ -199,9 +238,15 @@ struct ConchApp: App {
         // because the request that carried the words was answered and closed long before the
         // Mac knew — which is precisely how a failed send used to reach nobody at all.
         created.onDeliveries = { [weak talk] deliveries in talk?.apply(deliveries) }
-        created.onConnected = { [weak created] in
+        // The voice stays on the Mac while this phone sets itself up (`leavesAudioOnMac`).
+        created.leavesAudioOnMac = setup.showing
+        let setup = setup
+        created.onConnected = { [weak created, weak setup] in
             guard let created else { return }
             Task { await created.claimAudio(true) }
+            // A report of the phone's setup the Mac hasn't heard: after a drop, or the "done" a phone that set itself up
+            // before owes a newly paired Mac.
+            Task { await setup?.sync(created) }
         }
         // Assigning state during view construction is fine here: the next
         // render pass reuses the cached client rather than reconnecting.
@@ -223,6 +268,7 @@ struct ConchApp: App {
         bridge = nil
         PairingStore.delete()
         LastStateTransport.forget()
+        setup.forget()
         pairing = nil
     }
 }

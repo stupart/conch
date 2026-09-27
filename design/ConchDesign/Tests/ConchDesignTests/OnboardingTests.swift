@@ -101,10 +101,10 @@ final class OnboardingTests: XCTestCase {
         progress = run([
             .phone(.init(stage: .connecting)),
             .phone(.init(device: "Tyler's iPhone", stage: .paired)),
-            .phone(.init(device: "Tyler's iPhone", stage: .microphone, declined: [.notifications])),
+            .phone(.init(device: "Tyler's iPhone", stage: .tour, declined: [.microphone])),
         ], from: progress)
         XCTAssertEqual(progress.step, .phone, "still setting up on the phone")
-        XCTAssertEqual(progress.phone.declined, [.notifications])
+        XCTAssertEqual(progress.phone.declined, [.microphone])
         progress = progress.applying(.phone(.init(device: "Tyler's iPhone", stage: .finished)), readiness: fresh)
         XCTAssertEqual(progress.step, .practice)
         XCTAssertEqual(progress.mark(.phone), .done)
@@ -116,6 +116,15 @@ final class OnboardingTests: XCTestCase {
         progress = progress.applying(.phone(.init(device: "Tyler's iPhone", stage: .finished)), readiness: fresh)
         XCTAssertEqual(progress.step, .practice, "the Mac stays where the person is")
         XCTAssertEqual(progress.mark(.phone), .done)
+    }
+
+    /// The phone asks for no notifications until it has some to send (decision 11), so the Mac shows no row for them.
+    /// The stage itself stays, in its place, so the ask can come back without moving what's on disk.
+    func testTheMacMirrorsNoNotificationsRow() {
+        XCTAssertEqual(PhoneSetupStage.mirrored, [.paired, .microphone, .tour])
+        XCTAssertFalse(PhoneSetupStage.mirrored.contains(.notifications))
+        XCTAssertEqual(PhoneSetupStage.allCases, [.waiting, .connecting, .paired, .notifications, .microphone, .tour, .finished])
+        XCTAssertEqual(PhoneSetupStage(rawValue: "notifications"), .notifications)
     }
 
     func testALateReportNeverUndoesAStage() {
@@ -136,7 +145,7 @@ final class OnboardingTests: XCTestCase {
     }
 
     func testItSurvivesARoundTripThroughJSON() throws {
-        let progress = run([.begin, .next, .skip, .phone(.init(device: "Tyler's iPhone", stage: .microphone, declined: [.notifications]))])
+        let progress = run([.begin, .next, .skip, .phone(.init(device: "Tyler's iPhone", stage: .tour, declined: [.microphone]))])
         let data = try JSONEncoder().encode(progress)
         XCTAssertEqual(try JSONDecoder().decode(OnboardingProgress.self, from: data), progress)
         // Readable on disk: the marks are keyed by step name, not an array of pairs.

@@ -383,6 +383,8 @@ export class MacRelayPeer {
   #currentPhoneChallenge: string | null = null;
   #retiredPhoneChallenges = new Set<string>();
   #sessionProven = false;
+  /** A phone hello was accepted and its first frame under the new keys hasn't come: a key exchange in flight. */
+  #exchangeOpen = false;
   #closed = false;
   #receiveChain: Promise<void> = Promise.resolve();
   #nextPhoneSequence = 0;
@@ -435,6 +437,7 @@ export class MacRelayPeer {
     if (!this.#cipher || now - this.#lastAuthenticatedAt <= RELAY_LIVENESS_MS) return false;
     this.#clearSubscription();
     this.#cipher = null;
+    this.#settleExchange("abandoned");
     this.log("phone relay heartbeat expired");
     return true;
   }
@@ -443,6 +446,7 @@ export class MacRelayPeer {
     this.#closed = true;
     this.#generation += 1;
     this.#cipher = null;
+    this.#settleExchange("abandoned");
     this.#pendingPhoneFrames.clear();
     this.#rejectChunkAcks(new Error("relay socket closed"));
     this.#resetBulkWaiters(new Error("relay socket closed"));
@@ -546,6 +550,11 @@ export class MacRelayPeer {
       this.#currentPhoneChallenge = challengeId;
       this.#sessionProven = false;
       this.#cipher = RelaySessionCipher.mac(keys);
+      // A hello that replaces one still unproven ends that exchange; this one is under way until the phone's first
+      // frame opens under the new keys.
+      this.#settleExchange("abandoned");
+      this.#exchangeOpen = true;
+      this.application.keyExchange("started");
       this.#epoch = this.cache.beginEpoch();
       this.#nextPhoneSequence = 0;
       this.#pendingPhoneFrames.clear();
@@ -571,6 +580,8 @@ export class MacRelayPeer {
       throw new Error("stale relay session");
     }
     this.#sessionProven = true;
+    // Both ends hold the same session keys: the key exchange is complete.
+    this.#settleExchange("completed");
     this.#lastAuthenticatedAt = Date.now();
 
     const sequence = opened.header.sequence;
@@ -618,6 +629,12 @@ export class MacRelayPeer {
       }
     }
     return dispatches;
+  }
+
+  #settleExchange(event: "completed" | "abandoned"): void {
+    if (!this.#exchangeOpen) return;
+    this.#exchangeOpen = false;
+    this.application.keyExchange(event);
   }
 
   async #dispatch(opened: OpenedRelayFrame): Promise<void> {
