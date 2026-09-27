@@ -1,8 +1,28 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { afterAll } from "bun:test";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { conchHome } from "../src/home.ts";
 import { assertUnderTestRoot } from "./isolation-guard.ts";
+
+// Every scratch folder a test makes with `tmpdir()` lands in one folder per run, removed when the run ends. Tests
+// called `mkdtempSync(join(tmpdir(), …))` straight into the user's temp folder and never removed them: 86,567
+// `conch-*` folders (1.8 GB) had piled up there by 2026-09-27. `os.tmpdir()` reads TMPDIR on every call, so setting
+// it here, before any test module loads, catches every call site, later ones included, and the processes they spawn.
+// Removed in a run-wide `afterAll`: `bun test` never fires the process's "exit" event (measured 2026-09-27), which is
+// how 4,050 `conch-test-config-*` roots below outlived their runs too. A run killed before its end leaves its folder,
+// so each run first sweeps runs older than an hour.
+const systemTemp = tmpdir();
+for (const name of readdirSync(systemTemp)) {
+  if (!name.startsWith("conch-test-run-")) continue;
+  const path = join(systemTemp, name);
+  try {
+    if (Date.now() - statSync(path).mtimeMs > 60 * 60 * 1000) rmSync(path, { recursive: true, force: true });
+  } catch {}
+}
+const runRoot = mkdtempSync(join(systemTemp, "conch-test-run-"));
+process.env.TMPDIR = runRoot;
+afterAll(() => rmSync(runRoot, { recursive: true, force: true }));
 
 // Default config/provider discovery and IPC must stay away from a running install.
 const testConfigRoot = mkdtempSync(join(tmpdir(), "conch-test-config-"));
