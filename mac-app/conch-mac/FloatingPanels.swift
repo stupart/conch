@@ -684,6 +684,32 @@ final class FloatingPanels: ObservableObject {
         showWhatIsOn()
     }
 
+    /// The panel's switches as they stand: on, folded, and whether the first open has turned it on yet
+    /// (`ConchStatusItem.open`). What something that puts the panel out only for a while (the tour) found, to put back.
+    struct Setting: Equatable {
+        let shown: Bool
+        let collapsed: Bool
+        let turnedOnByOpen: Bool
+
+        @MainActor static var current: Setting {
+            let defaults = UserDefaults.standard
+            return Setting(shown: defaults.bool(forKey: ConchStatusItem.showConversationKey),
+                           collapsed: defaults.bool(forKey: FloatingPanels.conversationCollapsedKey),
+                           turnedOnByOpen: defaults.bool(forKey: ConchStatusItem.panelTurnedOnByOpenKey))
+        }
+    }
+
+    /// Back as `setting` had it, applied at once as `bringOut` is. Put away, it docks first, so it never comes back
+    /// later as a full-screen panel nobody asked for.
+    func putBack(_ setting: Setting) {
+        if !setting.shown, isFullScreen { toggleFullScreen() }
+        let defaults = UserDefaults.standard
+        defaults.set(setting.turnedOnByOpen, forKey: ConchStatusItem.panelTurnedOnByOpenKey)
+        defaults.set(setting.collapsed, forKey: Self.conversationCollapsedKey)
+        defaults.set(setting.shown, forKey: ConchStatusItem.showConversationKey)
+        showWhatIsOn()
+    }
+
     /// The glass for each form: 24 pt in with the panel's corner docked, 12 pt from the screen's edges full screen, the
     /// handle's circle collapsed.
     private func geometry(for form: Form) -> PanelGlass.Geometry {

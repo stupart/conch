@@ -29,8 +29,13 @@ final class DaemonHost: ObservableObject {
         case starting
         /// We launched it, and it is ours to stop.
         case running(pid: Int32)
-        /// Someone else's daemon owns the socket: a terminal, or a launchd
-        /// agent left over from an older install. We show it and leave it be.
+        /// Someone else's daemon owns the socket: a terminal, a launchd agent
+        /// left over from an older install, or an earlier copy of this app (a
+        /// rebuild relaunches the app while its daemon lives on). The switch
+        /// doesn't turn it off, since it isn't ours to stop. The health check
+        /// still watches it: running and not answering, it is frozen and is
+        /// replaced like our own; stopped (Ctrl-Z, a debugger), it was paused on
+        /// purpose and is never signalled (`DaemonHealth`).
         case adopted
         case failed(String)
     }
@@ -46,8 +51,10 @@ final class DaemonHost: ObservableObject {
     /// Which daemon we launched: the bundled one, a checkout's, or a `conch` on
     /// PATH. Nil when none is ours.
     @Published private(set) var launchedFrom: LaunchCommand.Source?
-    /// Said once the daemon stopped answering and was replaced, until dismissed.
+    /// Said once the daemon stopped answering and was replaced, or while it is paused, until dismissed.
     @Published private(set) var recoveryNotice: String?
+    /// The daemon is stopped in a terminal or a debugger (`DaemonHealth.Verdict.paused`): left alone, and said so.
+    @Published private(set) var paused = false
 
     struct Identity: Decodable, Equatable {
         let pid: Int32
@@ -72,7 +79,8 @@ final class DaemonHost: ObservableObject {
     /// When `process` was launched: a daemon still starting may not be listening yet.
     private var launchedAt: Date?
     private var outputPipe: Pipe?
-    private var restartAttempts = 0
+    /// Restarts after an exit, and their backoff: forgiven once a daemon has answered steadily (`DaemonHealth.CrashBudget`).
+    private var crashes = DaemonHealth.CrashBudget()
     private var restartWork: DispatchWorkItem?
     /// Pings the daemon, ours or adopted (`DaemonHealth`); nil while there is none.
     private var healthTimer: Timer?
@@ -97,8 +105,11 @@ final class DaemonHost: ObservableObject {
     func start() {
         restartWork?.cancel()
         if case .running = state { return }
-        // Only a person starts a daemon that failed: a fresh budget for replacing frozen ones.
-        if case .failed = state { health.forgetRestarts() }
+        // Only a person starts a daemon that failed: fresh budgets, for replacing frozen ones and for exits.
+        if case .failed = state {
+            health.forgetRestarts()
+            crashes = DaemonHealth.CrashBudget()
+        }
 
         // A daemon whose socket refuses connects but whose identity names a live process is not gone: a frozen
         // daemon's backlog fills and then refuses (2026-09-28), and one of ours started now would only lose the
@@ -183,14 +194,16 @@ final class DaemonHost: ObservableObject {
         }
     }
 
-    /// Stop the daemon we started. A daemon we merely adopted is left alone —
-    /// it belongs to a terminal or a launchd agent, and killing someone else's
-    /// process because our window closed would be a surprise.
+    /// Stop the daemon we started. A daemon we merely adopted is not stopped
+    /// here — it belongs to a terminal or a launchd agent, and killing someone
+    /// else's process because our window closed would be a surprise. (Frozen,
+    /// it is still replaced: that is the health check's, not this switch's.)
     func stop() {
         restartWork?.cancel()
         stopHealthWatch()
-        restartAttempts = 0
+        crashes = DaemonHealth.CrashBudget()
         recoveryNotice = nil
+        paused = false
         guard let task = process else {
             if case .adopted = state {} else { state = .stopped }
             return
@@ -260,8 +273,10 @@ final class DaemonHost: ObservableObject {
     /// "Running — started outside this app". And a daemon of our own that
     /// freezes never exits at all: on 2026-09-28 one sat in a synchronous loop
     /// for eight minutes while a bare connect() to its socket kept succeeding.
-    /// So both are asked, and one that has stopped answering is stopped by its
-    /// pid and replaced; one that is simply gone is replaced by our own.
+    /// So both are asked, and one that is running and has stopped answering is
+    /// stopped by its pid and replaced, adopted or ours; one that is simply gone
+    /// is replaced by our own. One that is stopped (Ctrl-Z, `kill -STOP`, a
+    /// debugger) was paused on purpose: it is never signalled, only said.
     private func watchHealth() {
         healthTimer?.invalidate()
         let timer = Timer(timeInterval: health.policy.interval, repeats: true) { [weak self] _ in
@@ -284,9 +299,23 @@ final class DaemonHost: ObservableObject {
             return
         }
         guard let verdict = await health.check() else { return }
+        // Answers in a row for a while forgive the restarts before them, and their backoff.
+        crashes.observed(verdict, at: Date())
+        let pausedNow: Bool
+        if case .paused = verdict { pausedNow = true } else { pausedNow = false }
+        if paused, !pausedNow {
+            // Continued: what was said about the pause goes with it.
+            paused = false
+            if recoveryNotice == Self.pausedWords { recoveryNotice = nil }
+        }
         switch verdict {
         case .healthy, .suspect:
             return
+        case .paused:
+            // Said once, as it pauses: not again every ping, and not back after it is dismissed.
+            guard !paused else { return }
+            paused = true
+            recoveryNotice = Self.pausedWords
         case .gone:
             // Ours says so itself, through handleExit. An adopted one says nothing: start our own.
             guard case .adopted = state else { return }
@@ -328,7 +357,8 @@ final class DaemonHost: ObservableObject {
         switch recovery.plan {
         case .restart:
             recoveryNotice = "conch's background service stopped responding and was restarted."
-            scheduleRestart()
+            // The freeze budget allowed it (`health.recover`): not an exit, so not the crash budget's to count.
+            scheduleRestart(after: 2)
         case .giveUp:
             recoveryNotice = nil
             state = .failed("conch's background service kept freezing, so it was stopped. Check the log, then start it again.")
@@ -338,6 +368,9 @@ final class DaemonHost: ObservableObject {
     func dismissRecoveryNotice() {
         recoveryNotice = nil
     }
+
+    /// What the window and Settings say while the daemon is paused.
+    static let pausedWords = "conch's background service is paused (stopped in a terminal or debugger)."
 
     /// The process a failed health check may stop: our own child, or the daemon an identity file names on our
     /// socket, when that process is the one that wrote it.
@@ -361,19 +394,18 @@ final class DaemonHost: ObservableObject {
         stopHealthWatch()
         outputPipe?.fileHandleForReading.readabilityHandler = nil
         outputPipe = nil
-        scheduleRestart()
+        // Back off rather than hammering. A daemon that cannot start — a port
+        // already taken, a machine with no memory left — should not become a
+        // restart loop that makes the machine worse.
+        switch crashes.exited() {
+        case .restart(let delay):
+            scheduleRestart(after: delay)
+        case .giveUp:
+            state = .failed("The daemon kept stopping. Check the log, then start it again.")
+        }
     }
 
-    /// Back off rather than hammering. A daemon that cannot start — a port
-    /// already taken, a machine with no memory left — should not become a
-    /// restart loop that makes the machine worse.
-    private func scheduleRestart() {
-        restartAttempts += 1
-        guard restartAttempts <= 5 else {
-            state = .failed("The daemon kept stopping. Check the log, then start it again.")
-            return
-        }
-        let delay = Double(min(30, 1 << restartAttempts))
+    private func scheduleRestart(after delay: TimeInterval) {
         state = .starting
         let work = DispatchWorkItem { [weak self] in
             Task { @MainActor in self?.start() }
@@ -387,10 +419,9 @@ final class DaemonHost: ObservableObject {
         guard !lines.isEmpty else { return }
         recentOutput.append(contentsOf: lines)
         if recentOutput.count > 40 { recentOutput.removeFirst(recentOutput.count - 40) }
-        // Output means it got far enough to talk, so stop counting this as a
-        // crash loop; otherwise a daemon restarted five times over a long
-        // session would refuse to come back.
-        restartAttempts = 0
+        // Output is not what forgives a crash loop: headless, the daemon prints
+        // nothing, and one that prints and exits is the loop. Answering pings
+        // for a while is (`checkHealth`, `DaemonHealth.CrashBudget`).
     }
 
     /// The PATH the daemon needs, whatever the app was launched with: brew,

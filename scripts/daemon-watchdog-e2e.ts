@@ -1,16 +1,22 @@
 #!/usr/bin/env bun
 /**
  * A frozen daemon, end to end: found by the ping, stopped by its pid, replaced — and named in the log by its own
- * event-loop watchdog. Two runs, each in a temporary home with its own socket and log, never the live daemon's:
+ * event-loop watchdog; and a paused one, left alone. Three runs, each in a temporary home with its own socket and log,
+ * never the live daemon's:
  *
- *   freeze  The real 2026-09-28 freeze. A copy of this checkout's daemon with the agent-activity fix taken back out,
- *           whose one Claude session has a live sub-agent and a transcript whose newest 256 KiB read begins on a
- *           newline. Its first panel build spins forever. Expected: the daemon's watchdog logs "event loop blocked"
- *           with the breadcrumb `panel: live sub-agents of "…"`; the Mac app's monitor (ConchDesign's
- *           DaemonHealthMonitor, run by `swift test`) finds it unresponsive; SIGTERM does nothing (the handler is
- *           JavaScript, on the stuck thread), SIGKILL ends it; this checkout's fixed daemon, started in its place on the
- *           same home and transcript, answers pong and publishes the session.
- *   stop    This checkout's daemon, answering, then `kill -STOP`. Expected: the same stop and replacement.
+ *   freeze          The real 2026-09-28 freeze. A copy of this checkout's daemon with the agent-activity fix taken back
+ *                   out, whose one Claude session has a live sub-agent and a transcript whose newest 256 KiB read begins
+ *                   on a newline. Its first panel build spins forever. Expected: the daemon's watchdog logs "event loop
+ *                   blocked" with the breadcrumb `panel: live sub-agents of "…"`; the Mac app's monitor (ConchDesign's
+ *                   DaemonHealthMonitor, run by `swift test`) finds it unresponsive; SIGTERM does nothing (the handler is
+ *                   JavaScript, on the stuck thread), SIGKILL ends it; this checkout's fixed daemon, started in its place
+ *                   on the same home and transcript, answers pong and publishes the session.
+ *   freeze-adopted  The same freeze, watched as an adopted daemon (no launch time: a terminal's, launchd's, or the one
+ *                   an earlier copy of the app started before a rebuild relaunched it). Expected: the same stop and
+ *                   replacement. A running daemon that doesn't answer is frozen, whoever started it.
+ *   paused          This checkout's daemon, answering, then `kill -STOP`, as Ctrl-Z in its terminal. Expected: paused at
+ *                   every check, well past the three silent pings that stop a frozen one; no signal sent, ever; after
+ *                   SIGCONT it answers, healthy.
  *
  *   bun scripts/daemon-watchdog-e2e.ts [--keep]
  *
@@ -87,7 +93,9 @@ function frozenSession(claudeDir: string, cwd: string, pid: number): { sessionId
   return { sessionId, label };
 }
 
-async function run(mode: "freeze" | "stop"): Promise<void> {
+type Mode = "freeze" | "freeze-adopted" | "paused";
+
+async function run(mode: Mode): Promise<void> {
   say(`── ${mode} ──`);
   // A short /tmp path: a unix socket path must fit sockaddr_un.
   const root = mkdtempSync(join("/tmp", `conch-wd-${mode}-`));
@@ -131,9 +139,10 @@ async function run(mode: "freeze" | "stop"): Promise<void> {
   };
   // The session's own process: something alive at the registry's pid, as a real Claude Code is.
   const stand = Bun.spawn(["/bin/sleep", "600"], { stdout: "ignore", stderr: "ignore" });
-  const session = mode === "freeze" ? frozenSession(claudeDir, root, stand.pid) : null;
+  const freezes = mode !== "paused";
+  const session = freezes ? frozenSession(claudeDir, root, stand.pid) : null;
   const fixedArgv = [process.execPath, join(repo, "src", "cli.ts"), "daemon"];
-  const frozenArgv = mode === "freeze" ? [process.execPath, join(buggyCopy(root), "src", "cli.ts"), "daemon"] : fixedArgv;
+  const frozenArgv = freezes ? [process.execPath, join(buggyCopy(root), "src", "cli.ts"), "daemon"] : fixedArgv;
   const config = {
     socket,
     log,
@@ -160,7 +169,24 @@ async function run(mode: "freeze" | "stop"): Promise<void> {
       console.log((out + err).split("\n").filter((l) => /error|failed|XCT/.test(l)).slice(0, 20).join("\n"));
       return;
     }
-    say(`  frozen pid ${result.frozenPid}${mode === "stop" ? ` (answered ${result.answeredBeforeFreeze}, then SIGSTOP)` : ""}`);
+    const lines = existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : [];
+    const app = lines.filter((l) => l.includes("] app: "));
+    if (!freezes) {
+      say(`  paused pid ${result.frozenPid} (answered ${result.answeredBeforeFreeze}, then SIGSTOP)`);
+      say(`  verdicts: ${result.verdicts.join(" → ")}  (${result.secondsToVerdict.toFixed(1)}s)`);
+      for (const l of app) say(`  log: ${l}`);
+      const paused = `paused(pid: ${result.frozenPid})`;
+      check(result.answeredBeforeFreeze === true, "it answered before it was stopped");
+      check(result.pausedSeen === true, "the kernel says it is stopped");
+      check(result.verdicts.length >= 5 && result.verdicts.every((v: string) => v === paused), "paused at every check, past the three that stop a frozen one");
+      check(result.signals.length === 0, "no signal sent to it, ever");
+      check(result.aliveWhilePaused === true, "…and it is still there");
+      check(result.verdictAfterContinue === "healthy", "continued, it answers: healthy");
+      check(app.filter((l) => l.includes(`(pid ${result.frozenPid}) is stopped`)).length === 1, "the pause is in the daemon log, once");
+      check(!app.some((l) => l.includes("stopping it") || l.includes("SIGKILL")), "…and no stop is");
+      return;
+    }
+    say(`  frozen pid ${result.frozenPid}`);
     say(`  verdicts: ${result.verdicts.join(" → ")}  (${result.secondsToVerdict.toFixed(1)}s)`);
     say(`  termination: ${result.termination}; frozen pid alive after: ${result.frozenAliveAfter}`);
     say(`  replacement pid ${result.replacementPid} answered pong as pid ${result.replacementPong} after ${result.secondsToReplacementPong.toFixed(1)}s`);
@@ -170,18 +196,14 @@ async function run(mode: "freeze" | "stop"): Promise<void> {
     check(result.frozenAliveAfter === false, "the frozen pid is gone");
     check(result.replacementPong === result.replacementPid && result.replacementPid !== result.frozenPid, "a new daemon answers pong with its own pid");
 
-    const lines = existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : [];
-    const app = lines.filter((l) => l.includes("] app: "));
     for (const l of app) say(`  log: ${l}`);
     check(app.some((l) => l.includes(`the daemon (pid ${result.frozenPid}) has not answered a ping for at least 13s`)), "the app's stop is in the daemon log, with the pid");
     check(app.some((l) => l.includes("ignored SIGTERM") && l.endsWith("starting a new one")), "…and how it ended");
-    if (mode === "freeze") {
-      const blocked = lines.filter((l) => l.includes("event loop blocked") || l.includes("event loop still blocked"));
-      for (const l of blocked.slice(0, 3)) say(`  log: ${l}`);
-      check(blocked.some((l) => l.includes(`last breadcrumb: "panel: live sub-agents of \\"${session!.label}\\""`)), "the daemon's own watchdog named where it was stuck");
-      // The replacement has the fix: it publishes the session instead of freezing on it.
-      check(result.replacementPublished === true, "the fixed daemon, on the same transcript, published the session");
-    }
+    const blocked = lines.filter((l) => l.includes("event loop blocked") || l.includes("event loop still blocked"));
+    for (const l of blocked.slice(0, 3)) say(`  log: ${l}`);
+    check(blocked.some((l) => l.includes(`last breadcrumb: "panel: live sub-agents of \\"${session!.label}\\""`)), "the daemon's own watchdog named where it was stuck");
+    // The replacement has the fix: it publishes the session instead of freezing on it.
+    check(result.replacementPublished === true, "the fixed daemon, on the same transcript, published the session");
   } finally {
     stand.kill("SIGKILL");
     if (!keep) rmSync(root, { recursive: true, force: true });
@@ -189,6 +211,7 @@ async function run(mode: "freeze" | "stop"): Promise<void> {
 }
 
 await run("freeze");
-await run("stop");
+await run("freeze-adopted");
+await run("paused");
 say(failures.length ? `✗ ${failures.length} failed` : "✓ all passed");
 process.exit(failures.length ? 1 : 0);

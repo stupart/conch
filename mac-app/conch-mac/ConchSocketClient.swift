@@ -150,6 +150,16 @@ enum ConchSocketRequestOutcome: Equatable, Sendable {
     case timeout
 }
 
+/// A streamed request's end (`ConchSocketClient.stream`).
+enum ConchSocketStreamOutcome: Equatable, Sendable {
+    /// The line `isReply` took for the answer.
+    case reply(Data)
+    /// The connection ended before any reply: the daemon went away part way (it restarted, or quit).
+    case dropped
+    case connectFailed
+    case timeout
+}
+
 /// A streamed request's socket, shut from another thread when its task is cancelled: the blocking read then ends.
 final class StreamConnection: @unchecked Sendable {
     private let lock = NSLock()
@@ -629,14 +639,17 @@ struct ConchSocketClient: Sendable {
         }.value
     }
 
-    /// A request answered in lines, the last of them the reply: setup's microphone check streams its levels first, an
-    /// agent's installer its last words (src/setup.ts). `onLine` gets each line before the last as it arrives. Cancelling
-    /// the task closes the connection, which the daemon reads as the asker gone: a microphone check stops and lets go.
+    /// A request answered in lines, then its reply: setup's microphone check streams its levels first, an agent's
+    /// installer its last words (src/setup.ts). The reply is the first line `isReply` takes for one, by what it says,
+    /// never the last line read: a connection that ends after only streamed lines is `.dropped`, never a reply.
+    /// `onLine` gets each streamed line as it arrives. Cancelling the task closes the connection, which the daemon reads
+    /// as the asker gone: a microphone check stops and lets go.
     func stream<Request: Encodable>(
         _ request: Request,
         timeout: TimeInterval,
+        isReply: @escaping @Sendable (Data) -> Bool,
         onLine: @escaping @Sendable (Data) -> Void
-    ) async -> ConchSocketRequestOutcome {
+    ) async -> ConchSocketStreamOutcome {
         guard var payload = try? JSONEncoder().encode(request) else { return .connectFailed }
         payload.append(0x0A)
         let socketPath = socketPath
@@ -653,15 +666,14 @@ struct ConchSocketClient: Sendable {
                 defer { connection.close() }
                 guard Self.write(payload, to: descriptor, deadline: deadline) == .complete else { return .timeout }
                 var buffered = Data()
-                var last: Data?
                 while true {
                     switch Self.readReplyLine(from: descriptor, deadline: deadline, buffered: &buffered) {
                     case let .reply(line):
-                        if let previous = last { onLine(previous) }
-                        last = line
+                        if isReply(line) { return .reply(line) }
+                        onLine(line)
                     case .timeout, .connectFailed:
-                        // The daemon ends the connection after its reply: the last line is the answer.
-                        return last.map { .reply($0) } ?? .timeout
+                        // No reply: out of time, or the connection ended first (the daemon restarted part way, or quit).
+                        return DispatchTime.now().uptimeNanoseconds < deadline ? .dropped : .timeout
                     }
                 }
             }.value

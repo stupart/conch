@@ -86,7 +86,10 @@ test("the settings row keeps the switch, says who started the daemon, and offers
   const view = read("mac-app", "conch-mac", "SettingsView.swift");
   expect(view).toContain('"Running — started by the launchd service"');
   expect(view).toContain('"Running — started from a terminal (pid \\(identity.pid))"');
-  expect(view).toContain(`"the app can't stop what it didn't start"`);
+  // Truthful since #442: the switch can't turn it off, but a frozen one is still replaced, and a paused one left be.
+  expect(view).toContain(`"the switch can't turn off what the app didn't start"`);
+  expect(view).not.toContain("the app can't stop what it didn't start");
+  expect(view).toContain("If it stops answering while it runs, conch still replaces it. Paused in a terminal or debugger (Ctrl-Z), it's left alone.");
   expect(view).not.toContain('Text("started elsewhere")');
   expect(view).toContain('Button("Let the app own it") { daemon.takeOverFromLaunchd() }');
   expect(view).toContain('daemon.adoptedIdentity?.startedBy == "launchd"');

@@ -699,15 +699,18 @@ private struct DaemonPowerRow: View {
             // An adopted daemon belongs to a terminal or a launchd agent. The
             // switch stays — hiding it read as "the app lost its toggle" (A2) —
             // but disabled, with the reason beside it, and when launchd is the
-            // owner, the one fix the app can make on its own (A3).
+            // owner, the one fix the app can make on its own (A3). The switch is
+            // all that is off: one that freezes is still replaced, and one paused
+            // in a terminal or debugger is left alone (DaemonHost, DaemonHealth).
             if daemon.adoptedIdentity?.startedBy == "launchd" {
                 Button("Let the app own it") { daemon.takeOverFromLaunchd() }
                     .controlSize(.small)
             }
             if adopted {
-                Text("the app can't stop what it didn't start")
+                Text("the switch can't turn off what the app didn't start")
                     .font(ConchTypography.font(size: 11))
                     .foregroundStyle(ConchPalette.textDim)
+                    .help("If it stops answering while it runs, conch still replaces it. Paused in a terminal or debugger (Ctrl-Z), it's left alone.")
             }
             Toggle("", isOn: Binding(
                 get: { daemon.isOurs || daemon.state == .starting || adopted },
@@ -730,6 +733,7 @@ private struct DaemonPowerRow: View {
     }
 
     private var indicator: Color {
+        if daemon.paused { return ConchPalette.statusWaiting }
         switch daemon.state {
         case .running, .adopted: return ConchPalette.brandCyan
         case .starting: return ConchPalette.statusQuiet
@@ -739,6 +743,8 @@ private struct DaemonPowerRow: View {
     }
 
     private var detail: String {
+        // Stopped with Ctrl-Z or at a debugger: never signalled, and said so until it's continued.
+        if daemon.paused { return "Paused — stopped in a terminal or debugger. conch leaves it alone until it's continued." }
         switch daemon.state {
         case .running(let pid): return "Running · pid \(pid)"
         case .adopted: return adoptedDetail

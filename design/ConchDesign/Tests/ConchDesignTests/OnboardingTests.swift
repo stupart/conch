@@ -58,6 +58,26 @@ final class OnboardingTests: XCTestCase {
         XCTAssertEqual(notNow.remaining(readiness), [.permissions, .phone])
     }
 
+    /// Welcome back never asks about the practice turn, so the menu never counts it: put away with a daemon that runs
+    /// it, a returning Mac is reminded of what is off, and once that's on, of nothing.
+    func testAReturningMacIsNeverRemindedOfTryIt() {
+        var readiness = OnboardingReadiness(agentsFound: 1, agentsConnected: 1, microphone: true, permissionsMissing: 0, engineReady: true,
+                                            practiceAvailable: true)
+        guard case let .welcomeBack(missing) = OnboardingProgress.entry(nil, readiness: readiness) else { return XCTFail("not welcome back") }
+        XCTAssertEqual(missing, [.phone])
+        let notNow = OnboardingProgress.welcomingBack(missing: missing, readiness: readiness).applying(.close, readiness: readiness)
+        XCTAssertTrue(notNow.putAway)
+        XCTAssertEqual(notNow.remaining(readiness), [.phone], "Try it is offered, never owed")
+        readiness.phonePaired = true
+        XCTAssertEqual(notNow.remaining(readiness), [], "the phone paired since: nothing left, nothing reminds")
+        // It still reads as returning after a round trip to disk.
+        let data = try! JSONEncoder().encode(notNow)
+        XCTAssertEqual(try! JSONDecoder().decode(OnboardingProgress.self, from: data).remaining(readiness), [])
+        // A Mac setting up for the first time is reminded of it, as before.
+        let firstRun = run([.begin, .next, .next, .next, .close], readiness: OnboardingReadiness(practiceAvailable: true))
+        XCTAssertEqual(firstRun.remaining(OnboardingReadiness(practiceAvailable: true)), [.phone, .practice])
+    }
+
     // MARK: What setup asks for
 
     /// Setup asks for the three the voice loop needs; Screen Recording and Notifications are asked when first needed, so
@@ -103,6 +123,19 @@ final class OnboardingTests: XCTestCase {
         // The phone handing back moves a waiting Mac to the end, or to Try it.
         XCTAssertEqual(atPhone.applying(.phone(.init(device: "Tyler's iPhone", stage: .finished)), readiness: fresh).step, .done)
         XCTAssertEqual(atPhone.applying(.phone(.init(device: "Tyler's iPhone", stage: .finished)), readiness: freshWithPractice).step, .practice)
+    }
+
+    /// Setup relaunched on Try it before the daemon says it can run the practice turn (after a reboot, or with an older
+    /// daemon): moving on from a step this Mac's rail doesn't list goes on to You're set, never back to a step left for
+    /// later.
+    func testMovingOnFromAStepOffTheRailGoesForwardNeverBack() {
+        let atTry = run([.begin, .next, .skip, .next, .next], readiness: freshWithPractice)
+        XCTAssertEqual(atTry.step, .practice)
+        XCTAssertEqual(atTry.mark(.permissions), .later)
+        let skipped = atTry.applying(.skip, readiness: fresh)
+        XCTAssertEqual(skipped.step, .done, "not Permissions, left for later three steps back")
+        XCTAssertTrue(skipped.finished)
+        XCTAssertEqual(atTry.applying(.next, readiness: fresh).step, .done)
     }
 
     /// The tour closing is Try it's Continue: done, and You're set. Its own Skip leaves it for later, which the menu counts;
@@ -275,13 +308,45 @@ final class OnboardingTests: XCTestCase {
 
     // MARK: Again, and on disk
 
+    /// Help › Set up conch… or Settings › Run setup again, on a Mac that finished: from Agents, keeping the phone and
+    /// "reached the end at least once". Put away part way, it reminds about nothing, Try it included: this Mac is set up.
     func testRunningSetupAgainStartsAtAgentsAndKeepsThePhone() {
         let finished = run([.begin, .next, .next, .next, .phone(.init(device: "Tyler's iPhone", stage: .finished)), .next])
         XCTAssertTrue(finished.finished)
         let again = finished.applying(.restart, readiness: fresh)
         XCTAssertEqual(again.step, .agents)
-        XCTAssertFalse(again.finished)
+        XCTAssertTrue(again.finished, "reached the end at least once, still")
+        XCTAssertTrue(again.marks.isEmpty)
         XCTAssertEqual(again.phone.device, "Tyler's iPhone")
+        let set = OnboardingReadiness(agentsFound: 1, agentsConnected: 1, microphone: true, permissionsMissing: 0, engineReady: true,
+                                      phonePaired: true, practiceAvailable: true)
+        let putAway = again.applying(.close, readiness: set)
+        XCTAssertFalse(putAway.putAway, "no \"Finish setting up conch\" for a Mac set up already")
+        XCTAssertEqual(OnboardingProgress.entry(putAway, readiness: set), .none)
+        // A returning Mac run again is still returning.
+        let returning = OnboardingProgress.welcomingBack(missing: [.phone], readiness: set).applying(.restart, readiness: set)
+        XCTAssertTrue(returning.returning)
+    }
+
+    /// Progress an older conch wrote has no `returning`: it must still read back (unreadable progress is none, and a
+    /// set-up Mac would be walked through setup again), as not returning.
+    func testProgressWrittenBeforeReturningWasKeptStillReads() throws {
+        let old = #"{"version":1,"step":"phone","marks":{"agents":"done","permissions":"later"},"phone":{"stage":"waiting","declined":[]},"finished":false,"putAway":true,"reopening":false}"#
+        let progress = try JSONDecoder().decode(OnboardingProgress.self, from: Data(old.utf8))
+        XCTAssertEqual(progress.step, .phone)
+        XCTAssertEqual(progress.mark(.permissions), .later)
+        XCTAssertTrue(progress.putAway)
+        XCTAssertFalse(progress.returning)
+    }
+
+    /// The published state is read every second while setup's window or Settings › Setup shows the downloads, every five
+    /// while setup is unfinished, and not at all otherwise: Settings › Setup on a finished Mac keeps reading.
+    func testTheDownloadsAreWatchedWhileAnythingShowsThem() {
+        XCTAssertEqual(OnboardingWatch.interval(windowShown: true, settingsShown: false, unfinished: false), 1)
+        XCTAssertEqual(OnboardingWatch.interval(windowShown: false, settingsShown: true, unfinished: false), 1, "Settings › Setup, finished")
+        XCTAssertEqual(OnboardingWatch.interval(windowShown: false, settingsShown: true, unfinished: true), 1)
+        XCTAssertEqual(OnboardingWatch.interval(windowShown: false, settingsShown: false, unfinished: true), 5)
+        XCTAssertNil(OnboardingWatch.interval(windowShown: false, settingsShown: false, unfinished: false))
     }
 
     func testItSurvivesARoundTripThroughJSON() throws {

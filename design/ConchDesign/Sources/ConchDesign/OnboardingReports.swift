@@ -360,6 +360,12 @@ public enum OnboardingReports {
         (feature ?? 0) >= 1
     }
 
+    /// The same, with unknown kept apart from no: nil until the daemon has published its state at all this launch (after
+    /// a reboot `/tmp` is empty until it has), when Try it waits rather than skipping itself on a guess.
+    public static func practiceAvailability(feature: Int?, published: Bool) -> Bool? {
+        published ? practiceAvailable(feature: feature) : nil
+    }
+
     /// Where Try it stands before Start does anything: the microphone, speech recognition, then what the daemon last said
     /// about starting. Unknown is never a no: a microphone macOS hasn't answered for yet doesn't hold Start.
     public static func practiceStart(microphone: ConchPermissionStatus?, speech: SpeechEngineReport?, refusal: PracticeReport.Problem? = nil,
@@ -389,7 +395,33 @@ public enum OnboardingReports {
         }
     }
 
+    // MARK: Streamed requests
+
+    /// The kinds a streamed setup request sends before its reply (src/setup.ts `SetupLine`): the microphone's
+    /// levels and an installer's lines. Any other kind is the reply, the daemon's last word on the connection.
+    public static let streamedKinds: Set<String> = ["mic-level", "setup-install-line"]
+
+    /// Whether one line of a streamed request is its reply, by its kind: never by being the last line read. A line
+    /// with no kind this app can read is a reply too (and read as one it can't). A connection that ends after only
+    /// streamed lines had no reply: the daemon went away part way, restarted or quit, which is not an older daemon's
+    /// answer.
+    public static func isStreamReply(kind: String?) -> Bool {
+        guard let kind else { return true }
+        return !streamedKinds.contains(kind)
+    }
+
     // MARK: Readiness
+
+    /// At launch, for a Mac with no setup on record: whether speech recognition and the voices count as there, for
+    /// Welcome back. Only a report that says one can't work counts against it: speech recognition off, or the voices off
+    /// for a reason setup can change. Unknown, still checking, downloading, or being built (a model fetched again, the
+    /// voices' environment rebuilt after an update) is conch getting on with it by itself, which no step asks the person
+    /// to do: a set-up Mac is never welcomed back for it.
+    public static func engineReadyAtLaunch(speech: SpeechEngineReport?, voices: NaturalVoicesReport?) -> Bool {
+        if speech?.state == "off" { return false }
+        guard let voices, voices.state == "off" else { return true }
+        return voicesSettled(voices)
+    }
 
     /// What the Mac can see for itself, from the agents' report (nil: the daemon hasn't answered), the permissions, the
     /// downloads and the phone.
