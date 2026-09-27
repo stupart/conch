@@ -157,8 +157,10 @@ describe("the microphone check and the voices", () => {
     expect(daemon).toContain('hold: (stop) => voice.holdNarration(MIC_CHECK_QUIET_WITHIN_MS, stop, "Microphone check"),');
     expect(daemon).toContain("const proc = spawnNarrationRecorder(cfg, wav, seconds);");
     expect(daemon).toContain("transcribe: (wav) => transcribeWavSegments(cfg, wav)");
-    // A sample waits its turn and goes through `speak`'s gate, which drops a line while a mic is open.
-    expect(daemon).toContain('speak: (voiceId, text) => eventQueue.exclusive(() => voice.speak({ ...cfg, ttsVoices: [voiceId] }, text, "", true)),');
+    // A sample waits its turn and goes through `speak`'s gate, which drops a line while a mic is open; with the audio on
+    // the phone or another Mac, nothing is sent there (D6, setup-installer.test.ts).
+    expect(daemon).toContain('speak: (voiceId, text) => eventQueue.exclusive(() => (audioLease.isPhone() || !audioHolder.isLocal()');
+    expect(daemon).toContain(': voice.speak({ ...cfg, ttsVoices: [voiceId] }, text, "", true))),');
   });
 
   test("a sample stops the check first, and the check starts again after", () => {

@@ -3321,6 +3321,45 @@ describe("setup's practice turn (practice.ts), through the loop's own gates", ()
     h.playing.get("alpha: the build is green.")!.finish();
   });
 
+  // D4 (review 2026-09-28): the practice may only cut off its own line. `onLine` says the queue is held for it and its
+  // line is starting; while it waits behind another session's turn, what plays is that session's.
+  test("its line starts only once the queue is its: onLine never fires while another session is read", async () => {
+    const h = harness({ holdSpeech: true });
+    void h.queue.submit(accepted(h, turnEnd()));
+    await waitFor("the other session's turn", () => h.said.includes("alpha: the build is green."));
+    let lined = 0;
+    expect(await practice(h, { queueWithinMs: 80, onLine: () => void lined++ })).toEqual({ refused: "busy" });
+    expect(lined).toBe(0);
+    h.playing.get("alpha: the build is green.")!.finish();
+
+    // The queue free: the line starts, is said, plays through, and only then is the mic next.
+    const free = harness({ holdSpeech: true, heard: [["hi"]] });
+    const events: string[] = [];
+    const outcome = practice(free, {
+      onLine: () => void events.push(`line, said so far: ${free.said.length}`),
+      onSpoken: () => void events.push("spoken"),
+    });
+    await waitFor("the practice's line", () => free.said.includes(line));
+    expect(events).toEqual(["line, said so far: 0"]);
+    free.playing.get(line)!.finish();
+    expect(await outcome).toEqual({ heard: "hi" });
+    expect(events).toEqual(["line, said so far: 0", "spoken"]);
+  });
+
+  test("stopped while it waits its turn: its line never starts, so onLine never fires", async () => {
+    const h = harness({ holdSpeech: true });
+    void h.queue.submit(accepted(h, turnEnd()));
+    await waitFor("the other session's turn", () => h.said.includes("alpha: the build is green."));
+    let wanted = true;
+    let lined = 0;
+    const outcome = practice(h, { stillWanted: () => wanted, onLine: () => void lined++ });
+    await Bun.sleep(30);
+    wanted = false;
+    expect(await outcome).toEqual({ heard: null, interrupted: true });
+    expect(lined).toBe(0);
+    h.playing.get("alpha: the build is green.")!.finish();
+  });
+
   test("a session being read aloud past the wait: busy, in words the app shows", async () => {
     const h = harness({ holdSpeech: true });
     void h.queue.submit(accepted(h, turnEnd()));

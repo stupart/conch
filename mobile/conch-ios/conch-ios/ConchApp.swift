@@ -182,7 +182,7 @@ struct ConchApp: App {
     private var content: some View {
         if let pairing {
             if setup.showing {
-                SetupFlow(bridge: bridgeClient(for: pairing), store: setup, onCancel: unpair)
+                SetupFlow(bridge: bridgeClient(for: pairing), store: setup, onCancel: unpair, onRepaired: adopt)
                     .transition(.opacity)
             } else {
                 LedgerView(
@@ -194,13 +194,19 @@ struct ConchApp: App {
                 .transition(.opacity)
             }
         } else {
-            PairingView { newPairing in
-                LastStateTransport.forget()
-                PairingStore.save(newPairing)
-                setup.paired()
-                pairing = newPairing
-            }
+            PairingView(onPaired: adopt)
         }
+    }
+
+    /// A new pairing, from the way in or from setup's expired-code screen: it replaces whatever was paired (the link to a
+    /// pairing the Mac refused goes with it), and setup starts on it.
+    private func adopt(_ newPairing: BridgeClient.Pairing) {
+        bridge?.stop()
+        bridge = nil
+        LastStateTransport.forget()
+        PairingStore.save(newPairing)
+        setup.paired()
+        pairing = newPairing
     }
 
     private func bridgeClient(for pairing: BridgeClient.Pairing) -> BridgeClient {

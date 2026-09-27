@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createControlServer, type ControlServer } from "../src/control-server.ts";
 import type { TurnEvent } from "../src/hook.ts";
-import { createPhoneBridgeApplication, forwardToDaemonSocket } from "../src/phone-bridge.ts";
+import { createPhoneBridgeApplication, forwardToDaemonSocket, MAC_APP_ONLY_KINDS } from "../src/phone-bridge.ts";
+import { PRACTICE_REQUEST_KINDS } from "../src/practice.ts";
+import { SETUP_REQUEST_KINDS } from "../src/setup.ts";
 import {
   MacRelayPeer,
   RELAY_RESPONSE_CACHE_LIMIT,
@@ -297,6 +299,31 @@ describe("Mac phone relay adapter", () => {
     await second.peer.receive(JSON.stringify(retried));
     expect(responseStatus(await openSent(second.phone, second.sent))).toBe(200);
     expect(forwarded).toBe(1);
+  });
+
+  // D1 (review 2026-09-28): setup's and the practice's requests are the Mac app's alone. The relay drives the same
+  // application handler as the LAN, so a sealed one is refused there too, and never reaches the daemon.
+  test("the Mac app's own requests are refused over the relay, and never reach the daemon", async () => {
+    const forwarded: string[] = [];
+    const h = await connectedHarness({ forward: async (line) => { forwarded.push(line); return JSON.stringify({ kind: "ack" }); } });
+    const kinds = [...SETUP_REQUEST_KINDS, ...PRACTICE_REQUEST_KINDS, "narration-start", ...MAC_APP_ONLY_KINDS];
+    let sequence = 0;
+    const send = async (body: unknown) => {
+      const sealed = await h.phone.seal(
+        { id: `mac-only-${++sequence}`, method: "POST", kind: "request" },
+        requestBody("/control", h.relay.secret, JSON.stringify(body)),
+      );
+      await h.peer.receive(JSON.stringify(sealed));
+      return responseStatus(await openSent(h.phone, h.sent));
+    };
+    for (const kind of kinds) {
+      expect(await send({ kind, agent: "claude", canvasId: "0f3c1a2b-4d5e-4f60-8a7b-9c0d1e2f3a4b" }), kind).toBe(403);
+      expect(await send({ kind: "control-envelope", body: { kind, agent: "codex" } }), `enveloped ${kind}`).toBe(403);
+    }
+    expect(forwarded).toEqual([]);
+    // The phone's own still go through the same way.
+    expect(await send({ type: "pause", sessionId: "", label: "", announce: "" })).toBe(200);
+    expect(forwarded).toHaveLength(1);
   });
 
   // The phone turns the Mac's reason into the sentence it shows, so the relay has to carry

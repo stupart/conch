@@ -19,7 +19,8 @@
  * A row in setup goes green on the first real hook event from that agent, not on the file write: `noteTurn` hears every
  * hook-shaped event, and the agent it came from is remembered in `setup.json`, beside the time conch wired it.
  */
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import type { AgentBinary } from "./doctor-checks.ts";
 import type { TurnEvent } from "./hook.ts";
@@ -75,7 +76,8 @@ export type SetupLine =
   | { kind: "setup-install-line"; agent: SetupAgent; line: string }
   | { kind: "mic-level"; level: number };
 
-const SETUP_KINDS = new Set(["setup-status", "setup-connect", "setup-install", "voice-sample", "mic-check", "setup-retry"]);
+/** Every kind `decodeSetupRequest` takes: the Mac app's alone (the phone bridge refuses each, `isMacAppOnlyRequest`). */
+export const SETUP_REQUEST_KINDS: ReadonlySet<string> = new Set(["setup-status", "setup-connect", "setup-install", "voice-sample", "mic-check", "setup-retry"]);
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -83,7 +85,7 @@ function record(value: unknown): value is Record<string, unknown> {
 
 /** A setup request, a refusal of a malformed one, or null for anything that isn't setup's. */
 export function decodeSetupRequest(body: unknown): SetupRequest | { error: string } | null {
-  if (!record(body) || typeof body.kind !== "string" || !SETUP_KINDS.has(body.kind)) return null;
+  if (!record(body) || typeof body.kind !== "string" || !SETUP_REQUEST_KINDS.has(body.kind)) return null;
   const agent = body.agent === "claude" || body.agent === "codex" ? body.agent : null;
   switch (body.kind) {
     case "setup-status":
@@ -266,6 +268,63 @@ export function micRefusal(refused: string): { error: string; reason: string } {
   return { reason: "speaking", error: "conch is still speaking. It checks the microphone once it's done." };
 }
 
+/** Where conch's audio is when it isn't this Mac (`audio-holder.ts`): the phone has it, or another Mac does. */
+export type AudioElsewhere = "phone" | "another-mac";
+
+/**
+ * A voice sample refused because this Mac doesn't have the audio: in the microphone check's and the practice's words, so
+ * the app offers the same Hand it back. Played anyway, it would arm the phone's latch or play on the other Mac, and the
+ * sample would answer done for a line nobody heard here.
+ */
+export function voiceSampleRefusal(where: AudioElsewhere): { error: string; reason: "elsewhere" } {
+  return where === "phone"
+    ? { reason: "elsewhere", error: "Your iPhone has conch's audio right now. Hand it back to this Mac to hear the voices." }
+    : { reason: "elsewhere", error: "Another Mac has conch's audio right now. Hand it back to hear the voices here." };
+}
+
+/** The microphone check's recording in `$TMPDIR`: `conch-mic-check-<pid>-<ms>.wav`, and only that. */
+export const MIC_CHECK_FILE = /^conch-mic-check-(\d+)-(\d+)\.wav$/;
+/** A recording older than this that its daemon isn't making any more is one a killed daemon left. */
+export const MIC_CHECK_STALE_MS = 60_000;
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * The microphone check's recordings a daemon left behind when it was killed mid-check: up to ten seconds of the room,
+ * gone when the next daemon starts. Only a regular file with the check's exact name, older than a minute, whose daemon
+ * is gone (another conch running a check keeps its own). Never follows a link.
+ */
+export function sweepStaleMicChecks(dir: string, now: number, alive: (pid: number) => boolean = processAlive): string[] {
+  const removed: string[] = [];
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return removed;
+  }
+  for (const name of names) {
+    const match = MIC_CHECK_FILE.exec(name);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    if (pid !== process.pid && alive(pid)) continue;
+    const path = join(dir, name);
+    try {
+      const info = lstatSync(path);
+      if (!info.isFile() || now - info.mtimeMs < MIC_CHECK_STALE_MS) continue;
+      rmSync(path, { force: true });
+      removed.push(name);
+    } catch {}
+  }
+  return removed;
+}
+
 // MARK: - The service
 
 export interface SetupDependencies {
@@ -289,12 +348,18 @@ export interface SetupDependencies {
   installPlugin(agent: SetupAgent): Promise<boolean>;
   /** Whether the person's login shell has `brew` or `npm`, for the default installer. */
   shellHas(tool: "brew" | "npm"): Promise<boolean>;
-  /** Run an installer's command line in a login shell: its output, line by line, and its exit code. */
-  runInstaller(command: string, onOutput: (text: string) => void): { exited: Promise<number>; kill(): void };
+  /** Run an installer's command line in a login shell (`runInstallerInLoginShell`): its output as it comes, and its exit code. */
+  runInstaller(command: string, onOutput: (text: string) => void): InstallerRun;
+  /** How long an installer may run before it is stopped; `INSTALL_TIMEOUT_MS` but in tests. */
+  installTimeoutMs?: number;
+  /** How long a stopped installer's exit is waited for before setup lets go of it anyway; `INSTALLER_STOP_WAIT_MS` but in tests. */
+  installerStopWaitMs?: number;
   /** Kokoro voice ids in the ring, in order (`CONCH_TTS_VOICES`). */
   voices(): readonly string[];
   /** One line in one voice through the speech path, once the queue is free: false when conch was busy. */
   speak(voice: string, text: string): Promise<boolean>;
+  /** Who has conch's audio when this Mac doesn't: the phone, or another Mac. Null when it's here. */
+  audioElsewhere(): AudioElsewhere | null;
   mic: {
     hold(stop: () => void): Promise<{ release(): void } | { refused: string }>;
     record(wav: string, seconds: number): { exited: Promise<number>; stop(): void };
@@ -310,6 +375,8 @@ export interface Setup {
   /** Every event the socket takes: a hook's is how conch hears from an agent. */
   noteTurn(event: Pick<TurnEvent, "type" | "sessionId">): void;
   status(): Promise<AgentSetupReport[]>;
+  /** conch is closing: every installer still running is stopped now, its whole process group. */
+  close(): void;
 }
 
 export function createSetup(deps: SetupDependencies): Setup {
@@ -320,7 +387,12 @@ export function createSetup(deps: SetupDependencies): Setup {
   /** Every session heard from this run: it has its hooks, whenever it started. */
   const heardSessions = new Set<string>();
   const connecting = new Set<SetupAgent>();
-  const installing = new Set<SetupAgent>();
+  /** An install claimed for each agent, and how to stop it once its installer is running. */
+  const installing = new Map<SetupAgent, { stop(why: InstallStop): void }>();
+  let closing = false;
+  // A daemon killed mid-check (a crash, a SIGKILL) left its recording: the room, on disk. Gone before this one starts.
+  const swept = sweepStaleMicChecks(deps.tmpDir, deps.now());
+  if (swept.length) deps.log(`setup: removed ${swept.length} microphone check recording${swept.length === 1 ? "" : "s"} an earlier conch left`);
   // Finding the agents runs login shells; the window asks every few seconds while it waits to hear from one, so the
   // answer is kept briefly, and dropped whenever an install or a connect may have changed it.
   let found: { at: number; binaries: Promise<AgentBinary[]> } | null = null;
@@ -442,17 +514,36 @@ export function createSetup(deps: SetupDependencies): Setup {
     }
   };
 
-  const install = async (agent: SetupAgent, requested: InstallVia | undefined, emit: (line: SetupLine) => void): Promise<SetupReply> => {
+  const install = async (
+    agent: SetupAgent,
+    requested: InstallVia | undefined,
+    emit: (line: SetupLine) => void,
+    closed: Promise<void>,
+  ): Promise<SetupReply> => {
     const name = AGENT_NAMES[agent];
+    if (closing) return { kind: "setup-error", agent, error: "conch is closing." };
+    // Claimed before anything is awaited: a double click's two requests both reach this line before either's login
+    // shells answer, and only the first may get past it.
     if (installing.has(agent)) return { kind: "setup-error", agent, error: `${name} is already installing.` };
-    const tools = { brew: await deps.shellHas("brew"), npm: await deps.shellHas("npm") };
-    const via = requested ?? defaultInstallVia(agent, (tool) => tools[tool]);
-    const command = INSTALLERS[agent][via]!;
-    if ((via === "brew" || via === "npm") && !tools[via]) {
-      return { kind: "setup-error", agent, error: `${via === "brew" ? "Homebrew" : "npm"} isn't on this Mac, so this installer can't run.`, command };
-    }
-    installing.add(agent);
-    deps.log(`setup: installing ${name} with ${command}`);
+    let signalStopped!: () => void;
+    const stoppedSignal = new Promise<void>((resolve) => { signalStopped = resolve; });
+    const claim: { stopped: InstallStop | null; run: InstallerRun | null; done: boolean; stop(why: InstallStop): void } = {
+      stopped: null,
+      run: null,
+      done: false,
+      stop(why) {
+        // Answered already: the socket closing after the reply, or conch closing later, must not signal a process group
+        // that is no longer this install's (a finished installer can leave a helper in it).
+        if (claim.done) return;
+        const first = claim.stopped === null;
+        claim.stopped ??= why;
+        if (first) signalStopped();
+        // A second stop only matters when conch is closing: then the group goes at once.
+        if (first || why === "closing") claim.run?.kill({ immediate: why === "closing" });
+      },
+    };
+    installing.set(agent, claim);
+    let command = INSTALLERS[agent][requested ?? "native"] ?? "";
     let last = "";
     let buffer = "";
     let lastEmit = 0;
@@ -463,7 +554,23 @@ export function createSetup(deps: SetupDependencies): Setup {
       lastEmit = at;
       emit({ kind: "setup-install-line", agent, line });
     };
+    // The app that asked went away (its window closed, its request cancelled): the installer goes with it.
+    void closed.then(() => claim.stop("cancelled"));
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
+      // Stopped while the login shells are asked (one that never answers included): answered now, nothing started.
+      const probed = await Promise.race([
+        Promise.all([deps.shellHas("brew"), deps.shellHas("npm")]),
+        stoppedSignal.then(() => null),
+      ]);
+      if (!probed || claim.stopped) return installStopped(agent, claim.stopped ?? "cancelled", command);
+      const tools = { brew: probed[0], npm: probed[1] };
+      const via = requested ?? defaultInstallVia(agent, (tool) => tools[tool]);
+      command = INSTALLERS[agent][via]!;
+      if ((via === "brew" || via === "npm") && !tools[via]) {
+        return { kind: "setup-error", agent, error: `${via === "brew" ? "Homebrew" : "npm"} isn't on this Mac, so this installer can't run.`, command };
+      }
+      deps.log(`setup: installing ${name} with ${command}`);
       const run = deps.runInstaller(command, (text) => {
         buffer += text;
         const parts = buffer.split(/\r\n|\r|\n/);
@@ -473,11 +580,23 @@ export function createSetup(deps: SetupDependencies): Setup {
           if (line) say(line);
         }
       });
-      const timer = setTimeout(() => run.kill(), INSTALL_TIMEOUT_MS);
-      const code = await run.exited.finally(() => clearTimeout(timer));
+      claim.run = run;
+      timer = setTimeout(() => claim.stop("timeout"), deps.installTimeoutMs ?? INSTALL_TIMEOUT_MS);
+      // The installer's own exit is the answer. One that was stopped and still hasn't exited a while later is let go
+      // of, so "already installing" can never outlive the request.
+      const code = await Promise.race([
+        run.exited,
+        stoppedSignal.then(() => Bun.sleep(deps.installerStopWaitMs ?? INSTALLER_STOP_WAIT_MS)).then(() => null),
+      ]);
+      clearTimeout(timer);
       const tail = installerLine(buffer, deps.home);
       if (tail) say(tail, true);
       else if (last) emit({ kind: "setup-install-line", agent, line: last });
+      // A stop that crossed with a finished install doesn't undo it.
+      if (claim.stopped && code !== 0) {
+        deps.log(`setup: installing ${name} stopped (${claim.stopped})${code === null ? "; it hadn't exited when setup let go of it" : ""}`);
+        return installStopped(agent, claim.stopped, command);
+      }
       if (code !== 0) {
         deps.log(`setup: installing ${name} exited ${code}: ${last}`);
         return { kind: "setup-error", agent, error: last ? `The install stopped: ${last}` : "The install stopped without saying why.", command };
@@ -488,7 +607,9 @@ export function createSetup(deps: SetupDependencies): Setup {
       deps.log(`setup: installing ${name} couldn't start: ${error instanceof Error ? error.message : String(error)}`);
       return { kind: "setup-error", agent, error: "The installer couldn't start.", command };
     } finally {
-      installing.delete(agent);
+      claim.done = true;
+      clearTimeout(timer);
+      if (installing.get(agent) === claim) installing.delete(agent);
       found = null;
     }
   };
@@ -498,8 +619,15 @@ export function createSetup(deps: SetupDependencies): Setup {
     const wanted = asked.toLowerCase();
     const id = ring.find((voice) => voice.toLowerCase() === wanted || voice.toLowerCase().split("_").pop() === wanted);
     if (!id) return { kind: "setup-error", error: "conch doesn't have that voice." };
+    // The phone or another Mac has the audio: the line would go there, or only arm the phone's latch, and "done" would be
+    // a sample nobody heard here. Refused as the microphone check and the practice are, for the app's Hand it back.
+    const elsewhere = deps.audioElsewhere();
+    if (elsewhere) return { kind: "setup-error", ...voiceSampleRefusal(elsewhere) };
     const name = voiceName(id);
     const spoken = await deps.speak(id, `Hi, I'm ${name}. Each session keeps the voice it's given.`);
+    // The audio can move while the sample waits its turn behind another line.
+    const movedAway = deps.audioElsewhere();
+    if (movedAway) return { kind: "setup-error", ...voiceSampleRefusal(movedAway) };
     return spoken
       ? { kind: "voice-sample-done", voice: name }
       : { kind: "setup-error", error: "conch is reading something aloud. Try again when it's done.", reason: "busy" };
@@ -515,13 +643,23 @@ export function createSetup(deps: SetupDependencies): Setup {
     };
     const held = await deps.mic.hold(() => stop());
     if ("refused" in held) return { kind: "setup-error", ...micRefusal(held.refused) };
+    let released = false;
+    const release = (): void => {
+      if (released) return;
+      released = true;
+      held.release();
+    };
     let gone = false;
     void closed.then(() => {
       gone = true;
       stop();
     });
     const wav = join(deps.tmpDir, `conch-mic-check-${process.pid}-${deps.now()}.wav`);
+    const reading: { fd: number | null } = { fd: null };
     let peak = 0;
+    // One try around the whole check. However it ends (its reply, a stop, a throw anywhere in it), the microphone is let
+    // go and the recording is removed: up to ten seconds of the room must never be left in $TMPDIR. A daemon killed
+    // mid-check can't get here; the next one's start sweeps what it left (`sweepStaleMicChecks`).
     try {
       let recorder: { exited: Promise<number>; stop(): void };
       try {
@@ -536,7 +674,6 @@ export function createSetup(deps: SetupDependencies): Setup {
       void recorder.exited.finally(() => { exited = true; });
 
       // Read the WAV as sox writes it: a level for each 60 ms, and an early end once someone has spoken and paused.
-      let fd: number | null = null;
       let position = 0;
       let dataStart: number | null = null;
       let carry: Uint8Array = new Uint8Array(0);
@@ -544,15 +681,16 @@ export function createSetup(deps: SetupDependencies): Setup {
       let quietSince: number | null = null;
       const deadline = deps.now() + (seconds + 2) * 1000;
       const drain = (): void => {
-        if (fd === null) {
+        if (reading.fd === null) {
           if (!existsSync(wav)) return;
-          try { fd = openSync(wav, "r"); } catch { return; }
+          try { reading.fd = openSync(wav, "r"); } catch { return; }
         }
         let size = 0;
         try { size = statSync(wav).size; } catch { return; }
         if (size <= position) return;
         const chunk = new Uint8Array(size - position);
-        const read = readSync(fd, chunk, 0, chunk.length, position);
+        let read = 0;
+        try { read = readSync(reading.fd, chunk, 0, chunk.length, position); } catch { return; }
         position += read;
         let bytes = concat(carry, chunk.subarray(0, read));
         if (dataStart === null) {
@@ -590,11 +728,10 @@ export function createSetup(deps: SetupDependencies): Setup {
         await Promise.race([recorder.exited, Bun.sleep(2_000)]);
       }
       drain();
-      if (fd !== null) closeSync(fd);
-    } finally {
-      held.release();
-    }
-    try {
+      if (reading.fd !== null) closeSync(reading.fd);
+      reading.fd = null;
+      // The mic is let go before whisper runs: a warm whisper can take a moment, a cold one longer.
+      release();
       if (gone) return { kind: "setup-error", error: "The microphone check stopped.", reason: "cancelled" };
       const silent = peak < MIC_SILENT_PEAK;
       const rounded = Math.round(peak * 1000) / 1000;
@@ -606,6 +743,10 @@ export function createSetup(deps: SetupDependencies): Setup {
       });
       return { kind: "mic-check-done", heard: heard?.trim() || null, silent: false, recognition: "ready", peak: rounded };
     } finally {
+      if (reading.fd !== null) {
+        try { closeSync(reading.fd); } catch {}
+      }
+      release();
       rmSync(wav, { force: true });
     }
   };
@@ -620,7 +761,7 @@ export function createSetup(deps: SetupDependencies): Setup {
         case "setup-connect":
           return connect(request.agent);
         case "setup-install":
-          return install(request.agent, request.via, emit);
+          return install(request.agent, request.via, emit, closed);
         case "voice-sample":
           return voiceSample(request.voice);
         case "mic-check":
@@ -629,7 +770,27 @@ export function createSetup(deps: SetupDependencies): Setup {
           return { kind: "setup-ack", retried: deps.retry(request.what) };
       }
     },
+    close() {
+      closing = true;
+      for (const claim of installing.values()) claim.stop("closing");
+    },
   };
+}
+
+/** Why an install was stopped before its installer finished. */
+export type InstallStop = "timeout" | "cancelled" | "closing";
+
+/** An install setup stopped, said as the app shows it, with the command to run by hand. */
+function installStopped(agent: SetupAgent, why: InstallStop, command: string): SetupReply {
+  switch (why) {
+    case "timeout":
+      return { kind: "setup-error", agent, reason: "timeout", command,
+        error: `The install ran for ${Math.round(INSTALL_TIMEOUT_MS / 60_000)} minutes without finishing, so conch stopped it. Try again, or run it yourself in Terminal.` };
+    case "cancelled":
+      return { kind: "setup-error", agent, reason: "cancelled", command, error: "The install was stopped." };
+    case "closing":
+      return { kind: "setup-error", agent, reason: "closing", command, error: "conch is closing, so it stopped the install." };
+  }
 }
 
 /** How long a found agent is taken as found before the shells are asked again. */
@@ -661,29 +822,150 @@ function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
   return out;
 }
 
-/** The default installer runner: a login shell, so Homebrew and npm are found as they are in Terminal. */
-export function runInstallerInLoginShell(command: string, onOutput: (text: string) => void): { exited: Promise<number>; kill(): void } {
-  const proc = Bun.spawn(["/bin/zsh", "-lc", command], {
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
-    // No prompts it can't answer: Homebrew's own switch for unattended installs.
-    env: { ...process.env, NONINTERACTIVE: "1", HOMEBREW_NO_ENV_HINTS: "1" },
-  });
-  const pump = async (stream: ReadableStream<Uint8Array>): Promise<void> => {
-    const decoder = new TextDecoder();
-    for await (const chunk of stream) onOutput(decoder.decode(chunk, { stream: true }));
-  };
-  const exited = Promise.all([pump(proc.stdout), pump(proc.stderr)]).then(() => proc.exited);
-  return { exited, kill: () => proc.kill() };
+/** A running installer: its exit code once it has exited, and how to stop it. */
+export interface InstallerRun {
+  /** The installer's own exit. Never waits on a process it left behind holding its output. */
+  exited: Promise<number>;
+  /** Its whole process group: SIGTERM, then SIGKILL after a grace. `immediate` sends both at once: conch is closing. */
+  kill(options?: { immediate?: boolean }): void;
 }
 
-/** Whether the person's login shell has `tool`. */
-export async function loginShellHas(tool: "brew" | "npm"): Promise<boolean> {
+/** How long a stopped installer gets to exit on SIGTERM before its whole group is killed outright. */
+export const INSTALLER_KILL_GRACE_MS = 3_000;
+/** How long setup waits for a stopped installer to exit before it lets go of it anyway: the grace, and room past it. */
+export const INSTALLER_STOP_WAIT_MS = INSTALLER_KILL_GRACE_MS + 5_000;
+/** How long output still in the pipes is read after the installer has exited, before the pipes are let go of. */
+const INSTALLER_DRAIN_MS = 250;
+/** How long a login shell gets to say whether it has `brew` or `npm`. */
+const SHELL_PROBE_TIMEOUT_MS = 15_000;
+
+/**
+ * Run an installer in a process group of its own (`setsid`), so it can be stopped whole. `curl … | bash` is a shell, a
+ * curl and a bash, and `brew` starts more: SIGTERM to the shell alone left the rest running with the pipes open, and the
+ * old runner's answer waited for the pipes to close, so a stalled curl held "already installing" until conch restarted.
+ *
+ * The answer is the child's own exit. What is still in its pipes is read for a moment after, then let go of, so a
+ * process it left behind can't hold the answer either.
+ */
+export function spawnInstaller(
+  argv: string[],
+  onOutput: (text: string) => void,
+  options: { env?: Record<string, string | undefined>; graceMs?: number } = {},
+): InstallerRun & { pid: number } {
+  const proc = Bun.spawn(argv, { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: options.env, detached: true });
+  // `detached` is setsid(): the child leads a new session and process group whose id is its pid.
+  const group = proc.pid;
+  const readers = [proc.stdout.getReader(), proc.stderr.getReader()];
+  const pump = async (reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> => {
+    const decoder = new TextDecoder();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) return;
+        onOutput(decoder.decode(value, { stream: true }));
+      }
+    } catch {}
+  };
+  const pumps = Promise.all(readers.map((reader) => pump(reader as ReadableStreamDefaultReader<Uint8Array>)));
+  const exited = proc.exited.then(async (code) => {
+    await Promise.race([pumps, Bun.sleep(INSTALLER_DRAIN_MS)]);
+    for (const reader of readers) void reader.cancel().catch(() => {});
+    return code;
+  });
+  /** The group, by its negative id. False once nothing in it is left to signal. */
+  const signal = (name: "SIGTERM" | "SIGKILL"): boolean => {
+    try {
+      process.kill(-group, name);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  let escalation: ReturnType<typeof setTimeout> | undefined;
+  return {
+    pid: group,
+    exited,
+    kill({ immediate = false } = {}) {
+      if (!signal("SIGTERM")) return;
+      if (immediate) {
+        signal("SIGKILL");
+        return;
+      }
+      clearTimeout(escalation);
+      escalation = setTimeout(() => signal("SIGKILL"), options.graceMs ?? INSTALLER_KILL_GRACE_MS);
+    },
+  };
+}
+
+function samePath(a: string, b: string): boolean {
+  const real = (path: string): string => {
+    try {
+      return realpathSync(path);
+    } catch {
+      return path.replace(/\/+$/, "");
+    }
+  };
+  return real(a) === real(b);
+}
+
+/**
+ * Why this conch must not run a real installer, or a login shell: it runs with a stand-in home (its tests, an e2e,
+ * `CONCH_HOME`), and neither can be pointed at one. A login shell reads the Mac's own /etc/zprofile, whose path_helper
+ * puts the real Homebrew first whatever PATH says, and Homebrew, npm and the install scripts change the real Mac: an e2e
+ * run once did a real `brew install --cask codex` on Tyler's Mac this way. Null when the home is the account's own,
+ * as it is for the app's daemon and a terminal's.
+ */
+export function installerSandboxRefusal(
+  env: Record<string, string | undefined> = process.env,
+  accountHome: () => string = () => userInfo().homedir,
+): string | null {
+  if (env.CONCH_TEST_ROOT) return "conch is running its tests";
+  for (const name of ["CONCH_HOME", "HOME"] as const) {
+    const home = env[name];
+    if (home && !samePath(home, accountHome())) return `conch is running with a stand-in home (${name})`;
+  }
+  return null;
+}
+
+/** What the real runner and probe may be handed instead, in tests: never a real shell there. */
+export interface InstallerSeams {
+  env?: Record<string, string | undefined>;
+  accountHome?: () => string;
+  spawn?: typeof spawnInstaller;
+  run?: (argv: string[]) => Promise<{ code: number; out: string }>;
+}
+
+/**
+ * The default installer runner: a login shell, so Homebrew and npm are found as they are in Terminal. Refuses (throws,
+ * which setup answers as "couldn't start") in a conch with a stand-in home, before anything is spawned.
+ */
+export function runInstallerInLoginShell(command: string, onOutput: (text: string) => void, seams: InstallerSeams = {}): InstallerRun {
+  const env = seams.env ?? process.env;
+  const refused = installerSandboxRefusal(env, seams.accountHome);
+  if (refused) throw new Error(`${refused}, so it won't run a real installer`);
+  // No prompts it can't answer: Homebrew's own switch for unattended installs.
+  return (seams.spawn ?? spawnInstaller)(["/bin/zsh", "-lc", command], onOutput, {
+    env: { ...env, NONINTERACTIVE: "1", HOMEBREW_NO_ENV_HINTS: "1" },
+  });
+}
+
+async function runQuietly(argv: string[]): Promise<{ code: number; out: string }> {
+  const proc = Bun.spawn(argv, { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+  const timer = setTimeout(() => proc.kill("SIGKILL"), SHELL_PROBE_TIMEOUT_MS);
   try {
-    const proc = Bun.spawn(["/bin/zsh", "-lc", `command -v ${tool}`], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
-    const out = (await new Response(proc.stdout).text()).trim();
-    return (await proc.exited) === 0 && out.length > 0;
+    const out = await new Response(proc.stdout).text();
+    return { code: await proc.exited, out };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Whether the person's login shell has `tool`. False, without a shell, in a conch with a stand-in home. */
+export async function loginShellHas(tool: "brew" | "npm", seams: InstallerSeams = {}): Promise<boolean> {
+  if (installerSandboxRefusal(seams.env ?? process.env, seams.accountHome)) return false;
+  try {
+    const { code, out } = await (seams.run ?? runQuietly)(["/bin/zsh", "-lc", `command -v ${tool}`]);
+    return code === 0 && out.trim().length > 0;
   } catch {
     return false;
   }

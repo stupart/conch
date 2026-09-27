@@ -387,6 +387,11 @@ export interface PracticeTurn {
   speechCfg: Config;
   /** False once the practice is stopped: the line and the mic end with it. */
   stillWanted(): boolean;
+  /**
+   * The line is starting: the queue is held for the practice and the line goes to `speak` now. Until this, whatever
+   * conch is playing is another session's, which stopping the practice must leave alone.
+   */
+  onLine?(): void;
   /** The line has finished playing (or there was none) and the mic is about to open. */
   onSpoken?(): void;
   /** How long it waits for another session's exchange to finish before it says conch is busy. */
@@ -704,6 +709,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     prewarmEar();
     if (turn.line) {
       resetReadingProgress();
+      turn.onLine?.();
       await speak(turn.speechCfg, turn.line, turn.label, true);
       if (!wanted() || consumeStopKey()) return { heard: null, interrupted: true };
       // The phone may have claimed the audio while conch spoke: its ear, then, not this Mac's.

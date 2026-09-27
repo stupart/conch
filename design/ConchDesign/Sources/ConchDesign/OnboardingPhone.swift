@@ -109,9 +109,15 @@ public struct PhoneSetupFlow: Codable, Equatable, Sendable {
         next()
     }
 
+    /// Where this phone's setup is, as the Mac is told it: this screen's stage, or finished once "Open conch" is tapped.
+    /// Nil on Connecting, which the Mac sees for itself.
+    public var reportable: PhoneSetupStage? {
+        finished ? .finished : screen.reports
+    }
+
     /// What to tell the Mac now, if anything: this screen's stage, once, until the Mac has answered it.
     public var unreported: PhoneSetupStage? {
-        guard let stage = finished ? .finished : screen.reports else { return nil }
+        guard let stage = reportable else { return nil }
         if let acknowledged, acknowledged >= stage { return nil }
         return stage
     }
@@ -670,18 +676,24 @@ public struct PhoneFirstWelcome: View {
 public struct PhoneScanner: View {
     let denied: Bool
     let camera: AnyView?
+    /// Why the last code scanned didn't work, in plain words; the scanner stays open for the next one.
+    let message: String?
     let onEnterCode: () -> Void
     let onOpenSettings: () -> Void
     let onClose: (() -> Void)?
 
-    public init(denied: Bool = false, camera: AnyView? = nil, onEnterCode: @escaping () -> Void = {},
+    public init(denied: Bool = false, camera: AnyView? = nil, message: String? = nil, onEnterCode: @escaping () -> Void = {},
                 onOpenSettings: @escaping () -> Void = {}, onClose: (() -> Void)? = nil) {
         self.denied = denied
         self.camera = camera
+        self.message = message
         self.onEnterCode = onEnterCode
         self.onOpenSettings = onOpenSettings
         self.onClose = onClose
     }
+
+    /// What the scanner says when a conch code can't be read: nothing technical, and the one thing to do.
+    public static let unreadableCode = "conch couldn't read that code. Show a new one on your Mac, then scan it again."
 
     public var body: some View {
         ZStack {
@@ -730,8 +742,18 @@ public struct PhoneScanner: View {
                     Spacer()
                 }
             }
-            VStack {
+            VStack(spacing: 14) {
                 Spacer()
+                if let message, !denied {
+                    Text(message)
+                        .font(OnboardingType.Phone.callout).foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 18).padding(.vertical, 12)
+                        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(.black.opacity(0.55)))
+                        .padding(.horizontal, 28)
+                        .accessibilityAddTraits(.updatesFrequently)
+                }
                 Button(action: onEnterCode) {
                     Text("Enter a code instead").font(OnboardingType.Phone.buttonMedium).foregroundStyle(.white)
                         .padding(.horizontal, 20).frame(minHeight: 46).background(Capsule().fill(.white.opacity(0.16)))

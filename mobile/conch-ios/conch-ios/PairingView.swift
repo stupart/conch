@@ -8,6 +8,9 @@ import UIKit
 /// route reaches `onPaired` through `commit`, and scanning goes straight on to it: no second tap.
 struct PairingView: View {
     let onPaired: (BridgeClient.Pairing) -> Void
+    /// Where the typed code's back button goes when this was opened over something (setup's expired-code screen): back
+    /// to it. Without one, back is the welcome.
+    let onBack: (() -> Void)?
 
     /// Which of the two screens: the welcome, or the typed code. The scanner covers either.
     enum Entry { case welcome, code }
@@ -15,8 +18,9 @@ struct PairingView: View {
     @State private var gettingMac = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    init(startingAt entry: Entry = .welcome, onPaired: @escaping (BridgeClient.Pairing) -> Void) {
+    init(startingAt entry: Entry = .welcome, onBack: (() -> Void)? = nil, onPaired: @escaping (BridgeClient.Pairing) -> Void) {
         self.onPaired = onPaired
+        self.onBack = onBack
         _entry = State(initialValue: entry)
     }
 
@@ -219,7 +223,7 @@ struct PairingView: View {
         .overlay(alignment: .topLeading) {
             Button {
                 focused = nil
-                entry = .welcome
+                if let onBack { onBack() } else { entry = .welcome }
             } label: {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 17, weight: .semibold))
@@ -314,18 +318,22 @@ struct PairingView: View {
 /// The live camera for a `conch-relay-v1:` code, under the designed scanner (`PhoneScanner`): its words, its frame, and
 /// the way round it. Camera access is asked for here, the first time, and a no says so rather than showing black.
 struct SetupScanner: View {
+    /// Only a code that decodes: one that doesn't is said on the scanner, which stays open for the next (`accept`).
     let onCode: (String) -> Void
     let onEnterCode: () -> Void
     let onClose: () -> Void
     @State private var access = AVCaptureDevice.authorizationStatus(for: .video)
     @State private var failure: String?
+    /// The last code scanned couldn't be read. It used to close the scanner and say nothing: the scan just vanished.
+    @State private var unreadable: String?
 
     var body: some View {
         PhoneScanner(
             denied: access == .denied || access == .restricted,
             camera: access == .authorized && AVCaptureDevice.default(for: .video) != nil
-                ? AnyView(RelayQRScanner(onCode: onCode))
+                ? AnyView(RelayQRScanner(onCode: accept))
                 : nil,
+            message: unreadable,
             onEnterCode: onEnterCode,
             onOpenSettings: {
                 guard let settings = URL(string: UIApplication.openSettingsURLString) else { return }
@@ -341,6 +349,19 @@ struct SetupScanner: View {
             _ = await AVCaptureDevice.requestAccess(for: .video)
             access = AVCaptureDevice.authorizationStatus(for: .video)
         }
+    }
+}
+
+extension SetupScanner {
+    /// A conch code off the camera: on to `onCode` only once it decodes; otherwise said in plain words, and the scanner
+    /// keeps looking.
+    func accept(_ scanned: String) {
+        guard (try? RelayPairingPayload.decodePairingCode(scanned)) != nil else {
+            unreadable = PhoneScanner.unreadableCode
+            return
+        }
+        unreadable = nil
+        onCode(scanned)
     }
 }
 
@@ -411,7 +432,9 @@ struct RelayQRScanner: UIViewControllerRepresentable {
 
     final class Coordinator: NSObject, AVCaptureMetadataOutputObjectsDelegate {
         let onCode: (String) -> Void
-        private var delivered = false
+        /// Each code once: the camera sees the same one many times a second. A code that couldn't be read leaves the
+        /// scanner open, so a different one (a fresh code on the Mac) is still delivered.
+        private var delivered: String?
 
         init(onCode: @escaping (String) -> Void) { self.onCode = onCode }
 
@@ -420,12 +443,12 @@ struct RelayQRScanner: UIViewControllerRepresentable {
             didOutput metadataObjects: [AVMetadataObject],
             from connection: AVCaptureConnection
         ) {
-            guard !delivered,
-                  let object = metadataObjects.first as? AVMetadataMachineReadableCodeObject,
+            guard let object = metadataObjects.first as? AVMetadataMachineReadableCodeObject,
                   object.type == .qr,
                   let value = object.stringValue,
-                  value.hasPrefix(RelayPairingPayload.codePrefix) else { return }
-            delivered = true
+                  value.hasPrefix(RelayPairingPayload.codePrefix),
+                  value != delivered else { return }
+            delivered = value
             onCode(value)
         }
     }

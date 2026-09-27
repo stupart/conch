@@ -9,6 +9,8 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { conchHome } from "./home.ts";
 import { decodeNarrationRequest } from "./narration.ts";
+import { decodePracticeRequest } from "./practice.ts";
+import { decodeSetupRequest } from "./setup.ts";
 import { checkLocalFile } from "./snippet.ts";
 import { breadcrumb } from "./loop-watchdog.ts";
 import type { PreviewAnswer } from "./review-preview.ts";
@@ -155,15 +157,37 @@ function historyRequest(pathname: string, value: unknown): ReturnType<typeof val
 
 /**
  * What only the Mac app sends: Show's narration (its lease is a local connection held open, which a
- * phone never holds), its answer to a window snapshot the daemon asked it for, and what it saw on
- * screen. A phone forwarding one would be speaking as the Mac app.
+ * phone never holds), its answer to a window snapshot the daemon asked it for, what it saw on
+ * screen, first-run setup (an agent's official installer, conch's hooks written into an agent's own
+ * settings, the microphone check, a voice sample, a download retried) and setup's practice turn. A
+ * phone forwarding one would be speaking as the Mac app: a paired phone could run `curl … | bash`
+ * on the Mac, rewrite `~/.claude/settings.json`, or stop a practice the Mac is running.
+ *
+ * The requests with a decoder are refused by that decoder, the one the control server dispatches
+ * with (`createControlServer`), so a kind added to setup's or the practice's is refused here the day
+ * it is added. test/phone-mac-only.test.ts holds every branch the control server takes before a
+ * session is resolved to one side or the other.
  */
-const MAC_APP_ONLY = new Set(["review-preview", "screen-observation"]);
+export const MAC_APP_ONLY_KINDS: ReadonlySet<string> = new Set(["review-preview", "screen-observation"]);
+export const MAC_APP_ONLY_DECODERS: Readonly<Record<string, (value: unknown) => unknown>> = {
+  decodeNarrationRequest,
+  decodeSetupRequest,
+  decodePracticeRequest,
+};
+
+/** A control body only the Mac app may send, as the control server would read it (one envelope unwrapped, as it does). */
+export function isMacAppOnlyRequest(value: unknown): boolean {
+  if (typeof value === "object" && value !== null && (value as { kind?: unknown }).kind === "control-envelope") {
+    value = (value as { body?: unknown }).body;
+  }
+  if (Object.values(MAC_APP_ONLY_DECODERS).some((decode) => decode(value) !== null)) return true;
+  const kind = typeof value === "object" && value !== null ? (value as { kind?: unknown }).kind : undefined;
+  return typeof kind === "string" && MAC_APP_ONLY_KINDS.has(kind);
+}
+
 function isMacAppOnly(body: string): boolean {
   try {
-    let value = JSON.parse(body);
-    if (value?.kind === "control-envelope") value = value.body;
-    return decodeNarrationRequest(value) !== null || MAC_APP_ONLY.has(value?.kind);
+    return isMacAppOnlyRequest(JSON.parse(body));
   } catch { return false; }
 }
 
