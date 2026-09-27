@@ -1,0 +1,14 @@
+# What conch's natural voices (Kokoro via mlx-audio) need, before resolution.
+# scripts/lock-voice-env.sh resolves this into voice-requirements.txt, the
+# hashed lock the daemon installs (src/voice-env.ts). Edit here, never there.
+#
+# Every line is here for a measured reason (2026-09-27):
+# - mlx-audio 0.2.9's kokoro module imports loguru without declaring it, and
+#   the missing import surfaced as "ValueError: Model type kokoro not supported".
+# - misaki[en] and the spaCy English model are Kokoro's English G2P.
+# - [server] keeps the environment identical to the one proven working, and
+#   keeps `mlx_audio.server` available for the CONCH_TTS=server rollback.
+mlx-audio[server]==0.2.9
+misaki[en]==0.9.4
+loguru==0.7.3
+en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl

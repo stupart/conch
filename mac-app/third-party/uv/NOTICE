@@ -1,0 +1,11 @@
+conch.app carries uv (https://github.com/astral-sh/uv) at Contents/Helpers/uv.
+
+uv is Copyright (c) 2025 Astral Software Inc., and is dual-licensed under the
+MIT license (LICENSE-MIT) or the Apache License, Version 2.0 (LICENSE-APACHE),
+at your option. Both texts are included beside this notice, unmodified, from
+the uv source tree at the pinned release tag.
+
+conch runs it for one job: building conch's own Python environment for its
+natural voices under ~/.cache/conch/voice (src/voice-env.ts). The pinned
+version and the sha256 of its release tarball are in scripts/fetch-uv.sh;
+scripts/embed-uv.sh copies it into the app and signs it with the app's identity.

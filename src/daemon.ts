@@ -97,7 +97,8 @@ import { reapOrphanedWhisper, recordSpawnedWhisper } from "./whisper-orphan.ts";
 import { reapOrphanedSox } from "./sox-orphan.ts";
 import { PauseOriginLedger } from "./pause-origin.ts";
 import { TtsSupervisor } from "./tts-supervisor.ts";
-import { ManagedTtsWorker, resolveMlxAudioPython } from "./tts-worker.ts";
+import { ManagedTtsWorker } from "./tts-worker.ts";
+import { VoiceEnvManager, type NaturalVoicesStatus } from "./voice-env.ts";
 import {
   listenOnce,
   hasActiveRecorders,
@@ -616,6 +617,8 @@ export function buildDaemonPublishedState(
   showing?: PublishedShowing,
   /** Window snapshots the Mac app is asked to take (`WindowPreviews`). */
   previewRequests?: readonly PreviewRequest[],
+  /** Where the natural voices stand (`voice-env.ts`), for the app's Settings. */
+  naturalVoices?: NaturalVoicesStatus,
 ): PublishedState {
   return buildPublishedState(
     ownerDeviceId,
@@ -635,6 +638,7 @@ export function buildDaemonPublishedState(
       ...(approvalForSessionId ? { approvalForSessionId } : {}),
       ...(showing ? { showing } : {}),
       ...(previewRequests?.length ? { previewRequests } : {}),
+      ...(naturalVoices ? { naturalVoices } : {}),
     },
   );
 }
@@ -900,15 +904,37 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
 
   let whisperSupervisor: ServerSupervisor<WhisperRecoveryReason> | null = null;
   let ttsSupervisor: TtsSupervisor | null = null;
-  const ttsWorkerPython = resolveMlxAudioPython(cfg.ttsWorkerPython, cfg.ttsServerBin);
+  // The worker starts with no interpreter: voiceEnv hands one over once it has
+  // checked it — CONCH_TTS_WORKER_PYTHON, conch's own environment (built in the
+  // background with the uv the app carries when missing or wrong), or a legacy
+  // mlx-audio tool that can import Kokoro. Until then `say` speaks.
+  let voiceEnv: VoiceEnvManager | null = null;
+  let naturalVoices: NaturalVoicesStatus | undefined;
   const ttsWorker = new ManagedTtsWorker({
-    enabled: cfg.ttsEngine === "worker" && Boolean(ttsWorkerPython),
+    enabled: cfg.ttsEngine === "worker",
     model: cfg.ttsModel,
     voices: cfg.ttsVoices,
     speed: cfg.ttsSpeed,
-    python: ttsWorkerPython,
+    python: null,
+    onStartFailed: (error) => voiceEnv?.workerStartFailed(error),
     log,
   });
+  if (cfg.ttsEngine !== "server") {
+    voiceEnv = new VoiceEnvManager({
+      engine: cfg.ttsEngine,
+      explicitPython: cfg.ttsWorkerPython,
+      serverBin: cfg.ttsServerBin,
+      model: cfg.ttsModel,
+      voices: cfg.ttsVoices,
+      speed: cfg.ttsSpeed,
+      usePython: (python) => ttsWorker.setPython(python),
+      onStatus: (status) => {
+        naturalVoices = status;
+        void renderSessionPanel();
+      },
+      log,
+    });
+  }
   whisperServerClient.setRecoveryHandler((reason) => whisperSupervisor?.requestRecovery(reason));
   whisperServerClient.setNoteHandler((detail) => log(`whisper request failed — ${detail}`));
   // D2: every warm transcription (partials included) restarts the idle-unload clock.
@@ -1917,6 +1943,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         (sessionId, path) => voice.pendingApprovalFor(sessionId, path),
         screen.showing(),
         windowPreviews.requests(),
+        naturalVoices,
       );
       publishedStateWriter.request();
       if (theaterMode) theaterNavigation.commitFrame(nextActiveSessionId, navSelectedId);
@@ -2698,6 +2725,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     whisperServerClient.cancelWarmRequests();
     whisperSupervisor?.close();
     ttsSupervisor?.close();
+    voiceEnv?.close(); // kills a setup step in flight; the next start resumes it
     ttsWorker.close();
     // Preserve the synchronous audio cancellation above, then drain accepted journal writes before exit.
     await records.close();
@@ -2740,12 +2768,6 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   });
 
   const ttsBinaryAvailable = Boolean(Bun.which(cfg.ttsServerBin));
-  if (!ttsWorkerPython && cfg.ttsEngine === "worker") {
-    log(
-      `CONCH_TTS=worker but mlx-audio Python was not found via ${cfg.ttsServerBin} `
-      + "or CONCH_TTS_WORKER_PYTHON — voices via say",
-    );
-  }
   if (!ttsBinaryAvailable && cfg.ttsEngine === "server") {
     log(`CONCH_TTS=server but ${cfg.ttsServerBin} not found (uv tool install "mlx-audio[server]") — voices via say`);
   }
@@ -2769,11 +2791,16 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   // D1: a daemon booting in manual mode never loads Kokoro; auto mode will.
   if (pause.paused) kokoroByMode(true, 0);
   if (cfg.ttsEngine === "worker") {
-    // Loading and the first Metal/G2P warmup may take seconds (or download on a
-    // cold install). Do not hold the turn queue: say is live during startup.
-    void ttsWorker.start().catch((error) => {
-      if (!shuttingDown) log(`tts worker startup failed — voices via say: ${error}`);
+    // Checking the environment, building it on a first run, loading and the
+    // first Metal/G2P warmup all take time. None of it holds the turn queue:
+    // say is live throughout, and the worker starts when voiceEnv hands it an
+    // interpreter (setPython), unless manual mode unloaded it above (D1).
+    void voiceEnv?.start().catch((error) => {
+      if (!shuttingDown) log(`natural voices: startup check failed — voices via say: ${error}`);
     });
+  } else if (voiceEnv) {
+    // CONCH_TTS=say: publishes "off (CONCH_TTS=say)" and sets nothing up.
+    void voiceEnv.start();
   } else if (ttsSupervisor) {
     // Assign synchronously before listen: early hook events queue behind this
     // one full-body compatibility canary. Later repair is fire-and-forget.

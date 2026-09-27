@@ -72,6 +72,19 @@ echo "Verifying installed signature:"
 codesign --verify --strict --verbose=2 "$INSTALLED_APP_PATH"
 codesign -dv --verbose=2 "$INSTALLED_APP_PATH"
 
+# The natural voices set themselves up with the uv the app carries
+# (scripts/embed-uv.sh, src/voice-env.ts). A Release app without it, or with
+# it unsigned, would leave every new user on the macOS `say` voice.
+UV_HELPER="$INSTALLED_APP_PATH/Contents/Helpers/uv"
+if [[ ! -x "$UV_HELPER" ]]; then
+  echo "error: $UV_HELPER is missing — the Embed uv helper build phase did not run" >&2
+  exit 1
+fi
+echo "Verifying the embedded uv:"
+codesign --verify --strict --verbose=2 "$UV_HELPER"
+codesign -dv --verbose=2 "$UV_HELPER" 2>&1 | grep -E '^(Authority=Developer ID Application|TeamIdentifier|CodeDirectory)'
+"$UV_HELPER" --version
+
 if [[ -n "$WAS_RUNNING" ]]; then
   echo "Relaunching conch.app"
   # -g: in the background, so a deploy never takes focus from whatever you're typing in.

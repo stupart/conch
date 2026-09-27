@@ -53,6 +53,12 @@ export interface UninstallPaths {
   codexInstructions: string;
   servicePlist: string;
   modelsDir: string;
+  /**
+   * conch's natural-voice environment (voice-env.ts): its own Python and packages, ~1 GB.
+   * Removed with the speech models under --models. The Kokoro model itself sits in the
+   * shared Hugging Face cache, which other tools use too, so it is named, never deleted.
+   */
+  voiceDir?: string;
 }
 
 export type TmuxRemovalResult = "removed" | "absent" | "unavailable";
@@ -311,6 +317,7 @@ export function defaultUninstallPaths(
       "Library/LaunchAgents/com.conch.daemon.plist",
     ),
     modelsDir: join(home, ".cache", "conch", "models"),
+    voiceDir: join(home, ".cache", "conch", "voice"),
   };
 }
 
@@ -591,6 +598,27 @@ export async function runUninstall(
     const message = `Speech models: removal failed — ${caught instanceof Error ? caught.message : String(caught)}`;
     failures.push(message);
     error(message);
+  }
+
+  if (paths.voiceDir) {
+    try {
+      const voicePath = resolve(paths.voiceDir);
+      if (existsSync(voicePath)) {
+        const bytes = directorySize(voicePath);
+        if (options.models) {
+          rmSync(voicePath, { recursive: true, force: true });
+          modelsRemovedBytes += bytes;
+          log(`Natural-voice environment: removed ${formatBytes(bytes)} — ${voicePath}`);
+          log("The Kokoro model stays in the shared Hugging Face cache (~/.cache/huggingface/hub/models--mlx-community--Kokoro-82M-bf16).");
+        } else {
+          log(`Natural-voice environment: kept ${formatBytes(bytes)} — ${voicePath}`);
+        }
+      }
+    } catch (caught) {
+      const message = `Natural-voice environment: removal failed — ${caught instanceof Error ? caught.message : String(caught)}`;
+      failures.push(message);
+      error(message);
+    }
   }
 
   return {

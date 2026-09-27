@@ -109,6 +109,30 @@ def validate_request(value: Any) -> tuple[str, str, str, float, Path]:
     return request_id, text, voice, float(speed), output
 
 
+def host_audio(chunk: Any) -> Any:
+    """One Kokoro chunk as mono float32 samples in host memory.
+
+    np.array, never np.from_dlpack. MLX arrays live on the GPU, and DLPack
+    refuses a device buffer: with mlx 0.32.2 and numpy 2.5.3 every synthesis
+    raised "BufferError: Unsupported device in DLTensor", and the daemon spoke
+    through `say` for every session (2026-09-27). np.array goes through MLX's
+    buffer protocol, which evaluates the array and hands back host memory; one
+    copy of a few seconds of audio costs well under a millisecond.
+    """
+    import numpy as np
+
+    samples = np.array(chunk, dtype=np.float32)
+    # Guard the shape the WAV writer relies on: mono, 1-D, finite, non-empty.
+    # A conversion that silently yields something else would otherwise be
+    # written out as noise or as a zero-length file afplay accepts.
+    samples = samples.reshape(-1)
+    if samples.size == 0:
+        raise RuntimeError("Kokoro returned an empty audio chunk")
+    if not np.isfinite(samples).all():
+        raise RuntimeError("Kokoro returned non-finite audio samples")
+    return samples
+
+
 def synthesize(model: Any, text: str, voice: str, speed: float, output: Path) -> dict[str, Any]:
     import numpy as np
 
@@ -129,9 +153,7 @@ def synthesize(model: Any, text: str, voice: str, speed: float, output: Path) ->
     if not chunks or sample_rate is None:
         raise RuntimeError("Kokoro generated no audio")
 
-    # MLX exposes DLPack.  This avoids mlx_audio.audio_io.write's Python-list
-    # round trip while retaining the same mono PCM16 WAV consumed by afplay.
-    arrays = [np.from_dlpack(chunk) for chunk in chunks]
+    arrays = [host_audio(chunk) for chunk in chunks]
     audio = arrays[0] if len(arrays) == 1 else np.concatenate(arrays)
     pcm = (np.clip(audio, -1.0, 1.0) * 32767).astype("<i2")
     partial = output.with_name(f"{output.name}.partial-{os.getpid()}")
