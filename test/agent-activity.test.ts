@@ -7,6 +7,10 @@ import {
   sessionHasLiveBackgroundWork,
 } from "../src/agent-activity.ts";
 
+const AGENT_ACTIVITY = join(import.meta.dir, "..", "src", "agent-activity.ts");
+/** The reverse scan's read size (`READ_CHUNK_BYTES` in agent-activity.ts). */
+const READ_CHUNK = 256 * 1024;
+
 const roots: string[] = [];
 const taskRoots: string[] = [];
 
@@ -252,4 +256,73 @@ describe("sessionHasLiveBackgroundWork", () => {
     agentArtifact(f, "a7777777777777777"); // force the detector to try opening the missing transcript
     expect(sessionHasLiveBackgroundWork(f.transcript)).toBe(false);
   });
+});
+
+/**
+ * A transcript whose newest 256 KiB read starts exactly on a newline: `older` ends on the byte before the boundary,
+ * and the newest chunk is the newline that ends it, then `newer`, then a filler line that makes the chunk exactly
+ * `READ_CHUNK` bytes. The reverse scan used to reach index 0 of that chunk, ask `lastIndexOf(0x0a, -1)`, get the
+ * chunk's LAST newline back, and go round forever — synchronously, which is how the daemon froze on 2026-09-28.
+ */
+function boundaryTranscript(f: Fixture, older: unknown[], newer: unknown[]): string[] {
+  const olderText = older.map((line) => JSON.stringify(line)).join("\n");
+  let newest = "\n" + newer.map((line) => JSON.stringify(line) + "\n").join("");
+  const pad = READ_CHUNK - newest.length - JSON.stringify({ type: "system", filler: "" }).length - 1;
+  if (pad < 0) throw new Error("newer lines do not fit in one read");
+  const filler = { type: "system", filler: "f".repeat(pad) };
+  newest += JSON.stringify(filler) + "\n";
+  if (Buffer.byteLength(newest) !== READ_CHUNK) throw new Error(`newest chunk is ${Buffer.byteLength(newest)} bytes`);
+  writeFileSync(f.transcript, olderText + newest);
+  return [...older, ...newer, filler].map((line) => JSON.stringify(line));
+}
+
+/**
+ * Run `body` in its own process with a deadline. A regression here is an infinite synchronous loop, which no
+ * in-process test timeout can interrupt: it would hang the whole suite instead of failing this test.
+ */
+async function isolated(body: string, timeoutMs = 10_000): Promise<{ timedOut: boolean; exitCode: number | null; out: string; err: string }> {
+  // `ulimit -t`: a child this suite loses track of still stops itself after 20 s of CPU, spinning or not.
+  const child = Bun.spawn(["/bin/sh", "-c", 'ulimit -t 20; exec "$0" --eval "$1"', process.execPath, body], { stdout: "pipe", stderr: "pipe" });
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, timeoutMs);
+  const [out, err, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  clearTimeout(timer);
+  return { timedOut, exitCode, out, err };
+}
+
+describe("the reverse scan across a read boundary that lands on a newline (the 2026-09-28 daemon freeze)", () => {
+  test("visits every line once, newest first, and returns", async () => {
+    const f = fixture();
+    const older = Array.from({ length: 40 }, (_, i) => ({ type: "user", n: i, text: "o".repeat(9_000) }));
+    const newer = Array.from({ length: 5 }, (_, i) => ({ type: "assistant", n: i }));
+    const lines = boundaryTranscript(f, older, newer);
+    expect(Bun.file(f.transcript).size).toBeGreaterThan(READ_CHUNK);
+    const run = await isolated(`
+      const { visitLinesNewestFirst } = await import(${JSON.stringify(AGENT_ACTIVITY)});
+      const seen = [];
+      // Going round again is the bug; stop after a third lap so it fails as a wrong answer, not a hang.
+      visitLinesNewestFirst(${JSON.stringify(f.transcript)}, () => true, (line) => { seen.push(line.toString("utf8")); return seen.length >= ${lines.length * 3}; });
+      console.log(JSON.stringify(seen));
+    `);
+    expect(run.timedOut).toBe(false);
+    expect(run.exitCode).toBe(0);
+    expect(JSON.parse(run.out)).toEqual([...lines].reverse());
+  }, 30_000);
+
+  test("a live agent whose newest mention sits in that chunk is found, not scanned forever", async () => {
+    const f = fixture();
+    const id = "a9191919191919191";
+    // The launch is older than the boundary; the newest chunk only mentions the id, so it is relevant and resolves
+    // nothing: the scan has to leave it and read on.
+    const older = [genuinePrompt("delegate this"), ...agentLaunch(id), ...Array.from({ length: 30 }, (_, i) => ({ type: "user", n: i, text: "o".repeat(9_000) }))];
+    boundaryTranscript(f, older, [genuinePrompt(`how is agent ${id} doing?`)]);
+    agentArtifact(f, id);
+    const run = await isolated(`
+      const { liveBackgroundAgents } = await import(${JSON.stringify(AGENT_ACTIVITY)});
+      console.log(JSON.stringify(liveBackgroundAgents(${JSON.stringify(f.transcript)}).map((agent) => agent.agentId)));
+    `);
+    expect(run.timedOut).toBe(false);
+    expect(run.exitCode).toBe(0);
+    expect(JSON.parse(run.out)).toEqual([id]);
+  }, 30_000);
 });

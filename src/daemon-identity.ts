@@ -26,7 +26,13 @@ export interface DaemonIdentity {
   version: string;
   /** Who launched it, so the app can tell its own child from a stranger. */
   startedBy: "app" | "terminal" | "launchd";
+  /**
+   * When this was written (epoch ms), after the daemon began listening. The app only signals a pid whose process
+   * started before this: a pid reused by a later process started after it (`DaemonHealth` in ConchDesign).
+   */
   startedAt: number;
+  /** The socket this daemon owns: the app only stops a daemon on its own socket. */
+  socketPath?: string;
 }
 
 export const IDENTITY_PATH = join(conchHome(), ".cache/conch/daemon.json");
@@ -52,6 +58,7 @@ export function writeIdentity(
     version: identity.version ?? CONCH_VERSION,
     startedBy: identity.startedBy ?? startedByFromEnv(),
     startedAt: identity.startedAt ?? Date.now(),
+    ...(identity.socketPath ? { socketPath: identity.socketPath } : {}),
   };
   try {
     mkdirSync(join(path, ".."), { recursive: true });
@@ -92,6 +99,7 @@ export function readIdentity(
         ? record.startedBy
         : "terminal",
       startedAt: typeof record.startedAt === "number" ? record.startedAt : 0,
+      ...(typeof record.socketPath === "string" ? { socketPath: record.socketPath } : {}),
     };
   } catch {
     return null;

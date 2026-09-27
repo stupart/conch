@@ -135,6 +135,24 @@ const inject = {
 };
 
 describe("control server over a real Unix socket", () => {
+  test("ping is answered pong with this pid, from the loop itself: no resolver, no application entry", async () => {
+    // The Mac app's liveness probe (DaemonHealth). The resolver below never settles: a ping that waited on anything
+    // the daemon does would never be answered, and would read as a frozen daemon.
+    const never = new Promise<never>(() => {});
+    const f = await fixture({
+      sessions: { resolve: () => never },
+      application: { runtime: () => never },
+    });
+    const reply = JSON.parse(await f.request({ kind: "ping" }));
+    expect(reply.kind).toBe("pong");
+    expect(reply.pid).toBe(process.pid);
+    expect(typeof reply.uptimeMs).toBe("number");
+    expect(reply.uptimeMs).toBeGreaterThan(0);
+    expect(f.reads).toEqual({ resolve: [], current: [] });
+    expect(f.calls).toEqual({ configuration: [], session: [], runtime: [], turn: [], device: [] });
+    expect(f.logs).toEqual([]);
+  });
+
   test("persisted owner envelopes survive a server restart and foreign owners never read local state", async () => {
     const f = await fixture({ persistentIdentity: true });
     const learnedId = f.options.ownerDeviceId;

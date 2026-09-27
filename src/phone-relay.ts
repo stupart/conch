@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { conchHome } from "./home.ts";
+import { breadcrumb } from "./loop-watchdog.ts";
 import { dirname, join } from "node:path";
 import { isPhoneHistoryRead, type PhoneBridgeApplication, type PhoneStateSink } from "./phone-bridge.ts";
 import {
@@ -458,6 +459,7 @@ export class MacRelayPeer {
   }
 
   receive(wire: string): Promise<void> {
+    breadcrumb("relay: a frame from the phone");
     let dispatches: Array<Promise<void>> = [];
     // Only handshake/decrypt/order commitment is serialized. Response streams
     // deliberately run outside this chain so a large /file cannot block a later
@@ -638,6 +640,7 @@ export class MacRelayPeer {
   }
 
   async #dispatch(opened: OpenedRelayFrame): Promise<void> {
+    breadcrumb("relay: dispatching a phone request");
     const acceptedGeneration = this.#generation;
     const acceptedEpoch = this.#epoch;
     const payload = parseRequestPayload(opened);

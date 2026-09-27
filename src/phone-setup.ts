@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSy
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { conchHome } from "./home.ts";
+import { breadcrumb } from "./loop-watchdog.ts";
 
 /**
  * The iPhone's first-run setup, as the Mac follows it.
@@ -141,6 +142,7 @@ function readSetupFile(path: string): PhoneSetupFile {
 let cachedComputerName: string | undefined;
 export function computerName(): string {
   if (cachedComputerName !== undefined) return cachedComputerName;
+  breadcrumb("phone setup: asking scutil for the computer name");
   let name = "";
   try {
     const result = Bun.spawnSync(["/usr/sbin/scutil", "--get", "ComputerName"], { stdout: "pipe", stderr: "ignore" });
@@ -201,6 +203,7 @@ export class PhoneSetup {
 
   /** A transport's key exchange: a phone hello accepted, its first authenticated frame, or the link dying first. */
   exchange(event: KeyExchangeEvent): void {
+    breadcrumb(`phone setup: key exchange ${event}`);
     this.#changing(() => {
       if (event === "started") this.#exchanges += 1;
       else this.#exchanges = Math.max(0, this.#exchanges - 1);
@@ -213,6 +216,7 @@ export class PhoneSetup {
 
   /** A phone's report. Only an authenticated phone can make one, so it also means paired. */
   report(report: SetupStageReport): SetupStageAnswer {
+    breadcrumb(`phone setup: ${report.stage} reported`);
     let answer!: SetupStageAnswer;
     this.#changing(() => {
       const known = this.#file.devices[report.device];

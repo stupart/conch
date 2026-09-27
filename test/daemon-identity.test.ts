@@ -22,6 +22,20 @@ test("a daemon records who it is", () => {
   rmSync(join(path, ".."), { recursive: true, force: true });
 });
 
+test("a daemon records the socket it owns, and when, so the app can tell it from a pid reused since", () => {
+  const path = scratch();
+  const before = Date.now();
+  writeIdentity(path, { pid: 4242, startedBy: "app", socketPath: "/tmp/elsewhere.sock" });
+  const raw = JSON.parse(readFileSync(path, "utf8"));
+  expect(raw.socketPath).toBe("/tmp/elsewhere.sock");
+  expect(raw.startedAt).toBeGreaterThanOrEqual(before);
+  expect(readIdentity(path, () => true)?.socketPath).toBe("/tmp/elsewhere.sock");
+  // Older records have none, and read as such.
+  writeIdentity(path, { pid: 4242 });
+  expect(readIdentity(path, () => true)?.socketPath).toBeUndefined();
+  rmSync(join(path, ".."), { recursive: true, force: true });
+});
+
 test("a record whose process is gone is no record at all", () => {
   // The whole point. An orphaned file mistaken for a live daemon is how a
   // whisper-server survived from Aug 10, adopted by every daemon since and

@@ -26,6 +26,7 @@ import { decodeNarrationRequest, type Narration, type NarrationReply } from "./n
 import type { AgentInstall } from "./agent-install.ts";
 import { applyPlan, planToggle, rollbackFile, type ConfigWriteHomes, type ConfigWriteIo } from "./config-write.ts";
 import { decodeSetupRequest, type Setup, type SetupReply } from "./setup.ts";
+import { breadcrumb } from "./loop-watchdog.ts";
 import {
   isControlMessageCandidate,
   validateControlMessage,
@@ -1132,6 +1133,24 @@ export interface ControlServerOptions {
  */
 export const INJECT_DELIVERY_WAIT_MS = 20_000;
 
+/**
+ * The answer to `{"kind":"ping"}`: this daemon's pid and how long it has run.
+ *
+ * The Mac app's liveness probe (`DaemonHost`, `DaemonHealth` in ConchDesign). A connect alone proves nothing: the
+ * kernel completes one from the listen backlog while the event loop is stuck, which is how a frozen daemon passed the
+ * app's old check for eight minutes on 2026-09-28. This is answered before anything else in the request, with no I/O
+ * and nothing awaited, so an answer means the loop is turning and silence means it is not.
+ */
+export interface Pong {
+  kind: "pong";
+  pid: number;
+  uptimeMs: number;
+}
+
+export function pong(): Pong {
+  return { kind: "pong", pid: process.pid, uptimeMs: Math.round(process.uptime() * 1000) };
+}
+
 export interface ControlServer {
   /** False means another daemon already owns the path; exiting is the caller's decision. */
   start(): Promise<boolean>;
@@ -1187,6 +1206,11 @@ export function createControlServer(options: ControlServerOptions): ControlServe
       try {
         let body: unknown;
         try { body = JSON.parse(line); } catch (error) { framingError(error); return; }
+        if (socketRecord(body) && body.kind === "ping") {
+          sock.end(JSON.stringify(pong()) + "\n");
+          return;
+        }
+        breadcrumb(`control: ${socketRecord(body) ? String(body.kind ?? body.type ?? "?").slice(0, 40) : "?"}`);
         // C9b seam: refuse foreign owners BEFORE consulting any local state.
         // No client sends this yet. Untargeted commands still name one daemon.
         if (socketRecord(body) && body.kind === "control-envelope") {

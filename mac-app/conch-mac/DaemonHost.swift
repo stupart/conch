@@ -1,5 +1,9 @@
 import Foundation
 import Combine
+// test/daemon-host-launch.test.ts compiles this file with DaemonHealth.swift beside it, as one module.
+#if canImport(ConchDesign)
+import ConchDesign
+#endif
 
 /// The app owns the daemon.
 ///
@@ -42,23 +46,48 @@ final class DaemonHost: ObservableObject {
     /// Which daemon we launched: the bundled one, a checkout's, or a `conch` on
     /// PATH. Nil when none is ours.
     @Published private(set) var launchedFrom: LaunchCommand.Source?
+    /// Said once the daemon stopped answering and was replaced, until dismissed.
+    @Published private(set) var recoveryNotice: String?
 
     struct Identity: Decodable, Equatable {
         let pid: Int32
         let version: String
         /// "app" | "terminal" | "launchd" — what the launcher's CONCH_STARTED_BY declared.
         let startedBy: String
+        /// When the daemon wrote it (epoch ms): after it began listening, so its process started before this.
+        let startedAt: Double?
+        /// The socket the daemon owns. Absent from older daemons.
+        let socketPath: String?
+
+        init(pid: Int32, version: String, startedBy: String, startedAt: Double? = nil, socketPath: String? = nil) {
+            self.pid = pid
+            self.version = version
+            self.startedBy = startedBy
+            self.startedAt = startedAt
+            self.socketPath = socketPath
+        }
     }
 
     private var process: Process?
+    /// When `process` was launched: a daemon still starting may not be listening yet.
+    private var launchedAt: Date?
     private var outputPipe: Pipe?
     private var restartAttempts = 0
     private var restartWork: DispatchWorkItem?
-    /// Polls an adopted daemon's socket; nil when the daemon is ours or absent.
-    private var adoptedProbe: Timer?
+    /// Pings the daemon, ours or adopted (`DaemonHealth`); nil while there is none.
+    private var healthTimer: Timer?
     /// Deliberately not `Bundle.main` — the daemon and the socket path have to
     /// agree, and the daemon reads this same default.
     private let socketPath = ProcessInfo.processInfo.environment["CONCH_SOCKET"] ?? "/tmp/conch.sock"
+    /// The daemon's log, which the daemon inherits from this app's environment: what the app does to it goes there too.
+    private let logPath = DaemonHealth.logPath()
+    /// A connect is not an answer: a frozen daemon's backlog completes it (2026-09-28). This pings, and stops a
+    /// daemon that has stopped answering, by its exact pid.
+    private lazy var health = DaemonHealthMonitor(hooks: .init(
+        socketPath: socketPath,
+        target: { [weak self] in self?.healthTarget() },
+        log: { [logPath] line in DaemonHealth.appendToLog(line, path: logPath) }
+    ))
 
     var isOurs: Bool { if case .running = state { return true }; return false }
 
@@ -68,11 +97,16 @@ final class DaemonHost: ObservableObject {
     func start() {
         restartWork?.cancel()
         if case .running = state { return }
+        // Only a person starts a daemon that failed: a fresh budget for replacing frozen ones.
+        if case .failed = state { health.forgetRestarts() }
 
-        if socketAnswers() {
+        // A daemon whose socket refuses connects but whose identity names a live process is not gone: a frozen
+        // daemon's backlog fills and then refuses (2026-09-28), and one of ours started now would only lose the
+        // socket's lock to it and exit, over and over. Adopt it, and the health check decides.
+        if socketAnswers() || DaemonHost.signallableIdentity(socketPath: socketPath) != nil {
             adoptedIdentity = DaemonHost.readIdentity()
             state = .adopted
-            watchAdoptedDaemon()
+            watchHealth()
             return
         }
 
@@ -139,8 +173,10 @@ final class DaemonHost: ObservableObject {
         do {
             try task.run()
             process = task
+            launchedAt = Date()
             launchedFrom = launch.source
             state = .running(pid: task.processIdentifier)
+            watchHealth()
         } catch {
             state = .failed(error.localizedDescription)
             process = nil
@@ -152,14 +188,15 @@ final class DaemonHost: ObservableObject {
     /// process because our window closed would be a surprise.
     func stop() {
         restartWork?.cancel()
-        adoptedProbe?.invalidate()
-        adoptedProbe = nil
+        stopHealthWatch()
         restartAttempts = 0
+        recoveryNotice = nil
         guard let task = process else {
             if case .adopted = state {} else { state = .stopped }
             return
         }
         process = nil
+        launchedAt = nil
         launchedFrom = nil
         outputPipe?.fileHandleForReading.readabilityHandler = nil
         outputPipe = nil
@@ -184,8 +221,7 @@ final class DaemonHost: ObservableObject {
     func takeOverFromLaunchd() {
         guard adoptedIdentity?.startedBy == "launchd",
               let command = DaemonHost.launchCommand(subcommand: ["service", "off"]) else { return }
-        adoptedProbe?.invalidate()
-        adoptedProbe = nil
+        stopHealthWatch()
         state = .starting
         let task = Process()
         task.executableURL = command.executable
@@ -216,44 +252,122 @@ final class DaemonHost: ObservableObject {
 
     // MARK: - Internals
 
+    /// Ping the daemon every `interval`, ours or adopted, off the main thread (`DaemonHealth`).
+    ///
     /// An adopted daemon is someone else's process, so there is no exit
     /// callback when it dies. The app sat on a dead socket twice in one day
     /// (A2): hooks failing, the phone gone, and the window still saying
-    /// "Running — started outside this app". Poll the socket instead, and when
-    /// it stops answering, start our own — which is what the toggle promises.
-    private func watchAdoptedDaemon() {
-        adoptedProbe?.invalidate()
-        let probe = Timer(timeInterval: 3, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.probeAdoptedDaemon() }
+    /// "Running — started outside this app". And a daemon of our own that
+    /// freezes never exits at all: on 2026-09-28 one sat in a synchronous loop
+    /// for eight minutes while a bare connect() to its socket kept succeeding.
+    /// So both are asked, and one that has stopped answering is stopped by its
+    /// pid and replaced; one that is simply gone is replaced by our own.
+    private func watchHealth() {
+        healthTimer?.invalidate()
+        let timer = Timer(timeInterval: health.policy.interval, repeats: true) { [weak self] _ in
+            Task { @MainActor in await self?.checkHealth() }
         }
-        RunLoop.main.add(probe, forMode: .common)
-        adoptedProbe = probe
+        RunLoop.main.add(timer, forMode: .common)
+        healthTimer = timer
     }
 
-    private func probeAdoptedDaemon() {
-        guard case .adopted = state else {
-            adoptedProbe?.invalidate()
-            adoptedProbe = nil
+    private func stopHealthWatch() {
+        healthTimer?.invalidate()
+        healthTimer = nil
+    }
+
+    private func checkHealth() async {
+        switch state {
+        case .running, .adopted: break
+        default:
+            stopHealthWatch()
             return
         }
-        guard !socketAnswers() else { return }
-        adoptedProbe?.invalidate()
-        adoptedProbe = nil
+        guard let verdict = await health.check() else { return }
+        switch verdict {
+        case .healthy, .suspect:
+            return
+        case .gone:
+            // Ours says so itself, through handleExit. An adopted one says nothing: start our own.
+            guard case .adopted = state else { return }
+            stopHealthWatch()
+            adoptedIdentity = nil
+            state = .stopped
+            start()
+        case .unidentified(let failures):
+            // Said once, when it first crosses the line: not again every ping, and not back after it is dismissed.
+            guard failures == health.policy.failuresBeforeRestart else { return }
+            recoveryNotice = "conch's background service stopped responding, and it isn't one this app can stop. "
+                + "Quit it where it was started, then start conch again."
+        case .unresponsive(let pid):
+            await recoverFrozenDaemon(pid: pid)
+        }
+    }
+
+    /// Stop a daemon that stopped answering, by its pid, and start another within the restart budget.
+    private func recoverFrozenDaemon(pid: Int32) async {
+        stopHealthWatch()
+        // Detached first: the exit this causes is the recovery's to handle, not handleExit's.
+        if let task = process, task.processIdentifier == pid {
+            process = nil
+            launchedAt = nil
+            launchedFrom = nil
+            outputPipe?.fileHandleForReading.readabilityHandler = nil
+            outputPipe = nil
+            task.terminationHandler = nil
+        }
         adoptedIdentity = nil
-        state = .stopped
-        start()
+        state = .starting
+        let recovery = await health.recover(pid: pid)
+        // A stop() while it was being stopped: leave it off.
+        guard case .starting = state else { return }
+        guard recovery.termination != .survived else {
+            state = .failed("conch's background service stopped responding and could not be stopped (pid \(pid)).")
+            return
+        }
+        switch recovery.plan {
+        case .restart:
+            recoveryNotice = "conch's background service stopped responding and was restarted."
+            scheduleRestart()
+        case .giveUp:
+            recoveryNotice = nil
+            state = .failed("conch's background service kept freezing, so it was stopped. Check the log, then start it again.")
+        }
+    }
+
+    func dismissRecoveryNotice() {
+        recoveryNotice = nil
+    }
+
+    /// The process a failed health check may stop: our own child, or the daemon an identity file names on our
+    /// socket, when that process is the one that wrote it.
+    private func healthTarget() -> DaemonHealth.Target? {
+        switch state {
+        case .running:
+            guard let task = process else { return nil }
+            return DaemonHealth.Target(pid: task.processIdentifier, launchedAt: launchedAt)
+        case .adopted:
+            return DaemonHost.signallableIdentity(socketPath: socketPath).map { DaemonHealth.Target(pid: $0.pid) }
+        default:
+            return nil
+        }
     }
 
     private func handleExit(_ finished: Process) {
         guard process === finished else { return } // a stop() we already handled
         process = nil
+        launchedAt = nil
         launchedFrom = nil
+        stopHealthWatch()
         outputPipe?.fileHandleForReading.readabilityHandler = nil
         outputPipe = nil
+        scheduleRestart()
+    }
 
-        // Back off rather than hammering. A daemon that cannot start — a port
-        // already taken, a machine with no memory left — should not become a
-        // restart loop that makes the machine worse.
+    /// Back off rather than hammering. A daemon that cannot start — a port
+    /// already taken, a machine with no memory left — should not become a
+    /// restart loop that makes the machine worse.
+    private func scheduleRestart() {
         restartAttempts += 1
         guard restartAttempts <= 5 else {
             state = .failed("The daemon kept stopping. Check the log, then start it again.")
@@ -342,6 +456,21 @@ final class DaemonHost: ObservableObject {
         guard let data = FileManager.default.contents(atPath: path),
               let identity = try? JSONDecoder().decode(Identity.self, from: data),
               alive(identity.pid) else { return nil }
+        return identity
+    }
+
+    /// The identity file's daemon, only when the app may signal it: alive, on this socket, and the very process that
+    /// wrote the file — a pid reused since by something else started after the file was written.
+    nonisolated static func signallableIdentity(
+        socketPath: String,
+        identity: Identity? = DaemonHost.readIdentity(),
+        processStartedAt: (Int32) -> Date? = { DaemonHealth.processStartTime($0) }
+    ) -> Identity? {
+        guard let identity, identity.socketPath == socketPath, let startedAt = identity.startedAt,
+              DaemonHealth.identityMatchesProcess(
+                writtenAt: Date(timeIntervalSince1970: startedAt / 1_000),
+                processStartedAt: processStartedAt(identity.pid)
+              ) else { return nil }
         return identity
     }
 

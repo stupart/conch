@@ -24,7 +24,8 @@ beforeAll(() => {
   copyFileSync(repo("test/fixtures/daemon-launch-main.swift"), join(root, "main.swift"));
   const binary = join(root, "launch");
   const compile = Bun.spawnSync(
-    ["swiftc", "-swift-version", "5", repo("mac-app/conch-mac/DaemonHost.swift"), join(root, "main.swift"), "-o", binary],
+    ["swiftc", "-swift-version", "5", repo("mac-app/conch-mac/DaemonHost.swift"),
+      repo("design/ConchDesign/Sources/ConchDesign/DaemonHealth.swift"), join(root, "main.swift"), "-o", binary],
     { stdout: "pipe", stderr: "pipe" },
   );
   if (compile.exitCode !== 0) throw new Error(`swiftc failed:\n${compile.stderr.toString()}`);
@@ -80,6 +81,23 @@ describe("the dev install runs the checkout, and never ends up with nothing", ()
   test("CONCH_DAEMON_SOURCE in the environment beats the Info.plist, either way", () => {
     expect(lines.get("env-beats-plist")).toBe(CHECKOUT);
     expect(lines.get("env-bundled-beats-dev-plist")).toBe(BUNDLED);
+  });
+});
+
+describe("the only daemon the health check may stop is the one on this socket that wrote the identity file", () => {
+  // A frozen daemon is stopped by the pid in ~/.cache/conch/daemon.json when the app adopted it (DaemonHealth). That
+  // pid must be the daemon's: on the app's socket, and started before it wrote the file — a pid reused since by
+  // another process started after.
+  test("the daemon that wrote it, on this socket, may be signalled", () => {
+    expect(lines.get("identity-current")).toBe("4242");
+  });
+
+  test("another socket's daemon, a record with no time, a reused pid and no record are never signalled", () => {
+    expect(lines.get("identity-other-socket")).toBe("none");
+    expect(lines.get("identity-older-daemon")).toBe("none");
+    expect(lines.get("identity-reused-pid")).toBe("none");
+    expect(lines.get("identity-process-gone")).toBe("none");
+    expect(lines.get("identity-absent")).toBe("none");
   });
 });
 
