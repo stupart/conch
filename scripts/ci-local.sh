@@ -82,7 +82,7 @@ run() { # <check>
   rc=$?
   case "$name" in
     test)      detail=$(sed "s/$ESC\[[0-9;]*m//g" "$log" | grep -oE '^ *[0-9]+ (pass|fail)$' | xargs) ;;   # bun colours even a log file
-    swift)     detail=$(grep -oE 'Executed [0-9]+ tests?, with [0-9]+ failures?' "$log" | tail -1) ;;
+    swift)     detail=$(grep -oE 'Executed [0-9]+ tests?, with ([0-9]+ tests? skipped and )?[0-9]+ failures?' "$log" | tail -1) ;;
     mac | ios) detail=$(tail -1 "$log") ;;   # -quiet drops BUILD SUCCEEDED; the .app is the proof
     gap)       detail=$(head -1 "$log") ;;
   esac
