@@ -45,7 +45,7 @@ extension CanvasController {
         if let recorder { return sendShow(recorder) }
         guard let document, document.has(.you), !sending, let store else { return }
         let state = store.state
-        guard let route = Self.route(state, panel: FloatingPanels.installed?.staged, picked: picked) else {
+        guard let route = Self.route(state, panel: FloatingPanels.installed?.heldSession, picked: picked) else {
             return say(.nowhere)
         }
         // A guess isn't sent to: a localhost page at 0.7 went to the panel's session without a word.

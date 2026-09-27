@@ -87,7 +87,7 @@ describe("never sent, or recorded, without saying so", () => {
     expect(choose).toContain("picked = id");
     expect(choose).not.toContain("clear()");
     expect(member(canvas, "    func clear() {")).toContain("picked = nil");
-    expect(canvas).toContain("let route = CanvasController.route(store.state, panel: FloatingPanels.installed?.staged, picked: canvas.picked)");
+    expect(canvas).toContain("let route = CanvasController.route(store.state, panel: FloatingPanels.installed?.heldSession, picked: canvas.picked)");
   });
 
   test("no system error's words, and no path, in anything the pill says", () => {

@@ -258,8 +258,8 @@ describe("Send", () => {
     const sendBody = member(send, "    func send(marksOnly: Bool = false) {");
     expect(sendBody).toContain("CanvasCapture.still(");
     // Nowhere to send it: nothing captured, and the pill says why.
-    expect(sendBody.indexOf("guard let route = Self.route(state, panel: FloatingPanels.installed?.staged, picked: picked) else {")).toBeLessThan(sendBody.indexOf("CanvasCapture.still("));
-    expect(sendBody).toContain("guard let route = Self.route(state, panel: FloatingPanels.installed?.staged, picked: picked) else {\n            return say(.nowhere)\n        }");
+    expect(sendBody.indexOf("guard let route = Self.route(state, panel: FloatingPanels.installed?.heldSession, picked: picked) else {")).toBeLessThan(sendBody.indexOf("CanvasCapture.still("));
+    expect(sendBody).toContain("guard let route = Self.route(state, panel: FloatingPanels.installed?.heldSession, picked: picked) else {\n            return say(.nowhere)\n        }");
     // Send is the pill's button, Return on the glass, a pick from Send's own menu, and the notice's Send marks only:
     // nothing else calls it.
     const callers = Object.entries(macSources).flatMap(([name, source]) => (source.match(/(?:canvas|controller\?|CanvasController\.shared)\.send\(\)/g) ?? []).map((call) => `${name}: ${call}`));

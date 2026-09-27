@@ -63,7 +63,7 @@ describe("only one input is ever in use", () => {
   });
 
   test("the panel draws no reply line of its own: its reply line is the composer, laid over its room", () => {
-    const host = member(panels, "var body: some View {\n        let row = Self.session(store.state, staged: panels.staged ?? panels.replyPin)");
+    const host = member(panels, "var body: some View {\n        let row = Self.session(store.state, staged: panels.heldSession)");
     expect(host).toContain("heldReply: panels.heldReply,");
     expect(host).toContain("onMic: {},");
     expect(host).toContain("onSend: {},");

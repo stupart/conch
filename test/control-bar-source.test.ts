@@ -997,7 +997,7 @@ test("the blur's mask is drawn only while the blur shows", () => {
 test("the conversation stays on the pill's scene, whatever the voice does, until the pill again or another pick", () => {
   expect(panels).toContain("@Published var staged: SessionRow.ID?");
   // A reply being written in the reply line holds it too, after what the pill staged (`ComposerDock.pinReply`).
-  expect(panels).toContain("let row = Self.session(store.state, staged: panels.staged ?? panels.replyPin)");
+  expect(panels).toContain("let row = Self.session(store.state, staged: panels.heldSession)");
   // The chain itself is the window's, in the design system: the overlay pins a different
   // session from the dashboard, but both resolve it by the same rule and by identity.
   const session = member(panels, "static func session(_ state: PublishedState?, staged: SessionRow.ID? = nil) -> SessionRow? {");

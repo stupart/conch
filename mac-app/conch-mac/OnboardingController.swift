@@ -797,8 +797,15 @@ final class OnboardingStore: ObservableObject {
         micTask = nil
         playing = index
         Task {
-            _ = await SetupDaemon.ask(SetupDaemonRequest(kind: "voice-sample", voice: OnboardingVoiceStep.voices[index]), timeout: 30, expecting: "voice-sample-done")
+            let result = await SetupDaemon.ask(SetupDaemonRequest(kind: "voice-sample", voice: OnboardingVoiceStep.voices[index]), timeout: 30, expecting: "voice-sample-done")
             if playing == index { playing = nil }
+            // A sample that didn't play here says why, in the step's one line for what went wrong: the phone or another
+            // Mac holding the audio (the daemon refuses, `voice-sample` in src/setup.ts), or a daemon not answering.
+            // The mic check would meet the same refusal, so it isn't started again over the words.
+            if case let .failure(failure) = result, failure.reason != "cancelled" {
+                mic.state = .problem(failure.words)
+                return
+            }
             if stepTasksFor == .voice, !heardYou, PermissionCenter.shared.statuses[.microphone] == .granted { listen() }
         }
     }

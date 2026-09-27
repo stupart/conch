@@ -260,7 +260,7 @@ describe("Esc and Send", () => {
     expect(canvas).toContain("canSend: drawn || canvas.recorder != nil,");
     const sendShow = member(show, "    func sendShow(_ recorder: CanvasRecorder) {");
     // Nowhere to send it: it keeps recording, and the pill says why.
-    inOrder(sendShow, "guard let route = Self.route(state, panel: FloatingPanels.installed?.staged, picked: picked) else {", "await recorder.stop()");
+    inOrder(sendShow, "guard let route = Self.route(state, panel: FloatingPanels.installed?.heldSession, picked: picked) else {", "await recorder.stop()");
     // A guess asks where before anything stops.
     inOrder(sendShow, "guard route.sure else {\n            routeMenu = .sendTo\n            return\n        }", "await recorder.stop()");
     expect(sendShow).toContain("let event = ConchDaemonEvent.inject(sessionId: row.id, label: row.label, text: prompt)");

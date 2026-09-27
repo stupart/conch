@@ -55,9 +55,16 @@ describe("1: typing never switches the session under you", () => {
 
   test("the panel is on the pinned session after anything Tyler staged, by its one rule", () => {
     expect(panels).toContain("@Published var replyPin: SessionRow.ID?");
-    expect(panels).toContain("var session: SessionRow? { ConversationFogHost.session(store?.state, staged: staged ?? replyPin) }");
-    expect(panels).toContain("let row = Self.session(store.state, staged: panels.staged ?? panels.replyPin)");
-    expect(panels).toContain("switcherSelection = ConversationFogHost.session(store?.state, staged: staged ?? replyPin)?.id");
+    expect(panels).toContain("var session: SessionRow? { ConversationFogHost.session(store?.state, staged: heldSession) }");
+    // One name for the panel's session, and the canvas asks it too: a pinned reply line and the canvas's Send never disagree.
+    expect(panels).toContain("var heldSession: SessionRow.ID? { staged ?? replyPin }");
+    for (const file of ["Canvas.swift", "CanvasSend.swift", "CanvasShow.swift"]) {
+      const source = readFileSync(join(import.meta.dir, "..", "mac-app", "conch-mac", file), "utf8");
+      expect(source, file).not.toContain("FloatingPanels.installed?.staged");
+      expect(source, file).toContain("panel: FloatingPanels.installed?.heldSession");
+    }
+    expect(panels).toContain("let row = Self.session(store.state, staged: panels.heldSession)");
+    expect(panels).toContain("switcherSelection = ConversationFogHost.session(store?.state, staged: heldSession)?.id");
     // The floating composer is the panel's session, so it keeps to the pin too.
     expect(member(dock, "func floatingRow(_ state: PublishedState?) -> SessionRow? {")).toContain("guard let row = panels?.session, row.parentSessionId == nil");
   });

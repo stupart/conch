@@ -102,7 +102,7 @@ extension CanvasController {
     func sendShow(_ recorder: CanvasRecorder) {
         guard !sending, let store else { return }
         let state = store.state
-        guard let route = Self.route(state, panel: FloatingPanels.installed?.staged, picked: picked) else {
+        guard let route = Self.route(state, panel: FloatingPanels.installed?.heldSession, picked: picked) else {
             return say(.nowhere)
         }
         guard route.sure else {

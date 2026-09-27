@@ -476,7 +476,7 @@ private struct CanvasPillHost: View {
     var body: some View {
         // Only Tyler's marks are his to undo and to send; the agent's are what he is answering.
         let drawn = canvas.document?.has(.you) == true
-        let route = CanvasController.route(store.state, panel: FloatingPanels.installed?.staged, picked: canvas.picked)
+        let route = CanvasController.route(store.state, panel: FloatingPanels.installed?.heldSession, picked: canvas.picked)
         CanvasToolPill(
             mode: canvas.pillMode,
             hangs: canvas.hangs,
@@ -487,7 +487,7 @@ private struct CanvasPillHost: View {
             sending: canvas.sending,
             route: route.map { CanvasToolPill.Route(id: $0.row.id, label: $0.row.label, sure: $0.sure) },
             // Built only while the menu is open.
-            destinations: canvas.routeMenu == nil ? [] : CanvasController.destinations(store.state, panel: FloatingPanels.installed?.staged, picked: canvas.picked),
+            destinations: canvas.routeMenu == nil ? [] : CanvasController.destinations(store.state, panel: FloatingPanels.installed?.heldSession, picked: canvas.picked),
             routeMenu: canvas.routeMenu,
             notice: canvas.notice,
             onTool: { canvas.pick($0) },

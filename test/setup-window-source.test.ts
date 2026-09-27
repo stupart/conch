@@ -335,3 +335,17 @@ describe("the daemon's side is wired where hooks and the socket meet", () => {
     }
   });
 });
+
+describe("a voice sample that didn't play says why", () => {
+  // The daemon refuses `voice-sample` when the phone or another Mac holds the audio (#448, review D6); the window used to
+  // throw that answer away, so Hear one did nothing and said nothing.
+  test("its failure is shown in the step's line, and the mic check isn't restarted over it", () => {
+    const hear = member(controller, "func hear(_ index: Int) {");
+    expect(hear).toContain("let result = await SetupDaemon.ask(SetupDaemonRequest(kind: \"voice-sample\"");
+    expect(hear).not.toContain("_ = await SetupDaemon.ask(SetupDaemonRequest(kind: \"voice-sample\"");
+    const failure = hear.indexOf("if case let .failure(failure) = result, failure.reason != \"cancelled\" {");
+    expect(failure).toBeGreaterThan(-1);
+    expect(hear.indexOf("mic.state = .problem(failure.words)", failure)).toBeGreaterThan(failure);
+    expect(hear.indexOf("return", failure)).toBeLessThan(hear.indexOf("listen()", failure));
+  });
+});
