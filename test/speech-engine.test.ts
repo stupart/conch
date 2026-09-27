@@ -598,7 +598,7 @@ describe("the daemon is wired to it", () => {
   });
 
   test("only the socket's owner fetches, and a shutdown stops the fetch", () => {
-    const owner = daemon.indexOf("writeIdentity();\n");
+    const owner = daemon.indexOf("writeIdentity(undefined, { socketPath: cfg.socketPath });\n");
     expect(owner).toBeGreaterThan(-1);
     expect(daemon.indexOf("void speechEngine.start();")).toBeGreaterThan(owner);
     expect(daemon).toContain("speechEngine.close();");

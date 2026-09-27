@@ -67,3 +67,21 @@ run("no-plist-key", present: everything, source: nil)
 run("inherited-path", present: ["/Users/tester/tools/conch"], environment: ["PATH": "/Users/tester/tools:/usr/bin"])
 print("prefers-checkout-plist \(DaemonHost.prefersCheckout(bundle: makeBundle(source: "checkout"), environment: [:]))")
 print("prefers-checkout-release \(DaemonHost.prefersCheckout(bundle: makeBundle(source: "bundled"), environment: [:]))")
+
+// Which identity the health check may signal (DaemonHost.signallableIdentity): `identity-<case> <pid>` or `none`.
+let written = 1_790_524_645_000.0 // epoch ms, when the daemon wrote the file
+func signallable(_ name: String, _ identity: DaemonHost.Identity?, processStarted: Double?) {
+    let found = DaemonHost.signallableIdentity(
+        socketPath: "/tmp/test-conch.sock",
+        identity: identity,
+        processStartedAt: { _ in processStarted.map { Date(timeIntervalSince1970: $0 / 1_000) } }
+    )
+    print("identity-\(name) \(found.map { String($0.pid) } ?? "none")")
+}
+let current = DaemonHost.Identity(pid: 4242, version: "1", startedBy: "app", startedAt: written, socketPath: "/tmp/test-conch.sock")
+signallable("current", current, processStarted: written - 2_000)
+signallable("other-socket", DaemonHost.Identity(pid: 4242, version: "1", startedBy: "terminal", startedAt: written, socketPath: "/tmp/other.sock"), processStarted: written - 2_000)
+signallable("older-daemon", DaemonHost.Identity(pid: 4242, version: "1", startedBy: "app"), processStarted: written - 2_000)
+signallable("reused-pid", current, processStarted: written + 60_000)
+signallable("process-gone", current, processStarted: nil)
+signallable("absent", nil, processStarted: written - 2_000)

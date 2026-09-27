@@ -81,6 +81,32 @@ struct WorkspaceNotices: View {
             .frame(height: 1)
     }
 
+    // The daemon stopped answering and the app replaced it (DaemonHealth): said once, until read, so a frozen
+    // minute that healed itself is not a mystery.
+    if let notice = daemon.recoveryNotice {
+        HStack(spacing: 10) {
+            Image(systemName: "arrow.clockwise.circle")
+                .font(.system(size: 10.5, weight: .medium))
+            Text(notice)
+                .font(ConchTypography.font(size: 11.5))
+                .textSelection(.enabled)
+            Spacer(minLength: 8)
+            Button("OK", action: daemon.dismissRecoveryNotice)
+                .buttonStyle(.plain)
+                .font(ConchTypography.font(size: 11, weight: .medium))
+                .foregroundStyle(ConchPalette.statusQuiet)
+        }
+        .foregroundStyle(ConchPalette.statusWaiting)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ConchPalette.raised)
+
+        Rectangle()
+            .fill(ConchPalette.divider)
+            .frame(height: 1)
+    }
+
     // Whatever stopped for want of a macOS permission, with the button that fixes it: a refused keystroke, the mic
     // turned off, the front window read as the app alone (`PermissionNoticeLine`).
     PermissionNoticeLine()

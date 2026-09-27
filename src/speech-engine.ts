@@ -2,6 +2,7 @@ import { accessSync, constants, existsSync, mkdirSync, readFileSync, renameSync,
 import { open } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { conchHome } from "./home.ts";
+import { breadcrumb } from "./loop-watchdog.ts";
 
 /**
  * conch's speech engine is seashell's: sox captures the microphone, whisper.cpp
@@ -619,6 +620,7 @@ export class SpeechEngineManager {
   }
 
   private setStatus(head: Parameters<SpeechEngineManager["compose"]>[0]): void {
+    breadcrumb(`speech engine: ${head.state}`);
     this.status = this.compose(head);
     if (this.options.statusPath) {
       try {

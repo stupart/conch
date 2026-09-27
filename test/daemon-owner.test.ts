@@ -20,7 +20,8 @@ const read = (...parts: string[]) => readFileSync(join(import.meta.dir, "..", ..
 test("the daemon claims the identity only after winning the socket, and drops it on shutdown", () => {
   const daemon = read("src", "daemon.ts");
   const won = daemon.indexOf("if (!await controlServer.start()) {");
-  const claim = daemon.indexOf("writeIdentity();");
+  // With the socket it owns: the app only ever stops a daemon on its own socket (DaemonHealth).
+  const claim = daemon.indexOf("writeIdentity(undefined, { socketPath: cfg.socketPath });");
   expect(won).toBeGreaterThan(-1);
   expect(claim).toBeGreaterThan(-1);
   // A loser of the ownership race exits inside that block; writing first

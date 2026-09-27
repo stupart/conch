@@ -3,6 +3,7 @@ import type { StoredPromptCursor } from "./records-store.ts";
 import type { RecordReceipt } from "./records-types.ts";
 import { historyError, historyOff, validateHistoryRequest, validateHistoryResponse,
   type HistoryItemRequest, type HistoryPageRequest, type HistoryRequest, type HistoryResponse } from "./history.ts";
+import { breadcrumb } from "./loop-watchdog.ts";
 
 export interface RecordsRuntimeClient {
   startIngestion(options: RecordsIngestionOptions): Promise<void>;
@@ -100,6 +101,7 @@ export class RecordsRuntime {
 
   prioritize(hints: RecordsPriorityHints): void {
     if (this.closed) return;
+    breadcrumb("records: handing the indexer its priorities");
     const live = hints.live.slice(0, 256);
     const selected = hints.selected && hints.live.find((item) => item.provider === hints.selected!.provider
       && item.nativeId === hints.selected!.nativeId);

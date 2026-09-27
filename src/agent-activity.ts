@@ -64,6 +64,20 @@ function freshIds(
   return ids;
 }
 
+/**
+ * The last newline before `end`, or -1 when there is none.
+ *
+ * `end` reaches 0 when the chunk starts with a newline, and `Buffer#lastIndexOf` reads a negative offset as counting
+ * from the END (Node's semantics, which Bun follows): `lastIndexOf(0x0a, -1)` found the chunk's last newline again, so
+ * the scan went round the same chunk forever, synchronously. That froze the daemon on 2026-09-28 (152% CPU, socket
+ * accepting and never answering, SIGTERM ignored): a 256 KiB read boundary landed on a newline in a session whose
+ * background agent was still out, and the 20 s panel refresh (`subagentSessions` → `liveBackgroundAgents`) never
+ * returned.
+ */
+function previousNewline(buffer: Buffer, end: number): number {
+  return end > 0 ? buffer.lastIndexOf(0x0a, end - 1) : -1;
+}
+
 /** Visit complete JSONL lines from newest to oldest without loading the transcript. */
 export function visitLinesNewestFirst(
   path: string,
@@ -92,11 +106,11 @@ export function visitLinesNewestFirst(
         continue;
       }
       let end = combined.length;
-      let newline = combined.lastIndexOf(0x0a, end - 1);
+      let newline = previousNewline(combined, end);
       while (newline !== -1) {
         if (newline + 1 < end && visit(combined.subarray(newline + 1, end))) return;
         end = newline;
-        newline = combined.lastIndexOf(0x0a, end - 1);
+        newline = previousNewline(combined, end);
       }
       carry = Buffer.from(combined.subarray(0, end));
     }

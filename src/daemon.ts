@@ -182,12 +182,14 @@ import {
   type RelayPairing,
 } from "./phone-relay.ts";
 import { computerName, PhoneSetup } from "./phone-setup.ts";
+import { breadcrumb, loopWatchdogEnabled, startLoopWatchdog } from "./loop-watchdog.ts";
 import {
   transcribeWavSegments,
   whisperServerClient,
   type WhisperRecoveryReason,
 } from "./transcribe.ts";
 import {
+  LOG_FILE,
   prepareLogFile,
   clearTheaterSelection,
   configureRenderer,
@@ -712,6 +714,10 @@ export async function runDaemon(cfg: Config, runOwned = runOwnedDaemon): Promise
 
 async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership.ts").SocketOwnership): Promise<void> {
   prepareLogFile();
+  // A thread that notices when this one stops, and says in the log what it was running (loop-watchdog.ts). Left
+  // running through shutdown, so a shutdown that hangs is named too; process.exit ends it.
+  if (loopWatchdogEnabled()) startLoopWatchdog({ logPath: LOG_FILE });
+  breadcrumb("daemon: starting");
   const daemonSettingsPath = settingsPathFor();
   const ownerDeviceId = await loadDeviceId(dirname(daemonSettingsPath), log);
   const rendererSelection = configureRenderer();
@@ -1084,6 +1090,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     holderExpiry = null;
     if (expiresAt === null) return;
     holderExpiry = setTimeout(() => {
+      breadcrumb("timer: audio holder expiry");
       holderExpiry = null;
       if (!audioHolder.isLocal()) return; // renewed since
       log("audio lease expired — this Mac speaks again");
@@ -1122,6 +1129,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       ? 120_000
       : Math.min(120_000, 5_000 + (text.length / 8) * 1_000);
     phoneSpeechLatch = setTimeout(() => {
+      breadcrumb("timer: phone speech latch");
       phoneSpeechLatch = null;
       if (getLiveState().state !== "speaking") return;
       log("phone never reported finishing — clearing the speaking state");
@@ -1191,6 +1199,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   function enqueue(incoming: TurnEvent): void | Promise<SocketTurnOutcome> {
     if (shuttingDown) return;
     const event = incoming;
+    breadcrumb(`hook: ${event.type} for "${event.label}"`);
     // Turned away rather than queued: a dictation while Show's narration has the mic (`VoiceLoop.refusal`).
     const refused = voice.refusal(event);
     if (refused) return log(`refused a dictation for "${event.label || "the last session"}" — ${refused}`);
@@ -1267,7 +1276,10 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   const restState = (): ConchState => (pause.paused ? "paused" : "idle");
 
   const panelRefresh = new SessionReconciler({
-    read: () => registrySnapshot(cfg.claudeDir).catch(() => null),
+    read: () => {
+      breadcrumb("panel: reading the session registry");
+      return registrySnapshot(cfg.claudeDir).catch(() => null);
+    },
     reconcile: reconcileSessionSnapshot,
     render: buildSessionPanel,
     onError: (error) => log(`session refresh failed: ${error}`),
@@ -1291,7 +1303,10 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   // already reads a 512 KB window and not the file. A cursor would save single
   // digit milliseconds. Add one if a render ever has to run faster than 250ms.
   const transcriptRender = createPublishThrottle(() => void renderSessionPanel(), { intervalMs: 250 });
-  const transcriptWatch = watchChangingPaths(() => transcriptRender.request(), { debounceMs: 50 });
+  const transcriptWatch = watchChangingPaths(() => {
+    breadcrumb("watch: a live transcript changed");
+    transcriptRender.request();
+  }, { debounceMs: 50 });
   let lastPublishedPanelState: PublishedState | null = null;
   let lastPanelModel: PanelModel | null = null;
   /**
@@ -1444,6 +1459,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   /** The phone's first-run setup, as the Mac's setup window follows it: published as `phone` (`phone-setup.ts`). */
   const phoneSetup = new PhoneSetup({ onChange: () => publishPhoneSetup(), log });
   function publishPhoneSetup(): void {
+    breadcrumb("phone setup: publishing");
     if (!lastPublishedPanelState) return;
     lastPublishedPanelState = { ...lastPublishedPanelState, ts: Date.now(), phone: phoneSetup.published(cfg.phoneEnabled) };
     publishedStateWriter.request();
@@ -1652,6 +1668,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   const WAKE_GAP_MS = 240_000;
   let lastWakeTick = Date.now();
   const wakeWatch = setInterval(() => {
+    breadcrumb("timer: wake watch");
     const now = Date.now();
     const gap = now - lastWakeTick;
     lastWakeTick = now;
@@ -1671,7 +1688,9 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   wakeWatch.unref?.();
 
   const publishedStateWriter = createPublishThrottle(() => {
+    breadcrumb("published state: writing the sessions file");
     if (lastPublishedPanelState) publishSessionsFile(lastPublishedPanelState);
+    breadcrumb("published state: sending it to the phone");
     phoneApplication?.publish();
   });
 
@@ -1741,6 +1760,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     snap: Awaited<ReturnType<typeof registrySnapshot>>,
     current: () => boolean,
   ): Promise<void> {
+    breadcrumb("panel: building rows");
     const registryLive = snap?.infos ?? [];
     const live = withoutDismissedSessions(registryLive, dismissedSessionIds);
     // Live background subagents, nested under their parents (C4). Rows and
@@ -1752,8 +1772,11 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     // bounding how many probes are outstanding at once.
     const nested: SessionInfo[] = [];
     for (const session of live) {
+      // Synchronous for Claude (`liveBackgroundAgents` scans the transcript's tail): the 2026-09-28 freeze was here.
+      breadcrumb(`panel: live sub-agents of "${session.name ?? session.sessionId.slice(0, 8)}"`);
       nested.push(...await subagentSessions(session, session.transcriptPath ?? findTranscript(cfg.claudeDir, session.sessionId)));
     }
+    breadcrumb("panel: rows and the reply");
     const visible = [...live, ...nested];
     const liveState = getLiveState(); // what conch is doing right now, if anything
     const orderedRows = buildPanelRows({
@@ -1832,6 +1855,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     // One per visible row. The reads are tail-only and bounded, and doing them
     // together means a viewer can show whichever session it is focused on
     // without the daemon having to guess which that is.
+    breadcrumb("panel: conversations");
     const conversationsBySession = Object.fromEntries(
       (await Promise.all(
         [
@@ -1856,6 +1880,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         }),
       )).filter((entry): entry is NonNullable<typeof entry> => entry !== null),
     );
+    breadcrumb("panel: context usage");
     const sessionContexts = new Map(
       (await Promise.all(live.map(async (session) => {
         const path = session.transcriptPath
@@ -1894,6 +1919,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       const navSelectedId = theaterNavigation.manualSelectedId
         ?? (cursorAuto ? null : selectedId);
 
+      breadcrumb("panel: model");
       const model = buildPanelModel({
         // With their live agents: `live` alone published none of them, so the rows C4 nests
         // under a session never reached either app (5 agents detected, 0 rows, 2026-09-23).
@@ -1963,7 +1989,9 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         ...(pause.paused && pauseOrigin.agentOwns("") ? { pausedByAgent: true } : {}),
       };
       lastPanelModel = model;
+      breadcrumb("panel: drawing the terminal panel");
       renderPanel(model);
+      breadcrumb("published state: building");
       lastPublishedPanelState = buildDaemonPublishedState(
         ownerDeviceId,
         cfg,
@@ -2083,6 +2111,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     // is waiting on right now — an interrupt most of all, since its whole value
     // is arriving before the agent does more of what you are stopping.
     if (event.type !== "inject" && event.type !== "interrupt" && event.type !== "session-start") await ttsStartup;
+    breadcrumb(`event: ${event.type} for "${event.label}"`);
     return voice.handle(event);
   }
 
@@ -2781,6 +2810,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   const shutdown = async (): Promise<void> => {
     if (shutdownStarted) return;
     shutdownStarted = true;
+    breadcrumb("daemon: shutting down");
     // Synchronous and first: no cancellation/cleanup failure may strand the
     // alternate screen or hidden cursor before either process.exit below.
     rendererLifecycle.restore();
@@ -2940,7 +2970,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   }
   // Only the socket's owner may claim to be the daemon (A2): the Mac app reads
   // this to say who started what it adopted, and to tell its own child apart.
-  writeIdentity();
+  writeIdentity(undefined, { socketPath: cfg.socketPath });
   // Only the socket's owner fetches models: a daemon that lost the race exited above.
   void speechEngine.start();
   recordsMayStart = true;
@@ -2961,7 +2991,10 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     void renderSessionPanel(); // refresh the model and re-fit to the new width
   });
   // Refresh periodically so killed sessions drop off even with no new events.
-  const panelTimer = setInterval(() => void renderSessionPanel(), 20_000);
+  const panelTimer = setInterval(() => {
+    breadcrumb("timer: panel refresh (20 s)");
+    void renderSessionPanel();
+  }, 20_000);
   panelTimer.unref?.();
   // ...but the timer is only the backstop. Both agents publish liveness in a
   // directory, so a session opening or closing is an event conch can be told
@@ -2991,6 +3024,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   /** The ask already announced per Codex session, so a five-second poll says it once. */
   const codexApprovalMemory = new Map<string, string>();
   const codexTimer = setInterval(() => void (async () => {
+    breadcrumb("timer: codex turn watch");
     let ended: ReturnType<typeof detectCodexTurnEnds>;
     let approvals: ReturnType<typeof detectCodexApprovals>;
     try {

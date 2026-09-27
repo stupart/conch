@@ -3,6 +3,7 @@ import {
   type WatchdogProcess,
   type WatchdogWarning,
 } from "./audio-watchdog.ts";
+import { breadcrumb } from "./loop-watchdog.ts";
 
 export type ServerSupervisorStatus = "disabled" | "starting" | "ready" | "recovering" | "fallback" | "unloaded" | "stopped";
 export type ServerOwnership = "none" | "adopted" | "owned";
@@ -218,6 +219,7 @@ export class ServerSupervisor<RequestReason extends string = string> {
     }
     const timer = this.schedule(() => {
       if (this.unloadTimer !== timer) return;
+      breadcrumb(`${this.service}: manual-mode unload`);
       this.unloadTimer = null;
       if (!this.unload(why)) this.unloadAfter(ms, why);
     }, ms);
@@ -232,6 +234,7 @@ export class ServerSupervisor<RequestReason extends string = string> {
     if (this.stopped() || ms <= 0 || this.status !== "ready" || this.ownership !== "owned") return;
     const timer = this.schedule(() => {
       if (this.idleTimer !== timer) return;
+      breadcrumb(`${this.service}: idle unload`);
       this.idleTimer = null;
       this.unload(`idle for ${Math.round(ms / 60_000)} min — unloaded to free its memory; reloads when a mic is about to open`);
     }, ms);
@@ -338,6 +341,7 @@ export class ServerSupervisor<RequestReason extends string = string> {
    */
   private unload(why: string): boolean {
     if (this.stopped() || this.status === "unloaded" || this.ownership === "adopted") return true;
+    breadcrumb(`${this.service}: unloading`);
     const inFlight = this.recovery || this.status === "recovering" || (this.status === "starting" && this.started);
     if (inFlight) return false;
     this.status = "unloaded";
@@ -355,6 +359,7 @@ export class ServerSupervisor<RequestReason extends string = string> {
   }
 
   private async recover(reason: ServerRecoveryReason<RequestReason>): Promise<void> {
+    breadcrumb(`${this.service}: recovery (${reason})`);
     const inspected = await this.inspect();
     if (inspected === "ready" || this.stopped()) return;
     if (inspected === "deferred") {
@@ -556,6 +561,7 @@ export class ServerSupervisor<RequestReason extends string = string> {
 
   private childExited(child: WatchdogProcess, generation: number, code: unknown): void {
     if (this.stopped() || this.child !== child || this.childGeneration !== generation) return;
+    breadcrumb(`${this.service}: owned child exited`);
     this.child = null;
     this.ownership = "none";
     this.options.resetReadiness();
@@ -597,6 +603,7 @@ export class ServerSupervisor<RequestReason extends string = string> {
 
   private retiringChildExited(child: WatchdogProcess, code: unknown): void {
     if (this.stopped() || this.retiringChild !== child) return;
+    breadcrumb(`${this.service}: retired child exited`);
     this.retiringChild = null;
     if (!this.child) this.ownership = "none";
     this.options.resetReadiness();
@@ -657,6 +664,7 @@ export class ServerSupervisor<RequestReason extends string = string> {
     this.clearTimer();
     const timer = this.schedule(() => {
       if (this.timer !== timer) return;
+      breadcrumb(`${this.service}: probe/recovery timer`);
       this.timer = null;
       if (!this.stopped()) callback();
     }, ms);

@@ -10,6 +10,7 @@ import { dirname, join } from "node:path";
 import { conchHome } from "./home.ts";
 import { decodeNarrationRequest } from "./narration.ts";
 import { checkLocalFile } from "./snippet.ts";
+import { breadcrumb } from "./loop-watchdog.ts";
 import type { PreviewAnswer } from "./review-preview.ts";
 import { localhostPort, resolveScreen, SCREEN_RESOLVERS, screenContextFromPublished, type PortListener } from "./screen-context.ts";
 import {
@@ -453,6 +454,7 @@ export class PhoneBridgeApplication {
 
   handle(req: Request, context: PhoneRequestContext = {}): PhoneRequestResult {
     const url = new URL(req.url);
+    breadcrumb(`phone: ${req.method} ${url.pathname.slice(0, 48)}`);
 
     // The one unauthenticated route. Its exposure is bounded — not made safe
     // for hostile networks — by a two-minute, single-use, five-guess window.
