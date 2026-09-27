@@ -147,7 +147,7 @@ final class FakeRecord: ObservableObject {
     private(set) var pagesServed = 0
     private(set) var bodiesServed = 0
     var bodiesInFlight: Bool { !reading.isEmpty }
-    var onLanded: (() -> Void)?
+    var onLanded: ((String) -> Void)?
 
     init(session: Synthetic, itemCap: Int?, latency: TimeInterval) {
         self.session = session
@@ -166,7 +166,7 @@ final class FakeRecord: ObservableObject {
         let before = paging.previousCursor.flatMap(Int.init) ?? session.items.count
         let page = serve(before: before)
         DispatchQueue.main.asyncAfter(deadline: .now() + latency) {
-            self.onLanded?()
+            self.onLanded?("page")
             self.paging.apply(page: page, generation: generation)
         }
     }
@@ -189,7 +189,7 @@ final class FakeRecord: ObservableObject {
             guard let reread = paging.beginReread(page: page), let before = Int(reread.cursor) else { continue }
             let served = serve(before: before)
             DispatchQueue.main.asyncAfter(deadline: .now() + latency) {
-                self.onLanded?()
+                self.onLanded?("reread")
                 self.paging.apply(reread: served, page: page, generation: reread.generation)
             }
         }
@@ -204,7 +204,7 @@ final class FakeRecord: ObservableObject {
             let text = session.bodies[id] ?? ""
             bodiesServed += 1
             DispatchQueue.main.asyncAfter(deadline: .now() + latency / 2) {
-                self.onLanded?()
+                self.onLanded?("body")
                 self.reading.remove(id)
                 self.bodies[id] = text
                 self.bodyOrder.removeAll { $0 == id }
@@ -488,6 +488,10 @@ final class Bench {
     var maxHeld = 0
     var observers: [CFRunLoopObserver] = []
     var trace: [String] = []
+    /// What happened in the turn being timed, and how many slow turns each combination made.
+    var tags: Set<String> = []
+    var slowBy: [String: Int] = [:]
+    var lastReal: Range<Int> = 0..<0
     var timer: Timer?
 
     init(mode: String, count: Int, session: Synthetic, jsonPath: String?) {
@@ -511,11 +515,18 @@ final class Bench {
                           styleMask: [.borderless], backing: .buffered, defer: false)
         window.contentView = NSHostingView(rootView: root.background(ConchColor.surface))
         window.orderFrontRegardless()
-        record.onLanded = { [weak self] in self?.landings += 1; self?.trace.append("lands") }
+        record.onLanded = { [weak self] kind in
+            self?.landings += 1
+            self?.trace.append("lands")
+            self?.tags.insert(kind)
+        }
 
 
         let wake = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.afterWaiting.rawValue, true, 0) { [weak self] _, _ in
-            MainActor.assumeIsolated { self?.turnStart = CACurrentMediaTime() }
+            MainActor.assumeIsolated {
+                self?.turnStart = CACurrentMediaTime()
+                self?.tags = []
+            }
         }
         // After Core Animation's commit (order 2,000,000): what is on screen now.
         let committed = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeWaiting.rawValue, true, 3_000_000) { [weak self] _, _ in
@@ -524,6 +535,14 @@ final class Bench {
                 if self.measuring, self.turnStart > 0 {
                     let ms = (CACurrentMediaTime() - self.turnStart) * 1_000
                     if ms > 0.2 { self.turns.append(ms) }
+                    let real = self.record.region.window.materialised
+                    let added = real.filter { !self.lastReal.contains($0) }.count
+                    if added > 0 { self.tags.insert(added > 3 ? "rows>3" : "rows<=3") }
+                    self.lastReal = real
+                    if ms > 16.7 {
+                        let key = self.tags.isEmpty ? "(nothing tagged)" : self.tags.sorted().joined(separator: "+")
+                        self.slowBy[key, default: 0] += 1
+                    }
                 }
                 self.sample()
             }
@@ -567,6 +586,7 @@ final class Bench {
             guard !busy else { return }
             let before = clip.bounds.minY
             scroll(to: before - clip.bounds.height * 0.25)
+            tags.insert("scroll")
             if mode != "after", clip.bounds.minY <= clip.bounds.height { record.loadOlder() }
             steps += 1
             note()
@@ -580,6 +600,7 @@ final class Bench {
         case let .down(round):
             guard !busy else { return }
             scroll(to: min(clip.bounds.minY + clip.bounds.height * 0.25, maxY))
+            tags.insert("scroll")
             steps += 1
             note()
             stillAtEnd = clip.bounds.minY >= maxY - 0.5 ? stillAtEnd + 1 : 0
@@ -708,6 +729,7 @@ final class Bench {
             "anchorLost": lost,
             "blankFrames": blank,
             "seconds": elapsed,
+            "slowTurnsBy": slowBy,
         ]
         let json = try! JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys])
         print(String(decoding: json, as: UTF8.self))
