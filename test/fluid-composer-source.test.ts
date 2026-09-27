@@ -18,6 +18,7 @@ const dashboard = read("mac-app/conch-mac/DashboardView.swift");
 const panels = read("mac-app/conch-mac/FloatingPanels.swift");
 const fog = read("design/ConchDesign/Sources/ConchDesign/Components.swift");
 const model = read("design/ConchDesign/Sources/ConchDesign/ComposerPlacement.swift");
+const composer = read("mac-app/conch-mac/ComposerView.swift");
 
 /** A Swift member from its signature to its closing brace at `indent` spaces. */
 function member(source: string, signature: string, indent = 4): string {
@@ -186,5 +187,40 @@ describe("the swoop is one glass, never stretched and never dimmed", () => {
     expect(returns).toBeGreaterThan(flying);
     expect(fresh).toBeGreaterThan(flying);
     expect(returns).toBeLessThan(fresh);
+  });
+});
+
+describe("the swoop's picture holds nothing ImageRenderer can't draw", () => {
+  // ImageRenderer draws an AppKit-backed view as its placeholder, a yellow box with a no-entry sign. The composer's
+  // `.onDrop` is one, and it covered the whole input box: Tyler saw "the input box itself turned yellow" mid-swoop.
+  test("the picture is the bare, static composer", () => {
+    const picture = member(dock, "private func face(of row: SessionRow?, width: CGFloat?, dark: Bool) -> CGImage? {");
+    expect(picture).toContain("chrome: .bare");
+    expect(picture).toContain(".environment(\\.conchRendersStatically, true)");
+  });
+
+  test("the drop target is left out of the picture", () => {
+    expect(composer.match(/\.onDrop\(/g)?.length).toBe(1);
+    const target = composer.slice(composer.indexOf("private struct ComposerDropTarget: ViewModifier {"));
+    expect(target.indexOf("if live {")).toBeGreaterThan(-1);
+    expect(target.indexOf("if live {")).toBeLessThan(target.indexOf(".onDrop("));
+    expect(composer).toContain(".modifier(ComposerDropTarget(live: !rendersStatically, isTargeted: $isTargetedForDrop, load: load))");
+  });
+
+  test("the editor and its AppKit bridges are only in the live branch", () => {
+    const staticField = composer.indexOf("} else if rendersStatically {");
+    const editor = composer.indexOf("TextEditor(text: $draft)");
+    expect(composer.match(/TextEditor\(/g)?.length).toBe(1);
+    expect(staticField).toBeGreaterThan(-1);
+    expect(staticField).toBeLessThan(editor);
+    for (const bridge of [".conchTextViewInsets(", ".conchSpelling()", "ComposerPasteBridge { urls in attach(urls) }"]) {
+      expect(composer.indexOf(bridge), bridge).toBeGreaterThan(editor);
+      expect(composer.indexOf(bridge), bridge).toBeLessThan(composer.indexOf("if draft.isEmpty {", editor));
+    }
+    // The card's anchor is the window's alone; the picture is `.bare`.
+    const card = composer.slice(composer.indexOf("private struct ComposerCard: ViewModifier {"));
+    const anchor = card.indexOf(".background(ComposerCardAnchor())");
+    expect(anchor).toBeGreaterThan(card.indexOf("case .window:"));
+    expect(anchor).toBeLessThan(card.indexOf("case .panel:"));
   });
 });
