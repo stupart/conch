@@ -36,6 +36,16 @@ enum DebugSnapshot {
     /// selected row; anything it names is read-only either way.
     static let inspectRequestPath = "/tmp/conch-inspect.request"
 
+    /// Ask the app to SHOW a session before it is photographed: `conch parity` writes its id, waits
+    /// for the file to go, then asks for the shot. The same as picking the row, and nothing else —
+    /// no window is raised and no focus moves. The value is a session id; one the app doesn't list
+    /// changes nothing.
+    static let selectRequestPath = "/tmp/conch-select.request"
+
+    /// Which session conch's window shows, for the sidecar: set by the window as it changes, so a
+    /// caller can tell a picture of the session it asked for from one of another.
+    @MainActor static var viewing: String?
+
     /// Which window to photograph.
     ///
     /// `key` is what a one-line request has always meant and stays the default.
@@ -45,6 +55,18 @@ enum DebugSnapshot {
     /// photograph at all.
     enum Target: String {
         case key, overlay, controlbar, dashboard, geometry
+    }
+
+    /// Read and clear a pending request to show a session.
+    @MainActor
+    static func pendingSelection() -> String? {
+        let manager = FileManager.default
+        guard manager.fileExists(atPath: selectRequestPath) else { return nil }
+        let wanted = (try? String(contentsOfFile: selectRequestPath, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        try? manager.removeItem(atPath: selectRequestPath)
+        guard let wanted, !wanted.isEmpty else { return nil }
+        return wanted
     }
 
     /// Read and clear a pending request to open the capability inspector.
@@ -208,6 +230,8 @@ enum DebugSnapshot {
             // against a dark-mode app without noticing.
             "overlayAppearance": UserDefaults.standard.string(forKey: FloatingPanels.Look.appearanceKey) ?? "auto",
             "appIsActive": NSApp.isActive,
+            // The session the window shows, so `conch parity` can say when it isn't the one it asked for.
+            "viewing": viewing ?? NSNull(),
             "capturedAt": ISO8601DateFormatter().string(from: Date()),
         ]
         if let json = try? JSONSerialization.data(withJSONObject: sidecar, options: [.prettyPrinted, .sortedKeys]) {

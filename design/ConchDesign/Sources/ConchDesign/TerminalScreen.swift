@@ -1,7 +1,7 @@
 import Foundation
 import SwiftUI
 
-// The agent's own terminal, as a screen: what a Claude Code or Codex TUI is drawing right now, for the Terminal tab.
+// The agent's own terminal, as a screen: what a Claude Code or Codex TUI is drawing right now, for the Terminal Mirror (a debug view).
 //
 // NOT the Shell tab's parser (`ConchTerminalOutput`), and the difference is the input. That one reads a command's output
 // off a pty as it streams, where 100% of the measured escapes were the eight colours. This reads a SNAPSHOT tmux has

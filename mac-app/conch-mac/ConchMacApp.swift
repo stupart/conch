@@ -103,6 +103,11 @@ struct ConchMacApp: App {
                 }
                 .keyboardShortcut("3", modifiers: .command)
             }
+            // Debugging conch itself. The Terminal Mirror: the session's own terminal, view-only, beside conch's
+            // view of it — off unless this is on. The strip's Terminal is a button that brings the real one forward.
+            CommandMenu("Debug") {
+                TerminalMirrorMenuToggle()
+            }
             CommandGroup(after: .help) {
                 Button("Set up conch…") { OnboardingController.shared.openFromHelp() }
                 Button("Take the tour") { OnboardingController.shared.takeTheTour() }

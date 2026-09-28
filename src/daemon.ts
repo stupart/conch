@@ -2664,13 +2664,17 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       });
       return resolveAgentInstall({ backend: message.backend, executable }, peers, installVersionCache);
     },
-    // The Mac app's Terminal tab: the session's own terminal, read without touching focus, only while the tab is on
-    // screen (terminal-mirror.ts). Keyed by the daemon's own record of the session, never a pid the asker supplies.
-    terminalScreen: (message) => terminalMirror.screen(message.sessionId, panelSessions.get(message.sessionId), message.text ? { text: true } : {}),
+    // The session's own terminal, read without touching focus (terminal-mirror.ts): for the Mac app's Terminal Mirror, a
+    // debug view read only while it is on screen, and `conch parity`, which alone asks for the scrollback. Keyed by the
+    // daemon's own record of the session, never a pid the asker supplies.
+    terminalScreen: (message) => terminalMirror.screen(message.sessionId, panelSessions.get(message.sessionId), {
+      ...(message.text ? { text: true } : {}),
+      ...(message.history ? { history: message.history } : {}),
+    }),
     terminalFocus: async (message) => {
       const focused = await terminalMirror.focus(message.sessionId, panelSessions.get(message.sessionId));
       log(focused.focused
-        ? `brought ${labelForSessionId(message.sessionId)}'s terminal forward (Terminal tab)`
+        ? `brought ${labelForSessionId(message.sessionId)}'s terminal forward (Terminal button)`
         : `couldn't bring ${labelForSessionId(message.sessionId)}'s terminal forward: ${focused.reason ?? "no reason given"}`);
       return focused;
     },

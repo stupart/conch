@@ -1743,8 +1743,19 @@ private struct ConversationPane: View {
     /// Is there anything to put in the work half at all?
     ///
     /// This used to be "is there a deliverable", which is why Cmd-2 and Cmd-3 did nothing in a
-    /// session that had not filed one — even though its files were there the whole time.
-    private var hasWorkPane: Bool { selectedReview != nil || workingFolder != nil || focusedRow?.hasAgentTerminal == true }
+    /// session that had not filed one — even though its files were there the whole time. The
+    /// Terminal button is not something to show there; the mirror is, while the debug view is on.
+    private var hasWorkPane: Bool {
+        selectedReview != nil || workingFolder != nil || focusedRow.map { terminalStrip(for: $0).showsMirror } == true
+    }
+
+    /// Debug › Show Terminal Mirror, off by default (`ConchTerminalStrip`).
+    @AppStorage(TerminalMirrorDebug.key) private var showTerminalMirror = false
+
+    /// The Terminal button wherever the session has a terminal; the mirror beside it only while the debug view is on.
+    private func terminalStrip(for row: SessionRow) -> ConchTerminalStrip {
+        ConchTerminalStrip(hasTerminal: row.hasAgentTerminal, mirrorOn: showTerminalMirror)
+    }
 
     /// The narrowest conversation column the composer card sits in rather than over the stage.
     private static let composerColumnMinimum: CGFloat = 360
@@ -1811,11 +1822,12 @@ private struct ConversationPane: View {
 
     /// More than one thing to choose between, so the strip is worth drawing.
     private func hasWorkTabs(for row: SessionRow) -> Bool {
-        // A working folder is worth TWO: the files in it, and a shell running in it; the agent's own
-        // terminal is one more. Artifacts count, not filings: six versions of one page are one tab. A
-        // lone tab with older versions under it is still drawn, or those versions could not be reached.
+        // A working folder is worth TWO: the files in it, and a shell running in it; the Terminal
+        // button is one more, and the mirror another while the debug view is on. Artifacts count, not
+        // filings: six versions of one page are one tab. A lone tab with older versions under it is
+        // still drawn, or those versions could not be reached.
         let groups = deliverableGroups
-        let places = (workingFolder == nil ? 0 : 2) + (row.hasAgentTerminal ? 1 : 0)
+        let places = (workingFolder == nil ? 0 : 2) + terminalStrip(for: row).places
         return groups.count + places > 1 || groups.contains(where: \.hasOlderVersions)
     }
 
@@ -1827,12 +1839,14 @@ private struct ConversationPane: View {
         if chosen == .files, workingFolder != nil { return .files }
         // A shell needs somewhere to run as much as a tree needs somewhere to read.
         if chosen == .shell, workingFolder != nil { return .shell }
-        // The agent's terminal, only where there is one: never the practice session, a closed Codex
-        // thread, a background job with no window, or a subagent (its session's tab shows it).
-        if chosen == .terminal, row.hasAgentTerminal { return .terminal }
+        // The mirror, only while the debug view is on and only where there is a terminal: never the
+        // practice session, a closed Codex thread, a background job with no window, or a subagent. Off,
+        // a session remembered on it opens on its other contents; the Terminal button is never a pane.
+        let strip = terminalStrip(for: row)
+        if chosen == .terminal, strip.showsMirror { return .terminal }
         if selectedReview != nil { return .deliverable }
         if workingFolder != nil { return .files }
-        return row.hasAgentTerminal ? .terminal : .deliverable
+        return strip.showsMirror ? .terminal : .deliverable
     }
 
     /// What this session changed, resolved against its own folder.
@@ -1857,8 +1871,8 @@ private struct ConversationPane: View {
             // handed to another because SwiftUI reused the view.
             ShellPaneView(cwd: folder).id(row.id)
         } else if workPane(for: row) == .terminal {
-            // Keyed on the session too: one session's reads and picture must never go on
-            // showing under another's name.
+            // The mirror, a debug view. Keyed on the session too: one session's reads and picture
+            // must never go on showing under another's name.
             AgentTerminalPaneView(row: row).id(row.id)
         } else if let selectedReview {
             InlineReviewView(
@@ -1875,7 +1889,7 @@ private struct ConversationPane: View {
             // things was looking at at all".
             //
             // Both hooks, because they cover different routes back: `onChange` for switching
-            // between deliverable tabs, `onAppear` for returning from the Files or Terminal tab,
+            // between deliverable tabs, `onAppear` for returning from the Files, Shell or Mirror tab,
             // where this view was gone and onChange never fires.
             .onChange(of: selectedReview.id) { _, _ in deliverableAddress = nil }
             .onAppear { deliverableAddress = nil }
@@ -2360,18 +2374,34 @@ private struct ConversationPane: View {
                     )
                 }
 
-                // The agent's own terminal: only where it has one to show.
-                if row.hasAgentTerminal {
-                    TerminalTab(
+                // The agent's own terminal: a button that brings it forward, only where it has one. It
+                // changes no pane and reads nothing. Option on it opens the mirror, the debug view.
+                let strip = terminalStrip(for: row)
+                if strip.showsButton {
+                    TerminalButton {
+                        switch strip.press(option: NSEvent.modifierFlags.contains(.option)) {
+                        case .reveal:
+                            store.openAgentTerminal(row)
+                        case .openMirror:
+                            showTerminalMirror = true
+                            TerminalMirrorAsk.mirrorOpened()
+                            workspace.show(work: .terminal, for: row.id)
+                        }
+                    }
+                }
+
+                // The mirror: Debug › Show Terminal Mirror only.
+                if strip.showsMirror {
+                    TerminalMirrorTab(
                         isSelected: workPane(for: row) == .terminal,
                         action: {
-                            TerminalMirrorAsk.tabPressed()
+                            TerminalMirrorAsk.mirrorOpened()
                             workspace.show(work: .terminal, for: row.id)
                         }
                     )
                 }
 
-                if workingFolder != nil || row.hasAgentTerminal, !held.isEmpty {
+                if workingFolder != nil || strip.showsButton, !held.isEmpty {
                     // The place, and the work that came out of it, are different kinds of
                     // thing. A hairline says so without a word.
                     Rectangle()
@@ -2751,9 +2781,46 @@ private struct ShellTab: View {
     }
 }
 
-/// The session's own Claude Code or Codex, live in its terminal: a second view of the same
-/// conversation, beside conch's. View-only; "Open in Terminal" inside it is how to type there.
-private struct TerminalTab: View {
+/// The session's own terminal, brought forward: a BUTTON, never a tab with content. A press asks
+/// the daemon to bring its Terminal window and tab (or its tmux window and pane) to the front, and
+/// nothing in conch changes — no pane switch, no reads. The ↗ says it leads out of conch.
+///
+/// Tyler: "it is no use having an image of the terminal lol. Maybe we just make that button bring
+/// you to the terminal session instead of showing an image of it?" Option on it opens the Terminal
+/// Mirror, the debug view that picture became.
+private struct TerminalButton: View {
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Text("Terminal")
+                    .font(ConchTypography.font(size: 11))
+                Image(systemName: "arrow.up.forward")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .foregroundStyle(isHovered ? ConchPalette.textPrimary : ConchPalette.textDim)
+            .padding(.horizontal, 8)
+            .frame(height: 24)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isHovered ? ConchPalette.hover : .clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help("Bring this session's terminal forward")
+        .accessibilityLabel("Open this session's terminal")
+    }
+}
+
+/// The Terminal Mirror: the session's own Claude Code or Codex, live in its terminal, beside
+/// conch's view of the same conversation. View-only. A debug view, drawn only while Debug › Show
+/// Terminal Mirror is on.
+private struct TerminalMirrorTab: View {
     let isSelected: Bool
     let action: () -> Void
 
@@ -2764,7 +2831,7 @@ private struct TerminalTab: View {
             HStack(spacing: 5) {
                 Image(systemName: "terminal")
                     .font(.system(size: 10))
-                Text("Terminal")
+                Text("Mirror")
                     .font(ConchTypography.font(size: 11))
             }
             .foregroundStyle(isSelected ? ConchPalette.textPrimary : ConchPalette.textDim)
@@ -2778,8 +2845,8 @@ private struct TerminalTab: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
-        .help("This session's agent, live in its own terminal (view only)")
-        .accessibilityLabel("Terminal")
+        .help("Debug: this session's agent as its terminal shows it (view only)")
+        .accessibilityLabel("Terminal Mirror")
     }
 }
 

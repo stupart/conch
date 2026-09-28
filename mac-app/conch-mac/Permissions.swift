@@ -113,9 +113,9 @@ final class PermissionCenter: ObservableObject {
                 perform(.openSettings, for: permission, store: store)
             case .screenRecording:
                 // macOS's own prompt, the once a launch it may show (the canvas's `CanvasCapture.granted`, which also
-                // lists conch in System Settings), and a fresh reading after. The Terminal tab asks this way the first
-                // time a Terminal window needs it, after a press on the tab; its row's reading is never `notAsked`, so
-                // nothing else reaches here. System Settings stays the row's own button, never opened unasked.
+                // lists conch in System Settings), and a fresh reading after. The Terminal Mirror, a debug view, asks
+                // this way the first time a Terminal window needs it, after a press that opened it; its row's reading
+                // is never `notAsked`, so nothing else reaches here. System Settings stays the row's own button, never opened unasked.
                 _ = CanvasCapture.granted()
                 refresh(after: .seconds(1))
             }

@@ -2,7 +2,7 @@ import SwiftUI
 import XCTest
 @testable import ConchDesign
 
-/// The Terminal tab's screen: what a Claude Code or Codex TUI draws, parsed from tmux's own capture of it.
+/// The Terminal Mirror's screen: what a Claude Code or Codex TUI draws, parsed from tmux's own capture of it.
 ///
 /// The fixtures are real `tmux capture-pane -p -e -N` output, taken from a throwaway tmux server: `claude --help` and
 /// `codex --help` themselves, and a frame drawn with the escape sequences each TUI uses (Claude Code's 24-bit colours,
@@ -236,7 +236,7 @@ final class TerminalScreenTests: XCTestCase {
     }
 }
 
-/// What the Terminal tab shows, and when it reads anything at all.
+/// What the Terminal Mirror (a debug view) shows, and when it reads anything at all.
 final class TerminalMirrorTests: XCTestCase {
     private func location(_ json: String) throws -> ConchTerminalLocation {
         try JSONDecoder().decode(ConchTerminalLocation.self, from: Data(json.utf8))
@@ -313,6 +313,48 @@ final class TerminalMirrorTests: XCTestCase {
         XCTAssertEqual(ConchTerminalAgent.name(backend: "codex"), "Codex")
         XCTAssertEqual(ConchTerminalAgent.name(backend: nil), "Claude Code")
         XCTAssertEqual(ConchTerminalAgent.name(backend: "claude"), "Claude Code")
+    }
+
+    /// The strip's Terminal is a button; the mirror is a debug view, there only while it is on.
+    func testTheTerminalIsAButtonAndTheMirrorIsThereOnlyWhileTheDebugViewIsOn() {
+        let normal = ConchTerminalStrip(hasTerminal: true, mirrorOn: false)
+        XCTAssertTrue(normal.showsButton)
+        XCTAssertFalse(normal.showsMirror, "off by default: no mirror tab, and a remembered mirror isn't honoured")
+        XCTAssertEqual(normal.places, 1)
+        XCTAssertEqual(normal.press(option: false), .reveal, "a press brings the terminal forward and changes no pane")
+
+        let debugging = ConchTerminalStrip(hasTerminal: true, mirrorOn: true)
+        XCTAssertTrue(debugging.showsButton, "the button stays a button with the mirror on")
+        XCTAssertTrue(debugging.showsMirror)
+        XCTAssertEqual(debugging.places, 2)
+        XCTAssertEqual(debugging.press(option: false), .reveal)
+
+        // Option on the button is the way to the mirror from the strip, whether or not it is on yet.
+        XCTAssertEqual(normal.press(option: true), .openMirror)
+        XCTAssertEqual(debugging.press(option: true), .openMirror)
+
+        // No terminal (the practice session, a closed Codex thread, a subagent): no button, no mirror, nothing to open.
+        for mirrorOn in [false, true] {
+            let none = ConchTerminalStrip(hasTerminal: false, mirrorOn: mirrorOn)
+            XCTAssertFalse(none.showsButton)
+            XCTAssertFalse(none.showsMirror)
+            XCTAssertEqual(none.places, 0)
+            XCTAssertEqual(none.press(option: true), .reveal)
+        }
+        XCTAssertEqual(ConchTerminalStrip.mirrorDefaultsKey, "conch.debug.terminalMirror")
+    }
+
+    /// Screen Recording is asked only on the debug path: after the mirror was opened by hand, while it is on, once.
+    func testScreenRecordingIsAskedOnlyAfterTheMirrorWasOpenedByHandWhileItIsOn() {
+        var ask = ConchMirrorPermissionAsk()
+        XCTAssertFalse(ask.shouldAsk(mirrorOn: true), "restoring the mirror at launch is not a press")
+        XCTAssertFalse(ask.asked, "and a refusal spends nothing")
+        ask.press()
+        XCTAssertFalse(ask.shouldAsk(mirrorOn: false), "the debug view turned off since: nothing is asked")
+        XCTAssertTrue(ask.shouldAsk(mirrorOn: true))
+        XCTAssertFalse(ask.shouldAsk(mirrorOn: true), "once a launch")
+        ask.press()
+        XCTAssertFalse(ask.shouldAsk(mirrorOn: true), "another press doesn't ask again")
     }
 
     /// The Shell tab was remembered as "terminal"; that name now means the agent's terminal.

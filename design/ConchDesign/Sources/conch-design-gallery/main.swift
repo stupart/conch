@@ -2693,13 +2693,23 @@ func terminalFixture(_ name: String) -> String {
     return (try? String(contentsOf: url, encoding: .utf8)) ?? "(fixture \(name) missing)"
 }
 
-/// The strip's place tabs as DashboardView draws them, Terminal selected: drawn here only to show where the tab sits.
+/// The strip's places as DashboardView draws them: the Terminal button (↗, it leads out of conch), and — with Debug › Show
+/// Terminal Mirror on — the Mirror tab beside it, selected. Drawn here only to show where each sits.
 struct TerminalStripPicture: View {
+    var mirror = true
+
     var body: some View {
         HStack(spacing: 2) {
-            tab("folder", "Files", selected: false)
+            tab("folder", "Files", selected: !mirror)
             tab("chevron.left.forwardslash.chevron.right", "Shell", selected: false)
-            tab("terminal", "Terminal", selected: true)
+            HStack(spacing: 4) {
+                Text("Terminal").font(.system(size: 11))
+                Image(systemName: "arrow.up.forward").font(.system(size: 9, weight: .semibold))
+            }
+            .foregroundStyle(ConchColor.textSecondary)
+            .padding(.horizontal, 8)
+            .frame(height: 24)
+            if mirror { tab("terminal", "Mirror", selected: true) }
             Rectangle().fill(ConchColor.hairline).frame(width: 1, height: 14).padding(.horizontal, 2)
             tab("doc.richtext", "Invite page · 3m", selected: false)
         }
@@ -2764,8 +2774,16 @@ func terminalSheet<Content: View>(@ViewBuilder _ content: () -> Content) -> some
     .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(ConchColor.hairlineStrong))
 }
 
+try render("terminal-button", width: 1000) {
+    Heading(title: "The strip's Terminal: a button", note: "A press brings the session's own terminal forward — its Terminal window and tab, out of the Dock, or its tmux window and pane in the terminal attached to it. The pane stays where it was; nothing is read and nothing is asked. Only for a session with a terminal of its own. Option on it opens the Terminal Mirror, the debug view below.")
+    TerminalStripPicture(mirror: false)
+        .frame(width: 920)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(ConchColor.hairlineStrong))
+}
+
 try render("terminal-tab-tmux", width: 1000) {
-    Heading(title: "Terminal tab: a session in tmux", note: "The daemon's capture-pane -e of the session's pane, re-read every 300 ms and drawn as text in SF Mono with the terminal's colours: Claude Code's 24-bit orange, its painted diff lines, its own cursor cell. Selectable and copyable. No permission needed.")
+    Heading(title: "Terminal Mirror (Debug › Show Terminal Mirror): a session in tmux", note: "The daemon's capture-pane -e of the session's pane, re-read every 300 ms and drawn as text in SF Mono with the terminal's colours: Claude Code's 24-bit orange, its painted diff lines, its own cursor cell. Selectable and copyable. No permission needed.")
     terminalSheet {
         ConchAgentTerminalPane(agent: "Claude Code", state: .screen(terminalClaude), place: "tmux %7 · 100×22", onOpen: {}, onPermission: { _ in }) { EmptyView() }
     }
@@ -2773,7 +2791,7 @@ try render("terminal-tab-tmux", width: 1000) {
 }
 
 try render("terminal-tab-terminal-app", width: 1000) {
-    Heading(title: "Terminal tab: a session in a Terminal window", note: "ScreenCaptureKit, that one window, at up to 5 frames a second and only while this tab is on screen. It pictures the window even behind others.")
+    Heading(title: "Terminal Mirror (debug): a session in a Terminal window", note: "ScreenCaptureKit, that one window, at up to 5 frames a second and only while the mirror is on screen. It pictures the window even behind others.")
     terminalSheet {
         ConchAgentTerminalPane(agent: "Codex", state: .window(4242), place: "Terminal · ttys012", onOpen: {}, onPermission: { _ in }) {
             TerminalWindowFixture(screen: terminalCodex)
@@ -2783,7 +2801,7 @@ try render("terminal-tab-terminal-app", width: 1000) {
 }
 
 try render("terminal-tab-permission", width: 1000) {
-    Heading(title: "Terminal tab: Screen Recording not yet allowed", note: "Never a blank: the reason and the permission's one button, over Terminal's own text for the tab (contents of tab) — the words without their colours — until the picture can be taken.")
+    Heading(title: "Terminal Mirror (debug): Screen Recording not yet allowed", note: "Never a blank: the reason and the permission's one button, over Terminal's own text for the tab (contents of tab) — the words without their colours — until the picture can be taken.")
     terminalSheet {
         ConchAgentTerminalPane(agent: "Codex", state: .text(ConchTerminalScreen(plain: terminalCodex.plainText), .needsScreenRecording(.denied)), place: "Terminal · ttys012", onOpen: {}, onPermission: { _ in }) { EmptyView() }
     }
@@ -2794,7 +2812,7 @@ try render("terminal-tab-permission", width: 1000) {
 }
 
 try render("terminal-tab-other-states", width: 1000) {
-    Heading(title: "Terminal tab: the other states", note: "The session's tab behind another in its window, and a session in a terminal conch can't see into.")
+    Heading(title: "Terminal Mirror (debug): the other states", note: "The session's tab behind another in its window, and a session in a terminal conch can't see into.")
     terminalSheet {
         ConchAgentTerminalPane(agent: "Claude Code", state: .text(ConchTerminalScreen(plain: terminalClaude.plainText), .otherTab), place: "Terminal · ttys004", openFailure: "conch isn't allowed to control Terminal: allow conch in Automation.", onOpen: {}, onPermission: { _ in }) { EmptyView() }
     }

@@ -1,10 +1,77 @@
 import Foundation
 import SwiftUI
 
-// The Terminal tab: the session's own Claude Code or Codex, as its terminal shows it, beside conch's view of the same
-// conversation. View-only. The daemon finds the terminal and reads it (src/terminal-mirror.ts); the Mac app asks it
-// while the tab is on screen and pictures a Terminal window itself; everything that decides what the tab shows is here,
+// The session's own terminal, from the strip.
+//
+// In normal use the strip's Terminal is a BUTTON: a press brings the session's real terminal forward (its Terminal window
+// and tab, or its tmux window and pane in the terminal attached to it) and nothing else — the pane stays where it was and
+// nothing is read. Tyler: "it is no use having an image of the terminal lol. Maybe we just make that button bring you to
+// the terminal session instead of showing an image of it?"
+//
+// The Terminal Mirror — the session's Claude Code or Codex as its terminal shows it, view-only, beside conch's view of the
+// same conversation — is kept as a DEBUG view, off unless Debug › Show Terminal Mirror is on (or Option is held on the
+// button): "We could keep it as a debugging feature tho, cause it is useful for u to make sure the terminal matches conch
+// in one image." Agents get the same comparison as one picture from `conch parity` (src/parity.ts).
+//
+// The daemon finds the terminal and reads it (src/terminal-mirror.ts); the Mac app asks it while the mirror is on screen
+// and pictures a Terminal window itself; everything that decides what the strip offers and what the mirror shows is here,
 // where it is tested.
+
+/// What the strip offers for a session's own terminal: the Terminal button, and the mirror only while the debug view is on.
+public struct ConchTerminalStrip: Equatable, Sendable {
+    /// Where "Show Terminal Mirror" is kept (UserDefaults): off unless someone turns it on.
+    public static let mirrorDefaultsKey = "conch.debug.terminalMirror"
+
+    /// What a press on the Terminal button does.
+    public enum Press: Equatable, Sendable {
+        /// Bring the real terminal forward. The pane doesn't change.
+        case reveal
+        /// Option held: open the mirror, the debug view.
+        case openMirror
+    }
+
+    /// The session has a terminal of its own (the app's `SessionRow.hasAgentTerminal`).
+    public let hasTerminal: Bool
+    /// Debug › Show Terminal Mirror.
+    public let mirrorOn: Bool
+
+    public init(hasTerminal: Bool, mirrorOn: Bool) {
+        self.hasTerminal = hasTerminal
+        self.mirrorOn = mirrorOn
+    }
+
+    /// The button, wherever there is a terminal to bring forward.
+    public var showsButton: Bool { hasTerminal }
+    /// The mirror's tab, and a remembered choice of it honoured, only while the debug view is on.
+    public var showsMirror: Bool { hasTerminal && mirrorOn }
+    /// What it adds to the strip's places.
+    public var places: Int { (showsButton ? 1 : 0) + (showsMirror ? 1 : 0) }
+
+    /// A plain press reveals; Option opens the mirror, which is how the debug view is reached from the strip.
+    public func press(option: Bool) -> Press {
+        option && hasTerminal ? .openMirror : .reveal
+    }
+}
+
+/// Screen Recording, for the mirror's picture of a Terminal window: asked at most once a launch, and only after a press
+/// that opened the mirror (its tab, or Option on the Terminal button) while the debug view is on. Restoring the mirror at
+/// launch is not a press, and the Terminal button never asks: it reveals, and a reveal needs no picture.
+public struct ConchMirrorPermissionAsk: Equatable, Sendable {
+    public private(set) var pressed = false
+    public private(set) var asked = false
+
+    public init() {}
+
+    /// The mirror was opened by hand.
+    public mutating func press() { pressed = true }
+
+    /// True once: after a press, while the mirror is on, the first time its picture needs the permission.
+    public mutating func shouldAsk(mirrorOn: Bool) -> Bool {
+        guard mirrorOn, pressed, !asked else { return false }
+        asked = true
+        return true
+    }
+}
 
 /// The daemon's answer to `terminal-screen`.
 public struct ConchTerminalLocation: Decodable, Equatable, Sendable {
@@ -93,7 +160,7 @@ public enum ConchTerminalFallback: Equatable, Sendable {
     }
 }
 
-/// What the Terminal tab is showing.
+/// What the Terminal Mirror is showing.
 public enum ConchAgentTerminalState: Equatable, Sendable {
     /// Asking the daemon where the terminal is.
     case finding
@@ -157,8 +224,9 @@ public enum ConchAgentTerminalState: Equatable, Sendable {
     }
 }
 
-/// When the tab reads anything at all: only while it can be seen. Off the moment the tab is left, conch's window is
-/// hidden, minimised or covered, or the Mac sleeps — no timer, no stream, no daemon reads.
+/// When the mirror reads anything at all: only while it can be seen. Off the moment its tab is left (or the debug view is
+/// turned off, which takes the tab away), conch's window is hidden, minimised or covered, or the Mac sleeps — no timer, no
+/// stream, no daemon reads.
 public struct ConchTerminalMirrorGate: Equatable, Sendable {
     public var tabShown = false
     public var windowVisible = true
@@ -178,9 +246,10 @@ public enum ConchTerminalAgent {
     public static func name(backend: String?) -> String { backend == "codex" ? "Codex" : "Claude Code" }
 }
 
-// MARK: - The tab
+// MARK: - The mirror
 
-/// The Terminal tab's content: a line saying whose terminal this is, with "Open in Terminal", over the terminal itself.
+/// The Terminal Mirror's content: a line saying whose terminal this is, that this is the debug view, with "Open in
+/// Terminal", over the terminal itself.
 public struct ConchAgentTerminalPane<Picture: View>: View {
     let agent: String
     let state: ConchAgentTerminalState
@@ -235,8 +304,8 @@ public struct ConchAgentTerminalPane<Picture: View>: View {
                     .foregroundStyle(ConchColor.textTertiary)
                     .lineLimit(1)
             }
-            // Said, so nobody types at a picture and wonders where it went.
-            Text("View only")
+            // Said, so nobody types at a picture and wonders where it went, or takes the debug view for the feature.
+            Text("Debug · view only")
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(ConchColor.textSecondary)
                 .padding(.horizontal, 6)

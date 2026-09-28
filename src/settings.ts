@@ -23,7 +23,7 @@ import type { ResumableSession } from "./resumable.ts";
 import { startOptionsError, teleportRequestError } from "./session-lifecycle.ts";
 import { normalizeSessionLabel } from "./sessions.ts";
 import { isValidVoiceName } from "./speak.ts";
-import type { TerminalFocusReply, TerminalScreenReply } from "./terminal-mirror.ts";
+import { MAX_HISTORY_LINES, type TerminalFocusReply, type TerminalScreenReply } from "./terminal-mirror.ts";
 
 export const DEFAULT_CONCH_CONFIG_DIR = join(conchHome(), ".config", "conch");
 export const SETTINGS_FILE = "settings.json";
@@ -895,11 +895,12 @@ export type RuntimeControlMessage =
   /** Put the newest `<file>.conch-backup-*` back. */
   | { kind: "config-rollback"; file: string }
   /**
-   * The session's own terminal, for the Mac app's Terminal tab (terminal-mirror.ts): a tmux pane's screen, or which
-   * Terminal window holds it. `text` also asks a Terminal tab for its own text, for while it can't be pictured.
+   * The session's own terminal (terminal-mirror.ts), for the Mac app's Terminal Mirror and `conch parity`: a tmux pane's
+   * screen, or which Terminal window holds it. `text` also asks a Terminal tab for its own text, for while it can't be
+   * pictured; `history` asks for that many scrollback lines as plain text, which only `conch parity` does.
    */
-  | { kind: "terminal-screen"; sessionId: string; text?: true }
-  /** Bring the session's terminal forward to type in: "Open in Terminal", on a press only. */
+  | { kind: "terminal-screen"; sessionId: string; text?: true; history?: number }
+  /** Bring the session's terminal forward to type in: the strip's Terminal button, on a press only. */
   | { kind: "terminal-focus"; sessionId: string };
 
 export type ControlMessage = ConfigControlMessage | SessionControlMessage;
@@ -1446,7 +1447,19 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
     if (!sessionId.ok) return sessionId;
     if (value.kind === "terminal-focus") return { ok: true, value: { kind: "terminal-focus", sessionId: sessionId.value } };
     if (value.text !== undefined && value.text !== true) return { ok: false, err: "terminal-screen: text must be true when present" };
-    return { ok: true, value: { kind: "terminal-screen", sessionId: sessionId.value, ...(value.text ? { text: true as const } : {}) } };
+    const history = value.history;
+    if (history !== undefined && !(Number.isSafeInteger(history) && (history as number) >= 1 && (history as number) <= MAX_HISTORY_LINES)) {
+      return { ok: false, err: `terminal-screen: history must be a whole number of lines from 1 to ${MAX_HISTORY_LINES}` };
+    }
+    return {
+      ok: true,
+      value: {
+        kind: "terminal-screen",
+        sessionId: sessionId.value,
+        ...(value.text ? { text: true as const } : {}),
+        ...(history === undefined ? {} : { history: history as number }),
+      },
+    };
   }
   return { ok: false, err: `unknown runtime control message kind "${value.kind}"` };
 }
@@ -1495,6 +1508,8 @@ function validateTerminalScreenReply(value: Record<string, unknown>): ParseResul
       ? { ok: true, value: { kind: "terminal-screen", sessionId: value.sessionId, host: "none", reason: value.reason } }
       : invalid;
   }
+  const history = value.history;
+  if (history !== undefined && typeof history !== "string") return invalid;
   if (value.host === "tmux") {
     const cursor = value.cursor;
     if (typeof value.pane !== "string" || !count(value.columns) || !count(value.rows) || typeof value.screen !== "string") return invalid;
@@ -1511,6 +1526,7 @@ function validateTerminalScreenReply(value: Record<string, unknown>): ParseResul
         ...(cursor === undefined ? {} : { cursor: { x: cursor.x as number, y: cursor.y as number } }),
         ...(value.alternate === true ? { alternate: true as const } : {}),
         screen: value.screen,
+        ...(history === undefined ? {} : { history }),
       },
     };
   }
@@ -1528,6 +1544,7 @@ function validateTerminalScreenReply(value: Record<string, unknown>): ParseResul
         minimized: value.minimized,
         selected: value.selected,
         ...(value.text === undefined ? {} : { text: value.text as string }),
+        ...(history === undefined ? {} : { history }),
       },
     };
   }
