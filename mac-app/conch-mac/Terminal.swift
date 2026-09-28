@@ -164,8 +164,9 @@ final class PTYSession {
     }
 }
 
-/// The terminal pane: what you ran, and what it printed.
-struct TerminalPaneView: View {
+/// The Shell tab: what you ran in the session's folder, and what it printed. (The Terminal tab is
+/// the agent's own terminal, `AgentTerminalPaneView`.)
+struct ShellPaneView: View {
     let cwd: String
 
     @State private var output = ConchTerminalOutput()

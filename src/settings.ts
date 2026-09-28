@@ -23,6 +23,7 @@ import type { ResumableSession } from "./resumable.ts";
 import { startOptionsError, teleportRequestError } from "./session-lifecycle.ts";
 import { normalizeSessionLabel } from "./sessions.ts";
 import { isValidVoiceName } from "./speak.ts";
+import type { TerminalFocusReply, TerminalScreenReply } from "./terminal-mirror.ts";
 
 export const DEFAULT_CONCH_CONFIG_DIR = join(conchHome(), ".config", "conch");
 export const SETTINGS_FILE = "settings.json";
@@ -892,7 +893,14 @@ export type RuntimeControlMessage =
     expectBeforeHash?: string;
   }
   /** Put the newest `<file>.conch-backup-*` back. */
-  | { kind: "config-rollback"; file: string };
+  | { kind: "config-rollback"; file: string }
+  /**
+   * The session's own terminal, for the Mac app's Terminal tab (terminal-mirror.ts): a tmux pane's screen, or which
+   * Terminal window holds it. `text` also asks a Terminal tab for its own text, for while it can't be pictured.
+   */
+  | { kind: "terminal-screen"; sessionId: string; text?: true }
+  /** Bring the session's terminal forward to type in: "Open in Terminal", on a press only. */
+  | { kind: "terminal-focus"; sessionId: string };
 
 export type ControlMessage = ConfigControlMessage | SessionControlMessage;
 export type AnyControlMessage = ControlMessage | RuntimeControlMessage;
@@ -1011,7 +1019,9 @@ export type RuntimeControlResponse =
     backup?: string;
     appliesNextSession: true;
   }
-  | { kind: "config-rollback"; file: string; restoredFrom: string };
+  | { kind: "config-rollback"; file: string; restoredFrom: string }
+  | TerminalScreenReply
+  | TerminalFocusReply;
 
 export type SessionControlResponse = SessionAck | SessionError | PairingOpen | RuntimeControlResponse;
 export type ControlResponse = ConfigControlResponse | SessionControlResponse;
@@ -1063,7 +1073,9 @@ export function isControlMessageCandidate(value: unknown): boolean {
     || value.kind === "session-close"
     || value.kind === "app-error"
     || value.kind === "config-toggle"
-    || value.kind === "config-rollback";
+    || value.kind === "config-rollback"
+    || value.kind === "terminal-screen"
+    || value.kind === "terminal-focus";
 }
 
 const MAX_SESSION_ID_LENGTH = 256;
@@ -1429,6 +1441,13 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
     if (!file.value.startsWith("/")) return { ok: false, err: "config-rollback: file must be an absolute path" };
     return { ok: true, value: { kind: "config-rollback", file: file.value } };
   }
+  if (value.kind === "terminal-screen" || value.kind === "terminal-focus") {
+    const sessionId = validateSessionId(value.sessionId);
+    if (!sessionId.ok) return sessionId;
+    if (value.kind === "terminal-focus") return { ok: true, value: { kind: "terminal-focus", sessionId: sessionId.value } };
+    if (value.text !== undefined && value.text !== true) return { ok: false, err: "terminal-screen: text must be true when present" };
+    return { ok: true, value: { kind: "terminal-screen", sessionId: sessionId.value, ...(value.text ? { text: true as const } : {}) } };
+  }
   return { ok: false, err: `unknown runtime control message kind "${value.kind}"` };
 }
 
@@ -1447,6 +1466,8 @@ export function validateControlMessage(value: unknown): ParseResult<AnyControlMe
     || value.kind === "app-error"
     || value.kind === "config-toggle"
     || value.kind === "config-rollback"
+    || value.kind === "terminal-screen"
+    || value.kind === "terminal-focus"
   ) {
     return validateRuntimeControlMessage(value);
   }
@@ -1463,6 +1484,54 @@ export function validateControlMessage(value: unknown): ParseResult<AnyControlMe
   const parsed = found.value.parse(value.value);
   if (!parsed.ok) return { ok: false, err: `${found.value.key}: ${parsed.err}` };
   return { ok: true, value: { kind: "set-config", key: found.value.key, value: parsed.value } };
+}
+
+function validateTerminalScreenReply(value: Record<string, unknown>): ParseResult<TerminalScreenReply> {
+  const invalid = { ok: false as const, err: "invalid terminal-screen response" };
+  if (typeof value.sessionId !== "string") return invalid;
+  const count = (n: unknown): n is number => Number.isSafeInteger(n) && (n as number) >= 0;
+  if (value.host === "none") {
+    return typeof value.reason === "string"
+      ? { ok: true, value: { kind: "terminal-screen", sessionId: value.sessionId, host: "none", reason: value.reason } }
+      : invalid;
+  }
+  if (value.host === "tmux") {
+    const cursor = value.cursor;
+    if (typeof value.pane !== "string" || !count(value.columns) || !count(value.rows) || typeof value.screen !== "string") return invalid;
+    if (cursor !== undefined && !(record(cursor) && count(cursor.x) && count(cursor.y))) return invalid;
+    return {
+      ok: true,
+      value: {
+        kind: "terminal-screen",
+        sessionId: value.sessionId,
+        host: "tmux",
+        pane: value.pane,
+        columns: value.columns,
+        rows: value.rows,
+        ...(cursor === undefined ? {} : { cursor: { x: cursor.x as number, y: cursor.y as number } }),
+        ...(value.alternate === true ? { alternate: true as const } : {}),
+        screen: value.screen,
+      },
+    };
+  }
+  if (value.host === "terminal") {
+    if (typeof value.tty !== "string" || !count(value.window) || typeof value.minimized !== "boolean"
+      || typeof value.selected !== "boolean" || (value.text !== undefined && typeof value.text !== "string")) return invalid;
+    return {
+      ok: true,
+      value: {
+        kind: "terminal-screen",
+        sessionId: value.sessionId,
+        host: "terminal",
+        tty: value.tty,
+        window: value.window,
+        minimized: value.minimized,
+        selected: value.selected,
+        ...(value.text === undefined ? {} : { text: value.text as string }),
+      },
+    };
+  }
+  return invalid;
 }
 
 export function validateControlResponse(value: unknown): ParseResult<ControlResponse> {
@@ -1531,6 +1600,21 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
         appliesNextSession: true,
       },
     };
+  }
+  if (value.kind === "terminal-screen") return validateTerminalScreenReply(value);
+  if (value.kind === "terminal-focus") {
+    return typeof value.sessionId === "string" && typeof value.focused === "boolean"
+      && (value.reason === undefined || typeof value.reason === "string")
+      ? {
+        ok: true,
+        value: {
+          kind: "terminal-focus",
+          sessionId: value.sessionId,
+          focused: value.focused,
+          ...(value.reason === undefined ? {} : { reason: value.reason as string }),
+        },
+      }
+      : { ok: false, err: "invalid terminal-focus response" };
   }
   if (value.kind === "config-rollback") {
     return typeof value.file === "string" && typeof value.restoredFrom === "string"

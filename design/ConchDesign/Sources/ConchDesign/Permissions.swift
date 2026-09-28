@@ -34,7 +34,7 @@ public enum ConchPermission: String, CaseIterable, Identifiable, Sendable {
         case .automation:
             "Lets conch find your session's Terminal window, bring it forward, and press keys there through System Events."
         case .screenRecording:
-            "Lets conch take the picture you draw on and send, record a Show, and snapshot a window for your phone."
+            "Lets conch take the picture you draw on and send, record a Show, snapshot a window for your phone, and show a session's Terminal window in its Terminal tab."
         case .microphone:
             "Lets conch hear your spoken replies. What you say is transcribed on this Mac and never uploaded."
         }

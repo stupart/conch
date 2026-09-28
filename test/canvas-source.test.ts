@@ -248,9 +248,10 @@ describe("Send", () => {
     expect(filesWith("SCScreenshotManager")).toEqual(["CanvasSend.swift", "WindowPreview.swift"]);
     expect(filesWith("CanvasCapture.still(")).toEqual(["CanvasSend.swift"]);
     // Show is the other capture, on its own explicit press (canvas-show-source.test.ts).
-    expect(filesWith("SCShareableContent")).toEqual(["CanvasSend.swift", "CanvasShow.swift", "WindowPreview.swift"]);
+    // And the Terminal tab's picture of one Terminal window, only while its tab is on screen (terminal-mirror-source.test.ts).
+    expect(filesWith("SCShareableContent")).toEqual(["CanvasSend.swift", "CanvasShow.swift", "TerminalMirror.swift", "WindowPreview.swift"]);
     // Settings' Screen Recording row checks too (Permissions.swift): a check, which neither captures nor asks.
-    expect(filesWith("CGPreflightScreenCaptureAccess")).toEqual(["CanvasSend.swift", "Permissions.swift", "WindowPreview.swift"]);
+    expect(filesWith("CGPreflightScreenCaptureAccess")).toEqual(["CanvasSend.swift", "Permissions.swift", "TerminalMirror.swift", "WindowPreview.swift"]);
     // The grant is asked for in one place, for a Send and a Show alike (`CanvasCapture.granted`).
     expect(filesWith("CGRequestScreenCaptureAccess")).toEqual(["CanvasSend.swift"]);
     expect(send.match(/CGRequestScreenCaptureAccess\(\)/g)?.length).toBe(1);

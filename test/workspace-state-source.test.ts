@@ -200,7 +200,8 @@ describe("new work does not replace what you are reading", () => {
     // whole time. The work half now has two possible contents, so the question is whether
     // either exists.
     expect(header).toContain("if hasWorkPane {");
-    expect(pane).toContain("private var hasWorkPane: Bool { selectedReview != nil || workingFolder != nil }");
+    // The agent's own terminal is a third thing to switch to (terminal-mirror-source.test.ts).
+    expect(pane).toContain("private var hasWorkPane: Bool { selectedReview != nil || workingFolder != nil || focusedRow?.hasAgentTerminal == true }");
     // Icons alone up here: three labelled segments take over 40% of the header at the
     // default window width, and the title is what the header is for.
     expect(pane).not.toContain("Text(label)");
@@ -214,11 +215,13 @@ describe("new work does not replace what you are reading", () => {
     // single deliverable and no folder has exactly the pane it always had. The working folder
     // is one of those things now, which is what the count has to include.
     expect(pane).toContain("if hasWorkTabs(for: reviewRow) {");
-    // TWO, not one: a working folder offers the files in it AND a terminal running in it, so
-    // a session with a folder and no deliverable still has a strip worth drawing. ARTIFACTS are
-    // what count on the other side of the sum — six filings of one link are one tab — and a
-    // lone artifact with older versions still earns the strip, or they could not be reached.
-    expect(pane).toContain("groups.count + (workingFolder == nil ? 0 : 2) > 1 || groups.contains(where: \\.hasOlderVersions)");
+    // TWO, not one: a working folder offers the files in it AND a shell running in it, so a
+    // session with a folder and no deliverable still has a strip worth drawing; the agent's own
+    // terminal is one more. ARTIFACTS are what count on the other side of the sum — six filings
+    // of one link are one tab — and a lone artifact with older versions still earns the strip,
+    // or they could not be reached.
+    expect(pane).toContain("let places = (workingFolder == nil ? 0 : 2) + (row.hasAgentTerminal ? 1 : 0)");
+    expect(pane).toContain("groups.count + places > 1 || groups.contains(where: \\.hasOlderVersions)");
     // Three states, and looking at one is what marks it — but only ever told to a daemon that
     // can remember, so an older one is never handed a command it will refuse.
     expect(pane).toContain("isUnviewed ? ConchPalette.textPrimary : ConchPalette.textDim");

@@ -90,6 +90,8 @@ describe("never a prompt at launch: every answer is read silently, and asked for
       "Permissions.swift: center.perform($0, for: notice.permission, store: store)",
       "Permissions.swift: center.perform(action, for: permission, store: store)",
       "Permissions.swift: perform(.openSettings",
+      // The Terminal tab's Screen Recording button, and its first-time ask after a press on the tab.
+      "TerminalMirror.swift: PermissionCenter.shared.perform(action, for: .screenRecording, store: store)",
     ]);
   });
 

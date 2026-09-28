@@ -12,8 +12,8 @@ test("the home folder is not a working folder, so a session there gets the whole
   // The home check is ConchDesign's now (`ConchWorkFolder.pick`, XCTested in FolderDeliverableTests), which also
   // prefers a folder the agent declared: a session started in ~ that declared ~/Projects/X shows Files for X.
   expect(folder).toContain("ConchWorkFolder.pick(cwd: row.cwd, workDirs: row.workDirs, home: NSHomeDirectory())");
-  // With neither folder nor deliverable, the split is never drawn.
-  expect(dashboard).toContain("private var hasWorkPane: Bool { selectedReview != nil || workingFolder != nil }");
+  // With no folder, no deliverable and no terminal of its own, the split is never drawn.
+  expect(dashboard).toContain("private var hasWorkPane: Bool { selectedReview != nil || workingFolder != nil || focusedRow?.hasAgentTerminal == true }");
   expect(dashboard).toContain("if let reviewRow = focusedRow, hasWorkPane, stage(for: reviewRow) != .conversation {");
 });
 

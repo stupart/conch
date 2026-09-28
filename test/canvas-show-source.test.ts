@@ -44,7 +44,10 @@ const record = member(show, "private func record() async throws {");
 describe("the recording", () => {
   test("SCRecordingOutput writes the MP4, added before capture starts; never an asset writer", () => {
     expect(filesWith("SCRecordingOutput(")).toEqual(["CanvasShow.swift"]);
-    expect(filesWith("SCStream(")).toEqual(["CanvasShow.swift"]);
+    // The Terminal tab's stream is the other (terminal-mirror-source.test.ts): one Terminal window, shown and never
+    // written anywhere, only while its tab is on screen.
+    expect(filesWith("SCStream(")).toEqual(["CanvasShow.swift", "TerminalMirror.swift"]);
+    expect(filesWith("SCRecordingOutput")).toEqual(["CanvasShow.swift"]);
     expect(filesWith("AVAssetWriter")).toEqual([]);
     expect(record).toContain("settings.outputFileType = .mp4");
     expect(record).toContain("let output = SCRecordingOutput(configuration: settings, delegate: self)");
@@ -195,7 +198,7 @@ describe("only on an explicit Show", () => {
     expect(filesWith("CanvasRecorder.start(")).toEqual(["CanvasShow.swift"]);
     expect(show.match(/CanvasRecorder\.start\(/g)?.length).toBe(1);
     expect(member(show, "    func toggleShow() {")).toContain("recorder = try await CanvasRecorder.start(on: display)");
-    expect(filesWith("startCapture(")).toEqual(["CanvasShow.swift"]);
+    expect(filesWith("startCapture(")).toEqual(["CanvasShow.swift", "TerminalMirror.swift"]);
     expect(show.match(/startCapture\(/g)?.length).toBe(1);
     // Its definition, the pill's button and the R key: nothing else calls it, from outside or within.
     const calls = Object.entries(macSources).flatMap(([name, source]) =>

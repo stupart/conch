@@ -100,9 +100,9 @@ describe("a command runs where the session runs", () => {
   });
 });
 
-describe("the terminal is a third content for the work half", () => {
+describe("the shell is a content of the work half, beside the folder", () => {
   test("it is a WorkPane, not a fourth way of splitting the stage", () => {
-    expect(workspace).toContain("case terminal");
+    expect(workspace).toContain("case shell");
     // StageMode is untouched: how the stage is split is a different question from what is in it.
     expect(section(workspace, "public enum StageMode", "public enum WorkPane").match(/case \w+/g) ?? [])
       .toHaveLength(3);
@@ -110,7 +110,7 @@ describe("the terminal is a third content for the work half", () => {
 
   test("it needs somewhere to run, and falls back when there is nowhere", () => {
     const choose = section(pane, "private func workPane(for row: SessionRow) -> WorkPane {", "\n    private func changedFiles");
-    expect(choose).toContain("if chosen == .terminal, workingFolder != nil { return .terminal }");
+    expect(choose).toContain("if chosen == .shell, workingFolder != nil { return .shell }");
   });
 
   /**
@@ -119,15 +119,18 @@ describe("the terminal is a third content for the work half", () => {
    */
   test("a running shell cannot be inherited by another session", () => {
     const content = section(pane, "private func workContent(for row: SessionRow) -> some View {", "\n    private var deliverables");
-    expect(content).toContain("TerminalPaneView(cwd: folder).id(row.id)");
+    expect(content).toContain("ShellPaneView(cwd: folder).id(row.id)");
   });
 
-  test("its tab sits with the folder, ahead of the outputs", () => {
+  test("its tab sits with the folder, ahead of the outputs, and is called Shell", () => {
     const tabs = section(pane, "private func deliverableTabs(", ".padding(.vertical, 5)");
     // Both are the PLACE the session works; the filed work scrolls on the far side of the rule.
-    expect(at(tabs, "FilesTab(")).toBeLessThan(at(tabs, "TerminalTab("));
-    expect(at(tabs, "TerminalTab(")).toBeLessThan(at(tabs, "ScrollView(.horizontal)"));
-    expect(pane).toContain("action: { workspace.show(work: .terminal, for: row.id) }");
-    expect(pane).toContain("private struct TerminalTab: View {");
+    expect(at(tabs, "FilesTab(")).toBeLessThan(at(tabs, "ShellTab("));
+    expect(at(tabs, "ShellTab(")).toBeLessThan(at(tabs, "ScrollView(.horizontal)"));
+    expect(pane).toContain("action: { workspace.show(work: .shell, for: row.id) }");
+    const shellTab = section(pane, "private struct ShellTab: View {", "\n}\n");
+    expect(shellTab).toContain('Text("Shell")');
+    expect(shellTab).toContain('.accessibilityLabel("Shell")');
+    expect(shellTab).not.toContain('"Terminal"');
   });
 });
