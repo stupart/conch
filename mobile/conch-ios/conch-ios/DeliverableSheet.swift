@@ -1239,7 +1239,8 @@ private struct MarkdownImage: View {
         do {
             let file = try await bridge.fetchFile(path: target.path)
             defer { try? FileManager.default.removeItem(at: file) }
-            let preview = await ImageDownsampler.filePreview(at: file, maxBytes: 32 * 1024 * 1024, maxPixelSize: 2048)
+            // To the width it is drawn at, the height following: a tall picture in a document is not a thumbnail.
+            let preview = await ImageDownsampler.filePreview(at: file, maxBytes: 32 * 1024 * 1024, forWidth: ImageDownsampler.screenPixels)
             guard !Task.isCancelled else { return }
             if case let .image(decoded) = preview {
                 image = UIImage(cgImage: decoded)

@@ -1527,9 +1527,10 @@ struct MirrorLine: View {
 struct PulseDot: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.conchRendersStatically) private var statically
+    @Environment(\.conchHidden) private var hidden
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || statically)) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || statically || hidden)) { timeline in
             let breath = reduceMotion || statically ? 0.6 : 0.5 + 0.5 * sin(timeline.date.timeIntervalSinceReferenceDate * 2 * .pi / ConchMotion.breathPeriod)
             ZStack {
                 Circle().fill(ConchColor.textTertiary.opacity(0.3 * breath)).frame(width: 14, height: 14)

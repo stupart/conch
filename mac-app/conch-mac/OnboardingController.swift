@@ -158,7 +158,8 @@ final class OnboardingController: NSObject, NSWindowDelegate {
             window.title = "Set up conch"
             window.delegate = self
             window.onEscape = { [weak self] in self?.close() }
-            window.contentView = NSHostingView(rootView: OnboardingRootView(model: model, controller: self))
+            // Kept when closed (`isReleasedWhenClosed = false`): its spinners stop with it (`conchHidden`).
+            window.contentView = NSHostingView(rootView: OnboardingRootView(model: model, controller: self).conchPausesWhenHidden())
             window.center()
             self.window = window
         }

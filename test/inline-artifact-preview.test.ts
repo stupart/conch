@@ -40,8 +40,8 @@ test("the card renders the artifact, through the conversation's own markdown pat
  * coloured ring around all of it.
  */
 test("the card is a picture and one line, on a plain hairline", () => {
-  // The deliverable's own proportions, not a letterboxed slot.
-  expect(card).toContain("image.size.width / max(image.size.height, 1)");
+  // The deliverable's own proportions, not a letterboxed slot: read from its header, before it is decoded.
+  expect(card).toContain(".aspectRatio(picture.aspect, contentMode: .fit)");
   expect(card).not.toContain("maxHeight: 260");
   // A hairline, not a ring in the review colour.
   expect(card).toContain(".strokeBorder(ConchPalette.hairlineStrong, lineWidth: 1)");

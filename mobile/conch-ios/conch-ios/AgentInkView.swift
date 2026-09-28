@@ -391,7 +391,8 @@ struct MarkedImage: View {
             }
         }
         .task(id: url) {
-            let preview = await ImageDownsampler.filePreview(at: url, maxBytes: 64 * 1024 * 1024, maxPixelSize: 4096)
+            // Its full width up to 4,096 pixels, the height following, so a tall marked capture zooms in sharp.
+            let preview = await ImageDownsampler.filePreview(at: url, maxBytes: 64 * 1024 * 1024, forWidth: 4_096)
             if case let .image(decoded) = preview { image = UIImage(cgImage: decoded) } else { onFailure("iPhone couldn't read this image") }
         }
     }

@@ -1221,40 +1221,154 @@ private struct DeliverableImageView: NSViewRepresentable {
     /// Images smaller than the pane centre at native size; nothing upscales.
     /// Flipped so the document's origin is the TOP — an unflipped container
     /// opened every tall screenshot scrolled to its bottom.
+    ///
+    /// Decoded for the width it is drawn at, not whole. `NSImage(contentsOf:)`
+    /// handed Core Animation the whole picture, and Core Animation shrinks a
+    /// layer's contents with a bilinear filter and no mipmaps: a 2880-pixel
+    /// page capture drawn 976 pixels wide in Side by Side sampled one pixel in
+    /// three, and its small print broke up and shimmered as it scrolled (seen
+    /// through CARenderer, 28 Sep). ImageIO's decode at the drawn width averages
+    /// every pixel, and is drawn a pixel to a pixel; it is also a fifth of the
+    /// memory (a 2880 x 30000 capture was 345 MB decoded whole).
     private final class FlippedView: NSView {
         override var isFlipped: Bool { true }
     }
 
     final class FitWidthImageScrollView: NSScrollView {
-        let imageView = NSImageView()
+        /// The picture's own view, exactly the rect it is drawn in: what the agent's marks are placed on
+        /// (`AgentInkController`).
+        let imageView = DeliverablePictureView()
         private let container = FlippedView()
+        /// The picture as ImageIO reads it, decoded for the width it is drawn at (`ConchImage.decode(_:forWidth:)`).
+        private(set) var picture: ConchImage.Picture?
+        /// The file shown, for a decode that fails to say which.
+        private var url: URL?
+        /// What AppKit draws itself instead: a GIF that moves, an SVG, anything ImageIO can't read.
+        private var whole: NSImage?
+        /// The decode on screen, and the one on its way, in device pixels wide.
+        private var decoded: CGImage?
+        private var decoding: (key: String, width: Int)?
+        private var decodeTask: Task<Void, Never>?
+        var onFailure: (Error) -> Void = { _ in }
 
         init() {
             super.init(frame: .zero)
             drawsBackground = false
             hasVerticalScroller = true
-            imageView.imageScaling = .scaleProportionallyUpOrDown
             container.addSubview(imageView)
             documentView = container
         }
 
         required init?(coder: NSCoder) { nil }
 
+        deinit { decodeTask?.cancel() }
+
+        /// What `url` holds, shown from the top. A GIF keeps AppKit's own view, which plays it; so does anything
+        /// ImageIO has no header for (an SVG draws sharp at any size there). Anything else is decoded for its width.
+        func show(_ url: URL) {
+            decodeTask?.cancel()
+            decodeTask = nil
+            decoding = nil
+            decoded = nil
+            picture = nil
+            whole = nil
+            self.url = url
+            let moves = url.pathExtension.lowercased() == "gif"
+            if !moves, let picture = ConchImage.picture(atPath: url.path) {
+                self.picture = picture
+                imageView.clear()
+            } else if let image = NSImage(contentsOf: url) {
+                whole = image
+                imageView.show(image)
+            } else {
+                // The icon alone said nothing; macOS's reason and the path do (A13).
+                let error = DeliverableLoadError.reason(url)
+                DispatchQueue.main.async { [onFailure] in onFailure(error) }
+                let broken = NSImage(systemSymbolName: "photo.badge.exclamationmark", accessibilityDescription: nil)
+                whole = broken
+                broken.map(imageView.show)
+            }
+            needsLayout = true
+            contentView.scroll(to: .zero)
+        }
+
+        /// The picture's size in points, as NSImage reads it (its resolution; 72 dpi when it says none).
+        private var pointSize: CGSize? {
+            picture?.points ?? whole?.size
+        }
+
+        private var scale: CGFloat { window?.backingScaleFactor ?? 2 }
+
         override func layout() {
             super.layout()
-            guard let image = imageView.image, image.size.width > 0 else { return }
+            guard let size = pointSize, size.width > 0, size.height > 0 else { return }
             let paneWidth = contentSize.width
-            let targetWidth = min(paneWidth - 36, image.size.width)
+            var targetWidth = min(paneWidth - 36, size.width)
             guard targetWidth > 0 else { return }
-            let height = targetWidth * image.size.height / image.size.width
+            var height = targetWidth * size.height / size.width
+            // Drawn at the decode's own size when it was decoded for this width: a pixel of it to a pixel of the
+            // screen. ImageIO rounds, and a picture resampled one pixel narrower is soft all the way across.
+            if let decoded, abs(CGFloat(decoded.width) / scale - targetWidth) <= 1 / scale + 0.001 {
+                targetWidth = CGFloat(decoded.width) / scale
+                height = CGFloat(decoded.height) / scale
+            }
             let containerHeight = max(height + 36, contentSize.height)
             container.frame = NSRect(x: 0, y: 0, width: paneWidth, height: containerHeight)
-            imageView.frame = NSRect(
+            // On the pixel grid, so a pixel of the decode lands on a pixel of the screen.
+            imageView.frame = container.backingAlignedRect(NSRect(
                 x: (paneWidth - targetWidth) / 2,
                 y: (containerHeight - height) / 2,
                 width: targetWidth,
                 height: height
-            )
+            ), options: [.alignMinXNearest, .alignMinYNearest, .alignWidthNearest, .alignHeightNearest])
+            decodeIfNeeded(forWidth: targetWidth * scale)
+        }
+
+        override func viewDidChangeBackingProperties() {
+            super.viewDidChangeBackingProperties()
+            needsLayout = true
+        }
+
+        /// A window resized by hand is decoded again once it lets go; until then the decode it has is scaled.
+        override func viewDidEndLiveResize() {
+            super.viewDidEndLiveResize()
+            needsLayout = true
+        }
+
+        /// Decoded again when the width it is drawn at outgrows the decode (a wider window, full screen, a sharper
+        /// display), or falls to under half of it (so a narrowed pane lets the memory go); never mid-resize, and
+        /// only once the width holds still: Side by Side's divider is dragged a few points a frame, and a decode a
+        /// frame would be tens of milliseconds of decoding thrown away on every one.
+        private func decodeIfNeeded(forWidth width: CGFloat) {
+            guard let picture, !inLiveResize else { return }
+            let wanted = ConchImage.decodeWidth(forDrawnWidth: width, of: picture.pixels)
+            guard wanted > 0 else { return }
+            let have = decoding?.key == picture.key ? decoding?.width : decoded.map(\.width)
+            if let have, have >= wanted, have <= 2 * wanted { return }
+            // A decode that rounded a pixel short of what was asked is the same decode.
+            if let have, have >= wanted - 1, have <= wanted { return }
+            // The first decode at once; a later one after the width has held still for a moment.
+            let settle = decoded != nil
+            decoding = (picture.key, wanted)
+            decodeTask?.cancel()
+            decodeTask = Task { [weak self] in
+                if settle {
+                    try? await Task.sleep(for: .milliseconds(150))
+                    guard !Task.isCancelled else { return }
+                }
+                let image = await Task.detached(priority: .userInitiated) {
+                    ConchImage.decode(picture, forWidth: CGFloat(wanted))
+                }.value
+                guard !Task.isCancelled, let self, self.picture?.key == picture.key else { return }
+                self.decoding = nil
+                guard let image else {
+                    if let url = self.url { self.onFailure(DeliverableLoadError.reason(url)) }
+                    return
+                }
+                self.decoded = image
+                self.imageView.show(image)
+                self.needsLayout = true
+            }
         }
     }
 
@@ -1269,21 +1383,66 @@ private struct DeliverableImageView: NSViewRepresentable {
     }
 
     func updateNSView(_ view: FitWidthImageScrollView, context: Context) {
+        view.onFailure = onFailure
         guard context.coordinator.loadedURL != url else { return }
         context.coordinator.loadedURL = url
-        let image = NSImage(contentsOf: url)
-        // The icon alone said nothing; macOS's reason and the path do (A13).
-        if image == nil {
-            let error = DeliverableLoadError.reason(url)
-            DispatchQueue.main.async { onFailure(error) }
-        }
-        view.imageView.image = image
-            ?? NSImage(
-                systemSymbolName: "photo.badge.exclamationmark",
-                accessibilityDescription: nil
-            )
-        view.needsLayout = true
-        view.contentView.scroll(to: .zero)
+        view.show(url)
+    }
+}
+
+/// A deliverable picture in the rect it is drawn in: one layer holding the decode made for this width, handed to Core
+/// Animation at a pixel to a pixel. Anything AppKit draws itself (`show(NSImage)`) is an image view filling the rect,
+/// which plays a GIF and draws an SVG sharp.
+final class DeliverablePictureView: NSView {
+    private let picture = CALayer()
+    private let appKit = NSImageView()
+
+    override var isFlipped: Bool { true }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        appKit.imageScaling = .scaleProportionallyUpOrDown
+        picture.contentsGravity = .resize
+        picture.actions = ["contents": NSNull(), "bounds": NSNull(), "position": NSNull()]
+        layer?.addSublayer(picture)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func clear() {
+        picture.contents = nil
+        appKit.image = nil
+        appKit.removeFromSuperview()
+    }
+
+    func show(_ image: NSImage) {
+        clear()
+        appKit.image = image
+        appKit.frame = bounds
+        addSubview(appKit)
+    }
+
+    func show(_ image: CGImage) {
+        clear()
+        picture.contents = image
+        needsLayout = true
+    }
+
+    override func layout() {
+        super.layout()
+        appKit.frame = bounds
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        picture.frame = bounds
+        CATransaction.commit()
+    }
+
+    /// The decode drawn now, in pixels, for tests and the render harness.
+    var shown: (width: Int, height: Int)? {
+        guard let contents = picture.contents else { return nil }
+        let image = contents as! CGImage
+        return (image.width, image.height)
     }
 }
 

@@ -1827,6 +1827,9 @@ private struct StatePollResult: Sendable {
 private actor StateSnapshotReader {
     private let snapshotURL: URL
     private var logReader: DaemonLogTailReader
+    /// The snapshot decoded only when the file was written again (`ConchStampedRead`): a `stat` a poll, and the
+    /// decode — 277 KB of JSON four times a second while the daemon published once in seven — only after a publish.
+    private var snapshot = ConchStampedRead<PublishedState>()
 
     init(snapshotURL: URL, logURL: URL) {
         self.snapshotURL = snapshotURL
@@ -1834,8 +1837,9 @@ private actor StateSnapshotReader {
     }
 
     func read(includeLog: Bool) -> StatePollResult {
-        StatePollResult(
-            snapshot: StateSnapshotFile.read(from: snapshotURL),
+        let url = snapshotURL
+        return StatePollResult(
+            snapshot: snapshot.value(at: url.path) { StateSnapshotFile.read(from: url) },
             logLines: includeLog ? logReader.readDelta() : []
         )
     }
