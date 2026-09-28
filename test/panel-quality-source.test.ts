@@ -107,8 +107,9 @@ test("collapsing shrinks the glass into the handle and expanding grows it back, 
 
 test("the panel's keys: Esc, Command-Return, Previous and Next, Collapse, and the switcher's arrows, only while it has them", () => {
   // Seen before whatever view has the keyboard, so Command-Return works whether or not a reply is being typed. A press
-  // is seen first too, for the floating composer's field to take the keys (`ComposerDock.pressed`); it never swallows it.
-  expect(panels).toContain("override func sendEvent(_ event: NSEvent) {\n        if event.type == .keyDown, let onKey, onKey(event) { return }\n        if event.type == .leftMouseDown { onPress?(event) }\n        super.sendEvent(event)");
+  // is seen first too, for the floating composer's field to take the keys (`ComposerDock.pressed`), and so are a drag and
+  // a let-go, for the reply line alone to follow the pointer (`ComposerDock.dragged`); it never swallows either.
+  expect(panels).toContain("override func sendEvent(_ event: NSEvent) {\n        if event.type == .keyDown, let onKey, onKey(event) { return }\n        if event.type == .leftMouseDown { onPress?(event) }\n        if event.type == .leftMouseDragged || event.type == .leftMouseUp { onDrag?(event) }\n        super.sendEvent(event)");
   expect(panels).toContain("fog.onKey = { [weak self] event in MainActor.assumeIsolated { self?.key(event) ?? false } }");
   const key = member(panels, "private func key(_ event: NSEvent) -> Bool {");
   expect(key).toContain("typing: fog.firstResponder is NSTextView");

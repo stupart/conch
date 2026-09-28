@@ -412,16 +412,169 @@ public enum ComposerDockGeometry {
     public static func replyLineWidth(measure: CGFloat, in visible: CGRect) -> CGFloat {
         min(measure, max(0, visible.width - 2 * ConchSpace.x6))
     }
+}
 
-    /// The reply line alone, `size`, in the panel's corner of the screen's visible frame (clear of the Dock and the menu
-    /// bar), in by the panel's own margin (`PanelGlass.Geometry.docked`). With the panel folded to its handle it sits beside
-    /// the handle rather than on it. Screen coordinates, y up.
-    public static func replyLineFrame(size: CGSize, corner: FogCorner, in visible: CGRect, besideHandle: Bool) -> CGRect {
-        let margin = ConchSpace.x6
-        let clear = besideHandle ? FogHandle.side : 0
-        let x = corner.leading ? visible.minX + margin + clear : visible.maxX - margin - clear - size.width
-        let y = corner.bottom ? visible.minY + margin : visible.maxY - margin - size.height
-        return CGRect(x: x, y: y, width: size.width, height: size.height)
+/// The one spot conch remembers for the reply line alone: the last place Tyler left it. It is kept relative to the
+/// visible frame of the screen he left it on, so a new resolution or a Dock moved keeps it where it was in the same
+/// sense. `across` and `up` are how far along the glass's free travel it sits, 0 against the visible frame's leading or
+/// bottom edge and 1 against its trailing or top edge: flush against an edge stays flush, centred stays centred, and
+/// every value is wholly on screen.
+public struct ReplyLineSpot: Codable, Equatable, Sendable {
+    /// The display it was left on, by its UUID, which outlives unplugging it and plugging it back in.
+    public var screen: String
+    public var across: Double
+    public var up: Double
+
+    public init(screen: String, across: Double, up: Double) {
+        self.screen = screen
+        self.across = across
+        self.up = up
+    }
+}
+
+/// Where the reply line alone sits: the input out with Tyler while the panel is off or folded (`ComposerPlace.replyLine`,
+/// "detached"). Tyler: "Can we make it so that the input bar defaults to bottom center of the screen when it's in
+/// detached mode (or wherever u left it for that one last time) but u can drag it around where u want to and stuff?"
+///
+/// Bottom centre of its screen's visible frame, clear of the Dock by `margin`, until he drags it somewhere; then there,
+/// on that screen, until he drags it again, lets go of it near bottom centre, or double-clicks it home. Screen
+/// coordinates, y up, as AppKit has them.
+public enum ReplyLinePlacement {
+    /// A display as the rule sees it.
+    public struct Screen: Equatable, Sendable {
+        public var id: String
+        public var frame: CGRect
+        /// Clear of the menu bar and the Dock.
+        public var visible: CGRect
+
+        public init(id: String, frame: CGRect, visible: CGRect) {
+            self.id = id
+            self.frame = frame
+            self.visible = visible
+        }
+    }
+
+    /// Where it sits: its glass, the screen it is on, and the edge a longer draft grows it from.
+    public struct Placed: Equatable, Sendable {
+        public var frame: CGRect
+        public var screen: String
+        /// In the top half of its screen it hangs from its top edge and grows down; in the bottom half it stands on its
+        /// bottom edge and grows up.
+        public var growsDown: Bool
+    }
+
+    /// Between the glass and the Dock (or the screen's foot with the Dock hidden or at a side): the panel's own margin
+    /// in from its corner (`PanelGlass.Geometry.docked`), which the reply line alone kept there too, so it sits on the
+    /// same line the panel would and the floating shadow under it has room.
+    public static let margin: CGFloat = ConchSpace.x6
+    /// Let go within this many points of bottom centre, it goes home and nothing is remembered. Three times a click's
+    /// wobble (`wobble`), so an aim back at the middle by eye lands there; about 2% of the 580 pt bar, so a spot chosen
+    /// on purpose just beside the middle is kept.
+    public static let snap: CGFloat = ConchSpace.x3
+    /// Moved less than this between press and let-go, the press was a click and nothing moves: the panel's own drag
+    /// threshold (`FloatingPanels.released`).
+    public static let wobble: CGFloat = 4
+
+    /// Bottom centre of `visible`, `margin` above its foot.
+    public static func home(size: CGSize, in visible: CGRect) -> CGRect {
+        clamped(CGRect(x: visible.midX - size.width / 2, y: visible.minY + margin, width: size.width, height: size.height), in: visible)
+    }
+
+    /// `rect` moved the least it takes to be wholly inside `visible`; centred on an axis it is too big for.
+    public static func clamped(_ rect: CGRect, in visible: CGRect) -> CGRect {
+        func axis(_ origin: CGFloat, _ length: CGFloat, _ low: CGFloat, _ span: CGFloat) -> CGFloat {
+            guard length <= span else { return low + (span - length) / 2 }
+            return min(max(origin, low), low + span - length)
+        }
+        return CGRect(
+            x: axis(rect.minX, rect.width, visible.minX, visible.width),
+            y: axis(rect.minY, rect.height, visible.minY, visible.height),
+            width: rect.width,
+            height: rect.height
+        )
+    }
+
+    /// The spot `rect` is at on `screen`, clamped onto it first.
+    public static func spot(of rect: CGRect, on screen: Screen) -> ReplyLineSpot {
+        let visible = screen.visible, inside = clamped(rect, in: visible)
+        func fraction(_ origin: CGFloat, _ length: CGFloat, _ low: CGFloat, _ span: CGFloat) -> Double {
+            let free = span - length
+            return free > 0 ? unit(Double((origin - low) / free)) : 0.5
+        }
+        return ReplyLineSpot(
+            screen: screen.id,
+            across: fraction(inside.minX, inside.width, visible.minX, visible.width),
+            up: fraction(inside.minY, inside.height, visible.minY, visible.height)
+        )
+    }
+
+    /// The glass, `size`, at `spot` in `visible`: wholly inside it, whatever the spot says.
+    public static func frame(of spot: ReplyLineSpot, size: CGSize, in visible: CGRect) -> CGRect {
+        func origin(_ fraction: Double, _ length: CGFloat, _ low: CGFloat, _ span: CGFloat) -> CGFloat {
+            let free = span - length
+            return free > 0 ? low + free * CGFloat(unit(fraction)) : low + free / 2
+        }
+        return CGRect(
+            x: origin(spot.across, size.width, visible.minX, visible.width),
+            y: origin(spot.up, size.height, visible.minY, visible.height),
+            width: size.width,
+            height: size.height
+        )
+    }
+
+    /// The screen it goes on. The spot's own, while that display is there. Else the one it is on now (`current`): it
+    /// stays put while it shows, so conch steering Terminal forward on another display, which moves the main screen,
+    /// or the pointer wandering, never moves it. Else, with no spot, the panel's (`home`); then the pointer's; then the
+    /// main one; then any.
+    public static func screen(for spot: ReplyLineSpot?, in screens: [Screen], current: String?, home: String?, pointer: CGPoint?, main: String?) -> Screen? {
+        func named(_ id: String?) -> Screen? { id.flatMap { id in screens.first { $0.id == id } } }
+        if let own = named(spot?.screen) { return own }
+        if let here = named(current) { return here }
+        if spot == nil, let panel = named(home) { return panel }
+        if let pointer, let under = screens.first(where: { $0.frame.contains(pointer) }) { return under }
+        return named(main) ?? screens.first
+    }
+
+    /// The one rule: at the spot on its screen, else bottom centre of the screen `screen(for:…)` picks. The width of the
+    /// window's composer (`ComposerDockGeometry.replyLineWidth`), `height` tall.
+    public static func place(measure: CGFloat, height: CGFloat, spot: ReplyLineSpot?, screens: [Screen], current: String?, home: String?, pointer: CGPoint?, main: String?) -> Placed? {
+        guard let screen = screen(for: spot, in: screens, current: current, home: home, pointer: pointer, main: main) else { return nil }
+        let visible = screen.visible
+        let size = CGSize(width: ComposerDockGeometry.replyLineWidth(measure: measure, in: visible), height: height)
+        let frame = spot.flatMap { $0.screen == screen.id ? self.frame(of: $0, size: size, in: visible) : nil } ?? self.home(size: size, in: visible)
+        return Placed(frame: frame, screen: screen.id, growsDown: frame.midY > visible.midY)
+    }
+
+    /// Let go at `rect`: on the screen under its middle (else under the pointer, else the one it covers most), wholly on
+    /// it, at that screen's width. Within `snap` of bottom centre it goes home and `spot` is nil: nothing to remember.
+    /// Otherwise `spot` is where it came to rest.
+    public static func released(_ rect: CGRect, screens: [Screen], pointer: CGPoint?, measure: CGFloat) -> (placed: Placed, spot: ReplyLineSpot?)? {
+        let middle = CGPoint(x: rect.midX, y: rect.midY)
+        func covered(_ screen: Screen) -> CGFloat {
+            let overlap = screen.frame.intersection(rect)
+            return overlap.isNull ? 0 : overlap.width * overlap.height
+        }
+        guard let screen = screens.first(where: { $0.frame.contains(middle) })
+            ?? pointer.flatMap({ pointer in screens.first { $0.frame.contains(pointer) } })
+            ?? screens.max(by: { covered($0) < covered($1) }) else { return nil }
+        let visible = screen.visible
+        let width = ComposerDockGeometry.replyLineWidth(measure: measure, in: visible)
+        let rest = clamped(CGRect(x: rect.midX - width / 2, y: rect.minY, width: width, height: rect.height), in: visible)
+        let home = home(size: rest.size, in: visible)
+        if hypot(rest.minX - home.minX, rest.minY - home.minY) <= snap {
+            return (Placed(frame: home, screen: screen.id, growsDown: home.midY > visible.midY), nil)
+        }
+        return (Placed(frame: rest, screen: screen.id, growsDown: rest.midY > visible.midY), spot(of: rest, on: screen))
+    }
+
+    /// The pointer went further than a click's wobble between press and let-go: the press was a move.
+    public static func isMove(from press: CGPoint, to release: CGPoint) -> Bool {
+        hypot(release.x - press.x, release.y - press.y) > wobble
+    }
+
+    /// 0 to 1; the middle for anything that is not a number.
+    private static func unit(_ value: Double) -> Double {
+        value.isFinite ? min(1, max(0, value)) : 0.5
     }
 }
 

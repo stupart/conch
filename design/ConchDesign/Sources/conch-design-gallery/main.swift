@@ -1840,14 +1840,26 @@ let fluidPanelCard: CGRect = {
     return slot.offsetBy(dx: fluidPanel.minX + inset.leading, dy: fluidPanel.minY + inset.top)
 }()
 
-/// The reply line alone, the panel off: `ComposerDockGeometry.replyLineFrame`, on the screen's visible frame (y up there,
-/// turned y down here).
-let fluidReplyLineCard: CGRect = {
-    let visible = CGRect(x: 0, y: 0, width: fluidScreen.width, height: fluidScreen.height - panelMenuBar)
-    let width = ComposerDockGeometry.replyLineWidth(measure: 580, in: visible)
-    let up = ComposerDockGeometry.replyLineFrame(size: CGSize(width: width, height: fluidComposerHeight), corner: .bottomLeading, in: visible, besideHandle: false)
-    return CGRect(x: up.minX, y: fluidScreen.height - up.maxY, width: up.width, height: up.height)
-}()
+/// The fluid sheets' screen as AppKit has it (y up), for `ReplyLinePlacement`: its visible frame clear of the menu bar,
+/// and of a Dock along its foot when there is one.
+func fluidAppKitScreen(dock: CGFloat = 0) -> ReplyLinePlacement.Screen {
+    ReplyLinePlacement.Screen(id: "gallery", frame: CGRect(origin: .zero, size: fluidScreen), visible: CGRect(x: 0, y: dock, width: fluidScreen.width, height: fluidScreen.height - dock - panelMenuBar))
+}
+
+/// A rect on that screen (y up) as the sheets draw it (y down).
+func fluidFlipped(_ rect: CGRect) -> CGRect {
+    CGRect(x: rect.minX, y: fluidScreen.height - rect.maxY, width: rect.width, height: rect.height)
+}
+
+/// The reply line alone, the panel off, where the Mac's rule puts it (`ReplyLinePlacement.place`): at `spot`, or bottom
+/// centre of the visible frame when Tyler hasn't left it anywhere.
+func fluidReplyLine(spot: ReplyLineSpot? = nil, dock: CGFloat = 0) -> CGRect {
+    let screen = fluidAppKitScreen(dock: dock)
+    let placed = ReplyLinePlacement.place(measure: 580, height: fluidComposerHeight, spot: spot, screens: [screen], current: nil, home: screen.id, pointer: nil, main: screen.id)
+    return fluidFlipped(placed?.frame ?? .zero)
+}
+
+let fluidReplyLineCard = fluidReplyLine()
 
 /// The composer's face, a stand-in for ComposerView to the lab's numbers: the field, then the bar under it.
 struct ComposerFaceStandIn: View {
@@ -2024,6 +2036,12 @@ struct FluidScene: View {
     var arrivingWidth: CGFloat = fluidPanelCard.width
     /// Another app's window over conch's composer, for the flight that fades in as it leaves.
     var covered = false
+    /// Where the reply line alone rests (`fluidReplyLine`).
+    var replyLineCard = fluidReplyLineCard
+    /// A Dock this tall along the screen's foot, which the reply line alone keeps clear of.
+    var dock: CGFloat = 0
+    /// Where it was a moment ago, outlined: where Tyler picked it up, or where he let go of it.
+    var ghost: CGRect? = nil
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
@@ -2075,8 +2093,29 @@ struct FluidScene: View {
                 .frame(width: fluidPanel.width, height: fluidPanel.height)
                 .offset(x: fluidPanel.minX, y: fluidPanel.minY)
             }
+            if dock > 0 {
+                // The Dock, standing in: glass along the foot, a row of app tiles.
+                let dockShape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+                HStack(spacing: 10) {
+                    ForEach(0..<11, id: \.self) { _ in
+                        RoundedRectangle(cornerRadius: 11, style: .continuous).fill(ConchColor.fill).frame(width: 48, height: 48)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .frame(height: dock - 8)
+                .background(dockShape.fill(ConchColor.glass))
+                .overlay(dockShape.strokeBorder(ConchColor.hairlineStrong, lineWidth: 0.5))
+                .position(x: fluidScreen.width / 2, y: fluidScreen.height - dock / 2)
+            }
             if resting == .panel { RestingComposer(rect: fluidPanelCard, floats: true, listening: listening) }
-            if resting == .replyLine { RestingComposer(rect: fluidReplyLineCard, floats: true, listening: listening) }
+            if resting == .replyLine { RestingComposer(rect: replyLineCard, floats: true, listening: listening) }
+            if let ghost {
+                // Over the glass, so where it was let go shows even where it came to rest on top of it.
+                RoundedRectangle(cornerRadius: ConchRadius.panel, style: .continuous)
+                    .strokeBorder(ConchColor.attention, style: StrokeStyle(lineWidth: 1.5, dash: [6, 5]))
+                    .frame(width: ghost.width, height: ghost.height)
+                    .position(x: ghost.midX, y: ghost.midY)
+            }
             ForEach(Array(cards.enumerated()), id: \.offset) { _, card in
                 FlyingCard(card: card, leavingWidth: leavingWidth, arrivingWidth: arrivingWidth)
             }
@@ -2201,7 +2240,7 @@ try render("fluid-states", width: 1520) {
     FluidScene(room: fluidComposerHeight, resting: .panel)
     Caption("Dictating while away: the mic's state is the daemon's, so it reads the same wherever the input is.")
     FluidScene(room: fluidComposerHeight, resting: .panel, listening: true)
-    Caption("The panel off (the default, With Panel Off): the reply line alone, in the panel's corner.")
+    Caption("The panel off (the default, With Panel Off): the reply line alone, at bottom centre until Tyler drags it somewhere.")
     FluidScene(panelOn: false, resting: .replyLine)
     Caption("Back to conch: it swoops home into its room, and the panel's room closes behind it.")
     let back = fluidFrames(ComposerFlight(from: .panel, at: .floating(fluidPanelCard), to: .window, at: .window(fluidWindowCard)), roomFrom: fluidComposerHeight, roomTo: 0, times: [0.067, 0.1, 0.133, 0.2])
@@ -2244,7 +2283,7 @@ try render("fluid-filmstrip-turnback", width: 1520) {
 }
 
 try render("fluid-filmstrip-reply-line", width: 1520) {
-    Heading(title: "The panel off: to the reply line alone", note: "With the panel off (With Panel Off, on by default) the input still comes with him, as the reply line alone in the panel's corner, the window composer's width, so the flight is a move and a change of glass rather than a resize. " + fluidNote)
+    Heading(title: "The panel off: to the reply line alone", note: "With the panel off (With Panel Off, on by default) the input still comes with him, as the reply line alone at bottom centre (or wherever he last left it), the window composer's width, so the flight is a move and a change of glass rather than a resize. " + fluidNote)
     let alone = ComposerFlight(from: .window, at: .window(fluidWindowCard), to: .replyLine, at: .floating(fluidReplyLineCard))
     filmstrip(fluidFrames(alone, roomFrom: 0, roomTo: 0, times: leaveTimes), arriving: fluidReplyLineCard.width, panelOn: false)
 }
@@ -2259,6 +2298,84 @@ try render("fluid-filmstrip-reduce-motion", width: 1520) {
     Heading(title: "Reduce Motion: a crossfade in place", note: "Nothing travels: the composer fades out where it was and in where it goes, on the morph's timing with no overshoot. " + fluidNote)
     let calm = ComposerFlight(from: .window, at: .window(fluidWindowCard), to: .panel, at: .floating(fluidPanelCard), reduceMotion: true)
     filmstrip(fluidFrames(calm, roomFrom: 0, roomTo: fluidComposerHeight, times: Array(leaveTimes.prefix(12))))
+}
+
+// MARK: - The reply line alone, where Tyler leaves it
+
+// Tyler: "Can we make it so that the input bar defaults to bottom center of the screen when it's in detached mode (or
+// wherever u left it for that one last time) but u can drag it around where u want to and stuff?" Every position here is
+// `ReplyLinePlacement` itself, the rule the Mac's ComposerDock places the reply line alone by; the drags are its
+// `released`, as the dock calls it when Tyler lets go.
+
+let replyBarDock: CGFloat = 70
+let replyBarScreen = fluidAppKitScreen(dock: replyBarDock)
+/// Bottom centre, above the Dock.
+let replyBarHome = fluidReplyLine(dock: replyBarDock)
+/// Picked up at bottom centre and let go up and to the right, 420 across and 470 up (y up): where it rests, and the spot
+/// kept for it.
+let replyBarDragged: (card: CGRect, spot: ReplyLineSpot?) = {
+    let from = fluidFlipped(replyBarHome)
+    let rest = ReplyLinePlacement.released(from.offsetBy(dx: 420, dy: 470), screens: [replyBarScreen], pointer: nil, measure: 580)
+    return (fluidReplyLine(spot: rest?.spot, dock: replyBarDock), rest?.spot)
+}()
+/// Dragged off the screen's trailing edge and let go there: it settles wholly back on, and that is the spot.
+let replyBarOffEdge: (letGo: CGRect, card: CGRect) = {
+    let from = fluidFlipped(replyBarHome)
+    let letGo = from.offsetBy(dx: 760, dy: 180)
+    let rest = ReplyLinePlacement.released(letGo, screens: [replyBarScreen], pointer: nil, measure: 580)
+    return (fluidFlipped(letGo), fluidReplyLine(spot: rest?.spot, dock: replyBarDock))
+}()
+/// Let go 8 across and 7 up from bottom centre: within `snap`, so home, and nothing kept.
+let replyBarNearHome: (letGo: CGRect, card: CGRect, kept: Bool) = {
+    let letGo = fluidFlipped(replyBarHome).offsetBy(dx: 8, dy: 7)
+    let rest = ReplyLinePlacement.released(letGo, screens: [replyBarScreen], pointer: nil, measure: 580)
+    return (fluidFlipped(letGo), fluidFlipped(rest?.placed.frame ?? .zero), rest?.spot != nil)
+}()
+
+/// The whole screen at `scale`, with a caption under it.
+struct ReplyBarFrame: View {
+    let caption: String
+    var scene: FluidScene
+    var scale: CGFloat = 0.62
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            scene
+                .scaleEffect(scale, anchor: .topLeading)
+                .frame(width: fluidScreen.width * scale, height: fluidScreen.height * scale, alignment: .topLeading)
+            Caption(caption)
+        }
+    }
+}
+
+try render("reply-bar-detached", width: 1860) {
+    Heading(title: "The reply line alone: bottom centre, or where he left it", note: "The panel off or folded, the input comes out with Tyler as the reply line alone. It sits at bottom centre of its screen's visible frame, \(Int(ReplyLinePlacement.margin)) pt above the Dock, until he drags it by its chrome (anywhere on the glass but the field and the buttons); then it is where he last left it, kept relative to that screen's visible frame. Let go within \(Int(ReplyLinePlacement.snap)) pt of bottom centre it goes home and nothing is kept; a double click on its chrome does the same. The composer's face is a stand-in; the positions are ReplyLinePlacement's own.")
+    HStack(alignment: .top, spacing: 24) {
+        ReplyBarFrame(caption: "Never moved: bottom centre, \(Int(ReplyLinePlacement.margin)) pt above the Dock.", scene: FluidScene(panelOn: false, resting: .replyLine, replyLineCard: replyBarHome, dock: replyBarDock))
+        ReplyBarFrame(caption: String(format: "Dragged up and right and let go: it stays, and that one spot is kept (across %.2f, up %.2f of its free travel).", replyBarDragged.spot?.across ?? 0, replyBarDragged.spot?.up ?? 0), scene: FluidScene(panelOn: false, resting: .replyLine, replyLineCard: replyBarDragged.card, dock: replyBarDock, ghost: replyBarHome))
+    }
+    HStack(alignment: .top, spacing: 24) {
+        ReplyBarFrame(caption: "Let go half off the screen's edge (outlined): it settles wholly back on, on the dock spring, and that is kept.", scene: FluidScene(panelOn: false, resting: .replyLine, replyLineCard: replyBarOffEdge.card, dock: replyBarDock, ghost: replyBarOffEdge.letGo))
+        ReplyBarFrame(caption: "Let go 8 across and 7 up from bottom centre (outlined): within \(Int(ReplyLinePlacement.snap)) pt, so it snaps home and nothing is kept" + (replyBarNearHome.kept ? " (KEPT: wrong)" : "") + ".", scene: FluidScene(panelOn: false, resting: .replyLine, replyLineCard: replyBarNearHome.card, dock: replyBarDock, ghost: replyBarNearHome.letGo))
+    }
+}
+
+try render("reply-bar-swoop", width: 1860) {
+    Heading(title: "The swoop goes where it really is", note: "Leaving conch with the panel off, the input flies to the reply line alone where Tyler last left it, not to a corner: the flight's target is the rule's own frame (ComposerDock.shape(of: .replyLine) is floatingCard, which is ReplyLinePlacement.place). Coming back, it leaves from there. " + fluidNote)
+    let out = ComposerFlight(from: .window, at: .window(fluidWindowCard), to: .replyLine, at: .floating(replyBarDragged.card))
+    let frames = fluidFrames(out, roomFrom: 0, roomTo: 0, times: [0, 0.067, 0.133, 0.2, 0.3, 0.6])
+    let rows = [Array(frames.prefix(3)), Array(frames.suffix(3))]
+    ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+        HStack(alignment: .top, spacing: 16) {
+            ForEach(row, id: \.time) { frame in
+                ReplyBarFrame(
+                    caption: String(format: "%.0f ms", frame.time * 1000) + (frame.arrived ? " · arrived, handing off" : ""),
+                    scene: FluidScene(panelOn: false, resting: frame.arrived ? .replyLine : nil, cards: frame.cards, leavingWidth: fluidWindowCard.width, arrivingWidth: replyBarDragged.card.width, replyLineCard: replyBarDragged.card, dock: replyBarDock),
+                    scale: 0.4
+                )
+            }
+        }
+    }
 }
 
 // First-run setup (OnboardingGallery.swift).

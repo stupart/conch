@@ -423,19 +423,201 @@ final class ComposerPlacementTests: XCTestCase {
 
     // MARK: Where the reply line alone sits
 
-    /// In the panel's corner of the visible frame, in by the panel's own margin; beside the folded handle, never on it.
-    func testTheReplyLineAloneSitsInThePanelsCorner() {
-        let visible = CGRect(x: 0, y: 70, width: 1440, height: 800)
-        let size = CGSize(width: 580, height: 80)
-        let bottomLeft = ComposerDockGeometry.replyLineFrame(size: size, corner: .bottomLeading, in: visible, besideHandle: false)
-        XCTAssertEqual(bottomLeft.origin, CGPoint(x: 24, y: 94))
-        let beside = ComposerDockGeometry.replyLineFrame(size: size, corner: .bottomLeading, in: visible, besideHandle: true)
-        XCTAssertEqual(beside.minX, 24 + FogHandle.side)
-        let topRight = ComposerDockGeometry.replyLineFrame(size: size, corner: .topTrailing, in: visible, besideHandle: false)
-        XCTAssertEqual(topRight.maxX, visible.maxX - 24)
-        XCTAssertEqual(topRight.maxY, visible.maxY - 24)
-        XCTAssertEqual(ComposerDockGeometry.replyLineWidth(measure: 580, in: visible), 580)
-        XCTAssertEqual(ComposerDockGeometry.replyLineWidth(measure: 580, in: CGRect(x: 0, y: 0, width: 500, height: 400)), 452)
+    /// The laptop: a 70 pt Dock along the foot and a 30 pt menu bar. A second display to its right, no Dock.
+    private let laptop = ReplyLinePlacement.Screen(id: "A", frame: CGRect(x: 0, y: 0, width: 1440, height: 900), visible: CGRect(x: 0, y: 70, width: 1440, height: 800))
+    private let studio = ReplyLinePlacement.Screen(id: "B", frame: CGRect(x: 1440, y: 0, width: 1920, height: 1080), visible: CGRect(x: 1440, y: 0, width: 1920, height: 1055))
+
+    private func placed(
+        spot: ReplyLineSpot? = nil, screens: [ReplyLinePlacement.Screen]? = nil, current: String? = nil, home: String? = "A",
+        pointer: CGPoint? = nil, main: String? = "A", height: CGFloat = 80
+    ) -> ReplyLinePlacement.Placed? {
+        ReplyLinePlacement.place(measure: 580, height: height, spot: spot, screens: screens ?? [laptop, studio], current: current, home: home, pointer: pointer, main: main)
+    }
+
+    private func assertInside(_ rect: CGRect, _ visible: CGRect, _ message: String = "", file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertGreaterThanOrEqual(rect.minX, visible.minX - 0.001, message, file: file, line: line)
+        XCTAssertLessThanOrEqual(rect.maxX, visible.maxX + 0.001, message, file: file, line: line)
+        XCTAssertGreaterThanOrEqual(rect.minY, visible.minY - 0.001, message, file: file, line: line)
+        XCTAssertLessThanOrEqual(rect.maxY, visible.maxY + 0.001, message, file: file, line: line)
+    }
+
+    /// Never moved: bottom centre of its screen's visible frame, `margin` above the Dock, the window composer's width,
+    /// standing on its bottom edge. Tyler: "defaults to bottom center of the screen when it's in detached mode".
+    func testTheReplyLineAloneDefaultsToBottomCentre() {
+        let home = placed()
+        XCTAssertEqual(home?.screen, "A")
+        XCTAssertEqual(home?.frame, CGRect(x: 430, y: 94, width: 580, height: 80))
+        XCTAssertEqual(home?.frame.midX, laptop.visible.midX)
+        XCTAssertEqual(home?.frame.minY, laptop.visible.minY + ReplyLinePlacement.margin)
+        XCTAssertEqual(home?.growsDown, false)
+        XCTAssertEqual(ReplyLinePlacement.margin, 24)
+        // On the other display, the same: its own visible frame's foot, its middle.
+        XCTAssertEqual(placed(home: "B")?.frame, CGRect(x: 2110, y: 24, width: 580, height: 80))
+        // A narrow screen: narrower, still centred.
+        let narrow = ReplyLinePlacement.Screen(id: "N", frame: CGRect(x: 0, y: 0, width: 500, height: 400), visible: CGRect(x: 0, y: 0, width: 500, height: 400))
+        let small = placed(screens: [narrow], home: "N")
+        XCTAssertEqual(small?.frame.width, 452)
+        XCTAssertEqual(small?.frame.midX, 250)
+        // A longer draft grows it up from where it stands, never down into the Dock.
+        XCTAssertEqual(placed(height: 200)?.frame.minY, 94)
+        XCTAssertEqual(ComposerDockGeometry.replyLineWidth(measure: 580, in: laptop.visible), 580)
+    }
+
+    /// Left somewhere, it is there next time, on that screen, whichever screen it is on now or the panel is on.
+    func testASavedSpotIsRestored() {
+        let left = CGRect(x: 200, y: 500, width: 580, height: 80)
+        let spot = ReplyLinePlacement.spot(of: left, on: laptop)
+        XCTAssertEqual(spot.screen, "A")
+        let back = placed(spot: spot, current: "B", home: "B", pointer: CGPoint(x: 2000, y: 500), main: "B")
+        XCTAssertEqual(back?.screen, "A")
+        XCTAssertEqual(back?.frame.minX ?? 0, 200, accuracy: 0.0001)
+        XCTAssertEqual(back?.frame.minY ?? 0, 500, accuracy: 0.0001)
+        // In the top half it hangs from its top edge.
+        XCTAssertEqual(back?.growsDown, true)
+        // Left on the other display, it is on that one.
+        let there = ReplyLinePlacement.spot(of: CGRect(x: 1600, y: 300, width: 580, height: 80), on: studio)
+        XCTAssertEqual(placed(spot: there)?.frame.origin.x ?? 0, 1600, accuracy: 0.0001)
+        XCTAssertEqual(placed(spot: there)?.screen, "B")
+        // Remembered as JSON, it reads back the same.
+        let data = try! JSONEncoder().encode(spot)
+        XCTAssertEqual(try JSONDecoder().decode(ReplyLineSpot.self, from: data), spot)
+    }
+
+    /// Relative to the visible frame: a new resolution or the Dock moved keeps it where it was in the same sense. Flush
+    /// against an edge stays flush, centred stays centred, and it is always wholly on screen.
+    func testASavedSpotKeepsItsSenseOnANewResolutionOrDock() {
+        let corner = ReplyLinePlacement.spot(of: CGRect(x: 860, y: 790, width: 580, height: 80), on: laptop)
+        XCTAssertEqual(corner.across, 1)
+        XCTAssertEqual(corner.up, 1)
+        let centred = ReplyLinePlacement.spot(of: CGRect(x: 430, y: 400, width: 580, height: 80), on: laptop)
+        XCTAssertEqual(centred.across, 0.5)
+        // A bigger resolution.
+        let big = ReplyLinePlacement.Screen(id: "A", frame: CGRect(x: 0, y: 0, width: 1920, height: 1200), visible: CGRect(x: 0, y: 70, width: 1920, height: 1100))
+        let grown = placed(spot: corner, screens: [big])?.frame
+        XCTAssertEqual(grown?.maxX, big.visible.maxX)
+        XCTAssertEqual(grown?.maxY, big.visible.maxY)
+        XCTAssertEqual(placed(spot: centred, screens: [big])?.frame.midX, big.visible.midX)
+        // The Dock moved to the left side: still in the top trailing corner, clear of the Dock.
+        let docked = ReplyLinePlacement.Screen(id: "A", frame: laptop.frame, visible: CGRect(x: 80, y: 0, width: 1360, height: 870))
+        let moved = placed(spot: corner, screens: [docked])?.frame
+        XCTAssertEqual(moved?.maxX, docked.visible.maxX)
+        XCTAssertEqual(moved?.maxY, docked.visible.maxY)
+        // A smaller one: wholly on it, whatever it was.
+        let smallest = ReplyLinePlacement.Screen(id: "A", frame: CGRect(x: 0, y: 0, width: 1024, height: 640), visible: CGRect(x: 0, y: 50, width: 1024, height: 565))
+        for spot in [corner, centred, ReplyLinePlacement.spot(of: CGRect(x: 0, y: 70, width: 580, height: 80), on: laptop)] {
+            assertInside(placed(spot: spot, screens: [smallest])!.frame, smallest.visible, "\(spot)")
+        }
+    }
+
+    /// Wholly on screen: a spot or a let-go past any edge comes back onto the visible frame, the least it takes; nothing
+    /// a spot can say (past the ends, not a number) puts it off screen.
+    func testItIsClampedWhollyOnScreen() {
+        let visible = laptop.visible
+        XCTAssertEqual(ReplyLinePlacement.clamped(CGRect(x: -100, y: -50, width: 580, height: 80), in: visible).origin, CGPoint(x: 0, y: 70))
+        XCTAssertEqual(ReplyLinePlacement.clamped(CGRect(x: 1200, y: 850, width: 580, height: 80), in: visible).origin, CGPoint(x: 860, y: 790))
+        XCTAssertEqual(ReplyLinePlacement.clamped(CGRect(x: 300, y: 400, width: 580, height: 80), in: visible).origin, CGPoint(x: 300, y: 400))
+        // Too big for an axis: centred on it.
+        XCTAssertEqual(ReplyLinePlacement.clamped(CGRect(x: 0, y: 400, width: 2000, height: 80), in: visible).midX, visible.midX)
+        // Let go half off the foot of the screen, into the Dock: it settles wholly above it, and that is what is kept.
+        let rest = ReplyLinePlacement.released(CGRect(x: -200, y: 10, width: 580, height: 80), screens: [laptop, studio], pointer: CGPoint(x: 40, y: 50), measure: 580)
+        XCTAssertEqual(rest?.placed.frame.origin, CGPoint(x: 0, y: 70))
+        XCTAssertEqual(rest?.spot?.across, 0)
+        XCTAssertEqual(rest?.spot?.up, 0)
+        for (across, up) in [(1.7, -3.0), (Double.nan, Double.infinity), (-0.2, 1.2)] {
+            let frame = ReplyLinePlacement.frame(of: ReplyLineSpot(screen: "A", across: across, up: up), size: CGSize(width: 580, height: 80), in: visible)
+            assertInside(frame, visible, "\(across) \(up)")
+        }
+        XCTAssertEqual(ReplyLinePlacement.frame(of: ReplyLineSpot(screen: "A", across: .nan, up: 0), size: CGSize(width: 580, height: 80), in: visible).midX, visible.midX)
+    }
+
+    /// Its screen gone (the display unplugged): bottom centre of the screen with the pointer, else the main one. The spot
+    /// is not forgotten: plugged back in, it is there again.
+    func testWithItsScreenGoneItGoesToThePointersScreenOrTheMainOne() {
+        let spot = ReplyLineSpot(screen: "C", across: 0.1, up: 0.9)
+        let pointer = placed(spot: spot, home: "A", pointer: CGPoint(x: 2000, y: 500))
+        XCTAssertEqual(pointer?.screen, "B")
+        XCTAssertEqual(pointer?.frame, CGRect(x: 2110, y: 24, width: 580, height: 80))
+        XCTAssertEqual(placed(spot: spot, home: "B", pointer: nil, main: "A")?.screen, "A")
+        XCTAssertEqual(placed(spot: spot, home: nil, pointer: CGPoint(x: -5000, y: 0), main: nil)?.screen, "A")
+        XCTAssertNil(placed(spot: spot, screens: []))
+        let display = ReplyLinePlacement.Screen(id: "C", frame: CGRect(x: -1920, y: 0, width: 1920, height: 1080), visible: CGRect(x: -1920, y: 0, width: 1920, height: 1055))
+        XCTAssertEqual(placed(spot: spot, screens: [laptop, studio, display], pointer: CGPoint(x: 2000, y: 500))?.screen, "C")
+    }
+
+    /// While it shows, it stays on the screen it is on: conch steering Terminal forward on another display (which moves
+    /// the main screen) or the pointer wandering over there never moves it (#446's steering, which holds it in place).
+    /// With no spot and nowhere yet, it starts on the panel's screen.
+    func testItStaysOnItsScreenWhileItShows() {
+        let steady = placed(current: "A", home: "A", pointer: CGPoint(x: 2000, y: 500), main: "B")
+        XCTAssertEqual(steady, placed(current: "A", home: "A", pointer: nil, main: "A"))
+        XCTAssertEqual(steady?.screen, "A")
+        // A spot whose screen is gone: where it went, it stays.
+        let gone = ReplyLineSpot(screen: "C", across: 0.1, up: 0.9)
+        XCTAssertEqual(placed(spot: gone, current: "A", pointer: CGPoint(x: 2000, y: 500), main: "B")?.screen, "A")
+        // Starting out: the panel's screen over the pointer's and the main one.
+        XCTAssertEqual(placed(current: nil, home: "B", pointer: CGPoint(x: 40, y: 40), main: "A")?.screen, "B")
+        XCTAssertEqual(placed(current: nil, home: nil, pointer: CGPoint(x: 2000, y: 40), main: "A")?.screen, "B")
+        XCTAssertEqual(placed(current: nil, home: nil, pointer: nil, main: "B")?.screen, "B")
+    }
+
+    /// Let go within `snap` of bottom centre, it goes home and nothing is remembered; further off, it stays where it came
+    /// to rest and that is the spot.
+    func testLetGoNearBottomCentreItSnapsHome() {
+        XCTAssertEqual(ReplyLinePlacement.snap, 12)
+        let home = CGRect(x: 430, y: 94, width: 580, height: 80)
+        func letGo(dx: CGFloat, dy: CGFloat) -> (placed: ReplyLinePlacement.Placed, spot: ReplyLineSpot?)? {
+            ReplyLinePlacement.released(home.offsetBy(dx: dx, dy: dy), screens: [laptop, studio], pointer: nil, measure: 580)
+        }
+        for (dx, dy) in [(0.0, 0.0), (8.0, 8.0), (12.0, 0.0), (0.0, -12.0), (-11.9, 0.0)] as [(CGFloat, CGFloat)] {
+            let rest = letGo(dx: dx, dy: dy)
+            XCTAssertEqual(rest?.placed.frame, home, "\(dx), \(dy)")
+            XCTAssertNil(rest?.spot, "\(dx), \(dy)")
+        }
+        for (dx, dy) in [(12.5, 0.0), (9.0, 9.0), (0.0, 40.0), (-300.0, 200.0)] as [(CGFloat, CGFloat)] {
+            let rest = letGo(dx: dx, dy: dy)
+            XCTAssertEqual(rest?.placed.frame, home.offsetBy(dx: dx, dy: dy), "\(dx), \(dy)")
+            XCTAssertNotNil(rest?.spot, "\(dx), \(dy)")
+            // What is kept puts it exactly back where it rested.
+            if let spot = rest?.spot {
+                let again = ReplyLinePlacement.frame(of: spot, size: home.size, in: laptop.visible)
+                XCTAssertEqual(again.minX, home.minX + dx, accuracy: 0.0001)
+                XCTAssertEqual(again.minY, home.minY + dy, accuracy: 0.0001)
+            }
+        }
+        // Home on the other display, when let go near its bottom centre.
+        let over = ReplyLinePlacement.released(CGRect(x: 2115, y: 30, width: 580, height: 80), screens: [laptop, studio], pointer: nil, measure: 580)
+        XCTAssertEqual(over?.placed.frame, CGRect(x: 2110, y: 24, width: 580, height: 80))
+        XCTAssertEqual(over?.placed.screen, "B")
+        XCTAssertNil(over?.spot)
+    }
+
+    /// Let go across displays, it belongs to the one under its middle, then the pointer's, then the one it covers most,
+    /// and takes that one's width.
+    func testLetGoItBelongsToTheScreenUnderIt() {
+        let straddling = ReplyLinePlacement.released(CGRect(x: 1300, y: 400, width: 580, height: 80), screens: [laptop, studio], pointer: CGPoint(x: 100, y: 100), measure: 580)
+        XCTAssertEqual(straddling?.placed.screen, "B")
+        XCTAssertEqual(straddling?.spot?.screen, "B")
+        assertInside(straddling!.placed.frame, studio.visible)
+        // Its middle off every display: the pointer's.
+        let off = ReplyLinePlacement.released(CGRect(x: -600, y: 400, width: 580, height: 80), screens: [laptop, studio], pointer: CGPoint(x: 1500, y: 100), measure: 580)
+        XCTAssertEqual(off?.placed.screen, "B")
+        // Nor the pointer: the one it covers most.
+        let most = ReplyLinePlacement.released(CGRect(x: -500, y: 400, width: 580, height: 80), screens: [laptop, studio], pointer: nil, measure: 580)
+        XCTAssertEqual(most?.placed.screen, "A")
+        let narrow = ReplyLinePlacement.Screen(id: "N", frame: CGRect(x: 0, y: -400, width: 500, height: 400), visible: CGRect(x: 0, y: -400, width: 500, height: 400))
+        let onto = ReplyLinePlacement.released(CGRect(x: 0, y: -300, width: 580, height: 80), screens: [laptop, narrow], pointer: nil, measure: 580)
+        XCTAssertEqual(onto?.placed.frame.width, 452)
+        assertInside(onto!.placed.frame, narrow.visible)
+    }
+
+    /// A press that barely moves is a click: nothing moves and nothing is remembered.
+    func testAClickIsNotAMove() {
+        XCTAssertEqual(ReplyLinePlacement.wobble, 4)
+        XCTAssertFalse(ReplyLinePlacement.isMove(from: .zero, to: CGPoint(x: 3, y: 0)))
+        XCTAssertFalse(ReplyLinePlacement.isMove(from: .zero, to: CGPoint(x: 4, y: 0)))
+        XCTAssertFalse(ReplyLinePlacement.isMove(from: CGPoint(x: 10, y: 10), to: CGPoint(x: 12, y: 13)))
+        XCTAssertTrue(ReplyLinePlacement.isMove(from: .zero, to: CGPoint(x: 4.1, y: 0)))
+        XCTAssertTrue(ReplyLinePlacement.isMove(from: .zero, to: CGPoint(x: 3, y: 3)))
     }
 
     // MARK: The panel's room for it
