@@ -37,10 +37,10 @@ describe("the reading measure", () => {
   });
 
   test("caps every prose piece the renderer draws, and nothing wider", () => {
-    const render = between(markdown, "    private func render(_ piece: Piece) -> some View {", "    private func table(");
+    const render = between(markdown, "    private func render(_ piece: Piece, segment: Int) -> some View {", "    private func table(");
     // The flow, a bullet, a numbered item and a quote; plus the one-text reply in `body`.
     expect(count(render, ".frame(maxWidth: measure, alignment: .leading)")).toBe(4);
-    expect(markdown).toContain("Text(text).frame(maxWidth: measure, alignment: .leading)");
+    expect(markdown).toContain("Text(text).conversationSelectable(row: selectionRow, segment: 0).frame(maxWidth: measure, alignment: .leading)");
     expect(markdown).toContain("private var measure: CGFloat { ConchReading.measure(size * scale) }");
     // Code keeps the column: it wraps rather than scrolls, so a narrower block wraps more of it.
     const code = between(render, "case let .code(text):", "case let .table(rows):");
@@ -65,7 +65,7 @@ describe("the rhythm between blocks", () => {
     // Views sit edge to edge and carry their own gap; a uniform stack spacing is what made a
     // list's items as far apart as its paragraphs.
     expect(markdown).toContain("VStack(alignment: .leading, spacing: 0) {");
-    expect(markdown).toContain("render(placed.piece).padding(.top, placed.gap)");
+    expect(markdown).toContain("render(placed.piece, segment: segments[index]).padding(.top, placed.gap)");
     expect(markdown).not.toMatch(/VStack\(alignment: \.leading, spacing: size \* 0\.7\)/);
   });
 

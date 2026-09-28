@@ -2,6 +2,7 @@
 // top and back twice, measured.
 //
 //   swift run -c release conch-scroll-bench [after|before|eager-whole] [items] [--json out.json]
+//                                           [--no-selection] [--select-all]
 //
 // `before` is the stack as it was: every recorded row a real view in one eager VStack, drawn from
 // its 240-character preview, the page before asked for within a screen of the top, a prepend
@@ -12,6 +13,11 @@
 //
 // The rows are the harness's own, drawn with the shared MarkdownView the apps use for replies; the
 // apps' rows add controls around the same text. The window sits offscreen and never takes focus.
+//
+// `after` carries the conversation's selection as the Mac's does (ConversationSelection.swift): every
+// text row reports its layout and has a highlight, and the surface lies over the column.
+// `--no-selection` leaves it out, for the numbers without it; `--select-all` scrolls with the whole
+// conversation selected, so every row that comes into view is lit.
 import AppKit
 import ConchDesign
 import SwiftUI
@@ -254,15 +260,26 @@ struct Marker: NSViewRepresentable {
 struct BenchRow: View {
     let row: RowModel
     let decodeAtDisplaySize: Bool
+    var selection: ConversationSelectionController? = nil
 
     var body: some View {
-        content
+        selectable
             .background(alignment: .topLeading) {
                 if Markers.shared.enabled { Marker(id: row.id).frame(width: 0, height: 0) }
             }
             .background(alignment: .bottomLeading) {
                 if Markers.shared.enabled { Marker(id: row.id + "#end").frame(width: 0, height: 0) }
             }
+    }
+
+    /// A text row joins the conversation's selection, as the Mac's messages do.
+    @ViewBuilder
+    private var selectable: some View {
+        if let selection, BenchSelection.isText(row) {
+            content.conversationSelectionRow(row.id, in: selection)
+        } else {
+            content
+        }
     }
 
     @ViewBuilder
@@ -281,7 +298,8 @@ struct BenchRow: View {
             if row.role == "user" || row.kind == "user" {
                 HStack {
                     Spacer(minLength: 48)
-                    Text(row.text).font(ConchType.readingBody).lineSpacing(ConchType.readingLineSpacing)
+                    Text(row.text).conversationSelectable(row: selection == nil ? nil : row.id, segment: 0)
+                        .font(ConchType.readingBody).lineSpacing(ConchType.readingLineSpacing)
                         .textSelection(.enabled)
                         .padding(.horizontal, 12).padding(.vertical, 8)
                         .background(ConchColor.fill, in: RoundedRectangle(cornerRadius: ConchRadius.large))
@@ -321,10 +339,47 @@ struct BenchImage: View {
 
 // MARK: - The two stacks
 
+/// The selection's reading of the synthetic session, as the Mac's `selectionSource` reads a real one.
+@MainActor
+enum BenchSelection {
+    static var enabled = true
+
+    static func isText(_ row: RowModel) -> Bool {
+        row.kind != "tool_call" && row.kind != "tool_result" && row.kind != "image"
+    }
+
+    static func source(_ record: FakeRecord) -> ConversationSelectionController.Source {
+        .init(
+            rowIDs: { record.paging.rows.map(\.id) + record.session.live.map(\.id) },
+            rowTexts: { ids in
+                let wanted = Set(ids)
+                var texts: [String: SelectableRowText] = [:]
+                var rows = record.paging.items.filter { wanted.contains($0.id) }.map {
+                    RowModel(id: $0.id, kind: $0.kind, role: $0.role, text: record.bodies[$0.id] ?? $0.preview, image: nil)
+                }
+                rows += record.session.live.filter { wanted.contains($0.id) }.map {
+                    RowModel(id: $0.id, kind: $0.kind, role: nil, text: $0.text, image: $0.image)
+                }
+                for row in rows where isText(row) {
+                    let user = row.role == "user" || row.kind == "user"
+                    texts[row.id] = SelectableRowText(
+                        id: row.id,
+                        speaker: user ? .you : .agent("Claude"),
+                        segments: user ? [SelectableSegment(text: row.text)] : MarkdownView.selectableSegments(row.text)
+                    )
+                }
+                return texts
+            }
+        )
+    }
+}
+
 struct AfterStack: View {
     @ObservedObject var record: FakeRecord
+    let selection: ConversationSelectionController?
 
     var body: some View {
+        let _ = selection?.source = BenchSelection.source(record)
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 HistoryRegion(
@@ -334,17 +389,25 @@ struct AfterStack: View {
                     gap: 22,
                     edgeFont: .system(size: 11)
                 ) { row in
-                    BenchRow(row: row, decodeAtDisplaySize: true)
+                    BenchRow(row: row, decodeAtDisplaySize: true, selection: selection)
                 }
                 ForEach(record.session.live) { live in
-                    BenchRow(row: RowModel(id: live.id, kind: live.kind, role: nil, text: live.text, image: live.image), decodeAtDisplaySize: true)
+                    BenchRow(row: RowModel(id: live.id, kind: live.kind, role: nil, text: live.text, image: live.image), decodeAtDisplaySize: true, selection: selection)
                 }
                 Color.clear.frame(height: 14).id("bottom")
             }
             .padding(.horizontal, 18)
             .padding(.top, 14)
             .frame(maxWidth: 700, alignment: .leading)
+            .modifier(SelectionSurface(selection: selection))
             .frame(maxWidth: .infinity)
+        }
+    }
+
+    private struct SelectionSurface: ViewModifier {
+        let selection: ConversationSelectionController?
+        func body(content: Content) -> some View {
+            if let selection { content.conversationSelectionSurface(selection) } else { content }
         }
     }
 
@@ -464,6 +527,8 @@ final class Bench {
     let record: FakeRecord
     let anchor = GrowthAnchor()
     let jsonPath: String?
+    let selection: ConversationSelectionController?
+    let selectAll: Bool
     var window: NSWindow!
     var scrollView: NSScrollView!
     var clip: NSClipView { scrollView.contentView }
@@ -494,11 +559,13 @@ final class Bench {
     var lastReal: Range<Int> = 0..<0
     var timer: Timer?
 
-    init(mode: String, count: Int, session: Synthetic, jsonPath: String?) {
+    init(mode: String, count: Int, session: Synthetic, jsonPath: String?, selection: Bool, selectAll: Bool) {
         self.mode = mode
         self.count = count
         self.session = session
         self.jsonPath = jsonPath
+        self.selection = selection && mode == "after" ? ConversationSelectionController() : nil
+        self.selectAll = selectAll
         // A ceiling on what is held — the phone's is 1,000, the Mac's 4,000. `before` had none on the Mac.
         record = FakeRecord(session: session, itemCap: mode == "after" ? 4_000 : nil, latency: 0.04)
     }
@@ -509,7 +576,7 @@ final class Bench {
     func start() {
         Markers.shared.enabled = mode == "after"
         let root: AnyView = mode == "after"
-            ? AnyView(AfterStack(record: record))
+            ? AnyView(AfterStack(record: record, selection: selection))
             : AnyView(BeforeStack(record: record, whole: mode == "eager-whole", anchor: anchor))
         window = NSWindow(contentRect: NSRect(x: -30_000, y: -30_000, width: 760, height: 900),
                           styleMask: [.borderless], backing: .buffered, defer: false)
@@ -576,6 +643,7 @@ final class Bench {
                 record.loadOlder()
             }
             if ticks == 45 { scroll(to: maxY) }
+            if ticks == 80, selectAll { selection?.selectAll() }
             if ticks == 90 {
                 memory.append(("1 at rest, opened at the end", footprint() - baseline))
                 clock = CACurrentMediaTime()
@@ -711,6 +779,8 @@ final class Bench {
         let result: [String: Any] = [
             "mode": mode,
             "items": count,
+            "selection": selection == nil ? "off" : (selectAll ? "all selected" : "on"),
+            "selectionRowsRegistered": selection?.registeredRows.count ?? 0,
             "baselineMB": (baseline * 10).rounded() / 10,
             "memoryMB": Dictionary(uniqueKeysWithValues: memory.map { ($0.0, ($0.1 * 10).rounded() / 10) }),
             "steps": steps,
@@ -744,11 +814,13 @@ let arguments = Array(CommandLine.arguments.dropFirst())
 let mode = arguments.first ?? "after"
 let count = arguments.dropFirst().first.flatMap(Int.init) ?? 5_000
 let jsonPath = arguments.firstIndex(of: "--json").flatMap { $0 + 1 < arguments.count ? arguments[$0 + 1] : nil }
+let withSelection = !arguments.contains("--no-selection")
+let selectAll = arguments.contains("--select-all")
 
 let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)
 let images = writeImages(to: FileManager.default.temporaryDirectory.appendingPathComponent("conch-scroll-bench"))
 let session = Synthetic.make(count: count, images: images)
-let bench = MainActor.assumeIsolated { Bench(mode: mode, count: count, session: session, jsonPath: jsonPath) }
+let bench = MainActor.assumeIsolated { Bench(mode: mode, count: count, session: session, jsonPath: jsonPath, selection: withSelection, selectAll: selectAll) }
 MainActor.assumeIsolated { bench.start() }
 app.run()

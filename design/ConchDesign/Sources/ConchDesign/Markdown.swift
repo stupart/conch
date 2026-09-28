@@ -266,6 +266,9 @@ public struct MarkdownView: View {
     @ScaledMetric(relativeTo: .body) private var scale: CGFloat = 1
     /// The leading the caller set (the Mac's transcript: `ConchType.readingLineSpacing`), which the gaps count.
     @Environment(\.lineSpacing) private var lineSpacing
+    /// Inside the conversation, the row whose selection its texts join (ConversationSelection.swift): each is tagged
+    /// with its place in `selectableSegments`. Nil everywhere else.
+    @Environment(\.conversationSelectionRow) private var selectionRow
 
     public init(text: String, size: CGFloat = ConchType.readingBodySize, image: ImageView? = nil) {
         self.text = text
@@ -374,11 +377,12 @@ public struct MarkdownView: View {
         Group {
             if placed.count == 1, case let .flow(text) = placed[0].piece {
                 // Most replies: one text, the one responder a reply always was.
-                Text(text).frame(maxWidth: measure, alignment: .leading)
+                Text(text).conversationSelectable(row: selectionRow, segment: 0).frame(maxWidth: measure, alignment: .leading)
             } else {
+                let segments = Self.firstSegments(placed.map(\.piece))
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(placed.enumerated()), id: \.offset) { _, placed in
-                        render(placed.piece).padding(.top, placed.gap)
+                    ForEach(Array(placed.enumerated()), id: \.offset) { index, placed in
+                        render(placed.piece, segment: segments[index]).padding(.top, placed.gap)
                     }
                 }
             }
@@ -394,16 +398,17 @@ public struct MarkdownView: View {
     /// Prose runs no wider than this (`ConchReading.measure`); tables, code and pictures take the whole width.
     private var measure: CGFloat { ConchReading.measure(size * scale) }
 
+    /// `segment`: the piece's first place in `selectableSegments`, which its texts are tagged with.
     @ViewBuilder
-    private func render(_ piece: Piece) -> some View {
+    private func render(_ piece: Piece, segment: Int) -> some View {
         switch piece {
         case let .flow(text):
-            Text(text).fixedSize(horizontal: false, vertical: true)
+            Text(text).conversationSelectable(row: selectionRow, segment: segment).fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: measure, alignment: .leading)
         case let .bullet(depth, text):
             HStack(alignment: .firstTextBaseline, spacing: size * 0.5) {
                 Text(["•", "◦", "▪"][min(depth, 2)]).font(bodyFont).foregroundStyle(ConchColor.textSecondary).allowsHitTesting(false)
-                Text(text).fixedSize(horizontal: false, vertical: true)
+                Text(text).conversationSelectable(row: selectionRow, segment: segment).fixedSize(horizontal: false, vertical: true)
             }
             .padding(.leading, size * CGFloat(1 + depth) * 1.2)
             .frame(maxWidth: measure, alignment: .leading)
@@ -411,26 +416,26 @@ public struct MarkdownView: View {
             HStack(alignment: .firstTextBaseline, spacing: size * 0.5) {
                 Text("\(ordinal).").font(bodyFont.monospacedDigit()).foregroundStyle(ConchColor.textSecondary)
                     .frame(minWidth: size * 1.4, alignment: .trailing).allowsHitTesting(false)
-                Text(text).fixedSize(horizontal: false, vertical: true)
+                Text(text).conversationSelectable(row: selectionRow, segment: segment).fixedSize(horizontal: false, vertical: true)
             }
             .padding(.leading, size * CGFloat(depth) * 1.2)
             .frame(maxWidth: measure, alignment: .leading)
         case let .quote(text):
             HStack(alignment: .top, spacing: size * 0.7) {
                 RoundedRectangle(cornerRadius: 1).fill(ConchColor.hairlineStrong).frame(width: 3).allowsHitTesting(false)
-                Text(text).foregroundStyle(ConchColor.textSecondary).fixedSize(horizontal: false, vertical: true)
+                Text(text).conversationSelectable(row: selectionRow, segment: segment).foregroundStyle(ConchColor.textSecondary).fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: measure, alignment: .leading)
         case let .code(text):
             // Wrapped, as Xcode wraps it: a sideways scroller here is an `NSScrollView` per code block, a platform
             // view in the responder chain of every scroll event, and one that captures the wheel.
-            Text(text).font(mono).fixedSize(horizontal: false, vertical: true)
+            Text(text).conversationSelectable(row: selectionRow, segment: segment).font(mono).fixedSize(horizontal: false, vertical: true)
                 .padding(.vertical, size * 0.7)
                 .padding(.horizontal, size * 0.9)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(ConchColor.fill, in: RoundedRectangle(cornerRadius: ConchRadius.small))
         case let .table(rows):
-            table(rows)
+            table(rows, segment: segment)
         case .rule:
             Rectangle().fill(ConchColor.hairlineStrong).frame(height: 1).padding(.vertical, size * 0.3).allowsHitTesting(false)
         case let .image(alt, source):
@@ -443,7 +448,7 @@ public struct MarkdownView: View {
     /// SwiftUI `Grid` does: it sizes every column to its widest cell's ideal width and the whole document with it
     /// (measured 2026-09-20: the paragraphs clipped at both edges of a 748 pt render). So the columns are laid out here,
     /// and the grid's lines are a rule per row and per column placed by the layout, not two overlays on every cell.
-    private func table(_ rows: [[String]]) -> some View {
+    private func table(_ rows: [[String]], segment: Int) -> some View {
         let columns = rows[0].count
         return MarkdownTableLayout(weights: MarkdownDocument.columnWeights(rows), rows: rows.count) {
             // The decorations first, so the cells draw over them: the header's ground, then the rules.
@@ -451,8 +456,8 @@ public struct MarkdownView: View {
             ForEach(0..<max(rows.count - 1, 0), id: \.self) { _ in Rectangle().fill(ConchColor.hairline).allowsHitTesting(false) }
             ForEach(0..<max(columns - 1, 0), id: \.self) { _ in Rectangle().fill(ConchColor.hairline).allowsHitTesting(false) }
             ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
-                ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
-                    Text(Self.styled(cell, font: index == 0 ? tableFont.weight(.semibold) : tableFont, size: tableSize))
+                ForEach(Array(row.enumerated()), id: \.offset) { column, cell in
+                    Text(Self.styled(cell, font: index == 0 ? tableFont.weight(.semibold) : tableFont, size: tableSize)).conversationSelectable(row: selectionRow, segment: segment + index * columns + column)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.horizontal, size * 0.6)
                         .padding(.vertical, size * 0.4)
@@ -462,6 +467,59 @@ public struct MarkdownView: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: ConchRadius.small))
         .overlay(RoundedRectangle(cornerRadius: ConchRadius.small).strokeBorder(ConchColor.hairlineStrong, lineWidth: 1).allowsHitTesting(false))
+    }
+}
+
+extension MarkdownView {
+    /// How many selectable texts a piece draws: one for prose, an item, a quote or a code block, one per cell for a table,
+    /// none for a rule or a picture.
+    static func segmentCount(_ piece: Piece) -> Int {
+        switch piece {
+        case .flow, .bullet, .ordered, .quote, .code: 1
+        case let .table(rows): rows.count * (rows.first?.count ?? 0)
+        case .rule, .image: 0
+        }
+    }
+
+    /// Each piece's first place among the document's selectable texts.
+    static func firstSegments(_ pieces: [Piece]) -> [Int] {
+        var next = 0
+        return pieces.map { piece in
+            defer { next += segmentCount(piece) }
+            return next
+        }
+    }
+
+    /// The document's selectable texts as `MarkdownView` draws and tags them, in the same order: the plain characters of
+    /// each, and what kind of block it is, for the conversation's selection to map and copy
+    /// (ConversationSelection.swift). `size` is the one the view is drawn at, so the parse is the one it cached.
+    public static func selectableSegments(_ text: String, size: CGFloat = ConchType.readingBodySize) -> [SelectableSegment] {
+        var segments: [SelectableSegment] = []
+        var tables = 0
+        for piece in MarkdownPieceCache.shared.pieces(text, size: size, images: false) {
+            switch piece {
+            case let .flow(text):
+                segments.append(SelectableSegment(text, kind: .prose))
+            case let .bullet(depth, text):
+                segments.append(SelectableSegment(text, kind: .listItem(marker: ["•", "◦", "▪"][min(depth, 2)], depth: depth)))
+            case let .ordered(depth, ordinal, text):
+                segments.append(SelectableSegment(text, kind: .listItem(marker: "\(ordinal).", depth: depth)))
+            case let .quote(text):
+                segments.append(SelectableSegment(text, kind: .quote))
+            case let .code(text):
+                segments.append(SelectableSegment(text: text, kind: .code))
+            case let .table(rows):
+                for (r, row) in rows.enumerated() {
+                    for (c, cell) in row.enumerated() {
+                        segments.append(SelectableSegment(MarkdownDocument.inline(cell), kind: .tableCell(table: tables, row: r, column: c)))
+                    }
+                }
+                tables += 1
+            case .rule, .image:
+                break
+            }
+        }
+        return segments
     }
 }
 
