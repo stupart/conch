@@ -55,6 +55,8 @@ export class RecordsRuntime {
   private activeReceipt?: QueuedReceipt;
   private receipts: QueuedReceipt[] = [];
   private historyRequests = 0;
+  /** Reads in the worker now, by what they ask: an identical read joins the one running. */
+  private historyFlights = new Map<string, Promise<HistoryResponse>>();
   private restarts = 0;
   private terminated = new WeakSet<RecordsRuntimeClient>();
   /** ponytail: three replacements, then it waits for an explicit enable. Raise it only if
@@ -184,17 +186,39 @@ export class RecordsRuntime {
     return this.closed ? historyError("unavailable", "conch is restarting; retry the read") : historyOff();
   }
 
-  private async readHistory(request: HistoryRequest): Promise<HistoryResponse> {
-    if (!this.enabled || this.closed) return this.notServing();
+  /**
+   * One worker read per question, however many times it is asked while the answer is on its way.
+   *
+   * The worker runs one read at a time and cannot abandon one it has started, while an app
+   * gives up after 5 s and asks again once its pause is over. A read slower than that — a
+   * large session, a cold disk — was queued once more per retry by every panel showing it,
+   * and the worker spent its whole life answering questions nobody was still waiting for.
+   */
+  private readHistory(request: HistoryRequest): Promise<HistoryResponse> {
+    if (!this.enabled || this.closed) return Promise.resolve(this.notServing());
     const parsed = validateHistoryRequest(request);
-    if (!parsed.ok) return historyError("invalid-request", parsed.err);
+    if (!parsed.ok) return Promise.resolve(historyError("invalid-request", parsed.err));
+    const value = parsed.value;
+    const key = JSON.stringify(value.kind === "history-page"
+      ? [value.kind, value.session, value.branch ?? null, value.before ?? null, value.limit ?? null]
+      : [value.kind, value.session, value.item, value.bodyCursor ?? null]);
+    const running = this.historyFlights.get(key);
+    if (running) return running;
+    const read = this.readHistoryOnce(value).finally(() => {
+      if (this.historyFlights.get(key) === read) this.historyFlights.delete(key);
+    });
+    this.historyFlights.set(key, read);
+    return read;
+  }
+
+  private async readHistoryOnce(request: HistoryRequest): Promise<HistoryResponse> {
     const client = this.client;
     if (!client || !this.ingesting) return historyError("unavailable", "history worker is unavailable");
     // Readers cannot grow the worker's RPC queue without bound during a long backfill.
     if (this.historyRequests >= 8) return historyError("busy", "history has too many pending reads; retry shortly");
     this.historyRequests++;
     try {
-      const { kind, ...query } = parsed.value;
+      const { kind, ...query } = request;
       const response = kind === "history-page"
         ? await client.historyPage(query as HistoryPageRequest, this.options.ownerDeviceId)
         : await client.historyItem(query as HistoryItemRequest, this.options.ownerDeviceId);

@@ -51,12 +51,37 @@ test("history reads have bounded backpressure while a worker is occupied", async
   let calls = 0;
   const f = fixture(async () => { calls++; return pending; });
   await f.runtime.setEnabled(true);
-  const reads = Array.from({ length: 8 }, () => f.runtime.historyPage({ session: "indexed" }));
+  const reads = Array.from({ length: 8 }, (_, index) => f.runtime.historyPage({ session: `indexed-${index}` }));
   expect(await f.runtime.historyPage({ session: "indexed" })).toMatchObject({ kind: "history-error", code: "busy" });
   expect(calls).toBe(8);
   release(page);
   expect((await Promise.all(reads)).every((response) => response.kind === "history-page")).toBe(true);
   expect((await f.runtime.historyPage({ session: "indexed" })).kind).toBe("history-page");
+});
+
+test("a read asked again while the same read is in the worker joins it instead of queueing another", async () => {
+  // The worker cannot drop a read it has started, and an app that gave up after 5 s asks again.
+  // A slow read used to be queued once more per retry until the worker did nothing else.
+  let release!: (response: HistoryResponse) => void;
+  let pending = new Promise<HistoryResponse>((resolve) => { release = resolve; });
+  const calls: HistoryPageRequest[] = [];
+  const f = fixture(async (request) => { calls.push(request); return pending; });
+  await f.runtime.setEnabled(true);
+  const tipped = { session: "indexed", branch: "tip", limit: 50 };
+  const reads = Array.from({ length: 12 }, () => f.runtime.historyPage({ ...tipped }));
+  const other = [f.runtime.historyPage({ ...tipped, branch: "other-tip" }), f.runtime.historyPage({ session: "indexed", limit: 50 }),
+    f.runtime.historyPage({ ...tipped, session: "another" })];
+  const body = [f.runtime.historyItem({ session: "indexed", item: "a" }), f.runtime.historyItem({ session: "indexed", item: "a" })];
+  expect(calls).toEqual([tipped, { ...tipped, branch: "other-tip" }, { session: "indexed", limit: 50 }, { ...tipped, session: "another" }]);
+  release(page);
+  for (const response of await Promise.all([...reads, ...other])) expect(response).toEqual(page);
+  expect(await Promise.all(body)).toEqual([historyOff(), historyOff()]);
+  // Joined only while running: the next ask after the answer is a fresh read.
+  pending = new Promise<HistoryResponse>((resolve) => { release = resolve; });
+  const again = f.runtime.historyPage({ ...tipped });
+  expect(calls).toHaveLength(5);
+  release(page);
+  expect(await again).toEqual(page);
 });
 
 test("a read completing after disable returns off and worker errors expose no raw details", async () => {

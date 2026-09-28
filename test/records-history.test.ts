@@ -230,7 +230,11 @@ test("Claude ancestry includes all UUID blocks, excludes siblings, and reads eve
   const body = item(store, tip);
   expect(body.encoding).toBe("text");
   const db = new Database(store.path);
-  db.query("UPDATE items SET parent_native_id=native_id WHERE id=?").run(tip); db.close();
+  // A cycle only a corrupt row could make. The store advances a session's change sequence with
+  // every write that can move an ancestry (a parent link changes only with a revision), and the
+  // walk is remembered against that sequence, so an edit made behind its back advances it too.
+  db.query("UPDATE items SET parent_native_id=native_id WHERE id=?").run(tip);
+  db.query("UPDATE sessions SET change_sequence=change_sequence+1 WHERE id=?").run(session.id); db.close();
   expect(page(store, { session: session.id, branch: tip }).coverage.branch).toBe("all");
 });
 
