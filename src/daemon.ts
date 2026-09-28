@@ -1,7 +1,7 @@
 import { SessionReconciler } from "./session-reconciler.ts";
 import { RecordsRuntime } from "./records-runtime.ts";
 import { createRecordOperation, createRecordReceiptObserver, type RecordObserver } from "./records-receipts.ts";
-import { historySessionAlias, recordSessionFor } from "./records-routing.ts";
+import { historySessionFor, recordSessionFor } from "./records-routing.ts";
 import type { RecordsPriorityHints } from "./records-indexer.ts";
 import { bindSessionProcess, readProcessIdentity } from "./process-identity.ts";
 import {
@@ -523,6 +523,31 @@ export function withoutDismissedSessions<T extends Pick<SessionInfo, "sessionId"
   return sessions.filter((session) => !dismissedSessionIds.has(session.sessionId));
 }
 
+/**
+ * Which sessions get a published conversation: working ones, then the most recently active.
+ *
+ * The budget used to be the first `limit` in REGISTRY order — Claude's pid files in directory
+ * order, every Codex thread after them — which is no order a person would recognise: with six
+ * Claude windows open, only two Codex sessions ever had a conversation, and a seventh window
+ * took one of those away. A session outside the budget reached the Mac with no live window, and
+ * the Mac drew "Nothing from … yet" over an entire conversation. Its newest activity is the
+ * registry's status time or conch's own latch for it, whichever is later. Ties keep the
+ * registry's order, so a quiet dashboard does not reshuffle.
+ */
+export function sessionsToPublish<T extends Pick<SessionInfo, "sessionId" | "status" | "statusUpdatedAt">>(
+  sessions: readonly T[],
+  limit: number,
+  latchedAt: (sessionId: string) => number | undefined = () => undefined,
+): T[] {
+  const busy = (session: T) => Number(session.status === "busy");
+  const lastActive = (session: T) => Math.max(session.statusUpdatedAt ?? 0, latchedAt(session.sessionId) ?? 0);
+  return sessions
+    .map((session, index) => ({ session, index, busy: busy(session), at: lastActive(session) }))
+    .sort((a, b) => b.busy - a.busy || b.at - a.at || a.index - b.index)
+    .slice(0, Math.max(0, limit))
+    .map(({ session }) => session);
+}
+
 /** Restoration only changes visibility; quiet mode is an independent choice. */
 export function restoreDismissedSessionState(
   sessionId: string,
@@ -835,6 +860,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       ),
     };
   };
+  /** The live agents listed under those sessions (C4), by row id: what an agent row's history read resolves against. */
+  let panelAgents = new Map<string, SessionInfo>();
   // Keyed by executable path, which is itself version-specific for a Homebrew
   // cask or a desktop app bundle (each version lives at its own path) — so a
   // cache hit never goes stale for those. npm global installs mutate in place
@@ -1926,10 +1953,9 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     const conversationsBySession = Object.fromEntries(
       (await Promise.all(
         [
-          ...live.slice(0, MAX_PUBLISHED_CONVERSATIONS),
+          ...sessionsToPublish(live, MAX_PUBLISHED_CONVERSATIONS, (id) => sessionStates.get(id)?.at),
           // Its own budget, or seven sessions left an agent's row nothing to open (C4).
-          ...[...nested].sort((a, b) => Number(b.status === "busy") - Number(a.status === "busy"))
-            .slice(0, MAX_PUBLISHED_AGENT_CONVERSATIONS),
+          ...sessionsToPublish(nested, MAX_PUBLISHED_AGENT_CONVERSATIONS, (id) => sessionStates.get(id)?.at),
         ].map(async (session) => {
           const path = session.transcriptPath
             ?? findTranscript(cfg.claudeDir, session.sessionId);
@@ -2046,6 +2072,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       } else {
         for (const session of registryLive) panelSessions.set(session.sessionId, session);
       }
+      panelAgents = new Map(nested.map((agent) => [agent.sessionId, agent]));
       // This snapshot passed the reconciler's current() check; indexing never uses the eight-row preview cap.
       prioritizeRecords([...panelSessions.values(), ...nested], navSelectedId ?? nextActiveSessionId);
       // Re-arms only when the set of live transcripts changes; see session-watch.ts.
@@ -2554,9 +2581,9 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   };
   const runtimeControlDispatchOptions: RuntimeControlDispatchOptions = {
     historyPage: (message) => records.historyPage({ ...message,
-      session: historySessionAlias(ownerDeviceId, message.session, panelSessions.get(message.session)) }),
+      session: historySessionFor(ownerDeviceId, message.session, { sessions: panelSessions, agents: panelAgents }) }),
     historyItem: (message) => records.historyItem({ ...message,
-      session: historySessionAlias(ownerDeviceId, message.session, panelSessions.get(message.session)) }),
+      session: historySessionFor(ownerDeviceId, message.session, { sessions: panelSessions, agents: panelAgents }) }),
     listResumable: (message) => readResumableSessionsResult({
       ...(message.query === undefined ? {} : { query: message.query }),
       ...(message.limit === undefined ? {} : { limit: message.limit }),

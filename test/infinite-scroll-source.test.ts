@@ -158,7 +158,8 @@ describe("the phone does what the Mac does", () => {
       expect(store, name).toContain("region.onNearTop = { [weak self] in self?.loadOlder() }");
       expect(store, name).toContain("region.onShown = { [weak self] ids, center in self?.show(ids, around: center) }");
       expect(store, name).toContain("if let retryNotBefore, Date() < retryNotBefore { return }");
-      expect(store, name).toContain("HistoryRetry.delay(afterFailures: paging.failures)");
+      // `HistoryPaging.retryDelay`: HistoryRetry's pauses, and every 30 s for a reader holding nothing.
+      expect(store, name).toContain("guard let delay = paging.retryDelay else {");
       expect(store, name).toContain("for page in paging.releasedPages(holding: shown) { reread(page: page) }");
       expect(store, name).toContain("HistoryDemand.bodies(for: wantedRecorded, around: wantedCenter, held: held, reading: Set(bodyTasks.keys), paused: paused)");
       expect(store, name).toContain("pinned: pinned)");

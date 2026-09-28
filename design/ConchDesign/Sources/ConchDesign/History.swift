@@ -505,6 +505,16 @@ public struct HistoryPaging: Equatable, Sendable {
         self.rows = rows
     }
 
+    /// How long to wait before reading the newest page again after `failures` reads failed.
+    ///
+    /// A reader that holds nothing never stops asking: with no rows there is nothing to scroll
+    /// back to the top of, which is the only other thing that asks again, so a daemon that was
+    /// down or frozen for longer than the six tries left the conversation empty for good.
+    public var retryDelay: TimeInterval? {
+        guard case .failed = status else { return nil }
+        return HistoryRetry.delay(afterFailures: failures, holdingNothing: rows.isEmpty)
+    }
+
     /// Older items in front of what is already held, with any item the store has
     /// since revised kept at its newest revision.
     public static func merge(older page: [HistoryItem], into existing: [HistoryItem]) -> [HistoryItem] {
@@ -520,6 +530,64 @@ public struct HistoryPaging: Equatable, Sendable {
             if item.revision > merged[index].revision { merged[index] = item }
         }
         return merged
+    }
+}
+
+// MARK: - Which conversation a session's pane draws
+
+/// What a session's pane draws: the daemon's live window, the record's history, or neither.
+///
+/// The daemon publishes a live window for a handful of sessions at a time — the busiest eight,
+/// and four agents — so a session on screen can have none while its record holds every message.
+/// The Mac drew its conversation only when a live window was published, and fell back to a
+/// single-reply pane that said "Nothing from … yet" over a whole conversation (Tyler, 2026-09-28:
+/// "it says there's nothing even when there's an entire convo in the terminal"). The phone had
+/// already stopped gating on the live window (`SessionView.liveWindow`); this is that rule, in one
+/// place, for both.
+public enum ConversationSource: Equatable, Sendable {
+    /// The daemon's live window, with the recorded history above it.
+    case live
+    /// No live window for this session: an empty one, with the record's history above it.
+    case recorded
+    /// Nothing published, and the record answered that it holds nothing or is off: the app's
+    /// own screen for a session with no messages.
+    case neither
+
+    /// `publishedItems` is how many items the daemon published for THIS session (zero when it
+    /// published none, or published another session's). `reader` is the pane's history reader.
+    public static func of(publishedItems: Int, session: String, reader: HistoryPaging) -> ConversationSource {
+        if publishedItems > 0 { return .live }
+        // A reader still on another session has not been asked about this one yet, and the record
+        // may hold all of it: the pane is drawn so the reader can be pointed here and asked.
+        guard reader.session == session else { return .recorded }
+        return reader.hasAnythingToShow ? .recorded : .neither
+    }
+}
+
+/// What the single-reply pane says when it has no reply to show.
+///
+/// "Nothing from … yet. Send a message below to start." is an empty session's sentence and only
+/// that. It was also what the pane said before its transcript had been read, and when the newest
+/// prompt had not been answered yet — which, for a session mid-turn, is most of the time.
+public enum ConversationPlaceholder {
+    public enum Transcript: Equatable, Sendable {
+        /// Not read yet.
+        case unread
+        /// A prompt with no reply after it: the agent is on it.
+        case awaitingReply
+        /// Read to its start, and nobody has said anything.
+        case empty
+        /// There is no transcript to read, or it could not be read.
+        case unreadable
+    }
+
+    public static func text(name: String, transcript: Transcript) -> String {
+        switch transcript {
+        case .unread: "Reading \(name)’s conversation…"
+        case .awaitingReply: "\(name) hasn’t replied to the latest message yet."
+        case .empty: "Nothing from \(name) yet. Send a message below to start."
+        case .unreadable: "conch couldn’t read \(name)’s conversation. Its terminal still has it."
+        }
     }
 }
 

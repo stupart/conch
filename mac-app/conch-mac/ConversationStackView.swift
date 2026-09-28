@@ -373,6 +373,14 @@ struct ConversationStackView: View {
                 guard pinnedToBottom else { return }
                 requestBottomScroll(using: proxy)
             }
+            // A session drawn from its record alone — the daemon published no live window for it
+            // (`ConversationSource.recorded`) — ends with the record's newest row, not a live one:
+            // it opens there once that row arrives, as a live session opens at its tail. Older
+            // pages landing above leave the newest row where it is, so they do not trigger this.
+            .onChange(of: conversation.items.isEmpty ? history.paging.rows.last?.id : nil) { _, _ in
+                guard pinnedToBottom else { return }
+                requestBottomScroll(using: proxy)
+            }
             .onChange(of: conversation.sessionId) { _, _ in
                 // A different session is a different conversation: start at its
                 // end, and re-arm the follow. The recorded reader is told too —

@@ -313,10 +313,11 @@ final class HistoryStore: ObservableObject {
     }
 
     /// Try again on its own after a pause that doubles; after the last, the reader's next
-    /// scroll to the top tries again. There is no button — the Mac's rule too.
+    /// scroll to the top tries again — or, holding nothing to scroll, every 30 s for as long as
+    /// it is shown (`HistoryPaging.retryDelay`). There is no button — the Mac's rule too.
     private func scheduleRetry() {
         retryTask?.cancel()
-        guard let delay = HistoryRetry.delay(afterFailures: paging.failures) else {
+        guard let delay = paging.retryDelay else {
             retryNotBefore = nil
             return
         }

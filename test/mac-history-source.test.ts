@@ -150,7 +150,7 @@ describe("the Mac app reads recorded history", () => {
     expect(conversation).not.toContain('Text("Loading earlier messages…")');
     expect(conversation).not.toContain('"Earlier messages not shown"');
     // A failed read tries again on its own, after a pause that doubles.
-    expect(store).toContain("HistoryRetry.delay(afterFailures: paging.failures)");
+    expect(store).toContain("guard let delay = paging.retryDelay else {");
     expect(store).toContain("if let retryNotBefore, Date() < retryNotBefore { return }");
     // The one thing a person can do about an off record store is still said.
     expect(history).toContain("conch set records true");

@@ -19,6 +19,12 @@ test("the home folder is not a working folder, so a session there gets the whole
 
 test("an empty session says what to do, without placeholder brackets", () => {
   const content = read("TranscriptContent.swift");
-  expect(content).toContain('"Nothing from \\(name) yet. Send a message below to start."');
+  // The sentence is ConchDesign's (`ConversationPlaceholder`, XCTested in ConversationVanishTests), and only an
+  // empty transcript gets it: a prompt not yet answered is not an empty session.
+  expect(content).toContain("text: ConversationPlaceholder.text(name: name, transcript: transcript),");
+  expect(content).toContain("SessionStaticContent.fallback(for: row, transcript: .empty)");
   expect(content).not.toContain("‹");
+  const design = readFileSync(`${import.meta.dir}/../design/ConchDesign/Sources/ConchDesign/History.swift`, "utf8");
+  expect(design).toContain('case .empty: "Nothing from \\(name) yet. Send a message below to start."');
+  expect(design).not.toContain("‹");
 });
