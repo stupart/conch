@@ -466,6 +466,8 @@ enum ConchSessionCommand: String, Encodable, Sendable {
     case restore
     case reveal
     case setModel = "set-model"
+    /// Model and/or effort for this session only, through the agent's own picker (src/session-settings.ts).
+    case setSettings = "set-settings"
     case attach
     case reviewViewed = "review-viewed"
     case reviewRemove = "review-remove"
@@ -477,6 +479,8 @@ struct ConchSessionCommandRequest: Encodable, Sendable {
     let command: ConchSessionCommand
     let label: String?
     let model: String?
+    /// For `set-settings`: the reasoning effort, one lowercase word from the agent's own list.
+    let effort: String?
     /// Which deliverable was looked at, by the identity the daemon minted when it filed it.
     let review: String?
     /// Every filing of this artifact, for `review-remove`.
@@ -490,6 +494,7 @@ struct ConchSessionCommandRequest: Encodable, Sendable {
         command: ConchSessionCommand,
         label: String? = nil,
         model: String? = nil,
+        effort: String? = nil,
         review: String? = nil,
         artifact: String? = nil,
         awaitDelivery: Bool? = nil
@@ -498,6 +503,7 @@ struct ConchSessionCommandRequest: Encodable, Sendable {
         self.command = command
         self.label = label
         self.model = model
+        self.effort = effort
         self.review = review
         self.artifact = artifact
         self.awaitDelivery = awaitDelivery

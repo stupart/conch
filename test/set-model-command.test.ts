@@ -9,11 +9,11 @@ const root = join(import.meta.dir, "..");
 const read = (path: string): string => readFileSync(join(root, path), "utf8");
 
 function harness(target: SessionActionsTarget | null) {
-  const sent: Array<{ target: SessionActionsTarget; model: string }> = [];
+  const sent: Array<{ target: SessionActionsTarget; model?: string; effort?: string }> = [];
   const controller = {
-    setModel: (t: SessionActionsTarget, model: string) => {
-      sent.push({ target: t, model });
-      return new Promise<boolean>(() => {}); // never settles: the reply must not wait on the typing
+    setSettings: (t: SessionActionsTarget, change: { model?: string; effort?: string }) => {
+      sent.push({ target: t, ...change });
+      return new Promise<boolean>(() => {}); // never settles: the reply must not wait on the drive
     },
   } as unknown as SessionActionsController;
   const pause = { open: () => {}, close: () => {} };
@@ -29,10 +29,9 @@ function harness(target: SessionActionsTarget | null) {
 }
 
 /**
- * Change the model mid-session (B2). The daemon types `/model <model>` into
- * the session the way it syncs `/rename`, so the agent switches natively.
- * The ack says whether there was a window to deliver to — a session conch
- * only observes has none — and comes back before anything is typed.
+ * Change the model mid-session (B2), for this session only: the daemon drives the agent's own
+ * /model picker to it (session-settings.ts). The ack says whether there was a window to drive —
+ * a session conch only observes has none — and comes back before anything is typed.
  */
 test("set-model hands the model to the controller and acks by whether there was a window", () => {
   const withPid = harness({ sessionId: "s1", label: "arch", backend: "claude", pid: 4242 });
@@ -50,6 +49,24 @@ test("set-model hands the model to the controller and acks by whether there was 
   const unknown = harness(null);
   expect((unknown.reply() as { changed: boolean }).changed).toBe(false);
   expect(unknown.sent).toEqual([]);
+});
+
+test("set-settings hands model and effort, either or both, to the same drive", () => {
+  const h = harness({ sessionId: "s1", label: "arch", backend: "codex", pid: 4242 });
+  const send = (extra: Record<string, string>) => applySessionCommand(
+    { kind: "session-command", sessionId: "s1", command: "set-settings", ...extra },
+    h.options,
+  );
+  expect(send({ model: "gpt-6-luna", effort: "max" })).toEqual({
+    kind: "session-ack", sessionId: "s1", command: "set-settings", changed: true, label: "arch",
+  });
+  send({ effort: "high" });
+  send({ model: "gpt-5.5" });
+  expect(h.sent.map(({ model, effort }) => ({ model, effort }))).toEqual([
+    { model: "gpt-6-luna", effort: "max" },
+    { model: undefined, effort: "high" },
+    { model: "gpt-5.5", effort: undefined },
+  ]);
 });
 
 const servers: Array<{ dir: string; server: ControlServer }> = [];
@@ -101,19 +118,30 @@ test("over the real socket, the CLI's client gets a validated set-model ack", as
   expect(h.sent).toHaveLength(1);
 });
 
-test("the daemon types /model through the same slash-command route as the /rename sync", () => {
+/**
+ * Measured 2026-09-28 in a tmux lab: Claude Code's `/model <name>` saves the model as the default
+ * for every new session, and Codex's goes to the model as a message. So the daemon never types a
+ * one-line `/model`: it drives the picker, reading the screen between keys, in one UI hold.
+ */
+test("the daemon drives the agent's own picker, never a one-line /model", () => {
   const daemon = read("src/daemon.ts");
   const at = daemon.indexOf("const sessionActions: SessionActionsController = {");
   expect(at).toBeGreaterThan(-1);
   const controller = daemon.slice(at, daemon.indexOf("\n  };", at));
-  const model = controller.slice(controller.indexOf("setModel:"));
-  expect(model).toContain(
-    "return injectProviderCommand(cfg, target, `/model ${model}`).then((delivery) => {",
-  );
-  expect(model).toMatch(/recordDaemonError\(\s*"session-model",/);
+  const drive = controller.slice(controller.indexOf("setSettings: async (target, requested) => {"));
+  expect(controller.indexOf("setSettings: async (target, requested) => {")).toBeGreaterThan(-1);
+  expect(drive).toContain("const outcome = await withUIHold((ui) => driveSessionSettings(backend, change, {");
+  expect(drive).toContain("read: () => readSessionScreen(target.pid),");
+  // Typed and not submitted, so the driver can check the prompt before Enter.
+  expect(drive).toContain("delivered(await ui.text({ ...cfg, autoSubmit: false }, target.pid, words, { clipboardFallback: false }))");
+  expect(drive).toContain('if (status === "working") return refuse(');
+  expect(drive).toContain('if (status === "needs") return refuse(');
+  expect(drive).toMatch(/recordDaemonError\("session-settings",/);
+  expect(daemon).not.toContain("`/model ${");
+  expect(daemon).not.toContain("injectProviderCommand");
   const rename = controller.indexOf("renameProviderSession(cfg, target, renamed.label)");
   expect(rename).toBeGreaterThan(-1);
-  expect(controller.indexOf("setModel:")).toBeGreaterThan(rename);
+  expect(controller.indexOf("setSettings:")).toBeGreaterThan(rename);
   // The overlay's key ring is untouched: no TUI key in this slice.
   expect(read("src/panel.ts")).toContain(
     'export type SessionActionKey = "voice" | "prioritize" | "rename" | "dismiss" | "close";',

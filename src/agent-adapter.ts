@@ -68,6 +68,12 @@ export interface StartOption {
   /** Meaningful only with a resume; refused on a fresh start. */
   readonly resumeOnly?: boolean;
   /**
+   * Set as a per-launch config override, `-c <configKey>="<value>"`, instead of a flag: Codex's
+   * model and reasoning effort. One fixed key per row and a value `startOptionsError` has
+   * already validated, so this is not the free-form `-c` the table otherwise leaves out.
+   */
+  readonly configKey?: string;
+  /**
    * Option names this CLI refuses alongside this one, from its own
    * `conflicts_with`. Codex exits 2 before it starts on
    * `--dangerously-bypass-approvals-and-sandbox --ask-for-approval never`,
@@ -182,8 +188,13 @@ export interface AgentAdapter {
   ): { projectTrust?: AgentProjectTrust; threadConfiguration?: AgentThreadConfiguration };
 }
 
-/** One step of a picker answer: a key typed as itself, words typed out, or a named key. */
-export type AnswerKey = { press: string } | { type: string } | "Right" | "Enter";
+/**
+ * One step of a picker answer: a key typed as itself, words typed out, or a named key. The
+ * arrows, Escape and Backspace drive the model pickers (session-settings.ts).
+ */
+export type AnswerKey = { press: string } | { type: string } | NamedKey;
+
+export type NamedKey = "Right" | "Left" | "Up" | "Down" | "Enter" | "Escape" | "Backspace";
 
 /**
  * Claude Code's AskUserQuestion picker, measured on 2.1.280 by driving a
@@ -373,9 +384,24 @@ export const codexAdapter: AgentAdapter = {
   // invalid `--sandbox` there is rejected by name). Re-read on this Mac when
   // the bypass/sandbox conflict below was found; the option set is unchanged.
   startOptions: [
-    // No `--model` row, deliberately: codex takes its model from its own config, and a row here is an
-    // invitation to override it from the sheet. conch never passed the flag itself; offering it was the
-    // same thing one click later.
+    // Model and effort as `-c` overrides for this launch only, and only when the person picked one
+    // in conch: a start with neither passes nothing, so `~/.codex/config.toml` decides. Never
+    // `--model`, and never written into config.toml (session-settings.ts).
+    {
+      name: "model",
+      flag: "-c",
+      configKey: "model",
+      kind: "string",
+      help: "Model the agent should use",
+    },
+    {
+      name: "reasoning-effort",
+      flag: "-c",
+      configKey: "model_reasoning_effort",
+      kind: "enum",
+      choices: ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "persistent"],
+      help: "Reasoning effort for this session (model_reasoning_effort); each model offers some of these",
+    },
     {
       name: "sandbox",
       flag: "--sandbox",

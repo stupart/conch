@@ -198,6 +198,7 @@ describe("the practice session, published", () => {
     // Nothing else a session command asks does anything to it.
     for (const command of [
       { command: "rename", label: "x" }, { command: "dismiss" }, { command: "reveal" }, { command: "attach" }, { command: "set-model", model: "o" },
+      { command: "set-settings", effort: "high" },
     ] as const) {
       expect(p.practice.sessionCommand({ kind: "session-command", sessionId: PRACTICE_SESSION_ID, ...command } as never)).toMatchObject({ changed: false });
     }

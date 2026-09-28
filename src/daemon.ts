@@ -109,9 +109,9 @@ import {
   stopSoxProcess,
 } from "./listen.ts";
 import { createNarration, NARRATION_QUIET_WITHIN_MS } from "./narration.ts";
-import { revealSessionWindow } from "./inject.ts";
+import { readSessionScreen, revealSessionWindow, withUIHold } from "./inject.ts";
 import { adapterFor, transcriptFormatFor } from "./agent-adapter.ts";
-import { injectProviderCommand, renameProviderSession } from "./provider-rename.ts";
+import { renameProviderSession } from "./provider-rename.ts";
 import { classify } from "./commands.ts";
 import {
   describeNotice,
@@ -136,7 +136,19 @@ import {
 } from "./conversation.ts";
 import type { PendingApproval } from "./approval.ts";
 import { isWindowKey } from "./window-key.ts";
-import { readSessionContextUsage, type SessionContextUsage } from "./context-meter.ts";
+import { contextUsageFromLines, readTranscriptTailLines, type SessionContextUsage } from "./context-meter.ts";
+import {
+  AGENT_SESSION_SETTINGS,
+  driveSessionSettings,
+  publishedSessionSettings,
+  readSessionSettingsCatalog,
+  sessionSettingsFromLines,
+  withCarriedEffort,
+  type PublishedSessionSettings,
+  type SessionSettingsCatalog,
+  type SessionSettingsChangeState,
+  type SessionSettingsSample,
+} from "./session-settings.ts";
 import { appendConchError } from "./app-errors.ts";
 import {
   attachTerminalSession,
@@ -635,6 +647,11 @@ export function buildDaemonPublishedState(
   naturalVoices?: NaturalVoicesStatus,
   /** Where the speech engine stands (`speech-engine.ts`): Settings, and onboarding's setup status. */
   speechEngine?: SpeechEngineStatus,
+  /** Each agent's model and effort choices and defaults, and what each row runs (session-settings.ts). */
+  sessionSettings?: {
+    catalog: SessionSettingsCatalog;
+    forSessionId(sessionId: string, backend: "claude" | "codex"): PublishedSessionSettings | undefined;
+  },
 ): PublishedState {
   return buildPublishedState(
     ownerDeviceId,
@@ -656,6 +673,9 @@ export function buildDaemonPublishedState(
       ...(previewRequests?.length ? { previewRequests } : {}),
       ...(naturalVoices ? { naturalVoices } : {}),
       ...(speechEngine ? { speechEngine } : {}),
+      ...(sessionSettings
+        ? { sessionSettings: sessionSettings.catalog, settingsForSessionId: sessionSettings.forSessionId }
+        : {}),
     },
   );
 }
@@ -780,6 +800,41 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   let panelOrder: string[] = [];
   let panelLabels = new Map<string, string>();
   let panelSessions = new Map<string, SessionInfo>();
+  /**
+   * What each session's own record says it runs (session-settings.ts), newest kept: a tail
+   * with no turn in it must not blank a value an earlier read found.
+   */
+  const sessionSettingsSamples = new Map<string, SessionSettingsSample>();
+  /** Sessions whose agent was already asked outside the transcript, so one it knows nothing about is asked once. */
+  const sessionSettingsAsked = new Set<string>();
+  /** The change conch is driving through a session's picker, or the last one's outcome. */
+  const sessionSettingsChanges = new Map<string, SessionSettingsChangeState>();
+  let sessionSettingsCatalog: SessionSettingsCatalog | undefined;
+  const noteSessionSettings = (session: SessionInfo, sample: SessionSettingsSample | null): void => {
+    const known = sessionSettingsSamples.get(session.sessionId);
+    if (sample && (known?.at === undefined || sample.at === undefined || sample.at >= known.at)) {
+      sessionSettingsSamples.set(session.sessionId, sample);
+      return;
+    }
+    if (sample || known || sessionSettingsAsked.has(session.sessionId)) return;
+    sessionSettingsAsked.add(session.sessionId);
+    const recorded = AGENT_SESSION_SETTINGS[session.backend ?? "claude"].readRecorded?.(session.agentSessionId ?? session.sessionId);
+    if (recorded) sessionSettingsSamples.set(session.sessionId, recorded);
+  };
+  /** Both agents' lists and defaults, read from their own files (cached by mtime), and what each row runs. */
+  const publishedSessionSettingsFor = () => {
+    sessionSettingsCatalog = readSessionSettingsCatalog({ claudeDir: cfg.claudeDir, codexHome: codexHomeDir() });
+    const catalog = sessionSettingsCatalog;
+    return {
+      catalog,
+      forSessionId: (sessionId: string, backend: "claude" | "codex") => publishedSessionSettings(
+        backend,
+        sessionSettingsSamples.get(sessionId),
+        sessionSettingsChanges.get(sessionId),
+        catalog,
+      ),
+    };
+  };
   // Keyed by executable path, which is itself version-specific for a Homebrew
   // cask or a desktop app bundle (each version lives at its own path) — so a
   // cache hit never goes stale for those. npm global installs mutate in place
@@ -1892,16 +1947,24 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         }),
       )).filter((entry): entry is NonNullable<typeof entry> => entry !== null),
     );
-    breadcrumb("panel: context usage");
-    const sessionContexts = new Map(
-      (await Promise.all(live.map(async (session) => {
-        const path = session.transcriptPath
-          ?? findTranscript(cfg.claudeDir, session.sessionId);
-        if (!path) return null;
-        const context = await readSessionContextUsage(path, transcriptFormatFor(path)).catch(() => null);
-        return context ? [session.sessionId, context] as const : null;
-      }))).filter((entry): entry is NonNullable<typeof entry> => entry !== null),
-    );
+    breadcrumb("panel: context usage, model and effort");
+    // One tail read per session for both: how full its context is, and what model and effort it runs.
+    const sessionContexts = new Map<string, SessionContextUsage>();
+    await Promise.all(live.map(async (session) => {
+      const path = session.transcriptPath
+        ?? findTranscript(cfg.claudeDir, session.sessionId);
+      const tail = path ? await readTranscriptTailLines(path).catch(() => null) : null;
+      const format = path ? transcriptFormatFor(path) : null;
+      const context = tail && format ? contextUsageFromLines(tail, format) : null;
+      if (context) sessionContexts.set(session.sessionId, context);
+      noteSessionSettings(session, tail && format ? sessionSettingsFromLines(tail, format) : null);
+    }));
+    if (snap?.complete) {
+      const liveIds = new Set(registryLive.map((session) => session.sessionId));
+      for (const ids of [sessionSettingsSamples, sessionSettingsChanges, sessionSettingsAsked]) {
+        for (const sessionId of ids.keys()) if (!liveIds.has(sessionId)) ids.delete(sessionId);
+      }
+    }
     const transcriptReplyRaw = transcriptReply?.text ?? "";
     const previewRaw = previewReply?.text ?? "";
     const transcriptReplyText = stripMarkdown(transcriptReplyRaw);
@@ -2028,6 +2091,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         windowPreviews.requests(),
         naturalVoices,
         speechEngineStatus,
+        publishedSessionSettingsFor(),
       );
       lastPublishedPanelState.phone = phoneSetup.published(cfg.phoneEnabled);
       // Setup's practice session, first among the rows while it runs, and `features.practice` always (practice.ts).
@@ -2378,28 +2442,51 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         return false;
       });
     },
-    // B2: `/model <model>` typed into the session's own prompt, the way the
-    // `/rename` sync is — Claude Code or Codex handles it natively.
-    setModel: (target, model) => {
+    // B2: the model and effort for THIS session, through the agent's own picker and its
+    // session-only key (session-settings.ts). `/model <name>` saved Claude's default for every
+    // new session and reached Codex as a message to the model.
+    setSettings: async (target, requested) => {
+      const backend = target.backend ?? "claude";
+      const change = withCarriedEffort(backend, requested, sessionSettingsSamples.get(target.sessionId), sessionSettingsCatalog);
+      const settle = (state: SessionSettingsChangeState): void => {
+        sessionSettingsChanges.set(target.sessionId, state);
+        void renderSessionPanel();
+      };
+      const wanted = [change.model, change.effort].filter(Boolean).join(" · ");
+      const startedAt = Date.now();
+      const refuse = (message: string): false => {
+        settle({ state: "failed", ...change, at: Date.now(), startedAt, message });
+        log(`"${target.label}" stays as it is (${wanted}): ${message}`);
+        recordDaemonError("session-settings", `Could not change "${target.label}" to ${wanted}: ${message}`, target.sessionId, { ...change, backend });
+        return false;
+      };
+      if (sessionSettingsChanges.get(target.sessionId)?.state === "applying") {
+        log(`"${target.label}": a model change is already under way; ${wanted} not sent`);
+        return false;
+      }
+      if (!target.pid) return refuse("the session has no terminal conch can type into");
+      const status = lastPanelModel?.rows.find((row) => row.sessionId === target.sessionId)?.status;
+      if (status === "working") return refuse("the session is working; change it when its turn is over");
+      if (status === "needs") return refuse("the session is waiting on you; answer it first");
+      settle({ state: "applying", ...change, at: startedAt, startedAt });
       const receipt = createRecordOperation(observeRecords, { sessionId: target.sessionId }, "delivery");
       receipt.emit("accepted", "provider-command-accepted");
-      return injectProviderCommand(cfg, target, `/model ${model}`).then((delivery) => {
-        receipt.emit(delivery.kind === "delivered" ? "delivered" : "failed", delivery.kind === "delivered" ? "transport-submitted" : delivery.reason);
-        if (delivery.kind === "delivered") {
-          log(`sent /model ${model} to "${target.label}" via ${delivery.via}`);
-          return true;
-        }
-        recordDaemonError(
-          "session-model",
-          `Could not send /model ${model} to the session: ${delivery.reason}`,
-          target.sessionId,
-          { model, backend: target.backend ?? "claude" },
-        );
-        return false;
-      }, (error) => {
-        receipt.emit("unknown", "delivery-outcome-unknown");
-        throw error;
-      });
+      const delivered = (result: { via: string }) => result.via === "tmux" || result.via === "osascript-focused";
+      const outcome = await withUIHold((ui) => driveSessionSettings(backend, change, {
+        read: () => readSessionScreen(target.pid),
+        press: async (keys) => delivered(await ui.keys(cfg, target.pid, keys)),
+        // Typed and NOT submitted: the driver checks the prompt holds exactly this before Enter.
+        type: async (words) => delivered(await ui.text({ ...cfg, autoSubmit: false }, target.pid, words, { clipboardFallback: false })),
+        sleep: (ms) => Bun.sleep(ms),
+      })).catch((error): { ok: false; reason: string } => ({
+        ok: false,
+        reason: error instanceof Error ? error.message : String(error),
+      }));
+      receipt.emit(outcome.ok ? "delivered" : "failed", outcome.ok ? "transport-submitted" : "delivery-unconfirmed");
+      if (!outcome.ok) return refuse(outcome.reason);
+      settle({ state: "applied", ...change, at: Date.now(), startedAt, message: outcome.message });
+      log(`"${target.label}" now runs ${wanted} for this session only: ${outcome.message}`);
+      return true;
     },
   };
   sessionActionsOverlay = new SessionActionsOverlay({

@@ -605,7 +605,7 @@ describe("the daemon is wired to it", () => {
   });
 
   test("its status is published beside the natural voices", () => {
-    expect(daemon).toContain("naturalVoices,\n        speechEngineStatus,\n      );");
+    expect(daemon).toContain("naturalVoices,\n        speechEngineStatus,\n        publishedSessionSettingsFor(),\n      );");
     const panel = readFileSync(join(import.meta.dir, "..", "src", "panel.ts"), "utf8");
     expect(panel).toContain("...(options.speechEngine ? { speechEngine: structuredClone(options.speechEngine) } : {}),");
   });

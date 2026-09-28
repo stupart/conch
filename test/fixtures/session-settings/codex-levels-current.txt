@@ -1,0 +1,45 @@
+╭──────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.157.1)                   │
+│                                              │
+│ model:     GPT-6-Luna max   /model to change │
+│ directory: /private/tmp/csl-lab/work         │
+╰──────────────────────────────────────────────╯
+
+
+› /model gpt-6-luna
+
+
+■ Conversation interrupted - tell the model what to do differently. Something went wrong? Hit `/feedback` to report the issue.
+
+• Reconnected. No input was resent. Review uncertain submissions before retrying; recovered queues remain paused.
+
+• Model changed to gpt-6-astra ultra for this session only
+
+• Model changed to gpt-6-astra high for this session only
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  Select Reasoning Level for GPT-6-Astra
+
+
+  1. Low (default)    Fast responses with lighter reasoning
+  2. Medium           Balances speed and reasoning depth for everyday tasks
+› 3. High (current)   Greater reasoning depth for complex problems
+  4. Extra high       Extra high reasoning depth for complex problems
+  5. More reasoning…  Max and Ultra consume usage limits faster
+
+  enter default · s session · esc back

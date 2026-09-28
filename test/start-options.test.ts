@@ -26,7 +26,13 @@ describe("the start-options table (C1)", () => {
       const names = new Set<string>();
       for (const entry of adapter.startOptions) {
         expect(entry.name).toMatch(/^[a-z][a-z-]*$/);
-        expect(entry.flag).toMatch(/^--[a-z][a-z-]*$/);
+        // A per-launch config override names its one fixed key; every other entry is a long flag.
+        if (entry.configKey) {
+          expect(entry.flag).toBe("-c");
+          expect(entry.configKey).toMatch(/^[a-z_]+$/);
+        } else {
+          expect(entry.flag).toMatch(/^--[a-z][a-z-]*$/);
+        }
         expect(["enum", "bool", "string"]).toContain(entry.kind);
         expect(entry.help.length).toBeGreaterThan(10);
         if (entry.kind === "enum") expect(entry.choices?.length ?? 0).toBeGreaterThan(1);
@@ -45,10 +51,18 @@ describe("the start-options table (C1)", () => {
     expect(claudeAdapter.startOptions.map((entry) => entry.flag))
       .toEqual(["--model", "--permission-mode", "--dangerously-skip-permissions", "--effort", "--fork-session"]);
     expect(codexAdapter.startOptions.map((entry) => entry.flag))
-      .toEqual(["--sandbox", "--ask-for-approval", "--dangerously-bypass-approvals-and-sandbox", "--profile"]);
+      .toEqual(["-c", "-c", "--sandbox", "--ask-for-approval", "--dangerously-bypass-approvals-and-sandbox", "--profile"]);
+    // Codex's model and effort are `-c` overrides for one launch, each with its own fixed key;
+    // never `--model` (conch never forces a model through the flag) and never a free-form `-c`.
+    expect(codexAdapter.startOptions.filter((entry) => entry.configKey).map((entry) => [entry.name, entry.configKey]))
+      .toEqual([["model", "model"], ["reasoning-effort", "model_reasoning_effort"]]);
+    expect(codexAdapter.startOptions.map((entry) => entry.flag)).not.toContain("--model");
     // Tool lists, extra directories and raw config overrides cannot be validated; they stay out.
     for (const adapter of agentAdapters()) {
-      for (const entry of adapter.startOptions) expect(entry.flag).not.toMatch(/tools|add-dir|config|^-c$/);
+      for (const entry of adapter.startOptions) {
+        expect(entry.flag).not.toMatch(/tools|add-dir|config/);
+        if (entry.flag === "-c") expect(["model", "model_reasoning_effort"]).toContain(entry.configKey ?? "");
+      }
     }
   });
 });

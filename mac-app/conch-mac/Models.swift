@@ -16,11 +16,15 @@ struct PublishedState: Decodable, Equatable, Sendable {
         let viewedState: Int?
         /// Setup's practice turn (src/practice.ts): Try it and the tour. Absent from a daemon without one.
         let practice: Int?
+        /// `set-settings` and each row's model and effort (src/session-settings.ts). Absent from an older
+        /// daemon, which has no safe way to change them: the header then shows no picker.
+        let sessionSettings: Int?
 
-        init(deliverables: Int? = nil, viewedState: Int? = nil, practice: Int? = nil) {
+        init(deliverables: Int? = nil, viewedState: Int? = nil, practice: Int? = nil, sessionSettings: Int? = nil) {
             self.deliverables = deliverables
             self.viewedState = viewedState
             self.practice = practice
+            self.sessionSettings = sessionSettings
         }
     }
 
@@ -52,6 +56,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
     let previewRequests: [PreviewRequest]
     /// Setup's practice turn while one runs (src/practice.ts): where it is and what it heard, for the tour.
     let practice: PracticeReport?
+    /// Each agent's model and effort choices, and its own defaults (src/session-settings.ts).
+    let sessionSettings: SessionSettingsCatalog?
 
     struct PreviewRequest: Decodable, Equatable, Sendable {
         let id: String
@@ -107,6 +113,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         case showing
         case previewRequests
         case practice
+        case sessionSettings
     }
 
     init(
@@ -128,7 +135,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
         features: Features? = nil,
         showing: Showing? = nil,
         previewRequests: [PreviewRequest] = [],
-        practice: PracticeReport? = nil
+        practice: PracticeReport? = nil,
+        sessionSettings: SessionSettingsCatalog? = nil
     ) {
         self.v = v
         self.ownerDeviceId = ownerDeviceId
@@ -150,6 +158,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         self.showing = showing
         self.previewRequests = previewRequests
         self.practice = practice
+        self.sessionSettings = sessionSettings
     }
 
     init(from decoder: Decoder) throws {
@@ -192,6 +201,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         showing = try? container.decodeIfPresent(Showing.self, forKey: .showing)
         previewRequests = Self.decodeLossyArray(PreviewRequest.self, from: container, forKey: .previewRequests)
         practice = try? container.decodeIfPresent(PracticeReport.self, forKey: .practice)
+        sessionSettings = try? container.decodeIfPresent(SessionSettingsCatalog.self, forKey: .sessionSettings)
     }
 
     private static func decodeLossyArray<Element: Decodable>(
@@ -233,6 +243,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
             && features == other.features
             // The practice turn moving on moves the tour.
             && practice == other.practice
+            // The header's model menu offers what these say.
+            && sessionSettings == other.sessionSettings
     }
 }
 
@@ -1008,6 +1020,9 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     /// which agent the person is about to address.
     let backend: String?
     let context: SessionContext?
+    /// The model and effort it runs, from its own record, and a change conch is driving (src/session-settings.ts).
+    /// Absent from an older daemon, and when nothing is known: the header then says "default".
+    let settings: SessionSettingsState?
     let status: RowStatus?
     /// Epoch milliseconds for the status currently visible on this row.
     let at: Double?
@@ -1071,6 +1086,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         case label
         case backend
         case context
+        case settings
         case status
         case at
         case needsResponse
@@ -1102,6 +1118,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         label: String,
         backend: String? = nil,
         context: SessionContext? = nil,
+        settings: SessionSettingsState? = nil,
         status: RowStatus?,
         at: Double?,
         needsResponse: Bool,
@@ -1131,6 +1148,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         self.label = label
         self.backend = backend
         self.context = context
+        self.settings = settings
         self.status = status
         self.at = at
         self.needsResponse = needsResponse
@@ -1164,6 +1182,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         label = (try? container.decodeIfPresent(String.self, forKey: .label)) ?? id
         backend = try? container.decodeIfPresent(String.self, forKey: .backend)
         context = try? container.decodeIfPresent(SessionContext.self, forKey: .context)
+        settings = try? container.decodeIfPresent(SessionSettingsState.self, forKey: .settings)
         status = try? container.decodeIfPresent(RowStatus.self, forKey: .status)
         at = Timestamp.decode(from: container, forKey: .at)
         needsResponse =
@@ -1204,6 +1223,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             label: label,
             backend: backend,
             context: context,
+            settings: settings,
             status: status,
             at: at,
             needsResponse: needsResponse,

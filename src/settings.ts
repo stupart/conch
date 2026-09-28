@@ -803,6 +803,7 @@ export const SESSION_COMMANDS = [
   "restore",
   "reveal",
   "set-model",
+  "set-settings",
   "attach",
   "review-viewed",
   "review-remove",
@@ -820,8 +821,16 @@ export type SessionControlMessage =
   | { kind: "session-command"; sessionId: string; command: "restore" }
   /** Raise the session's terminal window; a click on its title in the app. */
   | { kind: "session-command"; sessionId: string; command: "reveal" }
-  /** Type `/model <model>` into the session's own prompt; the agent handles it natively (B2). */
+  /**
+   * Change the session's model for this session only, through the agent's own picker (B2). The
+   * same drive as `set-settings` with a model alone; the name stays for the CLI and the palette.
+   */
   | { kind: "session-command"; sessionId: string; command: "set-model"; model: string; awaitDelivery?: true }
+  /**
+   * Change the session's model and/or reasoning effort for this session only, through the
+   * agent's own picker and its session-only key (session-settings.ts). Never a default.
+   */
+  | { kind: "session-command"; sessionId: string; command: "set-settings"; model?: string; effort?: string; awaitDelivery?: true }
   /** Open a Claude Code background job in a new Terminal window (`claude attach <jobId>`). */
   | { kind: "session-command"; sessionId: string; command: "attach" }
   /**
@@ -1137,13 +1146,35 @@ export function validateSessionControlMessage(value: unknown): ParseResult<Sessi
       }
       return { ok: true, value: { kind: "session-command", sessionId: sessionId.value, command: "prioritize", value: value.value } };
     case "set-model": {
-      const model = boundedPrintable(value.model, "set-model: model", MAX_MODEL_LENGTH);
+      const model = validModelName(value.model, "set-model: model");
       if (!model.ok) return model;
-      // One argument to `/model`, never an option: a leading `-` reads as a
-      // flag and whitespace would smuggle a second argument into the prompt.
-      if (model.value.startsWith("-")) return { ok: false, err: "set-model: model cannot start with -" };
-      if (/\s/.test(model.value)) return { ok: false, err: "set-model: model cannot contain whitespace" };
       return { ok: true, value: { kind: "session-command", sessionId: sessionId.value, command: "set-model", model: model.value, ...delivery } };
+    }
+    case "set-settings": {
+      if (value.model === undefined && value.effort === undefined) {
+        return { ok: false, err: "set-settings: model or effort is required" };
+      }
+      const model = value.model === undefined ? undefined : validModelName(value.model, "set-settings: model");
+      if (model && !model.ok) return model;
+      let effort: string | undefined;
+      if (value.effort !== undefined) {
+        // An effort is one lowercase word from the agent's own list (`low`, `xhigh`); the picker refuses one it lacks.
+        if (typeof value.effort !== "string" || !/^[a-z]{1,16}$/.test(value.effort.trim())) {
+          return { ok: false, err: "set-settings: effort must be one lowercase word, like high or xhigh" };
+        }
+        effort = value.effort.trim();
+      }
+      return {
+        ok: true,
+        value: {
+          kind: "session-command",
+          sessionId: sessionId.value,
+          command: "set-settings",
+          ...(model?.ok ? { model: model.value } : {}),
+          ...(effort ? { effort } : {}),
+          ...delivery,
+        },
+      };
     }
     case "review-viewed": {
       const review = boundedPrintable(value.review, "review-viewed: review", MAX_REVIEW_ID_LENGTH);
@@ -1166,6 +1197,18 @@ export function validateSessionControlMessage(value: unknown): ParseResult<Sessi
     case "attach":
       return { ok: true, value: { kind: "session-command", sessionId: sessionId.value, command: value.command } };
   }
+}
+
+/**
+ * A model name as a picker row is found by: an alias (`opus`), a slug (`gpt-6-astra`), a full
+ * name (`claude-opus-5-5[1m]`). Never an option and never two words.
+ */
+function validModelName(value: unknown, name: string): ParseResult<string> {
+  const model = boundedPrintable(value, name, MAX_MODEL_LENGTH);
+  if (!model.ok) return model;
+  if (model.value.startsWith("-")) return { ok: false, err: `${name} cannot start with -` };
+  if (/\s/.test(model.value)) return { ok: false, err: `${name} cannot contain whitespace` };
+  return model;
 }
 
 function boundedPrintable(value: unknown, name: string, max: number): ParseResult<string> {

@@ -304,7 +304,7 @@ describe("model CLI daemon hand-off", () => {
       const result = await runCli(f, ["model", "Build", "opus"]);
 
       expect(result.exitCode).toBe(0);
-      expect(result.stdout).toContain("/model opus -> Build");
+      expect(result.stdout).toContain("switching Build to opus for this session only");
       expect(daemon.messages).toEqual([{
         kind: "session-command",
         sessionId: "session-123",

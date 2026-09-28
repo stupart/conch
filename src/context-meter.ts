@@ -77,12 +77,12 @@ export function contextUsageFromLines(
   return null;
 }
 
-/** Tail-only for the same reason as conversation reads: Codex rollouts can be hundreds of MB. */
-export async function readSessionContextUsage(
-  path: string,
-  format: ConversationFormat,
-  tailBytes = 1024 * 1024,
-): Promise<SessionContextUsage | null> {
+/**
+ * A transcript's last lines, whole ones only. Tail-only for the same reason as conversation
+ * reads: Codex rollouts can be hundreds of MB. One read feeds both the context meter and the
+ * session's model and effort (session-settings.ts).
+ */
+export async function readTranscriptTailLines(path: string, tailBytes = 1024 * 1024): Promise<string[] | null> {
   const file = Bun.file(path);
   let size: number;
   try {
@@ -100,5 +100,14 @@ export async function readSessionContextUsage(
   }
   const lines = text.split("\n");
   if (start > 0) lines.shift();
-  return contextUsageFromLines(lines, format);
+  return lines;
+}
+
+export async function readSessionContextUsage(
+  path: string,
+  format: ConversationFormat,
+  tailBytes = 1024 * 1024,
+): Promise<SessionContextUsage | null> {
+  const lines = await readTranscriptTailLines(path, tailBytes);
+  return lines ? contextUsageFromLines(lines, format) : null;
 }

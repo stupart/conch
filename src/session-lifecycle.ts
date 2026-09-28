@@ -163,7 +163,9 @@ function renderStartOptions(adapter: AgentAdapter, options: StartSessionRequest[
   for (const entry of adapter.startOptions) {
     const value = options[entry.name];
     if (entry.name === BYPASS_OPTION || value === undefined || value === false) continue;
-    rendered += entry.kind === "bool" ? ` ${entry.flag}` : ` ${entry.flag} ${shellQuote(String(value))}`;
+    rendered += entry.configKey
+      ? ` ${entry.flag} ${shellQuote(`${entry.configKey}="${String(value)}"`)}`
+      : entry.kind === "bool" ? ` ${entry.flag}` : ` ${entry.flag} ${shellQuote(String(value))}`;
   }
   return rendered;
 }
@@ -289,7 +291,21 @@ export function restartRequest(
       if (selector !== "none") takeNext();
       continue;
     }
-    const entry = adapter.startOptions.find((option) => option.flag === flag);
+    // A per-launch override the table sets (`-c model="gpt-6-luna"`) comes back as its row;
+    // any other `-c` (the trust override, one a person typed) stays out, as before.
+    if (flag === "-c" || flag === "--config") {
+      const override = inline ?? takeNext() ?? "";
+      const pair = /^([A-Za-z_][\w.]*)=(.*)$/.exec(override);
+      const row = pair ? adapter.startOptions.find((option) => option.configKey === pair[1]) : undefined;
+      const value = pair?.[2]?.replace(/^"(.*)"$/, "$1");
+      if (row && value !== undefined && !startOptionsError({ backend, resumeSessionId, options: { [row.name]: value } })) {
+        options[row.name] = value;
+      } else {
+        notCarriedOver.push(`${flag} ${override}`.trim().slice(0, 120));
+      }
+      continue;
+    }
+    const entry = adapter.startOptions.find((option) => option.flag === flag && !option.configKey);
     if (!entry) {
       notCarriedOver.push([token, takeNext()].filter(Boolean).join(" ").slice(0, 120));
       continue;

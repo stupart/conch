@@ -86,7 +86,8 @@ test("only an inject, and the session commands conch types, ask to hear about de
   // `/model` and `/rename` take (refocus-after-session-command.test.ts).
   expect(store.split("private static func refocusAfterDelivery(releasing steer: ComposerSteering.ID) {").length - 1).toBe(1);
   expect(store.split("await StateStore.refocusAfterDelivery(releasing: steer)").length - 1).toBe(2);
-  expect(store.split("Self.refocusWhenDelivered()").length - 1).toBe(2);
+  // Three: `/rename`, `setModel`, and the header's model and effort (`setSessionSettings`).
+  expect(store.split("Self.refocusWhenDelivered()").length - 1).toBe(3);
 });
 
 /**

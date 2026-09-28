@@ -162,12 +162,16 @@ function applySessionControlMessage(
       void invokeSessionAction(controller, target, { command: "reveal" });
       return sessionCommandAck(message, target.pid !== undefined, target.label);
     }
-    case "set-model": {
-      // Same shape as reveal: the typing is tmux/AppleScript against the
-      // session's window and the reply must not wait on it. `changed` means
-      // "there is a window to deliver to"; the daemon logs the delivery itself.
-      // The typing is handed back for a sender that asked to hear it finish.
-      const typing = invokeSessionAction(controller, target, { command: "set-model", model: message.model });
+    case "set-model":
+    case "set-settings": {
+      // Same shape as reveal: the picker is driven by tmux/AppleScript against the session's
+      // window and the reply must not wait on it. `changed` means "there is a window to drive";
+      // how it went is published on the row (`settings.change`) and logged. The drive is handed
+      // back for a sender that asked to hear it finish.
+      const change = message.command === "set-model"
+        ? { model: message.model }
+        : { ...(message.model ? { model: message.model } : {}), ...(message.effort ? { effort: message.effort } : {}) };
+      const typing = invokeSessionAction(controller, target, { command: "set-settings", change });
       delivered?.(Promise.resolve(typing));
       return sessionCommandAck(message, target.pid !== undefined, target.label);
     }

@@ -1,7 +1,7 @@
 import { appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Config } from "./config.ts";
-import type { AnswerKey } from "./agent-adapter.ts";
+import type { AnswerKey, NamedKey } from "./agent-adapter.ts";
 import { createPasteboard, hasUnreapedUIChild, pasteboardRefusal, runUICommand, type Pasteboard, type PasteboardLease } from "./pasteboard.ts";
 
 export type InjectRoute = "tmux" | "osascript-focused" | "clipboard" | "none";
@@ -115,6 +115,32 @@ export function injectKeys(
  */
 export const ANSWER_KEY_GAP_MS = 200;
 
+/** tmux's names for the named keys (`send-keys` without `-l`). */
+export const TMUX_KEY_NAMES: Readonly<Record<NamedKey, string>> = {
+  Right: "Right", Left: "Left", Up: "Up", Down: "Down", Enter: "Enter", Escape: "Escape", Backspace: "BSpace",
+};
+
+/** macOS virtual key codes for the named keys, as System Events presses them. */
+export const MAC_KEY_CODES: Readonly<Record<NamedKey, number>> = {
+  Right: 124, Left: 123, Up: 126, Down: 125, Enter: 36, Escape: 53, Backspace: 51,
+};
+
+/**
+ * One exclusive hold on keyboard focus for a drive of several steps — a picker read and
+ * answered in turns (session-settings.ts). The keys and words sent through `ui` go inside the
+ * hold, so no other typing (a voice reply, a queued send) lands in the session between two
+ * steps. Reading the screen needs no hold.
+ */
+export function withUIHold<T>(work: (ui: {
+  keys(cfg: Config, sessionPid: number | undefined, keys: readonly AnswerKey[], options?: InjectTextOptions): Promise<InjectTextResult>;
+  text(cfg: Config, sessionPid: number | undefined, text: string, options?: InjectTextOptions): Promise<InjectTextResult>;
+}) => Promise<T>): Promise<T> {
+  return withUITransaction(() => work({
+    keys: (cfg, sessionPid, keys, options) => injectKeysInTransaction(cfg, sessionPid, keys, undefined, options),
+    text: (cfg, sessionPid, text, options) => injectTextInTransaction(cfg, sessionPid, text, undefined, options),
+  }));
+}
+
 async function injectKeysInTransaction(
   cfg: Config,
   sessionPid: number | undefined,
@@ -141,7 +167,7 @@ async function injectKeysInTransaction(
     if (!(await mayInject())) return interrupted();
     for (const [index, key] of keys.entries()) {
       if (index) await sleep(ANSWER_KEY_GAP_MS);
-      const [text, literal] = typeof key === "string" ? [key, false] : "press" in key ? [key.press, true] : [key.type, true];
+      const [text, literal] = typeof key === "string" ? [TMUX_KEY_NAMES[key], false] : "press" in key ? [key.press, true] : [key.type, true];
       const sent = await (options.sendTmuxKeys ?? sendTmuxKeys)(pane, text, literal);
       if (sent.exitCode !== 0) return failed("automation-failed");
     }
@@ -182,8 +208,7 @@ async function injectKeysInTransaction(
       const lines: string[] = [];
       for (const [position, key] of step.entries()) {
         if (position) lines.push(`delay ${ANSWER_KEY_GAP_MS / 1000}`, ...FOCUS_GUARD_LINES);
-        if (key === "Right") lines.push('tell application "System Events" to key code 124');
-        else if (key === "Enter") lines.push('tell application "System Events" to key code 36');
+        if (typeof key === "string") lines.push(`tell application "System Events" to key code ${MAC_KEY_CODES[key]}`);
         else {
           argv.push("press" in key ? key.press : key.type);
           lines.push(`tell application "System Events" to keystroke (item ${argv.length} of argv)`);

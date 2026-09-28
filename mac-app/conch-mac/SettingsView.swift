@@ -114,6 +114,7 @@ struct ConchSettingsView: View {
                         }
 
                         SessionVoicesSection()
+                        AgentDefaultsSection()
                     }
                     .padding(.bottom, 12)
                 }
@@ -229,6 +230,76 @@ private struct SessionVoicesSection: View {
         if natural != status { natural = status }
         if engine != speech { engine = speech }
     }
+}
+
+/// Each agent's own default model and effort, as its config names them (`sessionSettings`,
+/// src/session-settings.ts), read-only. conch never writes them: a model or effort picked in a
+/// session's header is for that session only, and a new session gets these unless one is picked
+/// for it in the New session sheet.
+private struct AgentDefaultsSection: View {
+    @State private var catalog: SessionSettingsCatalog?
+
+    var body: some View {
+        Group {
+            if let catalog, catalog.claude != nil || catalog.codex != nil {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Agent defaults")
+                        .font(ConchTypography.font(size: 13, weight: .semibold))
+                        .foregroundStyle(ConchPalette.textPrimary)
+                    Text("Read from each agent's own config; conch doesn't change them. A model or effort picked in a session's header is for that session only.")
+                        .font(ConchTypography.font(size: 11))
+                        .foregroundStyle(ConchPalette.textDim)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let claude = catalog.claude { agent("Claude Code", claude.defaults) }
+                    if let codex = catalog.codex { agent("Codex", codex.defaults) }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 22)
+                .padding(.top, 18)
+            }
+        }
+        .task {
+            while !Task.isCancelled {
+                await load()
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+            }
+        }
+    }
+
+    private func agent(_ name: String, _ defaults: AgentSettingsCatalog.Defaults) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(name)
+                .font(ConchTypography.font(size: 12.5, weight: .medium))
+                .foregroundStyle(ConchPalette.textPrimary)
+            Text(SessionSettingsPresentation.defaultsLine(defaults))
+                .font(ConchTypography.font(size: 11.5))
+                .foregroundStyle(ConchPalette.textDim)
+                .textSelection(.enabled)
+            ForEach(SessionSettingsPresentation.perModelEffortLines(defaults), id: \.self) { line in
+                Text(line)
+                    .font(ConchTypography.font(size: 11))
+                    .foregroundStyle(ConchPalette.textDim)
+            }
+            Text(defaults.source ?? "No config file found")
+                .font(ConchTypography.font(size: 10.5))
+                .foregroundStyle(ConchPalette.textFaint)
+                .textSelection(.enabled)
+        }
+    }
+
+    private func load() async {
+        let path = ProcessInfo.processInfo.environment["CONCH_SESSIONS_FILE"]
+            ?? "/tmp/conch-sessions.json"
+        let decoded = await Task.detached(priority: .utility) { () -> SessionSettingsCatalog? in
+            guard let data = FileManager.default.contents(atPath: path) else { return nil }
+            return (try? JSONDecoder().decode(SessionSettingsEnvelope.self, from: data))?.sessionSettings
+        }.value
+        if catalog != decoded { catalog = decoded }
+    }
+}
+
+private struct SessionSettingsEnvelope: Decodable {
+    let sessionSettings: SessionSettingsCatalog?
 }
 
 /// Where the natural voices stand, as the daemon publishes it (`naturalVoices`

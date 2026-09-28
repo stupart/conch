@@ -23,6 +23,9 @@ struct PublishedState: Decodable, Equatable {
     var deliveries: [Delivery] = []
     /// What the Mac's daemon can do; absent from one older than these capabilities.
     var features: Features?
+    /// Each agent's model and effort choices and its own defaults (src/session-settings.ts). Absent from a
+    /// daemon too old to change them safely, so the session menu then shows the model without a picker.
+    var sessionSettings: SessionSettingsCatalog?
 
     struct Features: Decodable, Equatable {
         var deliverables: Int?
@@ -152,6 +155,9 @@ struct PublishedState: Decodable, Equatable {
         /// The quality boundary that decides whether this session should keep
         /// going. Absent on older daemons rather than guessed by the client.
         var context: ContextUsage?
+        /// The model and effort it runs, from its own record, and a change conch is driving
+        /// (src/session-settings.ts). Absent when nothing is known: the menu then says "default".
+        var settings: SessionSettingsState?
         var detail: String?
         var at: Double = 0
         var live: String?
@@ -262,7 +268,7 @@ struct PublishedState: Decodable, Equatable {
 
         private enum CodingKeys: String, CodingKey {
             case id, label, status, backend, context, detail, at, live, paused, pauseExempt, review, reviews, noTerminal, attachable
-            case cwd, workDirs, parentSessionId, startedBySessionId, waitingOnAgents, approval
+            case cwd, workDirs, parentSessionId, startedBySessionId, waitingOnAgents, approval, settings
         }
 
         init() {}
@@ -276,6 +282,7 @@ struct PublishedState: Decodable, Equatable {
             status = c.contains(.status) ? ((try? c.decodeIfPresent(String.self, forKey: .status)) ?? "idle") : "working"
             backend = try? c.decodeIfPresent(String.self, forKey: .backend)
             context = try? c.decodeIfPresent(ContextUsage.self, forKey: .context)
+            settings = try? c.decodeIfPresent(SessionSettingsState.self, forKey: .settings)
             detail = try? c.decodeIfPresent(String.self, forKey: .detail)
             at = (try? c.decodeIfPresent(Double.self, forKey: .at)) ?? 0
             live = try? c.decodeIfPresent(String.self, forKey: .live)
@@ -322,7 +329,7 @@ struct PublishedState: Decodable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case v, ts, mode, live, rows, dismissed, dismissedRows, reply, conversations
-        case ownerDeviceId, deliveries
+        case ownerDeviceId, deliveries, sessionSettings
     }
 
     init() {}
@@ -371,6 +378,7 @@ struct PublishedState: Decodable, Equatable {
         dismissedRows = decodedDismissed
         reply = try? c.decodeIfPresent(Reply.self, forKey: .reply)
         conversations = (try? c.decodeIfPresent([String: Conversation].self, forKey: .conversations)) ?? [:]
+        sessionSettings = try? c.decodeIfPresent(SessionSettingsCatalog.self, forKey: .sessionSettings)
         // Element by element: one malformed outcome must not cost the others, which are the
         // only thing that can resolve a message someone is still holding.
         if var deliveriesContainer = try? c.nestedUnkeyedContainer(forKey: .deliveries) {

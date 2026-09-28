@@ -397,6 +397,31 @@ struct SessionView: View {
             // never in the composer or a full-swipe gesture.
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
+                    // The model and effort it runs, and (when the Mac's daemon can) a menu that
+                    // changes either for this session only (src/session-settings.ts).
+                    if let row, row.parentSessionId == nil {
+                        let title = SessionSettingsPresentation.applying(row.settings)
+                            ?? SessionSettingsPresentation.title(row.settings)
+                        if bridge.isConnected, bridge.state?.sessionSettings != nil, row.noTerminal == nil {
+                            Menu {
+                                SessionSettingsMenuContent(
+                                    state: row.settings,
+                                    catalog: bridge.state?.sessionSettings?.agent(row.backend)
+                                ) { pick in
+                                    Task { _ = await bridge.setSessionSettings(sessionId: sessionId, pick: pick) }
+                                }
+                            } label: {
+                                Label(title, systemImage: "cpu")
+                            }
+                            .disabled(row.settings?.change?.state == "applying")
+                        } else {
+                            Label(title, systemImage: "cpu")
+                        }
+                        if let failure = SessionSettingsPresentation.failure(row.settings) {
+                            Label(failure, systemImage: "exclamationmark.triangle")
+                        }
+                        Divider()
+                    }
                     // How full the context is, where you look for it on
                     // purpose. It was the first line of every conversation,
                     // and Tyler called it secondary.
