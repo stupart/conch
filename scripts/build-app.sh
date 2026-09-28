@@ -35,6 +35,13 @@ fi
 cd "$REPO_ROOT"
 
 echo "Building conch.app (Release) with derived data at $DERIVED_DATA_PATH"
+# The embed phases (uv, daemon, speech engine, tmux) write into the bundle
+# without declared outputs, so Xcode can't see that they changed it. A build
+# that changes no app code finds its CodeSign step up to date and keeps the old
+# seal over the new files: #466 installed a conch.app whose seal didn't name
+# Helpers/tmux, and it failed verification with conch already quit. Without
+# the product, the bundle is made again and signed every time.
+rm -rf "$BUILT_APP_PATH"
 # CONCH_DAEMON_SOURCE=checkout: this is the dev install, so the app runs the
 # daemon from the checkout first (DaemonHost.prefersCheckout) — the bundled one
 # would be stale the moment anyone edits the source. It still carries the
@@ -50,6 +57,15 @@ xcodebuild \
 
 if [[ ! -d "$BUILT_APP_PATH" ]]; then
   echo "error: xcodebuild succeeded but the app was not found at $BUILT_APP_PATH" >&2
+  exit 1
+fi
+
+# Checked BEFORE the installed app is touched: a build that doesn't verify
+# leaves the working conch.app in place and running, rather than a broken one
+# that won't launch.
+echo "Verifying the built signature:"
+if ! codesign --verify --deep --strict --verbose=2 "$BUILT_APP_PATH"; then
+  echo "error: the built conch.app doesn't verify; the installed one was left as it was" >&2
   exit 1
 fi
 
