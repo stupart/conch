@@ -21,6 +21,10 @@ type Branch = { fingerprint: string | null; nativeIds: string[] };
 // session in this store, and only on an explicit page read. Materialise the chain per
 // traversal if a page read is ever measured slow.
 const MAX_ANCESTORS = 20_000;
+// Walks answered again for the same tip against an unchanged session: a reader paging one
+// traversal, or an app asking again after its read timed out. The key carries the session's
+// change sequence, so any write that could move the ancestry misses.
+const BRANCH_CACHE = 32;
 const PREVIEW_CHARACTERS = 240;
 const BODY_READ_BYTES = 24 * 1024;
 const utf8 = new TextDecoder("utf-8", { fatal: true });
@@ -47,6 +51,7 @@ const META = `${ID_COLUMNS.map((name) => `CASE WHEN length(CAST(i.${name} AS BLO
 /** SQLite-only projection. Production callers reach this through records-worker. */
 export class RecordsHistory {
   private readonly key: Buffer;
+  private readonly branches = new Map<string, Branch>();
   constructor(private readonly db: Database) {
     const row = db.query("SELECT value FROM history_metadata WHERE key='cursor-key'").get() as { value: Uint8Array } | null;
     if (!row || row.value.length !== 32) throw new Error("invalid history cursor key");
@@ -131,9 +136,27 @@ export class RecordsHistory {
    * reading because their tip is one message ahead of the index.
    */
   private branch(session: Session, tip: string | undefined, fence: number): Branch {
+    if (!tip || session.provider !== "claude") return { fingerprint: null, nativeIds: [] };
+    const key = JSON.stringify([session.id, session.history_epoch, session.change_sequence, fence, tip]);
+    const known = this.branches.get(key);
+    if (known) {
+      this.branches.delete(key);
+      this.branches.set(key, known);
+      return known;
+    }
+    const walked = this.walk(session, tip, fence);
+    this.branches.set(key, walked);
+    if (this.branches.size > BRANCH_CACHE) this.branches.delete(this.branches.keys().next().value!);
+    return walked;
+  }
+
+  private walk(session: Session, tip: string, fence: number): Branch {
     const allBranches = (): Branch => ({ fingerprint: null, nativeIds: [] });
-    if (!tip || session.provider !== "claude") return allBranches();
-    const ancestor = this.db.query(`SELECT native_id,parent_native_id FROM items
+    // INDEXED BY: left to itself the planner reads this through items_session_created
+    // (session_id, created_sequence<=fence) — every item of the session, fetched from the
+    // table and sorted — once per ANCESTOR. On a 34,000-item session that was 13 ms a hop
+    // and 23 s a page, longer than the apps wait, so each retry queued another.
+    const ancestor = this.db.query(`SELECT native_id,parent_native_id FROM items INDEXED BY items_session_native
       WHERE session_id=? AND native_id=? AND created_sequence<=? ORDER BY order_key,id LIMIT 1`);
     const byItemId = this.db.query("SELECT native_id,parent_native_id FROM items WHERE session_id=? AND id=? AND created_sequence<=?")
       .get(session.id, tip, fence) as { native_id: string | null; parent_native_id: string | null } | null;
@@ -198,11 +221,16 @@ export class RecordsHistory {
       parameters.push(...ancestry.nativeIds);
     }
     if (cursor) {
-      where += " AND (COALESCE(i.at,0),i.order_key,i.id)<(?,?,?)";
-      parameters.push(cursor.at, cursor.order, cursor.item);
+      // The scalar bound is what lets the index seek to the cursor; SQLite does not range
+      // an index on a row value that starts with an expression.
+      where += " AND COALESCE(i.at,0)<=? AND (COALESCE(i.at,0),i.order_key,i.id)<(?,?,?)";
+      parameters.push(cursor.at, cursor.at, cursor.order, cursor.item);
     }
     const limit = request.limit ?? HISTORY_DEFAULT_LIMIT;
-    const rows = this.db.query(`SELECT ${META} FROM items i WHERE ${where}
+    // INDEXED BY: the planner prefers items_session_created for the fence, which reads the
+    // WHOLE session, builds every row's preview, body size and tool name, and sorts them to
+    // keep 51. In page order it stops at the 51st row that passes.
+    const rows = this.db.query(`SELECT ${META} FROM items i INDEXED BY items_session_history_order WHERE ${where}
       ORDER BY COALESCE(i.at,0) DESC,i.order_key DESC,i.id DESC LIMIT ?`).all(...parameters, limit + 1) as any[];
     const count = Math.min(limit, rows.length);
     // What was actually read, never what was asked for: a fallback reporting "ancestry"
