@@ -10,8 +10,9 @@ import SwiftUI
 /// While conch's window is in front, the composer is in it and the conversation panel has no reply line. When Tyler leaves
 /// (conch stops being the app in front, or its window is minimised, hidden, closed or on another space) the composer leaves
 /// the window's layout and comes with him: into the panel's reply line when the panel is open, else as the reply line alone,
-/// in the panel's corner. Coming back to the window brings it home. Where it is is one value, `place`, from one rule
-/// (`ComposerPlacement`), so there is never a second input to type into.
+/// at bottom centre of the screen or wherever Tyler last dragged it (`ReplyLinePlacement`). Coming back to the window
+/// brings it home. Where it is is one value, `place`, from one rule (`ComposerPlacement`), so there is never a second input
+/// to type into.
 ///
 /// It travels as one piece of glass (`ComposerSwoop`): a picture of it springs from where it was to where it goes, its
 /// corner and chrome morphing from the window's card to the panel's glass, what is on it crossfading from one layout to the
@@ -85,6 +86,37 @@ final class ComposerDock: ObservableObject {
     /// click-through, but still on screen and key.
     private var veiled = false
     private var installed = false
+
+    /// The one spot Tyler last left the reply line alone at (`ReplyLineSpot`), kept across launches; none is bottom
+    /// centre. Written only when he lets go of it or sends it home.
+    static let replySpotKey = "conch.replyLine.spot"
+    private var replySpot: ReplyLineSpot? = ComposerDock.savedReplySpot() {
+        didSet {
+            guard replySpot != oldValue else { return }
+            if let replySpot, let data = try? JSONEncoder().encode(replySpot) {
+                UserDefaults.standard.set(data, forKey: Self.replySpotKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Self.replySpotKey)
+            }
+        }
+    }
+    /// The screen the reply line alone is on while it is out: it stays there while it shows, so conch steering Terminal
+    /// forward on another display (which moves the main screen) or the pointer wandering never moves it.
+    private var aloneScreen: String?
+    /// It hangs from its top edge, in the top half of its screen (`ReplyLinePlacement.Placed.growsDown`).
+    private var aloneGrowsDown = false
+    /// The reply line alone's glass while Tyler holds it, or while it settles after: `follow` puts it here rather than at
+    /// its spot.
+    private var aloneLive: NSRect?
+    /// Tyler holding it by its chrome: where on screen the press began, and where the glass was then.
+    private var grip: (pointer: NSPoint, card: NSRect)?
+    /// The last press on the floating composer, seen before any view (`pressed`): where on screen, and its click count.
+    private var lastPress: (at: NSPoint, clicks: Int)?
+    /// Let go, it settles where the rule now puts it, its origin on `ConchMotion.dock`.
+    private var settling: (x: CGFloat, y: CGFloat, vx: CGFloat, vy: CGFloat)?
+    private let settleClock = SettleClock()
+    /// Each display's lasting name (`ReplyLinePlacement.Screen.id`), by its number while it is connected.
+    private static var displayNames: [CGDirectDisplayID: String] = [:]
     /// So long after launch the input stays in the window, for the window to be registered and conch to come forward:
     /// without it, the first look found no window yet and sent the input to the reply line, to swoop straight back.
     private static let launchGrace: TimeInterval = 1
@@ -116,6 +148,10 @@ final class ComposerDock: ObservableObject {
         floating.title = "Reply"
         floating.onKey = { [weak self] event in MainActor.assumeIsolated { self?.key(event) ?? false } }
         floating.onPress = { [weak self] event in MainActor.assumeIsolated { self?.pressed(event) } }
+        // Out alone it moves by its chrome, and conch moves it (`grab`, `dragged`): the window server never does, so
+        // nothing races the settle, and a press never brings conch forward.
+        floating.isMovableByWindowBackground = false
+        floating.onDrag = { [weak self] event in MainActor.assumeIsolated { self?.dragged(event) } }
         let host = FirstClickHostingView(rootView: ComposerFloatingHost(store: store, dock: self, layout: layout))
         // Only `follow` sizes and places it.
         host.sizingOptions = []
@@ -139,6 +175,7 @@ final class ComposerDock: ObservableObject {
                         self?.steering.endAll()
                     }
                     if note.name == NSApplication.didUnhideNotification { self?.hiding = false }
+                    if note.name == NSApplication.didChangeScreenParametersNotification { Self.displayNames = [:] }
                     // conch has the front back: the sends that were waiting for it are done.
                     if note.name == NSApplication.didBecomeActiveNotification { self?.steering.landed() }
                     self?.update()
@@ -344,6 +381,9 @@ final class ComposerDock: ObservableObject {
         // alone with its field being typed in, it goes out of sight but keeps the keyboard.
         place = next
         shown = false
+        // Out of the reply line alone: a hold or a settle on it ends where it is, and next time it comes out it starts
+        // from its spot again.
+        if next != .replyLine { forgetAlone() }
         if from.floats {
             if next.floats, typing { veil() } else { hideFloating() }
         }
@@ -529,9 +569,9 @@ final class ComposerDock: ObservableObject {
         follow()
     }
 
-    /// The floating composer where its place is: the panel's room, which it holds open, or the reply line alone in the
-    /// panel's corner; over the canvas's glass while the pen is down, as the docked panel is; faint with the panel mid-throw
-    /// and gone while the panel morphs. A flight on its way there aims at where it now is.
+    /// The floating composer where its place is: the panel's room, which it holds open, or the reply line alone where the
+    /// rule puts it (or where Tyler holds it); over the canvas's glass while the pen is down, as the docked panel is; faint
+    /// with the panel mid-throw and gone while the panel morphs. A flight on its way there aims at where it now is.
     func follow() {
         guard installed else { return }
         panels?.holdReply(place == .panel ? floatingHeight : 0)
@@ -540,7 +580,7 @@ final class ComposerDock: ObservableObject {
             return
         }
         if abs(card.width - layout.width) > 0.5 { layout.width = card.width }
-        let down = place == .panel ? panelGrowsDown : !(panels?.corner.bottom ?? true)
+        let down = place == .panel ? panelGrowsDown : aloneGrowsDown
         if down != layout.growsDown { layout.growsDown = down }
         let margin = Self.margin
         let frame = NSRect(x: card.minX - margin.leading, y: card.minY - margin.bottom, width: card.width + margin.leading + margin.trailing, height: card.height + margin.top + margin.bottom)
@@ -574,16 +614,13 @@ final class ComposerDock: ObservableObject {
     }
 
     /// The glass's rect out of the window, on screen: the panel's room for the composer's height, or the reply line alone.
+    /// The swoop's own destination too (`shape(of:)`), so it flies to where the reply line alone really is.
     private func floatingCard(for place: ComposerPlace) -> NSRect? {
         switch place {
         case .panel:
             return panels?.replySlot(height: floatingHeight)
         case .replyLine:
-            guard let screen = panels?.screenForReply ?? NSScreen.main else { return nil }
-            let visible = screen.visibleFrame
-            let width = ComposerDockGeometry.replyLineWidth(measure: ConversationTextView.composerMeasure, in: visible)
-            let besideHandle = panels?.isCollapsed == true && panels?.isOnScreen == true
-            return ComposerDockGeometry.replyLineFrame(size: CGSize(width: width, height: floatingHeight), corner: panels?.corner ?? .bottomLeading, in: visible, besideHandle: besideHandle)
+            return aloneCard()
         case .window, .none:
             return nil
         }
@@ -608,6 +645,10 @@ final class ComposerDock: ObservableObject {
     /// first, so the field's window takes the keys and the click goes on to it. Only the field: a click on the mic or send
     /// acts and leaves the keys where they were. The one way it becomes key.
     private func pressed(_ event: NSEvent) {
+        // Where every press begins, for a hold on the reply line alone's chrome to move from (`grab`). A hold whose
+        // let-go never arrived ends here.
+        if grip != nil { letGo() }
+        lastPress = (floating.convertPoint(toScreen: event.locationInWindow), event.clickCount)
         guard !floating.isKeyWindow, let hit = floating.contentView?.hitTest(event.locationInWindow), Self.isField(hit) else { return }
         floating.makeKey()
     }
@@ -655,6 +696,149 @@ final class ComposerDock: ObservableObject {
         guard let field, field.window === floating, !(floating.isKeyWindow && floating.firstResponder === field) else { return }
         floating.makeKey()
         floating.makeFirstResponder(field)
+    }
+
+    // MARK: The reply line alone, where Tyler leaves it
+
+    // Tyler: "Can we make it so that the input bar defaults to bottom center of the screen when it's in detached mode (or
+    // wherever u left it for that one last time) but u can drag it around where u want to and stuff?"
+
+    /// Where the rule puts the reply line alone (`ReplyLinePlacement.place`): at its spot, on that spot's screen; else
+    /// bottom centre of the screen it is on, the panel's, the pointer's, or the main one.
+    private func alonePlaced() -> ReplyLinePlacement.Placed? {
+        ReplyLinePlacement.place(
+            measure: ConversationTextView.composerMeasure,
+            height: floatingHeight,
+            spot: replySpot,
+            screens: Self.screens,
+            current: aloneScreen,
+            home: panels?.screenForReply.map(Self.name(of:)),
+            pointer: NSEvent.mouseLocation,
+            main: NSScreen.main.map(Self.name(of:))
+        )
+    }
+
+    /// The reply line alone's glass on screen: where Tyler holds it or where it is settling, else where the rule puts it.
+    /// While it is out, the screen it is on is kept.
+    private func aloneCard() -> NSRect? {
+        guard let placed = alonePlaced() else { return nil }
+        if place == .replyLine { aloneScreen = placed.screen }
+        aloneGrowsDown = placed.growsDown
+        guard let live = aloneLive else { return placed.frame }
+        return NSRect(x: live.minX, y: live.minY, width: live.width, height: floatingHeight)
+    }
+
+    /// A press on the reply line alone's chrome (`ReplyLineGrip`: anywhere on its glass that its field and its buttons
+    /// don't take for themselves): Tyler takes hold of it, and it follows the pointer (`dragged`). A double click sends it
+    /// home instead. Only its frame moves: its window is not made key and conch does not come forward, so the app Tyler
+    /// is in keeps the keyboard.
+    func grab() {
+        guard grip == nil, let press = lastPress else { return }
+        // One hold for one press.
+        lastPress = nil
+        guard place == .replyLine, shown, !swoop.isFlying, let card = floatingCard(for: .replyLine) else { return }
+        if press.clicks >= 2 { return sendAloneHome() }
+        // Caught mid-settle, it is held where it is.
+        settleClock.stop()
+        settling = nil
+        aloneLive = card
+        grip = (press.at, card)
+    }
+
+    /// The pointer moved while Tyler holds it: the glass goes with it, one to one, from where it was when he pressed.
+    /// Seen before the view under it (`FloatingPanel.onDrag`), and the let-go with it.
+    private func dragged(_ event: NSEvent) {
+        guard let grip else { return }
+        if event.type == .leftMouseUp { return letGo() }
+        let pointer = NSEvent.mouseLocation
+        aloneLive = grip.card.offsetBy(dx: pointer.x - grip.pointer.x, dy: pointer.y - grip.pointer.y)
+        follow()
+    }
+
+    /// Let go: wholly on the screen it was let go over, or home when that is within `ReplyLinePlacement.snap` of bottom
+    /// centre; remembered, the one spot; and it settles there. A press that went no further than a click's wobble
+    /// remembers nothing, and settles back where it was going.
+    func letGo() {
+        guard let grip else { return }
+        self.grip = nil
+        let pointer = NSEvent.mouseLocation
+        guard let live = aloneLive else { return settled() }
+        guard ReplyLinePlacement.isMove(from: grip.pointer, to: pointer),
+              let resting = ReplyLinePlacement.released(live, screens: Self.screens, pointer: pointer, measure: ConversationTextView.composerMeasure)
+        else { return settle(from: live) }
+        aloneScreen = resting.placed.screen
+        replySpot = resting.spot
+        settle(from: live)
+    }
+
+    /// Home: bottom centre of the screen it is on, and nothing remembered. A double click on its chrome, or its
+    /// accessibility action (`ReplyLineGrip`).
+    func sendAloneHome() {
+        grip = nil
+        let from = place == .replyLine ? floatingCard(for: .replyLine) : nil
+        // Where it is until it settles: forgetting the spot moves nothing by itself.
+        if let from { aloneLive = from }
+        replySpot = nil
+        if let from { settle(from: from) }
+    }
+
+    /// From `rect` to where the rule now puts it, on `ConchMotion.dock`, the spring the panel lands in its corner on.
+    /// Under Reduce Motion, there at once.
+    private func settle(from rect: NSRect) {
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, let to = alonePlaced()?.frame,
+              hypot(to.minX - rect.minX, to.minY - rect.minY) > 0.5 else { return settled() }
+        aloneLive = rect
+        settling = (rect.minX, rect.minY, 0, 0)
+        settleClock.run(on: floating) { [weak self] dt in self?.settleStep(dt) }
+    }
+
+    /// One display frame of the settle, toward where the rule puts it now: a line added mid-settle moves the end.
+    private func settleStep(_ dt: Double) {
+        guard var step = settling, place == .replyLine, let to = alonePlaced()?.frame else { return settled() }
+        let spring = ConchMotion.dock
+        var done = spring.step(&step.x, velocity: &step.vx, to: to.minX, dt: dt, epsilon: 0.25)
+        done = spring.step(&step.y, velocity: &step.vy, to: to.minY, dt: dt, epsilon: 0.25) && done
+        guard !done else { return settled() }
+        settling = step
+        aloneLive = NSRect(x: step.x, y: step.y, width: to.width, height: to.height)
+        follow()
+    }
+
+    /// At rest where the rule puts it: nothing held, nothing settling.
+    private func settled() {
+        settleClock.stop()
+        settling = nil
+        aloneLive = nil
+        follow()
+    }
+
+    /// The input has left the reply line alone: whatever held or settled it is over, and the screen it was on is not kept
+    /// for next time.
+    private func forgetAlone() {
+        settleClock.stop()
+        settling = nil
+        grip = nil
+        aloneLive = nil
+        aloneScreen = nil
+    }
+
+    private static func savedReplySpot() -> ReplyLineSpot? {
+        UserDefaults.standard.data(forKey: replySpotKey).flatMap { try? JSONDecoder().decode(ReplyLineSpot.self, from: $0) }
+    }
+
+    /// The displays, as the rule sees them.
+    private static var screens: [ReplyLinePlacement.Screen] {
+        NSScreen.screens.map { ReplyLinePlacement.Screen(id: name(of: $0), frame: $0.frame, visible: $0.visibleFrame) }
+    }
+
+    /// A display's lasting name: its UUID, which outlives unplugging it and plugging it back in, where its number may not.
+    private static func name(of screen: NSScreen) -> String {
+        guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return screen.localizedName }
+        let display = CGDirectDisplayID(number.uint32Value)
+        if let known = displayNames[display] { return known }
+        let name = CGDisplayCreateUUIDFromDisplayID(display).map { CFUUIDCreateString(nil, $0.takeRetainedValue()) as String } ?? String(display)
+        displayNames[display] = name
+        return name
     }
 
     // MARK: The window's card
@@ -806,11 +990,74 @@ private struct ComposerFloatingHost: View {
                 )
                 .frame(width: layout.width)
                 .fixedSize(horizontal: false, vertical: true)
+                // Out alone, it moves by its chrome; in the panel it is the panel's reply line and stays put.
+                .modifier(ReplyLineGrip(dock: dock, detached: dock.place == .replyLine))
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { dock.floatingLaidOut(height: $0) }
             }
         }
         .padding(ComposerDock.margin)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: layout.growsDown ? .top : .bottom)
+    }
+}
+
+/// The reply line alone moves by its chrome: a press anywhere on its glass that its field and its buttons don't take for
+/// themselves. SwiftUI decides which presses those are, giving the field and every button first claim, so a button added
+/// later is never a handle; the dock moves the window in AppKit, one to one with the pointer (`ComposerDock.grab`). In the
+/// panel it is the panel's reply line and never moves. VoiceOver names it, and offers the way home as an action, which
+/// the keyboard reaches too.
+private struct ReplyLineGrip: ViewModifier {
+    let dock: ComposerDock
+    let detached: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .gesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .global)
+                    .onChanged { _ in dock.grab() }
+                    .onEnded { _ in dock.letGo() },
+                including: detached ? .all : .subviews
+            )
+            .background {
+                if detached {
+                    Color.clear
+                        .accessibilityElement()
+                        .accessibilityLabel("Move the reply bar")
+                        .accessibilityHint("Drag it by its edge or any empty part to move it. Double-click it to put it back at the bottom centre.")
+                        .accessibilityAction(named: "Move to bottom centre") { dock.sendAloneHome() }
+                        .accessibilitySortPriority(-1)
+                        .allowsHitTesting(false)
+                }
+            }
+    }
+}
+
+/// Display frames for the reply line alone settling after Tyler lets go of it, on its window's display.
+@MainActor
+private final class SettleClock: NSObject {
+    private var link: CADisplayLink?
+    private var last: CFTimeInterval = 0
+    private var tick: (Double) -> Void = { _ in }
+
+    func run(on window: NSWindow, _ tick: @escaping (Double) -> Void) {
+        self.tick = tick
+        guard link == nil else { return }
+        last = 0
+        let link = window.displayLink(target: self, selector: #selector(step(_:)))
+        link.add(to: .main, forMode: .common)
+        self.link = link
+    }
+
+    /// The link holds this clock; invalidated, it lets it go.
+    func stop() {
+        link?.invalidate()
+        link = nil
+    }
+
+    @objc private func step(_ link: CADisplayLink) {
+        // The real time since the last frame; the first counts as one at 120 Hz, and a stall never makes a jump.
+        let dt = last > 0 ? min(link.timestamp - last, 0.05) : 1.0 / 120
+        last = link.timestamp
+        tick(dt)
     }
 }
 

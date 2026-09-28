@@ -13,12 +13,16 @@ final class FloatingPanel: NSPanel {
     /// A press, seen before the view under it: the floating composer takes the keys when its field is clicked
     /// (`ComposerDock.pressed`).
     var onPress: ((NSEvent) -> Void)?
+    /// The pointer dragged or let go after a press, seen before the view under it: the reply line alone follows it while
+    /// Tyler holds it by its chrome (`ComposerDock.dragged`). Never swallowed, so the view's own gesture ends as it began.
+    var onDrag: ((NSEvent) -> Void)?
     override var canBecomeKey: Bool { takesKeys }
     override var canBecomeMain: Bool { false }
 
     override func sendEvent(_ event: NSEvent) {
         if event.type == .keyDown, let onKey, onKey(event) { return }
         if event.type == .leftMouseDown { onPress?(event) }
+        if event.type == .leftMouseDragged || event.type == .leftMouseUp { onDrag?(event) }
         super.sendEvent(event)
     }
 }
@@ -545,7 +549,8 @@ final class FloatingPanels: ObservableObject {
     /// The panel is on screen, open or folded.
     var isOnScreen: Bool { fog.isVisible }
 
-    /// The screen the panel is on, or would be: where the reply line alone goes when the panel is off.
+    /// The screen the panel is on, or would be: where the reply line alone first comes out, at bottom centre, when the panel
+    /// is off and Tyler has left it nowhere else (`ReplyLinePlacement`).
     var screenForReply: NSScreen? { screen() }
 
     /// Where the input's room is on screen, for ComposerDock to lay the composer over: at the reply line's place in the
