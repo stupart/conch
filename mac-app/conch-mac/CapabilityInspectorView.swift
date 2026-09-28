@@ -1,3 +1,4 @@
+import ConchDesign
 import SwiftUI
 
 /// What is this session actually carrying?
@@ -26,8 +27,9 @@ struct CapabilityInspectorView: View {
     /// Debug captures open every row, so a screenshot can prove what the
     /// detail actually renders. Never set from the UI.
     var expandAll: Bool = false
-    /// Types `/model <model>` into the session and returns the daemon's answer
-    /// in its own words (B2). nil hides the field, for captures with no daemon.
+    /// Changes the session's model for this session only — the daemon drives the agent's own
+    /// picker (src/session-settings.ts) — and returns the daemon's answer in its own words (B2).
+    /// nil hides the field, for captures with no daemon.
     var onSetModel: (@Sendable (String) async -> String)? = nil
     /// Previews or writes a plugin / MCP server switch through the daemon (B3).
     /// nil hides the toggles, for captures with no daemon.
@@ -129,11 +131,10 @@ struct CapabilityInspectorView: View {
                 }
             }
             // B2: the one row that is a control. The value is what Codex
-            // RECORDED for this thread; Claude Code writes nothing conch can
-            // read exactly, so it says "not reported" rather than guessing.
-            // Apply asks the daemon to type `/model <model>` into the session
-            // and shows the daemon's answer — never a claim about what the
-            // agent did with it.
+            // RECORDED for this thread; the session header shows what either
+            // agent runs now. Apply asks the daemon to drive the session's own
+            // /model picker to it for this session only, and shows the daemon's
+            // answer — never a claim about what the agent did with it.
             HStack(spacing: 8) {
                 Text("Model")
                     .font(ConchTypography.font(size: 11))
@@ -803,5 +804,80 @@ struct CapabilityInspectorSheet: View {
             install = read.install
             isLoading = false
         }
+    }
+}
+
+/// The session header's model and effort (src/session-settings.ts): what the session runs, from
+/// its own transcript or rollout ("default" when that says nothing), and a menu that changes
+/// either for THIS session only. The daemon drives the agent's own picker to its session-only
+/// key and publishes how it went on the row, which this shows: "Switching to …" while it
+/// types, a warning mark with the reason when it didn't happen.
+struct SessionSettingsHeaderControl: View {
+    let row: SessionRow
+    let catalog: AgentSettingsCatalog?
+    /// The daemon can change it (`features.sessionSettings`) and the session has a terminal to drive.
+    let canChange: Bool
+    let onPick: (SessionSettingsPick) -> Void
+    @State private var isHovered = false
+
+    private var title: String {
+        SessionSettingsPresentation.applying(row.settings) ?? SessionSettingsPresentation.title(row.settings)
+    }
+
+    private var failure: String? { SessionSettingsPresentation.failure(row.settings) }
+
+    var body: some View {
+        Group {
+            if canChange {
+                Menu {
+                    SessionSettingsMenuContent(state: row.settings, catalog: catalog, onPick: onPick)
+                } label: {
+                    label
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .disabled(row.settings?.change?.state == "applying")
+            } else {
+                label
+            }
+        }
+        .help(help)
+        .accessibilityLabel("Model and effort: \(title)")
+    }
+
+    private var help: String {
+        let base = canChange
+            ? "Model and effort. Changing them here is for this session only; new sessions keep the agent's own default."
+            : "Model and effort, as this session recorded them."
+        return failure.map { "\($0)\n\n\(base)" } ?? base
+    }
+
+    private var label: some View {
+        HStack(spacing: 4) {
+            if failure != nil {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 9))
+                    .foregroundStyle(ConchPalette.statusNeeds)
+            }
+            Text(title)
+                .font(ConchTypography.font(size: 11))
+                .foregroundStyle(ConchPalette.textDim)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            if canChange {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(ConchPalette.textFaint)
+            }
+        }
+        .padding(.horizontal, 7)
+        .frame(maxWidth: 240, minHeight: 24, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(isHovered && canChange ? ConchPalette.hover : .clear)
+        )
+        .contentShape(Rectangle())
+        .onHover { isHovered = $0 }
     }
 }

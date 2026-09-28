@@ -145,6 +145,21 @@ describe("the phone's /control refuses them all, and forwards nothing", () => {
     expect(forwarded.map((line) => JSON.parse(line).type)).toEqual(["pause"]);
   });
 
+  test("a model or effort change is a session command like the others, and the phone may send it", async () => {
+    const change = { kind: "session-command", sessionId: "s1", command: "set-settings", model: "gpt-6-luna", effort: "xhigh" };
+    expect(isMacAppOnlyRequest(change)).toBe(false);
+    expect(isMacAppOnlyRequest({ kind: "control-envelope", body: change })).toBe(false);
+    expect(isMacAppOnlyRequest({ ...change, command: "set-model", model: "opus" })).toBe(false);
+    const forwarded: string[] = [];
+    const app = bridge(async (line) => {
+      forwarded.push(line);
+      return JSON.stringify({ kind: "session-ack", sessionId: "s1", command: "set-settings", changed: true, label: "a" });
+    });
+    const response = await app.handle(post(change))!;
+    expect(response.status).toBe(200);
+    expect(forwarded.map((line) => JSON.parse(line))).toEqual([change]);
+  });
+
   describe("through to a real control server", () => {
     const servers: ControlServer[] = [];
     const dirs: string[] = [];

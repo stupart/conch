@@ -890,6 +890,33 @@ final class BridgeClient: ObservableObject {
         return true
     }
 
+    /// Change a session's model and/or effort for that session only: a session command like the
+    /// others, which the Mac's daemon carries out by driving the agent's own picker
+    /// (src/session-settings.ts). How it went arrives on the row (`settings.change`); false here
+    /// only when the Mac refused it or couldn't be reached, with why in `lastError`.
+    func setSessionSettings(sessionId: String, pick: SessionSettingsPick) async -> Bool {
+        var message: [String: Any] = ["kind": "session-command", "sessionId": sessionId, "command": "set-settings"]
+        if let model = pick.model { message["model"] = model }
+        if let effort = pick.effort { message["effort"] = effort }
+        guard !sessionId.isEmpty, pick.model != nil || pick.effort != nil,
+              let reply = await postControlRaw(message) else {
+            lastError = "Couldn't reach your Mac."
+            return false
+        }
+        if let error = reply["error"] as? String {
+            lastError = error
+            _ = await reportAppError(operation: "session-set-settings", message: error, sessionId: sessionId)
+            return false
+        }
+        guard reply["kind"] as? String == "session-ack", reply["sessionId"] as? String == sessionId,
+              reply["command"] as? String == "set-settings" else {
+            lastError = "The Mac sent something unexpected."
+            return false
+        }
+        lastError = reply["changed"] as? Bool == false ? "That session has no terminal on the Mac to change it in." : nil
+        return reply["changed"] as? Bool != false
+    }
+
     private func post(control message: [String: Any]) async -> Bool {
         guard let body = try? JSONSerialization.data(withJSONObject: message) else {
             lastError = "The phone couldn't encode that request."

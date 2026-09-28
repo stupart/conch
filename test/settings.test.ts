@@ -407,7 +407,7 @@ describe("control-message validation", () => {
     }
   });
 
-  test("recognizes and canonicalizes the eleven closed session-command shapes", () => {
+  test("recognizes and canonicalizes the twelve closed session-command shapes", () => {
     expect(SESSION_COMMANDS).toEqual([
       "rename",
       "set-voice",
@@ -417,6 +417,7 @@ describe("control-message validation", () => {
       "restore",
       "reveal",
       "set-model",
+      "set-settings",
       "attach",
       "review-viewed",
       "review-remove",
@@ -454,6 +455,14 @@ describe("control-message validation", () => {
       {
         input: { kind: "session-command", sessionId: "session-1", command: "set-model", model: " sonnet[1m] " },
         output: { kind: "session-command", sessionId: "session-1", command: "set-model", model: "sonnet[1m]" },
+      },
+      {
+        input: { kind: "session-command", sessionId: "session-1", command: "set-settings", model: " gpt-6-luna ", effort: " xhigh " },
+        output: { kind: "session-command", sessionId: "session-1", command: "set-settings", model: "gpt-6-luna", effort: "xhigh" },
+      },
+      {
+        input: { kind: "session-command", sessionId: "session-1", command: "set-settings", effort: "max", awaitDelivery: true },
+        output: { kind: "session-command", sessionId: "session-1", command: "set-settings", effort: "max", awaitDelivery: true },
       },
       {
         input: { kind: "session-command", sessionId: "session-1", command: "attach" },
@@ -506,6 +515,15 @@ describe("control-message validation", () => {
       { kind: "session-command", sessionId: "session-1", command: "set-model", model: "opus high" },
       { kind: "session-command", sessionId: "session-1", command: "set-model", model: "x".repeat(129) },
       { kind: "session-command", sessionId: "session-1", command: "set-model", model: 42 },
+      // set-settings: at least one of the two, each one word; an effort is a lowercase word.
+      { kind: "session-command", sessionId: "session-1", command: "set-settings" },
+      { kind: "session-command", sessionId: "session-1", command: "set-settings", model: "-c" },
+      { kind: "session-command", sessionId: "session-1", command: "set-settings", model: "opus high" },
+      { kind: "session-command", sessionId: "session-1", command: "set-settings", effort: "x high" },
+      { kind: "session-command", sessionId: "session-1", command: "set-settings", effort: "XHIGH" },
+      { kind: "session-command", sessionId: "session-1", command: "set-settings", effort: "high\ns" },
+      { kind: "session-command", sessionId: "session-1", command: "set-settings", effort: 3 },
+      { kind: "session-command", sessionId: "session-1", command: "set-settings", model: "opus", effort: "" },
       // A deliverable identity is minted by the daemon; anything that is not one is refused
       // rather than marking some other deliverable, or none, as read.
       { kind: "session-command", sessionId: "session-1", command: "review-viewed" },

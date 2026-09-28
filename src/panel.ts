@@ -12,6 +12,7 @@ import type { NaturalVoicesStatus } from "./voice-env.ts";
 import type { SpeechEngineStatus } from "./speech-engine.ts";
 import type { PublishedPhone } from "./phone-setup.ts";
 import type { PublishedPractice } from "./practice.ts";
+import type { PublishedSessionSettings, SessionSettingsCatalog } from "./session-settings.ts";
 
 export type PanelConchState = "idle" | "muted" | "paused" | "speaking" | "listening" | "recording" | "transcribing";
 
@@ -272,6 +273,12 @@ export interface PublishedSessionRow {
    */
   startedBySessionId?: string;
   context?: SessionContextUsage;
+  /**
+   * The model and effort the session runs, from its own record, and a change conch is driving
+   * or just drove (session-settings.ts). Absent values are unknown: a viewer says "default".
+   * Never on a subagent row.
+   */
+  settings?: PublishedSessionSettings;
   status: SessionStatus | null;
   /** Epoch-ms for the status currently visible on this row. */
   at?: number;
@@ -390,6 +397,8 @@ export interface PublishedState {
     viewedState: 1;
     /** Setup's practice turn (`practice.ts`): `practice-start`, `-listen`, `-stop`. Absent from a daemon without one. */
     practice?: 1;
+    /** `set-settings`, and `rows[].settings` / `sessionSettings` (session-settings.ts). */
+    sessionSettings?: 1;
   };
   /** Stable identity of the daemon installation that owns every local session key. */
   ownerDeviceId: string;
@@ -454,6 +463,12 @@ export interface PublishedState {
    * natural voices; onboarding reads it as setup status. Absent from older daemons.
    */
   speechEngine?: SpeechEngineStatus;
+  /**
+   * Per agent: the per-session settings conch can set (model, effort), the choices each agent
+   * offers, and its own defaults read from its config — read-only (session-settings.ts).
+   * Absent from older daemons, which also have no `set-settings` (`features.sessionSettings`).
+   */
+  sessionSettings?: SessionSettingsCatalog;
   /**
    * Setup's practice turn while one runs (`practice.ts`): where it is, what it heard, and why a go didn't run. Its
    * session is the first row. Absent with none running, and from older daemons.
@@ -610,6 +625,8 @@ export function buildPublishedState(
     showing?: PublishedShowing;
     naturalVoices?: NaturalVoicesStatus;
     speechEngine?: SpeechEngineStatus;
+    sessionSettings?: SessionSettingsCatalog;
+    settingsForSessionId?(sessionId: string, backend: "claude" | "codex"): PublishedSessionSettings | undefined;
   } = {},
 ): PublishedState {
   return {
@@ -617,7 +634,7 @@ export function buildPublishedState(
     // 2: deliverables carry `artifact`, `version` and `kind`, and a session command removes them.
     // 3: a deliverable's scene carries the agent's `marks` (agent ink).
     // 4: a deliverable the phone can't draw carries a snapshot of it from the Mac (`preview`).
-    features: { deliverables: 4, viewedState: 1 },
+    features: { deliverables: 4, viewedState: 1, ...(options.settingsForSessionId ? { sessionSettings: 1 as const } : {}) },
     ownerDeviceId,
     ts: now,
     ...(options.audio ? { audioControl: options.audio.control, audioOutbox: options.audio.outbox } : {}),
@@ -625,6 +642,7 @@ export function buildPublishedState(
     ...(options.previewRequests?.length ? { previewRequests: [...options.previewRequests] } : {}),
     ...(options.naturalVoices ? { naturalVoices: { ...options.naturalVoices } } : {}),
     ...(options.speechEngine ? { speechEngine: structuredClone(options.speechEngine) } : {}),
+    ...(options.sessionSettings ? { sessionSettings: structuredClone(options.sessionSettings) } : {}),
     mode: { ...model.mode },
     live: publishedLiveState(model.live),
     ...(model.reply ? { reply: publishedReply(model.reply) } : {}),
@@ -638,6 +656,10 @@ export function buildPublishedState(
       const approval = row.status === "needs" ? options.approvalForSessionId?.(row.sessionId, transcriptPath) : null;
       const voice = options.voiceForLabel?.(row.label)?.trim();
       const context = options.contextForSessionId?.(row.sessionId);
+      // A subagent runs inside its parent's process: nothing of its own to change.
+      const settings = row.parentSessionId
+        ? undefined
+        : options.settingsForSessionId?.(row.sessionId, row.backend ?? "claude");
       return {
         id: row.sessionId,
         label: row.label,
@@ -649,6 +671,7 @@ export function buildPublishedState(
         ...(transcriptPath ? { transcriptPath } : {}),
         ...(voice ? { voice } : {}),
         ...(context ? { context: { ...context } } : {}),
+        ...(settings ? { settings } : {}),
         ...(options.prioritizedSessionIds?.has(row.sessionId)
           ? { prioritized: true as const }
           : {}),

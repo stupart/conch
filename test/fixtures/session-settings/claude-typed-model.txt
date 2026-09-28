@@ -1,0 +1,38 @@
+
+❯ /model
+  ⎿  Kept model as Haiku 4.5
+
+❯ /model
+  ⎿  Kept model as Haiku 4.5
+
+❯ /model
+  ⎿  Set model to Opus 5.5 (1M context) for this session only with low effort
+
+❯ /model
+  ⎿  Set model to Opus 5.5 (1M context) for this session only with max effort
+
+❯ /model
+  ⎿  Kept model as Opus 5.5 (1M context)
+
+❯ /model
+  ⎿  Set model to Opus 5.5 (1M context) (default) for this session only
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ /model
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  /model                        Set the AI model for Claude Code (currently Opus 5.5 (1M context))
+  /claude-api                   Reference for the Claude API / Anthropic SDK — model ids, pricing, params, streaming, tool use, MCP,
+                                agents, caching, token counting, model migration. TRIGGER — read BEFORE opening the target file; don't sk…
+  /loop                         Run a prompt or slash command on a recurring interval (e.g. /loop 5m /foo). Omit the interval to let the
+                                model self-pace.
+  /advisor                      Let Claude consult a stronger model at key moments
+  /effort                       Set effort level for model usage
+  /status                       Show Claude Code status including version, model, account, API connectivity, and tool statuses
+  /code-review                  Review the current diff, or a PR number/branch/path target, for correctness bugs (plus
+                                reuse/simplification/efficiency cleanups where the model's review recipe covers them) at the given effort…
+  /doctor                       Health-check the user's Claude Code setup and fix issues: diagnose installation health — what the `claude
+                                doctor` terminal diagnostics cover — from local data (duplicate or leftover installs, PATH, unparseable s…
+  /update-config                Use this skill to configure the Claude Code harness via settings.json. Automated behaviors ("from now on
+                                when X", "each time X", "whenever X", "before/after X") require hooks configured in settings.json - the h…
+  /fast                         Toggle fast mode (Opus 5.5)
+  /plan                         Enable plan mode or view the current session plan

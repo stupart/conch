@@ -549,9 +549,43 @@ final class StateStore: ObservableObject {
         Task { _ = await socketClient.request(request) }
     }
 
-    /// Ask the daemon to type `/model <model>` into the session (B2). Returns
-    /// the daemon's answer in its own words, because the inspector shows it
-    /// verbatim rather than pretending to know what the agent did with it.
+    /// Change this session's model and/or effort, for this session only: the daemon drives the
+    /// agent's own picker to it (src/session-settings.ts) and publishes how it went on the row
+    /// (`settings.change`), which the header shows. A refusal before anything is typed — no
+    /// daemon, a session with no terminal — lands on the row's message here, in its words.
+    func setSessionSettings(id: SessionRow.ID, pick: SessionSettingsPick) {
+        rowMessages[id] = nil
+        let steered = Self.refocusWhenDelivered()
+        let request = ConchSessionCommandRequest(
+            sessionId: id,
+            command: .setSettings,
+            model: pick.model,
+            effort: pick.effort,
+            awaitDelivery: steered == nil ? nil : true
+        )
+        let socketClient = socketClient
+        Task { [weak self] in
+            let outcome = await socketClient.request(request, whenDelivered: steered?.whenDelivered)
+            steered?.settled(by: outcome)
+            let failure: String?
+            switch outcome {
+            case let .reply(data):
+                switch try? JSONDecoder().decode(ConchSessionCommandReply.self, from: data) {
+                case let .acknowledgement(ack)?: failure = ack.changed ? nil : "not changed: the session has no terminal conch can drive"
+                case let .error(error)?: failure = error.error
+                default: failure = "unexpected reply from daemon"
+                }
+            case .connectFailed: failure = "daemon not running"
+            case .timeout: failure = "daemon did not reply"
+            }
+            self?.rowMessages[id] = failure
+        }
+    }
+
+    /// Change the session's model for this session only (B2): the same drive as
+    /// `setSessionSettings`, through the agent's own picker. Returns the daemon's answer in its
+    /// own words, because the inspector shows it verbatim rather than pretending to know what the
+    /// agent did with it; the outcome itself arrives on the row.
     func setModel(id: SessionRow.ID, model: String) async -> String {
         let steered = Self.refocusWhenDelivered()
         let request = ConchSessionCommandRequest(
@@ -570,7 +604,7 @@ final class StateStore: ObservableObject {
             switch reply {
             case let .acknowledgement(acknowledgement):
                 return acknowledgement.changed
-                    ? "sent /model \(model) to the session"
+                    ? "switching to \(model) for this session only…"
                     : "not sent: the session has no terminal window to type into"
             case let .error(error):
                 return error.error
@@ -1060,9 +1094,9 @@ final class StateStore: ObservableObject {
         transportErrorSessionIDs.remove(context.id)
 
         switch context.command {
-        case .reveal, .setModel, .attach, .reviewViewed, .reviewRemove:
-            // A raise, a typed /model, or marking a deliverable read changes no row here;
-            // there is nothing to reconcile.
+        case .reveal, .setModel, .setSettings, .attach, .reviewViewed, .reviewRemove:
+            // A raise, a model change, or marking a deliverable read changes no row here: a
+            // model change arrives on the row itself (`settings.change`).
             break
         case .rename:
             guard let canonicalLabel = acknowledgement.label else { return }
@@ -1127,7 +1161,7 @@ final class StateStore: ObservableObject {
         )
 
         switch context.command {
-        case .rename, .reveal, .setModel, .attach, .reviewViewed, .reviewRemove:
+        case .rename, .reveal, .setModel, .setSettings, .attach, .reviewViewed, .reviewRemove:
             break
         case .dismiss:
             if optimisticDismissals[context.id]?.generation == context.generation {
@@ -1427,7 +1461,8 @@ final class StateStore: ObservableObject {
             features: sourceState.features,
             showing: sourceState.showing,
             previewRequests: sourceState.previewRequests,
-            practice: sourceState.practice
+            practice: sourceState.practice,
+            sessionSettings: sourceState.sessionSettings
         )
         if state?.hasSamePresentation(as: next) != true {
             state = next

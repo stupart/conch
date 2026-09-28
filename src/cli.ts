@@ -441,8 +441,9 @@ switch (command) {
     break;
   }
   case "model": {
-    // B2: the daemon types `/model <model>` into the session; the agent does
-    // the switching. No daemon-down fallback — there is nothing to persist.
+    // B2: the daemon drives the session's own /model picker to this model, for
+    // this session only (session-settings.ts); the outcome lands on the session's
+    // row. No daemon-down fallback — there is nothing to persist.
     const [query, model, ...extra] = rest;
     if (!query || !model || extra.length > 0) {
       console.error("usage: conch model <session> <model>");
@@ -479,10 +480,10 @@ switch (command) {
       process.exit(1);
     }
     if (!result.response.changed) {
-      console.error(`[conch] ${label} has no terminal window to type /model into`);
+      console.error(`[conch] ${label} has no terminal window conch can drive`);
       process.exit(1);
     }
-    console.log(`[conch] /model ${model} -> ${label}`);
+    console.log(`[conch] switching ${label} to ${model} for this session only (its row shows how it went)`);
     break;
   }
   case "config-toggle": {

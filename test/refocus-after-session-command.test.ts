@@ -37,7 +37,7 @@ afterEach(async () => {
 async function daemon() {
   const typing = deferred();
   const controller = {
-    setModel: () => typing.promise.then(() => true),
+    setSettings: () => typing.promise.then(() => true),
     rename: (_t: unknown, label: string, delivered?: SessionDelivery) => {
       delivered?.(typing.promise);
       return label;
@@ -86,7 +86,7 @@ const ackLine = (command: string, extra: object) =>
   JSON.stringify(applySessionCommand(
     { kind: "session-command", sessionId: "s1", command, ...extra } as never,
     {
-      controller: { setModel: async () => true, rename: (_t: unknown, label: string) => label } as unknown as SessionActionsController,
+      controller: { setSettings: async () => true, rename: (_t: unknown, label: string) => label } as unknown as SessionActionsController,
       pause: { open: () => {}, close: () => {} },
       targetForSessionId: () => ({ sessionId: "s1", label: "arch", pid: 4242 }),
     },
@@ -99,7 +99,7 @@ const ackLine = (command: string, extra: object) =>
  * `awaitDelivery`, the ack still goes out at once (the app shows it), then the
  * daemon waits for the typing and says `session-delivered`.
  */
-for (const [command, extra] of [["set-model", { model: "opus" }], ["rename", { label: "arch" }]] as const) {
+for (const [command, extra] of [["set-model", { model: "opus" }], ["set-settings", { effort: "high" }], ["rename", { label: "arch" }]] as const) {
   test(`an awaitDelivery ${command} is acked at once and delivered only once typed`, async () => {
     const d = await daemon();
     const p = peer(d.socketPath, { kind: "session-command", sessionId: "s1", command, ...extra, awaitDelivery: true });

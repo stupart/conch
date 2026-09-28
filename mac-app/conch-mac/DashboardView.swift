@@ -2205,6 +2205,17 @@ private struct ConversationPane: View {
 
             AgentBadge(backend: row.backend)
 
+            // What it runs, and a menu to change model or effort for this session only
+            // (src/session-settings.ts). Not on a subagent, which runs inside its parent.
+            if row.parentSessionId == nil, row.backend != "conch" {
+                SessionSettingsHeaderControl(
+                    row: row,
+                    catalog: state?.sessionSettings?.agent(row.backend),
+                    canChange: state?.features?.sessionSettings != nil && row.revealable && row.noTerminal == nil,
+                    onPick: { store.setSessionSettings(id: row.id, pick: $0) }
+                )
+            }
+
             Spacer(minLength: 8)
 
             if let context = row.context, context.limitTokens > 0 {
