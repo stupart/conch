@@ -62,7 +62,7 @@ function speech(root: string, options: { fetch: (dest: string) => Promise<void>;
     statusPath: join(root, "speech-engine.json"),
     failuresPath: join(root, "models", "fetch-failures.json"),
     whisperModel: pin,
-    tmux: () => null,
+    tmux: () => ({ path: "tmux", source: "missing", found: false }),
     fetchModel: async (_model, dest) => {
       fetches.push(dest);
       await options.fetch(dest);

@@ -5,7 +5,7 @@ import type { Config } from "./config.ts";
 import { CONCH_DATA } from "./config.ts";
 import { readState } from "./daemon-state.ts";
 import { runInstallPlugin } from "./plugin-install.ts";
-import { checkAgentBinaries, checkConchBinaries, checkKokoro, checkMicrophone, checkNaturalVoices, checkSpeechEngine, checkTts, checkWhisperServer, formatDoctorProbe } from "./doctor-checks.ts";
+import { checkAgentBinaries, checkConchBinaries, checkKokoro, checkMicrophone, checkNaturalVoices, checkSpeechEngine, checkTmux, checkTts, checkWhisperServer, formatDoctorProbe } from "./doctor-checks.ts";
 import { acquireFetchLock, VAD_MODEL, WHISPER_MODEL } from "./speech-engine.ts";
 import { CONCH_VERSION } from "./version.ts";
 
@@ -877,12 +877,9 @@ export async function runDoctor(cfg: Config): Promise<void> {
   // should produce a concrete recovery action without masking otherwise sound
   // installation state behind a hard doctor failure.
   // Optional: a session in a tmux pane is typed into through tmux; every other
-  // session through its own window, or the clipboard.
-  console.log(
-    binaryExists("tmux")
-      ? "ℹ️  tmux — sessions in tmux panes are typed into directly"
-      : "ℹ️  tmux not installed (optional) — sessions are typed into through their own window instead",
-  );
+  // session through its own window, or the clipboard. Which tmux conch's own
+  // sessions run in — the app carries one — and where it came from.
+  console.log(formatDoctorProbe(checkTmux()));
   console.log(formatDoctorProbe(checkSpeechEngine(cfg)));
   console.log(formatDoctorProbe(checkConchBinaries()));
   console.log(formatDoctorProbe(await checkAgentBinaries()));

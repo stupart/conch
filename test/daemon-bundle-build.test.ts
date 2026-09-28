@@ -301,7 +301,7 @@ describe("the build wires it in, and every shipping script checks it", () => {
 
   test("the bundle check covers every helper: present, Developer ID, Hardened Runtime, the app's architectures, the entitlements, the version", () => {
     const check = read("scripts/check-app-bundle.sh");
-    expect(check).toContain("for helper in conch-daemon whisper-cli whisper-server sox; do");
+    expect(check).toContain("for helper in conch-daemon whisper-cli whisper-server sox tmux; do");
     expect(check).toContain("'^Authority=Developer ID Application'");
     expect(check).toContain("runtime");
     expect(check).toContain('[[ "$archs" == "$app_archs" ]]');

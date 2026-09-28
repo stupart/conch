@@ -5,7 +5,9 @@
  * Finder-launched app gets — no Homebrew, no checkout, no bun — and the engine
  * it carries. Checks that the daemon answers its socket, publishes the speech
  * engine as coming from the app, warms the bundled whisper-server, and that the
- * bundled whisper transcribes a line `say` wrote to a file. Never plays audio,
+ * bundled whisper transcribes a line `say` wrote to a file, and that it
+ * publishes the app's own tmux as the one its sessions run in (the tmux itself
+ * is exercised by scripts/tmux-bundle-e2e.ts). Never plays audio,
  * never opens the microphone, never touches the live daemon, its socket, its
  * logs or conch's real folders: every path the daemon writes is in the temp
  * dir, and the daemon is stopped by its own pid.
@@ -112,7 +114,7 @@ const daemon = Bun.spawn([join(helpers, "conch-daemon"), "daemon"], {
 });
 say(`bundled daemon started, pid ${daemon.pid}`);
 
-type Published = { speechEngine?: { state: string; detail: string; progress?: { bytes: number; total: number }; parts: Record<string, { source: string; path: string }>; daemon: { version: string; path: string } } };
+type Published = { speechEngine?: { state: string; detail: string; progress?: { bytes: number; total: number }; parts: Record<string, { source: string; path: string; found?: boolean }>; daemon: { version: string; path: string } } };
 const published = (): Published | null => {
   try { return JSON.parse(readFileSync(env.CONCH_SESSIONS_FILE!, "utf8")) as Published; } catch { return null; }
 };
@@ -153,6 +155,8 @@ try {
       check(engine.parts[part]?.source === "conch.app" && engine.parts[part]!.path.startsWith(app), `${part} resolved from the app: ${engine.parts[part]?.path}`);
     }
     check(engine.daemon.path === join(helpers, "conch-daemon"), `the publishing daemon is the bundled one (${engine.daemon.path}, conch ${engine.daemon.version})`);
+    const tmux = engine.parts.tmux;
+    check(tmux?.source === "conch.app" && tmux.found === true && tmux.path === join(helpers, "tmux"), `tmux resolved from the app: ${tmux?.source} ${tmux?.path}`);
   }
 
   const wav = join(root, "line.wav");
