@@ -432,7 +432,10 @@ struct ConversationStack: View {
         default:
             // Whole, always: a reply the daemon cut, or a recorded one past its preview, is read
             // from the record as it arrives or comes near the viewport. "Show the rest" is gone.
+            // At the reading leading the Mac's transcript uses (`ConchType.readingLineSpacing`): 17 pt on SF's own
+            // line was set solid, which reads for a sentence and tires over a page.
             MarkdownView(text: text(of: item))
+                .lineSpacing(ConchType.readingLineSpacing)
                 .foregroundStyle(Palette.textPrimary)
         }
     }

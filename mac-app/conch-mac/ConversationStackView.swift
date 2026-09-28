@@ -127,6 +127,11 @@ struct ConversationStackView: View {
 
     private static let bottomAnchor = "conversation-bottom"
 
+    /// Room above your turn on top of the stack's 22 between rows. An exchange starts where you speak; at one gap for
+    /// everything, a reply, the steps after it and your next message sat the same distance apart and read as one list.
+    /// Your pending copy and a sent receipt take it too, so the transcript's own copy replaces them without a move.
+    static let turnBreak: CGFloat = 12
+
     /// Which rows fold (§3): the generic tool line, and a file change.
     ///
     /// Never a question — the session is BLOCKED on it, and hiding the one row a person must
@@ -182,8 +187,8 @@ struct ConversationStackView: View {
                         .font(.system(size: 8))
                         .foregroundStyle(ConchPalette.textFaint)
                     Text(run.summary)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(ConchPalette.textDim)
+                        .font(ConchType.secondary)
+                        .foregroundStyle(ConchPalette.textFaint)
                 }
                 .contentShape(Rectangle())
             }
@@ -681,6 +686,7 @@ struct ConversationStackView: View {
                 // A canvas, a Show or a video he sent: one quiet row in his bubble, never the picture of the screen he
                 // is looking at, nor the lines written for the agent.
                 SentReceiptBubble(receipt: receipt)
+                    .padding(.top, Self.turnBreak)
             } else {
                 // The one kind that is right-aligned and filled. Everything else in
                 // the stack is the machine talking; this is you, and it should be
@@ -700,6 +706,7 @@ struct ConversationStackView: View {
                         .padding(.vertical, 8)
                         .background(ConchPalette.fill, in: RoundedRectangle(cornerRadius: ConchRadius.large))
                 }
+                .padding(.top, Self.turnBreak)
             }
         case .assistant:
             // The reply as a document: headings on a scale, lists, code on a ground, tables as columns — the
@@ -1265,11 +1272,11 @@ struct ConversationStackView: View {
                             .foregroundStyle(statusColor(item.tool?.status))
                             .frame(width: 12)
                         Text(item.tool?.name ?? "tool")
-                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .font(ConchType.secondary)
                             .foregroundStyle(ConchPalette.textDim)
                         if !item.text.isEmpty {
                             Text(item.text)
-                                .font(.system(size: 11, design: .monospaced))
+                                .font(ConchType.code)
                                 .foregroundStyle(ConchPalette.textFaint)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
@@ -1707,7 +1714,7 @@ private struct PlanRow: View {
                         .foregroundStyle(colour(step.status))
                         .frame(width: 12)
                     Text(step.text)
-                        .font(.system(size: 11.5))
+                        .font(ConchType.secondary)
                         // Done steps recede: the eye should land on what is
                         // happening now, not on the pile already finished.
                         .foregroundStyle(
@@ -1734,7 +1741,9 @@ private struct PlanRow: View {
 
     private func colour(_ status: ConversationItem.PlanStep.Status) -> Color {
         switch status {
-        case .done: return ConchPalette.brandCyan
+        // Faint, as every step's mark is: the brand cyan here measured 1.9:1 on the stage, and at full strength it is
+        // the open microphone's alone.
+        case .done: return ConchPalette.textFaint
         // Faint for the tool call's reason: a plan left mid-step when its turn ended still says running.
         case .running: return ConchPalette.statusQuiet
         case .pending: return ConchPalette.textFaint
@@ -1758,10 +1767,10 @@ private struct ChangeRow: View {
                 HStack(spacing: 8) {
                     Image(systemName: "square.and.pencil")
                         .font(.system(size: 9.5))
-                        .foregroundStyle(ConchPalette.brandCyan)
+                        .foregroundStyle(ConchPalette.statusQuiet)
                         .frame(width: 12)
                     Text(change.file)
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .font(ConchType.code)
                         .foregroundStyle(ConchPalette.textDim)
                         // The name stays; the PATH is a hover away. A row that reads
                         // `shot.mjs` names one of every shot.mjs in the checkout, and putting
@@ -1771,12 +1780,12 @@ private struct ChangeRow: View {
                     if !change.added.isEmpty {
                         Text("+\(change.added.count)")
                             .font(.system(size: 10.5, design: .monospaced))
-                            .foregroundStyle(ConchPalette.brandCyan)
+                            .foregroundStyle(ConchPalette.added)
                     }
                     if !change.removed.isEmpty {
                         Text("−\(change.removed.count)")
                             .font(.system(size: 10.5, design: .monospaced))
-                            .foregroundStyle(ConchPalette.statusNeeds)
+                            .foregroundStyle(ConchPalette.removed)
                     }
                     Image(systemName: expanded ? "chevron.down" : "chevron.right")
                         .font(.system(size: 8))
@@ -1788,10 +1797,10 @@ private struct ChangeRow: View {
             if expanded {
                 VStack(alignment: .leading, spacing: 1) {
                     ForEach(Array(change.removed.enumerated()), id: \.offset) { _, line in
-                        DiffLine(text: line, sign: "−", tint: ConchPalette.statusNeeds)
+                        DiffLine(text: line, sign: "−", tint: ConchPalette.removed)
                     }
                     ForEach(Array(change.added.enumerated()), id: \.offset) { _, line in
-                        DiffLine(text: line, sign: "+", tint: ConchPalette.brandCyan)
+                        DiffLine(text: line, sign: "+", tint: ConchPalette.added)
                     }
                     if change.truncated {
                         Text("… longer than this view shows")
@@ -1858,6 +1867,7 @@ private struct PendingMessage: View {
             status
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
+        .padding(.top, ConversationStackView.turnBreak)
     }
 
     @ViewBuilder

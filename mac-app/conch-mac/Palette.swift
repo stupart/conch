@@ -43,6 +43,9 @@ enum ConchPalette {
     static let textDim = ConchColor.textSecondary.dynamic
     static let textFaint = ConchColor.textTertiary.dynamic
     static let divider = ConchColor.hairline.dynamic
+    /// A diff's added and removed lines and counts (workspace-lab's `--add` / `--del`), readable as text on the stage.
+    static let added = ConchColor.added.dynamic
+    static let removed = ConchColor.removed.dynamic
     /// The lab's `--hair2` (`rgba(0,0,0,.1)`), a step up from `divider`'s `--hair`. It is what
     /// `.dc` draws around the inline deliverable: `box-shadow:inset 0 0 0 1px var(--hair2)`.
     static let hairlineStrong = ConchColor.hairlineStrong.dynamic

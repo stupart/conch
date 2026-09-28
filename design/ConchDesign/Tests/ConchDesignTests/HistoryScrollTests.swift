@@ -414,14 +414,19 @@ final class HistoryScrollTests: XCTestCase {
 
     func testEstimatesGrowWithTheBodyAndKnowATextFromAToolLine() {
         let mac = HistoryEstimate.mac
-        let short = mac.height(kind: "message", role: "assistant", characters: 80, width: 700)
+        let short = mac.height(kind: "message", role: "assistant", characters: 60, width: 700)
         let long = mac.height(kind: "message", role: "assistant", characters: 8_000, width: 700)
         XCTAssertEqual(short, 23 + 22)
         XCTAssertGreaterThan(long, 20 * short)
+        // A reply's prose runs to the reading measure, not the column, so a wider column estimates it no shorter.
+        XCTAssertEqual(mac.measure, ConchReading.measure(15))
+        XCTAssertEqual(long, mac.height(kind: "message", role: "assistant", characters: 8_000, width: mac.measure))
+        XCTAssertGreaterThan(long, mac.height(kind: "message", role: "assistant", characters: 8_000, width: 1_000) - 1)
         XCTAssertEqual(mac.height(kind: "tool_call", role: nil, characters: 9_999, width: 700), 16 + 22,
                        "a tool row is one folded line however long its output")
-        XCTAssertGreaterThan(mac.height(kind: "message", role: "user", characters: 900, width: 700),
-                             mac.height(kind: "message", role: "assistant", characters: 900, width: 700),
+        // In a column narrow enough that the bubble is inside the measure (the deliverable beside it, say).
+        XCTAssertGreaterThan(mac.height(kind: "message", role: "user", characters: 900, width: 500),
+                             mac.height(kind: "message", role: "assistant", characters: 900, width: 500),
                              "your turns sit in a narrower bubble")
     }
 

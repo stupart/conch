@@ -140,6 +140,12 @@ public enum ConchColor {
     public static let hairline = ConchColorToken("hairline", .init(0x000000, alpha: 0.08), .init(0xFFFFFF, alpha: 0.08))
     public static let hairlineStrong = ConchColorToken("hairlineStrong", .init(0x000000, alpha: 0.1), .init(0xFFFFFF, alpha: 0.1))
 
+    // A diff's lines and counts: workspace-lab's `--add` and `--del`. The transcript's "+3" was the brand cyan, which
+    // measured 1.94:1 on the white stage, and cyan at full strength is the open microphone's alone. Both are text, so
+    // both hold 4.5:1 on every ground (ReadingContrastTests).
+    public static let added = ConchColorToken("added", .init(0x1F7A3C), .init(0x5FD08A))
+    public static let removed = ConchColorToken("removed", .init(0xB8432F), .init(0xFF8A75))
+
     // Primary action
     public static let accent = ConchColorToken("accent", .init(0x1D1D1F), .init(0xF2F1EF))
     public static let onAccent = ConchColorToken("onAccent", .init(0xFFFFFF), .init(0x1D1D1F))
@@ -184,7 +190,7 @@ public enum ConchColor {
     public static let grounds = [ground, surface, surfaceRaised, fog]
     public static let text = [textPrimary, textSecondary, textTertiary]
     public static let all = grounds + [glass, fill, fillSelected, rowHover, rowSelected] + text
-        + [hairline, hairlineStrong, accent, onAccent, attention, active]
+        + [hairline, hairlineStrong, added, removed, accent, onAccent, attention, active]
         + [speaking, listening, quiet, ready, listeningRing, onVoice, idleGlow] + overlay
     public static let overlay = [overlayText, overlayTextSecondary, overlayTextPending, overlayPlaceholder, overlayFill,
                                  overlayFillStrong, overlayGlass, overlayGlassStrong, overlayGlassIcon, overlayLine]
@@ -269,6 +275,42 @@ public enum ConchType {
         return UIFont.systemFont(ofSize: size, weight: bold ? .bold : .regular) as CTFont
         #endif
     }
+}
+
+// MARK: - Reading
+
+/// The rhythm of anything read rather than scanned — an agent's reply, a document — in ems of its body size, so the Mac's
+/// 15 pt transcript, a 12.5 pt nested agent and the phone's 17 pt keep one set of proportions (workspace-lab's `.ai`).
+///
+/// Measured before these existed (2026-09-28, `ReadingRhythmTests` pins what they draw): prose ran the Mac column's whole
+/// 664 pt, a median 95 characters a line at 15 pt; a list sat as far from the paragraph before it as its items sat from
+/// each other (10.5 pt), so a list and the prose around it ran together; a heading after a list, a code block or a table
+/// had 10.5 pt above it and 18 below, belonging to neither side; and inline code was set at the body's own size in SF Mono,
+/// wider and taller-bodied than SF, so a `path` in a sentence was its loudest word.
+///
+/// Every gap is a box gap: the room between the last line of one block and the first line of the next.
+public enum ConchReading {
+    /// The longest line prose runs to. 33 em holds 70 to 73 characters of SF at every size the transcript sets (the
+    /// median line, measured at 12.5, 15 and 17 pt), inside the 60 to 75 that reads comfortably. Tables, code and
+    /// pictures keep the whole column: a table's columns and a code line want the width, and neither is read as a line of
+    /// prose.
+    public static let measure: CGFloat = 33
+    /// Between paragraphs, and between a paragraph and a list, a code block, a table or a quote: 18 pt at 15.
+    public static let paragraphGap: CGFloat = 1.2
+    /// Between the items of one list: under half a line, so a list reads as one block (workspace-lab's `li{margin:3px}`).
+    public static let itemGap: CGFloat = 0.4
+    /// Above a heading, whatever comes before it: more than a paragraph, so a heading opens a section.
+    public static func headingGapAbove(level: Int) -> CGFloat { level <= 2 ? 1.75 : 1.45 }
+    /// Below a heading: half a paragraph gap, so a heading belongs to what follows it.
+    public static let headingGapBelow: CGFloat = 0.6
+    /// Code against the body it sits in, inline and in a block: 13 pt at 15, as Xcode sets it.
+    public static let codeScale: CGFloat = 0.87
+    /// A table's cells against the body: tables are scanned rather than read, and a size down fits more of each column
+    /// before it wraps (workspace-lab's 13.5 at 15).
+    public static let tableScale: CGFloat = 0.9
+
+    /// `measure` in points, for type at `size`.
+    public static func measure(_ size: CGFloat) -> CGFloat { measure * size }
 }
 
 // MARK: - Space, radius, elevation, motion
