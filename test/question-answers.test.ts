@@ -67,14 +67,45 @@ describe("Claude Code's picker keys", () => {
       .toEqual([{ press: "n" }, { type: "neither, something else" }, "Enter"]);
   });
 
+  test("multi-select words: down to Type something, the words, down to its Submit row, Return", () => {
+    // Measured 2026-09-28 in a tmux lab whose picker a stand-in API drew: a number only ticks
+    // (the cursor stays on option 1), words go in only with the cursor on "Type something",
+    // Return there unticks them and → there only moves the text cursor.
+    // "Pick gammas?"="typed words"
+    expect(claudeQuestionKeys([gamma], [{ text: "typed words" }])).toEqual([
+      "Down", "Down", "Down", { type: "typed words" }, "Down", "Enter", { press: "1" },
+    ]);
+    // "Pick gammas?"="G1, G3, plus my words"
+    expect(claudeQuestionKeys([gamma], [{ choices: [0, 2], text: "plus my words" }])).toEqual([
+      { press: "1" }, { press: "3" }, "Down", "Down", "Down", { type: "plus my words" }, "Down", "Enter", { press: "1" },
+    ]);
+  });
+
+  test("multi-select words in a set: each question moves on, then 1 submits the review", () => {
+    // "Pick gammas?"="gamma words", "Pick delta?"="D2"
+    expect(claudeQuestionKeys([gamma, delta], [{ text: "gamma words" }, { choices: [1] }])).toEqual([
+      "Down", "Down", "Down", { type: "gamma words" }, "Down", "Enter", { press: "2" }, { press: "1" },
+    ]);
+    // "Pick delta?"="delta words", "Pick gammas?"="G2, gamma words"
+    expect(claudeQuestionKeys([delta, gamma], [{ text: "delta words" }, { choices: [1], text: "gamma words" }])).toEqual([
+      { press: "3" }, { type: "delta words" }, "Enter",
+      { press: "2" }, "Down", "Down", "Down", { type: "gamma words" }, "Down", "Enter", { press: "1" },
+    ]);
+  });
+
   test("answers that don't fit the questions are refused, not typed", () => {
     for (const answers of [
       [{ choices: [1] }],                                // one answer for two questions
       [{ choices: [3] }, { choices: [0] }],              // no fourth option
       [{ choices: [0, 1] }, { choices: [0] }],           // two picks for a single-choice question
       [{ choices: [-1] }, { choices: [0] }],
+      [{ choices: [0], text: "and words" }, { choices: [0] }], // a pick AND words for a single-choice question
+      [{ text: "  " }, { choices: [0] }],                // no words at all
     ]) expect(typeof claudeQuestionKeys([alpha, beta], answers)).toBe("string");
-    expect(typeof claudeQuestionKeys([gamma], [{ text: "words" }])).toBe("string");
+    expect(claudeQuestionKeys([alpha, beta], [{ choices: [0], text: "and words" }, { choices: [0] }]))
+      .toBe('"Alpha" takes one answer: one of its options, or words of your own');
+    expect(typeof claudeQuestionKeys([gamma], [{ choices: [0, 0] }])).toBe("string");
+    expect(typeof claudeQuestionKeys([gamma], [{ choices: [] }])).toBe("string");
     expect(typeof claudeQuestionKeys([], [])).toBe("string");
   });
 });
@@ -131,13 +162,24 @@ describe("words sent to a session that is waiting on a question", () => {
     expect(textQuestionAnswers([delta], "neither,\nsomething else")).toEqual([{ text: "neither, something else" }]);
   });
 
-  test("a multi-select question takes its options, comma-separated, and nothing else", () => {
+  test("a multi-select question takes its options, comma-separated, or words of your own", () => {
+    // Claude Code's picker offers "Type something" here too. Refusing words is how Tyler's typed
+    // answer to "Ship tonight" failed twice from the phone (2026-09-28).
     expect(textQuestionAnswers([gamma], "G3, g1")).toEqual([{ choices: [2, 0] }]);
-    expect(typeof textQuestionAnswers([gamma], "G3 and my own idea")).toBe("string");
+    expect(textQuestionAnswers([gamma], "G3 and my own idea")).toEqual([{ text: "G3 and my own idea" }]);
+    expect(textQuestionAnswers([gamma], "Lets review everything,\nthen audit")).toEqual([{ text: "Lets review everything, then audit" }]);
+    expect(textQuestionAnswers([gamma], "G1, and more")).toEqual([{ text: "G1, and more" }]);
+  });
+
+  test("no words is no answer", () => {
+    expect(textQuestionAnswers([gamma], " \n ")).toBe("there is no answer to send");
+    expect(textQuestionAnswers([delta], "")).toBe("there is no answer to send");
   });
 
   test("several questions at once cannot be answered by words: which one would they be for?", () => {
-    expect(textQuestionAnswers([alpha, beta], "A2")).toContain("asking 2 questions at once");
+    expect(textQuestionAnswers([alpha, beta], "A2")).toBe(
+      "the session is asking 2 questions at once, so words alone can't say which one they answer: fill in its question card and press Submit answers",
+    );
   });
 });
 
@@ -146,13 +188,15 @@ describe("the answers field on the socket", () => {
     type, sessionId: "s1", label: "alpha", announce: "A2", answers,
   });
 
-  test("an inject may carry choices or words per question", () => {
+  test("an inject may carry choices or words per question, or both for a multi-select one", () => {
     expect(event([{ choices: [1] }, { text: "my own words" }]).ok).toBe(true);
+    expect(event([{ choices: [0, 2], text: "plus my words" }]).ok).toBe(true);
   });
 
   test("anything else is refused before it can reach a keyboard", () => {
     for (const bad of [
-      [], "A2", [{}], [{ choices: [1], text: "both" }], [{ choices: [] }], [{ choices: [8] }],
+      [], "A2", [{}], [{ choices: [], text: "words" }], [{ choices: [1], text: "" }], [{ choices: [1], text: "two\nlines" }],
+      [{ choices: [] }], [{ choices: [8] }],
       [{ choices: [1, 1] }], [{ choices: [1.5] }], [{ text: "" }], [{ text: "two\nlines" }],
       [{ text: "x".repeat(4001) }], Array.from({ length: 9 }, () => ({ choices: [0] })),
     ]) expect(event(bad).ok).toBe(false);
@@ -249,10 +293,14 @@ describe("the Mac question card, as source (conch-mac has no XCTest target)", ()
 
   test("a sent answer shows as Submitted until the row closes, and the card returns with the reason if it fails", () => {
     const tool = between("case .tool:", "} else if let plan = item.plan");
-    expect(tool).toContain('} else if item.tool?.status == "running", let sent = submittedAnswers[item.id],\n                          store.rowMessages[conversation.sessionId] == nil {\n                    submittedQuestionRow(sent)');
-    expect(tool).toContain("let failure = store.rowMessages[conversation.sessionId]");
-    // Every way the card sends goes through the one that records it.
-    expect(stack.match(/submitAnswer\(/g)?.length).toBe(4);
+    expect(tool).toContain("} else if live, let sent = submittedAnswers[item.id], questionNotices[item.id] == nil {\n                    submittedQuestionRow(sent)");
+    expect(tool).toContain("if live, let failure = questionNotices[item.id] {");
+    // Any send's failure while the card is live is said on it — the card's own, the composer's,
+    // a voice reply's — read from the row message a press clears and a failure sets.
+    expect(stack).toMatch(/\.onChange\(of: store\.rowMessages\[conversation\.sessionId\]\) \{ _, message in\s*guard let live = liveQuestionID else \{ return \}\s*questionNotices\[live\] = message/);
+    // Every way the card sends goes through the one that records it: an option, a multi-select
+    // Submit and Return in its words, and a set's Submit.
+    expect(stack.match(/submitAnswer\(/g)?.length).toBe(5);
     expect(stack).not.toMatch(/\bonAnswer\((?!summary, answers, itemID\))/);
     const store = readFileSync(`${import.meta.dir}/../mac-app/conch-mac/StateStore.swift`, "utf8");
     expect(store).toContain("if event.type == .inject, event.answers == nil, let opId = event.opId");
@@ -267,7 +315,7 @@ describe("the Mac question card, as source (conch-mac has no XCTest target)", ()
 
   test("several questions: each is filled in, and one Submit sends every answer in order", () => {
     const card = between("private func questionCard(", "private func setAnswers(");
-    expect(card).toContain('questionRow(asked, questionID: "\\(itemID)#\\(index)", answerable: answerable, inSet: true)');
+    expect(card).toContain('questionRow(asked, questionID: "\\(itemID)#\\(index)", answerable: answerable, inSet: true,');
     expect(card).toContain("if let filled { submitAnswer(filled.summary, filled.answers, itemID: itemID) }");
     expect(card).toContain(".disabled(filled == nil || noTerminal != nil)");
   });
@@ -304,11 +352,18 @@ describe("the phone question card, as source (conch-ios has no XCTest target)", 
   };
 
   test("a sent answer shows as Submitted until the row closes; a refusal brings the card back", () => {
-    expect(stack).toContain('} else if item.tool?.status == "running", let sent = submittedAnswers[item.id] {\n                    submittedQuestionRow(sent)');
+    expect(stack).toContain("} else if live, let sent = submittedAnswers[item.id] {\n                    submittedQuestionRow(sent)");
     const session = read("SessionView.swift");
     const answering = between(session, "private func answerQuestion(", "private func approve(");
     expect(answering).toContain("submittedAnswers[questionID] = summary");
-    expect(answering).toContain("answerFailure = reason\n                submittedAnswers[questionID] = nil");
+    // Said on the card it answers, not under the composer.
+    expect(answering).toContain("questionNotices[questionID] = reason\n                submittedAnswers[questionID] = nil");
+    expect(stack).toContain("if isActive, let notice = questionNotices[itemID] {");
+    // The composer's words go to a waiting question as its answer; a refusal is said on the card too.
+    const words = between(session, "private func sendWords() {", "private func uploadBody(");
+    expect(words).toContain("let asking = liveQuestionID");
+    expect(words).toContain("if let asking, case let .failed(reason) = delivered { questionNotices[asking] = reason }");
+    expect(session).toContain("questionNotices: questionNotices");
     expect(session).toContain("submittedAnswers: submittedAnswers,");
   });
 
@@ -348,7 +403,13 @@ describe("the phone question card, as source (conch-ios has no XCTest target)", 
   });
 
   test("the answers cross the wire as `answers`, the words only as the summary", () => {
-    expect(read("Models.swift")).toContain('var wire: [String: Any] { choices.map { ["choices": $0] } ?? ["text": text ?? ""] }');
+    // Choices, words, or both (a multi-select answer with words beside its ticks).
+    const models = read("Models.swift");
+    const from = models.indexOf("var wire: [String: Any] {");
+    expect(from).toBeGreaterThan(-1);
+    const wire = models.slice(from, models.indexOf("\n}\n", from));
+    expect(wire).toContain('if let choices { wire["choices"] = choices }');
+    expect(wire).toContain('if let text { wire["text"] = text }');
     const inject = between(read("BridgeClient.swift"), "    func inject(", "private func deliveryOutcome(");
     expect(inject).toContain('if let answers { payload["answers"] = answers.map(\\.wire) }');
     const session = read("SessionView.swift");

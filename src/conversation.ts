@@ -926,9 +926,10 @@ export interface AgentQuestion {
 /**
  * One answer per question, in order: the options picked (indexes into that
  * question's `options`; exactly one unless it is multiSelect), or words of
- * your own.
+ * your own — beside ticked options on a multiSelect question, which Claude
+ * Code records as one answer, "G1, G3, my words" (measured on 2.1.280).
  */
-export type QuestionAnswer = { choices: number[] } | { text: string };
+export type QuestionAnswer = { choices: number[] } | { text: string; choices?: number[] };
 
 /**
  * Words sent to a session that is waiting on a question — typed in the
@@ -937,27 +938,28 @@ export type QuestionAnswer = { choices: number[] } | { text: string };
  * Claude Code's picker records option 1 for words typed or pasted into it
  * with no "Type something" first (measured on 2.1.280: "hello there", then
  * Return, recorded "D1"), so the words have to become a real answer: the
- * option they name, or words of your own. A reason instead when they can't:
- * several questions at once, where there is no telling which one the words
- * are for, or words where only options are allowed.
+ * option they name (options, comma-separated, on a multiSelect question), or
+ * words of your own. Every question takes those: Claude Code's picker offers
+ * "Type something" on a multiSelect question too, and refusing them there is
+ * how Tyler's typed answer to "Ship tonight" failed twice from the phone
+ * (2026-09-28). A reason instead only when there are several questions at
+ * once, where there is no telling which one the words are for.
  */
 export function textQuestionAnswers(questions: readonly AgentQuestion[], text: string): QuestionAnswer[] | string {
   if (questions.length !== 1) {
-    return `the session is asking ${questions.length} questions at once; answer them on the question card in the conch app`;
+    return `the session is asking ${questions.length} questions at once, so words alone can't say which one they answer: fill in its question card and press Submit answers`;
   }
   const question = questions[0]!;
-  const said = text.trim().toLowerCase();
+  const line = text.replace(/\s+/g, " ").trim();
+  if (!line) return "there is no answer to send";
+  const said = line.toLowerCase();
   const named = (words: string) => question.options.findIndex((option) => option.label.trim().toLowerCase() === words);
   if (question.multiSelect) {
     const picked = said.split(",").map((part) => named(part.trim()));
-    return picked.length && picked.every((index) => index >= 0)
-      ? [{ choices: [...new Set(picked)] }]
-      : `"${question.header || question.question}" takes its options, not words of your own`;
+    return picked.every((index) => index >= 0) ? [{ choices: [...new Set(picked)] }] : [{ text: line }];
   }
   const index = named(said);
-  if (index >= 0) return [{ choices: [index] }];
-  const line = text.replace(/\s+/g, " ").trim();
-  return line ? [{ text: line }] : "there is no answer to send";
+  return index >= 0 ? [{ choices: [index] }] : [{ text: line }];
 }
 
 /**

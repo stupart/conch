@@ -47,6 +47,36 @@ final class SendFailureTests: XCTestCase {
         )
     }
 
+    /// A question the daemon could not answer says why in its own words, and those words are
+    /// shown: read as an unknown code they were a bare "Not delivered." on Tyler's phone, twice,
+    /// for an answer that was simply refused (2026-09-28).
+    func testAReasonTheDaemonWroteAsASentenceIsShown() {
+        XCTAssertEqual(
+            ConchSendFailure.sentence(reason: "the session is asking 3 questions at once, so words alone can't say which one they answer: fill in its question card and press Submit answers"),
+            "Not delivered — the session is asking 3 questions at once, so words alone can't say which one they answer: fill in its question card and press Submit answers."
+        )
+        XCTAssertEqual(
+            ConchSendFailure.sentence(reason: "the question is no longer open."),
+            "Not delivered — the question is no longer open."
+        )
+        XCTAssertEqual(
+            ConchSendFailure.sentence(reason: "the picker didn't take the answer; answer it in the terminal", onClipboard: true),
+            "Not delivered — the picker didn't take the answer; answer it in the terminal. Your words are on the Mac's clipboard."
+        )
+    }
+
+    /// A dialog is named when conch knows which one it is.
+    func testAWaitingPermissionPromptIsNamed() {
+        XCTAssertEqual(
+            ConchSendFailure.sentence(reason: "session-awaiting-permission"),
+            "Not delivered — that session is waiting on a permission prompt. Allow or deny it first, then send again."
+        )
+        XCTAssertEqual(
+            ConchSendFailure.sentence(reason: "session-awaiting-answer"),
+            "Not delivered — that session has a prompt open in its terminal, and typing would answer it. Answer it there, then send again."
+        )
+    }
+
     /// The honesty rule: no reason, no cause. A guessed cause sends someone to fix the wrong thing.
     func testAnUnknownReasonInventsNothing() {
         for reason in [nil, "", "delivery-fell-over", "staged-not-submitted", "transport-submitted"] {
@@ -65,7 +95,7 @@ final class SendFailureTests: XCTestCase {
             "submit-failed",
             "clipboard-fallback", "delivery-failed", "transport-error", "submit-error",
             "delivery-unconfirmed", "delivery-unattributed", "delivery-interrupted",
-            "session-awaiting-answer", "session-stopped", "session-ended",
+            "session-awaiting-answer", "session-awaiting-permission", "session-stopped", "session-ended",
         ]
         for reason in reasons {
             let sentence = ConchSendFailure.sentence(reason: reason)

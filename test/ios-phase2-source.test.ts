@@ -97,15 +97,20 @@ describe("iPhone Phase 2 daily controls", () => {
 
   test("question options submit one choice immediately or an explicit ordered set", () => {
     expect(conversation).toContain("let onAnswer: (String, [QuestionAnswer], String) -> Void");
-    expect(conversation).toMatch(/questionCard\([\s\S]*questions,[\s\S]*itemID: item\.id,[\s\S]*isActive: item\.tool\?\.status == "running"/);
+    // Only the live card answers: the newest running question with nothing said after it.
+    expect(conversation).toContain("let live = item.id == liveQuestionID");
+    expect(conversation).toMatch(/questionCard\([\s\S]*questions,[\s\S]*itemID: item\.id,[\s\S]*isActive: live,/);
     expect(conversation).toContain("@State private var multiSelections: [String: Set<String>] = [:]");
     expect(conversation).toContain("toggleSelection(option.label, for: questionID)");
     // One choice answers at once, as the option's INDEX: Claude Code's picker records option 1
     // for any typed words, so the label this used to send was usually the wrong answer (#367).
     expect(conversation).toMatch(/if asked\.multiSelect \{[\s\S]*toggleSelection[\s\S]*\} else \{\s*onAnswer\(option\.label, \[QuestionAnswer\(choices: \[index\]\)\], questionID\)/);
-    expect(conversation).toContain("[QuestionAnswer(choices: asked.options.indices.filter { selected.contains(asked.options[$0].label) })],");
-    expect(conversation).toContain('selected.isEmpty ? "Submit selections"');
-    expect(conversation).toContain(".disabled(!isActive || optionReplyInFlight || option.label.isEmpty || noTerminal != nil)");
+    // A multi-select Submit sends the ticked options and any words typed beside them, as one answer.
+    expect(conversation).toContain("if let filled { onAnswer(filled.summary, [filled.answer], questionID) }");
+    expect(conversation).toContain("QuestionAnswer(choices: picked.isEmpty ? nil : picked, text: typed.isEmpty ? nil : typed)");
+    expect(conversation).toContain('Text(filled?.label ?? "Submit selections")');
+    // A settled card's options are no buttons at all; a live one's go dead while a send is out.
+    expect(conversation).toContain(".disabled(optionReplyInFlight || option.label.isEmpty || noTerminal != nil)");
     expect(session).toContain("onAnswer: answerQuestion");
     expect(session).toMatch(/private func answerQuestion[\s\S]*?text: summary,\s*answers: answers/);
     expect(session).not.toContain("text: label\n");
@@ -114,7 +119,8 @@ describe("iPhone Phase 2 daily controls", () => {
     // itself is the view's state; a tap already in flight is not covered by it.
     expect(session).toContain("private func answerQuestion(_ summary: String, answers: [QuestionAnswer], questionID: String) {");
     expect(session).toContain("guard isStillAsking(questionID) else { return }");
-    expect(session).toContain('return item.question != nil && item.tool?.status == "running"');
+    expect(session).toContain("liveQuestionID == questionID");
+    expect(session).toContain("bridge.state?.conversations[sessionId].flatMap(ConversationStack.liveQuestionID(in:))");
   });
 
   test("machine-authored materials decode and render inline, including Mac images", () => {

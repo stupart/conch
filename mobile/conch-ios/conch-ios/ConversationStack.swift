@@ -36,6 +36,9 @@ struct ConversationStack: View {
     var noTerminal: String? = nil
     /// Offered beside that reason when a window can be attached to the job.
     var onOpenInTerminal: (() -> Void)? = nil
+    /// Why a send didn't land while a question card was the live one, by that card: the card is
+    /// where it gets fixed, whether the card sent it or the composer did.
+    var questionNotices: [String: String] = [:]
     @State private var expandedToolIDs: Set<String> = []
     /// Which folded runs are open. Its own set, not `expandedToolIDs`: a run is named by its
     /// first step, and sharing the set would open that step's output every time the run opens.
@@ -43,7 +46,8 @@ struct ConversationStack: View {
     /// Multi-select taps edit a retained set. Nothing crosses the bridge until
     /// the explicit Submit button sends the complete, option-ordered answer.
     @State private var multiSelections: [String: Set<String>] = [:]
-    /// Words typed for one question of several, keyed like `multiSelections`.
+    /// Words typed on a question card — one question of several, or a multi-select one — keyed
+    /// like `multiSelections`.
     @State private var questionTexts: [String: String] = [:]
     /// A link that could not be opened from the phone, shown where it was
     /// tapped instead of a tap that does nothing (A13).
@@ -392,16 +396,24 @@ struct ConversationStack: View {
                 // call, and only when its result names an option: the wire never
                 // states a choice, and guessing at a person's decision is worse
                 // than leaving the block as it was.
-                if item.tool?.status != "running",
-                   let decided = answeredSummary(questions, result: item.tool?.result) {
+                //
+                // Only the live card is a form (`liveQuestionID`). One Tyler has talked past is
+                // still "running" on disk, and it stayed pressable for an answer the Mac refused.
+                let live = item.id == liveQuestionID
+                if !live, let decided = answeredSummary(questions, result: item.tool?.result) {
                     answeredQuestionRow(decided)
-                } else if item.tool?.status == "running", let sent = submittedAnswers[item.id] {
+                } else if live, let sent = submittedAnswers[item.id] {
                     submittedQuestionRow(sent)
                 } else {
                     questionCard(
                         questions,
                         itemID: item.id,
-                        isActive: item.tool?.status == "running"
+                        isActive: live,
+                        chosen: live ? [] : QuestionOutcome.chosenPerQuestion(
+                            questions: questions.map(\.question),
+                            options: questions.map { $0.options.map(\.label) },
+                            result: item.tool?.result
+                        )
                     )
                 }
             }
@@ -566,13 +578,31 @@ struct ConversationStack: View {
         }
     }
 
+    /// The question card that can still be answered (`QuestionOutcome.liveQuestionID`): the
+    /// newest running question with nothing said after it — the Mac's rule, and the daemon's.
+    /// Every other card is settled (answered, expired, or talked past) and drawn as a record.
+    private var liveQuestionID: String? {
+        Self.liveQuestionID(in: conversation)
+    }
+
+    static func liveQuestionID(in conversation: Conversation) -> String? {
+        QuestionOutcome.liveQuestionID(
+            in: conversation.items,
+            id: \.id,
+            isUser: { $0.kind == "user" },
+            isRunningQuestion: { $0.question != nil && $0.tool?.status == "running" }
+        )
+    }
+
     /// What a finished question decided, one line per question, or nil when the result
     /// does not say for certain.
     private func answeredSummary(_ questions: [ConversationItem.AgentQuestion], result: String?) -> String? {
         if questions.count == 1, let asked = questions.first {
             return QuestionOutcome.summary(
                 header: asked.header,
-                chosen: QuestionOutcome.chosen(from: asked.options.map(\.label), in: result)
+                question: asked.question,
+                options: asked.options.map(\.label),
+                result: result
             )
         }
         guard let answers = QuestionOutcome.answers(to: questions.map(\.question), in: result) else { return nil }
@@ -588,15 +618,24 @@ struct ConversationStack: View {
     /// One question as it always was; or, when the agent asked several at once, each one to
     /// fill in and ONE Submit that sends every answer in order — the Mac's card (#367).
     /// Claude Code records nothing until all of them are answered, and the phone used to know
-    /// only the first.
+    /// only the first. `chosen`: on a settled card, what each question's recorded answer names.
     @ViewBuilder
     private func questionCard(
         _ questions: [ConversationItem.AgentQuestion],
         itemID: String,
-        isActive: Bool
+        isActive: Bool,
+        chosen: [[String]] = []
     ) -> some View {
         let inSet = questions.count > 1
         VStack(alignment: .leading, spacing: 10) {
+            // Why the last send here didn't land — from this card or the composer — on the card
+            // that is still waiting for the answer.
+            if isActive, let notice = questionNotices[itemID] {
+                Text(notice)
+                    .font(Type.caption.weight(.medium))
+                    .foregroundStyle(Palette.needs)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             ForEach(Array(questions.enumerated()), id: \.offset) { index, asked in
                 if index > 0 {
                     Rectangle().fill(Palette.divider).frame(height: 1).padding(.vertical, 4)
@@ -605,7 +644,8 @@ struct ConversationStack: View {
                     asked,
                     questionID: inSet ? "\(itemID)#\(index)" : itemID,
                     isActive: isActive,
-                    inSet: inSet
+                    inSet: inSet,
+                    chosen: index < chosen.count ? chosen[index] : []
                 )
             }
             if inSet, isActive {
@@ -642,12 +682,16 @@ struct ConversationStack: View {
     }
 
     /// `inSet`: one of several questions asked at once. Its picks are held for the card's one
-    /// Submit instead of sent, and "Something else…" is typed here rather than in the composer.
+    /// Submit instead of sent. "Something else…" is typed here, in the card, for one of several
+    /// and for a multi-select question (a form with its own Submit, where the words go beside the
+    /// ticked options as Claude Code's picker records them); a lone single-choice question sends
+    /// on a tap, so its words go through the composer.
     private func questionRow(
         _ asked: ConversationItem.AgentQuestion,
         questionID: String,
         isActive: Bool,
-        inSet: Bool
+        inSet: Bool,
+        chosen: [String] = []
     ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             if !asked.header.isEmpty {
@@ -660,76 +704,84 @@ struct ConversationStack: View {
                 .foregroundStyle(Palette.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
             ForEach(Array(asked.options.enumerated()), id: \.offset) { index, option in
-                let selected = multiSelections[questionID]?.contains(option.label) == true
-                Button {
-                    if asked.multiSelect {
-                        toggleSelection(option.label, for: questionID)
-                    } else if inSet {
-                        multiSelections[questionID] = [option.label]
-                        questionTexts[questionID] = nil
-                    } else {
-                        onAnswer(option.label, [QuestionAnswer(choices: [index])], questionID)
-                    }
-                } label: {
-                    HStack(alignment: .firstTextBaseline, spacing: 10) {
-                        // The mark's shape is how every form teaches pick-one
-                        // versus pick-many — no caption spells it out.
-                        Image(systemName: asked.multiSelect
-                            ? (selected ? "checkmark.square.fill" : "square")
-                            : (selected ? "largecircle.fill.circle" : "circle"))
-                            .font(Type.caption)
-                            .foregroundStyle(selected ? Palette.needs : Palette.textDim)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(option.label)
-                                .font(Type.body.weight(.medium))
-                                .foregroundStyle(Palette.textPrimary)
-                            if let description = option.description, !description.isEmpty {
-                                Text(description)
-                                    .font(Type.caption)
-                                    .foregroundStyle(Palette.textDim)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
+                if isActive {
+                    let selected = multiSelections[questionID]?.contains(option.label) == true
+                    Button {
+                        if asked.multiSelect {
+                            toggleSelection(option.label, for: questionID)
+                        } else if inSet {
+                            multiSelections[questionID] = [option.label]
+                            questionTexts[questionID] = nil
+                        } else {
+                            onAnswer(option.label, [QuestionAnswer(choices: [index])], questionID)
                         }
+                    } label: {
+                        optionLabel(option, multiSelect: asked.multiSelect, selected: selected, live: true)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(optionReplyInFlight || option.label.isEmpty || noTerminal != nil)
+                    .accessibilityHint(
+                        asked.multiSelect
+                            ? "Toggles this option; Submit sends all selected options"
+                            : (inSet
+                                ? "Chooses this option; Submit answers sends every answer"
+                                : "Sends this option as your reply")
+                    )
+                } else {
+                    // Settled — answered, expired, or talked past. The transcript keeps it for
+                    // context, as a record rather than controls: no press, no highlight, nothing
+                    // to focus, so an old choice can never inject a reply into a later turn. What
+                    // was chosen stays marked; the rest recede.
+                    let picked = chosen.contains(option.label)
+                    optionLabel(option, multiSelect: asked.multiSelect, selected: picked, live: false)
+                        .opacity(picked ? 1 : 0.45)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityAddTraits(picked ? .isSelected : [])
+                        .accessibilityHint("This question is no longer active")
+                }
+            }
+
+            if isActive, !inSet, noTerminal != nil { noTerminalReason }
+
+            if isActive && (inSet || asked.multiSelect) {
+                // Claude Code's "Type something": the words become this question's answer — in
+                // place of a pick on a single-choice question, beside the ticks on a multi-select one.
+                TextField("Something else…", text: Binding(
+                    get: { questionTexts[questionID] ?? "" },
+                    set: { typed in
+                        questionTexts[questionID] = typed
+                        if !typed.isEmpty && !asked.multiSelect { multiSelections[questionID] = nil }
+                    }
+                ))
+                .textFieldStyle(.plain)
+                .font(Type.body)
+                .foregroundStyle(Palette.textPrimary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 12)
+                        .strokeBorder(
+                            Palette.textDim.opacity(0.22),
+                            style: StrokeStyle(lineWidth: 1, dash: [3, 3])
+                        )
+                )
+                .disabled(optionReplyInFlight || noTerminal != nil)
+            } else if isActive && !inSet {
+                Button(action: onFreeform) {
+                    HStack(spacing: 10) {
+                        // A pencil, not a circle: this is not a fourth choice,
+                        // it is the way out of choosing.
+                        Image(systemName: "square.and.pencil")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Palette.textDim)
+                        Text("Something else…")
+                            .font(Type.caption.weight(.medium))
+                            .foregroundStyle(Palette.textDim)
                         Spacer(minLength: 0)
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        selected ? Palette.needs.opacity(0.10) : Palette.raised,
-                        in: RoundedRectangle(cornerRadius: 12)
-                    )
-                }
-                .buttonStyle(.plain)
-                // The transcript keeps completed questions for context, but
-                // their old choices must not inject a reply into a later turn.
-                .disabled(!isActive || optionReplyInFlight || option.label.isEmpty || noTerminal != nil)
-                .accessibilityHint(
-                    !isActive
-                        ? "This question is no longer active"
-                        : (asked.multiSelect
-                            ? "Toggles this option; Submit sends all selected options"
-                            : (inSet
-                                ? "Chooses this option; Submit answers sends every answer"
-                                : "Sends this option as your reply"))
-                )
-            }
-
-            if inSet {
-                if isActive && !asked.multiSelect {
-                    // Claude Code's "Type something": the words become this question's answer.
-                    TextField("Something else…", text: Binding(
-                        get: { questionTexts[questionID] ?? "" },
-                        set: { typed in
-                            questionTexts[questionID] = typed
-                            if !typed.isEmpty { multiSelections[questionID] = nil }
-                        }
-                    ))
-                    .textFieldStyle(.plain)
-                    .font(Type.body)
-                    .foregroundStyle(Palette.textPrimary)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
                     .background(
                         RoundedRectangle(cornerRadius: 12)
                             .strokeBorder(
@@ -737,66 +789,88 @@ struct ConversationStack: View {
                                 style: StrokeStyle(lineWidth: 1, dash: [3, 3])
                             )
                     )
-                    .disabled(optionReplyInFlight || noTerminal != nil)
+                    .contentShape(Rectangle())
                 }
-            } else {
-                if isActive, noTerminal != nil { noTerminalReason }
+                .buttonStyle(.plain)
+                .disabled(noTerminal != nil)
+                .accessibilityHint("Moves to the message field so you can answer in your own words")
+            }
 
-                if isActive {
-                    Button(action: onFreeform) {
-                        HStack(spacing: 10) {
-                            // A pencil, not a circle: this is not a fourth choice,
-                            // it is the way out of choosing.
-                            Image(systemName: "square.and.pencil")
-                                .font(.system(size: 11))
-                                .foregroundStyle(Palette.textDim)
-                            Text("Something else…")
-                                .font(Type.caption.weight(.medium))
-                                .foregroundStyle(Palette.textDim)
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.horizontal, 12)
+            if asked.multiSelect && isActive && !inSet {
+                let filled = multiAnswer(asked, questionID: questionID)
+                Button {
+                    if let filled { onAnswer(filled.summary, [filled.answer], questionID) }
+                } label: {
+                    Text(filled?.label ?? "Submit selections")
+                        .font(Type.caption.weight(.semibold))
+                        .foregroundStyle(filled == nil ? Palette.textFaint : Palette.bg)
+                        .frame(maxWidth: .infinity)
                         .padding(.vertical, 10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
                         .background(
-                            RoundedRectangle(cornerRadius: 12)
-                                .strokeBorder(
-                                    Palette.textDim.opacity(0.22),
-                                    style: StrokeStyle(lineWidth: 1, dash: [3, 3])
-                                )
+                            filled == nil ? Palette.raised : Palette.needs,
+                            in: RoundedRectangle(cornerRadius: 12)
                         )
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(noTerminal != nil)
-                    .accessibilityHint("Moves to the message field so you can answer in your own words")
                 }
-
-                if asked.multiSelect && isActive {
-                    let selected = selectedLabels(for: asked, questionID: questionID)
-                    Button {
-                        onAnswer(
-                            selected.joined(separator: ", "),
-                            [QuestionAnswer(choices: asked.options.indices.filter { selected.contains(asked.options[$0].label) })],
-                            questionID
-                        )
-                    } label: {
-                        Text(selected.isEmpty ? "Submit selections" : "Submit \(selected.count) selected")
-                            .font(Type.caption.weight(.semibold))
-                            .foregroundStyle(selected.isEmpty ? Palette.textFaint : Palette.bg)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 10)
-                            .background(
-                                selected.isEmpty ? Palette.raised : Palette.needs,
-                                in: RoundedRectangle(cornerRadius: 12)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(selected.isEmpty || optionReplyInFlight || noTerminal != nil)
-                    .accessibilityHint("Sends all selected options as your reply")
-                }
+                .buttonStyle(.plain)
+                .disabled(filled == nil || optionReplyInFlight || noTerminal != nil)
+                .accessibilityHint("Sends the selected options and any words of your own as your reply")
             }
         }
+    }
+
+    /// One option's row. Live, it sits on a raised ground that reads as pressable; settled, it
+    /// has no ground at all, and only what was chosen is marked, with a check.
+    private func optionLabel(
+        _ option: ConversationItem.AgentQuestion.Option,
+        multiSelect: Bool,
+        selected: Bool,
+        live: Bool
+    ) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            // The mark's shape is how every form teaches pick-one
+            // versus pick-many — no caption spells it out.
+            Image(systemName: multiSelect
+                ? (selected ? "checkmark.square.fill" : "square")
+                : (selected ? (live ? "largecircle.fill.circle" : "checkmark.circle.fill") : "circle"))
+                .font(Type.caption)
+                .foregroundStyle(selected ? Palette.needs : Palette.textDim)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(option.label)
+                    .font(Type.body.weight(.medium))
+                    .foregroundStyle(Palette.textPrimary)
+                if let description = option.description, !description.isEmpty {
+                    Text(description)
+                        .font(Type.caption)
+                        .foregroundStyle(Palette.textDim)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            selected ? Palette.needs.opacity(0.10) : (live ? Palette.raised : Color.clear),
+            in: RoundedRectangle(cornerRadius: 12)
+        )
+    }
+
+    /// A lone multi-select question's answer: the ticked options and any words of your own, as
+    /// one answer (Claude Code records them together: "G1, G3, my words"); nil with neither.
+    private func multiAnswer(
+        _ asked: ConversationItem.AgentQuestion,
+        questionID: String
+    ) -> (answer: QuestionAnswer, summary: String, label: String)? {
+        let selected = selectedLabels(for: asked, questionID: questionID)
+        let picked = asked.options.indices.filter { selected.contains(asked.options[$0].label) }
+        let typed = (questionTexts[questionID] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !picked.isEmpty || !typed.isEmpty else { return nil }
+        return (
+            QuestionAnswer(choices: picked.isEmpty ? nil : picked, text: typed.isEmpty ? nil : typed),
+            (selected + (typed.isEmpty ? [] : [typed])).joined(separator: ", "),
+            typed.isEmpty ? "Submit \(picked.count) selected" : "Submit answer"
+        )
     }
 
     /// Why nothing on this card can be pressed: answering IS typing, and this row has no
@@ -824,7 +898,8 @@ struct ConversationStack: View {
     }
 
     /// Every question's answer in order, and a summary to name the send by; nil while any
-    /// question is unanswered. Words typed for a question win over its ticked options.
+    /// question is unanswered. Words typed for a single-choice question win over its pick; a
+    /// multi-select one takes its ticks and the words together.
     private func setAnswers(
         _ questions: [ConversationItem.AgentQuestion],
         itemID: String
@@ -835,7 +910,11 @@ struct ConversationStack: View {
             let id = "\(itemID)#\(index)"
             let typed = (questionTexts[id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             let picked = asked.options.indices.filter { multiSelections[id]?.contains(asked.options[$0].label) == true }
-            if !typed.isEmpty {
+            if asked.multiSelect, !picked.isEmpty, !typed.isEmpty {
+                // Ticks and words together, as Claude Code's picker records them: "G1, G3, my words".
+                answers.append(QuestionAnswer(choices: picked, text: typed))
+                lines.append((picked.map { asked.options[$0].label } + [typed]).joined(separator: ", "))
+            } else if !typed.isEmpty {
                 answers.append(QuestionAnswer(text: typed))
                 lines.append(typed)
             } else if !picked.isEmpty {

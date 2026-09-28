@@ -25,14 +25,18 @@ test("a question offers a way out of its own options, on both apps", () => {
 test("it only appears while the question can still be answered", () => {
   // A completed tool is not a valid destination; offering an escape hatch on a
   // dead question invites answering an old prompt.
+  // Two doors: typed in place on the card (one of several questions, or a multi-select one,
+  // whose words go beside its ticks), or the composer for a lone single-choice question.
   const macRow = mac.slice(mac.indexOf("private func questionRow"));
-  expect(macRow.indexOf("if answerable {")).toBeLessThan(macRow.indexOf("Something else…"));
+  expect(macRow.indexOf("if answerable && (inSet || asked.multiSelect) {")).toBeGreaterThan(-1);
+  expect(macRow.indexOf("if answerable && (inSet || asked.multiSelect) {")).toBeLessThan(macRow.indexOf('TextField("Something else…"'));
+  expect(macRow.indexOf("} else if answerable && !inSet {")).toBeGreaterThan(-1);
+  expect(macRow.indexOf("} else if answerable && !inSet {")).toBeLessThan(macRow.indexOf('Text("Something else…")'));
   const phoneRow = phone.slice(phone.indexOf("asked.options.enumerated"));
-  // Two doors now: typed in place for one of several questions, or the composer for a lone one.
-  expect(phoneRow.indexOf("if isActive && !asked.multiSelect {")).toBeGreaterThan(-1);
-  expect(phoneRow.indexOf("if isActive && !asked.multiSelect {")).toBeLessThan(phoneRow.indexOf('TextField("Something else…"'));
-  expect(phoneRow.indexOf("if isActive {")).toBeGreaterThan(-1);
-  expect(phoneRow.indexOf("if isActive {")).toBeLessThan(phoneRow.indexOf('Text("Something else…")'));
+  expect(phoneRow.indexOf("if isActive && (inSet || asked.multiSelect) {")).toBeGreaterThan(-1);
+  expect(phoneRow.indexOf("if isActive && (inSet || asked.multiSelect) {")).toBeLessThan(phoneRow.indexOf('TextField("Something else…"'));
+  expect(phoneRow.indexOf("} else if isActive && !inSet {")).toBeGreaterThan(-1);
+  expect(phoneRow.indexOf("} else if isActive && !inSet {")).toBeLessThan(phoneRow.indexOf('Text("Something else…")'));
 });
 
 test("both apps route it to their own composer's focus", () => {

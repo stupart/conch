@@ -108,7 +108,8 @@ struct ConversationStackView: View {
     /// explicit Submit button sends it. Keying by tool row keeps two questions
     /// in the retained transcript from sharing checkmarks.
     @State private var multiSelections: [String: Set<String>] = [:]
-    /// Words typed for one question of several, keyed like `multiSelections`.
+    /// Words typed on a question card — one question of several, or a multi-select one — keyed
+    /// like `multiSelections`.
     @State private var questionTexts: [String: String] = [:]
     /// What was sent from a question card, by the question row it answers. The card gives way
     /// to "Submitted" at once — Tyler: "when submitted the state of the question ui … should
@@ -116,7 +117,12 @@ struct ConversationStackView: View {
     /// which a send clears at the press and a failure sets).
     @State private var submittedAnswers: [String: String] = [:]
     /// `.qo:hover` — which option the pointer is on, so an option can be transparent at rest.
+    /// A live card's only: a settled one follows no pointer.
     @State private var hoveredOption: String?
+    /// Why a send to this session didn't land while a question card was the live one, by that
+    /// card — the card is where it gets fixed. Read from the store's row message, which a press
+    /// clears and a failure sets, whichever sent it: this card, the composer, or a voice reply.
+    @State private var questionNotices: [String: String] = [:]
     @State private var scrollRequestGeneration = 0
 
     private static let bottomAnchor = "conversation-bottom"
@@ -218,16 +224,33 @@ struct ConversationStackView: View {
     /// still reaches the same store and workspace.
     private func rowKey(for item: ConversationItem) -> RowKey {
         let expanded = isExpanded(item.id)
+        let live = item.question != nil && item.id == liveQuestionID
         return RowKey(
             item: item,
             expanded: expanded,
             fullText: history.fullText(forSnapshotItem: item.id),
             bodyStatus: expanded && wasCut(item) ? bodyStatus(for: item) : nil,
             selections: multiSelections.filter { $0.key == item.id || $0.key.hasPrefix(item.id + "#") },
-            typed: questionTexts.filter { $0.key.hasPrefix(item.id + "#") },
-            hovered: item.question == nil ? nil : hoveredOption,
+            typed: questionTexts.filter { $0.key == item.id || $0.key.hasPrefix(item.id + "#") },
+            // A settled card draws no hover, so the pointer crossing it redraws nothing.
+            hovered: live ? hoveredOption : nil,
+            live: live,
+            submitted: item.question == nil ? nil : submittedAnswers[item.id],
+            notice: live ? questionNotices[item.id] : nil,
             noTerminal: noTerminal,
             canOpenInTerminal: onOpenInTerminal != nil
+        )
+    }
+
+    /// The question card that can still be answered (`QuestionOutcome.liveQuestionID`): the
+    /// newest running question with nothing said after it — the daemon's own rule. Every other
+    /// card is settled (answered, expired, or talked past) and is drawn as a record, not controls.
+    private var liveQuestionID: String? {
+        QuestionOutcome.liveQuestionID(
+            in: conversation.items,
+            id: \.id,
+            isUser: { $0.kind == .user },
+            isRunningQuestion: { $0.question != nil && $0.tool?.status == "running" }
         )
     }
 
@@ -381,6 +404,11 @@ struct ConversationStackView: View {
                 guard pinnedToBottom else { return }
                 requestBottomScroll(using: proxy)
             }
+            // A send's failure while a question waits is said on that question's card as well.
+            .onChange(of: store.rowMessages[conversation.sessionId]) { _, message in
+                guard let live = liveQuestionID else { return }
+                questionNotices[live] = message
+            }
             .onChange(of: conversation.sessionId) { _, _ in
                 // A different session is a different conversation: start at its
                 // end, and re-arm the follow. The recorded reader is told too —
@@ -391,6 +419,7 @@ struct ConversationStackView: View {
                 pinnedToBottom = true
                 multiSelections = [:]
                 questionTexts = [:]
+                questionNotices = [:]
                 linkFailure = nil
                 requestBottomScroll(using: proxy)
                 // Declarative, never an imperative animation block: mac-phase1-source forbids
@@ -712,16 +741,19 @@ struct ConversationStackView: View {
                 // so it is recovered from the finished call's result text, and when nothing
                 // matches the block stays exactly as it was. Guessing at a person's decision
                 // is worse than not summarising it.
-                if item.tool?.status != "running",
-                   let decided = answeredSummary(questions, result: item.tool?.result) {
+                //
+                // Only the live card is a form (`liveQuestionID`). One Tyler has talked past is
+                // still "running" on disk, and it stayed pressable for an answer the daemon refused.
+                let live = item.id == liveQuestionID
+                if !live, let decided = answeredSummary(questions, result: item.tool?.result) {
                     answeredQuestionRow(decided)
-                } else if item.tool?.status == "running", let sent = submittedAnswers[item.id],
-                          store.rowMessages[conversation.sessionId] == nil {
+                } else if live, let sent = submittedAnswers[item.id], questionNotices[item.id] == nil {
                     submittedQuestionRow(sent)
                 } else {
                     VStack(alignment: .leading, spacing: 8) {
-                        if item.tool?.status == "running", submittedAnswers[item.id] != nil,
-                           let failure = store.rowMessages[conversation.sessionId] {
+                        // Why the last send here didn't land — from this card, the composer or a
+                        // voice reply — on the card that is still waiting for the answer.
+                        if live, let failure = questionNotices[item.id] {
                             Text(failure)
                                 .font(.system(size: 11.5, weight: .medium))
                                 .foregroundStyle(ConchPalette.statusNeeds)
@@ -730,7 +762,12 @@ struct ConversationStackView: View {
                         questionCard(
                             questions,
                             itemID: item.id,
-                            answerable: item.tool?.status == "running"
+                            answerable: live,
+                            chosen: live ? [] : QuestionOutcome.chosenPerQuestion(
+                                questions: questions.map(\.question),
+                                options: questions.map { $0.options.map(\.label) },
+                                result: item.tool?.result
+                            )
                         )
                     }
                 }
@@ -852,12 +889,17 @@ struct ConversationStackView: View {
     }
 
     /// `inSet`: one of several questions asked at once. Its picks are held for the card's one
-    /// Submit instead of sent, and "Something else…" is typed here rather than in the composer.
+    /// Submit instead of sent. "Something else…" is typed here, in the card, for one of several
+    /// and for a multi-select question (a form with its own Submit, where the words go beside the
+    /// ticked options as Claude Code's picker records them); a lone single-choice question sends
+    /// on a tap, so its words go through the composer. `chosen`: on a settled card, what the
+    /// recorded answer names.
     private func questionRow(
         _ asked: ConversationItem.AgentQuestion,
         questionID: String,
         answerable: Bool,
-        inSet: Bool = false
+        inSet: Bool = false,
+        chosen: [String] = []
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             if !asked.header.isEmpty {
@@ -876,8 +918,8 @@ struct ConversationStackView: View {
                 .padding(.bottom, 2)
 
             ForEach(Array(asked.options.enumerated()), id: \.offset) { index, option in
-                let selected = multiSelections[questionID]?.contains(option.label) == true
                 if answerable {
+                    let selected = multiSelections[questionID]?.contains(option.label) == true
                     Button {
                         if asked.multiSelect {
                             toggleSelection(option.label, for: questionID)
@@ -891,7 +933,8 @@ struct ConversationStackView: View {
                         questionOption(
                             option,
                             multiSelect: asked.multiSelect,
-                            selected: selected
+                            selected: selected,
+                            live: true
                         )
                     }
                     .buttonStyle(.plain)
@@ -904,12 +947,15 @@ struct ConversationStackView: View {
                             : "Sends this option to the session"
                     )
                 } else {
-                    // The question remains part of the transcript, but a
-                    // completed tool is no longer a valid destination. Leaving
-                    // it looking tappable is an invitation to answer a later
-                    // prompt with an earlier choice.
-                    questionOption(option, multiSelect: asked.multiSelect, selected: false)
-                        .opacity(0.58)
+                    // Settled — answered, expired, or talked past. The question stays in the
+                    // transcript as a record, and a record is not a control: no hover, no press,
+                    // nothing to focus. What was chosen stays marked; the rest recede. Tyler:
+                    // "Remove the hover state from old multiple choice questions" (2026-09-28).
+                    let picked = chosen.contains(option.label)
+                    questionOption(option, multiSelect: asked.multiSelect, selected: picked, live: false)
+                        .opacity(picked ? 1 : 0.45)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityAddTraits(picked ? .isSelected : [])
                         .accessibilityHint("This question is no longer waiting for an answer")
                 }
             }
@@ -934,13 +980,14 @@ struct ConversationStackView: View {
                 }
             }
 
-            if answerable && inSet && !asked.multiSelect {
-                // Claude Code's "Type something": the words become this question's answer.
+            if answerable && (inSet || asked.multiSelect) {
+                // Claude Code's "Type something": the words become this question's answer — in
+                // place of a pick on a single-choice question, beside the ticks on a multi-select one.
                 TextField("Something else…", text: Binding(
                     get: { questionTexts[questionID] ?? "" },
                     set: { typed in
                         questionTexts[questionID] = typed
-                        if !typed.isEmpty { multiSelections[questionID] = nil }
+                        if !typed.isEmpty && !asked.multiSelect { multiSelections[questionID] = nil }
                     }
                 ))
                 .textFieldStyle(.plain)
@@ -952,6 +999,11 @@ struct ConversationStackView: View {
                         .strokeBorder(ConchPalette.textDim.opacity(0.22), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
                 )
                 .disabled(noTerminal != nil)
+                .onSubmit {
+                    if !inSet, let filled = multiAnswer(asked, questionID: questionID) {
+                        submitAnswer(filled.summary, [filled.answer], itemID: questionID)
+                    }
+                }
             } else if answerable && !inSet {
                 Button(action: onFreeform) {
                     HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -981,27 +1033,23 @@ struct ConversationStackView: View {
             }
 
             if asked.multiSelect && answerable && !inSet {
-                let selected = selectedLabels(for: asked, questionID: questionID)
+                let filled = multiAnswer(asked, questionID: questionID)
                 Button {
-                    submitAnswer(
-                        selected.joined(separator: ", "),
-                        [ConchQuestionAnswer(choices: asked.options.indices.filter { selected.contains(asked.options[$0].label) })],
-                        itemID: questionID
-                    )
+                    if let filled { submitAnswer(filled.summary, [filled.answer], itemID: questionID) }
                 } label: {
-                    Text(selected.isEmpty ? "Submit selections" : "Submit \(selected.count) selected")
+                    Text(filled?.label ?? "Submit selections")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(selected.isEmpty ? ConchPalette.textFaint : ConchPalette.bg)
+                        .foregroundStyle(filled == nil ? ConchPalette.textFaint : ConchPalette.bg)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 9)
                         .background(
                             RoundedRectangle(cornerRadius: 9)
-                                .fill(selected.isEmpty ? ConchPalette.raised : ConchPalette.statusNeeds)
+                                .fill(filled == nil ? ConchPalette.raised : ConchPalette.statusNeeds)
                         )
                 }
                 .buttonStyle(.plain)
-                .disabled(selected.isEmpty || noTerminal != nil)
-                .accessibilityHint("Sends all selected options to the session")
+                .disabled(filled == nil || noTerminal != nil)
+                .accessibilityHint("Sends the selected options and any words of your own to the session")
             }
         }
         // `.qb{border-radius:14px;box-shadow:inset 0 0 0 1px var(--hair2);
@@ -1010,7 +1058,7 @@ struct ConversationStackView: View {
         // The card was uniform 12 at radius 10, ringed in the attention colour. The colour
         // said "answer me" a second time, louder than the header that already says it, and
         // on a settled question it still glowed at 0.18. Live-versus-settled is carried by
-        // the options, which already dim to 0.58 when the question can no longer be answered.
+        // the options, which recede on a settled card to all but what was chosen.
         .padding(.top, 14)
         .padding(.trailing, 10)
         .padding(.bottom, 8)
@@ -1022,19 +1070,40 @@ struct ConversationStackView: View {
         )
     }
 
+    /// A lone multi-select question's answer: the ticked options and any words of your own, as
+    /// one answer (Claude Code records them together: "G1, G3, my words"); nil with neither.
+    private func multiAnswer(
+        _ asked: ConversationItem.AgentQuestion,
+        questionID: String
+    ) -> (answer: ConchQuestionAnswer, summary: String, label: String)? {
+        let selected = selectedLabels(for: asked, questionID: questionID)
+        let picked = asked.options.indices.filter { selected.contains(asked.options[$0].label) }
+        let typed = (questionTexts[questionID] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !picked.isEmpty || !typed.isEmpty else { return nil }
+        return (
+            ConchQuestionAnswer(choices: picked.isEmpty ? nil : picked, text: typed.isEmpty ? nil : typed),
+            (selected + (typed.isEmpty ? [] : [typed])).joined(separator: ", "),
+            typed.isEmpty ? "Submit \(picked.count) selected" : "Submit answer"
+        )
+    }
+
     private func questionOption(
         _ option: ConversationItem.AgentQuestion.Option,
         multiSelect: Bool,
-        selected: Bool
+        selected: Bool,
+        live: Bool
     ) -> some View {
         // `.qo{gap:12px;align-items:flex-start;padding:8px 10px;border-radius:9px}`,
         // `.qo b{font:500 14px/20px}`, `.qo small{font-size:12.5px;color:var(--text2)}`.
         //
         // Every option carried a permanent `raised` fill, so three choices read as three
         // stacked cards inside a card. In the lab an option is a ROW: transparent until the
-        // pointer is on it, filled only when it is the one you picked.
+        // pointer is on it, filled only when it is the one you picked. On a settled card only
+        // what was chosen is filled, with a check, and nothing follows the pointer.
         HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Image(systemName: multiSelect && selected ? "checkmark.square.fill" : (multiSelect ? "square" : "circle"))
+            Image(systemName: multiSelect
+                ? (selected ? "checkmark.square.fill" : "square")
+                : (selected && !live ? "checkmark.circle.fill" : "circle"))
                 .font(.system(size: 10.5))
                 .foregroundStyle(selected ? ConchPalette.statusNeeds : ConchPalette.textDim)
             VStack(alignment: .leading, spacing: 1) {
@@ -1058,13 +1127,9 @@ struct ConversationStackView: View {
         // hover once read as MORE selected than selected.
         .background(
             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(selected ? ConchPalette.selection : (hoveredOption == option.label ? ConchPalette.hover : .clear))
+                .fill(selected ? ConchPalette.selection : (live && hoveredOption == option.label ? ConchPalette.hover : .clear))
         )
-        .contentShape(Rectangle())
-        .onHover { inside in
-            if inside { hoveredOption = option.label }
-            else if hoveredOption == option.label { hoveredOption = nil }
-        }
+        .modifier(OptionHover(live: live, label: option.label, hovered: $hoveredOption))
     }
 
     private func toggleSelection(_ label: String, for questionID: String) {
@@ -1091,7 +1156,9 @@ struct ConversationStackView: View {
         if questions.count == 1, let asked = questions.first {
             return QuestionOutcome.summary(
                 header: asked.header,
-                chosen: QuestionOutcome.chosen(from: asked.options.map(\.label), in: result)
+                question: asked.question,
+                options: asked.options.map(\.label),
+                result: result
             )
         }
         guard let answers = QuestionOutcome.answers(to: questions.map(\.question), in: result) else { return nil }
@@ -1108,14 +1175,16 @@ struct ConversationStackView: View {
     private func questionCard(
         _ questions: [ConversationItem.AgentQuestion],
         itemID: String,
-        answerable: Bool
+        answerable: Bool,
+        chosen: [[String]] = []
     ) -> some View {
         if questions.count == 1, let asked = questions.first {
-            questionRow(asked, questionID: itemID, answerable: answerable)
+            questionRow(asked, questionID: itemID, answerable: answerable, chosen: chosen.first ?? [])
         } else {
             VStack(alignment: .leading, spacing: 10) {
                 ForEach(Array(questions.enumerated()), id: \.offset) { index, asked in
-                    questionRow(asked, questionID: "\(itemID)#\(index)", answerable: answerable, inSet: true)
+                    questionRow(asked, questionID: "\(itemID)#\(index)", answerable: answerable, inSet: true,
+                                chosen: index < chosen.count ? chosen[index] : [])
                 }
                 if answerable {
                     let filled = setAnswers(questions, itemID: itemID)
@@ -1141,7 +1210,8 @@ struct ConversationStackView: View {
     }
 
     /// Every question's answer in order, and a summary to name the send by; nil while any
-    /// question is unanswered. Words typed for a question win over its ticked options.
+    /// question is unanswered. Words typed for a single-choice question win over its pick; a
+    /// multi-select one takes its ticks and the words together.
     private func setAnswers(
         _ questions: [ConversationItem.AgentQuestion],
         itemID: String
@@ -1152,7 +1222,11 @@ struct ConversationStackView: View {
             let id = "\(itemID)#\(index)"
             let typed = (questionTexts[id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             let picked = asked.options.indices.filter { multiSelections[id]?.contains(asked.options[$0].label) == true }
-            if !typed.isEmpty {
+            if asked.multiSelect, !picked.isEmpty, !typed.isEmpty {
+                // Ticks and words together, as Claude Code's picker records them: "G1, G3, my words".
+                answers.append(ConchQuestionAnswer(choices: picked, text: typed))
+                lines.append((picked.map { asked.options[$0].label } + [typed]).joined(separator: ", "))
+            } else if !typed.isEmpty {
                 answers.append(ConchQuestionAnswer(text: typed))
                 lines.append(typed)
             } else if !picked.isEmpty {
@@ -1267,6 +1341,27 @@ struct ConversationStackView: View {
     }
 }
 
+/// A live question option's pointer tracking. A settled card's options get none — no hover
+/// fill, no hit shape — so nothing on a finished question reacts to the pointer.
+private struct OptionHover: ViewModifier {
+    let live: Bool
+    let label: String
+    @Binding var hovered: String?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if live {
+            content
+                .contentShape(Rectangle())
+                .onHover { inside in
+                    if inside { hovered = label } else if hovered == label { hovered = nil }
+                }
+        } else {
+            content
+        }
+    }
+}
+
 /// What one row is drawn from (`rowKey(for:)`).
 private struct RowKey: Equatable {
     let item: ConversationItem
@@ -1279,9 +1374,15 @@ private struct RowKey: Equatable {
     let selections: [String: Set<String>]
     /// Words typed for one question of several, per question.
     let typed: [String: String]
-    /// Which option the pointer is on — a question row's only, so a hover over one question
-    /// does not redraw every other.
+    /// Which option the pointer is on — the live question card's only, so a hover over one
+    /// question does not redraw every other, and a settled card never redraws for the pointer.
     let hovered: String?
+    /// The question card that can still be answered (`liveQuestionID`).
+    let live: Bool
+    /// What this question card sent, while the session records it.
+    let submitted: String?
+    /// Why a send didn't land, on the live question card.
+    let notice: String?
     let noTerminal: String?
     let canOpenInTerminal: Bool
 }

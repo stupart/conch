@@ -32,17 +32,21 @@ test("the Mac question card goes dead on a row with no terminal and says why", (
   expect(option).toContain(".disabled(noTerminal != nil)");
 
   const reason = row.indexOf("if answerable, let noTerminal {");
+  const typed = row.indexOf('TextField("Something else…"');
   const freeform = row.indexOf("Button(action: onFreeform) {");
-  const submit = row.indexOf("selected.joined(separator: \", \"),");
+  const submit = row.indexOf("let filled = multiAnswer(asked, questionID: questionID)\n");
   expect(reason).toBeGreaterThan(-1);
-  expect(freeform).toBeGreaterThan(reason);
+  expect(typed).toBeGreaterThan(reason);
+  expect(freeform).toBeGreaterThan(typed);
   expect(submit).toBeGreaterThan(freeform);
-  const reasonBlock = row.slice(reason, freeform);
+  const reasonBlock = row.slice(reason, typed);
   expect(reasonBlock).toContain("Text(noTerminal)");
   expect(reasonBlock).toContain("if let onOpenInTerminal {");
   expect(reasonBlock).toContain('Label("Open in Terminal", systemImage: "terminal")');
+  // Words typed on the card go dead too, and Return in them sends nothing on such a row.
+  expect(row.slice(typed, freeform)).toContain(".disabled(noTerminal != nil)");
   expect(row.slice(freeform, submit)).toContain(".disabled(noTerminal != nil)");
-  expect(row.slice(submit)).toContain(".disabled(selected.isEmpty || noTerminal != nil)");
+  expect(row.slice(submit)).toContain(".disabled(filled == nil || noTerminal != nil)");
 
   const dashboard = read("mac-app/conch-mac/DashboardView.swift");
   const stack = sliceFrom(dashboard, "ConversationStackView(", ".frame(maxWidth: .infinity, maxHeight: .infinity)");
@@ -56,15 +60,15 @@ test("the phone question card goes dead on a row with no terminal and says why",
   expect(phone).toContain("var onOpenInTerminal: (() -> Void)? = nil");
   const row = sliceFrom(phone, "private func questionRow(", "private var noTerminalReason: some View {");
 
-  expect(row).toContain(".disabled(!isActive || optionReplyInFlight || option.label.isEmpty || noTerminal != nil)");
-  const reason = row.indexOf("if isActive, noTerminal != nil { noTerminalReason }");
+  expect(row).toContain(".disabled(optionReplyInFlight || option.label.isEmpty || noTerminal != nil)");
+  const reason = row.indexOf("if isActive, !inSet, noTerminal != nil { noTerminalReason }");
   const freeform = row.indexOf("Button(action: onFreeform) {");
-  const submit = row.indexOf("selected.joined(separator: \", \"),");
+  const submit = row.indexOf("let filled = multiAnswer(asked, questionID: questionID)\n");
   expect(reason).toBeGreaterThan(-1);
   expect(freeform).toBeGreaterThan(reason);
   expect(submit).toBeGreaterThan(freeform);
   expect(row.slice(freeform, submit)).toContain(".disabled(noTerminal != nil)");
-  expect(row.slice(submit)).toContain(".disabled(selected.isEmpty || optionReplyInFlight || noTerminal != nil)");
+  expect(row.slice(submit)).toContain(".disabled(filled == nil || optionReplyInFlight || noTerminal != nil)");
   // Several questions at once: the reason once, and Submit and each typed answer dead too.
   expect(row).toContain(".disabled(optionReplyInFlight || noTerminal != nil)");
   const card = sliceFrom(phone, "private func questionCard(", "private func questionRow(");

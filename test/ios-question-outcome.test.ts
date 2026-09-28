@@ -22,20 +22,22 @@ function sliceFrom(start: string, end: string): string {
 }
 
 describe("an answered question collapses to what it decided", () => {
-  test("the tool row asks the shared rule, and only for a finished call", () => {
+  test("the tool row asks the shared rule, and only for a card that is no longer live", () => {
     expect(stack).toContain("import ConchDesign");
     const tool = sliceFrom('case "tool":', 'case "material":');
     expect(tool).toContain("answeredSummary(questions, result: item.tool?.result)");
     const summary = sliceFrom("private func answeredSummary(", "private func questionCard(");
     expect(summary).toContain("QuestionOutcome.summary(");
-    expect(summary).toContain("QuestionOutcome.chosen(");
+    // A lone question: the shared rule reads its recorded answer, words of your own included.
+    expect(summary).toContain("question: asked.question,");
     // Several questions: each one's own recorded answer, never a label search across them.
     expect(summary).toContain("QuestionOutcome.answers(to: questions.map(\\.question), in: result)");
-    // A running question is still the thing the session is blocked on: every option pressable.
-    expect(tool).toContain('if item.tool?.status != "running",');
+    // The live question is still the thing the session is blocked on: every option pressable.
+    expect(tool).toContain("let live = item.id == liveQuestionID");
+    expect(tool).toContain("if !live, let decided = answeredSummary(questions, result: item.tool?.result) {");
     expect(tool).toContain("answeredQuestionRow(decided)");
-    // The fallback survives: when the answer names no option, the block renders as before.
-    expect(tool).toContain('isActive: item.tool?.status == "running"');
+    // The fallback survives: when the answer says nothing certain, the block renders settled.
+    expect(tool).toContain("isActive: live,");
   });
 
   test("the collapsed line is not a button", () => {

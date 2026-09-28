@@ -559,14 +559,17 @@ export function scopePublishedInjectEvent(
 /**
  * An AskUserQuestion call carries at most 4 questions of at most 4 options;
  * the bounds leave room without letting a picker's digits run past 9. Typed
- * words are one line: a newline would be a Return.
+ * words are one line: a newline would be a Return. Choices AND words are one
+ * multiSelect answer (ticked options beside words of your own); whether the
+ * question takes that is the picker's keys' business (`claudeQuestionKeys`).
  */
 function questionAnswersError(answers: unknown): string | undefined {
   if (!Array.isArray(answers) || answers.length < 1 || answers.length > 8) return "answers must be 1-8 answers";
   for (const answer of answers) {
     if (!socketRecord(answer)) return "each answer must be an object";
     const hasChoices = answer.choices !== undefined;
-    if (hasChoices === (answer.text !== undefined)) return "each answer has choices or text, not both";
+    const hasText = answer.text !== undefined;
+    if (!hasChoices && !hasText) return "each answer has choices, text, or both";
     if (hasChoices) {
       const choices = answer.choices;
       if (!Array.isArray(choices) || choices.length < 1 || choices.length > 8
@@ -574,8 +577,9 @@ function questionAnswersError(answers: unknown): string | undefined {
         || new Set(choices).size !== choices.length) {
         return "choices must be 1-8 distinct option indexes from 0 to 7";
       }
-    } else if (typeof answer.text !== "string" || !answer.text.trim() || answer.text.length > 4000
-      || /[\u0000-\u001f\u007f]/.test(answer.text)) {
+    }
+    if (hasText && (typeof answer.text !== "string" || !answer.text.trim() || answer.text.length > 4000
+      || /[\u0000-\u001f\u007f]/.test(answer.text))) {
       return "text must be one line of 1-4000 characters";
     }
   }
