@@ -974,6 +974,29 @@ final class FloatingPanels: ObservableObject {
         !isCollapsed && !controlFrames.contains { $0.contains(point) }
     }
 
+    /// Where the panel's words were when the record was last asked about them: scrolled, laid out, how many turns.
+    private var readAt: [CGFloat] = []
+    /// The turns whose recorded messages were last asked to be read whole (`HistoryStore.showing`).
+    private var readNearby: [String] = []
+
+    /// The panel's record, read as its reader goes (`PanelHistory`): the page before the oldest turn while the transcript's
+    /// oldest end is near the box — or while there are no turns to show — and the whole bodies of the recorded messages
+    /// about where the reader is. Asked on the frames the words have moved since last asked (a scroll, a layout, turns
+    /// arriving), and when a page lands (`force`); a read that failed is the reader's own to try again (`HistoryRetry`).
+    func readHistory(force: Bool = false) {
+        guard form != .collapsed, let history = store?.overlayHistory, !history.paging.session.isEmpty else { return }
+        let at = [text.scroll.offset.rounded(), text.scroll.range.rounded(), text.box.rounded(), CGFloat(text.turnIDs.count)]
+        guard force || at != readAt else { return }
+        readAt = at
+        if PanelHistory.wantsOlder(turns: text.turnIDs.count, scroll: text.scroll, box: text.box) {
+            history.loadOlder(anchor: history.paging.rows.first?.id)
+        }
+        let nearby = PanelHistory.nearby(text.turnIDs, scroll: text.scroll, box: text.box)
+        guard nearby.ids != readNearby else { return }
+        readNearby = nearby.ids
+        history.showing(nearby.ids, around: nearby.center)
+    }
+
     /// The reader's wheel or trackpad, in points toward the oldest line: up the screen's content bottom-up, down it when
     /// the newest line is at the top. A mouse wheel's deltas are lines. Only this ever unpins the transcript (`FogScroll`).
     func scrolled(_ event: NSEvent) {
@@ -1041,6 +1064,7 @@ final class FloatingPanels: ObservableObject {
         }
         let now = ProcessInfo.processInfo.systemUptime
         let words = text.step(dt: dt, now: now, reduceMotion: motion.reduceMotion)
+        readHistory()
         if var morph = morphing {
             let done = ConchMotion.morph.step(&morph.progress, velocity: &morph.velocity, to: 1, dt: dt)
             let arrives = !morph.arrived && (done || morph.progress >= Self.arrives)
@@ -1313,11 +1337,15 @@ private struct ConversationFogHost: View {
     @ObservedObject var history: HistoryStore
     @ObservedObject private var drafts = ComposerDraftStore.shared
     @ObservedObject private var canvas = CanvasController.shared
+    /// The transcript's own last reply, for a session with no live window whose record is off or holds nothing: the main
+    /// window's single-reply document's reader (`PanelConversation.lastReply`).
+    @StateObject private var lastReply = TranscriptContentModel()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let row = Self.session(store.state, staged: panels.heldSession)
-        let turns = row.map { Self.turns(store.state, $0, whole: history.fullBodies) } ?? []
+        let words = row.map(words(for:))
+        let turns = words?.turns ?? []
         // Previous and Next only while something is held to walk to, looked at or not: with nothing they would do nothing.
         let walks = !ConchStatusItem.heldRows(store.state).isEmpty
         // The words lay out for the form the panel has landed in, inside its glass (`FloatingPanels.laidGlass`).
@@ -1353,6 +1381,7 @@ private struct ConversationFogHost: View {
                     // What the store says of this session's last send: why a reply didn't go (`ConchSendFailure`).
                     notice: row.flatMap { store.rowMessages[$0.id] },
                     empty: row == nil ? Self.empty(store.liveness) : nil,
+                    placeholder: words?.placeholder,
                     speaking: Self.speaking(store.state, besides: row?.id),
                     onPick: { queue.pick($0, store: store, panels: panels) },
                     onPrevious: walks ? { queue.walk(backward: true, from: .panel, store: store, panels: panels) } : nil,
@@ -1388,6 +1417,13 @@ private struct ConversationFogHost: View {
         }
         // Words come in as the daemon sends them; another session starts from its newest line, its reply whole.
         .onChange(of: row?.id) { _, _ in panels.text.session() }
+        // Docked too: a session the daemon published no live window for has only its record to show.
+        .onChange(of: row?.id, initial: true) { _, _ in follow(row) }
+        // A page landed: read on while the transcript's oldest end is near, even when it held no turns (all tool steps).
+        .onChange(of: history.paging.rows.count) { _, _ in panels.readHistory(force: true) }
+        .task(id: TranscriptWatchID(row: words?.conversation == .lastReply ? row.flatMap(Self.watchable) : nil)) {
+            await lastReply.monitor(row: words?.conversation == .lastReply ? row.flatMap(Self.watchable) : nil)
+        }
         // Its own modifier rather than a line inside that one: what the fog does with a
         // new session's words is a separate thing from reading that session whole.
         .onChange(of: row?.id) { _, _ in if panels.isFullScreen { readWhole(row) } }
@@ -1396,7 +1432,9 @@ private struct ConversationFogHost: View {
         .onChange(of: panels.form == .fullScreen && row.flatMap(content(of:)) != nil, initial: true) { _, shown in
             if panels.contentShown != shown { panels.contentShown = shown }
         }
-        .onChange(of: turns, initial: true) { _, turns in panels.text.update(turns: turns, now: ProcessInfo.processInfo.systemUptime) }
+        .onChange(of: turns, initial: true) { _, turns in
+            panels.text.update(turns: turns, now: ProcessInfo.processInfo.systemUptime, reveals: words?.reveals ?? true)
+        }
         // A newer version of the item the panel is on, published again as the same artifact, is followed to: the queue's
         // walk, and with it the header, full screen and the agent's marks (`AgentInkController`). Not while Tyler has marks
         // of his own on the canvas, which a new item clears (`CanvasController`): they are on this version, and it follows
@@ -1491,8 +1529,7 @@ private struct ConversationFogHost: View {
         _ row: SessionRow,
         whole: [String: String] = [:]
     ) -> [ConversationTurn] {
-        guard let conversation = state?.conversations?[row.id] ?? state?.conversation,
-              conversation.sessionId == row.id else { return [] }
+        guard let conversation = published(state, row) else { return [] }
         return conversation.items
             .filter { ($0.kind == .user || $0.kind == .assistant) && !$0.text.isEmpty }
             .map {
@@ -1504,18 +1541,91 @@ private struct ConversationFogHost: View {
             }
     }
 
-    /// Full screen is where someone READS rather than glances, so it is where the whole
-    /// text of anything the snapshot cut is fetched.
-    private func readWhole(_ row: SessionRow?) {
+    /// The live window the daemon published for THIS session, if it published one: the main window's check
+    /// (`ConversationPane.publishedConversation`). An older daemon publishes one conversation at a time in `conversation`,
+    /// and without it the panel would show a second session the first one's messages under its own name.
+    static func published(_ state: PublishedState?, _ row: SessionRow) -> Conversation? {
+        guard let conversation = state?.conversations?[row.id] ?? state?.conversation,
+              conversation.sessionId == row.id else { return nil }
+        return conversation
+    }
+
+    /// What the panel draws for a session (`words(for:)`).
+    struct Words {
+        let turns: [ConversationTurn]
+        /// While there are no turns, why, in the main window's words (`ConversationPlaceholder`).
+        let placeholder: String?
+        let conversation: PanelConversation
+        /// The newest reply came in live, word by word; read from the record or the transcript, it was already there.
+        let reveals: Bool
+    }
+
+    /// What the panel draws for `row`, by the main window's rule (`ConversationSource`, asked as `SessionConversationGate`
+    /// asks it): the record's conversation above the live window, or above an empty one when the daemon published none —
+    /// it publishes eight sessions' — and with neither, the transcript's last reply. While there are no turns yet, the
+    /// main window's sentence for why: reading, couldn't read, nothing said. Nothing here is only the panel's: the turns are
+    /// mapped as the main window's stack maps its rows (`PanelHistory.turn(recorded:whole:)`), from the same reader.
+    private func words(for row: SessionRow) -> Words {
+        let published = Self.published(store.state, row)
+        let turns = PanelHistory.turns(
+            session: row.id,
+            reader: history.paging,
+            live: Self.turns(store.state, row, whole: history.fullBodies),
+            liveItems: (published?.items ?? []).map(\.id),
+            liveStartsAt: published?.items.first?.at,
+            whole: { item in history.body(for: item.id).flatMap { $0.isComplete ? $0.text : nil } }
+        )
+        let source = ConversationSource.of(publishedItems: published?.items.count ?? 0, session: row.id, reader: history.paging)
+        let conversation = PanelConversation.of(source: source, turns: turns.count, session: row.id, reader: history.paging)
+        let live = !(published?.items.isEmpty ?? true)
+        switch conversation {
+        case .turns:
+            return Words(turns: turns, placeholder: nil, conversation: conversation, reveals: live)
+        case let .placeholder(transcript):
+            let name = row.label.isEmpty ? row.id : row.label
+            return Words(turns: [], placeholder: ConversationPlaceholder.text(name: name, transcript: transcript), conversation: conversation, reveals: live)
+        case .lastReply:
+            // The single-reply document's content: the transcript's last reply, or its sentence for why there is none.
+            let content = lastReply.content(for: row)
+            guard !content.isPlaceholder else {
+                return Words(turns: [], placeholder: content.text, conversation: conversation, reveals: false)
+            }
+            // Its own id for each reply, so another one shows whole rather than as more words of this one.
+            let reply = ConversationTurn(id: "conch.lastReply:\(row.id):\(content.text.hashValue)", fromYou: false, text: content.text)
+            return Words(turns: [reply], placeholder: nil, conversation: conversation, reveals: false)
+        }
+    }
+
+    /// A row whose transcript is its own to read. One keyed per window (`<id>#<pid>`) shares its file with another window,
+    /// and reading it would show whichever wrote last: the main window's rule (`watchesTranscriptForRow`).
+    static func watchable(_ row: SessionRow) -> SessionRow? {
+        row.id.contains("#") ? nil : row
+    }
+
+    /// Point the panel's reader at its session and ask for the newest page, which answers whether any of it is recorded
+    /// (`ConversationSource`). From there the panel's own scrolling reads further back (`FloatingPanels.readHistory`).
+    private func follow(_ row: SessionRow?) {
         guard let row else { return }
-        let conversation = store.state?.conversations?[row.id] ?? store.state?.conversation
-        // The same branch the pane is showing (A8): the overlay reads one window's
-        // history, not both windows' of a transcript they share.
+        select(row)
+        if history.paging.epoch == nil { history.loadOlder() }
+    }
+
+    /// The panel's reader on `row`, on the branch its live window is showing (A8): the overlay reads one window's history,
+    /// not both windows' of a transcript they share.
+    private func select(_ row: SessionRow) {
+        let conversation = Self.published(store.state, row)
         history.select(session: row.id, branchTip: HistorySnapshot.branchTip(
             forSnapshotItems: (conversation?.items ?? []).map(\.id),
             shared: conversation?.shared ?? false
         ))
-        let cut = (conversation?.items ?? [])
+    }
+
+    /// Full screen is where someone READS rather than glances, so it is where the whole
+    /// text of anything the snapshot cut is fetched.
+    private func readWhole(_ row: SessionRow?) {
+        guard let row else { return }
+        select(row)
+        let cut = (Self.published(store.state, row)?.items ?? [])
             .filter { ($0.kind == .user || $0.kind == .assistant) && HistorySnapshot.wasCut($0.text, cap: 4_000) }
             .map(\.id)
         history.loadFullBodies(forSnapshotItems: cut)

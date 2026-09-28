@@ -146,3 +146,58 @@ test("both readers keep asking while they hold nothing, and the Mac's empty sent
   expect(content).toContain("if content == SessionStaticContent.fallback(for: row) {\n                    content = SessionStaticContent.fallback(for: row, transcript: .unreadable)");
   expect(content).not.toContain('"Nothing from');
 });
+
+/**
+ * The conversation panel had the same gate the main window lost in #457: it drew the live window the daemon published and
+ * nothing else, so a session without one was a blank panel. It goes by the same rule now (`ConversationSource`, through
+ * `PanelConversation`, XCTested in PanelHistoryTests), with the overlay's own reader and its caps.
+ */
+test("the conversation panel draws a session's conversation from its record when the daemon published no live window", () => {
+  const panels = read("mac-app/conch-mac/FloatingPanels.swift");
+  const host = panels.slice(panels.indexOf("private struct ConversationFogHost: View {"), panels.indexOf("private struct PanelContent: View {"));
+  // The words come from one place, and the old gate — the live window's turns or nothing — is gone.
+  expect(host).toContain("let words = row.map(words(for:))\n        let turns = words?.turns ?? []");
+  expect(host).not.toContain("let turns = row.map { Self.turns(store.state, $0, whole: history.fullBodies) } ?? []");
+  expect(host).toContain("placeholder: words?.placeholder,");
+  const words = host.slice(host.indexOf("private func words(for row: SessionRow) -> Words {"), host.indexOf("static func watchable("));
+  expect(words).toContain("let source = ConversationSource.of(publishedItems: published?.items.count ?? 0, session: row.id, reader: history.paging)");
+  expect(words).toContain("let conversation = PanelConversation.of(source: source, turns: turns.count, session: row.id, reader: history.paging)");
+  expect(words).toContain("reader: history.paging,\n            live: Self.turns(store.state, row, whole: history.fullBodies),");
+  expect(words).toContain("liveItems: (published?.items ?? []).map(\\.id),\n            liveStartsAt: published?.items.first?.at,");
+  expect(words).toContain("ConversationPlaceholder.text(name: name, transcript: transcript)");
+  // Records off or empty: the main window's single-reply document's content, from the same reader of the transcript.
+  expect(words).toContain("let content = lastReply.content(for: row)");
+  expect(host).toContain("@StateObject private var lastReply = TranscriptContentModel()");
+  expect(host).toContain("await lastReply.monitor(row: words?.conversation == .lastReply ? row.flatMap(Self.watchable) : nil)");
+  expect(host).not.toContain('"Nothing from');
+  // The live window is this session's or none, as the main window checks it.
+  expect(host).toContain("static func published(_ state: PublishedState?, _ row: SessionRow) -> Conversation? {\n        guard let conversation = state?.conversations?[row.id] ?? state?.conversation,\n              conversation.sessionId == row.id else { return nil }");
+  // Docked too, the reader is pointed at the panel's session and asked for its newest page.
+  expect(host).toContain(".onChange(of: row?.id, initial: true) { _, _ in follow(row) }");
+  const follow = host.slice(host.indexOf("private func follow(_ row: SessionRow?) {"), host.indexOf("private func select(_ row: SessionRow) {"));
+  expect(follow).toContain("select(row)\n        if history.paging.epoch == nil { history.loadOlder() }");
+  // Older pages read in as the panel scrolls back; bodies read whole about where the reader is.
+  expect(host).toContain(".onChange(of: history.paging.rows.count) { _, _ in panels.readHistory(force: true) }");
+  expect(panels).toContain("let words = text.step(dt: dt, now: now, reduceMotion: motion.reduceMotion)\n        readHistory()");
+  const readHistory = panels.slice(panels.indexOf("func readHistory(force: Bool = false) {"), panels.indexOf("func scrolled(_ event: NSEvent) {"));
+  expect(readHistory).toContain("guard form != .collapsed, let history = store?.overlayHistory, !history.paging.session.isEmpty else { return }");
+  expect(readHistory).toContain("if PanelHistory.wantsOlder(turns: text.turnIDs.count, scroll: text.scroll, box: text.box) {\n            history.loadOlder(anchor: history.paging.rows.first?.id)");
+  expect(readHistory).toContain("history.showing(nearby.ids, around: nearby.center)");
+  expect(read("mac-app/conch-mac/HistoryStore.swift")).toContain("func showing(_ ids: [String], around center: String?) {\n        show(ids, around: center)");
+  // Bounded as the main window's reader is: the overlay's is a HistoryStore, with its item and body ceilings.
+  expect(panels).toContain("ConversationFogHost(store: store, panels: self, queue: queue, history: store.overlayHistory)");
+  expect(read("mac-app/conch-mac/HistoryStore.swift")).toContain("@Published private(set) var paging = HistoryPaging(itemCap: HistoryStore.itemCap)");
+
+  // The fog: the placeholder where the words would be, the reply line kept; and a page landing above keeps the reader's place.
+  const fog = read("design/ConchDesign/Sources/ConchDesign/Components.swift");
+  expect(fog).toContain("if let placeholder, turns.isEmpty, text.sent == nil {\n                    placeholderLine(placeholder, width: width, height: height, top: top)");
+  expect(fog).toContain("text.measured(content: $0.height, ends: $0.ends)");
+  expect(fog).toContain("let ends = FogTranscriptEnds(oldest: lines.first?.id, newest: lines.last?.id)");
+
+  // The phone already follows the rule (`SessionView.liveWindow`); pinned so the two cannot drift apart.
+  const phone = read("mobile/conch-ios/conch-ios/SessionView.swift");
+  const liveWindow = phone.slice(phone.indexOf("private var liveWindow: Conversation? {"), phone.indexOf("private var branchTip: String? {"));
+  expect(liveWindow).toContain("if let published, !published.items.isEmpty { return published }");
+  expect(liveWindow).toContain("guard history.paging.hasAnythingToShow else { return nil }");
+  expect(liveWindow).toContain("return published ?? Conversation(sessionId: sessionId)");
+});

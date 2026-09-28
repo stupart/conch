@@ -1690,6 +1690,7 @@ struct PanelScene: View {
     var content: FogContent?
     var notice: String?
     var empty: String?
+    var placeholder: String?
     var speaking: FogSession?
     var voice = VoiceState.talk
     var working = false
@@ -1736,6 +1737,7 @@ struct PanelScene: View {
                     content: content,
                     notice: notice,
                     empty: empty,
+                    placeholder: placeholder,
                     speaking: speaking,
                     onPrevious: {},
                     onNext: {},
@@ -1800,6 +1802,54 @@ try render("qp-panel-states", width: 1520) {
     PanelScene(draft: "Make the button just say Join", notice: ConchSendFailure.sentence(reason: "system-dialog-blocking"))
     Caption("The voice reading another session: named beside the header, a click away.")
     PanelScene(speaking: panelSessions[1], voice: .speaking)
+}
+
+/// A session the daemon published no live window for (it publishes eight sessions'), as its record answers the panel's
+/// reader: a page of messages with tool steps between them, the newest reply read whole, an older one still its preview.
+@MainActor
+func recordedPanel() -> (turns: [ConversationTurn], conversation: PanelConversation) {
+    let items = [
+        HistoryItem(id: "r1", role: "user", at: 1, preview: "The invite page still says Accept invitation. Make the button just say Join."),
+        HistoryItem(id: "r2", kind: "tool_call", toolName: "Grep", at: 2, preview: "Accept invitation"),
+        HistoryItem(id: "r3", kind: "tool_result", at: 3, preview: "src/InviteCard.tsx:42"),
+        HistoryItem(id: "r4", role: "assistant", at: 4, preview: String("The label is in `InviteCard.tsx`, and the email invite reads it too, so I'll give the page its own and leave the email's wording where it is, since that one is read in a mail client where Join on its own reads".prefix(240)), bodyBytes: 900),
+        HistoryItem(id: "r5", role: "user", at: 5, preview: "Fine. Keep the email check."),
+        HistoryItem(id: "r6", kind: "tool_call", toolName: "Edit", at: 6, preview: "InviteCard.tsx"),
+        HistoryItem(id: "r7", role: "assistant", at: 7, preview: "Changed. The button reads **Join**, and it still waits", bodyBytes: 400),
+    ]
+    var reader = HistoryPaging(itemCap: 4_000)
+    reader.select(session: panelSession.id)
+    reader.apply(page: HistoryPage(items: items, previousCursor: "older", epoch: "1"), generation: reader.beginLoad())
+    let whole = ["r7": "Changed. The button reads **Join**, and it still waits for the email check before it can be pressed. Tests pass."]
+    // The panel's own path: no live window, so no live turns and no seam; the record's messages, mapped as the main
+    // window maps its rows.
+    let turns = PanelHistory.turns(session: panelSession.id, reader: reader, live: [], liveItems: [], liveStartsAt: nil, whole: { whole[$0.id] })
+    let source = ConversationSource.of(publishedItems: 0, session: panelSession.id, reader: reader)
+    return (turns, PanelConversation.of(source: source, turns: turns.count, session: panelSession.id, reader: reader))
+}
+
+try render("panel-history-before", width: 1520) {
+    Heading(title: "Before: a session with no live window", note: "The daemon publishes a live window for eight sessions. The panel drew only those, so for any other session it was blank, whatever its record held. " + standInNote)
+    // What the old host handed the fog: the live window's turns, of which there were none.
+    PanelScene(turns: [])
+}
+
+try render("panel-history-after", width: 1520) {
+    let recorded = MainActor.assumeIsolated { recordedPanel() }
+    Heading(title: "After: the same session, drawn from its record", note: "The main window's rule (ConversationSource, #457): no live window, so its recorded conversation, the newest at the foot, older pages read in as it scrolls back. Tool steps stay in the main window. \(recorded.conversation == .turns ? "" : "NOT TURNS: \(recorded.conversation)") " + standInNote)
+    PanelScene(turns: recorded.turns)
+    Caption("Hanging from a top corner, the newest nearest the top.")
+    PanelScene(window: CGRect(x: 0, y: panelMenuBar, width: 900, height: 640), corner: .topLeading, turns: recorded.turns)
+}
+
+try render("panel-history-placeholders", width: 1520) {
+    Heading(title: "While there is nothing to draw yet", note: "The main window's sentences (ConversationPlaceholder), where the newest words will come in; the reply line stays. " + standInNote)
+    Caption("Its record being read.")
+    PanelScene(turns: [], placeholder: ConversationPlaceholder.text(name: panelSession.label, transcript: .unread))
+    Caption("A read that failed, which the reader keeps trying.")
+    PanelScene(turns: [], placeholder: ConversationPlaceholder.text(name: panelSession.label, transcript: .unreadable))
+    Caption("Records off, and the transcript's newest prompt unanswered.")
+    PanelScene(turns: [], placeholder: ConversationPlaceholder.text(name: panelSession.label, transcript: .awaitingReply))
 }
 
 /// The glass part way through a morph: the window and its glass in a straight line from one to the other.

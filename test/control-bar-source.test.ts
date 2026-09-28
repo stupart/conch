@@ -626,7 +626,8 @@ test("M3: the overlay's text is the lab's: pinned by the reader alone, words at 
   // Only a reader's scroll unpins; layout keeps pinned; the pill and a send re-pin and drop the leftover glide.
   expect(member(text, "public mutating func scroll(by delta: CGFloat, momentum: Bool) {")).toContain("pinned = offset < 6");
   expect(text.match(/pinned = offset < 6/g)?.length).toBe(1);
-  expect(member(text, "public mutating func layout(range next: CGFloat) {")).toContain("offset = pinned ? min(offset, next) : min(max(next - (range - offset), 0), next)");
+  // Kept at the newest line instead only when older turns were read in at the far end (PanelHistoryTests).
+  expect(member(text, "public mutating func layout(range next: CGFloat, grewAtOldest: Bool = false) {")).toContain("offset = pinned || grewAtOldest ? min(offset, next) : min(max(next - (range - offset), 0), next)");
   expect(member(text, "public mutating func toNewest() {")).toContain("ignoresGlide = true");
   expect(components).toContain("Button(action: text.toNewest)");
   expect(components).toContain('let label = text.scroll.unseen ? "New reply" : "Newest"');
@@ -637,7 +638,7 @@ test("M3: the overlay's text is the lab's: pinned by the reader alone, words at 
   expect(panels).toContain("text.wake = { [weak self] in MainActor.assumeIsolated { self?.container.run(true) } }");
   expect(member(panels, "private func apply() {")).toContain("next.replyHeight = replyRoomOpen ? text.replyHeight : 0");
   expect(panels).toContain("isWorking: row?.status == .working,");
-  expect(panels).toContain(".onChange(of: turns, initial: true) { _, turns in panels.text.update(turns: turns, now: ProcessInfo.processInfo.systemUptime) }");
+  expect(panels).toContain(".onChange(of: turns, initial: true) { _, turns in\n            panels.text.update(turns: turns, now: ProcessInfo.processInfo.systemUptime, reveals: words?.reveals ?? true)");
   expect(panels).toContain(".onChange(of: row?.id) { _, _ in panels.text.session() }");
   for (const fake of ["asyncAfter", "Task.sleep", "Timer("]) expect(text).not.toContain(fake);
   expect(components).toContain("if isWorking, lines.last?.fromYou == true { lines.append(.thinking) }");
@@ -936,8 +937,9 @@ test("the panel names its session, switches from it, and shows the words full sc
 test("the words and the header crossfade to another session; the switcher springs full screen", () => {
   // panel-lab's crossover, not the hard cut: out soft and up, in from a little below, on the pop spring, the words a beat
   // behind the header; a dissolve is what Reduce Motion keeps. The header crosses over on its item too.
+  // The placeholder a session shows before its words (PanelHistory) crosses over with them.
   expect(components).toContain(
-    "transcript(width: width, height: height, top: top, fontSize: fontSize)\n                .id(session?.id)\n                .transition(cross)",
+    "transcript(width: width, height: height, top: top, fontSize: fontSize)\n                }\n            }\n            .id(session?.id)\n            .transition(cross)",
   );
   expect(components).toContain(".animation(ConchMotion.pop.animation(reduceMotion: reduceMotion).delay(ConchMotion.crossStagger), value: session?.id)");
   expect(components).toContain("FogHeader(session: named, isOpen: isSwitching) { isSwitching.toggle() }\n                    .id(Self.crossKey(named))\n                    .transition(cross)");
