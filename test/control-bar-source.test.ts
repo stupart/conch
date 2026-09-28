@@ -1050,7 +1050,7 @@ test("the conversation stays on the pill's scene, whatever the voice does, until
 test("one opening rule: a deliverable the panel draws opens in it while it is on, one with marks always; any other stages", () => {
   // The rule is ConchDesign's (XCTests pin its cases): the kinds the side panel's renderers draw, by the filed kind.
   const rule = member(components, "public static func panelShowsContent(kind: Kind, deliverable: String?, link: URL?, fileExists: (String) -> Bool) -> Bool {");
-  expect(components).toContain('static let panelKinds: Set<String> = ["page", "markdown", "text", "image", "pdf", "video", "audio", "url"]');
+  expect(components).toContain('static let panelKinds: Set<String> = ["page", "markdown", "text", "image", "pdf", "video", "audio", "url", "folder"]');
   expect(rule).toContain("guard case let .open(url) = choose(kind: kind, link: link, fileExists: fileExists, appWindowOpen: false, revealable: false) else { return false }");
   expect(rule).toContain("if let deliverable { return panelKinds.contains(deliverable) }");
   // Read off the row as stage reads a scene, with the kind the daemon filed.
@@ -1063,7 +1063,9 @@ test("one opening rule: a deliverable the panel draws opens in it while it is on
   const order = [
     "let content = row.panelContent",
     "let marked = !(row.review?.marks.isEmpty ?? true)",
-    "if (content != nil && (defaults.bool(forKey: showConversationKey) || marked)) || words {",
+    // A folder's tree is conch's alone too (`ReviewScene.opensOnlyInConch`, XCTests pin its cases).
+    "let conchOnly = ReviewScene.opensOnlyInConch(deliverable: row.review?.kind, marked: marked)",
+    "if (content != nil && (defaults.bool(forKey: showConversationKey) || conchOnly)) || words {",
     "panels.bringOut()\n            panels.showInPanel()",
     "return true",
     "panels.dockForScene()",
@@ -1100,7 +1102,7 @@ test("one opening rule: a deliverable the panel draws opens in it while it is on
   expect(shown).toContain("return FogContent(id: item.id) { PanelContent(item: item, cwd: row.cwd, store: store, panels: panels) }");
   // The side panel's own renderer, so a local file gets its checks (the web view's file policy, the missing and the
   // unpreviewable states); no second web view here.
-  expect(member(panels, "private struct PanelContent: View {")).toContain("InlineReviewView(item: item, onOpenInPlace: openWhereItLives, liveAddress: $address)");
+  expect(member(panels, "private struct PanelContent: View {")).toContain("InlineReviewView(item: item, onOpenInPlace: openWhereItLives, liveAddress: $address, changed: changed)");
   expect(panels).not.toMatch(/WKWebView|DeliverableWebView\(|loadFileURL/);
   // Its arrow opens it where it lives, the panel docking first so it isn't left over what comes forward.
   const out = member(panels, "private func openWhereItLives() {");

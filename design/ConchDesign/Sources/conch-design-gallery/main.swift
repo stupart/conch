@@ -727,6 +727,84 @@ try render("m3-panel-content", width: 1280) {
     m3Fog(.bottomLeading, fullScreen: true, session: panelSessions[0], pager: true, showsReply: false, content: stagedPage)
 }
 
+/// A folder a session published, as the side panel's renderer draws it (`WorkspaceFilesView`): the real tree rows
+/// (`ConchFileTreeRail`) over a listing made up here, with what the session changed and what the agent pointed at, and
+/// the first focused file in the viewer beside it (drawn here as text, standing in for the app's text renderer).
+struct FolderDeliverablePicture: View {
+    static let root = "/Users/tyler/Projects/arch/web/invite"
+    static let focus = ["src/InviteCard.tsx", "src/join.ts", "test"]
+    static let changed = ["src/InviteCard.tsx", "src/join.ts", "test/join.test.ts", "README.md"]
+
+    private static func entry(_ relative: String, directory: Bool = false) -> ConchFileEntry {
+        ConchFileEntry(path: root + "/" + relative, name: (relative as NSString).lastPathComponent, isDirectory: directory)
+    }
+
+    private static let directories: Set<String> = ["src", "src/copy", "test", "public"].map { root + "/" + $0 }.reduce(into: []) { $0.insert($1) }
+
+    private static let listings: [String: [ConchFileEntry]] = [
+        root: ConchFileTree.sorted([entry("src", directory: true), entry("test", directory: true), entry("public", directory: true),
+                                    entry("README.md"), entry("package.json"), entry(".env.example")]),
+        root + "/src": ConchFileTree.sorted([entry("src/copy", directory: true), entry("src/InviteCard.tsx"), entry("src/join.ts"),
+                                             entry("src/emailCheck.ts"), entry("src/index.ts")]),
+        root + "/test": [entry("test/join.test.ts"), entry("test/emailCheck.test.ts")],
+    ]
+
+    private var focus: ConchFileFocus { ConchFileFocus(focus: Self.focus, relativeTo: Self.root) }
+
+    var body: some View {
+        let expanded = focus.expanded(isDirectory: { Self.directories.contains($0) })
+        HStack(spacing: 0) {
+            ConchFileTreeRail(
+                rows: ConchFileTree.rows(root: Self.root, listings: Self.listings, expanded: expanded),
+                selected: Self.root + "/src/InviteCard.tsx",
+                expanded: expanded,
+                changed: ConchFileChanges(changed: Self.changed, relativeTo: Self.root),
+                focus: focus,
+                title: "invite",
+                onPick: { _ in }
+            )
+            .frame(width: 232)
+            .frame(maxHeight: .infinity, alignment: .top)
+            .background(ConchColor.surfaceRaised)
+            Rectangle().fill(ConchColor.hairline).frame(width: 1)
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(Array(Self.source.enumerated()), id: \.offset) { line in
+                    Text(verbatim: line.element.isEmpty ? " " : line.element)
+                        .font(ConchType.code)
+                        .foregroundStyle(ConchColor.textPrimary)
+                }
+            }
+            .padding(24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(ConchColor.surface)
+        }
+    }
+
+    static let source = [
+        "export function InviteCard({ invite }: Props) {",
+        "  const ready = useEmailCheck(invite.email);",
+        "  return (",
+        "    <Card>",
+        "      <InviteHeading team={invite.team} />",
+        "      <Button disabled={!ready} onClick={() => join(invite)}>",
+        "        Join",
+        "      </Button>",
+        "    </Card>",
+        "  );",
+        "}",
+    ]
+}
+
+let folderPage = FogContent(id: "arch-invite-folder-v1") { FolderDeliverablePicture() }
+let folderSession = FogSession(id: "arch", label: "Arch brand page", agent: "Claude", item: "The invite module's new layout: the card, the join step and their tests", standing: .ready)
+
+try render("m3-panel-folder", width: 1280) {
+    Heading(title: "Conversation panel, full screen on a folder", note: "A folder a session published is its tree: what the session changed has its dot, what the agent pointed at (focus) is open and washed in its violet with the ✦, and the first focused file is in the viewer. Picking a file opens it there.")
+    m3Fog(.bottomLeading, fullScreen: true, draft: "Split the email check into its own step", session: folderSession, pager: true, content: folderPage)
+    Caption("Docked: the words, named by their session. A pick of the folder (Next, the switcher, the Ready pill) opens it full screen here, from anywhere: only conch draws its tree.")
+    m3Fog(.bottomLeading, session: folderSession, pager: true)
+}
+
 try render("m3-fog-top-right", width: 1280) {
     Heading(title: "Conversation fog, dragged to the top right", note: "It faces the screen corner nearest it: the fog gathers in the top-right corner and the words move up there.")
     m3Fog(.topTrailing)

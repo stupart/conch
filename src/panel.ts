@@ -333,6 +333,8 @@ export interface PublishedSessionRow {
     kind?: DeliverableKind;
     /** A snapshot of it from the Mac, for an app that can't draw its kind (`features.deliverables` 4). */
     preview?: ReviewPreview;
+    /** A folder deliverable's paths to point at, relative to it (`SessionReview.focus`). */
+    focus?: string[];
   };
   /**
    * Every deliverable the session is still holding, oldest first, the last of which is
@@ -341,7 +343,7 @@ export interface PublishedSessionRow {
    */
   reviews?: Array<{
     summary: string; link?: string; scene?: ReviewScene; at?: number; id?: string; viewedAt?: number;
-    artifact?: string; version?: number; kind?: DeliverableKind; preview?: ReviewPreview;
+    artifact?: string; version?: number; kind?: DeliverableKind; preview?: ReviewPreview; focus?: string[];
   }>;
 }
 
@@ -572,12 +574,14 @@ export function panelReplyText(
  * What a reader needs to tell deliverables apart: which artifact, which version, what kind.
  * Older apps ignore all three. `kindSource` stays in the ledger: no surface acts on it.
  */
-function publishedDeliverableFacts(review: SessionReview): Pick<SessionReview, "artifact" | "version" | "kind" | "preview"> {
+function publishedDeliverableFacts(review: SessionReview): Pick<SessionReview, "artifact" | "version" | "kind" | "preview" | "focus"> {
   return {
     ...(review.artifact ? { artifact: review.artifact } : {}),
     ...(review.version !== undefined ? { version: review.version } : {}),
     ...(review.kind ? { kind: review.kind } : {}),
     ...(review.preview ? { preview: { ...review.preview } } : {}),
+    // The paths the agent pointed at, never a listing: the apps read the tree themselves.
+    ...(review.focus?.length ? { focus: [...review.focus] } : {}),
   };
 }
 
@@ -1064,6 +1068,11 @@ export interface SessionReview {
   version?: number;
   /** The newest snapshot of it from the Mac, for a phone that can't draw its kind (`review-preview.ts`). */
   preview?: ReviewPreview;
+  /**
+   * A folder deliverable's paths to point at, relative to the folder (`checkFocusShape`): the tree opens expanded to
+   * them and marks them. Only these travel; the apps list the folder themselves when they show it.
+   */
+  focus?: string[];
 }
 
 /**
@@ -1112,7 +1121,7 @@ export function filedVersions(
  */
 export function fileReview(
   sessionId: string,
-  review: { summary: string; link?: string; scene?: ReviewScene; kind?: DeliverableKind; key?: string },
+  review: { summary: string; link?: string; scene?: ReviewScene; kind?: DeliverableKind; key?: string; focus?: string[] },
   at: number,
   held: readonly SessionReview[] | undefined,
   versions?: Readonly<Record<string, number>>,
@@ -1128,6 +1137,7 @@ export function fileReview(
     id,
     ...facts,
     version,
+    ...(review.focus?.length ? { focus: [...review.focus] } : {}),
   };
 }
 

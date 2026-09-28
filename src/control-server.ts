@@ -7,7 +7,7 @@ import { lockSocketPath, type SocketOwnership } from "./socket-ownership.ts";
 import { isSessionStartSource, type TurnEvent } from "./hook.ts";
 import type { SendFailure } from "./inject.ts";
 import { checkReviewScene, sanitizeReviewSummary } from "./snippet.ts";
-import { ARTIFACT_KEY_MAX, deliverableKindRefusal, isDeliverableKind } from "./deliverables.ts";
+import { ARTIFACT_KEY_MAX, checkFocusShape, deliverableKindRefusal, isDeliverableKind } from "./deliverables.ts";
 import { agentQuestions } from "./conversation.ts";
 import type { PublishedDelivery, PublishedState } from "./panel.ts";
 import type { SessionInfo } from "./sessions.ts";
@@ -609,6 +609,13 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
       if (!isDeliverableKind(value.review.kind)) return { ok: false, err: "review kind is not a deliverable kind" };
       const refusal = deliverableKindRefusal(value.review.kind, value.review.link !== undefined);
       if (refusal) return { ok: false, err: `review ${refusal}` };
+    }
+    if (value.review.focus !== undefined) {
+      // The shape alone: whether each path is inside the folder is the disk's question, asked where it is filed.
+      const focus = checkFocusShape(value.review.focus);
+      if (!focus.ok) return { ok: false, err: `review ${focus.reason}` };
+      if (value.review.link === undefined) return { ok: false, err: "review focus needs a folder link" };
+      if (type !== "review-published") return { ok: false, err: "review focus is only for review-published" };
     }
     if (value.review.key !== undefined) {
       const key = typeof value.review.key === "string" ? sanitizeReviewSummary(value.review.key, Infinity) : "";

@@ -1,10 +1,10 @@
 /** Turn a markdown reply into something worth hearing. */
 
 import { open as openFile, realpath, stat, type FileHandle } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { basename, resolve } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { selectWindowBranch, type WindowIdentity } from "./conversation.ts";
-import { inferDeliverableKind } from "./deliverables.ts";
+import { checkFocusShape, FOCUS_MAX, inferDeliverableKind, isPackagePath } from "./deliverables.ts";
 
 const BARE_URL = /(?:<)?\bhttps?:\/\/[^\s<>"'`]+(?:>)?/gi;
 const FILESYSTEM_PATH = /(^|[\s([{'":=])((?:(?:~?|\.\.?)\/|[A-Za-z0-9_.-]+\/)[^\s)\]}>,"'`]+)/g;
@@ -1321,16 +1321,92 @@ export async function checkLocalFile(
 }
 
 /**
+ * Whether a folder may be published as a deliverable (kind `folder`, its tree), and its real path when it may: the
+ * rule a linked file passes, for a directory. It must exist, and be one of `roots` (the session's folder and the
+ * folders it works in) or inside one, or inside a temp folder. It must not be hidden or in a hidden folder (`.worktrees`
+ * aside, as for a file), a package (an app, a document saved as a bundle: `isPackagePath`), or the home folder itself,
+ * whose tree is everything you own (the Files tab hides it for the same reason). Judged on the real path, so a symlink
+ * can't launder its target. Only the folder is checked here: the apps list it on the Mac when they show it, and the
+ * phone is never sent a listing.
+ */
+export async function checkLocalFolder(
+  path: string,
+  roots: readonly string[],
+): Promise<{ ok: true; real: string } | { ok: false; reason: string }> {
+  const real = await realpath(path).catch(() => null);
+  const found = real ? await stat(real).catch(() => null) : null;
+  if (!real || !found?.isDirectory()) return { ok: false, reason: `link ${path} is not a folder that exists` };
+  const own = (await Promise.all(roots.map((root) => realpath(root).catch(() => null)))).filter((root): root is string => Boolean(root));
+  const temp = (await Promise.all([tmpdir(), "/tmp"].map((root) => realpath(root).catch(() => null)))).filter((root): root is string => Boolean(root));
+  const under = (root: string) => real.startsWith(root.endsWith("/") ? root : `${root}/`);
+  if (!own.some((root) => real === root || under(root)) && !temp.some(under)) {
+    return {
+      ok: false,
+      reason: `link ${real} is outside this session's folder (${roots.join(", ") || "none known"}) and the temp folder,`
+        + " so conch won't show it; publish a folder under your own",
+    };
+  }
+  if (real === "/" || real === await realpath(homedir()).catch(() => homedir())) {
+    return { ok: false, reason: `link ${real} is the home folder, a tree of everything you own; publish the project folder inside it` };
+  }
+  if (real.split("/").some((part) => part.startsWith(".") && part !== ".worktrees")) {
+    return { ok: false, reason: `link ${real} is a hidden folder, or in one, so conch won't show it` };
+  }
+  if (isPackagePath(real)) {
+    return { ok: false, reason: `link ${real} is a package (an app or a document saved as a bundle), not a folder of work` };
+  }
+  return { ok: true, real };
+}
+
+/** How long one raw `focus` path may be before it is resolved; `checkFocusShape` caps what is published. */
+const FOCUS_RAW_MAX = 1024;
+
+/**
+ * A folder deliverable's `focus`, resolved against the folder on the disk as it is now: each path relative to the
+ * folder, or absolute inside it (by the path it was published at or its real one). Each must exist, and its real path
+ * must be inside the folder's real path: no `..` part at all, and no symlink out, whatever it points at. Returned as
+ * published: relative to the folder's real path, POSIX, and through `checkFocusShape`'s caps. The same check runs where
+ * the MCP server takes it and where the daemon files it, so a raw socket write gains nothing.
+ */
+export async function resolveReviewFocus(
+  folder: string,
+  focus: unknown,
+): Promise<{ ok: true; focus: string[] } | { ok: false; reason: string }> {
+  const refuse = (reason: string) => ({ ok: false, reason: `focus${reason.startsWith("[") ? "" : " "}${reason}` }) as const;
+  if (!Array.isArray(focus) || focus.length === 0 || focus.length > FOCUS_MAX) {
+    return refuse(`must be 1 to ${FOCUS_MAX} paths inside the folder`);
+  }
+  const root = await realpath(folder).catch(() => null);
+  if (!root || !(await stat(root).catch(() => null))?.isDirectory()) return refuse(`needs the folder ${folder} to exist`);
+  const resolved: string[] = [];
+  for (const [index, raw] of focus.entries()) {
+    const path = typeof raw === "string" ? raw.trim() : "";
+    if (!path || path.length > FOCUS_RAW_MAX || path.includes("\0")) return refuse(`[${index}] must be a non-empty path`);
+    // Refused before anything resolves: a path that walks out and back in is not a path in the folder.
+    if (path.split(/[\\/]/).includes("..")) return refuse(`[${index}] ${path} has a .. part; name the path inside the folder`);
+    const real = await realpath(isAbsolute(path) ? path : join(folder, path)).catch(() => null);
+    if (!real) return refuse(`[${index}] ${path} is not in the folder`);
+    if (real === root || !real.startsWith(`${root}/`)) {
+      return refuse(`[${index}] ${path} is ${real === root ? "the folder itself" : `outside the folder (${real})`}`);
+    }
+    const inside = relative(root, real);
+    if (!resolved.includes(inside)) resolved.push(inside);
+  }
+  return checkFocusShape(resolved);
+}
+
+/**
  * The one link check for both ways a session publishes: `review_to_front` and
  * the `conch:review` marker. Returns the link as published (an http(s) URL
  * unchanged, a file made absolute against `cwd` so the apps open the file that
  * was checked rather than resolving it against their own cwd), or the reason
- * it is not safe to hand an app and the phone.
+ * it is not safe to hand an app and the phone. A folder passes `checkLocalFolder`
+ * and says so (`folder`): it is published as its tree (kind `folder`).
  */
 export async function checkReviewLink(
   link: string,
   cwd: string,
-): Promise<{ ok: true; link: string } | { ok: false; reason: string }> {
+): Promise<{ ok: true; link: string; folder?: true } | { ok: false; reason: string }> {
   const refused = { ok: false, reason: SAFE_REVIEW_LINK } as const;
   const trimmed = link.trim();
   if (!trimmed) return refused;
@@ -1343,7 +1419,10 @@ export async function checkReviewLink(
   if (url) return (url.protocol === "http:" || url.protocol === "https:") && url.hostname ? { ok: true, link: trimmed } : refused;
   const path = resolve(cwd, trimmed);
   const checked = await checkLocalFile(path, [cwd]);
-  return checked.ok ? { ok: true, link: path } : checked;
+  if (checked.ok) return { ok: true, link: path };
+  if (!(await stat(path).catch(() => null))?.isDirectory()) return checked;
+  const folder = await checkLocalFolder(path, [cwd]);
+  return folder.ok ? { ok: true, link: path, folder: true } : folder;
 }
 
 /** `checkReviewLink` for a caller that can only drop an unsafe link: the link, or null. */

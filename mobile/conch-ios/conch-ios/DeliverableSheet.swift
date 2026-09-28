@@ -312,6 +312,8 @@ struct DeliverableSheet: View {
         case local(LocalKind)
         /// Only on the Mac, with no file to send: a snapshot of it (`StandInView`).
         case standIn
+        /// A folder on the Mac: its name and what the agent pointed at in it (`FolderDeliverableView`).
+        case folder(String)
         case unavailable(String)
     }
 
@@ -320,6 +322,8 @@ struct DeliverableSheet: View {
 
     private var kind: Kind {
         if review.link == nil, let typed = review.kind, Self.standInKinds.contains(typed) { return .standIn }
+        // Never downloaded: the phone's file access serves files a session published, not a folder's listing.
+        if review.kind == "folder", let link = review.link { return .folder(link) }
         guard let link = review.link else { return .unavailable("No link on this review.") }
         if let url = URL(string: link),
            let scheme = url.scheme?.lowercased(),
@@ -484,6 +488,8 @@ struct DeliverableSheet: View {
         switch kind {
         case .standIn:
             StandInView(bridge: bridge, review: review, sessionId: sessionId)
+        case let .folder(link):
+            FolderDeliverableView(folder: link, focus: review.focus)
         case let .web(url):
             BridgedWebView(url: url, page: page, onFailure: fail, ink: ink)
         case let .macLocal(url):
@@ -1243,6 +1249,74 @@ private struct MarkdownImage: View {
         } catch {
             if !Task.isCancelled { failure = BridgeClient.fileFailure(error) }
         }
+    }
+}
+
+/// A folder a session published, on the phone: its name and where it is, and what the agent pointed at in it, with
+/// the tree left to the Mac. The phone's file access (`/file`) serves only files a session published, one at a time,
+/// and never a folder's listing, so rather than a blank or an error this says what the folder is and where to open it.
+struct FolderDeliverableView: View {
+    let folder: String
+    let focus: [String]
+
+    private var name: String { (folder as NSString).lastPathComponent }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Image(systemName: "folder")
+                        .font(Type.sessionName)
+                        .foregroundStyle(Palette.textDim)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(name)
+                            .font(Type.sessionName)
+                            .foregroundStyle(Palette.textPrimary)
+                        Text(shortHomePath(folder))
+                            .font(Type.caption)
+                            .foregroundStyle(Palette.textFaint)
+                            .textSelection(.enabled)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                    }
+                }
+                if !focus.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Pointed at")
+                            .font(Type.caption.weight(.semibold))
+                            .foregroundStyle(Palette.textDim)
+                        ForEach(focus, id: \.self) { path in
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                // The ✦ an agent's marks carry, in its colour, as the Mac's tree marks these rows.
+                                Text("✦")
+                                    .font(Type.caption)
+                                    .foregroundStyle(CanvasInk.agentText)
+                                    .accessibilityHidden(true)
+                                Text(path)
+                                    .font(Type.mono)
+                                    .foregroundStyle(Palette.textPrimary)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                    }
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Palette.raised))
+                }
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: "macbook")
+                        .foregroundStyle(Palette.textDim)
+                        .accessibilityHidden(true)
+                    Text("Open on your Mac to see its files: conch shows the folder's tree there, with these marked.")
+                        .font(Type.summary)
+                        .foregroundStyle(Palette.textDim)
+                }
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .accessibilityElement(children: .contain)
     }
 }
 

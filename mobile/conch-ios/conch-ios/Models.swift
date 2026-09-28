@@ -216,6 +216,9 @@ struct PublishedState: Decodable, Equatable {
             var kind: String?
             /// A snapshot of it from the Mac, for a kind the phone can't draw (`features.deliverables` 4).
             var preview: Preview?
+            /// A folder deliverable's paths to point at, relative to the folder (`focus`). Empty for anything else, and
+            /// from an older daemon.
+            var focus: [String] = []
 
             struct Preview: Decodable, Equatable {
                 var path: String
@@ -223,7 +226,7 @@ struct PublishedState: Decodable, Equatable {
                 var capturedAt: Double
             }
 
-            private enum CodingKeys: String, CodingKey { case summary, link, at, scene, id, viewedAt, artifact, version, kind, preview }
+            private enum CodingKeys: String, CodingKey { case summary, link, at, scene, id, viewedAt, artifact, version, kind, preview, focus }
             private struct Scene: Decodable {
                 var inspect: String?
                 var marks: AgentMark.List?
@@ -253,6 +256,7 @@ struct PublishedState: Decodable, Equatable {
                 version = try? c.decodeIfPresent(Int.self, forKey: .version)
                 kind = try? c.decodeIfPresent(String.self, forKey: .kind)
                 preview = try? c.decodeIfPresent(Preview.self, forKey: .preview)
+                focus = (try? c.decodeIfPresent([String].self, forKey: .focus)) ?? []
             }
         }
 
