@@ -502,7 +502,7 @@ extension CanvasInk {
 
     /// Words on a white pill with a hairline in the agent's colour, kept inside `bounds`.
     private static func pill(_ text: String, at spot: CGPoint, size: CGFloat, bounds: CGRect, in context: CGContext) {
-        let font = CTFontCreateUIFontForLanguage(.system, size, nil) ?? CTFontCreateWithName("Helvetica" as CFString, size, nil)
+        let font = ConchType.coreText(size: size)
         let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [
             NSAttributedString.Key(kCTFontAttributeName as String): font,
             NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(srgbRed: 0.11, green: 0.11, blue: 0.12, alpha: 1),
@@ -524,7 +524,7 @@ extension CanvasInk {
 
     /// Bold type in `colour` (the words on its ink, `on`), centred on its cap height in `rect`, in a y-down context.
     private static func label(_ text: String, centredIn rect: CGRect, size: CGFloat, colour: ConchRGBA, in context: CGContext) {
-        let font = CTFontCreateUIFontForLanguage(.emphasizedSystem, size, nil) ?? CTFontCreateWithName("Helvetica-Bold" as CFString, size, nil)
+        let font = ConchType.coreText(size: size, bold: true)
         let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [
             NSAttributedString.Key(kCTFontAttributeName as String): font,
             NSAttributedString.Key(kCTForegroundColorAttributeName as String): colour.cgColor,

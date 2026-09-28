@@ -802,7 +802,6 @@ private struct DeliverableFailureView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(failure.link)
                         .font(ConchTypography.font(size: 11.5))
-                        .tracking(-0.2)
                         .foregroundStyle(ConchPalette.accent)
                         .lineLimit(4)
                         .truncationMode(.middle)
@@ -811,7 +810,6 @@ private struct DeliverableFailureView: View {
 
                     Text(failure.message)
                         .font(ConchTypography.font(size: 12))
-                        .tracking(-0.2)
                         .foregroundStyle(ConchPalette.textDim)
                         .fixedSize(horizontal: false, vertical: true)
                 }

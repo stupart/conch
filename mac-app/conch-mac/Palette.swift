@@ -125,29 +125,25 @@ enum ConchPalette {
     static let statusReview = ConchColor.ready.dynamic
 }
 
+/// The main window's type: SF, the system face, as the conversation panel, the canvas and the phone already set it.
+/// The window had a face of its own until 2026-09-28; asked to unify on one, Tyler: "Let's try SF for type."
+///
+/// Sizes and weights are the window's own scale, unchanged by the switch. SF carries its tracking per point size
+/// (tighter as it grows), so nothing here or at a call site tightens it again: the app-wide -0.3 and the -0.2/-0.25
+/// that the old face needed are gone with it.
+///
+/// There is no `relativeTo:`. It was here for Dynamic Type, which macOS does not have: the old
+/// `.custom(_:size: 13, relativeTo: .body)` laid out at the same 100 x 15 pt with the environment at its default and
+/// at `.accessibility3` (measured 2026-09-28), so every size here was always its point value. It is also only on
+/// `Font.custom`, which takes a face NAME, and the system face deliberately has none.
 enum ConchTypography {
-    private static let family = "Helvetica Neue"
-
-    /// `relativeTo:` is what makes a custom face respect the system text-size
-    /// setting. Without it every size here was a fixed point value and the app
-    /// ignored Dynamic Type entirely — bad for a dashboard meant to be
-    /// glanceable from across a room.
-    static func font(
-        size: CGFloat,
-        weight: Font.Weight = .regular,
-        relativeTo style: Font.TextStyle = .body
-    ) -> Font {
-        guard NSFont(name: family, size: size) != nil else {
-            return .system(size: size, weight: weight)
-        }
-        return .custom(family, size: size, relativeTo: style).weight(weight)
+    static func font(size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        .system(size: size, weight: weight)
     }
 
+    /// The same face for AppKit text, at the weight asked for: the old face was converted to its bold trait, so anything
+    /// from medium up came out bold.
     static func nsFont(size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont {
-        guard let base = NSFont(name: family, size: size) else {
-            return .systemFont(ofSize: size, weight: weight)
-        }
-        guard weight >= .medium else { return base }
-        return NSFontManager.shared.convert(base, toHaveTrait: .boldFontMask)
+        .systemFont(ofSize: size, weight: weight)
     }
 }

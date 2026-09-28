@@ -58,9 +58,9 @@ enum Palette {
     static let review = ConchColor.ready.dynamic
 }
 
-/// iOS speaks SF. The Mac app's Helvetica Neue is its own voice; forcing it
-/// here would fight Dynamic Type and read as a port. Same hierarchy, native
-/// materials — that is what makes the two feel like siblings, not clones.
+/// SF, the system face, as on the Mac: its main window set a face of its own
+/// until it moved to SF too. Same hierarchy, native materials — that is what
+/// makes the two feel like siblings, not clones.
 ///
 /// TEXT STYLES, not point sizes: fixed sizes opted the whole app out of the
 /// platform's accessibility contract — at XXXL only the nav title scaled.

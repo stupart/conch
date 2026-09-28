@@ -1177,8 +1177,8 @@ struct SidebarColumn<Content: View>: View {
 }
 
 // conch's macOS permissions (2026-09-27): Settings › Permissions, one row each, and the line conch's window shows where a
-// feature stopped for want of one. Drawn in the Settings window's own type, Helvetica Neue at its sizes, as the app does.
-func settingsFont(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font { .custom("Helvetica Neue", size: size).weight(weight) }
+// feature stopped for want of one. Drawn in the Settings window's own type, SF at its sizes, as the app does.
+func settingsFont(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font { .system(size: size, weight: weight) }
 
 func permissionsTab(_ statuses: [ConchPermission: ConchPermissionStatus], notes: [ConchPermission: String] = [:], caution: String? = nil, launchd: Bool = false) -> some View {
     VStack(spacing: 0) {

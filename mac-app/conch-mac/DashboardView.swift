@@ -171,8 +171,9 @@ struct DashboardView: View {
             }
         }
         .background(ConchPalette.bg)
+        // No app-wide tracking. The -0.3 that sat here tightened the window's face before SF and, inherited,
+        // every piece of SF in the window too; SF sets its own tracking at each size.
         .font(ConchTypography.font(size: 12.5))
-        .tracking(-0.3)
     }
 
     /// Fixed, at the spec's 264 (workspace-v1 §3). It used to scale with the window —
@@ -311,7 +312,6 @@ private struct DashboardHeader: View {
 
                 Text("conch")
                     .font(ConchTypography.font(size: 12, weight: .medium))
-                    .tracking(-0.2)
                     .foregroundStyle(ConchPalette.textDim)
             }
 

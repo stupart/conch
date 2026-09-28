@@ -489,7 +489,7 @@ export function welcomeCard(): string {
   @media (prefers-color-scheme: dark) {
     :root { --ground: #1c1c1e; --card: #2a2a2d; --ink: #f2f2f4; --soft: #b4b4ba; --faint: #86868c; --line: rgba(255,255,255,0.1); --ready: #3fb950; }
   }
-  html, body { margin: 0; background: var(--ground); color: var(--ink); font: 15px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif; }
+  html, body { margin: 0; background: var(--ground); color: var(--ink); font: 15px/1.5 -apple-system, system-ui, sans-serif; }
   main { max-width: 560px; margin: 56px auto; padding: 0 20px; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 20px; padding: 32px 32px 28px; box-shadow: 0 12px 40px rgba(0,0,0,0.08); }
   .mark { width: 28px; height: 28px; border-radius: 50%; background: var(--ready); display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 15px; }
@@ -498,7 +498,7 @@ export function welcomeCard(): string {
   ul { list-style: none; padding: 0; margin: 20px 0 0; border-top: 1px solid var(--line); }
   li { padding: 12px 0; border-bottom: 1px solid var(--line); color: var(--ink); }
   li span { display: block; color: var(--soft); font-size: 13px; }
-  kbd { font: 600 12px/1 -apple-system, sans-serif; border: 1px solid var(--line); border-radius: 5px; padding: 3px 5px; background: var(--ground); }
+  kbd { font: 600 12px/1 -apple-system, system-ui, sans-serif; border: 1px solid var(--line); border-radius: 5px; padding: 3px 5px; background: var(--ground); }
   footer { color: var(--faint); font-size: 12px; margin-top: 18px; text-align: center; }
 </style>
 </head>
