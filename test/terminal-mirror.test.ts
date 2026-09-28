@@ -417,6 +417,14 @@ describe("on the wire", () => {
     if (escapes.host !== "tmux") throw new Error("not tmux");
     expect(Buffer.byteLength(JSON.stringify(escapes)) + 1).toBeLessThanOrEqual(30_000);
     expect(escapes.history!.length).toBeGreaterThan(4_000);
+    // As much as fits, measured on what is KEPT: an oldest end that costs six bytes a character (escapes) and a newest
+    // end that costs one must still fill the frame to within one character.
+    const mixed = "\u001b".repeat(8_000) + "newest".repeat(3_000);
+    const most = fitHistory({ ...reply, history: mixed }, 30_000);
+    if (most.host !== "tmux") throw new Error("not tmux");
+    expect(mixed.endsWith(most.history!)).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(most)) + 1).toBeLessThanOrEqual(30_000);
+    expect(Buffer.byteLength(JSON.stringify(most)) + 1).toBeGreaterThan(30_000 - 6);
   });
 
   test("the replies parse, and a malformed one doesn't", () => {
