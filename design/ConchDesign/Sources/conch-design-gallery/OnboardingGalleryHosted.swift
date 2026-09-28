@@ -79,7 +79,14 @@ struct OnbHosted {
         }
     }
 
-    static func done() -> some View {
+    /// The welcome as the first launch opens it: conch has just registered at login, and says so in the footer.
+    static func welcome(_ line: LoginItemLine) -> some View {
+        OnbMacWindow {
+            OnboardingWelcome(backdrop: .shore, loginLine: line.words, onOpenLoginItems: line.opensLoginItems ? {} : nil)
+        }
+    }
+
+    static func done(openAtLogin: Bool = false, loginNote: LoginItemLine? = .notInApplications) -> some View {
         OnbMacWindow {
             OnboardingWindow(progress: progress(.done, done: [.agents, .voice, .phone, .practice], later: [.permissions]), steps: hostedRail, downloads: dlDone) {
                 OnboardingDoneStep(
@@ -95,8 +102,9 @@ struct OnbHosted {
                         OnboardingFirstAction(id: "wait", symbol: "cup.and.saucer", title: "Get on with your day",
                                               detail: "conch calls you when an agent has something."),
                     ],
-                    openAtLogin: false,
-                    loginNote: "Move conch to your Applications folder, then turn this on."
+                    openAtLogin: openAtLogin,
+                    loginNote: loginNote?.words,
+                    onOpenLoginItems: loginNote?.opensLoginItems == true ? {} : nil
                 )
             }
         }
@@ -166,6 +174,17 @@ func renderOnboardingHosted() throws {
         HStack(alignment: .top, spacing: 24) {
             small("Welcome back") { OnbHosted.welcomeBack() }
             small("You're set, conch outside Applications") { OnbHosted.done() }
+        }
+    }
+    try onb("onb-hosted-login", width: half) {
+        Heading(title: "Hosted · Opening at login", note: "The first launch registers, visibly: macOS shows its notice, and the welcome's footer names it. When macOS wants it allowed, the line and You're set's switch carry the button to Login Items.")
+        HStack(alignment: .top, spacing: 24) {
+            small("Welcome, registered") { OnbHosted.welcome(.added) }
+            small("Welcome, macOS wants it allowed") { OnbHosted.welcome(.needsApproval) }
+        }
+        HStack(alignment: .top, spacing: 24) {
+            small("You're set, on") { OnbHosted.done(openAtLogin: true, loginNote: nil) }
+            small("You're set, waiting on approval") { OnbHosted.done(openAtLogin: true, loginNote: .needsApproval) }
         }
     }
     try onb("onb-hosted-try", width: windowPage) {

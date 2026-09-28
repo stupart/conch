@@ -107,6 +107,9 @@ struct WorkspaceNotices: View {
             .frame(height: 1)
     }
 
+    // The first launch opened conch at login: said once, here, when setup's welcome didn't say it (`LoginItem`).
+    LoginItemNoticeLine()
+
     // Whatever stopped for want of a macOS permission, with the button that fixes it: a refused keystroke, the mic
     // turned off, the front window read as the app alone (`PermissionNoticeLine`).
     PermissionNoticeLine()
@@ -196,6 +199,44 @@ struct WorkspaceNotices: View {
             .fill(ConchPalette.divider)
             .frame(height: 1)
     }
+        }
+    }
+}
+
+/// The first launch's line about opening at login, until OK: macOS has shown its own notice, and this names it. When
+/// macOS wants it allowed, or refused it, the line says so with the button to System Settings › General › Login Items.
+private struct LoginItemNoticeLine: View {
+    @ObservedObject private var login = LoginItem.shared
+
+    var body: some View {
+        if login.announceInWindow, let line = login.announcement {
+            HStack(spacing: 10) {
+                Image(systemName: "power.circle")
+                    .font(.system(size: 10.5, weight: .medium))
+                Text(line.words)
+                    .font(ConchTypography.font(size: 11.5))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                if line.opensLoginItems {
+                    Button(LoginItemLine.openLoginItems, action: login.openLoginItems)
+                        .buttonStyle(.plain)
+                        .font(ConchTypography.font(size: 11, weight: .medium))
+                        .foregroundStyle(ConchPalette.brandCyan)
+                }
+                Button("OK", action: login.dismissAnnouncement)
+                    .buttonStyle(.plain)
+                    .font(ConchTypography.font(size: 11, weight: .medium))
+                    .foregroundStyle(ConchPalette.statusQuiet)
+            }
+            .foregroundStyle(line.opensLoginItems ? ConchPalette.statusWaiting : ConchPalette.textDim)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(ConchPalette.raised)
+
+            Rectangle()
+                .fill(ConchPalette.divider)
+                .frame(height: 1)
         }
     }
 }

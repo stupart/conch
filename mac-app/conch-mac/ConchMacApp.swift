@@ -162,8 +162,10 @@ private final class ConchAppDelegate: NSObject,
     func applicationDidFinishLaunching(_ notification: Notification) {
         let center = UNUserNotificationCenter.current()
         center.delegate = self
-        // Opening at login is setup's switch now (`LoginItem`), and notifications are asked when first needed: launch
-        // reads what macOS already has and asks nothing.
+        // The first launch opens conch at login, visibly: macOS's notice, and conch's own line on setup's welcome or in
+        // the window. Only the first, so a switch turned off stays off (`LoginItem`).
+        LoginItem.shared.registerAtLaunch()
+        // Notifications are asked when first needed: launch reads what macOS already has and asks nothing.
         ReviewNotifications.shared.readAuthorizationAtLaunch()
         // Adopts an already-listening daemon rather than starting a rival one.
         daemon.start()

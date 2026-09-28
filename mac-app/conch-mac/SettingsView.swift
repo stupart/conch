@@ -1,3 +1,4 @@
+import ConchDesign
 import SwiftUI
 
 struct ConchSettingsView: View {
@@ -16,6 +17,13 @@ struct ConchSettingsView: View {
             // daemon over its socket, so the one control that can turn the
             // daemon off cannot be among the things that disappear when it is.
             DaemonPowerRow(daemon: daemon)
+
+            Rectangle()
+                .fill(ConchPalette.divider)
+                .frame(height: 1)
+
+            // The app's too, like the switch above: opening at login is macOS's answer, not a daemon setting.
+            LoginItemRow()
 
             Rectangle()
                 .fill(ConchPalette.divider)
@@ -763,5 +771,48 @@ private struct DaemonPowerRow: View {
         case "terminal": return "Running — started from a terminal (pid \(identity.pid))"
         default: return "Running — started by another copy of this app (pid \(identity.pid))"
         }
+    }
+}
+
+/// "Open conch when you log in", the same switch as setup's You're set: macOS's own answer, read again when Settings
+/// shows it (`LoginItem`). When macOS wants it allowed, or refused it, the note says so beside the button that opens
+/// System Settings › General › Login Items.
+private struct LoginItemRow: View {
+    @ObservedObject private var login = LoginItem.shared
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "power")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(ConchPalette.textDim)
+                .frame(width: 7)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Open conch when you log in")
+                    .font(ConchTypography.font(size: 12.5, weight: .medium))
+                    .foregroundStyle(ConchPalette.textPrimary)
+                Text(login.note?.words ?? "So your agents can reach you. macOS lists it in System Settings › General › Login Items.")
+                    .font(ConchTypography.font(size: 11))
+                    .foregroundStyle(login.note == nil ? ConchPalette.textDim : ConchPalette.statusWaiting)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 12)
+
+            if login.note?.opensLoginItems == true {
+                Button(LoginItemLine.openLoginItems, action: login.openLoginItems)
+                    .controlSize(.small)
+            }
+            Toggle("", isOn: Binding(get: { login.isOn }, set: { login.set($0) }))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .accessibilityLabel("Open conch when you log in")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ConchPalette.raised)
+        .onAppear { login.refresh() }
     }
 }
