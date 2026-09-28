@@ -24,6 +24,7 @@ import { validateScreenObservation, type ScreenObservation } from "./screen-cont
 import type { AgentCapabilitiesRead } from "./agent-capabilities.ts";
 import { decodeNarrationRequest, type Narration, type NarrationReply } from "./narration.ts";
 import type { AgentInstall } from "./agent-install.ts";
+import type { TerminalFocusReply, TerminalScreenReply } from "./terminal-mirror.ts";
 import { applyPlan, planToggle, rollbackFile, type ConfigWriteHomes, type ConfigWriteIo } from "./config-write.ts";
 import { decodeSetupRequest, type Setup, type SetupReply } from "./setup.ts";
 import { decodePracticeRequest, practiceRefusal, type Practice, type PracticeReply } from "./practice.ts";
@@ -282,6 +283,8 @@ export function dispatchControlMessage(
     || validated.value.kind === "app-error"
     || validated.value.kind === "config-toggle"
     || validated.value.kind === "config-rollback"
+    || validated.value.kind === "terminal-screen"
+    || validated.value.kind === "terminal-focus"
   ) return { handled: false };
 
   return { handled: true, response: applyConfigControlMessage(validated.value, controller, configPersistence) };
@@ -338,6 +341,10 @@ export interface RuntimeControlDispatchOptions {
   report(message: Extract<RuntimeControlMessage, { kind: "app-error" }>): void | Promise<void>;
   /** Where the agents' config files live and how they are written; absent means the real homes (B3). */
   configWrite?: { homes?: ConfigWriteHomes; io?: ConfigWriteIo };
+  /** The session's own terminal, for the Mac app's Terminal tab (terminal-mirror.ts). Absent: the tab says so. */
+  terminalScreen?(message: Extract<RuntimeControlMessage, { kind: "terminal-screen" }>): Promise<TerminalScreenReply>;
+  /** "Open in Terminal": bring it forward to type in, on a press. */
+  terminalFocus?(message: Extract<RuntimeControlMessage, { kind: "terminal-focus" }>): Promise<TerminalFocusReply>;
 }
 
 /** Process/UI controls stay outside the synchronous settings controller so AppleScript cannot block config reads. */
@@ -450,6 +457,14 @@ export async function applyRuntimeControlMessage(
     }
     if (message.kind === "config-rollback") {
       return { kind: "config-rollback", ...rollbackFile(message.file, options.configWrite?.io) };
+    }
+    if (message.kind === "terminal-screen") {
+      return await options.terminalScreen?.(message)
+        ?? { kind: "terminal-screen", sessionId: message.sessionId, host: "none", reason: "This conch can't mirror terminals." };
+    }
+    if (message.kind === "terminal-focus") {
+      return await options.terminalFocus?.(message)
+        ?? { kind: "terminal-focus", sessionId: message.sessionId, focused: false, reason: "This conch can't open terminals." };
     }
     await options.report(message);
     return { kind: "app-error-ack" };
@@ -1179,6 +1194,7 @@ function isRuntimeControlCandidate(value: unknown): boolean {
     || value.kind === "app-error" || value.kind === "resumable"
     || value.kind === "agent-capabilities"
     || value.kind === "config-toggle" || value.kind === "config-rollback"
+    || value.kind === "terminal-screen" || value.kind === "terminal-focus"
   );
 }
 

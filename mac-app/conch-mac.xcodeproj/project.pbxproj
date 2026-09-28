@@ -30,6 +30,7 @@
 		A10000000000000000000006 /* ReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* ReviewView.swift */; };
 		A10000000000000000000007 /* WebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* WebView.swift */; };
 		A10000000000000000000964 /* Terminal.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000964 /* Terminal.swift */; };
+		D10000000000000000000B51 /* TerminalMirror.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000B51 /* TerminalMirror.swift */; };
 		A10000000000000000000965 /* FrontWindowObserver.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000965 /* FrontWindowObserver.swift */; };
 		A10000000000000000000980 /* Permissions.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000980 /* Permissions.swift */; };
 		E1000000000000000000A001 /* OnboardingController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2000000000000000000A001 /* OnboardingController.swift */; };
@@ -73,6 +74,7 @@
 		A20000000000000000000006 /* ReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewView.swift; sourceTree = "<group>"; };
 		A20000000000000000000007 /* WebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebView.swift; sourceTree = "<group>"; };
 		A20000000000000000000964 /* Terminal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Terminal.swift; sourceTree = "<group>"; };
+		D20000000000000000000B51 /* TerminalMirror.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalMirror.swift; sourceTree = "<group>"; };
 		A20000000000000000000965 /* FrontWindowObserver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FrontWindowObserver.swift; sourceTree = "<group>"; };
 		A20000000000000000000980 /* Permissions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Permissions.swift; sourceTree = "<group>"; };
 		E2000000000000000000A001 /* OnboardingController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingController.swift; sourceTree = "<group>"; };
@@ -163,6 +165,7 @@
 				A20000000000000000000006 /* ReviewView.swift */,
 				A20000000000000000000007 /* WebView.swift */,
 				A20000000000000000000964 /* Terminal.swift */,
+				D20000000000000000000B51 /* TerminalMirror.swift */,
 				A20000000000000000000965 /* FrontWindowObserver.swift */,
 				A20000000000000000000980 /* Permissions.swift */,
 				E2000000000000000000A001 /* OnboardingController.swift */,
@@ -380,6 +383,7 @@
 				A10000000000000000000006 /* ReviewView.swift in Sources */,
 				A10000000000000000000007 /* WebView.swift in Sources */,
 				A10000000000000000000964 /* Terminal.swift in Sources */,
+				D10000000000000000000B51 /* TerminalMirror.swift in Sources */,
 				A10000000000000000000965 /* FrontWindowObserver.swift in Sources */,
 				A10000000000000000000980 /* Permissions.swift in Sources */,
 				E1000000000000000000A001 /* OnboardingController.swift in Sources */,

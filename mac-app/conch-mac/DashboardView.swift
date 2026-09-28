@@ -1744,7 +1744,7 @@ private struct ConversationPane: View {
     ///
     /// This used to be "is there a deliverable", which is why Cmd-2 and Cmd-3 did nothing in a
     /// session that had not filed one — even though its files were there the whole time.
-    private var hasWorkPane: Bool { selectedReview != nil || workingFolder != nil }
+    private var hasWorkPane: Bool { selectedReview != nil || workingFolder != nil || focusedRow?.hasAgentTerminal == true }
 
     /// The narrowest conversation column the composer card sits in rather than over the stage.
     private static let composerColumnMinimum: CGFloat = 360
@@ -1811,11 +1811,12 @@ private struct ConversationPane: View {
 
     /// More than one thing to choose between, so the strip is worth drawing.
     private func hasWorkTabs(for row: SessionRow) -> Bool {
-        // A working folder is worth TWO: the files in it, and a terminal running in it.
-        // Artifacts count, not filings: six versions of one page are one tab. A lone tab with
-        // older versions under it is still drawn, or those versions could not be reached at all.
+        // A working folder is worth TWO: the files in it, and a shell running in it; the agent's own
+        // terminal is one more. Artifacts count, not filings: six versions of one page are one tab. A
+        // lone tab with older versions under it is still drawn, or those versions could not be reached.
         let groups = deliverableGroups
-        return groups.count + (workingFolder == nil ? 0 : 2) > 1 || groups.contains(where: \.hasOlderVersions)
+        let places = (workingFolder == nil ? 0 : 2) + (row.hasAgentTerminal ? 1 : 0)
+        return groups.count + places > 1 || groups.contains(where: \.hasOlderVersions)
     }
 
     /// Which content the work half is on, never trusting the remembered choice blindly: a
@@ -1824,10 +1825,14 @@ private struct ConversationPane: View {
     private func workPane(for row: SessionRow) -> WorkPane {
         let chosen = workspace.presentation(for: row.id).work
         if chosen == .files, workingFolder != nil { return .files }
-        // A terminal needs somewhere to run as much as a tree needs somewhere to read.
-        if chosen == .terminal, workingFolder != nil { return .terminal }
+        // A shell needs somewhere to run as much as a tree needs somewhere to read.
+        if chosen == .shell, workingFolder != nil { return .shell }
+        // The agent's terminal, only where there is one: never the practice session, a closed Codex
+        // thread, a background job with no window, or a subagent (its session's tab shows it).
+        if chosen == .terminal, row.hasAgentTerminal { return .terminal }
         if selectedReview != nil { return .deliverable }
-        return workingFolder != nil ? .files : .deliverable
+        if workingFolder != nil { return .files }
+        return row.hasAgentTerminal ? .terminal : .deliverable
     }
 
     /// What this session changed, resolved against its own folder.
@@ -1847,10 +1852,14 @@ private struct ConversationPane: View {
     private func workContent(for row: SessionRow) -> some View {
         if workPane(for: row) == .files, let folder = workingFolder {
             WorkspaceFilesView(root: folder, rowID: row.id, changed: changedFiles(for: row))
-        } else if workPane(for: row) == .terminal, let folder = workingFolder {
+        } else if workPane(for: row) == .shell, let folder = workingFolder {
             // Keyed on the session: a shell started in one session's folder must never be
             // handed to another because SwiftUI reused the view.
-            TerminalPaneView(cwd: folder).id(row.id)
+            ShellPaneView(cwd: folder).id(row.id)
+        } else if workPane(for: row) == .terminal {
+            // Keyed on the session too: one session's reads and picture must never go on
+            // showing under another's name.
+            AgentTerminalPaneView(row: row).id(row.id)
         } else if let selectedReview {
             InlineReviewView(
                 item: selectedReview,
@@ -2345,19 +2354,30 @@ private struct ConversationPane: View {
                         action: { workspace.show(work: .files, for: row.id) }
                     )
 
+                    ShellTab(
+                        isSelected: workPane(for: row) == .shell,
+                        action: { workspace.show(work: .shell, for: row.id) }
+                    )
+                }
+
+                // The agent's own terminal: only where it has one to show.
+                if row.hasAgentTerminal {
                     TerminalTab(
                         isSelected: workPane(for: row) == .terminal,
-                        action: { workspace.show(work: .terminal, for: row.id) }
+                        action: {
+                            TerminalMirrorAsk.tabPressed()
+                            workspace.show(work: .terminal, for: row.id)
+                        }
                     )
+                }
 
-                    if !held.isEmpty {
-                        // The place, and the work that came out of it, are different kinds of
-                        // thing. A hairline says so without a word.
-                        Rectangle()
-                            .fill(ConchPalette.divider)
-                            .frame(width: 1, height: 14)
-                            .padding(.horizontal, 2)
-                    }
+                if workingFolder != nil || row.hasAgentTerminal, !held.isEmpty {
+                    // The place, and the work that came out of it, are different kinds of
+                    // thing. A hairline says so without a word.
+                    Rectangle()
+                        .fill(ConchPalette.divider)
+                        .frame(width: 1, height: 14)
+                        .padding(.horizontal, 2)
                 }
 
                 // The filed work scrolls, because there can be any number of it. It used to be a
@@ -2697,7 +2717,11 @@ private struct FilesTab: View {
 ///
 /// Both of these are the PLACE the session works, which is why they sit together ahead of the
 /// hairline and the outputs scroll on the far side of it.
-private struct TerminalTab: View {
+///
+/// "Shell", not "Terminal": it was Terminal until the agent's own terminal became a tab beside it,
+/// and two tabs of one name — one yours to type commands in, one the agent's to watch — would be
+/// taken for each other. This one is a shell prompt in the folder; that one is the terminal.
+private struct ShellTab: View {
     let isSelected: Bool
     let action: () -> Void
 
@@ -2707,6 +2731,38 @@ private struct TerminalTab: View {
         Button(action: action) {
             HStack(spacing: 5) {
                 Image(systemName: "chevron.left.forwardslash.chevron.right")
+                    .font(.system(size: 10))
+                Text("Shell")
+                    .font(ConchTypography.font(size: 11))
+            }
+            .foregroundStyle(isSelected ? ConchPalette.textPrimary : ConchPalette.textDim)
+            .padding(.horizontal, 8)
+            .frame(height: 24)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isSelected ? ConchPalette.selection : (isHovered ? ConchPalette.hover : .clear))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help("Run a command in this session's folder")
+        .accessibilityLabel("Shell")
+    }
+}
+
+/// The session's own Claude Code or Codex, live in its terminal: a second view of the same
+/// conversation, beside conch's. View-only; "Open in Terminal" inside it is how to type there.
+private struct TerminalTab: View {
+    let isSelected: Bool
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: "terminal")
                     .font(.system(size: 10))
                 Text("Terminal")
                     .font(ConchTypography.font(size: 11))
@@ -2722,7 +2778,7 @@ private struct TerminalTab: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
-        .help("Run a command where this session runs")
+        .help("This session's agent, live in its own terminal (view only)")
         .accessibilityLabel("Terminal")
     }
 }

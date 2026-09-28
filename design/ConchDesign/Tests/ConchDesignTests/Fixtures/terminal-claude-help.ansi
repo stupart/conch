@@ -1,0 +1,34 @@
+  -w, --worktree [name]                 Create a new git worktree for this session (optionally      
+                                        specify a name)                                             
+
+Commands:                
+  agents [options]                      Manage background agents                                    
+  attach <id>                           Open a background session in this terminal. <id> is the     
+                                        short id that `claude --bg` prints and `claude agents` lists
+  auth                                  Manage authentication                                       
+  auto-mode                             Inspect or reset auto mode classifier configuration         
+  doctor                                Check the health of your Claude Code installation. Reads    
+                                        settings files in the current directory without a trust     
+                                        prompt. For a full checkup that can also fix issues, run    
+                                        /doctor in a session.                                       
+  gateway [options]                     Run the enterprise auth/telemetry gateway                   
+  import [options] [source]             Import config from another AI coding agent into Claude Code 
+  install [options] [target]            Install Claude Code native build. Use [target] to specify   
+                                        version (stable, latest, or specific version)               
+  logs <id>                             Print a background session's recent terminal output         
+  mcp                                   Configure and manage MCP servers                            
+  plugin|plugins                        Manage Claude Code plugins                                  
+  project                               Manage Claude Code project state                            
+  respawn [options] [id]                Restart a background session, or all of them with --all, so 
+                                        it runs the current Claude Code version                     
+  rm <id>                               Delete a background session, and its worktree when that is  
+                                        safe. Works on sessions that have already exited            
+  setup-token                           Set up a long-lived authentication token (requires Claude   
+                                        subscription)                                               
+  stop|kill <id>                        Stop a background session. Its conversation is kept: `claude
+                                        attach <id>` opens it again, `claude --resume` works once it
+                                        is stopped                                                  
+  ultrareview [options] [target]        Run a cloud-hosted multi-agent code review of the current   
+                                        branch (or a PR number / base branch) and print the findings
+  update|upgrade                        Check for updates and install if available                  
+

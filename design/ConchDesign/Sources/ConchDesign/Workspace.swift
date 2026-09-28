@@ -152,7 +152,16 @@ public enum WorkPane: String, Equatable, Sendable, Codable {
     case deliverable
     /// The session's working folder, and what it changed in there.
     case files
-    /// Commands run in that folder, and what they printed.
+    /// Commands run in that folder, and what they printed: the Shell tab.
+    ///
+    /// Called "terminal" until the agent's own terminal became a tab of its own. Two things named Terminal side by side,
+    /// one yours to type in and one the agent's to watch, were bound to be mistaken for each other.
+    case shell
+    /// The session's own Claude Code or Codex, as its terminal shows it: the Terminal tab. View-only.
+    ///
+    /// Takes over the raw value "terminal" that the Shell tab used to be remembered under, so a session last left on the
+    /// old tab opens on this one. That is the one it now means; it is picked from this session's own terminal or not at
+    /// all, never started from what was remembered.
     case terminal
 }
 

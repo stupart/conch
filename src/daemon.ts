@@ -110,6 +110,7 @@ import {
 } from "./listen.ts";
 import { createNarration, NARRATION_QUIET_WITHIN_MS } from "./narration.ts";
 import { readSessionScreen, revealSessionWindow, withUIHold } from "./inject.ts";
+import { createTerminalMirror } from "./terminal-mirror.ts";
 import { adapterFor, transcriptFormatFor } from "./agent-adapter.ts";
 import { renameProviderSession } from "./provider-rename.ts";
 import { classify } from "./commands.ts";
@@ -2579,6 +2580,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     targetForSessionId: sessionActionTarget,
     isDismissed: (sessionId) => dismissedSessionIds.has(sessionId),
   };
+  const terminalMirror = createTerminalMirror();
   const runtimeControlDispatchOptions: RuntimeControlDispatchOptions = {
     historyPage: (message) => records.historyPage({ ...message,
       session: historySessionFor(ownerDeviceId, message.session, { sessions: panelSessions, agents: panelAgents }) }),
@@ -2661,6 +2663,16 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
           : [];
       });
       return resolveAgentInstall({ backend: message.backend, executable }, peers, installVersionCache);
+    },
+    // The Mac app's Terminal tab: the session's own terminal, read without touching focus, only while the tab is on
+    // screen (terminal-mirror.ts). Keyed by the daemon's own record of the session, never a pid the asker supplies.
+    terminalScreen: (message) => terminalMirror.screen(message.sessionId, panelSessions.get(message.sessionId), message.text ? { text: true } : {}),
+    terminalFocus: async (message) => {
+      const focused = await terminalMirror.focus(message.sessionId, panelSessions.get(message.sessionId));
+      log(focused.focused
+        ? `brought ${labelForSessionId(message.sessionId)}'s terminal forward (Terminal tab)`
+        : `couldn't bring ${labelForSessionId(message.sessionId)}'s terminal forward: ${focused.reason ?? "no reason given"}`);
+      return focused;
     },
     start: (message) => launchSession({
       ...message,

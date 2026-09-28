@@ -1,0 +1,34 @@
+          Tell the agent to use the specified directory as its working root                         
+
+      [1m--worktree[0m         
+          Run the session in a new managed Git worktree                                             
+
+      [1m--add-dir[0m <DIR>    
+          Additional directories that should be writable alongside the primary workspace            
+
+  [1m-a[0m, [1m--ask-for-approval[0m <APPROVAL_POLICY>        
+          Configure when the model requires human approval before executing a command               
+
+          Possible values:                        
+          - [1mon-request[0m: The model decides when to ask the user for approval                         
+          - [1mnever[0m:      Never ask for user approval Execution failures are immediately returned to  
+            the model    
+
+      [1m--search[0m           
+          Enable live web search. When enabled, the native Responses `web_search` tool is available 
+          to the model (no per‑call approval)     
+
+      [1m--no-alt-screen[0m    
+          Disable alternate screen mode           
+                         
+          Runs the TUI in inline mode, preserving terminal scrollback history.                      
+
+      [1m--no-daemon[0m        
+          Run without the shared background server, even if it is already running                   
+
+  [1m-h[0m, [1m--help[0m             
+          Print help (see a summary with '-h')    
+
+  [1m-V[0m, [1m--version[0m          
+          Print version  
+

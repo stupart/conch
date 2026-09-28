@@ -108,9 +108,16 @@ final class PermissionCenter: ObservableObject {
                     _ = PermissionCenter.automation(ask: true)
                     await MainActor.run { PermissionCenter.shared.refresh() }
                 }
-            case .accessibility, .screenRecording:
-                // macOS never says these weren't asked; Settings is where they are turned on.
+            case .accessibility:
+                // macOS never says this wasn't asked; Settings is where it is turned on.
                 perform(.openSettings, for: permission, store: store)
+            case .screenRecording:
+                // macOS's own prompt, the once a launch it may show (the canvas's `CanvasCapture.granted`, which also
+                // lists conch in System Settings), and a fresh reading after. The Terminal tab asks this way the first
+                // time a Terminal window needs it, after a press on the tab; its row's reading is never `notAsked`, so
+                // nothing else reaches here. System Settings stays the row's own button, never opened unasked.
+                _ = CanvasCapture.granted()
+                refresh(after: .seconds(1))
             }
         case .reopen:
             // The store's own relaunch: a new conch up before this one quits.
