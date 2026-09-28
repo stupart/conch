@@ -410,8 +410,11 @@ const tmuxPath = Bun.which("tmux");
 describe.skipIf(!tmuxPath)("a real tmux pane", () => {
   const socket = `conch-mirror-test-${process.pid}`;
   const tmux = [tmuxPath!, "-L", socket];
+  let socketPath = "";
   afterAll(() => {
     Bun.spawnSync([...tmux, "kill-server"], { stderr: "ignore", stdout: "ignore" });
+    // tmux leaves its socket file behind; this test's own, named for it, goes too.
+    if (socketPath.endsWith(`/${socket}`)) rmSync(socketPath, { force: true });
   });
 
   test("its colours come back exactly, with its size, from a pane found by process", async () => {
@@ -419,6 +422,7 @@ describe.skipIf(!tmuxPath)("a real tmux pane", () => {
     const draw = String.raw`printf '\033[38;2;215;119;87m\342\234\273 Welcome\033[0m \033[1mbold\033[0m \033[48;2;34;92;43m+ added \033[0m\n\033[36mcyan\033[39m \033[38;5;245mgrey\033[39m\n'; sleep 30`;
     const started = Bun.spawnSync([...tmux, "new-session", "-d", "-s", "mirror", "-x", "90", "-y", "12", "bash", "-c", draw]);
     expect(started.exitCode).toBe(0);
+    socketPath = Bun.spawnSync([...tmux, "display-message", "-p", "#{socket_path}"]).stdout.toString().trim();
     const panePid = Number(Bun.spawnSync([...tmux, "display-message", "-p", "-t", "mirror", "#{pane_pid}"]).stdout.toString().trim());
     expect(panePid).toBeGreaterThan(1);
     const mirror = createTerminalMirror({ ...defaultTerminalMirrorDeps(), tmux });
