@@ -1320,6 +1320,9 @@ public struct ConversationFog: View {
     let notice: String?
     /// With no session to show, what to say instead of the words: "No sessions yet", or that conch isn't running.
     let empty: String?
+    /// A session with no turns to show yet: why, in the transcript's place and the main window's words
+    /// (`ConversationPlaceholder`) — reading its record, couldn't read it, nothing said yet. The reply line stays.
+    let placeholder: String?
     /// The session the voice is reading aloud, when it isn't this one: named beside the header, a click away.
     let speaking: FogSession?
     let onPick: (String) -> Void
@@ -1364,6 +1367,7 @@ public struct ConversationFog: View {
         content: FogContent? = nil,
         notice: String? = nil,
         empty: String? = nil,
+        placeholder: String? = nil,
         speaking: FogSession? = nil,
         onPick: @escaping (String) -> Void = { _ in },
         onPrevious: (() -> Void)? = nil,
@@ -1397,6 +1401,7 @@ public struct ConversationFog: View {
         self.content = content
         self.notice = notice
         self.empty = empty
+        self.placeholder = placeholder
         self.speaking = speaking
         self.onPick = onPick
         self.onPrevious = onPrevious
@@ -1707,6 +1712,17 @@ public struct ConversationFog: View {
             .offset(x: frame.minX, y: frame.minY)
     }
 
+    /// A session's placeholder, where its newest words will come in: the foot of the transcript, or its head hanging from
+    /// the top.
+    private func placeholderLine(_ message: String, width: CGFloat, height: CGFloat, top: Bool) -> some View {
+        Text(message)
+            .font(ConchType.conversationPast)
+            .foregroundStyle(ConchColor.overlayTextSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(width: width, alignment: .leading)
+            .frame(width: width, height: height, alignment: top ? .top : .bottom)
+    }
+
     /// Full screen, the deliverable in a rounded card with a hairline under the button row. The next one crossfades in on
     /// `swap`, the old out soft and a touch large, the new in from a touch small and soft; under Reduce Motion they only
     /// fade. The card itself only fades in and out, so arriving with the panel's own reveal it never zooms inside it.
@@ -1804,9 +1820,15 @@ public struct ConversationFog: View {
     /// up, in from a little below, a beat behind the header. Reduce Motion keeps the dissolve.
     private func words(width: CGFloat, height: CGFloat, top: Bool, fontSize: CGFloat) -> some View {
         ZStack {
-            transcript(width: width, height: height, top: top, fontSize: fontSize)
-                .id(session?.id)
-                .transition(cross)
+            Group {
+                if let placeholder, turns.isEmpty, text.sent == nil {
+                    placeholderLine(placeholder, width: width, height: height, top: top)
+                } else {
+                    transcript(width: width, height: height, top: top, fontSize: fontSize)
+                }
+            }
+            .id(session?.id)
+            .transition(cross)
         }
         .animation(ConchMotion.pop.animation(reduceMotion: reduceMotion).delay(ConchMotion.crossStagger), value: session?.id)
     }
@@ -1916,6 +1938,7 @@ public struct ConversationFog: View {
         if isWorking, lines.last?.fromYou == true { lines.append(.thinking) }
         let flying = text.flight == nil ? nil : lines.last(where: \.fromYou)?.id
         let pinned = text.scroll.pinned
+        let ends = FogTranscriptEnds(oldest: lines.first?.id, newest: lines.last?.id)
         return VStack(alignment: .leading, spacing: 14) {
             ForEach(top ? Array(lines.reversed()) : lines) { line in
                 switch line {
@@ -1939,7 +1962,10 @@ public struct ConversationFog: View {
         .padding(top ? .bottom : .top, 72)
         .frame(width: width, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { text.measured(content: $0) }
+        // With its ends, so older turns read in above the oldest keep the reader where they were (`FogTranscriptEnds`).
+        .onGeometryChange(for: TranscriptMeasure.self) { TranscriptMeasure(height: $0.size.height, ends: ends) } action: {
+            text.measured(content: $0.height, ends: $0.ends)
+        }
         .offset(y: top ? -text.scroll.offset : text.scroll.offset)
         .frame(width: width, height: height, alignment: top ? .top : .bottom)
         .clipped()
@@ -2095,6 +2121,12 @@ extension View {
             .conchElevation(.floating)
         }
     }
+}
+
+/// The transcript's height and its ends, measured together (`FogTextState.measured(content:box:ends:)`).
+private struct TranscriptMeasure: Equatable {
+    let height: CGFloat
+    let ends: FogTranscriptEnds
 }
 
 /// One turn: yours small under "You", replies small but for the newest, which is large and comes in word by word. A

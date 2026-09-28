@@ -44,9 +44,14 @@ public struct FogScroll: Equatable, Sendable {
 
     /// The transcript or its box changed size. Pinned, it stays on the newest line; scrolled away, the reader keeps their
     /// place (the same distance from the oldest line). Never unpins; with nothing left to scroll it is at the newest.
-    public mutating func layout(range next: CGFloat) {
+    ///
+    /// `grewAtOldest`: the change was at the far end — older turns read in from the record above the oldest (or let go
+    /// from there) with the newest line the same. The place is then the same distance from the NEWEST line, which is what
+    /// the offset already is. Kept from the oldest instead, every page that landed moved the reader onto it, still at the
+    /// oldest end, which asked for the page before that: the panel read its way to the start on its own.
+    public mutating func layout(range next: CGFloat, grewAtOldest: Bool = false) {
         let next = max(0, next)
-        offset = pinned ? min(offset, next) : min(max(next - (range - offset), 0), next)
+        offset = pinned || grewAtOldest ? min(offset, next) : min(max(next - (range - offset), 0), next)
         range = next
         if range < 1 {
             offset = 0
@@ -201,6 +206,24 @@ public enum FogReply {
     }
 }
 
+/// The transcript's two ends as laid out: its oldest line and its newest, by id. Measured with its height, so a change
+/// in height is known to be at one end or the other (`FogScroll.layout(range:grewAtOldest:)`).
+public struct FogTranscriptEnds: Equatable, Sendable {
+    public let oldest: String?
+    public let newest: String?
+
+    public init(oldest: String?, newest: String?) {
+        self.oldest = oldest
+        self.newest = newest
+    }
+
+    /// Only the far end moved: the oldest line is another one, and the newest is the same.
+    public func movedAtOldest(from before: FogTranscriptEnds?) -> Bool {
+        guard let before else { return false }
+        return before.oldest != oldest && before.newest == newest
+    }
+}
+
 /// The overlay's words as they move, drawn by `ConversationFog` and stepped by its host on the display's frames: the
 /// transcript's scroll, the newest reply's words coming in, the reply line growing, and a sent message flying in. The
 /// host feeds it the store (`update`), the reader's scrolling and sends; the fog feeds it what it measured.
@@ -227,8 +250,15 @@ public final class FogTextState: ObservableObject {
     private var yours: String?
     private var yoursAtSend: String?
     private var transcript: (content: CGFloat, box: CGFloat) = (0, 0)
+    /// The transcript's ends when its height was last measured.
+    private var ends: FogTranscriptEnds?
     private var lines: (text: String, width: CGFloat, fontSize: CGFloat, count: Int)?
     private var dirty = false
+
+    /// The turns last handed over, by id, oldest first: what the host reads the record around (`PanelHistory`).
+    public private(set) var turnIDs: [String] = []
+    /// The transcript's box as last measured: how much of it shows at once.
+    public var box: CGFloat { transcript.box }
 
     public init() {}
 
@@ -239,16 +269,23 @@ public final class FogTextState: ObservableObject {
         sent = nil
         flight = nil
         yours = nil
+        ends = nil
         changed()
     }
 
     /// The daemon's transcript now. New words in the newest reply queue to come in; your sent message gives way to the
     /// daemon's copy of it.
-    public func update(turns: [ConversationTurn], now: Double) {
+    ///
+    /// `reveals` is false when the newest reply was read rather than heard — from the record, or the transcript's last
+    /// reply, for a session with no live window: it was there already, so a different one shows whole. Only a live window's
+    /// replies come in word by word.
+    public func update(turns: [ConversationTurn], now: Double, reveals: Bool = true) {
+        turnIDs = turns.map(\.id)
         yours = turns.last(where: \.fromYou)?.id
         if sent != nil, yours != yoursAtSend { sent = nil }
         if let reply = turns.last(where: { !$0.fromYou }) {
             let id = reveal.id, count = reveal.starts.count
+            if !reveals, reply.id != id { reveal = WordReveal() }
             reveal.update(id: reply.id, words: WordReveal.words(ConversationFog.plain(reply.text)), now: now)
             if (id != nil && reveal.id != id) || reveal.starts.count > count { scroll.arrived() }
         }
@@ -316,11 +353,17 @@ public final class FogTextState: ObservableObject {
         changed()
     }
 
-    /// The fog measured the transcript's height or its box's.
-    public func measured(content: CGFloat? = nil, box: CGFloat? = nil) {
+    /// The fog measured the transcript's height or its box's; with the height, the transcript's `ends`, which say whether
+    /// the change was at its far end (older turns read in above the oldest).
+    public func measured(content: CGFloat? = nil, box: CGFloat? = nil, ends: FogTranscriptEnds? = nil) {
+        var grewAtOldest = false
+        if let ends {
+            grewAtOldest = ends.movedAtOldest(from: self.ends)
+            self.ends = ends
+        }
         if let content { transcript.content = content }
         if let box { transcript.box = box }
-        scroll.layout(range: transcript.content - transcript.box)
+        scroll.layout(range: transcript.content - transcript.box, grewAtOldest: grewAtOldest)
         changed()
     }
 

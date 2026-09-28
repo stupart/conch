@@ -194,7 +194,10 @@ describe("the Mac app reads recorded history", () => {
     expect(turns).toContain("whole[HistorySnapshot.nativeId(forSnapshotItem: $0.id)] ?? $0.text");
     // Sliced to the function's own end: it used to stop at the next function's doc comment, which left with it.
     const whole = sliceFrom(panels, "private func readWhole(", "\n    }\n");
-    expect(whole).toContain("history.select(session: row.id, branchTip: HistorySnapshot.branchTip(");
+    // Selected through the panel's one door, which it also goes through docked (`follow`).
+    expect(whole).toContain("select(row)");
+    const select = sliceFrom(panels, "private func select(_ row: SessionRow) {", "\n    }\n");
+    expect(select).toContain("history.select(session: row.id, branchTip: HistorySnapshot.branchTip(");
     expect(whole).toContain("HistorySnapshot.wasCut($0.text, cap: 4_000)");
     expect(whole).toContain("history.loadFullBodies(forSnapshotItems: cut)");
     expect(panels).toContain(".onChange(of: panels.isFullScreen) { _, full in if full { readWhole(row) } }");

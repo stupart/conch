@@ -375,6 +375,13 @@ final class HistoryStore: ObservableObject {
         refreshWanted()
     }
 
+    /// The rows on or near screen for a reader with no region to lay them out: the conversation panel's, whose words are
+    /// one flow rather than rows, and which says where it is by position (`PanelHistory.nearby`). The region's own demand:
+    /// their bodies read whole, nearest the middle first, and held while they are near.
+    func showing(_ ids: [String], around center: String?) {
+        show(ids, around: center)
+    }
+
     /// The shown rows' messages that are longer than their preview, nearest the middle first.
     private func refreshWanted() {
         let byID = Dictionary(paging.items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
