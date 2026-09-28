@@ -1097,6 +1097,8 @@ private struct ControlBarHost: View {
     let panels: FloatingPanels
     /// Its ideal size, for the panel to take.
     let onSize: (CGSize) -> Void
+    /// The natural voices' short line, when it matters (`NaturalVoicesNotices.barNews`).
+    @ObservedObject var voices = NaturalVoicesNoticeStore.shared
 
     var body: some View {
         let voice = ConchStatusItem.voiceState(store.state)
@@ -1109,7 +1111,7 @@ private struct ControlBarHost: View {
             ),
             // The next ready item's session, where it is among what is ready, and what the agent asked you to check.
             ready: queue.pill(store.state),
-            news: ConchStatusItem.news(store.state),
+            news: NaturalVoicesNotices.barNews(working: ConchStatusItem.news(store.state), notice: voices.notice),
             onTap: { queue.walk(from: .pill, store: store, panels: panels) }
         )
         // A small gap under the menu bar, and room below for the glass's dropped shadow.

@@ -173,6 +173,7 @@ function voices(options: { build?: (progress: (step: string, at?: { step: number
       own = "good";
     },
     prefetch: async () => {},
+    probeNetwork: async () => true,
     sleep: async () => true,
     freeBytes: options.freeBytes ?? (() => null),
   });
@@ -203,8 +204,9 @@ describe("the natural voices publish their step as numbers", () => {
     expect(h.builds()).toBe(0);
     const waiting = h.statuses.find((status) => status.space);
     expect(waiting).toMatchObject({ state: "setting-up", space: { needs: VOICE_ENV_NEEDS_BYTES, free: 900_000_000 } });
-    expect(h.statuses.at(-1)).toMatchObject({ state: "off", space: { needs: VOICE_ENV_NEEDS_BYTES, free: 900_000_000 } });
-    // Room made, setup's Retry builds them.
+    // It never gives up for want of room (that is never counted): it waits, and says so.
+    expect(h.statuses.at(-1)).toMatchObject({ state: "setting-up", waiting: "space", space: { needs: VOICE_ENV_NEEDS_BYTES, free: 900_000_000 } });
+    // Room made, setup's Retry builds them at once (and so would the watch, by itself).
     free = 50_000_000_000;
     expect(h.manager.retry()).toBe(true);
     await h.manager.settled();

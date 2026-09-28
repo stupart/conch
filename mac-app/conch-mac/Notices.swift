@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import ConchDesign
 import SwiftUI
 
@@ -113,6 +114,10 @@ struct WorkspaceNotices: View {
     // Whatever stopped for want of a macOS permission, with the button that fixes it: a refused keystroke, the mic
     // turned off, the front window read as the app alone (`PermissionNoticeLine`).
     PermissionNoticeLine()
+
+    // The natural voices, only when it matters: setting up or coming back (quiet), stopped for good (one action), back
+    // (briefly). Nothing while they're healthy (`NaturalVoicesNotices`).
+    NaturalVoicesNoticeLine()
 
     // C9b Cut B. Another Mac holds this one's voice and ear: say so,
     // and offer the one control that changes it. Typed sends and
@@ -286,5 +291,126 @@ private struct PluginHintBar: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 7)
         .background(ConchPalette.raised)
+    }
+}
+
+/// The natural voices' calm line (`NaturalVoicesNotices`, ConchDesign), kept for the window's notices and the control bar:
+/// the daemon's published status stepped through the rules, what was dismissed remembered across launches, and the back
+/// line faded on time. One for the app, installed beside the menu bar item.
+@MainActor
+final class NaturalVoicesNoticeStore: ObservableObject {
+    static let shared = NaturalVoicesNoticeStore()
+    static let memoryKey = "conch.naturalVoicesNotice"
+
+    @Published private(set) var notice: NaturalVoicesNotice?
+    /// The daemon's own sentence, for Settings and the line's help.
+    @Published private(set) var detail: String?
+    private var memory: NaturalVoicesNoticeMemory
+    private var report: NaturalVoicesReport?
+    private var subscription: AnyCancellable?
+    private var fade: Task<Void, Never>?
+
+    private init() {
+        memory = UserDefaults.standard.data(forKey: Self.memoryKey)
+            .flatMap { try? JSONDecoder().decode(NaturalVoicesNoticeMemory.self, from: $0) } ?? NaturalVoicesNoticeMemory()
+    }
+
+    func install(store: StateStore) {
+        guard subscription == nil else { return }
+        subscription = store.$state
+            .map { $0?.naturalVoices }
+            .removeDuplicates()
+            .sink { [weak self] report in
+                MainActor.assumeIsolated { self?.update(report) }
+            }
+    }
+
+    func update(_ report: NaturalVoicesReport?) {
+        self.report = report
+        let now = Date().timeIntervalSince1970
+        let step = NaturalVoicesNotices.step(memory, report: report, now: now)
+        remember(step.memory)
+        if notice != step.notice { notice = step.notice }
+        if detail != report?.detail { detail = report?.detail }
+        fade?.cancel()
+        guard let at = NaturalVoicesNotices.nextChange(memory, now: now) else { return }
+        fade = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(0, at - Date().timeIntervalSince1970) * 1_000_000_000) + 50_000_000)
+            guard !Task.isCancelled, let self else { return }
+            self.update(self.report)
+        }
+    }
+
+    /// OK: that line is not shown again until the voices have worked again.
+    func dismiss() {
+        guard let key = notice?.key else { return }
+        remember(NaturalVoicesNotices.dismiss(memory, key: key))
+        notice = nil
+    }
+
+    /// Try again: setup's own Retry for the voices (`setup-retry`), which starts the count of attempts over.
+    func tryAgain() {
+        Task {
+            _ = await SetupDaemon.ask(SetupDaemonRequest(kind: "setup-retry", what: "voices"), timeout: 5, expecting: "setup-ack")
+        }
+    }
+
+    private func remember(_ next: NaturalVoicesNoticeMemory) {
+        guard next != memory else { return }
+        memory = next
+        if let data = try? JSONEncoder().encode(next) { UserDefaults.standard.set(data, forKey: Self.memoryKey) }
+    }
+}
+
+/// One line in the window's notices, in their pattern: an icon, the words, at most one action, and OK for a line that
+/// needs you. Why? opens Settings, where the natural voices' own status and sentence are.
+private struct NaturalVoicesNoticeLine: View {
+    @ObservedObject private var voices = NaturalVoicesNoticeStore.shared
+    @Environment(\.openSettings) private var openSettings
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Group {
+            if let notice = voices.notice {
+                HStack(spacing: 10) {
+                    Image(systemName: notice.tone == .needsYou ? "waveform.slash" : "waveform")
+                        .font(.system(size: 10.5, weight: .medium))
+                    Text(notice.text)
+                        .font(ConchTypography.font(size: 11.5))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .help(voices.detail ?? "")
+                    Spacer(minLength: 8)
+                    if let action = notice.action {
+                        Button(action.title) {
+                            switch action {
+                            case .tryAgain: voices.tryAgain()
+                            case .why: openSettings()
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .font(ConchTypography.font(size: 11, weight: .medium))
+                        .foregroundStyle(ConchPalette.brandCyan)
+                    }
+                    if notice.dismissible {
+                        Button("OK", action: voices.dismiss)
+                            .buttonStyle(.plain)
+                            .font(ConchTypography.font(size: 11, weight: .medium))
+                            .foregroundStyle(ConchPalette.statusQuiet)
+                    }
+                }
+                .foregroundStyle(notice.tone == .needsYou ? ConchPalette.statusWaiting : ConchPalette.textDim)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 7)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(ConchPalette.raised)
+                .transition(.opacity)
+
+                Rectangle()
+                    .fill(ConchPalette.divider)
+                    .frame(height: 1)
+            }
+        }
+        // The back line fades out rather than vanishing.
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.5), value: voices.notice)
     }
 }

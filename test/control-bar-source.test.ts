@@ -495,8 +495,9 @@ test("M3: the control bar leads with the session, with the state beneath it", ()
   expect(lines).toContain("return (ready.label, ready.line)");
   expect(lines).toContain("return detail.isEmpty ? (news ?? state.title, nil) : (detail, news)");
   expect(lines).toContain("return (detail, [state.title, waiting].compactMap { $0 }.joined(separator: \" · \"))");
-  // The host hands it the news.
-  expect(panels).toContain("news: ConchStatusItem.news(store.state),");
+  // The host hands it the news: how many are working, or the natural voices' short line when it matters
+  // (`NaturalVoicesNotices.barNews`, NaturalVoicesNoticeTests).
+  expect(panels).toContain("news: NaturalVoicesNotices.barNews(working: ConchStatusItem.news(store.state), notice: voices.notice),");
 });
 
 /**

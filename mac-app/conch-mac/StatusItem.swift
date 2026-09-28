@@ -36,6 +36,8 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
     static func install(store: StateStore) {
         guard installed == nil else { return }
         installed = ConchStatusItem(store: store)
+        // The natural voices' calm line, for the window's notices and the control bar.
+        NaturalVoicesNoticeStore.shared.install(store: store)
         // After the status item, which registers the defaults that show and hide the panels.
         FloatingPanels.install(store: store)
         // After the panels, whose staged item it follows.

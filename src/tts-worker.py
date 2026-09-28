@@ -109,6 +109,29 @@ def validate_request(value: Any) -> tuple[str, str, str, float, Path]:
     return request_id, text, voice, float(speed), output
 
 
+def take_test_fault(name: str) -> None:
+    """The end-to-end test's hook (scripts/voice-heal-e2e.ts), and nothing else.
+
+    Inert unless CONCH_TEST_HOOKS names a folder that holds a `<name>` file reading
+    `<count> <message>`: then the next <count> calls fail with that message, the way
+    MLX or Metal would (`worker-fault` at start, `synth-fault` per line). The daemon
+    never sets CONCH_TEST_HOOKS; only the test does, for the daemon it starts.
+    """
+    hooks = os.environ.get("CONCH_TEST_HOOKS", "").strip()
+    if not hooks:
+        return
+    path = Path(hooks) / name
+    try:
+        count, _, message = path.read_text(encoding="utf-8").strip().partition(" ")
+        left = int(count)
+    except (OSError, ValueError):
+        return
+    if left <= 0 or not message:
+        return
+    path.write_text(f"{left - 1} {message}\n", encoding="utf-8")
+    raise RuntimeError(message)
+
+
 def host_audio(chunk: Any) -> Any:
     """One Kokoro chunk as mono float32 samples in host memory.
 
@@ -191,6 +214,7 @@ def run() -> int:
     args = parse_args()
     voices = parse_voices(args.voices, args.warmup_voice)
     try:
+        take_test_fault("worker-fault")
         from mlx_audio.tts.utils import load_model
 
         load_started = time.perf_counter()
@@ -257,6 +281,7 @@ def run() -> int:
             continue
 
         try:
+            take_test_fault("synth-fault")
             result = synthesize(model, text, voice, speed, output)
             emit({"type": "result", "id": request_id, "ok": True, **result})
         except BaseException as error:

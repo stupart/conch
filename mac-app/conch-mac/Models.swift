@@ -58,6 +58,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
     let practice: PracticeReport?
     /// Each agent's model and effort choices, and its own defaults (src/session-settings.ts).
     let sessionSettings: SessionSettingsCatalog?
+    /// Where the natural voices stand (src/voice-env.ts): the calm line's source (`NaturalVoicesNoticeStore`).
+    let naturalVoices: NaturalVoicesReport?
 
     struct PreviewRequest: Decodable, Equatable, Sendable {
         let id: String
@@ -114,6 +116,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         case previewRequests
         case practice
         case sessionSettings
+        case naturalVoices
     }
 
     init(
@@ -136,7 +139,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
         showing: Showing? = nil,
         previewRequests: [PreviewRequest] = [],
         practice: PracticeReport? = nil,
-        sessionSettings: SessionSettingsCatalog? = nil
+        sessionSettings: SessionSettingsCatalog? = nil,
+        naturalVoices: NaturalVoicesReport? = nil
     ) {
         self.v = v
         self.ownerDeviceId = ownerDeviceId
@@ -159,6 +163,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         self.previewRequests = previewRequests
         self.practice = practice
         self.sessionSettings = sessionSettings
+        self.naturalVoices = naturalVoices
     }
 
     init(from decoder: Decoder) throws {
@@ -202,6 +207,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         previewRequests = Self.decodeLossyArray(PreviewRequest.self, from: container, forKey: .previewRequests)
         practice = try? container.decodeIfPresent(PracticeReport.self, forKey: .practice)
         sessionSettings = try? container.decodeIfPresent(SessionSettingsCatalog.self, forKey: .sessionSettings)
+        naturalVoices = try? container.decodeIfPresent(NaturalVoicesReport.self, forKey: .naturalVoices)
     }
 
     private static func decodeLossyArray<Element: Decodable>(
@@ -245,6 +251,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
             && practice == other.practice
             // The header's model menu offers what these say.
             && sessionSettings == other.sessionSettings
+            // The natural voices' calm line follows them.
+            && naturalVoices == other.naturalVoices
     }
 }
 

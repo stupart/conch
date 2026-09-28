@@ -1492,7 +1492,8 @@ final class StateStore: ObservableObject {
             showing: sourceState.showing,
             previewRequests: sourceState.previewRequests,
             practice: sourceState.practice,
-            sessionSettings: sourceState.sessionSettings
+            sessionSettings: sourceState.sessionSettings,
+            naturalVoices: sourceState.naturalVoices
         )
         if state?.hasSamePresentation(as: next) != true {
             state = next

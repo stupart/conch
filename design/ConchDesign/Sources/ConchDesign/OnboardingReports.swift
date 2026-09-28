@@ -68,14 +68,39 @@ public struct NaturalVoicesReport: Decodable, Equatable, Sendable {
     /// "prefetch" (Kokoro's own model, after the build) or "elsewhere" (another conch is building them).
     public let stage: String?
     public let space: Space?
+    /// The daemon's own sentence: which step, from where, or why not. What "Why?" shows.
+    public let detail: String?
+    /// Setting up: "first-run" (never ready on this Mac yet) or "repair" (voices that worked, coming back).
+    public let healing: String?
+    /// Setting up: 0–99 across the whole of it.
+    public let percent: Int?
+    /// Setting up and waiting: "network", "space" or "retry".
+    public let waiting: String?
+    /// When it tries again by itself, epoch ms.
+    public let retryAt: Double?
+    /// Off, and why: "choice", "unsupported" or "failed" (self-healing ran out).
+    public let off: String?
+    /// What went wrong last, by kind: "offline", "no-space", "gpu", "env", "model", "unsupported", "other"…
+    public let problem: String?
 
-    public init(state: String, reason: String? = nil, step: Int? = nil, steps: Int? = nil, stage: String? = nil, space: Space? = nil) {
+    public init(
+        state: String, reason: String? = nil, step: Int? = nil, steps: Int? = nil, stage: String? = nil, space: Space? = nil,
+        detail: String? = nil, healing: String? = nil, percent: Int? = nil, waiting: String? = nil, retryAt: Double? = nil,
+        off: String? = nil, problem: String? = nil
+    ) {
         self.state = state
         self.reason = reason
         self.step = step
         self.steps = steps
         self.stage = stage
         self.space = space
+        self.detail = detail
+        self.healing = healing
+        self.percent = percent
+        self.waiting = waiting
+        self.retryAt = retryAt
+        self.off = off
+        self.problem = problem
     }
 }
 
@@ -228,6 +253,8 @@ public enum OnboardingReports {
             default:
                 if report.reason == "needs Apple silicon" {
                     state = .failed("Natural voices need Apple silicon. conch speaks with the Mac's own voice.")
+                } else if report.off == "unsupported" {
+                    state = .failed(NaturalVoicesNotices.unsupportedLine(report.reason))
                 } else if report.reason?.hasPrefix("CONCH_TTS") == true {
                     state = .failed("Off in Settings. conch speaks with the Mac's own voice.")
                 } else if report.reason == "no uv" {

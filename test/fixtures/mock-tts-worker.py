@@ -24,6 +24,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", required=True)
     parser.add_argument("--record", required=True)
     parser.add_argument("--malformed-ready", action="store_true")
+    # Every line fails as Kokoro's inference would: a worker that started and then broke.
+    parser.add_argument("--fail-synth", action="store_true")
+    # Each line takes this long: long enough for another request to arrive while it runs.
+    parser.add_argument("--slow-ms", type=int, default=0)
     return parser.parse_args()
 
 
@@ -84,6 +88,11 @@ def run() -> int:
             os._exit(23)
 
         output = Path(frame["output"])
+        if args.slow_ms:
+            time.sleep(args.slow_ms / 1000)
+        if args.fail_synth:
+            emit({"type": "result", "id": frame["id"], "ok": False, "kind": "inference", "error": "RuntimeError: [METAL] Command buffer execution failed"})
+            continue
         if text == "__write_then_hang__":
             write_wav(output)
             hang()
