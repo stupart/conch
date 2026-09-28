@@ -1697,12 +1697,12 @@ private struct ConversationPane: View {
     /// A session conch merely observes may report none, and a tree rooted at nothing is a
     /// promise the pane cannot keep — the same rule the deliverable pages already follow.
     private var workingFolder: String? {
-        guard let folder = focusedRow?.workFolder, !folder.isEmpty else { return nil }
-        // Not the home folder: a session started there has no project, and a tree of
-        // everything you own beside its first message read as broken (Tyler, 2026-09-24).
-        // With no deliverable either, the conversation takes the whole stage.
-        guard (folder as NSString).standardizingPath != (NSHomeDirectory() as NSString).standardizingPath else { return nil }
-        return folder
+        guard let row = focusedRow else { return nil }
+        // The first folder its agent declared, else where it started; never the home folder itself: a session
+        // started there has no project, and a tree of everything you own beside its first message read as broken
+        // (Tyler, 2026-09-24). A session started in ~ that declared ~/Projects/X shows Files for X. With no folder and
+        // no deliverable, the conversation takes the whole stage. The rule is ConchDesign's, where it is tested.
+        return ConchWorkFolder.pick(cwd: row.cwd, workDirs: row.workDirs, home: NSHomeDirectory())
     }
 
     /// Is there anything to put in the work half at all?
@@ -1801,12 +1801,7 @@ private struct ConversationPane: View {
     /// check the transcript uses: the daemon publishes one conversation at a time, and marking
     /// another session's edits on this session's tree would be a confident lie about work.
     private func changedFiles(for row: SessionRow) -> ConchFileChanges {
-        let conversation = state?.conversations?[row.id] ?? state?.conversation
-        let items = conversation?.sessionId == row.id ? conversation?.items ?? [] : []
-        return ConchFileChanges(
-            changed: items.compactMap { $0.change?.path },
-            relativeTo: row.workFolder ?? ""
-        )
+        row.changedFiles(in: state)
     }
 
     /// The work half's content: the files, or the deliverable.
@@ -1825,7 +1820,9 @@ private struct ConversationPane: View {
             InlineReviewView(
                 item: selectedReview,
                 onOpenInPlace: openDeliverableInPlace,
-                liveAddress: $deliverableAddress
+                liveAddress: $deliverableAddress,
+                // A folder deliverable's tree marks what this session changed, as the Files tab does.
+                changed: changedFiles(for: row)
             )
             // Only the WEB pane publishes an address, but this state belongs to the pane, which
             // outlives the deliverable it was showing. So opening a web deliverable and then

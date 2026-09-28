@@ -46,7 +46,7 @@ https://brew.sh rather than trying to install Homebrew yourself.
 - **Speak** — `conch_speak {text}` says something aloud in conch's voice, up to 600 characters and one at a time. Use it to confirm an action or read a short answer the user asked for; do not repeat your reply or narrate progress.
 - **Answer from a transcript** — `conch_transcript_tail {session}` gives you the tail of a session's last reply, with the id and label of the session it read, so you can answer "did the tests pass?" without switching to it.
 - **Publish a result for the user to inspect** —
-  `review_to_front {summary, link?, kind?, key?, scene?}`. *Publishing results*
+  `review_to_front {summary, link?, kind?, key?, focus?, scene?}`. *Publishing results*
   above says when; this is how.
 
   **What the user sees.** conch files the result on your session in the Mac app
@@ -62,17 +62,31 @@ https://brew.sh rather than trying to install Homebrew yourself.
   - a design or render → the image (`/tmp/hero-v3.png`)
   - a document or spec → the file (`docs/proposal.md`, a PDF)
   - a change → a rendered diff or the file you changed
+  - a set of files or a structure you created or changed (a new module layout,
+    generated assets) → the folder, with `focus` on the paths to look at
   - a build, a chart, a recording → the artifact itself
 
   **What kind of thing it is.** `kind` is one of `page` (a local html file),
-  `image`, `video`, `audio`, `pdf`, `markdown`, `text`, `url` (a live web page
-  or dev server), `app` (a Mac app window or state), `simulator` (the iOS
-  Simulator or a device build), `terminal`, `design` (Figma and the like),
-  `document` (Keynote, Word, Pages and the like) or `other`. Omit it and conch
-  reads it off the link: the extension, `url` for http(s), `design` for
+  `image`, `video`, `audio`, `pdf`, `markdown`, `text`, `folder` (a directory,
+  shown as its file tree), `url` (a live web page or dev server), `app` (a Mac
+  app window or state), `simulator` (the iOS Simulator or a device build),
+  `terminal`, `design` (Figma and the like), `document` (Keynote, Word, Pages
+  and the like) or `other`. Omit it and conch reads it off the link: the
+  extension, `folder` for a directory, `url` for http(s), `design` for
   figma.com. `app`, `simulator`, `terminal`, `design` and `other` may go without
   a link; the summary then says where to look ("the onboarding flow is open in
   the Simulator, on the second screen").
+
+  **Folders.** Link a folder to show what is in it: conch draws its file tree
+  on the Mac, in its panel and window, with the files your session changed
+  marked, and a click on a file opens it there. `focus` names up to 12 paths
+  inside the folder to point at, relative to it or absolute inside it
+  (`focus: ["src/setup.ts", "test/"]`); the tree opens expanded to them and
+  marks them. Each must exist and stay inside the folder: no `..`, no symlink
+  out, at most 200 characters each and 1024 bytes in all. Only the folder and
+  these paths are published, never a listing, so the phone shows the folder's
+  name and the focus paths and says to open it on the Mac. The folder is the
+  artifact: publish it again as its next version.
 
   **Versions.** Each publication is a filing with its own `id`. Filings of the
   same artifact are its versions, numbered from 1. The artifact is the link (a
@@ -149,12 +163,14 @@ https://brew.sh rather than trying to install Homebrew yourself.
   Codex thread is verified by the thread id Codex sends with each call; an
   older Codex that sends none, from an app-server hosting many threads under
   one process, is not. `link` must be an
-  http(s) URL or an existing, non-executable file path; a relative path is
-  resolved to an absolute path against your cwd before it is sent, so the file
-  you checked is the file the apps open. A file is sent to the phone, so it must
-  sit under your cwd or a temp folder (`/tmp`), and not be hidden, in a hidden
-  folder (`~/.ssh`, `~/.config`, `.env`; a repo's `.worktrees` is fine), or a
-  key or certificate. If the tool isn't available to you or refuses you as
+  http(s) URL, an existing, non-executable file path, or a folder; a relative
+  path is resolved to an absolute path against your cwd before it is sent, so
+  the file you checked is the file the apps open. A file is sent to the phone,
+  so it must sit under your cwd or a temp folder (`/tmp`), and not be hidden,
+  in a hidden folder (`~/.ssh`, `~/.config`, `.env`; a repo's `.worktrees` is
+  fine), or a key or certificate. A folder must sit in the same places and not
+  be hidden, and must not be your home folder itself or a package (an `.app`,
+  a document saved as a bundle). If the tool isn't available to you or refuses you as
   unverified, end your final reply with its own line instead: `conch:review <one-line spoken summary> | <link-or-path>`.
 - **Auto / manual** — `conch_mode {action, session?, scope?}` uses `pause` for lossless manual mode and `resume` for auto read-and-listen mode. Without `session` or `scope` it switches only YOUR session; `session` names another one. Switching every session at once — the whole daemon, what the user's `p` key and `conch pause` do — needs `scope: "all"` explicitly, and only when the user asked for exactly that. A `resume` from an agent is refused while the user put conch in manual themselves (the `p` key, the Mac's toggle, `conch pause`) — only a person undoes a person's pause, and a `conch_speak` is held then too: not spoken and not queued, and its result carries `held` saying so.
 - **Rename** — `conch_rename {session, label}` gives a session a name the user actually uses ("call that one 'the api work'").
@@ -179,7 +195,8 @@ Do not retry the same call; do the alternative, or tell the user in one line.
 
 - `review_to_front` naming **another session's** artifact — omit `session`; you may only surface your own work.
 - `review_to_front` from a caller conch **cannot verify** — leave the result in your reply, or use the `conch:review` line.
-- `review_to_front` with a link that is not an http(s) URL or an existing, **non-executable** regular file — a directory, a missing file, a script, a `file://` or `javascript:` URL — or a file **outside your cwd and the temp folder**, hidden, or a key or certificate.
+- `review_to_front` with a link that is not an http(s) URL, an existing, **non-executable** regular file or a folder — a missing file, a script, a `file://` or `javascript:` URL — or a file **outside your cwd and the temp folder**, hidden, or a key or certificate; or a folder that is outside them, hidden, a package, or your home folder.
+- `review_to_front` with a **folder** link and a `kind` other than `folder`, `kind: "folder"` without a folder link, or `focus` without a folder link, or a `focus` path that is missing, has a `..` part, leads out of the folder (a symlink too), names the folder itself, or is over the limits in *Folders* — the refusal names the path (`focus[1]`).
 - `review_to_front` with a `kind` that is not one of the kinds above, or a
   kind that needs a link (`image`, `page`, `url`…) without one, or a `key`
   over 200 characters.

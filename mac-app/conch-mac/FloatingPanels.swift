@@ -1535,8 +1535,13 @@ private struct PanelContent: View {
     @State private var address: String?
 
     var body: some View {
-        InlineReviewView(item: item, onOpenInPlace: openWhereItLives, liveAddress: $address)
+        InlineReviewView(item: item, onOpenInPlace: openWhereItLives, liveAddress: $address, changed: changed)
             .environmentObject(store)
+    }
+
+    /// What its session changed, for a folder's tree to mark as the window's does (`SessionRow.changedFiles`).
+    private var changed: ConchFileChanges {
+        store.state?.row(item.rowID)?.changedFiles(in: store.state) ?? ConchFileChanges(changed: [], relativeTo: "")
     }
 
     private func openWhereItLives() {

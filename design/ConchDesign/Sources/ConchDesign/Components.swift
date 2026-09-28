@@ -758,8 +758,15 @@ public enum ReviewScene: Equatable {
     }
 
     /// The deliverable kinds (src/deliverables.ts) the panel shows inside itself, in the side panel's own renderers
-    /// (ReviewView.swift): a page, a document, a picture, a video, a sound, a live url.
-    static let panelKinds: Set<String> = ["page", "markdown", "text", "image", "pdf", "video", "audio", "url"]
+    /// (ReviewView.swift): a page, a document, a picture, a video, a sound, a live url, a folder's tree.
+    static let panelKinds: Set<String> = ["page", "markdown", "text", "image", "pdf", "video", "audio", "url", "folder"]
+
+    /// A deliverable only conch can show as it was published, so it opens in the panel from anywhere, turning the panel
+    /// on if it has to, rather than in its own app: one with marks (drawn only where conch shows the work), and a folder,
+    /// whose tree with what the agent pointed at (`focus`) is conch's; Finder would show the folder and none of it.
+    public static func opensOnlyInConch(deliverable: String?, marked: Bool) -> Bool {
+        marked || deliverable == "folder"
+    }
     /// The same kinds by a file's extension, src/deliverables.ts's table, for a deliverable filed without one.
     static let panelExtensions: Set<String> = [
         "html", "htm", "png", "jpg", "jpeg", "gif", "webp", "svg", "heic", "tiff", "mp4", "mov", "m4v", "webm",

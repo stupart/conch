@@ -24,6 +24,10 @@ struct ReviewItem: Identifiable, Equatable {
     let artifact: String?
     /// What the agent drew over it (`scene.marks`), for the canvas to draw where it shows (`AgentInkController`).
     let marks: [AgentMark]
+    /// What kind of thing it is, as the daemon filed it (src/deliverables.ts); nil from an older daemon.
+    let kind: String?
+    /// A folder deliverable's paths to point at, relative to the folder (`focus`); empty for anything else.
+    let focus: [String]
 
     init?(row: SessionRow) {
         guard let review = row.review else {
@@ -45,11 +49,30 @@ struct ReviewItem: Identifiable, Equatable {
         viewedAt = review.viewedAt
         artifact = review.artifact
         marks = review.marks
+        kind = review.kind
+        focus = review.focus
         // The identity the daemon minted when it filed this deliverable, which it carries
         // unchanged through every later event — so this id moves only when a NEWER deliverable
         // replaces this one. Everything keyed on it (the pane, the row pulse, the
         // notification) relies on that. An older daemon sends none and the old key stands in.
         id = ReviewIdentity.key(published: review.id, sessionId: row.id, filedAt: review.at)
+    }
+}
+
+extension SessionRow {
+    /// What this session changed, resolved against its own folder: what a tree of its files marks.
+    ///
+    /// Read from the conversation the daemon published FOR THIS ROW, with the same session
+    /// check the transcript uses: the daemon publishes one conversation at a time, and marking
+    /// another session's edits on this session's tree would be a confident lie about work.
+    /// One rule for the Files tab and a folder deliverable, in the window and in the panel.
+    func changedFiles(in state: PublishedState?) -> ConchFileChanges {
+        let conversation = state?.conversations?[id] ?? state?.conversation
+        let items = conversation?.sessionId == id ? conversation?.items ?? [] : []
+        return ConchFileChanges(
+            changed: items.compactMap { $0.change?.path },
+            relativeTo: workFolder ?? ""
+        )
     }
 }
 
@@ -63,12 +86,15 @@ struct InlineReviewView: View {
     /// opened the FILED link while the arrow opened the live one. That is the exact
     /// disagreement this change exists to delete, rebuilt on a different control.
     @Binding var liveAddress: String?
+    /// What the session changed, for a folder deliverable's tree to mark as the Files tab does (`SessionRow.changedFiles`).
+    var changed = ConchFileChanges(changed: [], relativeTo: "")
 
     @State private var isWebLoading = false
 
     var body: some View {
         ReviewSurface(
             item: item,
+            changed: changed,
             // The arrow OUT, not a bigger box. This control used to swap between filling the
             // conch window and sharing it, which meant the deliverable had no way to reach the
             // thing it actually is — a page in a browser, a file in its own app. Tyler: "maybe
@@ -99,6 +125,7 @@ struct InlineReviewView: View {
 
 private struct ReviewSurface: View {
     let item: ReviewItem
+    let changed: ConchFileChanges
     let actionSymbol: String
     let actionHelp: String
     let actionAccessibilityLabel: String
@@ -109,7 +136,21 @@ private struct ReviewSurface: View {
     var body: some View {
         VStack(spacing: 0) {
             ZStack(alignment: .top) {
-                if let link = item.link {
+                if let link = item.link, case let .folder(folder) = DeliverableSource(link: link) {
+                    // A folder is its tree: the Files tab's own, rooted at the folder the session published, with what
+                    // it changed marked and what the agent pointed at open and marked (`focus`). Keyed on the version,
+                    // so the next one opens on its own focus rather than inheriting this one's open folders.
+                    WorkspaceFilesView(
+                        root: folder.path,
+                        rowID: item.rowID,
+                        changed: changed,
+                        focus: item.focus,
+                        title: folder.lastPathComponent
+                    )
+                    .id(item.id)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .onAppear { isWebLoading = false }
+                } else if let link = item.link {
                     ReviewContent(
                         link: link,
                         rowID: item.rowID,
@@ -191,11 +232,15 @@ private struct ReviewSurface: View {
 /// tree is exactly the same act as opening a deliverable, and there is no second viewer to
 /// keep in step with the first.
 struct WorkspaceFilesView: View {
-    /// The session's working folder. Nothing is drawn above it: this is a session's workspace,
-    /// not a file browser, and the folder it runs in is the whole of it.
+    /// The session's working folder, or a folder it published. Nothing is drawn above the Files tab's: this is a
+    /// session's workspace, not a file browser, and the folder it runs in is the whole of it. A folder deliverable is
+    /// named above its tree (`title`), since it is one thing the session made rather than where it works.
     let root: String
     let rowID: String
     let changed: ConchFileChanges
+    /// A folder deliverable's paths to point at, relative to `root`: opened and marked on first draw (`ConchFileFocus`).
+    var focus: [String] = []
+    var title: String?
 
     /// Folders read once, when opened, and kept.
     ///
@@ -212,6 +257,8 @@ struct WorkspaceFilesView: View {
     private var rows: [ConchFileRow] {
         ConchFileTree.rows(root: root, listings: listings, expanded: expanded)
     }
+
+    private var pointedAt: ConchFileFocus { ConchFileFocus(focus: focus, relativeTo: root) }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -257,22 +304,18 @@ struct WorkspaceFilesView: View {
         }
     }
 
+    /// The tree itself is ConchDesign's (`ConchFileTreeRail`), in this window's type.
     private var rail: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(rows) { row in
-                    FileRowView(
-                        row: row,
-                        isSelected: selected == row.entry.path,
-                        isOpen: expanded.contains(row.entry.path),
-                        isChanged: changed.changed(row.entry),
-                        holdsChanges: changed.contains(row.entry),
-                        action: { pick(row.entry) }
-                    )
-                }
-            }
-            .padding(.vertical, ConchSpace.x1)
-        }
+        ConchFileTreeRail(
+            rows: rows,
+            selected: selected,
+            expanded: expanded,
+            changed: changed,
+            focus: pointedAt,
+            title: title,
+            font: { ConchTypography.font(size: $0, weight: $1) },
+            onPick: pick
+        )
     }
 
     private var nothingPicked: some View {
@@ -311,6 +354,28 @@ struct WorkspaceFilesView: View {
     private func loadRoot() {
         guard !root.isEmpty else { return }
         load(ConchFileTree.standardized(root))
+        openFocus()
+    }
+
+    /// What the agent pointed at, on screen on first draw: the folders on the way to each focus path open (and a focused
+    /// folder itself), each listed off the main thread like any opened folder, and the first focused file in the viewer.
+    /// Asked of the disk once, here, never from `body`.
+    private func openFocus() {
+        let focus = pointedAt
+        guard !focus.isEmpty else { return }
+        Task.detached(priority: .userInitiated) {
+            let isDirectory = { (path: String) -> Bool in
+                var directory: ObjCBool = false
+                return FileManager.default.fileExists(atPath: path, isDirectory: &directory) && directory.boolValue
+            }
+            let open = focus.expanded(isDirectory: isDirectory)
+            let first = focus.firstFile(isDirectory: isDirectory, exists: { FileManager.default.fileExists(atPath: $0) })
+            await MainActor.run {
+                expanded.formUnion(open)
+                for folder in open { load(folder) }
+                if selected == nil { selected = first }
+            }
+        }
     }
 
     /// Listed off the main thread, because a cold folder on a network or a spinning disk takes
@@ -321,81 +386,6 @@ struct WorkspaceFilesView: View {
             let children = ConchFileTree.children(of: directory)
             await MainActor.run { listings[directory] = children }
         }
-    }
-}
-
-/// One line of the tree.
-private struct FileRowView: View {
-    let row: ConchFileRow
-    let isSelected: Bool
-    let isOpen: Bool
-    let isChanged: Bool
-    let holdsChanges: Bool
-    let action: () -> Void
-
-    @State private var isHovered = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                // The chevron turns rather than swapping glyph: one control that moves is
-                // easier to follow than two that replace each other. `pop` because the tokens
-                // say small things bounce more.
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(ConchPalette.textFaint)
-                    .rotationEffect(.degrees(isOpen ? 90 : 0))
-                    .animation(ConchMotion.pop.animation(reduceMotion: reduceMotion), value: isOpen)
-                    .frame(width: 10)
-                    .opacity(row.entry.isDirectory ? 1 : 0)
-
-                Image(systemName: row.entry.isDirectory ? "folder" : "doc")
-                    .font(.system(size: 10))
-                    .foregroundStyle(isChanged ? ConchPalette.statusReview : ConchPalette.textFaint)
-                    .frame(width: 13)
-
-                Text(row.entry.name)
-                    .font(ConchTypography.font(size: 11.5, weight: isChanged ? .medium : .regular))
-                    .foregroundStyle(isChanged || isSelected ? ConchPalette.textPrimary : ConchPalette.textDim)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-
-                Spacer(minLength: 4)
-
-                // Two strengths, on purpose. A file the session edited is the claim; a folder
-                // merely CONTAINING one is the route to it, and must not shout as loudly or
-                // every folder from the root down reads as edited.
-                if isChanged || holdsChanges {
-                    Circle()
-                        .fill(ConchPalette.statusReview)
-                        .opacity(isChanged ? 1 : 0.35)
-                        .frame(width: 5, height: 5)
-                        .accessibilityHidden(true)
-                }
-            }
-            .padding(.leading, ConchSpace.x2 + CGFloat(row.depth) * ConchSpace.x3)
-            .padding(.trailing, ConchSpace.x2)
-            .frame(height: 22)
-            .background(
-                RoundedRectangle(cornerRadius: ConchRadius.small, style: .continuous)
-                    .fill(isSelected ? ConchPalette.selection : (isHovered ? ConchPalette.hover : .clear))
-                    .padding(.horizontal, ConchSpace.x1)
-            )
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { isHovered = $0 }
-        .help(row.entry.path)
-        .accessibilityLabel(accessibilityLabel)
-    }
-
-    private var accessibilityLabel: String {
-        var said = row.entry.name
-        if row.entry.isDirectory { said += isOpen ? ", open folder" : ", folder" }
-        if isChanged { said += ", changed by this session" }
-        else if holdsChanges { said += ", holds changed files" }
-        return said
     }
 }
 
@@ -536,9 +526,11 @@ private struct ReviewContent: View {
                 .onAppear {
                     isWebLoading = false
                 }
-        case let .unsupported(url):
+        case let .unsupported(url), let .folder(url):
             // A limitation stated plainly, not WebKit's "Frame load
-            // interrupted" — which looked like conch had broken.
+            // interrupted" — which looked like conch had broken. A folder reaches
+            // here only as a picked file, which the tree never picks; its tree is
+            // `ReviewSurface`'s to draw.
             VStack(spacing: 10) {
                 Image(systemName: url.hasDirectoryPath ? "folder" : "doc.zipper")
                     .font(.system(size: 22, weight: .regular))
@@ -930,6 +922,8 @@ private struct DeliverableLoadingLine: View {
 }
 
 enum DeliverableSource: Equatable {
+    /// A folder: shown as its tree (`WorkspaceFilesView`), a folder deliverable's own renderer.
+    case folder(URL)
     case image(URL)
     case video(URL)
     case pdf(URL)
@@ -988,10 +982,11 @@ enum DeliverableSource: Equatable {
         // A FOLDER is a real thing to hand over — Tyler filed a review pointing
         // at /tmp/deliverable-shots and got nothing, because a directory has no
         // extension, fell through to the web view, and WebKit refused it. It is
-        // not missing and it is not broken; there is simply nothing to render,
-        // and the useful action is to open it.
+        // its tree now (kind `folder`). A package is not a folder of work, and
+        // opening one launches it: it stays a thing to reveal in Finder.
         if isDirectory.boolValue {
-            self = .unsupported(localURL)
+            let packaged = NSWorkspace.shared.isFilePackage(atPath: localURL.path)
+            self = packaged ? .unsupported(localURL) : .folder(localURL)
             return
         }
         switch localURL.pathExtension.lowercased() {

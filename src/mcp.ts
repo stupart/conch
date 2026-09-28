@@ -39,6 +39,7 @@ import {
   checkReviewLink,
   checkReviewScene,
   markImagesRefusal,
+  resolveReviewFocus,
   REVIEW_INSPECT_MAX,
   REVIEW_MARK_FRAME_MAX,
   REVIEW_MARK_KINDS,
@@ -59,6 +60,10 @@ import {
   DELIVERABLE_KINDS,
   deliverableFacts,
   deliverableKindRefusal,
+  FOCUS_MAX,
+  FOCUS_MAX_BYTES,
+  FOCUS_PATH_MAX,
+  folderRefusal,
   isDeliverableKind,
   LINKLESS_DELIVERABLE_KINDS,
 } from "./deliverables.ts";
@@ -340,7 +345,14 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
           kind: {
             type: "string",
             enum: DELIVERABLE_KINDS,
-            description: `Optional. What the user will look at; inferred from the link when omitted. page is a local html file, url a live web page or dev server, app a Mac app window, simulator the iOS Simulator or a device build, design Figma and the like, document Keynote, Word, Pages and the like. Only ${LINKLESS_DELIVERABLE_KINDS.join(", ")} may omit link; the summary then says where to look.`,
+            description: `Optional. What the user will look at; inferred from the link when omitted. page is a local html file, url a live web page or dev server, folder a directory shown as its file tree (inferred when link is a folder), app a Mac app window, simulator the iOS Simulator or a device build, design Figma and the like, document Keynote, Word, Pages and the like. Only ${LINKLESS_DELIVERABLE_KINDS.join(", ")} may omit link; the summary then says where to look.`,
+          },
+          focus: {
+            type: "array",
+            minItems: 1,
+            maxItems: FOCUS_MAX,
+            items: { type: "string", minLength: 1 },
+            description: `Optional, for a folder link only: up to ${FOCUS_MAX} paths inside the folder to point at, relative to it or absolute inside it, e.g. ["src/setup.ts", "test/"]. The tree opens expanded to them and marks them. Each must exist and stay inside the folder (no .., no symlink out); at most ${FOCUS_PATH_MAX} characters each and ${FOCUS_MAX_BYTES} bytes in all. Only these paths are published, never a listing.`,
           },
           key: {
             type: "string",
@@ -906,6 +918,7 @@ interface HeldDeliverable {
   kind?: string;
   summary: string;
   link?: string;
+  focus?: string[];
   at?: number;
   viewedAt?: number;
 }
@@ -1391,6 +1404,7 @@ export function createMcpToolHandlers(
           ...(one.kind ? { kind: one.kind } : {}),
           summary: one.summary,
           ...(one.link ? { link: one.link } : {}),
+          ...(Array.isArray(one.focus) && one.focus.length ? { focus: one.focus } : {}),
           ...(one.at !== undefined ? { at: one.at } : {}),
           ...(one.viewedAt !== undefined ? { viewedAt: one.viewedAt } : {}),
           superseded: held.slice(index + 1).some((later) => artifactOf(later) === artifactOf(one)),
@@ -1428,9 +1442,9 @@ export function createMcpToolHandlers(
     async review_to_front(argumentsValue, meta) {
       // Accepted, refused or failed, and each says which. A refusal names its
       // reason and nothing reaches the daemon.
-      const { summary, truncatedFrom, link, scene, kind, key, session } = await (async () => {
+      const { summary, truncatedFrom, link, scene, kind, key, focus, session } = await (async () => {
         const argumentsObject = toolArguments(argumentsValue);
-        allowOnly(argumentsObject, ["summary", "link", "kind", "key", "session", "scene"]);
+        allowOnly(argumentsObject, ["summary", "link", "kind", "key", "session", "scene", "focus"]);
         const cleaned = sanitizeReviewSummary(requiredString(argumentsObject, "summary"), Infinity);
         if (!cleaned) throw new ToolInputError("summary must be a non-empty string");
         const scene = Object.hasOwn(argumentsObject, "scene")
@@ -1455,6 +1469,12 @@ export function createMcpToolHandlers(
         // which resolved it against its own cwd and previewed a missing file.
         const checked = rawLink === undefined ? undefined : await checkReviewLink(rawLink, process.cwd());
         if (checked && !checked.ok) throw new ToolInputError(checked.reason);
+        const hasFocus = Object.hasOwn(argumentsObject, "focus");
+        const mismatch = folderRefusal({ kind, isFolder: checked?.ok === true && checked.folder === true, hasFocus });
+        if (mismatch) throw new ToolInputError(mismatch);
+        // Inside the folder on the disk as it is now, and published relative to it: never a listing.
+        const focus = hasFocus && checked?.ok ? await resolveReviewFocus(checked.link, argumentsObject.focus) : undefined;
+        if (focus && !focus.ok) throw new ToolInputError(focus.reason);
         const images = await markImagesRefusal(scene?.ok ? scene.scene : undefined, process.cwd());
         if (images) throw new ToolInputError(images);
         return {
@@ -1464,6 +1484,7 @@ export function createMcpToolHandlers(
           scene: scene?.scene,
           kind,
           key,
+          focus: focus?.ok ? focus.focus : undefined,
           session,
         };
       })().catch((error) => {
@@ -1473,7 +1494,14 @@ export function createMcpToolHandlers(
       // What the daemon will file, computed by the same rules it files with, so the agent gets
       // its handles back from a send that has no reply (`sendToDaemon` is fire-and-forget).
       const at = dependencies.now();
-      const review = { summary, ...(link ? { link } : {}), ...(scene ? { scene } : {}), ...(kind ? { kind } : {}), ...(key ? { key } : {}) };
+      const review = {
+        summary,
+        ...(link ? { link } : {}),
+        ...(scene ? { scene } : {}),
+        ...(kind ? { kind } : {}),
+        ...(key ? { key } : {}),
+        ...(focus ? { focus } : {}),
+      };
       const facts = deliverableFacts(review);
       // ponytail: the version is predicted from the published state by the daemon's own rule
       // (`nextVersion`); a publication still queued behind speech isn't published yet, and the
@@ -1513,6 +1541,7 @@ export function createMcpToolHandlers(
         kind: facts.kind,
         summary,
         ...(link ? { link } : {}),
+        ...(focus ? { focus } : {}),
         ...(scene ? { scene } : {}),
         ...(truncatedFrom === undefined
           ? {}

@@ -24,7 +24,7 @@ import {
 import { adapterForTranscript, inputBoxHoldsWords, transcriptFormatFor } from "./agent-adapter.ts";
 import { injectProviderCommand as providerCommand, isProviderCommandLine } from "./provider-rename.ts";
 import { classifyReadingGap, parseNameAddress, wordOverlapRatio } from "./commands.ts";
-import { checkReviewLink, markImagesRefusal, lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince, transcriptMark, promptSince } from "./snippet.ts";
+import { checkReviewLink, markImagesRefusal, resolveReviewFocus, lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince, transcriptMark, promptSince } from "./snippet.ts";
 import {
   lastAssistantReply,
   latestAnswerableQuestion,
@@ -38,6 +38,7 @@ import {
   type WindowIdentity,
 } from "./conversation.ts";
 import { isWindowKey } from "./window-key.ts";
+import { folderRefusal } from "./deliverables.ts";
 import { deadTarget, type DeadTarget } from "./dead-target.ts";
 import { clipboardFallbackError } from "./app-errors.ts";
 import { recordTelemetry } from "./telemetry.ts";
@@ -972,15 +973,33 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
    * and the `conch:review` marker already pass. The socket checked only that a link was a
    * string, and it is not only the MCP server's, so a raw write could file `/etc/hosts` for the
    * phone to fetch. Checked against the folder the daemon knows the session by, not the one the
-   * event claims. The link as checked (absolute), undefined for none, null when refused.
+   * event claims. The link as checked (absolute), and whether it is a folder (kind `folder`, its tree); undefined for
+   * none, null when refused. A folder link with another kind said for it is refused here too (`folderRefusal`).
    */
-  async function vettedReviewLink(event: TurnEvent): Promise<string | undefined | null> {
+  async function vettedReviewLink(event: TurnEvent): Promise<{ link: string; folder: boolean } | undefined | null> {
     const link = event.review?.link;
     if (link === undefined) return undefined;
     const checked = await checkReviewLink(link, deps.window(event.sessionId)?.cwd ?? event.cwd ?? tmpdir());
-    if (checked.ok) return checked.link;
-    log(`refused a deliverable link from "${event.label}": ${checked.reason}`);
-    recordDaemonError("review-link", `Refused a deliverable's link: ${checked.reason}`, event.sessionId, { link });
+    const reason = !checked.ok
+      ? checked.reason
+      : folderRefusal({ kind: event.review?.kind, isFolder: checked.folder === true, hasFocus: event.review?.focus !== undefined });
+    if (checked.ok && !reason) return { link: checked.link, folder: checked.folder === true };
+    log(`refused a deliverable link from "${event.label}": ${reason}`);
+    recordDaemonError("review-link", `Refused a deliverable's link: ${reason}`, event.sessionId, { link });
+    return null;
+  }
+
+  /**
+   * A folder deliverable's `focus`, resolved on the disk again (`resolveReviewFocus`): the socket checked only its shape,
+   * and the socket is not only the MCP server's. The paths as filed, undefined for none, null when refused.
+   */
+  async function vettedFocus(event: TurnEvent, folder: string | undefined): Promise<string[] | undefined | null> {
+    const focus = event.review?.focus;
+    if (focus === undefined) return undefined;
+    const resolved = folder ? await resolveReviewFocus(folder, focus) : { ok: false as const, reason: "focus needs a folder link" };
+    if (resolved.ok) return resolved.focus;
+    log(`refused a deliverable's focus from "${event.label}": ${resolved.reason}`);
+    recordDaemonError("review-focus", `Refused a deliverable's focus: ${resolved.reason}`, event.sessionId);
     return null;
   }
 
@@ -1009,13 +1028,22 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
   async function publishReview(event: TurnEvent): Promise<void> {
     const { sessionId, label } = event;
     if (!sessionId || !event.review) return;
-    const link = await vettedReviewLink(event);
-    if (link === null || !(await vettedMarkImages(event))) return;
+    const vetted = await vettedReviewLink(event);
+    if (vetted === null || !(await vettedMarkImages(event))) return;
+    const focus = await vettedFocus(event, vetted?.folder ? vetted.link : undefined);
+    if (focus === null) return;
     const at = eventTimestamp(event.eventAt);
     const prior = sessionStates.get(sessionId);
     // A replayed or reordered older publication never displaces a newer one.
     if (prior?.review && prior.review.at > at) return;
-    const review = fileReview(sessionId, { ...event.review, ...(link ? { link } : {}) }, at, prior?.reviews, prior?.versions);
+    const { focus: _asSent, ...sent } = event.review;
+    const review = fileReview(
+      sessionId,
+      { ...sent, ...(vetted ? { link: vetted.link } : {}), ...(focus ? { focus } : {}) },
+      at,
+      prior?.reviews,
+      prior?.versions,
+    );
     // No latch yet: the oldest-truth latch a restored review gets
     // (`restoreReviews`), so the registry or the next hook decides status.
     const held = carriedReviews(prior?.reviews, review);
@@ -1461,8 +1489,8 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     // A marker's review keeps its summary when its link is refused, as the hook's own check does.
     if (event.type === "turn-end" && event.review?.link !== undefined) {
       const { link: _unchecked, ...rest } = event.review;
-      const link = await vettedReviewLink(event);
-      event.review = link ? { ...rest, link } : rest;
+      const vetted = await vettedReviewLink(event);
+      event.review = vetted ? { ...rest, link: vetted.link } : rest;
     }
     if (event.type === "turn-end" && !setSessionState(
       event.sessionId,

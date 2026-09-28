@@ -1,6 +1,6 @@
 import type { AnswerKey } from "../src/agent-adapter.ts";
 import { afterAll, describe, expect, test, setSystemTime } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, type Config } from "../src/config.ts";
@@ -2180,6 +2180,44 @@ describe("the daemon checks a deliverable's link itself", () => {
       expect(h.ledger.sessionStates.get("s1")?.review).toBeUndefined();
       expect(h.errors.map(([operation, , sessionId]) => [operation, sessionId])).toEqual([["review-marks", "s1"]]);
       expect(String(h.errors[0]![1])).toContain("scene marks[0] frame.image ");
+    });
+  });
+
+  // A folder deliverable: the daemon runs the tool's folder and focus checks itself, on the disk as it is now.
+  test("a folder is filed as kind folder with its focus resolved again, and published without a listing", async () => {
+    await withFolder(async (folder) => {
+      mkdirSync(join(folder, "module", "src"), { recursive: true });
+      writeFileSync(join(folder, "module", "src", "setup.ts"), "export {};");
+      writeFileSync(join(folder, "module", "hidden-from-the-wire.ts"), "");
+      // Named through a symlink inside the folder: filed by where it leads, as the disk says now.
+      symlinkSync(join(folder, "module", "src"), join(folder, "module", "latest"));
+      const h = harness({ paused: true, window: () => ({ sessionId: "s1", cwd: folder } as SessionInfo) });
+      await h.voice.handle(accepted(h, published({ summary: "the layout", link: "module", focus: ["latest/setup.ts", "src"] })));
+      expect(h.ledger.sessionStates.get("s1")?.review).toMatchObject({
+        link: join(folder, "module"), kind: "folder", version: 1, focus: ["src/setup.ts", "src"],
+      });
+      const row = publishedRow(h);
+      expect(row.review?.focus).toEqual(["src/setup.ts", "src"]);
+      expect(JSON.stringify(row)).not.toContain("hidden-from-the-wire");
+      expect(h.errors).toEqual([]);
+    });
+  });
+
+  test("a focus the tool would refuse is refused by the daemon too, and nothing is filed", async () => {
+    await withFolder(async (folder) => {
+      mkdirSync(join(folder, "module"), { recursive: true });
+      mkdirSync(join(folder, "outside"), { recursive: true });
+      writeFileSync(join(folder, "outside", "secret.txt"), "");
+      writeFileSync(join(folder, "notes.md"), "# n");
+      // A symlink passes the socket's shape check; only the disk can say where it leads.
+      symlinkSync(join(folder, "outside"), join(folder, "module", "out"));
+      const h = harness({ paused: true, window: () => ({ sessionId: "s1", cwd: folder } as SessionInfo) });
+      await h.voice.handle(accepted(h, published({ summary: "escape", link: "module", focus: ["out/secret.txt"] })));
+      await h.voice.handle(accepted(h, published({ summary: "not a folder", link: "notes.md", focus: ["x"] })));
+      await h.voice.handle(accepted(h, published({ summary: "wrong kind", link: "module", kind: "image" })));
+      expect(h.ledger.sessionStates.get("s1")?.review).toBeUndefined();
+      expect(h.errors.map(([operation]) => operation)).toEqual(["review-focus", "review-link", "review-link"]);
+      expect(String(h.errors[0]![1])).toContain("focus[0] out/secret.txt is outside the folder");
     });
   });
 

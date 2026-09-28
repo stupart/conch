@@ -9,7 +9,9 @@ const read = (name: string) => readFileSync(`${import.meta.dir}/../mac-app/conch
 test("the home folder is not a working folder, so a session there gets the whole stage", () => {
   const dashboard = read("DashboardView.swift");
   const folder = dashboard.slice(dashboard.indexOf("private var workingFolder: String? {"), dashboard.indexOf("private var hasWorkPane"));
-  expect(folder).toContain("(folder as NSString).standardizingPath != (NSHomeDirectory() as NSString).standardizingPath");
+  // The home check is ConchDesign's now (`ConchWorkFolder.pick`, XCTested in FolderDeliverableTests), which also
+  // prefers a folder the agent declared: a session started in ~ that declared ~/Projects/X shows Files for X.
+  expect(folder).toContain("ConchWorkFolder.pick(cwd: row.cwd, workDirs: row.workDirs, home: NSHomeDirectory())");
   // With neither folder nor deliverable, the split is never drawn.
   expect(dashboard).toContain("private var hasWorkPane: Bool { selectedReview != nil || workingFolder != nil }");
   expect(dashboard).toContain("if let reviewRow = focusedRow, hasWorkPane, stage(for: reviewRow) != .conversation {");

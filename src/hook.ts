@@ -74,9 +74,10 @@ export interface TurnEvent {
   /**
    * Set when the final reply carried a conch:review marker, and always on `review-published`.
    * `kind` and `key` travel only when the agent gave them; the daemon infers the rest
-   * (`deliverableFacts`).
+   * (`deliverableFacts`). `focus` is a folder deliverable's paths to point at, relative to it
+   * (`checkFocusShape`); the daemon resolves them on the disk again before filing.
    */
-  review?: { summary: string; link?: string; scene?: ReviewScene; kind?: DeliverableKind; key?: string };
+  review?: { summary: string; link?: string; scene?: ReviewScene; kind?: DeliverableKind; key?: string; focus?: string[] };
   /**
    * The tool a permission dialog is waiting on (B5). Attached by the daemon
    * at handle time from the transcript, never by the hook: the dialog may

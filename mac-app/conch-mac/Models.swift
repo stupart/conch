@@ -858,6 +858,9 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
     let artifact: String?
     let version: Int?
     let kind: String?
+    /// A folder deliverable's paths to point at, relative to the folder (`focus`). Empty from an older daemon and for
+    /// anything but a folder; one this build can't read is none, never a review that fails.
+    let focus: [String]
 
     private enum CodingKeys: String, CodingKey {
         case summary
@@ -869,6 +872,7 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
         case artifact
         case version
         case kind
+        case focus
     }
 
     private struct Scene: Decodable {
@@ -893,6 +897,7 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
         artifact = try? container.decodeIfPresent(String.self, forKey: .artifact)
         version = try? container.decodeIfPresent(Int.self, forKey: .version)
         kind = try? container.decodeIfPresent(String.self, forKey: .kind)
+        focus = (try? container.decodeIfPresent([String].self, forKey: .focus)) ?? []
     }
 
     private static func decodeTimestamp(

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import type { TurnEvent } from "./hook.ts";
 import { capReviews, filedVersions, removeReviews, type PanelSessionState, type SessionReview } from "./panel.ts";
-import { deliverableFacts, isDeliverableKind } from "./deliverables.ts";
+import { checkFocusShape, deliverableFacts, isDeliverableKind } from "./deliverables.ts";
 import { reviewIdentity } from "./records-receipts.ts";
 import { writeSettingsFileAtomic } from "./settings.ts";
 import { checkReviewScene } from "./snippet.ts";
@@ -265,6 +265,7 @@ export class SessionLedger {
       artifact?: unknown;
       version?: unknown;
       preview?: { path?: unknown; kind?: unknown; capturedAt?: unknown };
+      focus?: unknown;
     };
     if (
       typeof review.summary !== "string" || typeof review.at !== "number" || !Number.isFinite(review.at)
@@ -288,6 +289,8 @@ export class SessionLedger {
     // so its next republish is its next version rather than a second artifact.
     const derived = deliverableFacts(restored);
     const saved = isDeliverableKind(review.kind) && (review.kindSource === "agent" || review.kindSource === "inferred");
+    // A focus this conch can't read is dropped, like a scene: the deliverable is still the folder.
+    const focus = review.focus === undefined ? undefined : checkFocusShape(review.focus);
     return {
       ...restored,
       id,
@@ -301,6 +304,7 @@ export class SessionLedger {
         && typeof review.preview.capturedAt === "number" && Number.isFinite(review.preview.capturedAt)
         ? { preview: { path: review.preview.path, kind: "image" as const, capturedAt: review.preview.capturedAt } }
         : {}),
+      ...(focus?.ok ? { focus: focus.focus } : {}),
     };
   }
 
@@ -351,6 +355,7 @@ export class SessionLedger {
         ...(held.artifact ? { artifact: held.artifact } : {}),
         ...(held.version !== undefined ? { version: held.version } : {}),
         ...(held.preview ? { preview: held.preview } : {}),
+        ...(held.focus?.length ? { focus: held.focus } : {}),
       });
       const entry = {
         label,

@@ -1947,6 +1947,7 @@ private struct ArtifactPreview: View {
         // where the type should have said "website" or "document".
         guard let link = artifact.link, !link.isEmpty else { return "questionmark.circle" }
         if link.hasPrefix("http") { return "globe" }
+        if artifact.kind == "folder" { return "folder" }
         switch (link as NSString).pathExtension.lowercased() {
         case "pdf": return "doc.richtext"
         case "mp4", "mov", "webm": return "play.rectangle"

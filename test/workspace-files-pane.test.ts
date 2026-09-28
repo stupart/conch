@@ -20,6 +20,7 @@ const swift = (path: string) => source(path).replace(/^\s*\/\/.*$/gm, "");
 const pane = swift("mac-app/conch-mac/DashboardView.swift");
 const review = swift("mac-app/conch-mac/ReviewView.swift");
 const workspace = swift("design/ConchDesign/Sources/ConchDesign/Workspace.swift");
+const rail = swift("design/ConchDesign/Sources/ConchDesign/FileTreeRail.swift");
 
 function at(text: string, marker: string, from = 0): number {
   const index = text.indexOf(marker, from);
@@ -117,15 +118,19 @@ describe("the tree tells the truth about what changed", () => {
    * reason the transcript carries this check.
    */
   test("only this row's own changes mark this row's tree", () => {
-    const changed = section(pane, "private func changedFiles(for row: SessionRow) -> ConchFileChanges {", "\n    @ViewBuilder");
-    expect(changed).toContain("conversation?.sessionId == row.id ? conversation?.items ?? [] : []");
+    // One rule for the Files tab and a folder deliverable, in the window and in the panel.
+    expect(section(pane, "private func changedFiles(for row: SessionRow) -> ConchFileChanges {", "\n    @ViewBuilder"))
+      .toContain("row.changedFiles(in: state)");
+    const changed = section(review, "func changedFiles(in state: PublishedState?) -> ConchFileChanges {", "\nstruct InlineReviewView");
+    expect(changed).toContain("conversation?.sessionId == id ? conversation?.items ?? [] : []");
     expect(changed).toContain("changed: items.compactMap { $0.change?.path }");
     // The folder the agent said it works in, else where it started: what the tree is rooted at.
-    expect(changed).toContain("relativeTo: row.workFolder ?? \"\"");
+    expect(changed).toContain("relativeTo: workFolder ?? \"\"");
   });
 
   test("a folder holding changes is marked more quietly than a changed file", () => {
-    const row = section(review, "private struct FileRowView: View {", "private var accessibilityLabel");
+    // The row is ConchDesign's now (FileTreeRail.swift), one tree for the Files tab and a folder deliverable.
+    const row = section(rail, "struct ConchFileRowView: View {", "var accessibilityLabel");
     // One dot, two strengths. If a folder shouted as loudly as an edited file, every folder
     // from the root down would read as edited.
     expect(row).toContain(".opacity(isChanged ? 1 : 0.35)");
@@ -140,7 +145,7 @@ describe("the pane stays smooth", () => {
    * stutters the very scroll it is drawing.
    */
   test("listings are cached and loaded off the main thread, never from body", () => {
-    const files = section(review, "struct WorkspaceFilesView: View {", "private struct FileRowView: View {");
+    const files = section(review, "struct WorkspaceFilesView: View {", "private struct MissingDeliverableView: View {");
     expect(files).toContain("@State private var listings: [String: [ConchFileEntry]] = [:]");
     expect(files).toContain("guard listings[directory] == nil else { return }");
     expect(files).toContain("Task.detached(priority: .userInitiated)");

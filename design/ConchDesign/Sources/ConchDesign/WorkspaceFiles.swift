@@ -195,3 +195,83 @@ public struct ConchFileChanges: Equatable, Sendable {
         return paths.contains { $0.hasPrefix(prefix) }
     }
 }
+
+/// The paths a folder deliverable points at (`focus`), ready to be asked about one tree row at a time.
+///
+/// The agent names them relative to the folder, and the daemon has already checked each is inside it on the disk. This
+/// still drops anything that would not be (an absolute path, a `..` part): the tree marks only what it can show under
+/// its own root, and a mark on a path outside it would be a claim the tree cannot back. The same care as
+/// `ConchFileChanges`: a tree that points at the WRONG file is worse than one that points at nothing.
+public struct ConchFileFocus: Equatable, Sendable {
+    /// Absolute, standardized, in the order the agent named them.
+    public let paths: [String]
+    /// The folder they are inside, standardized.
+    public let root: String
+
+    public init(focus: [String], relativeTo root: String) {
+        let base = ConchFileTree.standardized(root)
+        var resolved: [String] = []
+        for raw in focus {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            let parts = trimmed.split(separator: "/", omittingEmptySubsequences: true)
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("/"), !trimmed.hasPrefix("~"), !parts.contains(".."), !parts.isEmpty else { continue }
+            let path = ConchFileTree.standardized(base + "/" + parts.joined(separator: "/"))
+            guard path.hasPrefix(base + "/"), !resolved.contains(path) else { continue }
+            resolved.append(path)
+        }
+        paths = resolved
+        self.root = base
+    }
+
+    public var isEmpty: Bool { paths.isEmpty }
+
+    /// Is this the very path the agent pointed at?
+    public func isFocused(_ entry: ConchFileEntry) -> Bool { paths.contains(entry.path) }
+
+    /// Does this folder hold a path the agent pointed at, at any depth: the route to it. The separator matters, as
+    /// for `ConchFileChanges.contains`: `/src/app` must not claim `/src/application.ts`.
+    public func leadsTo(_ entry: ConchFileEntry) -> Bool {
+        guard entry.isDirectory else { return false }
+        let prefix = entry.path + "/"
+        return paths.contains { $0.hasPrefix(prefix) }
+    }
+
+    /// The folders to open so every focus path is on screen: each one's folders between the root and it, and a focused
+    /// folder itself, whose contents are the point. The root is never in it: its listing is always shown.
+    /// `isDirectory` is asked only of the focus paths, off the render path, when the tree is first loaded.
+    public func expanded(isDirectory: (String) -> Bool) -> Set<String> {
+        var open: Set<String> = []
+        for path in paths {
+            var folder = (path as NSString).deletingLastPathComponent
+            while folder.hasPrefix(root + "/") {
+                open.insert(folder)
+                folder = (folder as NSString).deletingLastPathComponent
+            }
+            if isDirectory(path) { open.insert(path) }
+        }
+        return open
+    }
+
+    /// The first focus path that is a file: what the viewer opens on, so the thing pointed at is what you read first.
+    public func firstFile(isDirectory: (String) -> Bool, exists: (String) -> Bool) -> String? {
+        paths.first { exists($0) && !isDirectory($0) }
+    }
+}
+
+/// Which folder a session's Files tab shows: the first folder its agent declared (`conch_working_folders`), else the
+/// one it started in, never the home folder itself.
+///
+/// A session started in `~` has no project, and a tree of everything you own beside its first message read as broken
+/// (Tyler, 2026-09-24). But once its agent says where it works, that is a project: a session started in `~` that
+/// declared `~/Projects/X` shows Files for X. A declared folder that is itself the home folder is skipped the same way.
+public enum ConchWorkFolder {
+    public static func pick(cwd: String?, workDirs: [String]?, home: String) -> String? {
+        let home = ConchFileTree.standardized(home)
+        for folder in (workDirs ?? []) + [cwd].compactMap({ $0 }) {
+            let trimmed = folder.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, ConchFileTree.standardized(trimmed) != home else { continue }
+            return trimmed
+        }
+        return nil
+    }
+}

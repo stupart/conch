@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, writeFileSync, rmSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 import {
   chmod,
@@ -8,7 +8,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { CONCH_VERSION } from "../src/version.ts";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, relative, isAbsolute, resolve } from "node:path";
 import {
   AGENT_TUNABLE_SETTINGS,
@@ -516,7 +516,7 @@ describe("MCP tool discovery", () => {
       conch_rename: ["session", "label"],
       conch_config: ["key", "value", "unset"],
       conch_transcript_tail: ["session", "sentences"],
-      review_to_front: ["summary", "link", "kind", "key", "session", "scene"],
+      review_to_front: ["summary", "link", "kind", "focus", "key", "session", "scene"],
       conch_history: ["session", "branch", "before", "limit"],
       conch_item: ["session", "item", "bodyCursor"],
       conch_working_folders: ["folders"],
@@ -603,6 +603,99 @@ describe("conch_working_folders", () => {
   });
 });
 
+/**
+ * A folder is a deliverable: its tree in conch's panel and window, with `focus` naming the paths in it to point at.
+ * The tool takes the folder by the link rule a file passes, resolves the focus on the disk, and sends only the folder
+ * and those paths (relative to it); a refusal names why and sends nothing.
+ */
+describe("review_to_front with a folder", () => {
+  const runtime = { claudeDir: "/virtual/claude", socketPath: "/virtual/conch.sock" };
+  const withFolder = async (run: (root: string) => Promise<void>) => {
+    const base = mkdtempSync(join(tmpdir(), "conch-mcp-folder-"));
+    const root = join(base, "module");
+    try {
+      await mkdir(join(root, "src"), { recursive: true });
+      await mkdir(join(root, "test"), { recursive: true });
+      await writeFile(join(root, "src", "setup.ts"), "export {};\n");
+      await writeFile(join(root, "notes.md"), "# notes\n");
+      await run(root);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  };
+
+  test("a folder link is filed as kind folder, with its focus relative to it", async () => {
+    await withFolder(async (root) => {
+      const h = fakeHarness({ parentPid: 4321 });
+      const handlers = createMcpToolHandlers(runtime, h.dependencies);
+      const result = JSON.parse(toolText(await callTool(handlers, "review_to_front", {
+        summary: "the new module layout",
+        link: root,
+        focus: ["src/setup.ts", `${root}/test/`],
+      })));
+      expect(result).toMatchObject({
+        outcome: "accepted",
+        kind: "folder",
+        version: 1,
+        artifact: artifactIdentity(realpathSync(root)),
+        link: root,
+        focus: ["src/setup.ts", "test"],
+      });
+      // Only the folder and the paths named: never a listing.
+      expect(h.calls.daemon.map((call) => call.event.review)).toEqual([
+        { summary: "the new module layout", link: root, focus: ["src/setup.ts", "test"] },
+      ]);
+    });
+  });
+
+  test("the same folder again predicts its next version", async () => {
+    await withFolder(async (root) => {
+      const artifact = artifactIdentity(realpathSync(root));
+      const published = JSON.stringify({ v: 1, rows: [{ id: "session-123", label: "Build", reviews: [
+        { summary: "layout v1", link: root, at: 1_000, id: "f-1", artifact, version: 1, kind: "folder", focus: ["src"] },
+      ] }] });
+      const h = fakeHarness({ parentPid: 4321, sessionsFile: published });
+      const handlers = createMcpToolHandlers(runtime, h.dependencies);
+      const next = JSON.parse(toolText(await callTool(handlers, "review_to_front", { summary: "layout v2", link: `${root}/`, kind: "folder" })));
+      expect(next).toMatchObject({ artifact, version: 2, kind: "folder" });
+      // conch_deliverables says which paths each filing pointed at.
+      const listed = JSON.parse(toolText(await callTool(handlers, "conch_deliverables", {})));
+      expect(listed.deliverables[0]).toMatchObject({ id: "f-1", kind: "folder", focus: ["src"] });
+    });
+  });
+
+  test("kind, link and focus that disagree, and a focus out of the folder, are refused and send nothing", async () => {
+    await withFolder(async (root) => {
+      const h = fakeHarness({ parentPid: 4321 });
+      const handlers = createMcpToolHandlers(runtime, h.dependencies);
+      const refusal = async (args: Record<string, unknown>) => {
+        const response = await callTool(handlers, "review_to_front", { summary: "the layout", ...args });
+        expect(rpcResult(response), JSON.stringify(args)).toMatchObject({ isError: true });
+        return toolText(response);
+      };
+      expect(await refusal({ link: root, kind: "image" })).toContain('link is a folder, which is kind "folder"');
+      expect(await refusal({ link: join(root, "notes.md"), kind: "folder" })).toContain('kind "folder" needs a link to an existing folder');
+      expect(await refusal({ link: join(root, "notes.md"), focus: ["src"] })).toContain("focus is for a folder deliverable");
+      expect(await refusal({ focus: ["src"] })).toContain("focus is for a folder deliverable");
+      expect(await refusal({ link: root, focus: ["../module/src"] })).toContain("focus[0] ../module/src has a .. part");
+      expect(await refusal({ link: root, focus: ["/etc/hosts"] })).toContain("focus[0] /etc/hosts is outside the folder");
+      expect(await refusal({ link: root, focus: ["src/missing.ts"] })).toContain("focus[0] src/missing.ts is not in the folder");
+      expect(await refusal({ link: root, focus: [] })).toContain("focus must be 1 to 12 paths");
+      expect(await refusal({ link: homedir(), kind: "folder" })).toMatch(/home folder|outside this session's folder/);
+      expect(h.calls.daemon).toEqual([]);
+    });
+  });
+
+  test("the schema says what focus takes", () => {
+    const tool = MCP_TOOLS.find((candidate) => candidate.name === "review_to_front")!;
+    const properties = tool.inputSchema.properties as Record<string, any>;
+    expect(properties.focus).toMatchObject({ type: "array", minItems: 1, maxItems: 12, items: { type: "string", minLength: 1 } });
+    expect(properties.focus.description).toContain("for a folder link only");
+    expect(properties.kind.enum).toContain("folder");
+    expect(properties.kind.description).toContain("folder a directory shown as its file tree");
+  });
+});
+
 describe("schemas state what the handlers enforce", () => {
   const schema = (name: McpToolName) =>
     MCP_TOOLS.find((tool) => tool.name === name)!.inputSchema as Record<string, any>;
@@ -624,7 +717,7 @@ describe("schemas state what the handlers enforce", () => {
 
   test("review_to_front describes publishing, not opening or finishing", () => {
     expect(MCP_TOOLS.find((tool) => tool.name === "review_to_front")!.description).toBe(
-      "Publish your session’s result for the user to inspect, with a concise summary, an optional artifact link and kind, and an optional scene: the conversation to bring forward, or marks drawn over the result at the one thing to check. Publishing the same artifact again (the same link, or the same key) adds its next version rather than a second entry: the user sees the newest, with earlier versions listed under it by summary and time. Returns the filing's id, its artifact, version and kind. The user's pill click stages it. Publishing does not open applications or finish the running turn.",
+      "Publish your session’s result for the user to inspect, with a concise summary, an optional artifact link and kind, and an optional scene: the conversation to bring forward, or marks drawn over the result at the one thing to check. To show a set of files or a structure you created or changed (a new module layout, generated assets), link the folder (kind folder, its file tree in conch) and name the paths in it to look at with focus. Publishing the same artifact again (the same link, or the same key) adds its next version rather than a second entry: the user sees the newest, with earlier versions listed under it by summary and time. Returns the filing's id, its artifact, version and kind. The user's pill click stages it. Publishing does not open applications or finish the running turn.",
     );
   });
 });
@@ -1187,11 +1280,10 @@ describe("real MCP tool handlers with injected dependencies", () => {
     const root = await mkdtemp(join(tmpdir(), "conch-mcp-review-"));
     const regularFile = join(root, "review.html");
     const missingFile = join(root, "missing.html");
-    const directory = join(root, "directory");
     const executableFile = join(root, "review.sh");
     try {
+      // A directory is no longer on this list: it is a folder deliverable (test/folder-deliverable.test.ts).
       await writeFile(regularFile, "<h1>Review</h1>", { mode: 0o600 });
-      await mkdir(directory);
       await writeFile(executableFile, "#!/bin/sh\n", { mode: 0o700 });
       await chmod(executableFile, 0o700);
 
@@ -1205,7 +1297,6 @@ describe("real MCP tool handlers with injected dependencies", () => {
         "javascript:alert(1)",
         `file://${regularFile}`,
         missingFile,
-        directory,
         executableFile,
       ];
 
