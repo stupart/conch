@@ -843,10 +843,23 @@ private struct FolderHeader: View {
     }
 }
 
+private extension VerticalAlignment {
+    /// The middle of a session row's name line. The row's mark and live rail centre on it, so a
+    /// row that grows a second line keeps its mark beside its name.
+    enum NameLine: AlignmentID {
+        static func defaultValue(in dimensions: ViewDimensions) -> CGFloat {
+            dimensions[VerticalAlignment.center]
+        }
+    }
+
+    static let nameLine = VerticalAlignment(NameLine.self)
+}
+
 private struct DashboardRow: View {
-    /// `.row{height:var(--rowH)}` with `--rowH:30px`. The row is ONE line — mark, label,
-    /// agent, summary, age, glyph — and carried 42, which is a line and a half of air. At
-    /// a sidebar's usual height that is nine sessions you could not see.
+    /// `.row{height:var(--rowH)}` with `--rowH:30px`. The row is ONE line — mark, name, then
+    /// the agent, quiet mark and age small at its end — and carried 42, which is a line and a
+    /// half of air. At a sidebar's usual height that is nine sessions you could not see. A row
+    /// that asks something of you grows a second line under its name (`subtitle`).
     static let rowHeight: CGFloat = 30
 
     let row: SessionRow
@@ -890,7 +903,11 @@ private struct DashboardRow: View {
         row.hasPublishedLiveState
     }
 
-    private var inlineDetail: String {
+    /// Everything the row knows beyond its name, as one line of words: conch's own word about it,
+    /// the deliverable's summary, the question it is blocked on, or why it has no terminal. It is
+    /// no longer drawn beside the name, where it left the name "Co…egy" and itself "Screen…": the
+    /// tooltip and VoiceOver carry it, and the parts that ask something of you earn `subtitle`.
+    private var detailLine: String {
         if let rowMessage, !rowMessage.isEmpty {
             return rowMessage
         }
@@ -903,6 +920,38 @@ private struct DashboardRow: View {
         // Why a row has no terminal: a closed or app-server Codex thread, or
         // a background job no window is attached to.
         return row.noTerminal ?? ""
+    }
+
+    /// The agent and the age are details, not states: drawn for the row under the pointer and the
+    /// selected one, and at rest the line is the name's. Drawn on every row they cost it a mark, an
+    /// age and two gaps, 40-odd points: "Prime design system studio" faded at the default width
+    /// with them and fits without. What the row IS doing stays at rest — the status mark, and the
+    /// quiet mark and diamond beside where the age appears. VoiceOver reads both details always.
+    private var showsDetails: Bool {
+        isHovered || isSelected
+    }
+
+    /// The line under the name, for the rows that have earned one: a word from conch about this
+    /// row, the question it is blocked on, or who started it (`SidebarRowText.subtitle`).
+    private var subtitle: String? {
+        guard !isRenaming else { return nil }
+        return SidebarRowText.subtitle(
+            message: rowMessage,
+            blockedOn: row.status == .needs ? row.detail : nil,
+            startedBy: startedByLabel
+        )
+    }
+
+    /// With the name faded and the summary off the line, VoiceOver is told them in words: the
+    /// whole name, what the mark says and which agent it is; then the summary and age as its value.
+    private var accessibilityName: String {
+        SidebarRowText.accessibilityLabel(
+            name: row.label,
+            state: LedgerVisual(row: row).accessibilityLabel,
+            agent: AgentBadge.name(for: row.backend),
+            voice: voice.mark,
+            startedBy: startedByLabel
+        )
     }
 
 
@@ -921,7 +970,13 @@ private struct DashboardRow: View {
                     rowContent
                 }
                 .buttonStyle(.plain)
-                .help(row.label)
+                // The whole name, which the row may fade, and the summary it no longer draws.
+                .help(SidebarRowText.tooltip(name: row.label, snippet: detailLine, startedBy: startedByLabel))
+                .accessibilityLabel(accessibilityName)
+                .accessibilityValue([detailLine, age ?? ""].filter { !$0.isEmpty }.joined(separator: ", "))
+                // The quiet mark is a button inside this one. Its toggle is an action here too, so
+                // relabelling the row cannot take it from VoiceOver.
+                .accessibilityAction(named: Text(voice.togglesToQuiet ? "Make Quiet" : "Let It Speak"), onToggleQuiet)
             }
         }
         .frame(maxWidth: .infinity, minHeight: Self.rowHeight)
@@ -976,7 +1031,7 @@ private struct DashboardRow: View {
     }
 
     private var rowContent: some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .nameLine, spacing: 8) {
             // Full brand cyan means "your mic is open". The rail was painting it
             // on speaking and transcribing rows too — a bigger patch of it than
             // the glyph — so it contradicted the very invariant the glyph sets.
@@ -1006,155 +1061,132 @@ private struct DashboardRow: View {
             // colour and size. It is never dimmed and never swapped for a mode: dimming a manual
             // row once dropped its verdict to 2.45:1, and a pause glyph in its place hid that a
             // quiet session was still working. Quiet is its own mark, by the age.
+            //
+            // Centred on the name's line (`.nameLine`), so a row with a second line keeps its
+            // mark beside its name rather than between the two lines.
             DashboardStatusGlyph(visual: LedgerVisual(row: row))
                 .frame(width: 16)
 
-            if isRenaming {
-                TextField("Session name", text: $renameDraft)
-                    .textFieldStyle(.plain)
-                    .font(ConchTypography.font(size: 13.5, weight: .medium))
-                    .foregroundStyle(ConchPalette.textPrimary)
-                    .focused($renameFocused)
-                    .onSubmit(onCommitRename)
-                    .onExitCommand(perform: onCancelRename)
-                    .frame(minWidth: 72, idealWidth: 104, maxWidth: 132)
-                    .layoutPriority(4)
-                    .accessibilityLabel("Rename \(row.label)")
-                    .onAppear {
-                        DispatchQueue.main.async {
-                            renameFocused = true
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    if isRenaming {
+                        TextField("Session name", text: $renameDraft)
+                            .textFieldStyle(.plain)
+                            .font(ConchTypography.font(size: 13))
+                            .foregroundStyle(ConchPalette.textPrimary)
+                            .focused($renameFocused)
+                            .onSubmit(onCommitRename)
+                            .onExitCommand(perform: onCancelRename)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityLabel("Rename \(row.label)")
+                            .onAppear {
+                                DispatchQueue.main.async {
+                                    renameFocused = true
+                                }
+                            }
+                    } else {
+                        // The name is the thing, and it has the line. Tyler (2026-09-28): "we should
+                        // show as much of the beginning of the name as we can." It was middle-
+                        // truncated to share the line with a summary, the agent mark and a "started
+                        // by", and came out "Co…egy" for "Conch UI strategy". The start is what
+                        // says which session it is; it keeps every point the line has, and a name
+                        // too long even for that fades out at its end, as ChatGPT's list does,
+                        // rather than spending three characters on an ellipsis. The tooltip and
+                        // VoiceOver have the whole of it.
+                        //
+                        // The middle cut was for sibling names that share a start ("dayloop-
+                        // feature-flags" and "…-rollout") when the name had 60-odd points beside a
+                        // summary. With the line to itself, two names alike for its whole width
+                        // are rare, and the tooltip tells them apart.
+                        //
+                        // Regular weight, as a list of names reads; semibold when the row wants
+                        // you, the two statuses the mark draws as waiting and needs. Review is
+                        // carried by its check (Tyler: "review ready already has big green check
+                        // i dont think we also need to bold it"), and the selected row by its fill.
+                        TailFadeText(row.label)
+                            .font(ConchTypography.font(
+                                size: 13,
+                                weight: row.status == .waiting || row.status == .needs ? .semibold : .regular
+                            ))
+                            .foregroundStyle(ConchPalette.textPrimary)
+                            .contentTransition(.opacity)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    // Small and quiet at the end of the line: the prioritized diamond and the
+                    // quiet mark, which are states and always show, and the agent and the age,
+                    // which are details and show for the row under the pointer and the
+                    // selected one (`showsDetails`).
+                    HStack(spacing: 6) {
+                        if row.prioritized {
+                            Image(systemName: "diamond.fill")
+                                .font(.system(size: 5.5, weight: .medium))
+                                .foregroundStyle(ConchPalette.textDim.opacity(0.82))
+                                .accessibilityLabel("Prioritized")
+                                .help("Prioritized")
+                        }
+
+                        if showsDetails {
+                            AgentBadge(backend: row.backend)
+                        }
+
+                        // Quiet: conch won't read it aloud. Beside the age rather than in place of
+                        // the status, and a button, because the way back has to be where the state
+                        // is shown — Tyler had quieted a session with P and asked "how do I
+                        // resume?". Clicking it is the undo. While everything is quiet no row
+                        // carries one; the session let speak through it carries `speaks` instead
+                        // (`SessionVoice.mark`).
+                        if let mark = voice.mark, !isRenaming {
+                            Button(action: onToggleQuiet) {
+                                SessionVoiceGlyph(mark, pointSize: 9.5)
+                                    .frame(width: 16, height: 16)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .fixedSize()
+                            .layoutPriority(4)
+                            .help(mark.help(on: .mac))
+                            .accessibilityLabel(mark.help(on: .mac))
+                        }
+
+                        if showsDetails, let age {
+                            Text(age)
+                                .font(ConchTypography.font(size: 10.5))
+                                .foregroundStyle(ConchPalette.textFaint)
+                                .monospacedDigit()
+                                .lineLimit(1)
+                                // The age had no truncationMode and lost the layout fight to
+                                // a long label, so it was CLIPPED mid-string: a session that
+                                // finished 10 minutes ago rendered "1". On a dashboard whose
+                                // job is "who has been waiting longest", a plausible wrong
+                                // number is worse than no number. It is short and fixed —
+                                // it should never be the thing that gives way.
+                                .truncationMode(.tail)
+                                .fixedSize(horizontal: true, vertical: false)
+                                .layoutPriority(4)
                         }
                     }
-            } else {
-                Text(row.label)
-                    // §3: 13 pt, and semibold when the row wants you. The sidebar's job is to
-                    // show which sessions need a person without being read word by word.
-                    // Same predicate the status mark already uses, rather than a third opinion
-                    // about what "wants you" means.
-                    .font(ConchTypography.font(
-                        size: 13,
-                        weight: row.status == .waiting || row.status == .needs ? .semibold : .medium
-                    ))
-                    .foregroundStyle(ConchPalette.textPrimary)
-                    .lineLimit(1)
-                    // Sibling sessions share a prefix far more often than a
-                    // suffix ("dayloop-feature-flags" vs "…-rollout"), so tail
-                    // truncation made two different rows read identically. The
-                    // distinguishing end survives a middle ellipsis.
-                    .truncationMode(.middle)
-                    .contentTransition(.opacity)
-                    // The label is near-fixed prose and should size to its
-                    // content; the deliverable summary beside it is the variable
-                    // part and should take the flex. Hard-capping the label at
-                    // 116pt did the opposite: "dayloop-feature…" truncated while
-                    // "portal" left dead space, and the summary — the answer to
-                    // "what did it make for me?" — was cut to "Rebuilt th…".
-                    //
-                    // Do NOT add .fixedSize here: it overrides the lineLimit and
-                    // truncationMode above, so a long label runs over the age and
-                    // draws straight through the status glyph. The higher
-                    // layoutPriority already gets the label its ideal width and
-                    // lets it truncate only when it genuinely cannot fit.
-                    // No maxWidth: a frame with one is GREEDY — it expands to
-                    // whatever it is offered, so the label claimed 190pt no
-                    // matter how short it was and starved the summary down to
-                    // "R…". A bare Text with lineLimit + truncationMode takes
-                    // its ideal width and yields under real pressure, which is
-                    // exactly the behaviour wanted. The age is protected by its
-                    // own fixedSize + priority, not by capping this.
-                    .frame(minWidth: 54, alignment: .leading)
-                    .layoutPriority(1)
-            }
-
-            // A session another session started (C15): say by whom, in the
-            // small type the summary uses. The agent badge that follows is
-            // what tells a Claude-started Codex from its starter at a glance.
-            if let startedByLabel, !isRenaming {
-                Text("started by \(startedByLabel)")
-                    .font(ConchTypography.font(size: 10.5))
-                    .foregroundStyle(ConchPalette.textFaint)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .accessibilityLabel("Started by \(startedByLabel)")
-            }
-
-            if row.prioritized {
-                Image(systemName: "diamond.fill")
-                    .font(.system(size: 5.5, weight: .medium))
-                    .foregroundStyle(ConchPalette.textDim.opacity(0.82))
-                    .accessibilityLabel("Prioritized")
-                    .help("Prioritized")
-            }
-
-            AgentBadge(backend: row.backend)
-
-            // NEITHER of these two may carry a maxWidth frame. A frame with a
-            // maxWidth — 190 or .infinity alike — is GREEDY: it expands to
-            // whatever it is offered and then may not use it. Capping the label
-            // starved the summary to "R…"; giving the summary .infinity and a
-            // higher priority simply inverted it, pinning every label to its
-            // 54pt floor so two different sessions both read "daylo…".
-            //
-            // With equal priority and no greedy frame, HStack sizes the less
-            // flexible child (the label, small ideal) to its ideal and passes
-            // the remainder to the summary; under real pressure they split.
-            if !inlineDetail.isEmpty {
-                Text(inlineDetail)
-                    .font(ConchTypography.font(size: 11.5))
-                    .foregroundStyle(
-                        rowMessage == nil
-                            ? ConchPalette.textDim
-                            : ConchPalette.statusNeeds.opacity(0.90)
-                    )
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .contentTransition(.opacity)
-                    .layoutPriority(rowMessage == nil ? 1 : 5)
-                    .accessibilityLabel(inlineDetail)
-                    .help(inlineDetail)
-            }
-
-            // Always trails, so the age and glyph stay hard right whether or not
-            // this row has a summary.
-            Spacer(minLength: 0)
-
-            // Quiet: conch won't read it aloud. Beside the age rather than in place of the status,
-            // and a button, because the way back has to be where the state is shown — Tyler had
-            // quieted a session with P and asked "how do I resume?". Clicking it is the undo.
-            // While everything is quiet no row carries one; the session let speak through it
-            // carries `speaks` instead (`SessionVoice.mark`).
-            if let mark = voice.mark, !isRenaming {
-                Button(action: onToggleQuiet) {
-                    SessionVoiceGlyph(mark, pointSize: 9.5)
-                        .frame(width: 16, height: 16)
-                        .contentShape(Rectangle())
+                    .fixedSize()
                 }
-                .buttonStyle(.plain)
-                .fixedSize()
-                .layoutPriority(4)
-                .help(mark.help(on: .mac))
-                .accessibilityLabel(mark.help(on: .mac))
-            }
+                .alignmentGuide(.nameLine) { $0[VerticalAlignment.center] }
 
-            if let age {
-                Text(age)
-                    .font(ConchTypography.font(size: 10.5))
-                    .foregroundStyle(ConchPalette.textFaint)
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    // The age had no truncationMode and lost the layout fight to
-                    // a long label, so it was CLIPPED mid-string: a session that
-                    // finished 10 minutes ago rendered "1". On a dashboard whose
-                    // job is "who has been waiting longest", a plausible wrong
-                    // number is worse than no number. It is short and fixed —
-                    // it should never be the thing that gives way.
-                    .truncationMode(.tail)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .layoutPriority(4)
+                // Only what asks something of you: conch's word about this row in the needs
+                // colour, the question it is blocked on, or who started it.
+                if let subtitle {
+                    TailFadeText(subtitle, fade: 24)
+                        .font(ConchTypography.font(size: 11))
+                        .foregroundStyle(
+                            rowMessage == nil
+                                ? ConchPalette.textDim
+                                : ConchPalette.statusNeeds.opacity(0.90)
+                        )
+                        .contentTransition(.opacity)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
-
         }
         .padding(.trailing, 4)
+        .padding(.vertical, subtitle == nil ? 0 : 5)
         .frame(maxWidth: .infinity, minHeight: Self.rowHeight, alignment: .leading)
         .contentShape(Rectangle())
     }
@@ -1187,7 +1219,10 @@ private struct DashboardRow: View {
 struct AgentBadge: View {
     let backend: String?
 
-    private var label: String {
+    private var label: String { Self.name(for: backend) }
+
+    /// The agent's name, for a tooltip and for VoiceOver: the sidebar's row reads it into its own label.
+    static func name(for backend: String?) -> String {
         switch backend?.lowercased() {
         // Claude sessions predate the backend field. Treating absence as
         // Claude keeps old live rows identified instead of making only Codex
@@ -3052,12 +3087,12 @@ private struct AgentGroup: View {
                         DashboardStatusGlyph(visual: LedgerVisual(row: agent))
                             .scaleEffect(0.75)
                             .frame(width: 12, height: 12)
-                        Text(agent.label)
-                            .font(.system(size: 11.5, weight: selectedID == agent.id ? .semibold : .regular))
+                        // The session rows' rules, a size down: the name has the line and fades
+                        // at its end, regular unless it is blocked on you; the fill says selected.
+                        TailFadeText(agent.label, fade: 24)
+                            .font(ConchTypography.font(size: 11.5, weight: agent.status == .needs ? .semibold : .regular))
                             .foregroundStyle(selectedID == agent.id ? ConchPalette.textPrimary : ConchPalette.textDim)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                        Spacer(minLength: 0)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .padding(.horizontal, 6)
                     .padding(.vertical, 3)
@@ -3069,6 +3104,13 @@ private struct AgentGroup: View {
                 }
                 .buttonStyle(.plain)
                 .help(agent.label)
+                .accessibilityLabel(SidebarRowText.accessibilityLabel(
+                    name: agent.label,
+                    state: LedgerVisual(row: agent).accessibilityLabel,
+                    agent: AgentBadge.name(for: agent.backend),
+                    voice: nil,
+                    startedBy: nil
+                ))
             }
         }
         // `.row.child{padding-left:30px}`, the lab's indent for anything under a session.

@@ -90,7 +90,8 @@ test("the Mac shows a no-terminal row's reason and offers no send, stop or close
   expect(models).toContain("revealable: revealable,\n            noTerminal: noTerminal,");
 
   const dashboard = read("mac-app/conch-mac/DashboardView.swift");
-  const detail = dashboard.indexOf("private var inlineDetail: String {");
+  // Off the row's line now, in its tooltip and VoiceOver's value (sidebar-names-source.test.ts).
+  const detail = dashboard.indexOf("private var detailLine: String {");
   expect(detail).toBeGreaterThan(-1);
   const detailEnd = dashboard.indexOf("\n    }\n", detail);
   expect(detailEnd).toBeGreaterThan(detail);
