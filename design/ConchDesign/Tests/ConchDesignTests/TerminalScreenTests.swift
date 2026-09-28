@@ -141,6 +141,13 @@ final class TerminalScreenTests: XCTestCase {
 
     // MARK: Rows and the cursor
 
+    func testTheCapturesClosingNewlineEndsItsLastRowRatherThanStartingOne() {
+        XCTAssertEqual(ConchTerminalScreen.parse("a\nb\n").count, 2)
+        XCTAssertEqual(ConchTerminalScreen.parse("a\nb").count, 2)
+        XCTAssertEqual(ConchTerminalScreen.parse("a\n\n").count, 2, "a blank last row is still a row")
+        XCTAssertEqual(ConchTerminalScreen.parse("").count, 1)
+    }
+
     func testTheScreenIsAlwaysTheTerminalsOwnHeight() {
         XCTAssertEqual(ConchTerminalScreen(capture: "one\n", columns: 10, rows: 4).lines.count, 4)
         let tall = ConchTerminalScreen(capture: "1\n2\n3\n4\n5\n", columns: 10, rows: 3)

@@ -179,8 +179,9 @@ describe("reading a Terminal.app tab", () => {
 
   test("the script never opens Terminal to ask it, and never changes anything", () => {
     const script = terminalLocateScript("ttys012", true);
-    expect(script.indexOf('if application "Terminal" is not running then return "conch:notrunning"'))
-      .toBeLessThan(script.indexOf('tell application "Terminal"'));
+    // The first thing it does, before anything is told to Terminal.
+    expect(script.trim().split("\n")[0]).toBe('if application "Terminal" is not running then return "conch:notrunning"');
+    expect(script.split('tell application "Terminal"')).toHaveLength(2);
     expect(script).toContain('if tty of tab ti of window wi is "/dev/ttys012" then');
     expect(script).toContain("id of window wi");
     // `tab` inside Terminal's tell names its tab class, so the separator is spelled out.
@@ -280,7 +281,7 @@ describe("Open in Terminal", () => {
     for (const line of ["if miniaturized of w then set miniaturized of w to false", "set selected tab of w to t", "set index of w to 1", "activate"]) {
       expect(script).toContain(line);
     }
-    expect(script.indexOf('if application "Terminal" is not running')).toBeLessThan(script.indexOf('tell application "Terminal"'));
+    expect(script.trim().split("\n")[0]).toBe('if application "Terminal" is not running then return "conch:notrunning"');
   });
 
   test("a tmux pane: its window and pane selected, then the terminal its newest client is in", async () => {
@@ -289,6 +290,18 @@ describe("Open in Terminal", () => {
     expect(mac.calls).toContainEqual(["tmux", "-L", "fake", "list-clients", "-t", "$3", "-F", "#{client_activity} #{client_tty}"]);
     expect(mac.calls).toContainEqual(["tmux", "-L", "fake", "select-window", "-t", "%7", ";", "select-pane", "-t", "%7"]);
     expect(mac.focused).toEqual([terminalFocusScript("ttys041")]);
+  });
+
+  test("a client on something that isn't a tty is refused in words, and nothing is scripted with it", async () => {
+    const mac = tmuxMac({ clients: "1700000000 /dev/cu.debug-console\n" });
+    expect(await createTerminalMirror(mac.deps).focus("s6", { pid: 900 }))
+      .toEqual({ kind: "terminal-focus", sessionId: "s6", focused: false, reason: NOT_IN_TERMINAL });
+    expect(mac.focused).toEqual([]);
+  });
+
+  test("the process tree is walked as deep as a real one goes", () => {
+    const chain = Array.from({ length: 30 }, (_, i) => `${1000 + i} ${1001 + i}`).join("\n") + "\n1030 500\n500 1";
+    expect(paneForPid(1000, "500 %9", chain)).toBe("%9");
   });
 
   test("a tmux session nothing is attached to says so, and brings nothing forward", async () => {

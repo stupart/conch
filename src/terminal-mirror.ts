@@ -224,12 +224,13 @@ export function paneForPid(pid: number, panes: string, processes: string): strin
     const [child, parentPid] = line.trim().split(/\s+/).map(Number);
     if (child && parentPid !== undefined && Number.isSafeInteger(parentPid)) parent.set(child, parentPid);
   }
+  // Bounded, so a cycle in a bogus table ends rather than spinning; no real tree is 64 deep.
   let current = pid;
   for (let step = 0; step < 64 && current > 1; step++) {
     const pane = byPid.get(current);
     if (pane) return pane;
     const next = parent.get(current);
-    if (!next || next === current) break;
+    if (!next) break;
     current = next;
   }
   return null;
