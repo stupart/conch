@@ -98,8 +98,9 @@ import { reapOrphanedWhisper, recordSpawnedWhisper } from "./whisper-orphan.ts";
 import { reapOrphanedSox } from "./sox-orphan.ts";
 import { PauseOriginLedger } from "./pause-origin.ts";
 import { TtsSupervisor } from "./tts-supervisor.ts";
-import { ManagedTtsWorker } from "./tts-worker.ts";
-import { VoiceEnvManager, type NaturalVoicesStatus } from "./voice-env.ts";
+import { ManagedTtsWorker, TTS_WORKER_HEALTH_CHECK_MS } from "./tts-worker.ts";
+import { VoiceEnvManager, voiceTestFigure, type NaturalVoicesStatus } from "./voice-env.ts";
+import { hubCacheDir, modelCacheBytes, verifyModelCache } from "./voice-model-cache.ts";
 import { SpeechEngineManager, speechEngineStatusPath, type SpeechEngineStatus } from "./speech-engine.ts";
 import {
   listenOnce,
@@ -109,7 +110,7 @@ import {
   stopSoxProcess,
 } from "./listen.ts";
 import { createNarration, NARRATION_QUIET_WITHIN_MS } from "./narration.ts";
-import { readSessionScreen, revealSessionWindow, withUIHold } from "./inject.ts";
+import { INJECT_DEBUG_LOG, readSessionScreen, revealSessionWindow, withUIHold } from "./inject.ts";
 import { createTerminalMirror } from "./terminal-mirror.ts";
 import { adapterFor, transcriptFormatFor } from "./agent-adapter.ts";
 import { renameProviderSession } from "./provider-rename.ts";
@@ -624,7 +625,7 @@ const PUBLISHED_CONVERSATION_WINDOW = 30;
 function traceQueue(message: string): void {
   try {
     appendFileSync(
-      "/tmp/conch-inject-debug.log",
+      INJECT_DEBUG_LOG,
       `[${new Date().toISOString().slice(11, 23)}] queue: ${message}\n`,
     );
   } catch {}
@@ -1011,7 +1012,10 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   // The worker starts with no interpreter: voiceEnv hands one over once it has
   // checked it — CONCH_TTS_WORKER_PYTHON, conch's own environment (built in the
   // background with the uv the app carries when missing or wrong), or a legacy
-  // mlx-audio tool that can import Kokoro. Until then `say` speaks.
+  // mlx-audio tool that can import Kokoro. Until then `say` speaks. The worker
+  // reports every start that fails and every one that comes up warm, and asks
+  // itself for a tiny line when idle, so voiceEnv heals whatever breaks later
+  // (voice-heal.ts), not only what was broken at start.
   let voiceEnv: VoiceEnvManager | null = null;
   let naturalVoices: NaturalVoicesStatus | undefined;
   const ttsWorker = new ManagedTtsWorker({
@@ -1021,6 +1025,10 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     speed: cfg.ttsSpeed,
     python: null,
     onStartFailed: (error) => voiceEnv?.workerStartFailed(error),
+    onReady: () => voiceEnv?.workerReady(),
+    healthCheckMs: TTS_WORKER_HEALTH_CHECK_MS,
+    // Null (the default, 30 s) unless scripts/voice-heal-e2e.ts set CONCH_TEST_HOOKS.
+    periodicRetryMs: voiceTestFigure("worker-retry-ms") ?? undefined,
     log,
   });
   if (cfg.ttsEngine !== "server") {
@@ -1036,6 +1044,11 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         naturalVoices = status;
         void renderSessionPanel();
       },
+      // Kokoro's files in the Hugging Face cache, proved against their own hashes; only what's broken is fetched again.
+      verifyModel: (repair, signal, force) => verifyModelCache({ hub: hubCacheDir(), model: cfg.ttsModel, repair, force, signal }),
+      modelBytes: () => modelCacheBytes(hubCacheDir(), cfg.ttsModel),
+      conchVersion: CONCH_VERSION,
+      watchMs: voiceTestFigure("watch-ms") ?? undefined,
       log,
     });
   }

@@ -19,6 +19,8 @@ struct LedgerView: View {
     @State private var pendingPassive: Bool?
     @State private var sessionActionError: String?
     @State private var showingSessionActionError = false
+    /// The Mac's natural voices, said only when it matters (`NaturalVoicesNotices`).
+    @StateObject private var voicesNotice = VoicesNoticeModel()
     /// The open session. DEBUG seeds it from a launch argument, so the
     /// snapshot script can photograph a session without anyone tapping.
     @State private var path: [String] = {
@@ -81,6 +83,13 @@ struct LedgerView: View {
                             }
                             .listRowBackground(Palette.bg)
                             .listRowSeparator(.hidden)
+                        }
+                        // The Mac's natural voices: setting up or coming back (quiet), stopped (why), back (briefly).
+                        // Nothing while they're healthy.
+                        if let notice = voicesNotice.notice {
+                            VoicesNoticeRow(notice: notice, detail: voicesNotice.detail, onDismiss: voicesNotice.dismiss)
+                                .listRowBackground(Palette.bg)
+                                .listRowSeparator(.hidden)
                         }
                         ForEach(folders(in: state)) { folder in
                             Section {
@@ -185,6 +194,7 @@ struct LedgerView: View {
                 }
             }
             .background(Palette.bg)
+            .onChange(of: bridge.state?.naturalVoices, initial: true) { _, report in voicesNotice.update(report) }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 // The name alone. The shell went from both apps' headers — the
@@ -1253,5 +1263,98 @@ private struct ResumableRow: View {
         }
         .contentShape(Rectangle())
         .padding(.vertical, 2)
+    }
+}
+
+/// The Mac's natural voices on the phone, by the same rules and words as the Mac's window (`NaturalVoicesNotices`,
+/// ConchDesign): the published status stepped through them, what was dismissed remembered, the back line faded on time.
+@MainActor
+final class VoicesNoticeModel: ObservableObject {
+    static let memoryKey = "conch.naturalVoicesNotice"
+
+    @Published private(set) var notice: NaturalVoicesNotice?
+    /// The daemon's own sentence, which Why? shows.
+    @Published private(set) var detail: String?
+    private var memory: NaturalVoicesNoticeMemory
+    private var report: NaturalVoicesReport?
+    private var fade: Task<Void, Never>?
+
+    init() {
+        memory = UserDefaults.standard.data(forKey: Self.memoryKey)
+            .flatMap { try? JSONDecoder().decode(NaturalVoicesNoticeMemory.self, from: $0) } ?? NaturalVoicesNoticeMemory()
+    }
+
+    func update(_ report: NaturalVoicesReport?) {
+        self.report = report
+        let now = Date().timeIntervalSince1970
+        let step = NaturalVoicesNotices.step(memory, report: report, now: now)
+        remember(step.memory)
+        if notice != step.notice { notice = step.notice }
+        if detail != report?.detail { detail = report?.detail }
+        fade?.cancel()
+        guard let at = NaturalVoicesNotices.nextChange(memory, now: now) else { return }
+        fade = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(0, at - Date().timeIntervalSince1970) * 1_000_000_000) + 50_000_000)
+            guard !Task.isCancelled, let self else { return }
+            self.update(self.report)
+        }
+    }
+
+    func dismiss() {
+        guard let key = notice?.key else { return }
+        remember(NaturalVoicesNotices.dismiss(memory, key: key))
+        notice = nil
+    }
+
+    private func remember(_ next: NaturalVoicesNoticeMemory) {
+        guard next != memory else { return }
+        memory = next
+        if let data = try? JSONEncoder().encode(next) { UserDefaults.standard.set(data, forKey: Self.memoryKey) }
+    }
+}
+
+/// One quiet line at the top of the list, like the connection line: the words, Why? for a line that needs you (the
+/// Mac's own sentence, since the fix lives there), and a dismiss for it.
+struct VoicesNoticeRow: View {
+    let notice: NaturalVoicesNotice
+    let detail: String?
+    let onDismiss: () -> Void
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Image(systemName: notice.tone == .needsYou ? "waveform.slash" : "waveform")
+                    .font(.system(size: 12))
+                    .accessibilityHidden(true)
+                Text(notice.text)
+                    .font(Type.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                if notice.action != nil, detail != nil {
+                    Button(expanded ? "Hide" : "Why?") { expanded.toggle() }
+                        .font(Type.caption.weight(.medium))
+                        .foregroundStyle(Palette.micOpen)
+                        .buttonStyle(.borderless)
+                }
+                if notice.dismissible {
+                    Button(action: onDismiss) {
+                        Image(systemName: "xmark").font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundStyle(Palette.textFaint)
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Dismiss")
+                }
+            }
+            .foregroundStyle(notice.tone == .needsYou ? Palette.caution : Palette.textDim)
+            if expanded, let detail {
+                Text(notice.action == .tryAgain ? "\(detail) Try again from conch on your Mac." : detail)
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.textFaint)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+        }
+        .transition(.opacity)
     }
 }

@@ -26,6 +26,8 @@ struct PublishedState: Decodable, Equatable {
     /// Each agent's model and effort choices and its own defaults (src/session-settings.ts). Absent from a
     /// daemon too old to change them safely, so the session menu then shows the model without a picker.
     var sessionSettings: SessionSettingsCatalog?
+    /// Where the Mac's natural voices stand (src/voice-env.ts): the list's calm line (`NaturalVoicesNotices`).
+    var naturalVoices: NaturalVoicesReport?
 
     struct Features: Decodable, Equatable {
         var deliverables: Int?
@@ -329,7 +331,7 @@ struct PublishedState: Decodable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case v, ts, mode, live, rows, dismissed, dismissedRows, reply, conversations
-        case ownerDeviceId, deliveries, sessionSettings
+        case ownerDeviceId, deliveries, sessionSettings, naturalVoices
     }
 
     init() {}
@@ -379,6 +381,7 @@ struct PublishedState: Decodable, Equatable {
         reply = try? c.decodeIfPresent(Reply.self, forKey: .reply)
         conversations = (try? c.decodeIfPresent([String: Conversation].self, forKey: .conversations)) ?? [:]
         sessionSettings = try? c.decodeIfPresent(SessionSettingsCatalog.self, forKey: .sessionSettings)
+        naturalVoices = try? c.decodeIfPresent(NaturalVoicesReport.self, forKey: .naturalVoices)
         // Element by element: one malformed outcome must not cost the others, which are the
         // only thing that can resolve a message someone is still holding.
         if var deliveriesContainer = try? c.nestedUnkeyedContainer(forKey: .deliveries) {

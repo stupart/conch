@@ -132,6 +132,8 @@ function harness(options: {
       own = "good";
     },
     prefetch: async () => {},
+    // Online, unless a test says otherwise: never a real request from a unit test.
+    probeNetwork: async () => true,
     sleep: async (ms) => {
       h.sleeps.push(ms);
       return true;
@@ -275,10 +277,11 @@ describe("which Python the worker gets", () => {
     expect(h.used).toEqual([["/legacy/bin/python", "legacy"], [h.paths.python, "conch"]]);
     expect(h.builds).toBe(1);
     // What the app shows meanwhile names the step and who is speaking.
-    expect(h.statuses).toContainEqual({
+    expect(h.statuses).toContainEqual(expect.objectContaining({
       state: "setting-up",
+      healing: "first-run",
       detail: "installing Kokoro and its packages (3/4) — using your mlx-audio install until it is ready",
-    });
+    }));
     expect(h.manager.snapshot()).toMatchObject({ state: "ready", source: "conch" });
   });
 
@@ -295,10 +298,10 @@ describe("which Python the worker gets", () => {
     });
     await h.manager.start();
     expect(usedDuringBuild).toEqual([]); // no interpreter at all while building: say
-    expect(h.statuses).toContainEqual({
+    expect(h.statuses).toContainEqual(expect.objectContaining({
       state: "setting-up",
       detail: "installing Kokoro and its packages (3/4) — speaking with macOS say until it is ready",
-    });
+    }));
     expect(h.used).toEqual([[h.paths.python, "conch"]]);
     expect(h.logs.some((line) => line.includes("runs Python 3.9.6; Kokoro needs 3.10+ — not using it"))).toBeTrue();
   });
@@ -329,65 +332,71 @@ describe("the self-check and self-repair", () => {
     expect(h.builds).toBe(1);
     expect(h.probes.filter((python) => python === h.paths.python)).toHaveLength(3); // start, recheck, after build
 
-    // Healthy environment, worker still failing (a GPU fault, say): checked, not rebuilt.
+    // Healthy environment, worker still failing (a GPU fault, say): checked, not rebuilt — the worker retries by
+    // itself, and the status says the voices are coming back rather than ready.
     clock += 11 * 60_000;
     h.manager.workerStartFailed("Error: Metal device lost");
     await h.manager.settled();
     expect(h.builds).toBe(1);
-    expect(h.logs.at(-1)).toContain("checks out; the worker failed for another reason");
+    expect(h.logs).toContain("natural voices: the voice worker failed to start (gpu, 1 in a row): Error: Metal device lost");
+    expect(h.manager.snapshot()).toMatchObject({ state: "setting-up", healing: "repair", problem: "gpu" });
   });
 
-  test("rebuilding is bounded: three failures, then off with the reason — and a restart does not try again", async () => {
+  test("rebuilding is bounded: three quick attempts, then off with the reason and when it tries again — and a restart waits for that", async () => {
     const root = tempRoot();
     const failing = async () => {
-      throw new Error("installing Kokoro and its packages failed: exit 2 — No space left on device (os error 28)");
+      throw new Error("installing Kokoro and its packages failed: exit 2 — hash mismatch for torch");
     };
-    const first = harness({ root, own: "missing", build: failing });
+    const clock = () => 1_000_000;
+    const first = harness({ root, own: "missing", build: failing, now: clock });
     await first.manager.start();
     expect(first.builds).toBe(3);
-    expect(first.sleeps).toEqual([0, 60_000, 300_000]);
+    expect(first.sleeps).toEqual([60_000, 300_000]);
     expect(first.used).toEqual([]);
     const off = first.manager.snapshot();
-    expect(off.state).toBe("off");
-    expect(off.reason).toBe("setup failed");
-    expect(off.detail).toContain("No space left on device");
+    expect(off).toMatchObject({ state: "off", off: "failed", reason: "setup failed", problem: "other" });
+    expect(off.detail).toContain("hash mismatch for torch");
+    expect(off.detail).toContain("tries again by itself at");
     expect(off.detail).toContain("conch voices setup");
+    // Never "until tomorrow": the next try is an hour away.
+    expect(off.retryAt! - readSetupFailures(first.paths)!.at).toBe(60 * 60_000);
     expect(readSetupFailures(first.paths)?.count).toBe(3);
     // Published for `conch doctor` in another process.
     expect(JSON.parse(readFileSync(first.paths.status, "utf8"))).toMatchObject({ state: "off", reason: "setup failed", pid: process.pid });
 
-    const restarted = harness({ root, own: "missing", build: failing });
+    const restarted = harness({ root, own: "missing", build: failing, now: clock });
     await restarted.manager.start();
     expect(restarted.builds).toBe(0);
     expect(restarted.manager.snapshot()).toMatchObject({ state: "off", reason: "setup failed" });
   });
 
-  test("bounded even when the failure record cannot be written (a full disk): three builds in one run, then off", async () => {
+  test("bounded even when the failure record cannot be written: three builds in one run, then off", async () => {
     const root = tempRoot();
     mkdirSync(join(root, "setup-failures.json")); // a directory: every write of the record fails
     const h = harness({
       root,
       own: "missing",
-      build: async () => { throw new Error("installing Kokoro and its packages failed: exit 2 — No space left on device"); },
+      build: async () => { throw new Error("installing Kokoro and its packages failed: exit 2 — hash mismatch for torch"); },
+      now: () => 1_000_000,
     });
     await h.manager.start();
     expect(readSetupFailures(h.paths)).toBeNull();
     expect(h.builds).toBe(3);
-    expect(h.sleeps).toEqual([0, 60_000, 300_000]);
+    expect(h.sleeps).toEqual([60_000, 300_000]);
     expect(h.manager.snapshot()).toMatchObject({ state: "off", reason: "setup failed" });
-    expect(h.manager.snapshot().detail).toContain("No space left on device");
+    expect(h.manager.snapshot().detail).toContain("hash mismatch for torch");
   });
 
   test("with a legacy tool, a failed setup keeps the legacy voices and says why conch's failed", async () => {
     const h = harness({
       own: "missing",
       legacy: "/legacy/bin/python",
-      build: async () => { throw new Error("creating the environment failed: exit 1 — network unreachable"); },
+      build: async () => { throw new Error("creating the environment failed: exit 1 — hash mismatch for numpy"); },
     });
     await h.manager.start();
     expect(h.used).toEqual([["/legacy/bin/python", "legacy"]]);
     expect(h.manager.snapshot()).toMatchObject({ state: "ready", source: "legacy" });
-    expect(h.manager.snapshot().detail).toContain("network unreachable");
+    expect(h.manager.snapshot().detail).toContain("hash mismatch for numpy");
   });
 
   test("no uv means off with a reason, not a crash or a loop", async () => {
@@ -402,7 +411,7 @@ describe("the self-check and self-repair", () => {
     });
     managers.push(manager);
     await manager.start();
-    expect(manager.snapshot()).toMatchObject({ state: "off", reason: "no uv" });
+    expect(manager.snapshot()).toMatchObject({ state: "off", off: "failed", reason: "no uv" });
   });
 
   test("CONCH_TTS=say sets nothing up and says so", async () => {
@@ -415,7 +424,7 @@ describe("the self-check and self-repair", () => {
     });
     managers.push(manager);
     await manager.start();
-    expect(manager.snapshot()).toMatchObject({ state: "off", reason: "CONCH_TTS=say" });
+    expect(manager.snapshot()).toMatchObject({ state: "off", off: "choice", reason: "CONCH_TTS=say" });
   });
 });
 
@@ -541,17 +550,34 @@ describe("the worker reports a failed start", () => {
 describe("finding the uv to build with", () => {
   const executableIn = (set: Set<string>) => (path: string) => set.has(path);
 
-  test("CONCH_UV (what the app hands its daemon) is the only answer when set", () => {
+  test("CONCH_UV (what the app hands its daemon) wins while it is there; gone (the app moved), the search goes on", () => {
     const app = "/Applications/conch.app/Contents/Helpers/uv";
     expect(findConchUv({
       env: { CONCH_UV: "/bundle/Contents/Helpers/uv" },
       executable: executableIn(new Set(["/bundle/Contents/Helpers/uv", app])),
       which: () => "/opt/homebrew/bin/uv",
     })).toEqual({ path: "/bundle/Contents/Helpers/uv", source: "CONCH_UV" });
+    // Moved to /Applications while this daemon ran: found there, never "no uv".
     expect(findConchUv({
       env: { CONCH_UV: "/missing/uv" },
       executable: executableIn(new Set([app])),
       which: () => "/opt/homebrew/bin/uv",
+    })).toEqual({ path: app, source: "conch.app" });
+    // Nowhere the app lives: the uv the environment was built with, before one on PATH.
+    expect(findConchUv({
+      env: { CONCH_UV: "/missing/uv" },
+      home: "/Users/someone",
+      execPath: "/Users/someone/.bun/bin/bun",
+      remembered: "/Volumes/Apps/conch.app/Contents/Helpers/uv",
+      executable: executableIn(new Set(["/Volumes/Apps/conch.app/Contents/Helpers/uv", "/opt/homebrew/bin/uv"])),
+      which: () => "/opt/homebrew/bin/uv",
+    })).toEqual({ path: "/Volumes/Apps/conch.app/Contents/Helpers/uv", source: "record" });
+    expect(findConchUv({
+      env: { CONCH_UV: "/missing/uv" },
+      home: "/Users/someone",
+      execPath: "/Users/someone/.bun/bin/bun",
+      executable: executableIn(new Set()),
+      which: () => null,
     })).toBeNull();
   });
 
@@ -654,7 +680,11 @@ describe("the daemon wiring", () => {
 
   test("the daemon starts its worker with no interpreter and lets voiceEnv hand one over", () => {
     const daemon = readFileSync(repo("src/daemon.ts"), "utf8").replace(/\s+/g, " ");
-    expect(daemon).toContain("const ttsWorker = new ManagedTtsWorker({ enabled: cfg.ttsEngine === \"worker\", model: cfg.ttsModel, voices: cfg.ttsVoices, speed: cfg.ttsSpeed, python: null, onStartFailed: (error) => voiceEnv?.workerStartFailed(error), log, });");
+    expect(daemon).toContain("const ttsWorker = new ManagedTtsWorker({ enabled: cfg.ttsEngine === \"worker\", model: cfg.ttsModel, voices: cfg.ttsVoices, speed: cfg.ttsSpeed, python: null, onStartFailed: (error) => voiceEnv?.workerStartFailed(error), onReady: () => voiceEnv?.workerReady(), healthCheckMs: TTS_WORKER_HEALTH_CHECK_MS, // Null (the default, 30 s) unless scripts/voice-heal-e2e.ts set CONCH_TEST_HOOKS. periodicRetryMs: voiceTestFigure(\"worker-retry-ms\") ?? undefined, log, });");
+    // Kokoro's files proved against their own hashes at start, and the download's progress, from the real cache.
+    expect(daemon).toContain("verifyModel: (repair, signal, force) => verifyModelCache({ hub: hubCacheDir(), model: cfg.ttsModel, repair, force, signal }),");
+    expect(daemon).toContain("modelBytes: () => modelCacheBytes(hubCacheDir(), cfg.ttsModel),");
+    expect(daemon).toContain("conchVersion: CONCH_VERSION,");
     expect(daemon).toContain("usePython: (python) => ttsWorker.setPython(python),");
     expect(daemon).toContain("onStatus: (status) => { naturalVoices = status; void renderSessionPanel(); },");
     expect(daemon).toContain("void voiceEnv?.start().catch(");

@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { conchHome } from "./home.ts";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { awaitWithWatchdog, type WatchdogWarning } from "./audio-watchdog.ts";
 import workerSource from "./tts-worker.py" with { type: "text" };
 
@@ -18,6 +18,12 @@ export const TTS_WORKER_PROTOCOL_VERSION = 1;
 export const TTS_WORKER_STARTUP_TIMEOUT_MS = 120_000;
 export const TTS_WORKER_RETRY_DELAYS_MS = [0, 500, 1_500, 3_000] as const;
 export const TTS_WORKER_PERIODIC_RETRY_MS = 30_000;
+/**
+ * How often a warm worker that has served nothing lately is asked for one tiny line, so a worker that died or wedged
+ * after its start is found and restarted before a turn needs it. Its WAV is deleted, never played.
+ */
+export const TTS_WORKER_HEALTH_CHECK_MS = 10 * 60_000;
+export const TTS_WORKER_HEALTH_CHECK_TIMEOUT_MS = 30_000;
 
 const MAX_PROTOCOL_BUFFER = 64 * 1024;
 const VOICE_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
@@ -150,6 +156,9 @@ interface ReadyWaiter {
 interface PendingRequest {
   id: string;
   generation: number;
+  /** The worker's own health check, which a turn's request waits behind rather than being refused as busy. */
+  health: boolean;
+  settled: Promise<unknown>;
   output: string;
   timer: ReturnType<typeof setTimeout>;
   signal?: AbortSignal;
@@ -172,6 +181,10 @@ export interface ManagedTtsWorkerOptions {
   python?: string | null;
   /** A start burst ended with the worker still down (after its bounded attempts). */
   onStartFailed?: (lastError: string) => void;
+  /** A start or restart came up warm and synthesis-ready. */
+  onReady?: () => void;
+  /** Ask an idle warm worker for one tiny line this often (0 or absent: never). A failure restarts it. */
+  healthCheckMs?: number;
   /** Complete command test seam; the production command is assembled when omitted. */
   command?: string[];
   spawn?: (command: string[]) => TtsWorkerProcess;
@@ -288,12 +301,17 @@ export function resolveMlxAudioPython(explicit: string, serverBin: string, home 
   }
 }
 
+/** Beside the daemon's log (CONCH_LOG_FILE), so a daemon run elsewhere (the e2e test) never writes the live one's. */
+export function ttsWorkerStderrPath(env: Readonly<Record<string, string | undefined>> = process.env): string {
+  return join(dirname(env.CONCH_LOG_FILE || "/tmp/conch-daemon.log"), "conch-kokoro-worker.err.log");
+}
+
 function defaultSpawn(command: string[]): TtsWorkerProcess {
   return Bun.spawn(command, {
     stdin: "pipe",
     stdout: "pipe",
     // Never pipe diagnostics without a reader: a full stderr pipe can wedge Python.
-    stderr: Bun.file("/tmp/conch-kokoro-worker.err.log"),
+    stderr: Bun.file(ttsWorkerStderrPath()),
     env: { ...process.env, PYTHONUNBUFFERED: "1" },
   }) as unknown as TtsWorkerProcess;
 }
@@ -318,6 +336,9 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
   private recovery: Promise<boolean> | null = null;
   private periodicTimer: ReturnType<typeof setTimeout> | null = null;
   private unloadTimer: ReturnType<typeof setTimeout> | null = null;
+  private healthTimer: ReturnType<typeof setInterval> | null = null;
+  /** When the worker last answered: a start, a line, or a health check. */
+  private lastAnswerAt = 0;
   private requestCounter = 0;
   private python: string | null;
   private readonly outputFiles = new Set<string>();
@@ -420,8 +441,14 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
   }
 
   async synthesize(request: TtsWorkerSynthesisRequest): Promise<TtsWorkerSynthesisResult> {
+    return this.request(request, false);
+  }
+
+  private async request(request: TtsWorkerSynthesisRequest, health: boolean): Promise<TtsWorkerSynthesisResult> {
+    // A turn never loses its natural voice to the health check: it waits the tiny line out (bounded by its timeout).
+    if (!health && this.pending?.health) await this.pending.settled.catch(() => {});
     if (!this.isReady() || !this.child) {
-      this.requestRecovery("request while unavailable");
+      if (!health) this.requestRecovery("request while unavailable");
       throw new TtsWorkerUnavailableError();
     }
     if (this.pending) throw new TtsWorkerUnavailableError("Kokoro worker is busy");
@@ -459,6 +486,8 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
     this.pending = {
       id,
       generation,
+      health,
+      settled: result,
       output,
       timer,
       signal: request.signal,
@@ -508,6 +537,7 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
     this.lifecycle.abort();
     this.clearPeriodic();
     this.clearUnloadTimer();
+    this.clearHealth();
     this.readyWaiter?.reject(new TtsWorkerUnavailableError("Kokoro worker stopped"));
     this.readyWaiter = null;
     this.failPending(new TtsWorkerUnavailableError("Kokoro worker stopped"));
@@ -537,6 +567,7 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
     if (this.recovery || this.pending) return false;
     this.status = "unloaded";
     this.clearPeriodic();
+    this.clearHealth();
     this.retireCurrent(false);
     this.log(`kokoro worker ${why}`);
     return true;
@@ -591,10 +622,13 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
         this.status = "ready";
         this.lastError = null;
         this.voices = frame.voices.filter((voice) => VOICE_NAME.test(voice));
+        this.lastAnswerAt = Date.now();
         this.log(
           `kokoro worker warm and synthesis-ready (pid ${this.child?.pid ?? frame.pid ?? "?"}, `
           + `load ${Math.round(frame.load_ms ?? 0)}ms, warmup ${Math.round(frame.warmup_ms ?? 0)}ms)`,
         );
+        this.armHealth();
+        try { this.options.onReady?.(); } catch {}
         return true;
       } catch (error) {
         if (this.stopped()) return false;
@@ -847,6 +881,7 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
   private completePending(result: TtsWorkerSynthesisResult): void {
     const pending = this.takePending();
     if (!pending) return;
+    this.lastAnswerAt = Date.now();
     this.outputFiles.delete(pending.output); // ownership transfers to speak.ts
     pending.resolve(result);
   }
@@ -881,5 +916,41 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
   private clearPeriodic(): void {
     if (this.periodicTimer) clearTimeout(this.periodicTimer);
     this.periodicTimer = null;
+  }
+
+  /**
+   * Continuous, not only at start: every `healthCheckMs`, a warm worker that has answered nothing in that long is asked
+   * for one tiny line. It answers, and its WAV is deleted unplayed; it errs, and it is restarted; it hangs, and the
+   * request's own watchdog restarts it. A restart that fails reports through onStartFailed like any other, so the
+   * voices heal from there (voice-env.ts).
+   */
+  private armHealth(): void {
+    const every = this.options.healthCheckMs ?? 0;
+    if (every <= 0 || this.healthTimer || this.stopped()) return;
+    this.healthTimer = setInterval(() => void this.healthCheck(every), Math.max(10, Math.min(every, 60_000)));
+    this.healthTimer.unref?.();
+  }
+
+  private clearHealth(): void {
+    if (this.healthTimer) clearInterval(this.healthTimer);
+    this.healthTimer = null;
+  }
+
+  private async healthCheck(every: number): Promise<void> {
+    if (!this.isReady() || this.pending || this.recovery || Date.now() - this.lastAnswerAt < every) return;
+    const voice = this.voices[0] ?? this.options.voices[0] ?? "af_heart";
+    try {
+      const result = await this.request({
+        text: "Ready.",
+        voice,
+        speed: this.options.speed,
+        timeoutMs: TTS_WORKER_HEALTH_CHECK_TIMEOUT_MS,
+      }, true);
+      try { unlinkSync(result.path); } catch {}
+      if (result.samples <= 0) this.hardRestart("health check produced no audio");
+    } catch (error) {
+      if (error instanceof TtsWorkerInferenceError) this.hardRestart(`health check failed: ${error.message}`);
+      // A timeout has restarted it already; unavailable means it is restarting or unloaded.
+    }
   }
 }

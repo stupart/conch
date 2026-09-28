@@ -163,9 +163,18 @@ private struct SessionVoicesSection: View {
 
                     if let natural {
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(natural.headline)
-                                .font(ConchTypography.font(size: 12.5, weight: .medium))
-                                .foregroundStyle(natural.state == "ready" ? ConchPalette.textPrimary : ConchPalette.textDim)
+                            HStack(spacing: 10) {
+                                Text(natural.headline)
+                                    .font(ConchTypography.font(size: 12.5, weight: .medium))
+                                    .foregroundStyle(natural.state == "ready" ? ConchPalette.textPrimary : ConchPalette.textDim)
+                                // Where the window's "Why?" leads: the same Try again as its line, beside the reason.
+                                if natural.canTryAgain {
+                                    Button("Try again") { NaturalVoicesNoticeStore.shared.tryAgain() }
+                                        .buttonStyle(.plain)
+                                        .font(ConchTypography.font(size: 11, weight: .medium))
+                                        .foregroundStyle(ConchPalette.brandCyan)
+                                }
+                            }
                             Text(natural.detail)
                                 .font(ConchTypography.font(size: 11))
                                 .foregroundStyle(ConchPalette.textDim)
@@ -312,14 +321,26 @@ private struct NaturalVoicesStatus: Decodable, Equatable, Sendable {
     let reason: String?
     /// One sentence: which step, from where, or why not.
     let detail: String
+    /// Setting up: 0–99 across the whole of it.
+    let percent: Int?
+    /// Off, and why: "choice", "unsupported" or "failed".
+    let off: String?
+    /// Waiting before the next try: "network", "space" or "retry".
+    let waiting: String?
 
     var headline: String {
         switch state {
         case "ready": return "Natural voices: ready"
-        case "setting-up": return "Natural voices: setting up…"
+        case "setting-up": return "Natural voices: setting up…" + (percent.map { " \($0)%" } ?? "")
         case "checking": return "Natural voices: checking…"
         default: return "Natural voices: off" + (reason.map { " (\($0))" } ?? "")
         }
+    }
+
+    /// Stopped and not by choice or a limit of this Mac, or waiting on something: Try again starts it over now.
+    var canTryAgain: Bool {
+        if state == "off" { return off != "choice" && off != "unsupported" && reason != "needs Apple silicon" && reason?.hasPrefix("CONCH_TTS") != true }
+        return state == "setting-up" && waiting != nil
     }
 }
 
