@@ -1,4 +1,5 @@
 import Combine
+import ConchDesign
 import Foundation
 
 struct SessionStaticContent: Equatable {
@@ -6,7 +7,14 @@ struct SessionStaticContent: Equatable {
     let text: String
     let isPlaceholder: Bool
 
-    static func fallback(for row: SessionRow?) -> SessionStaticContent {
+    /// `transcript` is what reading the row's transcript found. Only `.empty` may say "Nothing
+    /// from … yet": this used to be the sentence for every row without a snippet — before its
+    /// transcript was read, and while its newest prompt was unanswered — so a session mid-turn read
+    /// as an empty one (`ConversationPlaceholder`).
+    static func fallback(
+        for row: SessionRow?,
+        transcript: ConversationPlaceholder.Transcript = .unread
+    ) -> SessionStaticContent {
         guard let row else {
             return SessionStaticContent(
                 rowID: nil,
@@ -27,7 +35,7 @@ struct SessionStaticContent: Equatable {
         let name = row.label.isEmpty ? row.id : row.label
         return SessionStaticContent(
             rowID: row.id,
-            text: "Nothing from \(name) yet. Send a message below to start.",
+            text: ConversationPlaceholder.text(name: name, transcript: transcript),
             isPlaceholder: true
         )
     }
@@ -70,30 +78,38 @@ final class TranscriptContentModel: ObservableObject {
         guard let row else { return }
         let rawPath = row.transcriptPath?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !rawPath.isEmpty else { return }
+        guard !rawPath.isEmpty else {
+            content = SessionStaticContent.fallback(for: row, transcript: .unreadable)
+            return
+        }
 
         while !Task.isCancelled {
             let result = await TranscriptReplyCache.shared.reply(at: rawPath)
             guard !Task.isCancelled, currentWatchID == watchID else { return }
 
             switch result {
-            case let .loaded(reply):
-                let next = if let reply, !reply.isEmpty {
+            case let .loaded(found):
+                let next = switch found {
+                case let .reply(reply):
                     SessionStaticContent(
                         rowID: row.id,
                         text: reply,
                         isPlaceholder: false
                     )
-                } else {
-                    SessionStaticContent.fallback(for: row)
+                case .awaitingReply:
+                    SessionStaticContent.fallback(for: row, transcript: .awaitingReply)
+                case .empty:
+                    SessionStaticContent.fallback(for: row, transcript: .empty)
                 }
                 if next != content {
                     content = next
                 }
             case .unavailable:
                 // Keep an already-displayed reply through a transient stat/read
-                // failure. A newly selected row already has an immediate fallback.
-                break
+                // failure. A row that has shown nothing yet says it could not be read.
+                if content == SessionStaticContent.fallback(for: row) {
+                    content = SessionStaticContent.fallback(for: row, transcript: .unreadable)
+                }
             }
 
             do {
@@ -105,8 +121,18 @@ final class TranscriptContentModel: ObservableObject {
     }
 }
 
+/// What the newest turn of a transcript holds.
+enum TranscriptLastReply: Equatable, Sendable {
+    /// The agent's latest words.
+    case reply(String)
+    /// Someone asked, and nothing has been said since: the agent is on it.
+    case awaitingReply
+    /// Nothing asked and nothing said, all the way to the start of the file.
+    case empty
+}
+
 private enum TranscriptLoadResult: Sendable {
-    case loaded(String?)
+    case loaded(TranscriptLastReply)
     case unavailable
 }
 
@@ -117,11 +143,11 @@ private struct TranscriptFileVersion: Hashable, Sendable {
 
 private struct TranscriptCacheEntry: Sendable {
     let version: TranscriptFileVersion
-    let reply: String?
+    let reply: TranscriptLastReply
 }
 
 private enum TranscriptTailRead: Sendable {
-    case success(String?)
+    case success(TranscriptLastReply)
     case failure
 }
 
@@ -223,8 +249,8 @@ private enum TranscriptTailReader {
         )
     }
 
-    static func lastAssistantReply(at path: String, fileSize: Int64) throws -> String? {
-        guard fileSize > 0 else { return nil }
+    static func lastAssistantReply(at path: String, fileSize: Int64) throws -> TranscriptLastReply {
+        guard fileSize > 0 else { return .empty }
         let filename = URL(fileURLWithPath: path).lastPathComponent
         if filename.hasPrefix("rollout-"), filename.hasSuffix(".jsonl") {
             return try lastCodexReply(at: path, fileSize: fileSize)
@@ -232,12 +258,17 @@ private enum TranscriptTailReader {
         return try lastClaudeReply(at: path, fileSize: fileSize)
     }
 
-    private static func lastClaudeReply(at path: String, fileSize: Int64) throws -> String? {
+    private static func lastClaudeReply(at path: String, fileSize: Int64) throws -> TranscriptLastReply {
         var newestFirst: [String] = []
-        _ = try scanLinesBackward(at: path, fileSize: fileSize) { line in
+        // Anything said at all, either way: what tells an unanswered prompt from an empty session.
+        var saidAnything = false
+        let reachedPrompt = try scanLinesBackward(at: path, fileSize: fileSize) { line in
             guard let entry = jsonObject(from: line) else { return false }
             let type = entry["type"] as? String
             let role = entry["role"] as? String
+            if type == "user" || role == "user" || type == "assistant" || role == "assistant" {
+                saidAnything = true
+            }
 
             // Claude Code records TOOL RESULTS as type:"user" entries. Treating
             // any user entry as the turn boundary meant the scan stopped at the
@@ -286,7 +317,8 @@ private enum TranscriptTailReader {
         let reply = newestFirst.reversed()
             .joined(separator: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return reply.isEmpty ? nil : reply
+        if !reply.isEmpty { return .reply(reply) }
+        return reachedPrompt || saidAnything ? .awaitingReply : .empty
     }
 
     /// A user entry whose content is only tool results — Claude Code's record of
@@ -304,16 +336,19 @@ private enum TranscriptTailReader {
         return objects.allSatisfy { ($0["type"] as? String) == "tool_result" }
     }
 
-    private static func lastCodexReply(at path: String, fileSize: Int64) throws -> String? {
+    private static func lastCodexReply(at path: String, fileSize: Int64) throws -> TranscriptLastReply {
         var fallback: String?
         var authoritative: String?
+        var saidAnything = false
 
-        _ = try scanLinesBackward(at: path, fileSize: fileSize) { line in
+        let reachedPrompt = try scanLinesBackward(at: path, fileSize: fileSize) { line in
             guard let entry = jsonObject(from: line) else { return false }
 
             if entry["type"] as? String == "event_msg",
                let payload = entry["payload"] as? [String: Any] {
-                switch payload["type"] as? String {
+                let kind = payload["type"] as? String
+                if kind == "user_message" || kind == "agent_message" || kind == "task_complete" { saidAnything = true }
+                switch kind {
                 case "task_complete":
                     if let message = payload["last_agent_message"] as? String {
                         authoritative = message
@@ -354,9 +389,9 @@ private enum TranscriptTailReader {
         let reply = (authoritative ?? fallback)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard let reply, !reply.isEmpty else {
-            return nil
+            return reachedPrompt || saidAnything ? .awaitingReply : .empty
         }
-        return reply
+        return .reply(reply)
     }
 
     @discardableResult

@@ -214,7 +214,7 @@ describe("the iPhone reads recorded history", () => {
     expect(stack).not.toContain('Button("Retry") { history.retry() }');
     expect(stack).not.toContain('Text("Loading earlier messages…")');
     expect(stack).not.toContain('"Earlier messages not shown"');
-    expect(store).toContain("HistoryRetry.delay(afterFailures: paging.failures)");
+    expect(store).toContain("guard let delay = paging.retryDelay else {");
     // The one thing a person can do about an off record store.
     expect(history).toContain("conch set records true");
   });

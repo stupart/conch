@@ -36,3 +36,20 @@ export function historySessionAlias(ownerDeviceId: string, requested: string, se
   const record = recordSessionFor(ownerDeviceId, session, { sessionId: requested });
   return record && record.nativeId !== requested ? record.id : requested;
 }
+
+/**
+ * A history read's session as the record knows it, resolved against the rows on screen —
+ * sessions, and the agents listed under them (C4).
+ *
+ * An agent row is `agent-<id>` on the wire and `<parent>/agent-<id>` in the record, and only
+ * its live entry (its transcript path) says which parent. Resolving against the sessions alone
+ * left every agent row's read `session-not-found`: an agent past the published budget had no
+ * live window and no history either, however much it had done.
+ */
+export function historySessionFor(
+  ownerDeviceId: string,
+  requested: string,
+  live: { sessions: ReadonlyMap<string, SessionInfo>; agents: ReadonlyMap<string, SessionInfo> },
+): string {
+  return historySessionAlias(ownerDeviceId, requested, live.sessions.get(requested) ?? live.agents.get(requested));
+}

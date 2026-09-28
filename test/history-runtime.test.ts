@@ -75,6 +75,37 @@ test("a read completing after disable returns off and worker errors expose no ra
   expect(JSON.stringify(response)).not.toContain("PRIVATE");
 });
 
+test("a read the daemon's shutdown catches is unavailable, never off: a restart is not records being off", async () => {
+  // A deploy, `conch restart` and the app replacing a frozen daemon all close the runtime while
+  // the apps are reading. Off is the one answer they take as final — the Mac dropped every page it
+  // held and never asked again — so a read in flight, or one that arrives while closing, must say
+  // the daemon is going away, which every reader retries against the next one.
+  let release!: (response: HistoryResponse) => void;
+  const pending = new Promise<HistoryResponse>((resolve) => { release = resolve; });
+  const f = fixture(async () => pending);
+  await f.runtime.setEnabled(true);
+  const inFlight = f.runtime.historyPage({ session: "indexed" });
+  const closing = f.runtime.close();
+  const arriving = f.runtime.historyPage({ session: "indexed" });
+  release(page);
+  await closing;
+  for (const response of [await inFlight, await arriving, await f.runtime.historyItem({ session: "indexed", item: "item" })]) {
+    expect(response).toMatchObject({ kind: "history-error", code: "unavailable" });
+    expect(response.kind).not.toBe("history-off");
+  }
+
+  // And a worker that dies under the shutdown says the same.
+  let fail!: (error: Error) => void;
+  const stopped = new Promise<HistoryResponse>((_, reject) => { fail = reject; });
+  const dying = fixture(async () => stopped);
+  await dying.runtime.setEnabled(true);
+  const read = dying.runtime.historyPage({ session: "indexed" });
+  const shutdown = dying.runtime.close();
+  fail(Error("worker stopped"));
+  await shutdown;
+  expect(await read).toMatchObject({ kind: "history-error", code: "unavailable" });
+});
+
 test("oversized worker responses cannot escape through the daemon service", async () => {
   const f = fixture(async () => ({ ...page, changeCursor: "x".repeat(70_000) }));
   await f.runtime.setEnabled(true);

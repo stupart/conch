@@ -332,8 +332,9 @@ describe("the daemon and the Mac app wire it up", () => {
 
     const nested = body.indexOf("subagentSessions(session, session.transcriptPath ?? findTranscript(");
     const rows = body.indexOf("sessions: visible,");
-    const conversations = body.indexOf("...live.slice(0, MAX_PUBLISHED_CONVERSATIONS),");
-    const agentConversations = body.indexOf(".slice(0, MAX_PUBLISHED_AGENT_CONVERSATIONS),");
+    // Each budget chosen by activity (`sessionsToPublish`), not by registry order.
+    const conversations = body.indexOf("...sessionsToPublish(live, MAX_PUBLISHED_CONVERSATIONS, (id) => sessionStates.get(id)?.at),");
+    const agentConversations = body.indexOf("...sessionsToPublish(nested, MAX_PUBLISHED_AGENT_CONVERSATIONS, (id) => sessionStates.get(id)?.at),");
     // The PUBLISHED model, not only the ordering pass: `sessions: visible` matched that one
     // while the model took `live`, and no agent row ever reached either app (2026-09-23).
     const model = body.indexOf("const model = buildPanelModel({");

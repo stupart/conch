@@ -35,11 +35,15 @@ public enum HistoryRetry {
     /// Tries the reader makes on its own before leaving the next one to the reader's scrolling.
     public static let attempts = 6
 
+    /// The longest pause between tries.
+    public static let longest: TimeInterval = 30
+
     /// How long to wait after `failures` reads have failed in a row: 1, 2, 4, 8, 16, then 30 s.
-    /// Nil before any failure and once the tries are spent.
-    public static func delay(afterFailures failures: Int) -> TimeInterval? {
-        guard failures > 0, failures <= attempts else { return nil }
-        return min(30, pow(2, Double(failures - 1)))
+    /// Nil before any failure and once the tries are spent — unless the reader is `holdingNothing`,
+    /// which goes on asking every 30 s (`HistoryPaging.retryDelay`).
+    public static func delay(afterFailures failures: Int, holdingNothing: Bool = false) -> TimeInterval? {
+        guard failures > 0, failures <= attempts || holdingNothing else { return nil }
+        return min(longest, pow(2, Double(failures - 1)))
     }
 }
 

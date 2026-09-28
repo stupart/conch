@@ -2419,10 +2419,15 @@ private struct ConversationPane: View {
         // agree with it about which session is "showing" — the
         // terminal dashboard holds its own cursor, and every attempt
         // to reconcile them left the stack silently falling back.
-        if let row,
-           let conversation = state?.conversations?[row.id] ?? state?.conversation,
-           !conversation.items.isEmpty,
-           conversation.sessionId == row.id {
+        //
+        // And when the daemon has none for this session, still the stack, drawn from the record
+        // (`ConversationSource`). The daemon publishes the busiest eight sessions' windows, so the
+        // one in front of you can have none while its record holds every message — and the old
+        // document's sentence for that was "Nothing from … yet" (Tyler, 2026-09-28: "it says
+        // there's nothing even when there's an entire convo in the terminal"). The document is
+        // only for a record that is off or holds nothing.
+        if let row {
+            SessionConversationGate(history: store.history, sessionId: row.id, published: publishedConversation(for: row)) { conversation in
             ConversationStackView(
                 conversation: conversation,
                 history: store.history,
@@ -2514,23 +2519,42 @@ private struct ConversationPane: View {
                 }
             )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            ConversationTextView(
-                attributedText: document.text,
-                scrollTarget: document.scrollTarget,
-                contentID: document.contentID,
-                onOpenLink: { link in
-                    fallbackLinkFailure = nil
-                    store.openLink(link, cwd: focusedRow?.cwd, rowId: focusedRow?.id) {
-                        fallbackLinkFailure = $0
-                    }
-                }
-            )
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .overlay(alignment: .bottom) {
-                LinkFailureLine(message: $fallbackLinkFailure)
+            } fallback: {
+                fallbackDocument
             }
+        } else {
+            fallbackDocument
+        }
+    }
+
+    /// The live window the daemon published for THIS session, if it published one.
+    ///
+    /// The session check is not paranoia: an older daemon publishes one conversation at a time
+    /// in `conversation`, so without it, focusing a second session would show it the first one's
+    /// messages under its own name.
+    private func publishedConversation(for row: SessionRow) -> Conversation? {
+        guard let conversation = state?.conversations?[row.id] ?? state?.conversation,
+              conversation.sessionId == row.id else { return nil }
+        return conversation
+    }
+
+    /// The old single-reply document: for no session, or one whose record is off or empty.
+    private var fallbackDocument: some View {
+        ConversationTextView(
+            attributedText: document.text,
+            scrollTarget: document.scrollTarget,
+            contentID: document.contentID,
+            onOpenLink: { link in
+                fallbackLinkFailure = nil
+                store.openLink(link, cwd: focusedRow?.cwd, rowId: focusedRow?.id) {
+                    fallbackLinkFailure = $0
+                }
+            }
+        )
+        .textSelection(.enabled)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .bottom) {
+            LinkFailureLine(message: $fallbackLinkFailure)
         }
     }
 
@@ -3127,5 +3151,29 @@ private struct AgentGroup: View {
         // `.row.child{padding-left:30px}`, the lab's indent for anything under a session.
         .padding(.leading, 30)
         .padding(.bottom, 2)
+    }
+}
+
+/// Which conversation a session's pane draws (`ConversationSource`), watching the history reader
+/// so the choice follows what the record answers: one that is off, or holds nothing, gives the
+/// pane back to the single-reply document.
+///
+/// Its own view so that only this — not the whole dashboard — is redrawn when the reader moves.
+/// The live and recorded cases are ONE branch, so a session whose live window comes or goes (it
+/// falls out of the daemon's budget, a publish misses it) keeps its stack, its scroll position
+/// and its reader instead of being torn down and rebuilt.
+private struct SessionConversationGate<Stack: View, Fallback: View>: View {
+    @ObservedObject var history: HistoryStore
+    let sessionId: String
+    let published: Conversation?
+    @ViewBuilder let stack: (Conversation) -> Stack
+    @ViewBuilder let fallback: () -> Fallback
+
+    var body: some View {
+        if ConversationSource.of(publishedItems: published?.items.count ?? 0, session: sessionId, reader: history.paging) == .neither {
+            fallback()
+        } else {
+            stack(published ?? Conversation(sessionId: sessionId))
+        }
     }
 }

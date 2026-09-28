@@ -170,8 +170,22 @@ export class RecordsRuntime {
     return this.readHistory({ ...request, kind: "history-item" });
   }
 
+  /**
+   * What a read answers when the store cannot serve it: off only when the SETTING is off.
+   *
+   * A daemon that is closing is not one whose records are off. `close()` clears `enabled` as
+   * it stops the worker, so every read in flight across a restart — a deploy, `conch restart`,
+   * the app replacing a frozen daemon — used to come back `history-off`, and the apps take off
+   * as final: the Mac dropped every recorded page it held, said "History isn't recorded for
+   * this session", and never asked again (a headless daemon killed mid-read answered six reads
+   * that way, 9–52 ms after SIGTERM). Restarting is `unavailable`, which every reader retries.
+   */
+  private notServing(): HistoryResponse {
+    return this.closed ? historyError("unavailable", "conch is restarting; retry the read") : historyOff();
+  }
+
   private async readHistory(request: HistoryRequest): Promise<HistoryResponse> {
-    if (!this.enabled || this.closed) return historyOff();
+    if (!this.enabled || this.closed) return this.notServing();
     const parsed = validateHistoryRequest(request);
     if (!parsed.ok) return historyError("invalid-request", parsed.err);
     const client = this.client;
@@ -184,7 +198,7 @@ export class RecordsRuntime {
       const response = kind === "history-page"
         ? await client.historyPage(query as HistoryPageRequest, this.options.ownerDeviceId)
         : await client.historyItem(query as HistoryItemRequest, this.options.ownerDeviceId);
-      if (!this.enabled || this.closed) return historyOff();
+      if (!this.enabled || this.closed) return this.notServing();
       if (this.client !== client) return historyError("unavailable", "history worker changed; retry the read");
       const checked = validateHistoryResponse(response);
       if (checked.ok && checked.value.kind !== kind && checked.value.kind !== "history-error" && checked.value.kind !== "history-off") {
@@ -193,7 +207,7 @@ export class RecordsRuntime {
       return checked.ok ? checked.value : historyError("response-too-large", "history worker returned an invalid or oversized response");
     } catch {
       this.detach(client);
-      return !this.enabled || this.closed ? historyOff() : historyError("unavailable", "history read failed");
+      return !this.enabled || this.closed ? this.notServing() : historyError("unavailable", "history read failed");
     } finally { this.historyRequests--; }
   }
 
