@@ -336,7 +336,7 @@ function harness(root: string, options: {
     statusPath: join(root, "speech-engine.json"),
     failuresPath: join(root, "models", "fetch-failures.json"),
     whisperModel: pin,
-    tmux: () => null,
+    tmux: () => ({ path: "/app/Contents/Helpers/tmux", source: "conch.app", found: true }),
     fetchModel: async (model, dest, fetchOptions) => {
       fetches.push(dest);
       await (options.fetch ?? (async (_m, d) => { mkdirSync(join(root, "models"), { recursive: true }); writeFileSync(d, "model"); }))(model, dest, fetchOptions);
@@ -372,7 +372,8 @@ describe("the daemon fetches what the app cannot carry, and says where it stands
     expect(last.state).toBe("ready");
     expect(last.parts.model.source).toBe("conch");
     expect(last.parts.capture).toEqual({ source: "conch.app", path: "/app/sox" });
-    expect(last.parts.tmux).toEqual({ found: false });
+    // Which tmux conch's own sessions run in, and from where — published beside the engine.
+    expect(last.parts.tmux).toEqual({ found: true, path: "/app/Contents/Helpers/tmux", source: "conch.app" });
     expect(last.daemon).toEqual({ version: "9.9.9", path: "/app/conch-daemon" });
     expect(describeSpeechEngine(last)).toStartWith("Speech engine: ready — whisper from the app, model from conch's download, capture from the app");
     // Written with our pid, for `conch doctor`.

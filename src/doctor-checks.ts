@@ -23,6 +23,7 @@ import {
   type EnginePart,
   type SpeechEngineStatus,
 } from "./speech-engine.ts";
+import { describeTmux, resolveTmux, type TmuxBinary } from "./tmux-binary.ts";
 
 export const MICROPHONE_PROBE_DURATION_MS = 300;
 export const TTS_PROBE_WORD = "Ready.";
@@ -33,7 +34,7 @@ const TTS_PROBE_TIMEOUT_MS = 5_000;
 export interface DoctorProbeResult {
   /** Live probes are advisory: callers should display this, not use it as the doctor's exit status. */
   ok: boolean;
-  label: "microphone" | "TTS" | "agents" | "conch" | "whisper-server" | "kokoro" | "natural voices" | "speech engine";
+  label: "microphone" | "TTS" | "agents" | "conch" | "whisper-server" | "kokoro" | "natural voices" | "speech engine" | "tmux";
   message: string;
   action?: string;
 }
@@ -123,6 +124,32 @@ export function checkSpeechEngine(cfg: Pick<Config, "speechEngine">, deps: Speec
     ...(modelToFetch
       ? { action: `The daemon downloads the ${WHISPER_MODEL.label} model (574 MB) on its first run; \`conch setup\` does it now.` }
       : {}),
+  };
+}
+
+export interface TmuxProbeDeps {
+  published?: () => (SpeechEngineStatus & { pid: number }) | null;
+  resolve?: () => TmuxBinary;
+}
+
+/**
+ * Which tmux conch's own sessions run in (tmux-binary.ts): the live daemon's
+ * answer when one published it — it resolves from the app that launched it —
+ * else where it resolves from here. Informational: tmux is optional, but a
+ * CONCH_TMUX that names nothing is a setting to fix.
+ */
+export function checkTmux(deps: TmuxProbeDeps = {}): DoctorProbeResult {
+  const label = "tmux" as const;
+  const published = (deps.published ?? readPublishedEngineStatus)();
+  // A daemon from before the app carried tmux published no source; resolve here instead.
+  const live = published?.parts?.tmux;
+  const tmux = live && typeof live.source === "string" ? live : (deps.resolve ?? resolveTmux)();
+  const broken = tmux.source === "explicit" && !tmux.found;
+  return {
+    ok: !broken,
+    label,
+    message: `${describeTmux(tmux)}${live === tmux ? ` (daemon ${published!.pid})` : ""}.`,
+    ...(broken ? { action: "Point CONCH_TMUX at a tmux, or unset it to use the app's." } : {}),
   };
 }
 

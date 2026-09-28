@@ -3,6 +3,7 @@ import { open } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { conchHome } from "./home.ts";
 import { breadcrumb } from "./loop-watchdog.ts";
+import type { TmuxBinary } from "./tmux-binary.ts";
 
 /**
  * conch's speech engine is seashell's: sox captures the microphone, whisper.cpp
@@ -82,7 +83,7 @@ export interface ResolveEngineOptions {
   brewPrefixes?: readonly string[];
 }
 
-function isExecutableFile(path: string): boolean {
+export function isExecutableFile(path: string): boolean {
   try {
     accessSync(path, constants.X_OK);
     return statSync(path).isFile();
@@ -469,8 +470,12 @@ export interface SpeechEngineStatus {
     model: { source: EngineSource; path: string };
     vad: { source: EngineSource; path: string };
     capture: { source: EngineSource; path: string };
-    /** Optional: sessions in tmux get pane injection; everything else is typed or pasted. */
-    tmux: { found: boolean; path?: string };
+    /**
+     * The tmux conch's own sessions run in (tmux-binary.ts): CONCH_TMUX, the
+     * app's, Homebrew's or PATH's. Optional: without one, sessions are typed
+     * into through their own window, or pasted.
+     */
+    tmux: TmuxBinary;
   };
   /** The daemon publishing this — the app's bundled one, a checkout, or Homebrew's. */
   daemon: { version: string; path: string };
@@ -486,7 +491,8 @@ export interface SpeechEngineManagerOptions {
   failuresPath?: string;
   whisperModel?: PinnedModel;
   vadModel?: PinnedModel;
-  tmux?: () => string | null;
+  /** Which tmux conch runs its own sessions with (`resolveTmux`), read each time the status is composed. */
+  tmux: () => TmuxBinary;
   fetchModel?: (model: PinnedModel, dest: string, options: FetchModelOptions) => Promise<void>;
   retryDelaysMs?: readonly number[];
   maxFailures?: number;
@@ -599,7 +605,7 @@ export class SpeechEngineManager {
 
   private compose(head: Pick<SpeechEngineStatus, "state" | "detail"> & Partial<Pick<SpeechEngineStatus, "reason" | "progress" | "problem" | "retryAt">>): SpeechEngineStatus {
     const engine = this.options.engine;
-    const tmux = (this.options.tmux ?? (() => Bun.which("tmux")))();
+    const tmux = this.options.tmux();
     return {
       state: head.state,
       ...(head.reason ? { reason: head.reason } : {}),
@@ -613,7 +619,7 @@ export class SpeechEngineManager {
         model: { source: engine.whisperModel.source, path: engine.whisperModel.path },
         vad: { source: engine.vadModel.source, path: engine.vadModel.path },
         capture: { source: engine.sox.source, path: engine.sox.path },
-        tmux: tmux ? { found: true, path: tmux } : { found: false },
+        tmux: { found: tmux.found, path: tmux.path, source: tmux.source },
       },
       daemon: { ...this.options.daemon },
     };

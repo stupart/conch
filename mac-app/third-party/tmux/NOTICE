@@ -1,0 +1,23 @@
+conch.app carries tmux 3.7c (https://github.com/tmux/tmux) at
+Contents/Helpers/tmux. conch runs it as a separate program to host its own
+sessions; nothing of tmux is linked into conch.
+
+tmux is distributed under the ISC licence: see COPYING beside this notice,
+unmodified from the tmux source tree. The code tmux compiles in from its
+compat/ directory on macOS carries its own ISC and BSD notices, collected
+verbatim in LICENSE.compat.
+
+That one binary has three libraries linked into it statically, each under its
+own licence, included beside this notice unmodified from its source tree:
+
+  libevent 2.1.13-stable  BSD 3-clause (and the notices of its parts)  LICENSE.libevent
+  jemalloc 5.3.1          BSD 2-clause                                  COPYING.jemalloc
+  utf8proc 2.11.3         MIT, and the Unicode data licence             LICENSE.utf8proc.md
+
+The terminal database is read through macOS's own ncurses
+(/usr/lib/libncurses.5.4.dylib), which conch does not ship.
+
+None of these licences asks for the source to travel with the binary. It was
+built with no changes to any source: the pinned versions, the sha256 of every
+source tarball and the exact configure and make invocations are in
+scripts/fetch-tmux.sh in conch's source.

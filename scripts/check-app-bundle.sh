@@ -1,7 +1,8 @@
 #!/bin/bash
 # Verify that a built conch.app carries everything it needs to run with nothing
-# else installed: its daemon and seashell's speech engine, each signed like the
-# app, with the entitlements each needs, for the app's own architectures.
+# else installed: its daemon, seashell's speech engine and the tmux its sessions
+# run in, each signed like the app, with the entitlements each needs, for the
+# app's own architectures.
 #
 #   scripts/check-app-bundle.sh <conch.app> <bundled|checkout>
 #
@@ -17,6 +18,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HELPERS="$APP/Contents/Helpers"
 RESOURCES="$APP/Contents/Resources"
 VAD_SHA256=2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987
+TMUX_VERSION="$(sed -n 's/^TMUX_VERSION=//p' "$REPO_ROOT/scripts/fetch-tmux.sh")"
 
 fail() { echo "error: $*" >&2; exit 1; }
 
@@ -25,7 +27,7 @@ source_declared="$(/usr/libexec/PlistBuddy -c 'Print :ConchDaemonSource' "$APP/C
   || fail "$APP declares ConchDaemonSource '$source_declared', expected '$EXPECT_SOURCE'"
 
 app_archs="$(lipo -archs "$APP/Contents/MacOS/conch-mac" | tr ' ' '\n' | sort | xargs)"
-for helper in conch-daemon whisper-cli whisper-server sox; do
+for helper in conch-daemon whisper-cli whisper-server sox tmux; do
   path="$HELPERS/$helper"
   [[ -x "$path" ]] || fail "$path is missing — its Embed build phase did not run"
   codesign --verify --strict "$path" || fail "$path is not validly signed"
@@ -46,7 +48,9 @@ vad="$RESOURCES/models/ggml-silero-v6.2.0.bin"
 [[ -f "$vad" ]] || fail "$vad is missing"
 echo "$VAD_SHA256  $vad" | shasum -a 256 -c - >/dev/null || fail "$vad is not the pinned VAD model"
 for notice in ThirdParty/whisper.cpp/LICENSE ThirdParty/sox/LICENSE.GPL ThirdParty/sox/sox-14.4.2.tar.gz \
-  ThirdParty/silero-vad/LICENSE ThirdParty/bun/LICENSE.md; do
+  ThirdParty/silero-vad/LICENSE ThirdParty/bun/LICENSE.md ThirdParty/tmux/NOTICE ThirdParty/tmux/COPYING \
+  ThirdParty/tmux/LICENSE.compat ThirdParty/tmux/LICENSE.libevent ThirdParty/tmux/COPYING.jemalloc \
+  ThirdParty/tmux/LICENSE.utf8proc.md; do
   [[ -f "$RESOURCES/$notice" ]] || fail "$RESOURCES/$notice is missing"
 done
 
@@ -56,6 +60,10 @@ if tr ' ' '\n' <<<"$app_archs" | grep -qx "$(uname -m)"; then
   [[ "$reported" == "conch $version" ]] || fail "the bundled daemon reports '$reported', expected 'conch $version'"
   "$HELPERS/whisper-cli" --help >/dev/null 2>&1 || fail "$HELPERS/whisper-cli does not run"
   "$HELPERS/sox" -h 2>/dev/null | grep -q 'AUDIO DEVICE DRIVERS: coreaudio' || fail "$HELPERS/sox has no CoreAudio driver"
+  [[ "$(env -i PATH=/usr/bin:/bin "$HELPERS/tmux" -V)" == "tmux $TMUX_VERSION" ]] || fail "$HELPERS/tmux does not report tmux $TMUX_VERSION"
 fi
+# Only the system is linked dynamically: a Mac without Homebrew has nothing else.
+outside="$(otool -L "$HELPERS/tmux" | tail -n +2 | awk '{print $1}' | grep -vE '^(/System/Library/Frameworks/|/usr/lib/)' || true)"
+[[ -z "$outside" ]] || fail "$HELPERS/tmux links a library outside the system: $outside"
 
-echo "✓ $APP carries its daemon (conch $version) and speech engine ($app_archs), signed; daemon source: $EXPECT_SOURCE"
+echo "✓ $APP carries its daemon (conch $version), speech engine and tmux $TMUX_VERSION ($app_archs), signed; daemon source: $EXPECT_SOURCE"

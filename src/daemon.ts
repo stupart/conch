@@ -102,6 +102,7 @@ import { ManagedTtsWorker, TTS_WORKER_HEALTH_CHECK_MS } from "./tts-worker.ts";
 import { VoiceEnvManager, voiceTestFigure, type NaturalVoicesStatus } from "./voice-env.ts";
 import { hubCacheDir, modelCacheBytes, verifyModelCache } from "./voice-model-cache.ts";
 import { SpeechEngineManager, speechEngineStatusPath, type SpeechEngineStatus } from "./speech-engine.ts";
+import { resolveTmux } from "./tmux-binary.ts";
 import {
   listenOnce,
   hasActiveRecorders,
@@ -1060,6 +1061,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   const speechEngine = new SpeechEngineManager({
     engine: cfg.speechEngine,
     daemon: { version: CONCH_VERSION, path: process.execPath },
+    // The tmux conch's own sessions run in: the app's (Contents/Helpers/tmux) before Homebrew's.
+    tmux: () => resolveTmux(),
     statusPath: speechEngineStatusPath(),
     onStatus: (status) => {
       speechEngineStatus = status;
