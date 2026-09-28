@@ -113,17 +113,17 @@ describe("the markdown renderer's texts join the row they are in", () => {
   const render = between(markdown, "private func render(_ piece: Piece, segment: Int)", "struct MarkdownTableLayout");
 
   test("every text the renderer draws a block's words with is tagged, and no bullet or number is", () => {
-    const texts = render.match(/Text\((text|MarkdownDocument\.inline\(cell\))\)/g) ?? [];
+    const texts = render.match(/Text\((text|Self\.styled\(cell, [^\n]*?size: tableSize\))\)/g) ?? [];
     expect(texts.length).toBe(6); // prose, bullet, ordered, quote, code, a table's cell
-    const tagged = render.match(/Text\((text|MarkdownDocument\.inline\(cell\))\)\.conversationSelectable\(row: selectionRow, segment: segment[^)]*\)/g) ?? [];
+    const tagged = render.match(/Text\((text|Self\.styled\(cell, [^\n]*?size: tableSize\))\)\.conversationSelectable\(row: selectionRow, segment: segment[^)]*\)/g) ?? [];
     expect(tagged.length).toBe(texts.length);
     expect(render).toContain("segment: segment + index * columns + column");
     expect(render).not.toContain('Text(["•", "◦", "▪"][min(depth, 2)]).conversationSelectable');
     expect(render).not.toContain('Text("\\(ordinal).").conversationSelectable');
     const body = between(markdown, "public var body: some View {", "private var bodyFont");
     expect(body).toContain("Text(text).conversationSelectable(row: selectionRow, segment: 0)");
-    expect(body).toContain("render(piece, segment: segments[index])");
-    expect(body).toContain("let segments = Self.firstSegments(pieces)");
+    expect(body).toContain("render(placed.piece, segment: segments[index])");
+    expect(body).toContain("let segments = Self.firstSegments(placed.map(\\.piece))");
     // Outside the conversation there is no row, and a document keeps its own selection.
     expect(markdown).toContain("@Environment(\\.conversationSelectionRow) private var selectionRow");
     expect(body).toContain(".textSelection(.enabled)");

@@ -457,8 +457,7 @@ public struct MarkdownView: View {
             ForEach(0..<max(columns - 1, 0), id: \.self) { _ in Rectangle().fill(ConchColor.hairline).allowsHitTesting(false) }
             ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
                 ForEach(Array(row.enumerated()), id: \.offset) { column, cell in
-                    Text(Self.styled(cell, font: index == 0 ? tableFont.weight(.semibold) : tableFont, size: tableSize))
-                        .conversationSelectable(row: selectionRow, segment: segment + index * columns + column)
+                    Text(Self.styled(cell, font: index == 0 ? tableFont.weight(.semibold) : tableFont, size: tableSize)).conversationSelectable(row: selectionRow, segment: segment + index * columns + column)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.horizontal, size * 0.6)
                         .padding(.vertical, size * 0.4)
