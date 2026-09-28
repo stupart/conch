@@ -519,9 +519,11 @@ public struct HistoryEstimate: Equatable, Sendable {
     public let bubbleIndent: CGFloat
     /// The space above every row but the first.
     public let gap: CGFloat
+    /// The longest line a reply's prose runs to, however wide the column (`ConchReading.measure`).
+    public let measure: CGFloat
 
     public init(characterWidth: CGFloat, lineHeight: CGFloat, toolRow: CGFloat, material: CGFloat,
-                bubbleInset: CGFloat, bubbleIndent: CGFloat, gap: CGFloat) {
+                bubbleInset: CGFloat, bubbleIndent: CGFloat, gap: CGFloat, measure: CGFloat = .infinity) {
         self.characterWidth = characterWidth
         self.lineHeight = lineHeight
         self.toolRow = toolRow
@@ -529,16 +531,19 @@ public struct HistoryEstimate: Equatable, Sendable {
         self.bubbleInset = bubbleInset
         self.bubbleIndent = bubbleIndent
         self.gap = gap
+        self.measure = measure
     }
 
-    /// The Mac transcript: 15/23 reading type, 22 between messages (workspace-v1 §3).
+    /// The Mac transcript: 15/23 reading type, 22 between messages (workspace-v1 §3), a reply's prose at the reading
+    /// measure, and your turn's bubble with the room above it that sets an exchange off (the Mac's `turnBreak`, 12).
     public static let mac = HistoryEstimate(
         characterWidth: 7.3, lineHeight: 23, toolRow: 16, material: 42,
-        bubbleInset: 16, bubbleIndent: 72, gap: 22
+        bubbleInset: 16 + 12, bubbleIndent: 72, gap: 22, measure: ConchReading.measure(15)
     )
-    /// The phone's: body text, 14 between rows.
+    /// The phone's: body text at the reading leading (17 pt SF's own line and `ConchType.readingLineSpacing`), 14
+    /// between rows.
     public static let phone = HistoryEstimate(
-        characterWidth: 8.4, lineHeight: 22, toolRow: 20, material: 44,
+        characterWidth: 8.4, lineHeight: 26, toolRow: 20, material: 44,
         bubbleInset: 16, bubbleIndent: 64, gap: 14
     )
 
@@ -560,7 +565,7 @@ public struct HistoryEstimate: Equatable, Sendable {
             if role == "user" {
                 return lines(characters, in: width - bubbleIndent) * lineHeight + bubbleInset + gap
             }
-            return lines(characters, in: width) * lineHeight + gap
+            return lines(characters, in: min(width, measure)) * lineHeight + gap
         }
     }
 }

@@ -33,6 +33,14 @@ enum MarkdownBlock: Equatable {
     case rule
     /// `![alt](source)` alone on its line: a document's screenshot. One inside a sentence stays in its prose.
     case image(alt: String, source: String)
+
+    /// A bullet or a numbered item: a list's items sit closer together than paragraphs (`ConchReading.itemGap`).
+    var isListItem: Bool {
+        switch self {
+        case .bullet, .ordered: true
+        default: false
+        }
+    }
 }
 
 enum MarkdownDocument {
@@ -256,6 +264,8 @@ public struct MarkdownView: View {
     private let size: CGFloat
     private let image: ImageView?
     @ScaledMetric(relativeTo: .body) private var scale: CGFloat = 1
+    /// The leading the caller set (the Mac's transcript: `ConchType.readingLineSpacing`), which the gaps count.
+    @Environment(\.lineSpacing) private var lineSpacing
 
     public init(text: String, size: CGFloat = ConchType.readingBodySize, image: ImageView? = nil) {
         self.text = text
@@ -263,65 +273,112 @@ public struct MarkdownView: View {
         self.image = image
     }
 
-    static func pieces(_ blocks: [MarkdownBlock], size: CGFloat, images: Bool = false) -> [Piece] {
-        var result: [Piece] = []
-        var flow = AttributedString()
-        func styled(_ text: String, font: Font) -> AttributedString {
-            var styled = MarkdownDocument.inline(text)
-            styled.font = font
-            return styled
+    /// A piece, and the room above it: `ConchReading`'s box gap to the piece before, 0 for the first.
+    struct Placed {
+        let piece: Piece
+        let gap: CGFloat
+    }
+
+    static func pieces(_ blocks: [MarkdownBlock], size: CGFloat, lineSpacing: CGFloat = 0, images: Bool = false) -> [Piece] {
+        placed(blocks, size: size, lineSpacing: lineSpacing, images: images).map(\.piece)
+    }
+
+    /// The box gap between two blocks, in ems (`ConchReading`): a heading takes its room above whatever it follows, and
+    /// gives only a little below; the items of one list sit close; everything else is a paragraph apart.
+    static func gap(after previous: MarkdownBlock, before next: MarkdownBlock) -> CGFloat {
+        if case let .heading(level, _) = next { return ConchReading.headingGapAbove(level: level) }
+        if case .heading = previous { return ConchReading.headingGapBelow }
+        if previous.isListItem, next.isListItem { return ConchReading.itemGap }
+        return ConchReading.paragraphGap
+    }
+
+    /// SF's line in a SwiftUI `Text`, as a multiple of its size: what a blank line set at a size takes up.
+    static let lineHeight: CGFloat = 1.27
+
+    /// `text` with its inline emphasis, set in `font`, its code a size down in SF Mono (`ConchReading.codeScale`).
+    static func styled(_ text: String, font: Font, size: CGFloat) -> AttributedString {
+        var styled = MarkdownDocument.inline(text)
+        styled.font = font
+        for run in styled.runs where run.inlinePresentationIntent?.contains(.code) == true {
+            styled[run.range].font = .system(size: size * ConchReading.codeScale, design: .monospaced)
         }
-        /// Paragraph spacing inside one text: a blank line whose only character is set small is a short blank line.
+        return styled
+    }
+
+    /// The pieces, each with the gap above it. `lineSpacing` is the environment's, which a text adds under every line
+    /// but its last, a blank one included, so a gap inside one text counts it.
+    static func placed(_ blocks: [MarkdownBlock], size: CGFloat, lineSpacing: CGFloat = 0, images: Bool = false) -> [Placed] {
+        var result: [Placed] = []
+        var flow = AttributedString()
+        /// The room above the flow being built, which is the room above its first block.
+        var flowGap: CGFloat = 0
+        func styled(_ text: String, font: Font, size: CGFloat = size) -> AttributedString {
+            Self.styled(text, font: font, size: size)
+        }
+        /// A gap inside one text (a `Text` takes no paragraph style): a blank line set just tall enough that it and the
+        /// line spacing under the line before it and under itself come to `gap`. Too little room for a line of its own,
+        /// a line break.
         func add(_ text: AttributedString, gap: CGFloat) {
-            if !flow.characters.isEmpty {
-                var blank = AttributedString("\n\n")
-                blank.font = .system(size: gap)
-                flow += blank
+            if flow.characters.isEmpty {
+                flowGap = gap
+            } else {
+                let blank = gap - 2 * lineSpacing
+                if blank < 1 {
+                    flow += AttributedString("\n")
+                } else {
+                    var line = AttributedString("\n\n")
+                    line.font = .system(size: blank / lineHeight)
+                    flow += line
+                }
             }
             flow += text
         }
-        func flush() {
-            if !flow.characters.isEmpty { result.append(.flow(flow)); flow = AttributedString() }
+        func place(_ piece: Piece, gap: CGFloat) {
+            if !flow.characters.isEmpty { result.append(Placed(piece: .flow(flow), gap: flowGap)); flow = AttributedString() }
+            result.append(Placed(piece: piece, gap: gap))
         }
+        var previous: MarkdownBlock?
         for block in blocks {
+            let gap = previous.map { size * Self.gap(after: $0, before: block) } ?? 0
+            previous = block
             switch block {
             case let .heading(level, text):
-                let font = Font.system(size: size * MarkdownDocument.headingScale(level), weight: level <= 2 ? .bold : .semibold)
-                add(styled(text, font: font), gap: size * (level <= 2 ? 0.8 : 0.6))
+                let headingSize = size * MarkdownDocument.headingScale(level)
+                add(styled(text, font: .system(size: headingSize, weight: level <= 2 ? .bold : .semibold), size: headingSize), gap: gap)
             case let .paragraph(text):
-                add(styled(text, font: .system(size: size)), gap: size * 0.55)
+                add(styled(text, font: .system(size: size)), gap: gap)
             case let .bullet(depth, text):
-                flush(); result.append(.bullet(depth: depth, styled(text, font: .system(size: size))))
+                place(.bullet(depth: depth, styled(text, font: .system(size: size))), gap: gap)
             case let .ordered(depth, ordinal, text):
-                flush(); result.append(.ordered(depth: depth, ordinal: ordinal, styled(text, font: .system(size: size))))
+                place(.ordered(depth: depth, ordinal: ordinal, styled(text, font: .system(size: size))), gap: gap)
             case let .quote(text):
-                flush(); result.append(.quote(styled(text, font: .system(size: size))))
+                place(.quote(styled(text, font: .system(size: size))), gap: gap)
             case let .code(text):
-                flush(); result.append(.code(text))
+                place(.code(text), gap: gap)
             case let .table(rows):
-                flush(); result.append(.table(rows))
+                place(.table(rows), gap: gap)
             case .rule:
-                flush(); result.append(.rule)
+                place(.rule, gap: gap)
             case let .image(alt, source):
                 // With nothing to draw it, the line reads as it always has: its alt text, in the prose.
-                if images { flush(); result.append(.image(alt: alt, source: source)) }
-                else { add(styled("![\(alt)](\(source))", font: .system(size: size)), gap: size * 0.55) }
+                if images { place(.image(alt: alt, source: source), gap: gap) }
+                else { add(styled("![\(alt)](\(source))", font: .system(size: size)), gap: gap) }
             }
         }
-        flush()
+        if !flow.characters.isEmpty { result.append(Placed(piece: .flow(flow), gap: flowGap)) }
         return result
     }
 
     public var body: some View {
-        let pieces = MarkdownPieceCache.shared.pieces(text, size: size * scale, images: image != nil)
+        let placed = MarkdownPieceCache.shared.placed(text, size: size * scale, lineSpacing: lineSpacing, images: image != nil)
         Group {
-            if pieces.count == 1, case let .flow(text) = pieces[0] {
+            if placed.count == 1, case let .flow(text) = placed[0].piece {
                 // Most replies: one text, the one responder a reply always was.
-                Text(text)
+                Text(text).frame(maxWidth: measure, alignment: .leading)
             } else {
-                VStack(alignment: .leading, spacing: size * 0.7) {
-                    ForEach(Array(pieces.enumerated()), id: \.offset) { _, piece in
-                        render(piece)
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(placed.enumerated()), id: \.offset) { _, placed in
+                        render(placed.piece).padding(.top, placed.gap)
                     }
                 }
             }
@@ -331,19 +388,25 @@ public struct MarkdownView: View {
     }
 
     private var bodyFont: Font { .system(size: size * scale) }
-    private var mono: Font { .system(size: (size - 1) * scale, design: .monospaced) }
+    private var tableSize: CGFloat { size * scale * ConchReading.tableScale }
+    private var tableFont: Font { .system(size: tableSize) }
+    private var mono: Font { .system(size: size * scale * ConchReading.codeScale, design: .monospaced) }
+    /// Prose runs no wider than this (`ConchReading.measure`); tables, code and pictures take the whole width.
+    private var measure: CGFloat { ConchReading.measure(size * scale) }
 
     @ViewBuilder
     private func render(_ piece: Piece) -> some View {
         switch piece {
         case let .flow(text):
             Text(text).fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: measure, alignment: .leading)
         case let .bullet(depth, text):
             HStack(alignment: .firstTextBaseline, spacing: size * 0.5) {
                 Text(["•", "◦", "▪"][min(depth, 2)]).font(bodyFont).foregroundStyle(ConchColor.textSecondary).allowsHitTesting(false)
                 Text(text).fixedSize(horizontal: false, vertical: true)
             }
             .padding(.leading, size * CGFloat(1 + depth) * 1.2)
+            .frame(maxWidth: measure, alignment: .leading)
         case let .ordered(depth, ordinal, text):
             HStack(alignment: .firstTextBaseline, spacing: size * 0.5) {
                 Text("\(ordinal).").font(bodyFont.monospacedDigit()).foregroundStyle(ConchColor.textSecondary)
@@ -351,16 +414,19 @@ public struct MarkdownView: View {
                 Text(text).fixedSize(horizontal: false, vertical: true)
             }
             .padding(.leading, size * CGFloat(depth) * 1.2)
+            .frame(maxWidth: measure, alignment: .leading)
         case let .quote(text):
             HStack(alignment: .top, spacing: size * 0.7) {
                 RoundedRectangle(cornerRadius: 1).fill(ConchColor.hairlineStrong).frame(width: 3).allowsHitTesting(false)
                 Text(text).foregroundStyle(ConchColor.textSecondary).fixedSize(horizontal: false, vertical: true)
             }
+            .frame(maxWidth: measure, alignment: .leading)
         case let .code(text):
             // Wrapped, as Xcode wraps it: a sideways scroller here is an `NSScrollView` per code block, a platform
             // view in the responder chain of every scroll event, and one that captures the wheel.
             Text(text).font(mono).fixedSize(horizontal: false, vertical: true)
-                .padding(size * 0.7)
+                .padding(.vertical, size * 0.7)
+                .padding(.horizontal, size * 0.9)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(ConchColor.fill, in: RoundedRectangle(cornerRadius: ConchRadius.small))
         case let .table(rows):
@@ -386,8 +452,7 @@ public struct MarkdownView: View {
             ForEach(0..<max(columns - 1, 0), id: \.self) { _ in Rectangle().fill(ConchColor.hairline).allowsHitTesting(false) }
             ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
                 ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
-                    Text(MarkdownDocument.inline(cell))
-                        .font(index == 0 ? bodyFont.weight(.semibold) : bodyFont)
+                    Text(Self.styled(cell, font: index == 0 ? tableFont.weight(.semibold) : tableFont, size: tableSize))
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.horizontal, size * 0.6)
                         .padding(.vertical, size * 0.4)
@@ -466,16 +531,19 @@ final class MarkdownPieceCache: @unchecked Sendable {
     private final class Key: NSObject {
         let text: String
         let size: CGFloat
+        let lineSpacing: CGFloat
         let images: Bool
         private let hashed: Int
 
-        init(_ text: String, size: CGFloat, images: Bool) {
+        init(_ text: String, size: CGFloat, lineSpacing: CGFloat, images: Bool) {
             self.text = text
             self.size = size
+            self.lineSpacing = lineSpacing
             self.images = images
             var hasher = Hasher()
             hasher.combine(text)
             hasher.combine(size)
+            hasher.combine(lineSpacing)
             hasher.combine(images)
             hashed = hasher.finalize()
         }
@@ -483,13 +551,14 @@ final class MarkdownPieceCache: @unchecked Sendable {
         override var hash: Int { hashed }
         override func isEqual(_ object: Any?) -> Bool {
             guard let other = object as? Key else { return false }
-            return hashed == other.hashed && size == other.size && images == other.images && text == other.text
+            return hashed == other.hashed && size == other.size && lineSpacing == other.lineSpacing && images == other.images
+                && text == other.text
         }
     }
 
     private final class Entry {
-        let pieces: [MarkdownView.Piece]
-        init(_ pieces: [MarkdownView.Piece]) { self.pieces = pieces }
+        let placed: [MarkdownView.Placed]
+        init(_ placed: [MarkdownView.Placed]) { self.placed = placed }
     }
 
     private let cache: NSCache<Key, Entry> = {
@@ -505,15 +574,19 @@ final class MarkdownPieceCache: @unchecked Sendable {
     private(set) var parses = 0
     private let lock = NSLock()
 
-    func pieces(_ text: String, size: CGFloat, images: Bool) -> [MarkdownView.Piece] {
-        let key = Key(text, size: size, images: images)
-        if let hit = cache.object(forKey: key) { return hit.pieces }
-        let pieces = MarkdownView.pieces(MarkdownDocument.blocks(text), size: size, images: images)
-        cache.setObject(Entry(pieces), forKey: key, cost: text.utf8.count * 4)
+    func pieces(_ text: String, size: CGFloat, lineSpacing: CGFloat = 0, images: Bool) -> [MarkdownView.Piece] {
+        placed(text, size: size, lineSpacing: lineSpacing, images: images).map(\.piece)
+    }
+
+    func placed(_ text: String, size: CGFloat, lineSpacing: CGFloat, images: Bool) -> [MarkdownView.Placed] {
+        let key = Key(text, size: size, lineSpacing: lineSpacing, images: images)
+        if let hit = cache.object(forKey: key) { return hit.placed }
+        let placed = MarkdownView.placed(MarkdownDocument.blocks(text), size: size, lineSpacing: lineSpacing, images: images)
+        cache.setObject(Entry(placed), forKey: key, cost: text.utf8.count * 4)
         lock.lock()
         parses += 1
         lock.unlock()
-        return pieces
+        return placed
     }
 }
 
@@ -560,7 +633,7 @@ public enum MarkdownTypesetter {
                 guard let raw = value as? UInt else { return }
                 let intent = InlinePresentationIntent(rawValue: raw)
                 if intent.contains(.code) {
-                    piece.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: blockFont.pointSize - 1, weight: .regular), range: range)
+                    piece.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: blockFont.pointSize * ConchReading.codeScale, weight: .regular), range: range)
                     return
                 }
                 if intent.contains(.strikethrough) {
@@ -619,7 +692,7 @@ public enum MarkdownTypesetter {
                 block.setWidth(size * 0.7, type: .absoluteValueType, for: .padding)
                 style.textBlocks = [block]
                 style.lineBreakMode = .byCharWrapping
-                append(text.replacingOccurrences(of: "\n", with: "\u{2028}"), font: NSFont.monospacedSystemFont(ofSize: size - 1, weight: .regular), style: style)
+                append(text.replacingOccurrences(of: "\n", with: "\u{2028}"), font: NSFont.monospacedSystemFont(ofSize: size * ConchReading.codeScale, weight: .regular), style: style)
             case let .table(rows):
                 let table = NSTextTable()
                 table.numberOfColumns = rows[0].count

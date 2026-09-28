@@ -1430,6 +1430,16 @@ public struct ConversationFog: View {
     /// A past turn against the newest: 70% of the words' ink, which holds 4.5:1 on the glass at its worst. Half, as the
     /// lab had it, measured 2.3 to 3.0 over a real screen.
     public static let pastOpacity: Double = 0.7
+    /// Between one turn and the next: more than a paragraph break inside a turn (`paragraphBreak`), so where one message
+    /// ends reads before where a paragraph does. At 14 against a whole blank line of 17 pt type (a 27 pt break), two of
+    /// the agent's replies in a row, the steps between them left in the main window, read as one.
+    public static let turnGap: CGFloat = 24
+    /// A paragraph break inside a turn: a blank line this many ems tall, not a whole line of the turn's type.
+    public static let paragraphBreak: CGFloat = 0.4
+    /// Leading, in ems of the turn's size: the newest reply's large type as the reply line sets its own (`InlineReplyLine`),
+    /// the past turns' opened up to read as paragraphs rather than a block (SF's own line is 1.2 of its size).
+    public static let newestLeading: CGFloat = 0.1
+    public static let pastLeading: CGFloat = 0.2
     /// Full screen on a deliverable, the newest reply's one line above the floating reply, and the gap under it.
     static let newestLineHeight: CGFloat = 34
     static let newestLineGap: CGFloat = ConchSpace.x2
@@ -1941,7 +1951,7 @@ public struct ConversationFog: View {
         let flying = text.flight == nil ? nil : lines.last(where: \.fromYou)?.id
         let pinned = text.scroll.pinned
         let ends = FogTranscriptEnds(oldest: lines.first?.id, newest: lines.last?.id)
-        return VStack(alignment: .leading, spacing: 14) {
+        return VStack(alignment: .leading, spacing: Self.turnGap) {
             ForEach(top ? Array(lines.reversed()) : lines) { line in
                 switch line {
                 case let .turn(turn):
@@ -2010,6 +2020,43 @@ public struct ConversationFog: View {
         for index in fading..<shown {
             let end = index + 1 < starts.count ? starts[index + 1] : attributed.endIndex
             text = text + Text(AttributedString(attributed[starts[index]..<end])).customAttribute(RevealedWord(index: index))
+        }
+        return text
+    }
+
+    /// `font(latest:fullScreen:)`'s point size.
+    static func size(latest: Bool, fullScreen: Bool) -> CGFloat {
+        switch (latest, fullScreen) {
+        case (true, false): ConchType.conversationNowSize
+        case (false, false): 17
+        case (true, true): 36
+        case (false, true): 24
+        }
+    }
+
+    /// `text` set for a turn at `size`: each blank line between paragraphs `paragraphBreak` ems tall (the newline that ends
+    /// a line keeps the line's height, so only the empty line between shrinks), and its code a size down in SF Mono, as
+    /// the main window sets it (`ConchReading.codeScale`). Attributes only, so the words and where each starts
+    /// (`wordStarts`) are the same.
+    static func typeset(_ text: AttributedString, size: CGFloat) -> AttributedString {
+        var text = text
+        for run in text.runs where run.inlinePresentationIntent?.contains(.code) == true {
+            text[run.range].font = .system(size: size * ConchReading.codeScale, design: .monospaced)
+        }
+        // Where each run of two or more newlines is, by offset: an index does not outlive a change to the string.
+        var breaks: [(start: Int, count: Int)] = []
+        var offset = 0, run = 0
+        for character in text.characters {
+            if character == "\n" { run += 1 } else {
+                if run > 1 { breaks.append((offset - run, run)) }
+                run = 0
+            }
+            offset += 1
+        }
+        if run > 1 { breaks.append((offset - run, run)) }
+        for (start, count) in breaks {
+            let from = text.characters.index(text.startIndex, offsetBy: start)
+            text[from..<text.characters.index(from, offsetBy: count)].font = .system(size: size * paragraphBreak)
         }
         return text
     }
@@ -2161,7 +2208,7 @@ private struct TurnLine: View, Equatable {
     var body: some View {
         let flight = reduceMotion ? nil : self.flight
         let e = flight?.progress ?? 1
-        let past: CGFloat = fullScreen ? 24 : 17
+        let past = ConversationFog.size(latest: false, fullScreen: fullScreen)
         VStack(alignment: .leading, spacing: 1) {
             if turn.fromYou {
                 Text("You")
@@ -2177,6 +2224,7 @@ private struct TurnLine: View, Equatable {
                 // Large type reads better set a touch tighter.
                 .tracking(now ? (fullScreen ? -0.8 : -0.3) : 0)
                 .foregroundStyle(ConchColor.overlayText)
+                .lineSpacing(ConversationFog.size(latest: now, fullScreen: fullScreen) * (now ? ConversationFog.newestLeading : ConversationFog.pastLeading))
                 // Wraps at the column, long paths and links included, rather than running out of the blur.
                 .fixedSize(horizontal: false, vertical: true)
                 .opacity(now ? 1 : 1 - (1 - ConversationFog.pastOpacity) * e)
@@ -2193,7 +2241,7 @@ private struct TurnLine: View, Equatable {
     /// Its words; the newest reply only as far as they have come in, the last few fading up out of a blur.
     @ViewBuilder
     private var words: some View {
-        let attributed = ConversationFog.inlineMarkdown(turn.text)
+        let attributed = ConversationFog.typeset(ConversationFog.inlineMarkdown(turn.text), size: ConversationFog.size(latest: now, fullScreen: fullScreen))
         if let reveal {
             if #available(macOS 15, iOS 18, *) {
                 ConversationFog.revealed(attributed, reveal, at: clock)
