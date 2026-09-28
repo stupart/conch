@@ -1156,12 +1156,14 @@ struct SidebarMark {
     var breathes = false
     var wantsYou = false
     var live = false
+    /// Blocked on a question: the one state whose summary earns the row a second line (`SidebarRowText.subtitle`).
+    var asks = false
 
     static let working = SidebarMark(symbol: "circle.fill", size: 8, colour: AnyShapeStyle(ConchColor.active), meaning: "Working — an agent is running, nothing needed from you", breathes: true)
     static let waitingOnAgents = SidebarMark(symbol: "person.2.fill", size: 9, colour: AnyShapeStyle(SidebarInk.waiting), meaning: "Its agents are working — you can talk to it")
     static let listening = SidebarMark(symbol: "mic.fill", size: 10, colour: AnyShapeStyle(SidebarInk.micOpen), meaning: "Mic open — it is hearing you", live: true)
     static let waiting = SidebarMark(symbol: "circle.inset.filled", size: 8, colour: AnyShapeStyle(SidebarInk.waiting), meaning: "Ready for you — its turn is over", wantsYou: true)
-    static let needs = SidebarMark(symbol: "exclamationmark.circle.fill", size: 10.5, colour: AnyShapeStyle(ConchColor.attention), meaning: "Blocked — needs an answer", wantsYou: true)
+    static let needs = SidebarMark(symbol: "exclamationmark.circle.fill", size: 10.5, colour: AnyShapeStyle(ConchColor.attention), meaning: "Blocked — needs an answer", wantsYou: true, asks: true)
     static let review = SidebarMark(symbol: "checkmark.circle.fill", size: 10.5, colour: AnyShapeStyle(ConchColor.ready), meaning: "Ready for you — work to look at")
     static let recording = SidebarMark(symbol: "record.circle.fill", size: 10.5, colour: AnyShapeStyle(SidebarInk.micOpen), meaning: "Recording your reply", live: true)
     static let speaking = SidebarMark(symbol: "play.fill", size: 9, colour: AnyShapeStyle(ConchColor.textTertiary), meaning: "Reading a reply aloud", live: true)
@@ -1182,7 +1184,9 @@ struct SidebarGlyph: View {
     }
 }
 
-/// `DashboardRow`'s anatomy: the live rail, the 16 pt mark, the label, the summary, the quiet mark, the age.
+/// `DashboardRow`'s anatomy: the live rail, the 16 pt mark, the name with the line to itself (fading at its end when it
+/// doesn't fit), the quiet mark; the age only on the hovered or selected row; and a second line only for the question a
+/// blocked row is waiting on. Other summaries are the tooltip's (SidebarRow.swift).
 struct SidebarSessionRow: View {
     let mark: SidebarMark
     let label: String
@@ -1191,6 +1195,8 @@ struct SidebarSessionRow: View {
     var phase = 0.5
     /// `SessionVoice.mark`: quiet, or let speak while the rest are quiet. Beside the age; the status mark is untouched.
     var voice: SessionVoice.Mark? = nil
+    /// Hovered or selected: the row shows its age.
+    var selected = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -1200,22 +1206,31 @@ struct SidebarSessionRow: View {
                 .opacity(mark.live ? 1 : 0)
                 .frame(width: 10)
             SidebarGlyph(mark: mark, phase: phase).frame(width: 16)
-            Text(label)
-                .font(.system(size: 13, weight: mark.wantsYou ? .semibold : .medium))
-                .foregroundStyle(ConchColor.textPrimary)
-                .lineLimit(1)
-            Text(summary)
-                .font(.system(size: 12))
-                .foregroundStyle(ConchColor.textTertiary)
-                .lineLimit(1)
-            Spacer(minLength: 4)
-            if let voice {
-                SessionVoiceGlyph(voice, pointSize: 9.5).frame(width: 16, height: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    TailFadeText(label)
+                        .font(.system(size: 13, weight: mark.wantsYou ? .semibold : .regular))
+                        .foregroundStyle(ConchColor.textPrimary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if let voice {
+                        SessionVoiceGlyph(voice, pointSize: 9.5).frame(width: 16, height: 16)
+                    }
+                    if selected {
+                        Text(age).font(.system(size: 11).monospacedDigit()).foregroundStyle(ConchColor.textTertiary)
+                    }
+                }
+                if mark.asks, !summary.isEmpty {
+                    TailFadeText(summary, fade: 24)
+                        .font(.system(size: 11))
+                        .foregroundStyle(ConchColor.textSecondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
-            Text(age).font(.system(size: 11).monospacedDigit()).foregroundStyle(ConchColor.textTertiary)
         }
         .padding(.trailing, 10)
-        .frame(height: 30)
+        .padding(.vertical, mark.asks && !summary.isEmpty ? 5 : 0)
+        .frame(minHeight: 30)
+        .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(ConchColor.rowSelected).opacity(selected ? 1 : 0))
     }
 }
 
@@ -1230,8 +1245,10 @@ struct SidebarAgentRow: View {
             SidebarGlyph(mark: mark, phase: phase)
                 .scaleEffect(0.75)
                 .frame(width: 12, height: 12)
-            Text(label).font(.system(size: 11.5)).foregroundStyle(ConchColor.textSecondary).lineLimit(1)
-            Spacer(minLength: 0)
+            TailFadeText(label, fade: 24)
+                .font(.system(size: 11.5, weight: mark.asks ? .semibold : .regular))
+                .foregroundStyle(ConchColor.textSecondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 3)
@@ -1359,9 +1376,9 @@ try render("ledger-marks", width: 1240) {
             SidebarAgentRow(mark: .paused, label: "Hume")
             SidebarAgentRow(mark: .needs, label: "Euler")
             SidebarSessionRow(mark: .listening, label: "Docs pass", age: "now")
-            SidebarSessionRow(mark: .waiting, label: "Settings copy", summary: "Done — three options", age: "6m")
+            SidebarSessionRow(mark: .waiting, label: "Settings copy", summary: "Done — three options", age: "6m", selected: true)
             SidebarSessionRow(mark: .needs, label: "Deploy script", summary: "Allow rm -rf build?", age: "1m")
-            SidebarSessionRow(mark: .review, label: "Invite page", summary: "The button reads Join", age: "12m")
+            SidebarSessionRow(mark: .review, label: "Invite page copy and the email check it waits on", summary: "The button reads Join", age: "12m")
             SidebarSessionRow(mark: .working, label: "Nightly cleanup", age: "1h", voice: .quiet)
             SidebarSessionRow(mark: .recording, label: "Docs pass", age: "now")
             SidebarSessionRow(mark: .transcribing, label: "Docs pass", age: "now")

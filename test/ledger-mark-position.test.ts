@@ -30,8 +30,8 @@ const row = (() => {
  */
 test("the status mark comes before the label", () => {
   const mark = row.indexOf("DashboardStatusGlyph(visual: LedgerVisual(row: row))");
-  const label = row.indexOf("Text(row.label)");
-  const age = row.indexOf("if let age {");
+  const label = row.indexOf("TailFadeText(row.label)");
+  const age = row.indexOf("if showsDetails, let age {");
   expect(mark).toBeGreaterThan(-1);
   expect(mark).toBeLessThan(label);
   expect(label).toBeLessThan(age);

@@ -65,9 +65,13 @@ test("a dismissed row is the same height as a live one", () => {
  *
  * Tyler, asked directly: "review ready already has big green check i dont think we also need
  * to bold it". So the weight follows waiting and needs only.
+ *
+ * Every other name is regular (2026-09-28), as a list of names reads — ChatGPT's recents, which
+ * Tyler held the sidebar up against — so the semibold of a row that wants you is the one weight
+ * that stands out, and the selected row is carried by its fill.
  */
 test("only waiting and needs bold the label — review is carried by its check", () => {
   expect(dashboard).toContain(
-    "weight: row.status == .waiting || row.status == .needs ? .semibold : .medium",
+    "weight: row.status == .waiting || row.status == .needs ? .semibold : .regular",
   );
 });

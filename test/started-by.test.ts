@@ -267,11 +267,14 @@ describe("the theater, the Mac sidebar and the wire agree", () => {
     expect(row).toBeGreaterThan(-1);
     const body = dashboard.slice(row, dashboard.indexOf("private func pulseForReview()", row));
     expect(body).toContain("var startedByLabel: String? = nil");
-    const line = body.indexOf('Text("started by \\(startedByLabel)")');
-    const badge = body.indexOf("AgentBadge(backend: row.backend)");
-    expect(line).toBeGreaterThan(-1);
-    expect(badge).toBeGreaterThan(-1);
-    expect(line).toBeLessThan(badge);
+    // The starter is named on the row's second line, under its name, rather than beside it
+    // where it cost the name its room (SidebarRowText.subtitle; sidebar-names-source.test.ts).
+    // It is in the tooltip and VoiceOver's label too, and the agent badge is still drawn.
+    expect(body).toContain("startedBy: startedByLabel\n        )");
+    expect(body).toContain(".help(SidebarRowText.tooltip(name: row.label, snippet: detailLine, startedBy: startedByLabel))");
+    expect(body).toContain("AgentBadge(backend: row.backend)");
+    const rule = read("design/ConchDesign/Sources/ConchDesign/SidebarRow.swift");
+    expect(rule).toContain('return present(startedBy).map { "started by \\($0)" }');
     // A started session is a session: the composer, close and reveal checks
     // key on parentSessionId alone and must not have grown a second condition.
     // Matched without its indentation: the composer moved into a ZStack so it can float over

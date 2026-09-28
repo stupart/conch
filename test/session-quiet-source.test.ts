@@ -63,7 +63,7 @@ describe("the Mac sidebar", () => {
   test("the quiet mark is its own button by the age, from SessionVoice, never in place of the status", () => {
     const glyph = rowContent.indexOf("DashboardStatusGlyph(visual: LedgerVisual(row: row))");
     const mark = rowContent.indexOf("if let mark = voice.mark, !isRenaming {");
-    const age = rowContent.indexOf("if let age {");
+    const age = rowContent.indexOf("if showsDetails, let age {");
     expect(glyph).toBeGreaterThan(-1);
     expect(mark).toBeGreaterThan(glyph);
     expect(age).toBeGreaterThan(mark);

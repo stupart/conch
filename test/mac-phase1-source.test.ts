@@ -459,8 +459,9 @@ describe("§3's anatomy, where the app had drifted from it", () => {
     expect(row.match(/RoundedRectangle\(cornerRadius: 7, style: \.continuous\)/g) ?? []).toHaveLength(3);
     expect(row).not.toContain("cornerRadius: 8");
     // 13 pt, semibold when the row wants a person: the two statuses the status mark draws as
-    // waiting and needs. (Its own `wantsUser` went with the manual glyph it guarded.)
-    expect(row).toContain("weight: row.status == .waiting || row.status == .needs ? .semibold : .medium");
+    // waiting and needs. (Its own `wantsUser` went with the manual glyph it guarded.) Regular
+    // otherwise, since the sidebar's names went name-first (sidebar-names-source.test.ts).
+    expect(row).toContain("weight: row.status == .waiting || row.status == .needs ? .semibold : .regular");
     const byStatus = dashboard.slice(dashboard.indexOf("    init(status: RowStatus?) {"), dashboard.indexOf("    init(row: SessionRow) {"));
     expect(byStatus.length).toBeGreaterThan(100);
     expect(byStatus).toContain("case .waiting:\n            self = .waiting");
