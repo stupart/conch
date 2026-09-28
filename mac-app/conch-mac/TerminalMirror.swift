@@ -5,11 +5,17 @@ import CoreVideo
 import ScreenCaptureKit
 import SwiftUI
 
-// The Terminal tab: the session's own Claude Code or Codex, live, as its terminal shows it. View-only.
+// The session's own terminal, from the strip.
 //
-// Tyler: "show the actual terminal instance of the claude code or codex process running there ... users can switch
-// between the terminal view of the conversation and our view of the conversation in one place, and it will also really
-// help for testing and feature parity." For now it is a tab in the strip beside Files and Shell.
+// Normal use: the strip's Terminal is a button. A press asks the daemon to bring the session's real terminal forward
+// (`terminal-focus`: its Terminal window and tab, out of the Dock; or its tmux window and pane in the terminal attached to
+// it) and changes nothing in conch — the pane stays, nothing is read, no permission is asked. Tyler: "it is no use having
+// an image of the terminal lol. Maybe we just make that button bring you to the terminal session instead."
+//
+// The Terminal Mirror: the session's own Claude Code or Codex, live, as its terminal shows it. View-only. A DEBUG view,
+// off unless Debug › Show Terminal Mirror is on or Option is held on the button (`ConchTerminalStrip`): "We could keep it
+// as a debugging feature tho, cause it is useful for u to make sure the terminal matches conch in one image." Agents get
+// that as one picture from `conch parity` (src/parity.ts), which asks nothing of this file.
 //
 // Where the picture comes from, best first (src/terminal-mirror.ts finds which):
 //  - a tmux pane: the daemon's `capture-pane -e` of it, re-read every 300 ms and drawn as text in its own colours
@@ -19,8 +25,9 @@ import SwiftUI
 //    what shows only while the picture can't be taken: Screen Recording not yet allowed, the window in the Dock, or
 //    another tab in front of the session's.
 //
-// It costs nothing unseen. Every read and the stream stop the moment the tab is left, conch's window is minimised, hidden
-// or covered, or the Mac sleeps (`ConchTerminalMirrorGate`), and start again when it can be seen.
+// It costs nothing unseen, and nothing at all while it is off. Every read and the stream stop the moment the mirror's tab
+// is left or the debug view turned off, conch's window is minimised, hidden or covered, or the Mac sleeps
+// (`ConchTerminalMirrorGate`), and start again when it can be seen.
 
 struct ConchTerminalScreenRequest: Encodable, Sendable {
     let kind = "terminal-screen"
@@ -29,43 +36,55 @@ struct ConchTerminalScreenRequest: Encodable, Sendable {
     var text: Bool? = nil
 }
 
+/// The Terminal button: bring the session's own terminal forward. Sent only on a press (`StateStore.openAgentTerminal`).
 struct ConchTerminalFocusRequest: Encodable, Sendable {
     let kind = "terminal-focus"
     let sessionId: String
 }
 
-private struct ConchTerminalFocusReply: Decodable {
+struct ConchTerminalFocusReply: Decodable {
     let kind: String
     let focused: Bool
     let reason: String?
 }
 
-/// A press on the Terminal tab this launch: the one moment Screen Recording is asked for, the first time a Terminal
-/// window needs it. Restoring the tab on launch is not a press, so it never puts macOS's prompt up by itself.
-@MainActor
-enum TerminalMirrorAsk {
-    private(set) static var pressed = false
-    private static var asked = false
+/// Debug › Show Terminal Mirror, off by default.
+enum TerminalMirrorDebug {
+    static let key = ConchTerminalStrip.mirrorDefaultsKey
 
-    static func tabPressed() { pressed = true }
+    static var isOn: Bool { UserDefaults.standard.bool(forKey: key) }
+}
 
-    /// True once: after a press, the first time the picture needs the permission.
-    static func shouldAsk() -> Bool {
-        guard pressed, !asked else { return false }
-        asked = true
-        return true
+/// The menu item, a view so it can hold the setting itself.
+struct TerminalMirrorMenuToggle: View {
+    @AppStorage(TerminalMirrorDebug.key) private var isOn = false
+
+    var body: some View {
+        Toggle("Show Terminal Mirror", isOn: $isOn)
     }
 }
 
-/// The Terminal tab's reader for one session.
+/// A press that opened the mirror this launch (its tab, or Option on the Terminal button): the one moment Screen
+/// Recording is asked for, the first time a Terminal window needs it, and only while the debug view is on
+/// (`ConchMirrorPermissionAsk`). Restoring the mirror on launch is not a press; the Terminal button itself never asks.
+@MainActor
+enum TerminalMirrorAsk {
+    private static var ask = ConchMirrorPermissionAsk()
+
+    static func mirrorOpened() { ask.press() }
+
+    /// True once: after a press, the first time the picture needs the permission, with the mirror still on.
+    static func shouldAsk() -> Bool { ask.shouldAsk(mirrorOn: TerminalMirrorDebug.isOn) }
+}
+
+/// The Terminal Mirror's reader for one session: a debug view.
 @MainActor
 final class AgentTerminalMirror: ObservableObject {
     @Published private(set) var state: ConchAgentTerminalState = .finding
-    /// Where it is, for the tab's line.
+    /// Where it is, for the mirror's line.
     @Published private(set) var place: String?
     /// The latest frame of a Terminal window.
     @Published private(set) var frame: IOSurfaceRef?
-    @Published private(set) var openFailure: String?
     /// PermissionCenter's one door, for Screen Recording: the tab's button, and the first-time ask. Given by the view,
     /// which holds the store it needs.
     var permission: ((ConchPermissionAction) -> Void)?
@@ -80,7 +99,6 @@ final class AgentTerminalMirror: ObservableObject {
     /// What ScreenCaptureKit said when the last picture stopped, until the tab is opened again.
     private var pictureFailure: String?
     private var lastScreen: String?
-    private var openFailureClear: Task<Void, Never>?
 
     init(sessionId: String, socket: ConchSocketClient = ConchSocketClient()) {
         self.sessionId = sessionId
@@ -217,43 +235,9 @@ final class AgentTerminalMirror: ObservableObject {
         if frame != nil { frame = nil }
     }
 
-    // MARK: Open in Terminal
-
-    /// Bring the real terminal forward to type in. Only ever on a press: reading never raises anything.
-    func open() {
-        openFailure = nil
-        let socket = socket
-        let sessionId = sessionId
-        Task { [weak self] in
-            let outcome = await socket.request(ConchTerminalFocusRequest(sessionId: sessionId), timeout: 6)
-            let failure: String?
-            switch outcome {
-            case let .reply(data):
-                if let reply = try? JSONDecoder().decode(ConchTerminalFocusReply.self, from: data), reply.kind == "terminal-focus" {
-                    failure = reply.focused ? nil : (reply.reason ?? "conch couldn't bring it forward.")
-                } else {
-                    failure = (try? JSONDecoder().decode(ConchSessionErrorReply.self, from: data))?.error ?? "conch couldn't bring it forward."
-                }
-            case .connectFailed, .timeout:
-                failure = "conch's background service isn't answering."
-            }
-            self?.showOpenFailure(failure)
-        }
-    }
-
-    private func showOpenFailure(_ failure: String?) {
-        openFailure = failure
-        openFailureClear?.cancel()
-        guard failure != nil else { return }
-        openFailureClear = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(8))
-            guard !Task.isCancelled else { return }
-            self?.openFailure = nil
-        }
-    }
 }
 
-/// One Terminal window, streamed by ScreenCaptureKit while the tab shows it.
+/// One Terminal window, streamed by ScreenCaptureKit while the mirror shows it.
 ///
 /// That window alone (`desktopIndependentWindow`), so it is pictured behind other windows and nothing else on screen is
 /// taken. At most five frames a second, and ScreenCaptureKit sends one only when the window changed, so an idle terminal
@@ -446,16 +430,16 @@ struct TerminalMirrorVisibility: NSViewRepresentable {
 }
 
 extension SessionRow {
-    /// Whether this session has a terminal of its own to show in the Terminal tab: a process the daemon knows
+    /// Whether this session has a terminal of its own, for the Terminal button (and the mirror): a process the daemon knows
     /// (`revealable`) and no reason it has none (`noTerminal`: the practice session, a closed or app-server Codex thread, a
-    /// background job no window is attached to). A subagent runs in its session's terminal, which that session's tab
-    /// shows. A remote Mac's sessions are drawn by `RemoteSessionView`, which has no tabs.
+    /// background job no window is attached to). A subagent runs in its session's terminal, which that session's button
+    /// brings forward. A remote Mac's sessions are drawn by `RemoteSessionView`, which has no strip.
     var hasAgentTerminal: Bool {
         revealable && noTerminal == nil && parentSessionId == nil
     }
 }
 
-/// The Terminal tab's content for one session.
+/// The Terminal Mirror's content for one session: only while Debug › Show Terminal Mirror is on.
 struct AgentTerminalPaneView: View {
     let row: SessionRow
     @StateObject private var mirror: AgentTerminalMirror
@@ -476,8 +460,8 @@ struct AgentTerminalPaneView: View {
             agent: ConchTerminalAgent.name(backend: row.backend),
             state: mirror.state,
             place: mirror.place,
-            openFailure: mirror.openFailure,
-            onOpen: canOpen ? { mirror.open() } : nil,
+            // The Terminal button's own press: its failure lands on the row, as the button's does.
+            onOpen: canOpen ? { store.openAgentTerminal(row) } : nil,
             onPermission: permission,
             picture: { TerminalPictureView(surface: mirror.frame) }
         )

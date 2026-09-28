@@ -157,11 +157,14 @@ public enum WorkPane: String, Equatable, Sendable, Codable {
     /// Called "terminal" until the agent's own terminal became a tab of its own. Two things named Terminal side by side,
     /// one yours to type in and one the agent's to watch, were bound to be mistaken for each other.
     case shell
-    /// The session's own Claude Code or Codex, as its terminal shows it: the Terminal tab. View-only.
+    /// The session's own Claude Code or Codex, as its terminal shows it: the Terminal Mirror, a debug view. View-only.
     ///
-    /// Takes over the raw value "terminal" that the Shell tab used to be remembered under, so a session last left on the
-    /// old tab opens on this one. That is the one it now means; it is picked from this session's own terminal or not at
-    /// all, never started from what was remembered.
+    /// Honoured only while Debug › Show Terminal Mirror is on (`ConchTerminalStrip.showsMirror`); otherwise a session
+    /// remembered on it opens on its other contents. The strip's Terminal is a button that brings the real terminal
+    /// forward, and never this pane.
+    ///
+    /// Takes over the raw value "terminal" that the Shell tab used to be remembered under. It is picked from this
+    /// session's own terminal or not at all, never started from what was remembered.
     case terminal
 }
 

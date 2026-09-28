@@ -166,6 +166,8 @@ struct ContentView: View {
                   let row = store.state?.rows.first(where: { $0.id == id }) else { return }
             selectSession(row)
         }
+        // Which session the window shows, for a debug capture's sidecar (`DebugSnapshot.viewing`).
+        .onChange(of: workspace.viewing, initial: true) { _, id in DebugSnapshot.viewing = id }
         // A session picked here takes the overlay's conversation off the Ready pill's scene, unless it is that one.
         .onChange(of: workspace.viewing) { _, id in
             guard let id else { return }

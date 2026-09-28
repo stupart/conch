@@ -229,3 +229,11 @@ user to open the help session: `conch help-session` on the command line, or
 **Help with conch** in the Mac app's New session sheet. It is a Claude session
 in a folder conch keeps for the purpose, with the log, the errors file, and the
 published state in front of it, and it is the place conch problems go.
+
+When the question is whether conch shows a session the way its own terminal
+does, or whether a message sent through conch reached it — you are working on
+conch, or the user asked — run `conch parity <session>` on the command line. It
+writes one picture of conch's view beside the session's terminal and prints its
+path, then a line starting `PASS`, `FAIL` or `SKIP` that names the session and
+the last message sent (`--text` checks other words; `--no-app` leaves the Mac
+app alone). It only reads; run it when asked, never as routine.

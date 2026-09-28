@@ -200,8 +200,9 @@ describe("new work does not replace what you are reading", () => {
     // whole time. The work half now has two possible contents, so the question is whether
     // either exists.
     expect(header).toContain("if hasWorkPane {");
-    // The agent's own terminal is a third thing to switch to (terminal-mirror-source.test.ts).
-    expect(pane).toContain("private var hasWorkPane: Bool { selectedReview != nil || workingFolder != nil || focusedRow?.hasAgentTerminal == true }");
+    // The Terminal Mirror, while the debug view is on, is a third thing to switch to (terminal-mirror-source.test.ts);
+    // the Terminal button is not.
+    expect(pane).toContain("selectedReview != nil || workingFolder != nil || focusedRow.map { terminalStrip(for: $0).showsMirror } == true");
     // Icons alone up here: three labelled segments take over 40% of the header at the
     // default window width, and the title is what the header is for.
     expect(pane).not.toContain("Text(label)");
@@ -216,11 +217,11 @@ describe("new work does not replace what you are reading", () => {
     // is one of those things now, which is what the count has to include.
     expect(pane).toContain("if hasWorkTabs(for: reviewRow) {");
     // TWO, not one: a working folder offers the files in it AND a shell running in it, so a
-    // session with a folder and no deliverable still has a strip worth drawing; the agent's own
-    // terminal is one more. ARTIFACTS are what count on the other side of the sum — six filings
-    // of one link are one tab — and a lone artifact with older versions still earns the strip,
-    // or they could not be reached.
-    expect(pane).toContain("let places = (workingFolder == nil ? 0 : 2) + (row.hasAgentTerminal ? 1 : 0)");
+    // session with a folder and no deliverable still has a strip worth drawing; the Terminal
+    // button is one more, and the mirror another while the debug view is on (ConchTerminalStrip).
+    // ARTIFACTS are what count on the other side of the sum — six filings of one link are one tab
+    // — and a lone artifact with older versions still earns the strip, or they could not be reached.
+    expect(pane).toContain("let places = (workingFolder == nil ? 0 : 2) + terminalStrip(for: row).places");
     expect(pane).toContain("groups.count + places > 1 || groups.contains(where: \\.hasOlderVersions)");
     // Three states, and looking at one is what marks it — but only ever told to a daemon that
     // can remember, so an older one is never handed a command it will refuse.

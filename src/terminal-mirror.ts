@@ -1,9 +1,12 @@
+import { CONTROL_FRAME_MAX_BYTES } from "./control-framing.ts";
 import { runUICommand, type UICommandResult, type UICommandScope } from "./pasteboard.ts";
 import { withUITransaction } from "./inject.ts";
 
 /**
- * The agent's own terminal, for the Mac app's Terminal tab: where the session's Claude Code or Codex is running, and
- * what that terminal shows, read without touching focus.
+ * The agent's own terminal: where the session's Claude Code or Codex is running, and what that terminal shows, read
+ * without touching focus. Asked for by the Mac app's Terminal Mirror (a debug view, off unless Debug › Show Terminal
+ * Mirror is on) and by `conch parity` (src/parity.ts), which also asks for the scrollback, to check a message conch sent
+ * is there. The strip's Terminal button only ever asks for `focus`.
  *
  * Two hosts, and each is read the cheapest exact way it allows:
  *  - a tmux pane: its screen as text with every colour and attribute (`capture-pane -e`), one short-lived tmux call per
@@ -13,7 +16,7 @@ import { withUITransaction } from "./inject.ts";
  *    is only what the app shows while it can't take the picture (Screen Recording not yet allowed, the session's tab
  *    behind another in its window, the window minimised).
  *
- * Nothing here types, raises or selects anything, except `focus`, which runs only on a press of "Open in Terminal".
+ * Nothing here types, raises or selects anything, except `focus`, which runs only on a press of the Terminal button.
  *
  * Its reads run in their own command scope, never the typing paths' one: a tmux or `ps` that hung here must never be
  * what suspends conch's keystrokes ("Previous UI child has not exited"), and a read every few hundred milliseconds
@@ -35,6 +38,11 @@ export type TerminalScreenReply =
     alternate?: true;
     /** `capture-pane -p -e -N`: one line per row, SGR sequences for colour and attributes. */
     screen: string;
+    /**
+     * Only when asked (`conch parity`): the pane's plain text from `history` lines above the screen to its last row,
+     * tmux's own line wrapping joined back (`capture-pane -p -J -S -N`).
+     */
+    history?: string;
   }
   | {
     kind: "terminal-screen";
@@ -49,6 +57,8 @@ export type TerminalScreenReply =
     selected: boolean;
     /** `contents of tab`, when asked for: the tab's text, without colour. */
     text?: string;
+    /** Only when asked (`conch parity`): the tab's scrollback and screen (`history of tab`), its last `history` lines. */
+    history?: string;
   }
   | {
     kind: "terminal-screen";
@@ -100,6 +110,9 @@ const TMUX_META = "#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{cursor
 const TTY = /^ttys?\d+$/;
 const PANE = /^%\d+$/;
 
+/** The most scrollback lines one read may ask for. */
+export const MAX_HISTORY_LINES = 10_000;
+
 export const NOT_IN_TERMINAL = "This session isn't running in a terminal conch can see: only Terminal and tmux are mirrored here.";
 export const NO_PROCESS = "conch doesn't know this session's process, so it can't find its terminal.";
 export const UNKNOWN_SESSION = "conch doesn't know this session.";
@@ -124,9 +137,10 @@ export function defaultTerminalMirrorDeps(): TerminalMirrorDeps {
 
 /**
  * Terminal's window and tab for a tty, read without launching Terminal: a `tell` to an app that isn't running opens
- * it, so that is asked first. `character id 9` because inside Terminal's `tell`, `tab` names its tab class.
+ * it, so that is asked first. `character id 9` because inside Terminal's `tell`, `tab` names its tab class. With text,
+ * the tab's `contents` (what it shows) or its `history` (all it keeps, scrollback included) follows on the next line.
  */
-export function terminalLocateScript(tty: string, withText: boolean): string {
+export function terminalLocateScript(tty: string, withText: boolean, property: "contents" | "history" = "contents"): string {
   if (!TTY.test(tty)) throw new Error(`not a tty: ${tty}`);
   return `
 if application "Terminal" is not running then return "conch:notrunning"
@@ -135,7 +149,7 @@ repeat with wi from 1 to count windows
 repeat with ti from 1 to count tabs of window wi
 if tty of tab ti of window wi is "/dev/${tty}" then
 set found to (id of window wi as text) & (character id 9) & (miniaturized of window wi as text) & (character id 9) & (selected of tab ti of window wi as text)
-${withText ? "return found & (character id 10) & (contents of tab ti of window wi)" : "return found"}
+${withText ? `return found & (character id 10) & (${property} of tab ti of window wi)` : "return found"}
 end if
 end repeat
 end repeat
@@ -145,7 +159,7 @@ return "conch:notfound"`;
 
 /**
  * Bring the Terminal tab on this tty forward to type in: out of the Dock if minimised, its tab selected, its window
- * first, Terminal active. Only ever run on a press.
+ * first, Terminal active. Only ever run on a press of the strip's Terminal button (or the mirror's Open in Terminal).
  */
 export function terminalFocusScript(tty: string): string {
   if (!TTY.test(tty)) throw new Error(`not a tty: ${tty}`);
@@ -171,6 +185,43 @@ return "conch:notfound"`;
 export function tmuxCaptureArgv(tmux: string[], pane: string): string[] {
   if (!PANE.test(pane)) throw new Error(`not a tmux pane: ${pane}`);
   return [...tmux, "display-message", "-p", "-t", pane, TMUX_META, ";", "capture-pane", "-p", "-e", "-N", "-t", pane];
+}
+
+/**
+ * The pane's plain text from `lines` above its screen to its last row, tmux's wrapping joined back: what `conch parity`
+ * searches for a message. Its own call, since only a parity check asks for it.
+ */
+export function tmuxHistoryArgv(tmux: string[], pane: string, lines: number): string[] {
+  if (!PANE.test(pane)) throw new Error(`not a tmux pane: ${pane}`);
+  if (!Number.isSafeInteger(lines) || lines < 1 || lines > MAX_HISTORY_LINES) throw new Error(`not a history length: ${lines}`);
+  return [...tmux, "capture-pane", "-p", "-J", "-S", `-${lines}`, "-t", pane];
+}
+
+/** The last `lines` lines of a text, for a Terminal tab's history, which has no bound of its own. */
+export function lastLines(text: string, lines: number): string {
+  const all = text.replace(/\n$/, "").split("\n");
+  return all.slice(Math.max(0, all.length - lines)).join("\n");
+}
+
+/**
+ * The reply with as much of its scrollback as one control frame (64 KiB) carries, newest kept: the rest of the reply
+ * first, then the END of the history, since that is where a message just sent is. A reply that can't carry any keeps none.
+ */
+export function fitHistory(reply: TerminalScreenReply, frameBytes = CONTROL_FRAME_MAX_BYTES): TerminalScreenReply {
+  if (reply.host === "none" || reply.history === undefined) return reply;
+  const { history, ...rest } = reply;
+  const size = (value: unknown) => Buffer.byteLength(JSON.stringify(value)) + 1;
+  if (size(reply) <= frameBytes) return reply;
+  // The fewest characters dropped from the front that fit, found by halving.
+  let low = 0;
+  let high = history.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (size({ ...rest, history: history.slice(middle) }) <= frameBytes) high = middle;
+    else low = middle + 1;
+  }
+  const kept = history.slice(low);
+  return kept && size({ ...rest, history: kept }) <= frameBytes ? { ...rest, history: kept } as TerminalScreenReply : rest as TerminalScreenReply;
 }
 
 /** The size line and the screen, out of one capture. Null when the first line isn't the size line. */
@@ -236,8 +287,15 @@ export function paneForPid(pid: number, panes: string, processes: string): strin
   return null;
 }
 
+export interface TerminalScreenOptions {
+  /** A Terminal tab's own text, for while it can't be pictured. */
+  text?: boolean;
+  /** This many scrollback lines as well, as plain text (`conch parity`). */
+  history?: number;
+}
+
 export interface TerminalMirror {
-  screen(sessionId: string, session: TerminalMirrorSession | undefined, options?: { text?: boolean }): Promise<TerminalScreenReply>;
+  screen(sessionId: string, session: TerminalMirrorSession | undefined, options?: TerminalScreenOptions): Promise<TerminalScreenReply>;
   focus(sessionId: string, session: TerminalMirrorSession | undefined): Promise<TerminalFocusReply>;
 }
 
@@ -277,11 +335,12 @@ export function createTerminalMirror(deps: TerminalMirrorDeps = defaultTerminalM
 
   const none = (sessionId: string, reason: string): TerminalScreenReply => ({ kind: "terminal-screen", sessionId, host: "none", reason });
 
-  const captureTmux = async (sessionId: string, pane: string): Promise<TerminalScreenReply | null> => {
+  const captureTmux = async (sessionId: string, pane: string, history?: number): Promise<TerminalScreenReply | null> => {
     const result = await deps.run(tmuxCaptureArgv(deps.tmux, pane));
     if (!ok(result)) return null;
     const parsed = parseTmuxCapture(result.text);
     if (!parsed) return null;
+    const scrollback = history ? await deps.run(tmuxHistoryArgv(deps.tmux, pane, history)) : null;
     return {
       kind: "terminal-screen",
       sessionId,
@@ -292,10 +351,11 @@ export function createTerminalMirror(deps: TerminalMirrorDeps = defaultTerminalM
       ...(parsed.cursor ? { cursor: parsed.cursor } : {}),
       ...(parsed.alternate ? { alternate: true as const } : {}),
       screen: parsed.screen,
+      ...(scrollback && ok(scrollback) ? { history: scrollback.text } : {}),
     };
   };
 
-  const locateTerminal = async (sessionId: string, tty: string, text: boolean): Promise<TerminalScreenReply> => {
+  const locateTerminal = async (sessionId: string, tty: string, text: boolean, history?: number): Promise<TerminalScreenReply> => {
     const result = await deps.osa(terminalLocateScript(tty, text));
     if (!ok(result)) {
       return none(sessionId, /-1743|not allowed|not authori[sz]ed/i.test(result.stderr)
@@ -304,6 +364,9 @@ export function createTerminalMirror(deps: TerminalMirrorDeps = defaultTerminalM
     }
     const found = parseTerminalLocate(result.text);
     if (found === "notrunning" || found === "notfound" || found === null) return none(sessionId, NOT_IN_TERMINAL);
+    // The whole scrollback, in a read of its own: only a parity check asks, and it may be long.
+    const kept = history ? await deps.osa(terminalLocateScript(tty, true, "history")) : null;
+    const scrollback = kept && ok(kept) ? parseTerminalLocate(kept.text) : null;
     return {
       kind: "terminal-screen",
       sessionId,
@@ -313,25 +376,33 @@ export function createTerminalMirror(deps: TerminalMirrorDeps = defaultTerminalM
       minimized: found.minimized,
       selected: found.selected,
       ...(text && found.text !== undefined ? { text: found.text } : {}),
+      ...(history && typeof scrollback === "object" && scrollback?.text !== undefined ? { history: lastLines(scrollback.text, history) } : {}),
     };
+  };
+
+  const read = async (sessionId: string, session: TerminalMirrorSession | undefined, options: TerminalScreenOptions): Promise<TerminalScreenReply> => {
+    if (!session) return none(sessionId, UNKNOWN_SESSION);
+    if (session.noTerminal) return none(sessionId, session.noTerminal);
+    if (!session.pid) return none(sessionId, NO_PROCESS);
+    const history = Number.isSafeInteger(options.history) && options.history! > 0
+      ? Math.min(options.history!, MAX_HISTORY_LINES)
+      : undefined;
+    let host = await locate(session.pid);
+    if (host.kind === "tmux") {
+      const shown = await captureTmux(sessionId, host.pane, history);
+      if (shown) return shown;
+      // The pane is gone (the session moved out of tmux, or the server restarted): find it again, once.
+      hosts.delete(session.pid);
+      host = await locate(session.pid);
+      if (host.kind === "tmux") return await captureTmux(sessionId, host.pane, history) ?? none(sessionId, "tmux didn't answer conch just now.");
+    }
+    if (host.kind === "tty") return await locateTerminal(sessionId, host.tty, options.text === true, history);
+    return none(sessionId, host.reason);
   };
 
   return {
     async screen(sessionId, session, options = {}) {
-      if (!session) return none(sessionId, UNKNOWN_SESSION);
-      if (session.noTerminal) return none(sessionId, session.noTerminal);
-      if (!session.pid) return none(sessionId, NO_PROCESS);
-      let host = await locate(session.pid);
-      if (host.kind === "tmux") {
-        const shown = await captureTmux(sessionId, host.pane);
-        if (shown) return shown;
-        // The pane is gone (the session moved out of tmux, or the server restarted): find it again, once.
-        hosts.delete(session.pid);
-        host = await locate(session.pid);
-        if (host.kind === "tmux") return await captureTmux(sessionId, host.pane) ?? none(sessionId, "tmux didn't answer conch just now.");
-      }
-      if (host.kind === "tty") return await locateTerminal(sessionId, host.tty, options.text === true);
-      return none(sessionId, host.reason);
+      return fitHistory(await read(sessionId, session, options));
     },
 
     async focus(sessionId, session) {

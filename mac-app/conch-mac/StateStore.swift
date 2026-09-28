@@ -137,7 +137,11 @@ final class StateStore: ObservableObject {
                 }
                 evaluateLiveness()
                 // Opening comes before the capture: a request to photograph a
-                // sheet has to reach the view a poll earlier than the shot.
+                // sheet has to reach the view a poll earlier than the shot. So does
+                // showing a session (`conch parity`): the same as picking its row.
+                if let wanted = DebugSnapshot.pendingSelection() {
+                    NotificationCenter.default.post(name: .selectSessionFromStatusItem, object: wanted)
+                }
                 if let wanted = DebugSnapshot.pendingInspection() { debugInspectRequest = wanted }
                 DebugSnapshot.serviceRequest()
 
@@ -540,6 +544,32 @@ final class StateStore: ObservableObject {
             case .timeout: failure = "daemon did not reply"
             }
             self?.rowMessages[sessionId] = failure
+        }
+    }
+
+    /// The strip's Terminal button: bring the session's own terminal forward — its Terminal window and tab, out of the
+    /// Dock, or its tmux window and pane in the terminal attached to it (`terminal-focus`, src/terminal-mirror.ts). Only
+    /// on a press, and nothing else moves: the pane stays where it was and nothing is read. Why it couldn't goes on the
+    /// row, in the daemon's words, like any other refused action.
+    func openAgentTerminal(_ row: SessionRow) {
+        guard row.hasAgentTerminal else { return }
+        rowMessages[row.id] = nil
+        let request = ConchTerminalFocusRequest(sessionId: row.id)
+        let socketClient = socketClient
+        Task { [weak self] in
+            let failure: String?
+            switch await socketClient.request(request, timeout: 6) {
+            case let .reply(data):
+                if let reply = try? JSONDecoder().decode(ConchTerminalFocusReply.self, from: data), reply.kind == "terminal-focus" {
+                    failure = reply.focused ? nil : (reply.reason ?? "conch couldn't bring its terminal forward.")
+                } else {
+                    failure = (try? JSONDecoder().decode(ConchSessionErrorReply.self, from: data))?.error
+                        ?? "conch couldn't bring its terminal forward."
+                }
+            case .connectFailed: failure = "daemon not running"
+            case .timeout: failure = "daemon did not reply"
+            }
+            self?.rowMessages[row.id] = failure
         }
     }
 

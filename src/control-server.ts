@@ -341,9 +341,9 @@ export interface RuntimeControlDispatchOptions {
   report(message: Extract<RuntimeControlMessage, { kind: "app-error" }>): void | Promise<void>;
   /** Where the agents' config files live and how they are written; absent means the real homes (B3). */
   configWrite?: { homes?: ConfigWriteHomes; io?: ConfigWriteIo };
-  /** The session's own terminal, for the Mac app's Terminal tab (terminal-mirror.ts). Absent: the tab says so. */
+  /** The session's own terminal (terminal-mirror.ts), for the Terminal Mirror and `conch parity`. Absent: they say so. */
   terminalScreen?(message: Extract<RuntimeControlMessage, { kind: "terminal-screen" }>): Promise<TerminalScreenReply>;
-  /** "Open in Terminal": bring it forward to type in, on a press. */
+  /** The strip's Terminal button: bring it forward to type in, on a press. */
   terminalFocus?(message: Extract<RuntimeControlMessage, { kind: "terminal-focus" }>): Promise<TerminalFocusReply>;
 }
 

@@ -14,7 +14,10 @@ import {
 import {
   createTerminalMirror,
   defaultTerminalMirrorDeps,
+  fitHistory,
   HOST_RETRY_MS,
+  lastLines,
+  MAX_HISTORY_LINES,
   NO_PROCESS,
   NOT_IN_TERMINAL,
   paneForPid,
@@ -23,6 +26,7 @@ import {
   terminalFocusScript,
   terminalLocateScript,
   tmuxCaptureArgv,
+  tmuxHistoryArgv,
   UNKNOWN_SESSION,
   type TerminalMirrorDeps,
 } from "../src/terminal-mirror.ts";
@@ -42,6 +46,7 @@ function fakeMac(options: {
   processes?: string;
   tty?: string;
   capture?: (argv: string[]) => UICommandResult;
+  history?: (argv: string[]) => UICommandResult;
   locate?: (script: string) => UICommandResult;
   focus?: (script: string) => UICommandResult;
   clients?: string;
@@ -61,6 +66,7 @@ function fakeMac(options: {
       if (argv[0] === "ps" && argv[1] === "-o") return done(options.tty ?? "??");
       if (argv[3] === "display-message" && argv.includes("capture-pane")) return options.capture?.(argv) ?? failed("can't find pane");
       if (argv[3] === "display-message") return done("$3\n");
+      if (argv[3] === "capture-pane") return options.history?.(argv) ?? failed("can't find pane");
       if (argv[3] === "list-clients") return done(options.clients ?? "");
       if (argv[3] === "select-window") return done("");
       return failed(`unexpected ${argv.join(" ")}`);
@@ -137,6 +143,31 @@ describe("reading a tmux pane", () => {
     expect(parseTmuxCapture("100 34 0 0 1\n")).toBeNull();
   });
 
+  test("its scrollback only when asked, in a call of its own: plain, tmux's wrapping joined, from that many lines up", async () => {
+    const mac = tmuxMac({ history: () => done("older line\nsent message\nline one\n") });
+    const mirror = createTerminalMirror(mac.deps);
+    const plain = await mirror.screen("s1", { pid: 900 });
+    expect(plain).not.toHaveProperty("history");
+    expect(mac.calls.some((argv) => argv[3] === "capture-pane")).toBe(false);
+    const asked = await mirror.screen("s1", { pid: 900 }, { history: 500 });
+    expect(asked).toMatchObject({ host: "tmux", pane: "%7", screen: SCREEN, history: "older line\nsent message\nline one\n" });
+    expect(mac.calls.at(-1)).toEqual(["tmux", "-L", "fake", "capture-pane", "-p", "-J", "-S", "-500", "-t", "%7"]);
+    expect(tmuxHistoryArgv(["tmux"], "%7", 500)).toEqual(["tmux", "capture-pane", "-p", "-J", "-S", "-500", "-t", "%7"]);
+    // More than a read may ask is cut to the most, never passed on.
+    await mirror.screen("s1", { pid: 900 }, { history: MAX_HISTORY_LINES + 5 });
+    expect(mac.calls.at(-1)).toContain(`-${MAX_HISTORY_LINES}`);
+    expect(() => tmuxHistoryArgv(["tmux"], "%7", 0)).toThrow();
+    expect(() => tmuxHistoryArgv(["tmux"], "%7", MAX_HISTORY_LINES + 1)).toThrow();
+    expect(() => tmuxHistoryArgv(["tmux"], "%7; kill-server", 5)).toThrow();
+  });
+
+  test("a scrollback tmux won't give leaves the screen as it was", async () => {
+    const mac = tmuxMac({ history: () => failed("no such pane") });
+    const reply = await createTerminalMirror(mac.deps).screen("s1", { pid: 900 }, { history: 50 });
+    expect(reply).toMatchObject({ host: "tmux", screen: SCREEN });
+    expect(reply).not.toHaveProperty("history");
+  });
+
   test("the pane is found through the process tree, however deep, and not through a stranger's", () => {
     const panes = "500 %1\n600 %2";
     expect(paneForPid(903, panes, "903 902\n902 901\n901 600\n600 1\n500 1")).toBe("%2");
@@ -163,6 +194,20 @@ describe("reading a Terminal.app tab", () => {
     const mirror = createTerminalMirror(mac.deps);
     expect(await mirror.screen("s2", { pid: 321 })).not.toHaveProperty("text");
     expect(await mirror.screen("s2", { pid: 321 }, { text: true })).toMatchObject({ host: "terminal", text: "$ claude\n> hi" });
+  });
+
+  test("its scrollback only when asked: the tab's history, its last lines, in a read of its own", async () => {
+    const history = Array.from({ length: 30 }, (_, n) => `line ${n}`).join("\n");
+    const mac = fakeMac({ tty: "ttys012", locate: (script) => located(script.includes("history of tab") ? history : script.includes("contents of tab") ? "shown" : undefined) });
+    const mirror = createTerminalMirror(mac.deps);
+    expect(await mirror.screen("s2", { pid: 321 }, { text: true })).not.toHaveProperty("history");
+    expect(mac.scripts.some((script) => script.includes("history of tab"))).toBe(false);
+    const reply = await mirror.screen("s2", { pid: 321 }, { text: true, history: 3 });
+    expect(reply).toMatchObject({ host: "terminal", text: "shown", history: "line 27\nline 28\nline 29" });
+    expect(mac.scripts.at(-1)).toBe(terminalLocateScript("ttys012", true, "history"));
+    expect(terminalLocateScript("ttys012", true, "history")).toContain("(history of tab ti of window wi)");
+    expect(lastLines("a\nb\nc\n", 2)).toBe("b\nc");
+    expect(lastLines("a\nb", 9)).toBe("a\nb");
   });
 
   test("a tty no Terminal tab has (iTerm, an editor's terminal) is said plainly", async () => {
@@ -333,6 +378,55 @@ describe("on the wire", () => {
     expect(validateControlMessage({ kind: "terminal-focus", sessionId: "s1" })).toMatchObject({ ok: true });
   });
 
+  test("a scrollback is asked for in whole lines, 1 to the most a read gives", () => {
+    expect(validateRuntimeControlMessage({ kind: "terminal-screen", sessionId: "s1", text: true, history: 2000 }))
+      .toEqual({ ok: true, value: { kind: "terminal-screen", sessionId: "s1", text: true, history: 2000 } });
+    expect(validateRuntimeControlMessage({ kind: "terminal-screen", sessionId: "s1", history: MAX_HISTORY_LINES }))
+      .toMatchObject({ ok: true });
+    for (const history of [0, -1, 1.5, "20", MAX_HISTORY_LINES + 1, null]) {
+      expect(validateRuntimeControlMessage({ kind: "terminal-screen", sessionId: "s1", history }))
+        .toEqual({ ok: false, err: `terminal-screen: history must be a whole number of lines from 1 to ${MAX_HISTORY_LINES}` });
+    }
+    const tmux = { kind: "terminal-screen", sessionId: "s", host: "tmux", pane: "%1", columns: 80, rows: 24, screen: "x", history: "h" } as const;
+    expect(validateControlResponse(tmux)).toEqual({ ok: true, value: tmux });
+    const terminal = { kind: "terminal-screen", sessionId: "s", host: "terminal", tty: "ttys001", window: 5, minimized: false, selected: true, history: "h" } as const;
+    expect(validateControlResponse(terminal)).toEqual({ ok: true, value: terminal });
+    expect(validateControlResponse({ ...tmux, history: 5 })).toEqual({ ok: false, err: "invalid terminal-screen response" });
+    expect(validateControlResponse({ ...terminal, history: ["h"] })).toEqual({ ok: false, err: "invalid terminal-screen response" });
+  });
+
+  test("a scrollback is cut from its oldest end to fit one control frame, and one that can't fit is left out", () => {
+    const history = Array.from({ length: 5_000 }, (_, n) => `scrollback line ${n} with some words on it`).join("\n");
+    const reply = { kind: "terminal-screen", sessionId: "s", host: "tmux", pane: "%1", columns: 80, rows: 24, screen: "x", history } as const;
+    const fitted = fitHistory(reply);
+    if (fitted.host !== "tmux") throw new Error("not tmux");
+    expect(Buffer.byteLength(JSON.stringify(fitted)) + 1).toBeLessThanOrEqual(64 * 1024);
+    expect(Buffer.byteLength(JSON.stringify(fitted)) + 1).toBeGreaterThan(64 * 1024 - 100);
+    expect(history.endsWith(fitted.history!)).toBe(true);
+    expect(fitted.history).toContain("scrollback line 4999 with some words on it");
+    expect(fitted.screen).toBe("x");
+    // Small enough already: untouched.
+    const small = { ...reply, history: "a\nb" };
+    expect(fitHistory(small)).toBe(small);
+    // The rest of the reply fills the frame: no history at all, never a broken reply.
+    const full = fitHistory({ ...reply, screen: "y".repeat(64 * 1024) }, 64 * 1024);
+    expect(full).not.toHaveProperty("history");
+    expect(full).toMatchObject({ host: "tmux", screen: "y".repeat(64 * 1024) });
+    // Escapes count as JSON writes them: a history of ESCs is cut to fit their six bytes each.
+    const escapes = fitHistory({ ...reply, history: "\u001b".repeat(20_000) }, 30_000);
+    if (escapes.host !== "tmux") throw new Error("not tmux");
+    expect(Buffer.byteLength(JSON.stringify(escapes)) + 1).toBeLessThanOrEqual(30_000);
+    expect(escapes.history!.length).toBeGreaterThan(4_000);
+    // As much as fits, measured on what is KEPT: an oldest end that costs six bytes a character (escapes) and a newest
+    // end that costs one must still fill the frame to within one character.
+    const mixed = "\u001b".repeat(8_000) + "newest".repeat(3_000);
+    const most = fitHistory({ ...reply, history: mixed }, 30_000);
+    if (most.host !== "tmux") throw new Error("not tmux");
+    expect(mixed.endsWith(most.history!)).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(most)) + 1).toBeLessThanOrEqual(30_000);
+    expect(Buffer.byteLength(JSON.stringify(most)) + 1).toBeGreaterThan(30_000 - 6);
+  });
+
   test("the replies parse, and a malformed one doesn't", () => {
     const tmux = { kind: "terminal-screen", sessionId: "s", host: "tmux", pane: "%1", columns: 80, rows: 24, cursor: { x: 1, y: 2 }, screen: "x" } as const;
     expect(validateControlResponse(tmux)).toEqual({ ok: true, value: tmux });
@@ -400,7 +494,10 @@ describe("on the wire", () => {
 
   test("the daemon keys it on its own session record, never a pid the asker sends", () => {
     const daemon = readFileSync(join(import.meta.dir, "../src/daemon.ts"), "utf8");
-    expect(daemon).toContain("terminalScreen: (message) => terminalMirror.screen(message.sessionId, panelSessions.get(message.sessionId), message.text ? { text: true } : {}),");
+    const screen = daemon.slice(daemon.indexOf("terminalScreen: (message) =>"), daemon.indexOf("terminalFocus: async (message) =>"));
+    expect(screen).toContain("terminalScreen: (message) => terminalMirror.screen(message.sessionId, panelSessions.get(message.sessionId), {");
+    expect(screen).toContain("...(message.text ? { text: true } : {}),");
+    expect(screen).toContain("...(message.history ? { history: message.history } : {}),");
     expect(daemon).toContain("const focused = await terminalMirror.focus(message.sessionId, panelSessions.get(message.sessionId));");
   });
 });
@@ -442,5 +539,27 @@ describe.skipIf(!tmuxPath)("a real tmux pane", () => {
     expect(lines[1]).toContain("\u001b[38;5;245mgrey");
     // -N: a row keeps the spaces its background colours.
     expect(lines.length).toBeGreaterThanOrEqual(12);
+  });
+
+  test("its scrollback comes back plain, lines above the screen included, a wrapped line joined", async () => {
+    const long = "x".repeat(70) + "END";
+    const draw = `for i in $(seq 1 40); do echo "history line $i"; done; echo "${long}"; sleep 30`;
+    expect(Bun.spawnSync([...tmux, "new-session", "-d", "-s", "history", "-x", "40", "-y", "8", "bash", "-c", draw]).exitCode).toBe(0);
+    socketPath ||= Bun.spawnSync([...tmux, "display-message", "-p", "#{socket_path}"]).stdout.toString().trim();
+    const panePid = Number(Bun.spawnSync([...tmux, "display-message", "-p", "-t", "history", "#{pane_pid}"]).stdout.toString().trim());
+    const mirror = createTerminalMirror({ ...defaultTerminalMirrorDeps(), tmux });
+    let reply = await mirror.screen("real", { pid: panePid }, { history: 200 });
+    for (let tries = 0; tries < 20 && !(reply.host === "tmux" && reply.history?.includes("END")); tries++) {
+      await Bun.sleep(100);
+      reply = await mirror.screen("real", { pid: panePid }, { history: 200 });
+    }
+    if (reply.host !== "tmux") throw new Error("not tmux");
+    // Scrolled off an 8-row screen long ago, and still there.
+    expect(reply.screen).not.toContain("history line 1\n");
+    expect(reply.history).toContain("history line 1\n");
+    expect(reply.history).not.toContain("\u001b");
+    // 73 characters in a 40-column pane: two rows on screen, one line in the scrollback.
+    expect(reply.history).toContain(long);
+    expect(reply.screen).not.toContain(long);
   });
 });

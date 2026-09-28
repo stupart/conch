@@ -59,7 +59,7 @@ Optional / manual setup:
   conch service [install|off] | uninstall [--models]  manage or remove the install
   conch install-plugin | uninstall-plugin | config-toggle <agent> <plugin|mcp-server> <id> <on|off> [--scope user|project] [--project <dir>] [--preview] | config-rollback <file>  the conch plugin · a next-session switch in the agent's own file · undo it
   conch install [--codex] | pair   wire hooks · connect the iPhone app
-  conch doctor | help-session | version   live checks | a Claude session that knows conch | version
+  conch doctor | help-session | version | parity <session>   live checks | a Claude session that knows conch | version | debug: conch beside the session's terminal in one picture, PASS/FAIL on the last message sent (parity --help)
 
 Internal entrypoints: conch hook | codex-hook | daemon | mcp
 `;
@@ -717,6 +717,26 @@ switch (command) {
     // picture, which is where anyone reading a shot looks for it.
     if (screen) copyFile(`${ask}.json`, `${target}.json`);
     console.log(target);
+    break;
+  }
+  case "parity": {
+    // A debugging command (src/parity.ts): run only when asked, and it only reads — the daemon's terminal read, the
+    // published state, and the Mac app's own picture of its window unless --no-app.
+    const { defaultParityDeps, PARITY_HELP, parseParityArgs, runParity, sessionsFilePath } = await import("./parity.ts");
+    if (rest.includes("--help") || rest.includes("-h")) {
+      console.log(PARITY_HELP);
+      break;
+    }
+    const options = parseParityArgs(rest);
+    if ("error" in options) {
+      console.error(options.error);
+      process.exitCode = 2;
+      break;
+    }
+    const result = await runParity(options, defaultParityDeps({ socketPath: cfg.socketPath, sessionsPath: sessionsFilePath() }));
+    for (const note of result.notes) console.error(note);
+    for (const line of result.out) console.log(line);
+    process.exitCode = result.exitCode;
     break;
   }
   case "start": {
