@@ -124,6 +124,12 @@ struct ConversationStackView: View {
     /// clears and a failure sets, whichever sent it: this card, the composer, or a voice reply.
     @State private var questionNotices: [String: String] = [:]
     @State private var scrollRequestGeneration = 0
+    /// Selecting across the whole conversation, as in a document (ConchDesign/ConversationSelection.swift). Tyler: "I
+    /// would also like to drag to select areas for copying in our conversation panel — it currently only lets me do 1
+    /// line at a time." Every paragraph was its own SwiftUI text, and a SwiftUI selection cannot leave the text it
+    /// started in. This keeps the selection as rows and offsets instead, so it runs across messages and survives the
+    /// history region letting rows go.
+    @StateObject private var selection = ConversationSelectionController()
 
     private static let bottomAnchor = "conversation-bottom"
 
@@ -219,8 +225,38 @@ struct ConversationStackView: View {
     /// (Instruments, 2026-09-20). That stall landing four times a second is what made
     /// scrolling stutter. `EquatableView` leaves a row's subtree untouched while its key is
     /// unchanged, so a snapshot that changed nothing here costs one comparison per row.
+    @ViewBuilder
     private func memoRow(_ item: ConversationItem) -> some View {
-        MemoRow(key: rowKey(for: item)) { row(for: item) }.equatable()
+        let memo = MemoRow(key: rowKey(for: item)) { row(for: item) }.equatable()
+        switch selectability(of: item) {
+        case .none: memo
+        case .whole: memo.conversationSelectionRow(item.id, in: selection)
+        case .text: memo.conversationSelectionRow(item.id, in: selection, wholeRow: false)
+        }
+    }
+
+    /// How much of a row the conversation's selection takes. A message is text through and through: a press anywhere on
+    /// it selects. A tool row whose output is open is text only there — its header stays the button that opens it. The
+    /// rest (a question, a plan, a file change, a picture) keeps its own controls, and a drag passes over it.
+    private enum Selectability { case none, whole, text }
+
+    private func selectability(of item: ConversationItem) -> Selectability {
+        switch item.kind {
+        case .user: return item.receipt == nil ? .whole : .none
+        case .assistant, .thinking: return .whole
+        case .tool: return toolOutput(of: item) != nil && isExpanded(item.id) ? .text : .none
+        case .review, .material: return .none
+        }
+    }
+
+    /// The output a tool row shows when opened, or nil for a row that shows none (a question, a plan, a change).
+    private func toolOutput(of item: ConversationItem) -> String? {
+        guard item.kind == .tool else { return nil }
+        if let asked = item.question, !asked.options.isEmpty { return nil }
+        if let plan = item.plan, !plan.isEmpty { return nil }
+        if item.change != nil { return nil }
+        let result = history.fullText(forSnapshotItem: item.id) ?? item.tool?.result ?? ""
+        return result.isEmpty ? nil : result
     }
 
     /// Everything `row(for:)` reads besides its callbacks. A row is redrawn exactly when one
@@ -273,6 +309,8 @@ struct ConversationStackView: View {
     }
 
     var body: some View {
+        // Read when the selection needs it, from this body's conversation: nothing is worked out here.
+        let _ = selection.source = selectionSource
         ScrollViewReader { proxy in
             ScrollView {
                 // Eager, still, for the live tail. A lazy stack leaves the viewport at an offset
@@ -316,7 +354,9 @@ struct ConversationStackView: View {
                     // checkmark". The daemon reads transcripts on a poll, so a sent message had
                     // seconds of saying nothing at all.
                     ForEach(store.outbox.entries(for: conversation.sessionId)) { pending in
-                        PendingMessage(entry: pending).id(pending.id)
+                        PendingMessage(entry: pending)
+                            .conversationSelectionRow(pending.id, in: selection)
+                            .id(pending.id)
                     }
                     if let approval {
                         approvalCard(approval)
@@ -361,6 +401,9 @@ struct ConversationStackView: View {
                 // The same measure the AppKit fallback uses, so the two renderers do not
                 // disagree about how wide a line of this conversation is.
                 .frame(maxWidth: ConversationTextView.maxMeasure, alignment: .leading)
+                // The column's own space, and over it the surface that takes a press on its text:
+                // a drag runs across every message, and Copy and Select All come here once it has.
+                .conversationSelectionSurface(selection)
                 .background(
                     ConversationScrollObserver(
                         onUserScroll: { isAtBottom in pinnedToBottom = isAtBottom },
@@ -426,6 +469,7 @@ struct ConversationStackView: View {
                 questionTexts = [:]
                 questionNotices = [:]
                 linkFailure = nil
+                selection.clear()
                 requestBottomScroll(using: proxy)
                 // Declarative, never an imperative animation block: mac-phase1-source forbids
                 // those here, because one that restarts on every streamed token never settles
@@ -695,6 +739,7 @@ struct ConversationStackView: View {
                     Spacer(minLength: 48)
                     // Whole: a long paste the daemon cut to its tail is read back from the record.
                     Text(AttributedString.conchMarkdown(text(of: item)))
+                        .conversationSelectable(row: item.id, segment: 0)
                         // workspace-v1 §3: the transcript reads at 15/23, not at the 13 the tool
                         // rows and captions around it use. This is the one thing on screen that is
                         // actually READ rather than scanned.
@@ -725,6 +770,7 @@ struct ConversationStackView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .thinking:
             Text(AttributedString.conchMarkdown(item.text))
+                .conversationSelectable(row: item.id, segment: 0)
                 .font(.system(size: 12).italic())
                 .foregroundStyle(ConchPalette.textFaint)
                 .textSelection(.enabled)
@@ -1323,6 +1369,7 @@ struct ConversationStackView: View {
                         .background(ConchPalette.hover, in: RoundedRectangle(cornerRadius: 8))
                 } else {
                     Text(result)
+                        .conversationSelectable(row: item.id, segment: 0)
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(ConchPalette.textDim)
                         .textSelection(.enabled)
@@ -1334,6 +1381,101 @@ struct ConversationStackView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: - The selection's reading of the conversation
+
+    /// The agent's name, for a copied exchange's labels.
+    private var agentName: String {
+        store.state?.row(conversation.sessionId)?.backend?.lowercased() == "codex" ? "Codex" : "Claude"
+    }
+
+    /// The conversation as the selection reads it: every row in the order drawn — the record's, the live window's, what
+    /// this Mac has sent — and each one's selectable texts, exactly as `row(for:)` draws and tags them. Closures, run only
+    /// when a selection needs them: building every row's text on every snapshot is what the memoised rows avoid.
+    private var selectionSource: ConversationSelectionController.Source {
+        let view = self
+        let store = self.store
+        return .init(
+            rowIDs: {
+                let recorded = view.recordedRowsInOrder
+                return recorded.map(\.id) + view.conversation.items.map(\.id)
+                    + store.outbox.entries(for: view.conversation.sessionId).map(\.id)
+            },
+            rowTexts: { ids in view.selectableTexts(ids) },
+            alias: { id in
+                // A live row that aged out of the snapshot is a recorded row now, by its native id.
+                let native = HistorySnapshot.nativeId(forSnapshotItem: id)
+                return view.history.paging.rows.first { $0.item?.nativeId == native || $0.id == native }?.id
+            }
+        )
+    }
+
+    /// The record's rows above the live window, in order.
+    private var recordedRowsInOrder: [HistoryRow] {
+        let live = Set(conversation.items.map { HistorySnapshot.nativeId(forSnapshotItem: $0.id) })
+        return HistorySnapshot.older(rows: history.paging.rows, thanSnapshot: live, startingAt: conversation.items.first?.at)
+    }
+
+    /// `ids`' selectable texts, the rows among them that have any.
+    private func selectableTexts(_ ids: [String]) -> [String: SelectableRowText] {
+        let wanted = Set(ids)
+        var texts: [String: SelectableRowText] = [:]
+        let agent = agentName
+        // A step folded into a run shows only while the run is open, whatever its own row says.
+        let liveFolds = folds(in: conversation.items)
+        for item in conversation.items where wanted.contains(item.id) {
+            let run = liveFolds.heads[item.id]?.id ?? liveFolds.memberOf[item.id]
+            texts[item.id] = selectableText(of: item, agent: agent, shown: run.map(isExpanded) ?? true)
+        }
+        if texts.count < wanted.count {
+            // One pass over the record. A message needs nothing else; only a tool step asks which run it is folded
+            // into, which means laying the folds out over the whole record, so that is done only when one is wanted.
+            var steps: [HistoryRow] = []
+            for row in history.paging.rows where wanted.contains(row.id) {
+                guard let item = row.item else { continue }
+                if Self.isToolStep(item) { steps.append(row); continue }
+                texts[row.id] = selectableText(of: conversationItem(recorded: item), agent: agent, shown: true)
+            }
+            if !steps.isEmpty {
+                let recorded = recordedRowsInOrder
+                var runOf: [String: String] = [:]
+                for run in ToolFolding.runs(for: recorded.map { (id: $0.id, isTool: $0.item.map(Self.isToolStep) ?? false, at: $0.item?.at) }) {
+                    for member in run.itemIDs { runOf[member] = run.id }
+                }
+                for row in steps {
+                    guard let item = row.item else { continue }
+                    texts[row.id] = selectableText(of: conversationItem(recorded: item), agent: agent, shown: runOf[row.id].map(isExpanded) ?? true)
+                }
+            }
+            for entry in store.outbox.entries(for: conversation.sessionId) where wanted.contains(entry.id) {
+                texts[entry.id] = SelectableRowText(id: entry.id, speaker: .you, segments: [SelectableSegment(AttributedString.conchMarkdown(entry.text))])
+            }
+        }
+        return texts
+    }
+
+    /// One row's selectable texts, as `row(for:)` draws them; nil for a row with none. `shown`: the row is not folded
+    /// away inside a closed run.
+    private func selectableText(of item: ConversationItem, agent: String, shown: Bool) -> SelectableRowText? {
+        switch item.kind {
+        case .user:
+            guard item.receipt == nil else { return nil }
+            return SelectableRowText(id: item.id, speaker: .you, segments: [SelectableSegment(AttributedString.conchMarkdown(text(of: item)))])
+        case .assistant:
+            return SelectableRowText(id: item.id, speaker: .agent(agent), segments: MarkdownView.selectableSegments(text(of: item)))
+        case .thinking:
+            return SelectableRowText(id: item.id, speaker: .thinking(agent), segments: [SelectableSegment(AttributedString.conchMarkdown(item.text))])
+        case .tool:
+            guard shown, isExpanded(item.id), let output = toolOutput(of: item) else { return nil }
+            let name = item.tool?.name ?? "Tool"
+            if item.tool?.kind == .subagent {
+                return SelectableRowText(id: item.id, speaker: .output(name), segments: MarkdownView.selectableSegments(output, size: 12.5))
+            }
+            return SelectableRowText(id: item.id, speaker: .output(name), segments: [SelectableSegment(text: output, kind: .code)])
+        case .review, .material:
+            return nil
+        }
     }
 
     private func statusColor(_ status: String?) -> Color {
@@ -1856,6 +1998,7 @@ private struct PendingMessage: View {
             HStack {
                 Spacer(minLength: 48)
                 Text(AttributedString.conchMarkdown(entry.text))
+                    .conversationSelectable(row: entry.id, segment: 0)
                     .font(ConchType.readingBody)
                     .lineSpacing(ConchType.readingLineSpacing)
                     .foregroundStyle(ConchPalette.textPrimary)
