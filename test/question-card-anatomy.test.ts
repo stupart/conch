@@ -72,10 +72,11 @@ test("an option is a row, not a filled card", () => {
   expect(option).toContain(".padding(.horizontal, 10)");
   expect(option).toContain(".padding(.vertical, 8)");
   expect(option).toContain("RoundedRectangle(cornerRadius: 9, style: .continuous)");
-  // Transparent at rest; hover and selected are the only fills.
+  // Transparent at rest; hover and selected are the only fills — and hover on a live card only.
   expect(option).toContain("ConchPalette.hover");
   expect(option).toContain("ConchPalette.selection");
-  expect(option).toContain(".onHover {");
+  expect(option).toContain("live && hoveredOption == option.label ? ConchPalette.hover : .clear");
+  expect(option).toContain(".modifier(OptionHover(live: live, label: option.label, hovered: $hoveredOption))");
   expect(option).not.toContain("ConchPalette.raised");
   expect(option).not.toContain("ConchPalette.statusNeeds.opacity(0.10)");
 });

@@ -7,8 +7,11 @@
 /// saw was a generic failure, and his words sat on a clipboard he was nowhere near.
 ///
 /// Both apps read this one table, so the phone and the Mac never describe the same failure
-/// differently. A reason conch does not recognise stays "Not delivered" — an invented cause
-/// is worse than no cause, because it sends someone to fix the wrong thing.
+/// differently. A code conch does not recognise stays "Not delivered" — an invented cause
+/// is worse than no cause, because it sends someone to fix the wrong thing. A reason the daemon
+/// wrote as a sentence is shown as it wrote it: a question it could not answer says why in
+/// words of its own ("the session is asking 3 questions at once, …"), and reading those as an
+/// unknown code is how Tyler's refused answer showed as a bare "Not delivered." (2026-09-28).
 public enum ConchSendFailure {
     /// The whole sentence to show: what went wrong, and where the words are if they survived.
     ///
@@ -16,7 +19,7 @@ public enum ConchSendFailure {
     /// saying it left the text on the Mac's clipboard, which is worth saying because it is the
     /// difference between lost words and a paste away.
     public static func sentence(reason: String?, onClipboard: Bool = false) -> String {
-        let opening = clause(for: reason).map { "Not delivered — \($0)" } ?? "Not delivered."
+        let opening = (clause(for: reason) ?? written(reason)).map { "Not delivered — \($0)" } ?? "Not delivered."
         return onClipboard ? "\(opening) Your words are on the Mac's clipboard." : opening
     }
 
@@ -59,9 +62,12 @@ public enum ConchSendFailure {
             "another window shares this session, so conch can't tell whether it landed."
         case "delivery-interrupted":
             "the send was stopped before it went in."
-        // Keys typed into an open dialog would answer it, so conch typed nothing.
+        // Keys typed into an open dialog would answer it, so conch typed nothing. A question conch
+        // can see takes the words as its answer instead, so this is a dialog it cannot see.
         case "session-awaiting-answer":
-            "that session is waiting on a permission prompt or question. Answer it on the Mac, then send again."
+            "that session has a prompt open in its terminal, and typing would answer it. Answer it there, then send again."
+        case "session-awaiting-permission":
+            "that session is waiting on a permission prompt. Allow or deny it first, then send again."
         // The terminal the row names no longer holds the session, so conch typed nothing there.
         case "session-stopped":
             "that session isn't running in its terminal any more: it was stopped. Resume it, and conch will pick it up."
@@ -70,5 +76,13 @@ public enum ConchSendFailure {
         default:
             nil
         }
+    }
+
+    /// A reason the daemon wrote as a sentence (it has spaces; a code never does), ending on a
+    /// full stop. Nil for a code, which only the table above may name.
+    static func written(_ reason: String?) -> String? {
+        guard let reason = reason?.trimmingCharacters(in: .whitespacesAndNewlines),
+              reason.contains(" ") else { return nil }
+        return reason.hasSuffix(".") ? reason : reason + "."
     }
 }

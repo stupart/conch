@@ -1221,8 +1221,10 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       recordDaemonError("question-answer", `Could not answer the question: ${reason}`, event.sessionId, {});
       return { delivered: false, reason };
     };
-    if (!event.transcriptPath) return refuse("the session's transcript was not found");
-    const adapter = adapterForTranscript(event.transcriptPath);
+    const transcriptPath = event.transcriptPath ?? deps.window(event.sessionId)?.transcriptPath;
+    if (!transcriptPath) return refuse("the session's transcript was not found");
+    if (transcriptPath !== event.transcriptPath) event = { ...event, transcriptPath };
+    const adapter = adapterForTranscript(transcriptPath);
     if (!adapter.questionKeys) return "as-message";
     // Keys typed into a prompt that is no longer a picker become a message.
     const pending = await pendingQuestionRow(event);
@@ -1239,9 +1241,9 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     const keys = adapter.questionKeys(questions, answers);
     if (typeof keys === "string") return refuse(keys);
     if (!injectKeys) return refuse("answering is unavailable here");
-    const receipt = createRecordOperation(deps.observeRecords, recordScope(event.sessionId, event.transcriptPath), "delivery", event.announce.length);
+    const receipt = createRecordOperation(deps.observeRecords, recordScope(event.sessionId, transcriptPath), "delivery", event.announce.length);
     receipt.emit("accepted", "question-answer-accepted");
-    const recordedFrom = transcriptSize(event.transcriptPath);
+    const recordedFrom = transcriptSize(transcriptPath);
     let sent: inject.InjectTextResult;
     try { sent = await injectKeys(cfg, event.pid, keys, beforeInject); }
     catch (error) { receipt.emit("unknown", "delivery-outcome-unknown"); throw error; }
@@ -1256,7 +1258,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     // Keys can all land and still not answer: typed into a picker laid out differently from
     // the one measured, Tyler's numbers only moved its highlight, and conch said "answered"
     // (2026-09-23: "it just didn't work lol"). The answer counts once Claude Code records it.
-    if (!(await answerRecorded(event.transcriptPath, recordedFrom))) {
+    if (!(await answerRecorded(transcriptPath, recordedFrom))) {
       receipt.emit("failed", "question-answer-not-recorded");
       return refuse("the picker didn't take the answer; answer it in the terminal");
     }
@@ -1904,6 +1906,8 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       failure?: inject.SendFailure;
     } = {},
   ): Promise<boolean | "staged"> {
+    // What was said or typed, before choice matching rewrites it: the draft a refusal hands back.
+    const written = text;
     if (event.transcriptPath) {
       try {
         const conversation = await readConversationTail(
@@ -1929,7 +1933,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     return routeVoicePrompt(cfg.voiceQa, text, event.transcriptPath, {
       askClaude: askHaiku,
       speak: (answer) => speak(cfg, answer, event.label),
-      inject: async (prompt) => (await answerWithWords(event, prompt, beforeInject, options.failure))
+      inject: async (prompt) => (await answerWithWords(event, prompt, beforeInject, options.failure, written))
         ?? deliverToSession(
           event,
           prompt,
@@ -1952,8 +1956,15 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     words: string,
     beforeInject?: () => boolean | Promise<boolean>,
     failure?: inject.SendFailure,
+    /** The words as they were written, for the draft; `words` may be choice matching's rewrite. */
+    written = words,
   ): Promise<boolean | undefined> {
-    if (!event.transcriptPath || !adapterForTranscript(event.transcriptPath).questionKeys) return undefined;
+    // The row's transcript when the event names none: the message route below falls back to it
+    // too, and without it here a waiting question was never seen, and the words were refused as
+    // typing into an open dialog instead of answering it.
+    const transcriptPath = event.transcriptPath ?? deps.window(event.sessionId)?.transcriptPath;
+    if (!transcriptPath || !adapterForTranscript(transcriptPath).questionKeys) return undefined;
+    if (transcriptPath !== event.transcriptPath) event = { ...event, transcriptPath };
     const questions = await pendingQuestions(event).catch(() => []);
     if (!questions.length) return undefined;
     const answers = textQuestionAnswers(questions, words);
@@ -1964,6 +1975,18 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     if (answered === "as-message") return undefined;
     if (failure) failure.reason = answered.reason;
     if (typeof answers === "string") log(`did not answer "${event.label}": ${answers}`);
+    if (answered.reason === "interrupted") return false;
+    // Never lost, never silent: the words go back to the draft, as a refused message's do, and
+    // the reason is said as well as shown (the phone and the card read it from the receipt).
+    publishDictation(written, event.sessionId);
+    if (!beforeInject || await beforeInject()) {
+      // A sentence the daemon wrote is said as written; a code is never read out.
+      const reason = answered.reason ?? "";
+      const why = reason.includes(" ")
+        ? `Couldn't answer that: ${reason}.`
+        : PERMISSION_LINES[reason] ?? "Couldn't answer that question.";
+      await speak(cfg, `${why} Your words are in the draft.`, event.label, false, event.sessionId);
+    }
     return false;
   }
 
@@ -2081,8 +2104,13 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       // Keys typed into a dialog answer it. Claude Code's `waiting` is a permission prompt,
       // question or other dialog on screen (`registryToPanel`). On 2026-09-23 a send was typed
       // into an open permission prompt: the words went nowhere and the Return approved the
-      // pending command.
-      if (target?.status === "waiting") return failedDelivery("session-awaiting-answer");
+      // pending command. A question conch can see never gets here: the words answered it
+      // (`answerWithWords`). What is left is refused, named when conch knows what it is.
+      if (target?.status === "waiting") {
+        return failedDelivery(approvalShowing(event.sessionId, transcriptPath, "waiting")
+          ? "session-awaiting-permission"
+          : "session-awaiting-answer");
+      }
       const dead = await deadTargetOf(event);
       if (dead) return refused(dead);
 

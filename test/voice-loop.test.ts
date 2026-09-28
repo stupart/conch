@@ -2854,6 +2854,68 @@ describe("answering the question a session is waiting on", () => {
     expect(h.texts).toEqual([]);
   });
 
+  test("words for a lone multi-select question are words of your own, typed with the measured keys", async () => {
+    // Tyler's typed answer to "Ship tonight" from the phone, refused twice (2026-09-28): "takes its
+    // options, not words of your own". The picker offers "Type something" on multi-select too.
+    const h = harness();
+    const path = asking(question("Gamma", ["G1", "G2", "G3"], true));
+    expect(await h.voice.handle(inject("Lets review everything, then audit", { transcriptPath: path }))).toBe(true);
+    expect(await h.voice.handle(inject("g1, G3", { transcriptPath: path }))).toBe(true);
+    expect(h.answered).toEqual([
+      ["Down", "Down", "Down", { type: "Lets review everything, then audit" }, "Down", "Enter", { press: "1" }],
+      [{ press: "1" }, { press: "3" }, "Right", { press: "1" }],
+    ]);
+    expect(h.texts).toEqual([]);
+  });
+
+  test("the card's multi-select answer carries ticked options and words together", async () => {
+    const h = harness();
+    const sent = await h.voice.handle(inject("Gamma: G1, G3, plus mine", {
+      transcriptPath: asking(question("Gamma", ["G1", "G2", "G3"], true)),
+      answers: [{ choices: [0, 2], text: "plus mine" }],
+      questionId: "tool:tu_ask",
+    }));
+    expect(sent).toBe(true);
+    expect(h.answered).toEqual([[{ press: "1" }, { press: "3" }, "Down", "Down", "Down", { type: "plus mine" }, "Down", "Enter", { press: "1" }]]);
+  });
+
+  test("words refused while several questions wait go back to the draft, and the reason is said", async () => {
+    const before = getLiveState().dictated?.id ?? 0;
+    const h = harness();
+    const sent = await h.voice.handle(inject("A2 please", { transcriptPath: two() }));
+    const reason = "the session is asking 2 questions at once, so words alone can't say which one they answer: fill in its question card and press Submit answers";
+    expect(sent).toEqual({ delivered: false, reason });
+    expect(getLiveState().dictated).toEqual({ text: "A2 please", id: before + 1, sessionId: "s1" });
+    expect(h.said).toEqual([`Couldn't answer that: ${reason}. Your words are in the draft.`]);
+    expect(h.answered).toEqual([]);
+    expect(h.texts).toEqual([]);
+  });
+
+  test("a phone message reaches the waiting question through the row's transcript when the event names none", async () => {
+    // The 20:19 shape: the session's row says a dialog is up. With the question visible it is
+    // answered, never refused as typing into a dialog.
+    const path = asking(question("Gamma", ["G1", "G2", "G3"], true));
+    const h = harness({ window: () => ({ sessionId: "s1", status: "waiting", transcriptPath: path }) as SessionInfo });
+    expect(await h.voice.handle(inject("my own words"))).toBe(true);
+    expect(h.answered).toEqual([["Down", "Down", "Down", { type: "my own words" }, "Down", "Enter", { press: "1" }]]);
+    expect(h.texts).toEqual([]);
+  });
+
+  test("a dialog that is no question conch can see refuses the words, and names a permission prompt when it knows one", async () => {
+    const waiting = () => ({ sessionId: "s1", status: "waiting" }) as SessionInfo;
+    const permissionUp = harness({ window: waiting });
+    expect(await permissionUp.voice.handle(inject("words", { transcriptPath: pendingBash() })))
+      .toEqual({ delivered: false, reason: "session-awaiting-permission" });
+    const unknown = harness({ window: waiting });
+    expect(await unknown.voice.handle(inject("words", { transcriptPath: transcript(user({ type: "text", text: "go" })) })))
+      .toEqual({ delivered: false, reason: "session-awaiting-answer" });
+    for (const h of [permissionUp, unknown]) {
+      expect(h.texts).toEqual([]);
+      expect(h.keys).toEqual([]);
+      expect(h.answered).toEqual([]);
+    }
+  });
+
   test("with no question waiting, words are an ordinary message", async () => {
     const h = harness();
     // Typed as a message (whether it then confirms is the message path's business).
@@ -2900,6 +2962,12 @@ describe("answering the question a session is waiting on", () => {
       answers: [{ choices: [0] }],
     }));
     expect(sent).toMatchObject({ delivered: false, reason: "front-window-changed" });
+    // Words that failed the same way go back to the draft, and a code is never read aloud.
+    const before = getLiveState().dictated?.id ?? 0;
+    const words = await h.voice.handle(inject("my own words", { transcriptPath: asking(question("Delta", ["D1", "D2"])) }));
+    expect(words).toMatchObject({ delivered: false, reason: "front-window-changed" });
+    expect(getLiveState().dictated).toEqual({ text: "my own words", id: before + 1, sessionId: "s1" });
+    expect(h.said).toEqual(["Couldn't answer that question. Your words are in the draft."]);
   });
 });
 

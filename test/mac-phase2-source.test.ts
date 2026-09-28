@@ -103,14 +103,18 @@ describe("Mac Phase 2 questions and error reporting", () => {
     expect(models).toContain("struct AgentQuestion: Decodable");
     expect(models).toContain("let question: AgentQuestion?");
     expect(conversation).toContain("let onAnswer: (String, [ConchQuestionAnswer], String) -> Void");
-    expect(conversation).toContain('answerable: item.tool?.status == "running"');
+    // Only the live card answers: the newest running question with nothing said after it.
+    expect(conversation).toContain("let live = item.id == liveQuestionID");
+    expect(conversation).toContain("answerable: live,");
     expect(conversation).toContain("@State private var multiSelections: [String: Set<String>] = [:]");
     expect(conversation).toContain("toggleSelection(option.label, for: questionID)");
     // An answer is the option's INDEX, not its words: the daemon types it as the picker's key.
     expect(conversation).toMatch(/if asked\.multiSelect \{[\s\S]*toggleSelection[\s\S]*\} else if inSet \{[\s\S]*\} else \{[\s\S]*submitAnswer\(option\.label, \[ConchQuestionAnswer\(choices: \[index\]\)\], itemID: questionID\)/);
-    expect(conversation).toMatch(/submitAnswer\(\s*selected\.joined\(separator: ", "\),\s*\[ConchQuestionAnswer\(choices: asked\.options\.indices\.filter/);
-    expect(conversation).toContain('selected.isEmpty ? "Submit selections"');
-    expect(conversation).toContain(".disabled(selected.isEmpty || noTerminal != nil)");
+    // A multi-select Submit sends the ticked options and any words typed beside them, as one answer.
+    expect(conversation).toContain("if let filled { submitAnswer(filled.summary, [filled.answer], itemID: questionID) }");
+    expect(conversation).toContain("ConchQuestionAnswer(choices: picked.isEmpty ? nil : picked, text: typed.isEmpty ? nil : typed)");
+    expect(conversation).toContain('Text(filled?.label ?? "Submit selections")');
+    expect(conversation).toContain(".disabled(filled == nil || noTerminal != nil)");
     expect(dashboard).toMatch(/onAnswer: \{ summary, answers, questionID in[\s\S]*\.inject\([\s\S]*text: summary,[\s\S]*answers: answers,[\s\S]*questionId: questionID/);
   });
 

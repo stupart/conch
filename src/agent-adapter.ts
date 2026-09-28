@@ -208,6 +208,15 @@ export type NamedKey = "Right" | "Left" | "Up" | "Down" | "Enter" | "Escape" | "
  * A question whose options carry previews is laid out side by side (measured
  * the same way, 2026-09-23): a number only moves the highlight and Return picks,
  * and there is no "Type something" row: `n` opens the question's notes.
+ *
+ * Words on a multiSelect question, measured 2026-09-28 in a tmux lab whose
+ * picker a stand-in API drew (no model turn): a number only ticks, and the
+ * cursor stays on option 1; words go in only with the cursor ON "Type
+ * something", and typing them ticks it; Return there UNticks it, and → there
+ * moves the text cursor, not the question. So: ↓ once per option to reach the
+ * row, the words, ↓ to the question's own "Submit" row, and Return, which
+ * moves on. Ticked options first go beside them: [1, 3, ↓↓↓, words, ↓, Return,
+ * 1] recorded "G1, G3, plus my words".
  * Assumes the picker is on its first question, as a new one opens.
  */
 export function claudeQuestionKeys(
@@ -220,23 +229,37 @@ export function claudeQuestionKeys(
   const keys: AnswerKey[] = [];
   for (const [index, question] of questions.entries()) {
     const answer = answers[index]!;
-    if ("text" in answer) {
-      if (question.multiSelect) return `"${question.header || question.question}" takes options, not words`;
+    const name = `"${question.header || question.question}"`;
+    const words = "text" in answer ? answer.text : null;
+    const choices = answer.choices ?? [];
+    if (choices.some((choice) => !Number.isInteger(choice) || choice < 0 || choice >= question.options.length)
+      || new Set(choices).size !== choices.length) {
+      return `the answer to ${name} doesn't match its options`;
+    }
+    if (words !== null && !words.trim()) return `there are no words to answer ${name} with`;
+    if (!question.multiSelect) {
+      if (words !== null ? choices.length !== 0 : choices.length !== 1) {
+        return `${name} takes one answer: one of its options, or words of your own`;
+      }
       // With previews there is no "Type something" row: words go in as the question's notes,
       // which Claude Code records as "(notes only)" with the words beside it.
-      keys.push(question.previews ? { press: "n" } : { press: String(question.options.length + 1) }, { type: answer.text }, "Enter");
+      if (words !== null) {
+        keys.push(question.previews ? { press: "n" } : { press: String(question.options.length + 1) }, { type: words }, "Enter");
+        continue;
+      }
+      keys.push({ press: String(choices[0]! + 1) });
+      // With previews a number only moves the highlight; Return picks it and moves on. Typing
+      // numbers alone is how Tyler's answer to "The ring" went nowhere (2026-09-23).
+      if (question.previews) keys.push("Enter");
       continue;
     }
-    const { choices } = answer;
-    if (!choices.length || (!question.multiSelect && choices.length !== 1)
-      || choices.some((choice) => !Number.isInteger(choice) || choice < 0 || choice >= question.options.length)) {
-      return `the answer to "${question.header || question.question}" doesn't match its options`;
-    }
+    if (!choices.length && words === null) return `the answer to ${name} doesn't match its options`;
     keys.push(...choices.map((choice) => ({ press: String(choice + 1) })));
-    if (question.multiSelect) keys.push("Right");
-    // With previews a number only moves the highlight; Return picks it and moves on. Typing
-    // numbers alone is how Tyler's answer to "The ring" went nowhere (2026-09-23).
-    else if (question.previews) keys.push("Enter");
+    if (words === null) {
+      keys.push("Right");
+      continue;
+    }
+    keys.push(...question.options.map((): AnswerKey => "Down"), { type: words }, "Down", "Enter");
   }
   if (questions.length > 1 || questions[0]!.multiSelect) keys.push({ press: "1" });
   return keys;

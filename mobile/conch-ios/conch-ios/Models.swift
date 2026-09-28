@@ -768,7 +768,13 @@ struct QuestionAnswer: Equatable {
     var choices: [Int]? = nil
     var text: String? = nil
 
-    var wire: [String: Any] { choices.map { ["choices": $0] } ?? ["text": text ?? ""] }
+    /// Choices, words, or — on a multi-select question — both: ticked options beside words of your own.
+    var wire: [String: Any] {
+        var wire: [String: Any] = [:]
+        if let choices { wire["choices"] = choices }
+        if let text { wire["text"] = text }
+        return wire
+    }
 }
 
 struct Conversation: Decodable, Equatable, Sendable {

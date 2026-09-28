@@ -73,8 +73,12 @@ describe("the Mac conversation stays readable while it grows", () => {
       "fullText: history.fullText(forSnapshotItem: item.id)",
       "bodyStatus: expanded && wasCut(item) ? bodyStatus(for: item) : nil",
       'selections: multiSelections.filter { $0.key == item.id || $0.key.hasPrefix(item.id + "#") }',
-      'typed: questionTexts.filter { $0.key.hasPrefix(item.id + "#") }',
-      "hovered: item.question == nil ? nil : hoveredOption",
+      'typed: questionTexts.filter { $0.key == item.id || $0.key.hasPrefix(item.id + "#") }',
+      // Only the live question card follows the pointer; a settled one never redraws for it.
+      "hovered: live ? hoveredOption : nil",
+      "live: live",
+      "submitted: item.question == nil ? nil : submittedAnswers[item.id]",
+      "notice: live ? questionNotices[item.id] : nil",
       "noTerminal: noTerminal",
       "canOpenInTerminal: onOpenInTerminal != nil",
     ]) expect(key).toContain(read);
@@ -412,12 +416,13 @@ describe("§3's anatomy, where the app had drifted from it", () => {
   test("an answered question collapses to what it decided (§3)", () => {
     expect(stack).toContain("private func answeredQuestionRow(_ decided: String) -> some View {");
     expect(stack).toContain("QuestionOutcome.summary(");
-    expect(stack).toContain("QuestionOutcome.chosen(");
-    // Only a FINISHED call collapses. A running question is still the thing the session is
-    // blocked on, and must keep every option pressable.
-    expect(stack).toContain('if item.tool?.status != "running",');
-    // The fallback survives: when the answer names no option, the block renders as before.
-    expect(stack).toContain('answerable: item.tool?.status == "running"');
+    // A lone question: the shared rule reads its recorded answer, words of your own included.
+    expect(stack).toContain("question: asked.question,");
+    // Only a card that is no longer live collapses. The live question is still the thing the
+    // session is blocked on, and must keep every option pressable.
+    expect(stack).toContain("if !live, let decided = answeredSummary(questions, result: item.tool?.result) {");
+    // The fallback survives: when the answer says nothing certain, the block renders settled.
+    expect(stack).toContain("answerable: live,");
 
     const collapsed = stack.slice(
       stack.indexOf("private func answeredQuestionRow"),

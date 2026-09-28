@@ -112,8 +112,12 @@ struct SessionView: View {
     @State private var fetchedReply: String?
     @State private var loadingReply = false
     @State private var optionReplyInFlight = false
-    /// Why an answer to a question or a permission prompt did not land, in the Mac's words.
+    /// Why an answer to a permission prompt did not land, in the Mac's words.
     @State private var answerFailure: String?
+    /// Why a send didn't land while a question card was the live one, by that card, in the Mac's
+    /// words: said on the card, whether the card sent it or the composer did (the Mac types the
+    /// composer's words into the question's picker as its answer).
+    @State private var questionNotices: [String: String] = [:]
     /// Answers sent from a question card, by question row; dropped again if the Mac refuses one.
     @State private var submittedAnswers: [String: String] = [:]
     @State private var confirmingClose = false
@@ -216,7 +220,8 @@ struct SessionView: View {
                             submittedAnswers: submittedAnswers,
                             onFreeform: { typing = true },
                             noTerminal: row?.noTerminal,
-                            onOpenInTerminal: row?.attachable == true ? openInTerminal : nil
+                            onOpenInTerminal: row?.attachable == true ? openInTerminal : nil,
+                            questionNotices: questionNotices
                         )
                     } else if let replyText {
                         MarkdownView(text: replyText)
@@ -912,7 +917,7 @@ struct SessionView: View {
         guard isStillAsking(questionID) else { return }
         optionReplyInFlight = true
         sendFailed = false
-        answerFailure = nil
+        questionNotices[questionID] = nil
         submittedAnswers[questionID] = summary
         let sessionLabel = row?.label ?? ""
         Task {
@@ -928,7 +933,7 @@ struct SessionView: View {
             // An option tap has no bubble to correct later, so only a refusal is reported,
             // and the card comes back to be answered again.
             if case let .failed(reason) = delivered {
-                answerFailure = reason
+                questionNotices[questionID] = reason
                 submittedAnswers[questionID] = nil
             }
         }
@@ -956,12 +961,14 @@ struct SessionView: View {
     }
 
     /// Whether the agent is still waiting on this exact question, by the same rule the row
-    /// uses to enable itself: its tool call is still running.
+    /// uses to enable itself: it is the live question card (`ConversationStack.liveQuestionID`).
     private func isStillAsking(_ questionID: String) -> Bool {
-        guard let item = bridge.state?.conversations[sessionId]?.items.first(where: { $0.id == questionID }) else {
-            return false
-        }
-        return item.question != nil && item.tool?.status == "running"
+        liveQuestionID == questionID
+    }
+
+    /// The question card that can still be answered in this session, if one can.
+    private var liveQuestionID: String? {
+        bridge.state?.conversations[sessionId].flatMap(ConversationStack.liveQuestionID(in:))
     }
 
     private func closeCleanly() {
@@ -1103,8 +1110,15 @@ struct SessionView: View {
         sendFailed = false
         let label = row?.label ?? ""
         let pending = attachments
+        // With a question waiting, the Mac types these words into its picker as the answer. A
+        // refusal (several questions at once, a dialog it can't see) is said on the card too,
+        // not only under the bubble: the card is where it gets fixed.
+        let asking = liveQuestionID
+        if let asking { questionNotices[asking] = nil }
         talk.send(session: sessionId) { text, opId in
-            await deliver(text: text, opId: opId, pending: pending, label: label)
+            let delivered = await deliver(text: text, opId: opId, pending: pending, label: label)
+            if let asking, case let .failed(reason) = delivered { questionNotices[asking] = reason }
+            return delivered
         }
     }
 

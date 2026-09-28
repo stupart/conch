@@ -37,7 +37,8 @@ const SENTENCES: Record<string, string> = {
   "delivery-unconfirmed": "Not delivered — conch typed it but the session never took it.",
   "delivery-unattributed": "Not delivered — another window shares this session, so conch can't tell whether it landed.",
   "delivery-interrupted": "Not delivered — the send was stopped before it went in.",
-  "session-awaiting-answer": "Not delivered — that session is waiting on a permission prompt or question. Answer it on the Mac, then send again.",
+  "session-awaiting-answer": "Not delivered — that session has a prompt open in its terminal, and typing would answer it. Answer it there, then send again.",
+  "session-awaiting-permission": "Not delivered — that session is waiting on a permission prompt. Allow or deny it first, then send again.",
   "session-stopped": "Not delivered — that session isn't running in its terminal any more: it was stopped. Resume it, and conch will pick it up.",
   "session-ended": "Not delivered — that session isn't running in its terminal any more: its process has ended. Resume it, and conch will pick it up.",
 };
@@ -117,6 +118,10 @@ precondition(receipt(${receiptJSON({ kind: "inject-done", delivered: false, reas
   == .failed(${swift("Not delivered — couldn't reach that session's window. Your words are on the Mac's clipboard.")}))
 precondition(receipt(${receiptJSON({ kind: "inject-done", delivered: false, onClipboard: true })})
   == .failed(${swift("Not delivered. Your words are on the Mac's clipboard.")}))
+
+// A reason the daemon wrote as a sentence (a question it could not answer) is shown as written.
+precondition(receipt(${receiptJSON({ kind: "inject-done", delivered: false, reason: "the session is asking 2 questions at once, so words alone can't say which one they answer: fill in its question card and press Submit answers" })})
+  == .failed(${swift("Not delivered — the session is asking 2 questions at once, so words alone can't say which one they answer: fill in its question card and press Submit answers.")}))
 
 // A cause conch is not sure of is never invented — an unknown reason, and no reason at all,
 // say the same thing and nothing more.
