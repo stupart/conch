@@ -1,3 +1,4 @@
+import CoreText
 import SwiftUI
 
 // MARK: - Colour
@@ -256,6 +257,18 @@ public enum ConchType {
         .init(name: "conversationNowFull", font: conversationNowFull, mac: "36 medium", iOS: ".largeTitle medium (34)"),
         .init(name: "conversationPastFull", font: conversationPastFull, mac: "24 regular", iOS: ".title2 (22)"),
     ]
+
+    /// SF through Core Text, for type drawn straight into a CGContext: the canvas's labels and pills, the storyboard's
+    /// frame stamps. Core Text answers nil only for a UI type it does not know; the fallback is the same face asked for
+    /// through the platform, so nothing drawn outside SwiftUI can land in a different one.
+    static func coreText(size: CGFloat, bold: Bool = false) -> CTFont {
+        if let font = CTFontCreateUIFontForLanguage(bold ? .emphasizedSystem : .system, size, nil) { return font }
+        #if os(macOS)
+        return NSFont.systemFont(ofSize: size, weight: bold ? .bold : .regular) as CTFont
+        #else
+        return UIFont.systemFont(ofSize: size, weight: bold ? .bold : .regular) as CTFont
+        #endif
+    }
 }
 
 // MARK: - Space, radius, elevation, motion

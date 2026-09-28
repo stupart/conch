@@ -1120,6 +1120,16 @@ private extension View {
             // `layoutManager` is what puts the view back on TextKit 1, which is the point: the
             // TextKit 2 caret is a subview AppKit re-places on every keystroke, with no seam.
             view.layoutManager?.delegate = ComposerCaretBaseline.shared
+            // A draft already in the field when it was built — restored at launch, or on coming back to its session —
+            // was laid out before that delegate existed, so its words sat the whole half-leading low, 2 pt under where
+            // the placeholder draws them, until a keystroke laid them out again (measured offscreen, 2026-09-28:
+            // ink 79..107 px against the placeholder's 75..103 at 2x). Lay it out again now, under the delegate.
+            if let layout = view.layoutManager, let storage = view.textStorage, storage.length > 0 {
+                layout.invalidateLayout(
+                    forCharacterRange: NSRange(location: 0, length: storage.length),
+                    actualCharacterRange: nil
+                )
+            }
 
             // A dropped file must reach the composer's `.onDrop`, not this
             // editor. NSTextView registers for file drops and inserts the PATH

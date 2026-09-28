@@ -105,6 +105,35 @@ test("the caret is moved by the baseline, and the words are put back", () => {
 });
 
 /**
+ * A draft that is already in the field when it is built sits on the placeholder's line too.
+ *
+ * The delegate above only moves glyphs laid out AFTER it is installed. A draft restored at launch,
+ * or found on coming back to its session, was laid out first, so its words kept the whole
+ * half-leading the editor slides down by and sat 2 pt under the placeholder until a keystroke laid
+ * them out again. Measured offscreen at 2x with the real ComposerView, the same words each way:
+ *
+ *     placeholder                          ink 75..103 px
+ *     words typed after the field is up    ink 75..103 px, baseline 49 pt
+ *     words there when it is built         ink 79..107 px, baseline 51 pt   <- before this
+ *     laid out again under the delegate    ink 75..103 px, baseline 49 pt
+ *
+ * The same run with the relayout removed measured 79..107 again.
+ */
+test("a draft laid out before the caret delegate existed is laid out again under it", () => {
+  const insets = composer.slice(composer.indexOf("func conchTextViewInsets("));
+  const body = insets.slice(0, insets.indexOf("\n    }\n"));
+  // Invalidated, not laid out here: the layout it asks for happens at the next draw, by which time the
+  // delegate is installed. (Moved above the delegate line it measured the same, 75..103 px.)
+  expect(body).toContain("view.layoutManager?.delegate = ComposerCaretBaseline.shared");
+  expect(body).toContain("layout.invalidateLayout(");
+  // Reachable for exactly the drafts that need it.
+  expect(body).toContain(
+    "if let layout = view.layoutManager, let storage = view.textStorage, storage.length > 0 {",
+  );
+  expect(body).toContain("forCharacterRange: NSRange(location: 0, length: storage.length),");
+});
+
+/**
  * The reach into the editor cannot depend on how deeply SwiftUI nests a background.
  *
  * The leading, the caret, the spell checking and the drag types all arrive through one

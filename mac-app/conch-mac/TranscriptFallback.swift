@@ -173,10 +173,10 @@ struct ConversationDocument {
         paragraph.lineSpacing = 5
         paragraph.paragraphSpacing = 0
         paragraph.lineBreakMode = .byWordWrapping
+        // No kern: the -0.25 here tightened the window's face before SF, and SF sets its own tracking at 16.
         return [
             .font: ConchTypography.nsFont(size: 16),
             .foregroundColor: color,
-            .kern: -0.25,
             .paragraphStyle: paragraph,
         ]
     }

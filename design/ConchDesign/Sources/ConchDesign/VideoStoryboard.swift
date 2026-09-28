@@ -49,7 +49,7 @@ public enum VideoStoryboard {
         context.setFillColor(CGColor(srgbRed: 0.08, green: 0.08, blue: 0.09, alpha: 1))
         context.fill(CGRect(origin: .zero, size: size))
         let stampPoints = max(11, 16 * scale)
-        let font = CTFontCreateUIFontForLanguage(.system, stampPoints, nil) ?? CTFontCreateWithName("Helvetica" as CFString, stampPoints, nil)
+        let font = ConchType.coreText(size: stampPoints)
         for (index, frame) in frames.enumerated() {
             let column = index % columns, row = index / columns
             // Core Graphics counts up from the bottom: the first row is the top one.
