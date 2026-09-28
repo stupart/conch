@@ -189,18 +189,18 @@ describe("the iPhone", () => {
 });
 
 describe("You're set, Settings, the menu and Help", () => {
-  test("the login switch replaces the silent registration at launch", () => {
+  test("the first launch registers at login, visibly; You're set's switch only shows macOS's answer", () => {
     expect(app).not.toContain("registerLoginItemIfNeeded");
     expect(app).not.toContain("SMAppService");
     const files = Object.entries(macSources).filter(([, source]) => source.includes("SMAppService")).map(([name]) => name);
     expect(files).toEqual(["OnboardingSupport.swift"]);
-    const set = member(support, "static func set(_ on: Bool) -> String? {");
-    expect(set).toContain("if service.status != .enabled { try service.register() }");
-    expect(set).toContain("try service.unregister()");
-    // On by default, applied on You're set, never before.
-    expect(member(support, "static func applyDefault() -> String? {")).toContain("return set(true)");
-    expect(controller).toContain("case .done?:\n            loginNote = LoginItem.applyDefault()");
-    expect(controller.match(/LoginItem\.applyDefault\(\)/g)?.length).toBe(1);
+    const register = member(support, "private func register(on: Bool) -> Bool {");
+    expect(register).toContain("if service.status != .enabled { try service.register() }");
+    expect(register).toContain("try service.unregister()");
+    // The rule, and the launch, are test/login-item-source.test.ts's and LoginItemPolicyTests'. You're set decides nothing.
+    expect(controller).toContain("case .done?:\n            LoginItem.shared.refresh()");
+    expect(controller).not.toContain("applyDefault");
+    expect(support).not.toContain("applyDefault");
   });
 
   test("Answer uses the open-and-recite path; Start a session opens the New session sheet", () => {

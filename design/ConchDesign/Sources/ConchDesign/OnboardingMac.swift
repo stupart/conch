@@ -452,12 +452,19 @@ public struct OnboardingWelcome: View {
     }
 
     let backdrop: Backdrop
+    /// The first launch's line about opening at login (`LoginItemLine`), in the footer: macOS has just shown its own.
+    let loginLine: String?
+    /// The line's fix, when it has one: System Settings › General › Login Items.
+    let onOpenLoginItems: (() -> Void)?
     let onBegin: () -> Void
     let onLater: () -> Void
     @Environment(\.colorScheme) private var scheme
 
-    public init(backdrop: Backdrop = .calm, onBegin: @escaping () -> Void = {}, onLater: @escaping () -> Void = {}) {
+    public init(backdrop: Backdrop = .calm, loginLine: String? = nil, onOpenLoginItems: (() -> Void)? = nil,
+                onBegin: @escaping () -> Void = {}, onLater: @escaping () -> Void = {}) {
         self.backdrop = backdrop
+        self.loginLine = loginLine
+        self.onOpenLoginItems = onOpenLoginItems
         self.onBegin = onBegin
         self.onLater = onLater
     }
@@ -495,6 +502,20 @@ public struct OnboardingWelcome: View {
                     .frame(maxWidth: 360)
                     .padding(.top, 16)
                 Spacer(minLength: 0)
+                if let loginLine {
+                    HStack(spacing: 8) {
+                        Text(loginLine)
+                            .font(.system(size: 12))
+                            .foregroundStyle(onOpenLoginItems == nil ? ConchColor.textTertiary : ConchColor.attention)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if let onOpenLoginItems {
+                            OnboardingButton(LoginItemLine.openLoginItems, style: .action, action: onOpenLoginItems)
+                        }
+                    }
+                    .frame(maxWidth: 520)
+                    .padding(.bottom, 8)
+                }
                 OnboardingButton("Set up later", style: .quiet, action: onLater)
                     .padding(.bottom, 20)
             }
@@ -1936,17 +1957,20 @@ public struct OnboardingDoneStep: View {
     /// Why the switch didn't take, or what macOS still wants, in place of the notice beside it.
     let loginNote: String?
     let onToggleLogin: (Bool) -> Void
+    /// The note's fix, when it has one: System Settings › General › Login Items.
+    let onOpenLoginItems: (() -> Void)?
     let onAction: (String) -> Void
     let onClose: () -> Void
 
     public init(summary: [OnboardingSummaryLine], actions: [OnboardingFirstAction], openAtLogin: Bool = true, loginNote: String? = nil,
-                onToggleLogin: @escaping (Bool) -> Void = { _ in },
+                onToggleLogin: @escaping (Bool) -> Void = { _ in }, onOpenLoginItems: (() -> Void)? = nil,
                 onAction: @escaping (String) -> Void = { _ in }, onClose: @escaping () -> Void = {}) {
         self.summary = summary
         self.actions = actions
         self.openAtLogin = openAtLogin
         self.loginNote = loginNote
         self.onToggleLogin = onToggleLogin
+        self.onOpenLoginItems = onOpenLoginItems
         self.onAction = onAction
         self.onClose = onClose
     }
@@ -1996,23 +2020,28 @@ public struct OnboardingDoneStep: View {
                         }
                     }
                 }
-                Button { onToggleLogin(!openAtLogin) } label: {
-                    HStack(spacing: 10) {
-                        MiniSwitch(on: openAtLogin)
-                        Text("Open conch when you log in").font(.system(size: 12, weight: .medium)).foregroundStyle(ConchColor.textPrimary)
-                        Text(loginNote ?? "macOS will say it added a background item. That's this.")
-                            .font(.system(size: 11))
-                            .foregroundStyle(loginNote == nil ? ConchColor.textTertiary : ConchColor.attention)
-                            .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 10) {
+                    Button { onToggleLogin(!openAtLogin) } label: {
+                        HStack(spacing: 10) {
+                            MiniSwitch(on: openAtLogin)
+                            Text("Open conch when you log in").font(.system(size: 12, weight: .medium)).foregroundStyle(ConchColor.textPrimary)
+                            Text(loginNote ?? "So your agents can reach you.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(loginNote == nil ? ConchColor.textTertiary : ConchColor.attention)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .contentShape(Rectangle())
                     }
-                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Open conch when you log in")
+                    .accessibilityValue(openAtLogin ? "On" : "Off")
+                    .accessibilityAddTraits(.isToggle)
+                    if let onOpenLoginItems {
+                        OnboardingButton(LoginItemLine.openLoginItems, style: .action, action: onOpenLoginItems)
+                    }
                 }
-                .buttonStyle(.plain)
                 .padding(.top, 2)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Open conch when you log in")
-                .accessibilityValue(openAtLogin ? "On" : "Off")
-                .accessibilityAddTraits(.isToggle)
             }
         }
     }

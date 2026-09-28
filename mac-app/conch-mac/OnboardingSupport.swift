@@ -264,38 +264,132 @@ enum AudioInputs {
 
 // MARK: - Opening at login
 
-/// "Open conch when you log in", the switch on You're set. It replaces the silent registration at first launch: macOS
-/// says it added a background item, so conch names it first and registers only once the person has seen the switch.
-/// On by default: reaching You're set with nothing chosen turns it on.
+/// "Open conch when you log in": registered at the first launch, visibly, and a switch on You're set and in Settings.
+///
+/// The first launch of an installed conch that has never registered, and hasn't been told not to, registers
+/// (`LoginItemPolicy.atLaunch`). macOS shows its own notice; conch says it too, once: on setup's welcome when that is
+/// what opens, otherwise in the window's notices (`announcement`). A launch never registers again, so a switch turned
+/// off, here or in System Settings, stays off. The switches show macOS's own answer, read again whenever conch comes
+/// forward. The rules are ConchDesign's (LoginItemPolicy.swift); this is the one place conch talks to `SMAppService`.
 @MainActor
-enum LoginItem {
-    /// The person has set the switch (or conch has, at You're set): never decided for them again.
-    static let decidedKey = "conch.loginItemDecided"
+final class LoginItem: ObservableObject {
+    static let shared = LoginItem()
 
-    /// Only an installed conch registers: a build run from Xcode or a checkout would register a copy that moves.
-    static var installed: Bool { Bundle.main.bundlePath.hasPrefix("/Applications/") }
+    /// macOS's answer for this conch.
+    @Published private(set) var status: LoginItemStatus
+    @Published private(set) var record: LoginItemRecord
+    /// Why the switch's last press didn't take, until the next press.
+    @Published private(set) var refusal: LoginItemLine?
+    /// Where the first launch's line goes: the window's notices once setup's launch has settled without its welcome.
+    @Published private(set) var announceInWindow = false
+    /// The line setup's welcome says, this launch, when the welcome is what opened.
+    @Published private(set) var welcomeLine: LoginItemLine?
 
-    static var decided: Bool { UserDefaults.standard.bool(forKey: decidedKey) }
+    private static let choiceKey = "conch.loginItem.choice"
+    private static let registeredOnceKey = "conch.loginItem.registeredOnce"
+    private static let announceKey = "conch.loginItem.announce"
+    private static let refusedKey = "conch.loginItem.refused"
+    /// #441's record: the switch was set on You're set. Read as a decision already made.
+    private static let legacyDecidedKey = "conch.loginItemDecided"
 
-    /// What the switch shows: registered, or not yet decided (on by default).
-    static var isOn: Bool {
-        switch SMAppService.mainApp.status {
-        case .enabled, .requiresApproval: true
-        case .notRegistered, .notFound: !decided && installed
-        @unknown default: false
+    private var activation: NSObjectProtocol?
+
+    private init() {
+        status = Self.read()
+        record = Self.load()
+        // Turned on or off in System Settings while conch was open: the switches follow when conch comes forward.
+        activation = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil,
+                                                            queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refresh() }
         }
     }
 
-    /// At You're set: on, unless the person already chose. Returns what to say instead of the notice, if anything.
-    static func applyDefault() -> String? {
-        guard !decided else { return note(for: SMAppService.mainApp.status) }
-        return set(true)
+    /// Only an installed conch registers: a build run from Xcode or a checkout would register a copy that moves.
+    static var installed: Bool {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let links = ["/Applications/conch.app", home + "/Applications/conch.app"].compactMap { path -> String? in
+            guard (try? FileManager.default.destinationOfSymbolicLink(atPath: path)) != nil else { return nil }
+            return URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+        }
+        return LoginItemPolicy.installed(bundlePath: Bundle.main.bundleURL.resolvingSymlinksInPath().path, home: home, linkedCopies: links)
     }
 
-    /// The switch, pressed. Returns what to say instead of the notice, if anything.
-    static func set(_ on: Bool) -> String? {
-        UserDefaults.standard.set(true, forKey: decidedKey)
-        guard installed else { return on ? "Move conch to your Applications folder, then turn this on." : nil }
+    /// What the switches show.
+    var isOn: Bool { LoginItemPolicy.isOn(status) }
+
+    /// The note beside a switch, or nil for its usual words.
+    var note: LoginItemLine? { LoginItemPolicy.note(status: status, installed: Self.installed, refusal: refusal) }
+
+    /// The first launch's line, while it's still to be seen.
+    var announcement: LoginItemLine? { LoginItemPolicy.announcement(record, status: status) }
+
+    // MARK: Launch
+
+    /// `applicationDidFinishLaunching`: the first launch registers, and only the first.
+    func registerAtLaunch() {
+        status = Self.read()
+        let installed = Self.installed
+        let step = LoginItemPolicy.atLaunch(record, legacyDecided: UserDefaults.standard.bool(forKey: Self.legacyDecidedKey),
+                                            status: status, installed: installed)
+        var next = step.record
+        if step.register {
+            let refused = !register(on: true)
+            status = Self.read()
+            next = LoginItemPolicy.registered(next, refused: refused)
+        }
+        if next != record { save(next) }
+    }
+
+    /// Setup's launch has decided what opens (OnboardingController). When that is its welcome, the welcome says the
+    /// line, and it has been seen; otherwise the window's notices say it, until OK.
+    func setupSettled(welcomeOnScreen: Bool) {
+        guard let line = announcement else { return }
+        if welcomeOnScreen {
+            welcomeLine = line
+            dismissAnnouncement()
+        } else {
+            announceInWindow = true
+        }
+    }
+
+    /// The window's notice, OK'd, or the line seen on setup's welcome: not said again.
+    func dismissAnnouncement() {
+        var next = record
+        next.announce = false
+        announceInWindow = false
+        save(next)
+    }
+
+    // MARK: The switches
+
+    /// You're set's and Settings' switch, pressed.
+    func set(_ on: Bool) {
+        let installed = Self.installed
+        save(LoginItemPolicy.switched(record, on: on, installed: installed))
+        announceInWindow = false
+        guard installed else {
+            refusal = nil
+            status = Self.read()
+            return
+        }
+        refusal = register(on: on) ? nil : (on ? .refused : .refusedOff)
+        status = Self.read()
+    }
+
+    /// macOS's answer, read again: a switch coming on screen, and conch coming forward.
+    func refresh() {
+        status = Self.read()
+    }
+
+    /// The fix for a line that needs one: System Settings › General › Login Items.
+    func openLoginItems() {
+        SMAppService.openSystemSettingsLoginItems()
+    }
+
+    // MARK: macOS
+
+    /// Registers or unregisters conch, and says whether macOS took it; a refusal goes to the daemon's error log.
+    private func register(on: Bool) -> Bool {
         let service = SMAppService.mainApp
         do {
             if on {
@@ -303,19 +397,44 @@ enum LoginItem {
             } else if service.status == .enabled || service.status == .requiresApproval {
                 try service.unregister()
             }
+            return true
         } catch {
             let message = error.localizedDescription
             Task {
                 await ConchSocketClient().reportAppError(operation: on ? "login-item.register" : "login-item.unregister", message: message,
                                                          state: ["bundlePath": Bundle.main.bundlePath])
             }
-            return on ? "macOS didn't add conch. Turn it on in System Settings › General › Login Items." : "macOS didn't remove conch. Turn it off in System Settings › General › Login Items."
+            return false
         }
-        return note(for: service.status)
     }
 
-    private static func note(for status: SMAppService.Status) -> String? {
-        status == .requiresApproval ? "Allow conch in System Settings › General › Login Items." : nil
+    private static func read() -> LoginItemStatus {
+        switch SMAppService.mainApp.status {
+        case .enabled: .enabled
+        case .requiresApproval: .requiresApproval
+        case .notRegistered: .notRegistered
+        case .notFound: .notFound
+        @unknown default: .notFound
+        }
+    }
+
+    // MARK: The record
+
+    private static func load() -> LoginItemRecord {
+        let defaults = UserDefaults.standard
+        return LoginItemRecord(choice: defaults.string(forKey: choiceKey).flatMap(LoginItemChoice.init(rawValue:)),
+                               registeredOnce: defaults.bool(forKey: registeredOnceKey),
+                               announce: defaults.bool(forKey: announceKey),
+                               refused: defaults.bool(forKey: refusedKey))
+    }
+
+    private func save(_ next: LoginItemRecord) {
+        let defaults = UserDefaults.standard
+        if let choice = next.choice { defaults.set(choice.rawValue, forKey: Self.choiceKey) } else { defaults.removeObject(forKey: Self.choiceKey) }
+        defaults.set(next.registeredOnce, forKey: Self.registeredOnceKey)
+        defaults.set(next.announce, forKey: Self.announceKey)
+        defaults.set(next.refused, forKey: Self.refusedKey)
+        record = next
     }
 }
 

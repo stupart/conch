@@ -50,6 +50,8 @@ final class OnboardingController: NSObject, NSWindowDelegate {
 
     /// What opens at launch, per the rule: the whole flow, back where it was, only what's missing, or nothing.
     private func launch() async {
+        // The first launch's login line goes on the welcome when that is what opened, else in the window's notices.
+        defer { LoginItem.shared.setupSettled(welcomeOnScreen: welcomeOnScreen) }
         var progress = OnboardingStore.loadProgress()
         let readiness: OnboardingReadiness
         if progress == nil {
@@ -93,6 +95,11 @@ final class OnboardingController: NSObject, NSWindowDelegate {
             model.replace(OnboardingProgress.welcomingBack(missing: missing, readiness: model.readiness))
         }
         show()
+    }
+
+    /// Setup's welcome is the page on screen.
+    private var welcomeOnScreen: Bool {
+        window?.isVisible == true && model.welcomeBack == nil && (model.shownStep ?? .welcome) == .welcome
     }
 
     // MARK: The menu, Help and Settings
@@ -286,10 +293,6 @@ final class OnboardingStore: ObservableObject {
     /// The practice turn's lease: the connection `practice-start` holds open (src/practice.ts). conch quitting or crashing
     /// closes it, and the daemon takes the practice session away with it.
     private var practiceLease: Int32?
-
-    // You're set.
-    @Published private(set) var openAtLogin = true
-    @Published private(set) var loginNote: String?
 
     weak var stateStore: StateStore?
     private var clock = DownloadClock()
@@ -518,9 +521,9 @@ final class OnboardingStore: ObservableObject {
         case .agents?: watchAgents()
         case .voice?: startVoice(microphone: PermissionCenter.shared.statuses[.microphone])
         case .phone?: startPhone()
+        // You're set's switch shows macOS's own answer: the first launch registered, and nothing is decided here.
         case .done?:
-            loginNote = LoginItem.applyDefault()
-            openAtLogin = LoginItem.isOn
+            LoginItem.shared.refresh()
         default: break
         }
     }
@@ -966,11 +969,6 @@ final class OnboardingStore: ObservableObject {
 
     // MARK: You're set
 
-    func toggleLogin(_ on: Bool) {
-        loginNote = LoginItem.set(on)
-        openAtLogin = LoginItem.isOn
-    }
-
     /// A session that needs an answer, or finished a turn while setup was open: offered first. Not every idle
     /// session: only one that finished since the window opened. Never the practice turn: it goes with the tour, which
     /// You're set follows, so its row is on its way out and there's nothing to answer.
@@ -1034,6 +1032,7 @@ private struct SetupConfig: Encodable, Sendable {
 struct OnboardingRootView: View {
     @ObservedObject var model: OnboardingStore
     @ObservedObject private var center = PermissionCenter.shared
+    @ObservedObject private var login = LoginItem.shared
     let controller: OnboardingController
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -1053,7 +1052,9 @@ struct OnboardingRootView: View {
         ZStack {
             switch page {
             case .welcome:
-                OnboardingWelcome(backdrop: .shore, onBegin: { model.apply(.begin) }, onLater: { controller.close() })
+                // The first launch's login line, when the welcome is what opened (`LoginItem.setupSettled`).
+                OnboardingWelcome(backdrop: .shore, loginLine: login.welcomeLine?.words, onOpenLoginItems: loginFix(login.welcomeLine),
+                                  onBegin: { model.apply(.begin) }, onLater: { controller.close() })
                     .transition(.onboardingSwap(reduceMotion: reduceMotion))
             case .welcomeBack, .step:
                 OnboardingWindow(progress: model.progress ?? OnboardingProgress(), steps: model.readiness.rail, downloads: model.downloads,
@@ -1073,6 +1074,12 @@ struct OnboardingRootView: View {
     private func open(_ step: OnboardingStep) {
         model.welcomeBack = nil
         model.apply(.open(step))
+    }
+
+    /// A login line's button, when its fix is in System Settings › General › Login Items.
+    private func loginFix(_ line: LoginItemLine?) -> (() -> Void)? {
+        guard line?.opensLoginItems == true else { return nil }
+        return { LoginItem.shared.openLoginItems() }
     }
 
     /// The rail's words beside a step: how many permissions are allowed, what's off, what's new.
@@ -1127,8 +1134,9 @@ struct OnboardingRootView: View {
                     }
                 }
             case .done:
-                OnboardingDoneStep(summary: summary, actions: firstActions, openAtLogin: model.openAtLogin, loginNote: model.loginNote,
-                                   onToggleLogin: model.toggleLogin, onAction: model.firstAction, onClose: { controller.close() })
+                OnboardingDoneStep(summary: summary, actions: firstActions, openAtLogin: login.isOn, loginNote: login.note?.words,
+                                   onToggleLogin: { login.set($0) }, onOpenLoginItems: loginFix(login.note),
+                                   onAction: model.firstAction, onClose: { controller.close() })
             case .welcome:
                 EmptyView()
             }
@@ -1142,7 +1150,7 @@ struct OnboardingRootView: View {
         let permissions = missing.contains(.permissions) ? model.welcomeBackAsks : []
         let rows = permissions.count + (missing.contains(.voice) ? 1 : 0) + (missing.contains(.phone) ? 1 : 0)
         OnboardingWelcomeBack(count: rows, onDone: {
-            // Finished while the page is still up, so no step's work (the login switch's default) runs on the way out.
+            // Finished while the page is still up, so no step's work runs on the way out.
             model.apply(.finish)
             controller.close()
         }, onNotNow: { controller.close() }) {
