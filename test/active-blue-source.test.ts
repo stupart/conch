@@ -100,8 +100,14 @@ test("the breath is a halo behind a still dot, and holds still under Reduce Moti
   // The function the XCTest drives is the one the view draws with.
   expect(halo).toContain(".opacity(Self.opacity(at: time, reduceMotion: reduceMotion))");
   expect(halo).toContain("guard !reduceMotion else { return 0 }");
-  // Under Reduce Motion the clock stops as well as the halo, so a still dot costs no frames.
-  expect(halo).toContain("TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion ||");
+  // Under Reduce Motion there is no halo view at all, so a still dot costs no frames: the first branch draws nothing.
+  expect(halo).toMatch(/if reduceMotion \{\n(\s*\/\/[^\n]*\n)*\s*Color\.clear\n\s*\} else if phase != nil \|\| rendersStatically \{/);
+  // The live breath is Core Animation's (`BreathingDisc`, keyframes handed over once), not a SwiftUI clock: one
+  // TimelineView per working row re-ran the whole window 30 times a second (11.9% of a core, measured 28 Sep).
+  expect(halo).not.toMatch(/TimelineView\(/);
+  expect(halo).toMatch(/\} else \{\n\s*BreathingDisc\(colour: /);
+  expect(halo).toContain('CAKeyframeAnimation(keyPath: "opacity")');
+  expect(halo).toContain("breath.values = ActiveHalo.keyframes().map { NSNumber(value: $0) }");
   // A background, so the dot keeps its own size and baseline in every row.
   expect(halo).toMatch(/background \{\n\s*if breathes \{\n\s*ActiveHalo\(/);
 });

@@ -359,6 +359,7 @@ public struct OnboardingSpinner: View {
     let phase: Double?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.conchRendersStatically) private var statically
+    @Environment(\.conchHidden) private var hidden
 
     public init(size: CGFloat = 14, phase: Double? = nil) {
         self.size = size
@@ -366,7 +367,7 @@ public struct OnboardingSpinner: View {
     }
 
     public var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: statically || reduceMotion)) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: statically || reduceMotion || hidden)) { timeline in
             let turn = phase ?? (statically ? 0.12 : timeline.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 0.9) / 0.9)
             ZStack {
                 Circle().stroke(ConchColor.fill, lineWidth: size * 0.14)

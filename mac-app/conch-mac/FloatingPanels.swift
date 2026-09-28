@@ -1120,6 +1120,8 @@ private struct ControlBarHost: View {
         .fixedSize()
         .background(GeometryReader { proxy in Color.clear.preference(key: ControlBarSize.self, value: proxy.size) })
         .onPreferenceChange(ControlBarSize.self, perform: onSize)
+        // The bar turned off is ordered out, not torn down: a speaking or listening glyph stops with it (`conchHidden`).
+        .conchPausesWhenHidden()
     }
 }
 
@@ -1442,6 +1444,9 @@ private struct ConversationFogHost: View {
         .onChange(of: canvas.document?.has(.you) == true ? nil : Self.followed(store.state, staged: panels.staged, lastStaged: queue.lastStaged)) { _, newer in
             if let newer { queue.follow(to: newer) }
         }
+        // The panel turned off is ordered out, not torn down: its "Thinking" went on at 30 frames a second behind nothing
+        // for as long as the session worked. It stops with the window now (`conchHidden`).
+        .conchPausesWhenHidden()
     }
 
     /// The session the Ready pill staged, else the one the voice is on, else the daemon's active or selected one, else

@@ -34,6 +34,8 @@ public struct VoiceGlyph: View {
     let kind: Kind
     let size: CGFloat
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Its window can't be seen: the clock stops (`conchHidden`).
+    @Environment(\.conchHidden) private var hidden
 
     public init(_ kind: Kind, size: CGFloat = 18) {
         self.kind = kind
@@ -44,7 +46,7 @@ public struct VoiceGlyph: View {
     static let bars: [CGFloat] = [7, 14, 10, 16, 6]
 
     public var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || kind == .quiet)) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || kind == .quiet || hidden)) { timeline in
             glyph(at: reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate)
         }
         .frame(width: size, height: size)
@@ -2245,9 +2247,11 @@ private struct WordRevealRenderer: TextRenderer {
 /// Between your message and its reply, while the session works: "Thinking", a light passing through it.
 private struct Thinking: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The panel ordered out, or covered: no light passes through a word nobody can see (`conchHidden`).
+    @Environment(\.conchHidden) private var hidden
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || hidden)) { timeline in
             let phase = reduceMotion ? 0.5 : 1.2 - 1.4 * (timeline.date.timeIntervalSinceReferenceDate / 1.6).truncatingRemainder(dividingBy: 1)
             let label = Text("Thinking").font(.system(size: 15, weight: .medium))
             label

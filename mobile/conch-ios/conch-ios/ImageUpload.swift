@@ -1,3 +1,4 @@
+import ConchDesign
 import ImageIO
 import UIKit
 import UniformTypeIdentifiers
@@ -45,6 +46,36 @@ enum ImageDownsampler {
         return CGSize(width: width.doubleValue, height: height.doubleValue)
     }
 
+    /// The most a picture decoded for a width may hold on the phone: 64 MB of
+    /// pixels. A 1,179-pixel-wide screen still gets a picture 13,500 pixels tall
+    /// at its full width; one taller is decoded narrower.
+    static let phonePixelBudget: CGFloat = 16_000_000
+
+    /// The widest the phone draws anything, in pixels: its screen's long side,
+    /// which is its width in landscape.
+    @MainActor static var screenPixels: CGFloat {
+        max(UIScreen.main.nativeBounds.width, UIScreen.main.nativeBounds.height)
+    }
+
+    /// A deliverable picture decoded to be drawn `widthPixels` wide, the height
+    /// following (`ConchImage.decodeWidth`), never wider than it is and within
+    /// the phone's budget.
+    ///
+    /// Not a long-edge bound: that is a box's rule, and a tall picture is drawn
+    /// to a width. Bounded at 2,048 on its long edge, a 1200 x 6000 capture came
+    /// out 410 pixels wide and was drawn across a 1,179-pixel screen, three times
+    /// magnified — the blur Tyler saw on tall pictures.
+    static func filePreview(
+        at url: URL,
+        maxBytes: Int,
+        forWidth widthPixels: CGFloat,
+        budget: CGFloat = phonePixelBudget
+    ) async -> FilePreview {
+        await filePreview(at: url, maxBytes: maxBytes) { size in
+            ConchImage.longEdge(forWidth: ConchImage.decodeWidth(forDrawnWidth: widthPixels, of: size, budget: budget), of: size)
+        }
+    }
+
     /// Decode a disk-backed deliverable away from SwiftUI and within fixed
     /// compressed and decoded bounds. Opening the URL directly also avoids an
     /// otherwise redundant full-file Data allocation.
@@ -52,6 +83,14 @@ enum ImageDownsampler {
         at url: URL,
         maxBytes: Int,
         maxPixelSize: Int
+    ) async -> FilePreview {
+        await filePreview(at: url, maxBytes: maxBytes) { _ in maxPixelSize }
+    }
+
+    private static func filePreview(
+        at url: URL,
+        maxBytes: Int,
+        longEdge: @escaping @Sendable (CGSize) -> Int
     ) async -> FilePreview {
         let worker = Task.detached(priority: .userInitiated) { () -> FilePreview in
             autoreleasepool {
@@ -62,7 +101,8 @@ enum ImageDownsampler {
                 guard let source = CGImageSourceCreateWithURL(url as CFURL, [
                     kCGImageSourceShouldCache: false,
                 ] as CFDictionary), !Task.isCancelled,
-                      let image = thumbnail(source: source, maxPixelSize: maxPixelSize)
+                      let size = pixelSize(source: source),
+                      let image = thumbnail(source: source, maxPixelSize: longEdge(size))
                 else { return .unreadable }
                 return .image(image)
             }

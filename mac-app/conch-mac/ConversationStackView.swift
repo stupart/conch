@@ -1799,6 +1799,8 @@ private struct ArtifactPreview: View {
     let artifact: ReviewInfo
     let onOpen: () -> Void
     @State private var isHovering = false
+    /// The picture, decoded off the main thread, under the key it was decoded for (`MaterialRow`'s way).
+    @State private var decoded: (key: String, image: NSImage)?
 
     var body: some View {
         Button(action: onOpen) {
@@ -1852,27 +1854,17 @@ private struct ArtifactPreview: View {
         .accessibilityHint("Opens it full size")
     }
 
-    /// A real thumbnail when the artifact is a local image, because seeing the
-    /// thing beats reading its name — the same reason the composer stopped
-    /// showing attachments as filenames.
-    @ViewBuilder
+    /// The type's mark, for a deliverable with no inline preview: a local picture
+    /// always has one (`inlinePreview`), so this is never a picture.
     private var thumbnail: some View {
-        if let image = localImage {
-            Image(nsImage: image)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .frame(width: 44, height: 44)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-        } else {
-            RoundedRectangle(cornerRadius: 6)
-                .fill(ConchPalette.bg)
-                .frame(width: 44, height: 44)
-                .overlay(
-                    Image(systemName: symbol)
-                        .font(.system(size: 15))
-                        .foregroundStyle(ConchPalette.statusReview.opacity(0.85))
-                )
-        }
+        RoundedRectangle(cornerRadius: 6)
+            .fill(ConchPalette.bg)
+            .frame(width: 44, height: 44)
+            .overlay(
+                Image(systemName: symbol)
+                    .font(.system(size: 15))
+                    .foregroundStyle(ConchPalette.statusReview.opacity(0.85))
+            )
     }
 
     private enum InlinePreviewKind { case image, document }
@@ -1884,7 +1876,7 @@ private struct ArtifactPreview: View {
     private var inlinePreviewKind: InlinePreviewKind? {
         guard let link = artifact.link, link.hasPrefix("/") else { return nil }
         switch (link as NSString).pathExtension.lowercased() {
-        case "png", "jpg", "jpeg", "gif", "heic", "webp": return localImage == nil ? nil : .image
+        case "png", "jpg", "jpeg", "gif", "heic", "webp": return picture == nil ? nil : .image
         case "md", "markdown", "txt": return documentHead == nil ? nil : .document
         default: return nil
         }
@@ -1894,17 +1886,32 @@ private struct ArtifactPreview: View {
     private var inlinePreview: some View {
         switch inlinePreviewKind {
         case .image:
-            if let image = localImage {
+            if let picture {
                 // The deliverable's OWN aspect ratio, not a letterboxed 260 pt
                 // slot: a wide screenshot and a tall phone capture are
                 // different shapes, and forcing both into one box wasted half
                 // the card on empty space for one of them. Capped generously so
                 // a very tall capture still cannot run away with the scroller.
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(image.size.width / max(image.size.height, 1), contentMode: .fit)
-                    .frame(maxWidth: .infinity, maxHeight: 420)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                // The same size before and after the decode lands, so nothing moves.
+                Group {
+                    if let image = image(for: picture) {
+                        Image(nsImage: image).resizable()
+                    } else {
+                        Color.clear
+                    }
+                }
+                .aspectRatio(picture.aspect, contentMode: .fit)
+                .frame(maxWidth: .infinity, maxHeight: 420)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .task(id: picture.key) {
+                    guard decoded?.key != picture.key else { return }
+                    let size = Self.maxPixelSize
+                    let image = await Task.detached(priority: .userInitiated) {
+                        ConchImage.decode(picture, maxPixelSize: size)
+                    }.value
+                    guard !Task.isCancelled, let image else { return }
+                    decoded = (picture.key, NSImage(cgImage: image, size: .zero))
+                }
             }
         case .document:
             if let head = documentHead {
@@ -1942,11 +1949,24 @@ private struct ArtifactPreview: View {
         return text
     }
 
-    private var localImage: NSImage? {
-        guard let link = artifact.link, link.hasPrefix("/") else { return nil }
-        let image = ["png", "jpg", "jpeg", "gif", "heic", "webp"]
-            .contains((link as NSString).pathExtension.lowercased())
-        return image ? NSImage(contentsOfFile: link) : nil
+    /// The deliverable's picture, when its link is one on this Mac: named and shaped from its header, never decoded
+    /// here (`ConchImage.picture`). This used to open the file as a new NSImage two or three times in every body — the
+    /// whole file from disk, then decoded again, whole, on the main thread when SwiftUI drew it — and a body runs at
+    /// every publish while the card is on screen, so each publish stalled a scrolling conversation by a decode.
+    private var picture: ConchImage.Picture? {
+        guard let link = artifact.link, link.hasPrefix("/"),
+              ["png", "jpg", "jpeg", "gif", "heic", "webp"].contains((link as NSString).pathExtension.lowercased())
+        else { return nil }
+        return ConchImage.picture(atPath: link)
+    }
+
+    /// The card is at most 420 pt tall in a 700 pt column: 1,400 pixels on its longest side is 2x either way.
+    private static let maxPixelSize = 1_400
+
+    /// Decoded already, for this card or any other showing the same file: drawn at once. Else nothing yet.
+    private func image(for picture: ConchImage.Picture) -> NSImage? {
+        if let decoded, decoded.key == picture.key { return decoded.image }
+        return ConchImage.decoded(picture, maxPixelSize: Self.maxPixelSize).map { NSImage(cgImage: $0, size: .zero) }
     }
 
     private var symbol: String {

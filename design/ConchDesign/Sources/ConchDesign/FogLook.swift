@@ -245,6 +245,7 @@ public struct FogLookView: View {
     let voice: VoiceState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.conchRendersStatically) private var rendersStatically
+    @Environment(\.conchHidden) private var hidden
 
     public init(look: FogLook, voice: VoiceState) {
         self.look = look
@@ -260,9 +261,8 @@ public struct FogLookView: View {
         ZStack(alignment: .topLeading) {
             FogLook.area(shift(look.blob), [(0.24, 0.86 * tint), (0.5, 0.5 * tint), (0.76, 0)], wash)
             FogLook.area(shift(look.scrimArea), [(0, 0.92 * scrim), (0.45, 0.78 * scrim), (1, 0)], wash)
-            // ponytail: redraws the nine glows at 30 fps for the drift while the overlay shows; pause it off screen if that
-            // ever shows up in a profile.
-            TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || rendersStatically)) { timeline in
+            // Redraws the nine glows at 30 fps for the drift while the overlay shows, and not at all while it can't be seen.
+            TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || rendersStatically || hidden)) { timeline in
                 let time = rendersStatically ? 0 : timeline.date.timeIntervalSinceReferenceDate
                 ZStack(alignment: .topLeading) {
                     // Each voice is its own layer, so a change crossfades rather than mixing through mud.

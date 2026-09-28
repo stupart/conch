@@ -42,7 +42,8 @@ describe("the window", () => {
     expect(show).toContain("styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView]");
     expect(show).toContain("window.titleVisibility = .hidden");
     expect(show).toContain("window.titlebarAppearsTransparent = true");
-    expect(show).toContain("NSHostingView(rootView: OnboardingRootView(model: model, controller: self))");
+    // The design's pages at the root; what is chained after them (its clocks pausing with the window) is not this guard's.
+    expect(show).toContain("NSHostingView(rootView: OnboardingRootView(model: model, controller: self)");
     for (const page of ["OnboardingWindow(", "OnboardingAgentsStep(", "OnboardingPermissionsStep(", "OnboardingVoiceStep(",
       "OnboardingPhoneStep(", "OnboardingDoneStep(", "OnboardingWelcomeBack(", "OnboardingWelcome(backdrop: .shore"]) {
       expect(controller, page).toContain(page);

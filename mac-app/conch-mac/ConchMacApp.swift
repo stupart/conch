@@ -43,6 +43,9 @@ struct ConchMacApp: App {
                 }
                 .frame(minWidth: 640, minHeight: 400)
                 .background(WindowBackgroundConfigurator())
+                // Its animation clocks stop while the window can't be seen: hidden behind others, minimised, on
+                // another Space (`conchHidden`).
+                .conchPausesWhenHidden()
                 .onReceive(
                     NotificationCenter.default.publisher(
                         for: NSApplication.didBecomeActiveNotification

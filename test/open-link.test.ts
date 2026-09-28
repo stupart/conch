@@ -283,15 +283,20 @@ describe("the Mac deliverable viewers say why a file would not show", () => {
     ordered(document, "content = try Self.read(url)", "} catch {", "DispatchQueue.main.async { onFailure(error) }");
   });
 
-  test("image: a file NSImage refuses is reported, not only an icon", () => {
+  test("image: a file neither ImageIO nor NSImage reads is reported, not only an icon", () => {
+    const viewer = slice(review, "private struct DeliverableImageView", "private struct ReviewPressButtonStyle");
+    // ImageIO first (decoded for the width it is drawn at), AppKit for what it can't read, and only then the failure.
     ordered(
-      slice(review, "private struct DeliverableImageView", "private struct ReviewPressButtonStyle"),
-      "let image = NSImage(contentsOf: url)",
-      "if image == nil {",
-      "DeliverableLoadError.reason(url)",
-      "DispatchQueue.main.async { onFailure(error) }",
-      "view.imageView.image = image",
+      viewer,
+      "if !moves, let picture = ConchImage.picture(atPath: url.path) {",
+      "} else if let image = NSImage(contentsOf: url) {",
+      "} else {",
+      "let error = DeliverableLoadError.reason(url)",
+      "DispatchQueue.main.async { [onFailure] in onFailure(error) }",
+      'NSImage(systemSymbolName: "photo.badge.exclamationmark", accessibilityDescription: nil)',
     );
+    // A header that read but a decode that didn't says so too.
+    ordered(viewer, "guard let image else {", "if let url = self.url { self.onFailure(DeliverableLoadError.reason(url)) }");
   });
 
   test("PDF: a nil document is reported, once per file, instead of an empty pane", () => {

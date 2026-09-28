@@ -249,7 +249,7 @@ const ACTIVE_WITHIN_MS = 20_000;
  */
 export async function readCodexOpenThreadIds(
   codexHome: string,
-  probe: CodexThreadsOptions["lockProbe"] = probeHeldLocks,
+  probe?: CodexThreadsOptions["lockProbe"],
 ): Promise<Map<string, number>> {
   const dir = join(codexHome, "thread-writer-locks");
   let names: string[];
@@ -269,8 +269,10 @@ export async function readCodexOpenThreadIds(
   // and a stale recency window, every one already resolving to pid 0.
   //
   // One `lsof` for every lock at once, not one per file: this runs on the
-  // render path, and the count is small but the cost is not.
-  const held = await (probe ?? probeHeldLocks)(names.map((name) => join(dir, name)));
+  // render path, and the count is small but the cost is not. The real probe is
+  // shared and remembered (`cachedLockProbe`); an injected one is asked every
+  // time, so a test's process table answers as it is now.
+  const held = await (probe ?? sharedLockProbe(dir))(names.map((name) => join(dir, name)));
   if (held === null) {
     // The probe itself failed — lsof missing, or something unexpected. Fall
     // back to the old assumption rather than silently emptying the ledger:
@@ -300,6 +302,132 @@ function probeHeldLocks(paths: string[]): Promise<string | null> {
 }
 
 /**
+ * The longest one lock probe answers for, when nothing says it has gone stale.
+ *
+ * `lsof` over the locks is not cheap however few there are: to find who holds a
+ * file it walks every open file of every process on the Mac. Measured on
+ * Tyler's (1,578 processes, 2026-09-28): 0.31 s a run, nearly all of it kernel
+ * time. And it ran on every render. A streaming transcript asks for a render
+ * every 250 ms, so the daemon ran it back to back — 162 a minute, about 97% of
+ * a core — and because each read outlasted the 250 ms before the next request,
+ * the reconciler threw every one away and the panel never rendered at all
+ * while the turn streamed.
+ *
+ * Twenty seconds because that is the panel's own backstop: the bound the ledger
+ * already accepts for a change no event announces. The changes that matter
+ * most do not wait for it (`cachedLockProbe`).
+ */
+export const LOCK_PROBE_TTL_MS = 20_000;
+
+/** A lock probe: `lsof -F pn` text over some lock paths, or null when it could not say. */
+type LockProbe = (paths: string[]) => string | null | Promise<string | null>;
+
+export interface CachedLockProbeOptions {
+  ttlMs?: number;
+  now?: () => number;
+  /** Whether a holder is still running. Injectable: a test's process table. */
+  alive?: (pid: number) => boolean;
+  /** What names a lock file as this file and not an earlier one at its path; null when it is gone. */
+  identity?: (path: string) => string | null;
+}
+
+/**
+ * One lock probe, remembered until something says its answer may be stale.
+ *
+ * The answer is asked again, at once, when:
+ * - a lock file appeared or went away, or was replaced where it was (a new inode).
+ *   That is a thread opening or closing: Codex creates a thread's lock when it
+ *   takes it, removes it on a clean exit, and whoever takes the next lock
+ *   deletes the stale ones (`writer_lock.rs:17-18, 40-160`). The directory
+ *   watch already renders on each of these, so a thread opened is seen with its
+ *   holder on that render — not after a cached miss expires, which is what the
+ *   old per-thread `lsof -t` cache did for 30 s.
+ * - a holder it named has exited. A crash leaves its lock files behind, so the
+ *   files alone cannot say; the pid can, without a spawn (`kill(pid, 0)`).
+ *
+ * Otherwise it stands for `LOCK_PROBE_TTL_MS`: a lock released by a process that
+ * lives on and keeps the file, or handed from one live process to another (a
+ * TUI to the shared app-server daemon), is seen within that. Callers that ask
+ * while a probe is out share it rather than starting their own — the panel, the
+ * five-second turn poll and every Codex parent's helper lookup ask for the same
+ * files at the same moment.
+ *
+ * A failed probe (null) is remembered too: a probe that timed out on a loaded
+ * Mac is the one to stop re-running every 250 ms, and its fallback — every lock
+ * file counted as held — is already the documented degraded answer.
+ */
+export function cachedLockProbe(
+  probe: LockProbe,
+  options: CachedLockProbeOptions = {},
+): (paths: string[]) => Promise<string | null> {
+  const ttlMs = options.ttlMs ?? LOCK_PROBE_TTL_MS;
+  const now = options.now ?? Date.now;
+  const alive = options.alive ?? processAlive;
+  const identity = options.identity ?? lockFileIdentity;
+  let answered: { key: string; at: number; answer: string | null; holders: number[] } | undefined;
+  let running: { key: string; answer: Promise<string | null> } | undefined;
+  return (paths) => {
+    const key = [...paths].sort().map((path) => `${path}\0${identity(path) ?? "gone"}`).join("\n");
+    const at = now();
+    if (
+      answered && answered.key === key && at - answered.at < ttlMs
+      && answered.holders.every((pid) => alive(pid))
+    ) return Promise.resolve(answered.answer);
+    if (running?.key === key) return running.answer;
+    // Started on the next microtask, so `running` is set before the probe can
+    // settle — even a probe that throws at once clears it rather than wedging it.
+    const answer: Promise<string | null> = Promise.resolve()
+      .then(() => probe(paths))
+      .then((result) => {
+        // The newest probe's answer wins; one that started earlier and finished later does not.
+        if (!answered || answered.at <= at) answered = { key, at, answer: result, holders: holderPids(result) };
+        return result;
+      })
+      .finally(() => {
+        if (running?.answer === answer) running = undefined;
+      });
+    running = { key, answer };
+    return answer;
+  };
+}
+
+/** The pids an `lsof -F pn` answer names. */
+function holderPids(answer: string | null): number[] {
+  if (!answer) return [];
+  return answer.split("\n")
+    .filter((line) => line.startsWith("p"))
+    .map((line) => Number(line.slice(1)))
+    .filter((pid) => pid > 0);
+}
+
+/** Signal 0 delivers nothing: it only asks whether the pid is there. EPERM means it is, and not ours. */
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/** A lock file's inode: the same path created again is a different file. */
+function lockFileIdentity(path: string): string | null {
+  try {
+    return String(statSync(path, { bigint: true }).ino);
+  } catch {
+    return null;
+  }
+}
+
+/** One remembered probe per lock directory, shared by every caller in this process. */
+const sharedLockProbes = new Map<string, (paths: string[]) => Promise<string | null>>();
+function sharedLockProbe(dir: string): (paths: string[]) => Promise<string | null> {
+  let probe = sharedLockProbes.get(dir);
+  if (!probe) sharedLockProbes.set(dir, probe = cachedLockProbe(probeHeldLocks));
+  return probe;
+}
+
+/**
  * Where keystrokes for a Codex thread may go: its writer lock's holder, if
  * that holder is a terminal session.
  *
@@ -325,10 +453,11 @@ function probeHeldLocks(paths: string[]): Promise<string | null> {
  * A held lock whose holder lsof did not name stays pid 0 with no reason: that
  * one is a genuine miss, and the daemon still reports it.
  *
- * Nothing is cached. The per-thread `lsof -t` this replaced kept even a MISS
- * for 30 s, so a thread opened just after a poll stayed pid-less until the
- * entry expired (notes, "Why conch misses the pid", 2). The holder now comes
- * from the one `lsof` the listing already runs.
+ * The per-thread `lsof -t` this replaced kept even a MISS for 30 s, so a thread
+ * opened just after a poll stayed pid-less until the entry expired (notes,
+ * "Why conch misses the pid", 2). The holder now comes from the one `lsof` the
+ * listing already runs, and that answer is asked again the moment a lock file
+ * appears or is replaced (`cachedLockProbe`), so opening a thread is seen at once.
  */
 export function codexThreadRoute(
   holder: number | undefined,
