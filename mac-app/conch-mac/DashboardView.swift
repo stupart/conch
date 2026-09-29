@@ -2232,7 +2232,7 @@ private struct ConversationPane: View {
                     .font(ConchTypography.font(size: 11))
                     .foregroundStyle(ConchPalette.textDim)
                     .lineLimit(1)
-                    .help("Claude account: \(account)")
+                    .help("Account: \(account)")
             }
 
             // What it runs, and a menu to change model or effort for this session only
