@@ -369,10 +369,11 @@ export class RecordStore {
   }
 
   appendReceipt(receipt: RecordReceipt): boolean {
-    const states = { delivery: ["accepted", "delivered", "staged", "failed", "unknown"], review: ["published", "opened", "failed", "unknown"], speech: ["queued", "started", "completed", "interrupted", "failed", "unknown"] };
+    const states = { handoff: ["accepted", "started", "failed"], delivery: ["accepted", "delivered", "staged", "failed", "unknown"], review: ["published", "opened", "failed", "unknown"], speech: ["queued", "started", "completed", "interrupted", "failed", "unknown"] };
     if (![receipt.id, receipt.sessionId, receipt.actionId].every(nonempty) || !Number.isFinite(receipt.observedAt)
       || !states[receipt.kind]?.includes(receipt.state)) throw new Error("invalid record receipt");
     const details = receipt.details && {
+      ...(receipt.details.handoff === undefined ? {} : { handoff: receipt.details.handoff }),
       ...(receipt.details.code === undefined ? {} : { code: receipt.details.code }),
       ...(receipt.details.reviewId === undefined ? {} : { reviewId: receipt.details.reviewId }),
       ...(receipt.details.surfaceRef === undefined ? {} : { surfaceRef: receipt.details.surfaceRef }),

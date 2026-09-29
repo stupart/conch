@@ -137,6 +137,7 @@ export class RecordsRuntime {
       ...(receipt.turnId === undefined ? {} : { turnId: receipt.turnId }),
       ...(receipt.itemId === undefined ? {} : { itemId: receipt.itemId }),
       ...(receipt.details ? { details: {
+        ...(receipt.details.handoff === undefined ? {} : { handoff: { ...receipt.details.handoff } }),
         ...(receipt.details.code === undefined ? {} : { code: receipt.details.code }),
         ...(receipt.details.reviewId === undefined ? {} : { reviewId: receipt.details.reviewId }),
         ...(receipt.details.surfaceRef === undefined ? {} : { surfaceRef: receipt.details.surfaceRef }),

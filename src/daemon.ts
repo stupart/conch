@@ -1,3 +1,4 @@
+import { prepareClaudeHandoff, settleClaudeHandoff, claudeHandoffReceipt, requireClaudeHandoffSupport } from "./claude-account-handoff.ts";
 import { SessionReconciler } from "./session-reconciler.ts";
 import { RecordsRuntime } from "./records-runtime.ts";
 import { createRecordOperation, createRecordReceiptObserver, type RecordObserver } from "./records-receipts.ts";
@@ -235,7 +236,7 @@ import {
 } from "./status.ts";
 import { assertCodexAccountIdle, assertClaudeAccountIdle, accountRegistrySnapshot, accountResumableSessions, findAccountTranscript as findTranscript } from "./claude-account-sessions.ts";
 import { readCodexAccounts, addCodexAccount, removeCodexAccount, requireCodexAccount, cachedCodexAccount, invalidateCodexAccount, codexAccountForLaunch } from "./codex-accounts.ts";
-import { claudeAccountForLaunch, readClaudeAccounts, addClaudeAccount, removeClaudeAccount, requireClaudeAccount, cachedClaudeAccountStatus, invalidateClaudeAccountStatus, type ClaudeAccountStatus } from "./claude-accounts.ts";
+import { claudeAccountForLaunch, readClaudeAccounts, addClaudeAccount, removeClaudeAccount, requireClaudeAccount, cachedClaudeAccountStatus, readClaudeAccountStatus, invalidateClaudeAccountStatus, type ClaudeAccountStatus } from "./claude-accounts.ts";
 import { runInstall as installAccountHooks } from "./install.ts";
 import {
   addressParkedWindow,
@@ -653,7 +654,7 @@ export function injectTimeoutFor(line: string): number {
     // bridge must not invent a failure while that clean shutdown is in flight.
     // A restart then opens a Terminal window, which a start alone gets 8s for.
     if (kind === "session-close") return JSON.parse(line)?.restart === true ? 20_000 : 12_000;
-    if (kind === "session-start") return 8_000;
+    if (kind === "session-start") return JSON.parse(line)?.claudeSourceAccountId !== undefined ? 20_000 : 8_000;
   } catch {}
   return 4_000;
 }
@@ -2771,13 +2772,32 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         : `couldn't bring ${labelForSessionId(message.sessionId)}'s terminal forward: ${focused.reason ?? "no reason given"}`);
       return focused;
     },
-    start: (message) => launchSession({
-      ...message,
-      // Read at start time, so changing the setting affects the next session
-      // you launch rather than needing a daemon restart.
-      bypassPermissions: cfg.bypassPermissions,
-      ...(message.trustFolder === true ? { trustFolder: true as const } : {}),
-    }),
+    start: async (message) => {
+      const request = { ...message, bypassPermissions: cfg.bypassPermissions };
+      if (message.claudeSourceAccountId === undefined) return launchSession(request);
+      await requireClaudeHandoffSupport();
+      const target = requireClaudeAccount(message.claudeAccountId!);
+      const status = await readClaudeAccountStatus(target, true);
+      if (status.status !== "signed-in") throw new Error("Sign in to the destination account in Settings → Providers first.");
+      const prepared = await prepareClaudeHandoff(request, {
+        accounts: readClaudeAccounts(cfg.claudeDir), configDir: dirname(daemonSettingsPath), ownerDeviceId,
+      });
+      const record = (state: "accepted" | "started" | "failed") => {
+        void records.appendReceipt(claudeHandoffReceipt(prepared.manifest, state)).catch(() => log("Could not record account handoff receipt"));
+      };
+      record("accepted");
+      try { await launchSession(prepared.request); }
+      catch (error) {
+        await settleClaudeHandoff(prepared.directory, prepared.manifest, "launch-failed").catch(() => {});
+        record("failed");
+        throw error;
+      }
+      // An opened Terminal is not proof of a successful authenticated model response.
+      await settleClaudeHandoff(prepared.directory, prepared.manifest, "terminal-opened")
+        .catch(() => log("Terminal opened; could not update the account handoff manifest"));
+      record("started");
+      return { sessionId: prepared.manifest.destination.nativeId };
+    },
     folderTrusted: (backend, cwd, accountId) => accountId && accountId !== "default" ? null : adapterFor(backend).folderTrusted(cwd),
     close: closeLiveSession,
     report: (message) => {

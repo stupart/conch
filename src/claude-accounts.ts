@@ -146,10 +146,12 @@ export function decodeClaudeAuth(account: ClaudeAccount, raw: string): ClaudeAcc
 }
 
 /** Read the official CLI's public status, never its credential files or Keychain. */
-export async function readClaudeAccountStatus(account: ClaudeAccount): Promise<ClaudeAccountStatus> {
+export async function readClaudeAccountStatus(account: ClaudeAccount, isolate = false): Promise<ClaudeAccountStatus> {
   try {
+    const env = account.id === "default" ? { ...process.env } : claudeAccountEnvironment(account.configDir);
+    if (isolate) for (const key of CLAUDE_ACCOUNT_ENV_REMOVE) delete env[key];
     const child = Bun.spawn(["claude", "auth", "status", "--json"], {
-      env: account.id === "default" ? { ...process.env } : claudeAccountEnvironment(account.configDir), cwd: conchHome(), stdout: "pipe", stderr: "ignore",
+      env, cwd: conchHome(), stdout: "pipe", stderr: "ignore",
     });
     let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; child.kill(); }, 5_000);
