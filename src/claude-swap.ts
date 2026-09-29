@@ -18,7 +18,7 @@ export interface SwapUsageAccount {
   lastGood: boolean;
 }
 export interface SwapDashboard {
-  source: "claude-swap";
+  source: "claude-swap" | "claude-statusline";
   state: "ready" | "unavailable" | "error";
   accounts: SwapUsageAccount[];
   message?: string;
@@ -77,7 +77,7 @@ export function decodeSwapDashboard(raw: string): SwapDashboard {
 }
 
 export function parseSwapDashboard(value: unknown): SwapDashboard | undefined {
-  if (!object(value) || value.source !== "claude-swap" || !["ready", "unavailable", "error"].includes(String(value.state))
+  if (!object(value) || !["claude-swap", "claude-statusline"].includes(String(value.source)) || !["ready", "unavailable", "error"].includes(String(value.state))
     || !Array.isArray(value.accounts) || value.accounts.length > 100) return;
   const accounts: SwapUsageAccount[] = [];
   for (const row of value.accounts) {
@@ -93,7 +93,7 @@ export function parseSwapDashboard(value: unknown): SwapDashboard | undefined {
       defaultLogin: row.defaultLogin === true, status: STATUSES.has(String(row.status)) ? String(row.status) : "unavailable",
       lastGood: row.lastGood === true, windows, ...(date(row.fetchedAt) ? { fetchedAt: date(row.fetchedAt) } : {}) });
   }
-  return { source: "claude-swap", state: value.state as SwapDashboard["state"], accounts,
+  return { source: value.source as SwapDashboard["source"], state: value.state as SwapDashboard["state"], accounts,
     ...(safeText(value.message, 300) ? { message: value.message as string } : {}) };
 }
 

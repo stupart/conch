@@ -485,7 +485,8 @@ private struct StartSessionSheet: View {
 
     @StateObject private var accounts = ClaudeAccountsStore()
     @State private var claudeAccountId = "default"
-    @State private var managingAccounts = false
+    @Environment(\.openSettings) private var openAccountSettings
+    @AppStorage("conch.settings.section") private var settingsSection = "providers"
     @State private var backend = ConchAgentBackend.claude
     @State private var mode = StartMode.new
     @State private var cwd = FileManager.default.homeDirectoryForCurrentUser.path
@@ -608,9 +609,9 @@ private struct StartSessionSheet: View {
                     HStack {
                         Picker("Account", selection: $claudeAccountId) {
                             if accounts.accounts.isEmpty { Text("Default").tag("default") }
-                            ForEach(accounts.accounts) { account in Text(account.label).tag(account.id) }
+                            ForEach(accounts.accounts) { account in Text([account.label, account.email].compactMap { $0 }.joined(separator: " · ")).tag(account.id) }
                         }
-                        Button("Manage…") { managingAccounts = true }
+                        Button("Manage…") { settingsSection = "providers"; dismiss(); openAccountSettings() }
                     }
                 }
             }
@@ -652,13 +653,6 @@ private struct StartSessionSheet: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(!canStart)
             }
-        }
-        .sheet(isPresented: $managingAccounts, onDismiss: { Task { await accounts.send("list") } }) {
-            VStack(spacing: 0) {
-                ClaudeAccountsView(initialTab: "profiles")
-                HStack { Spacer(); Button("Done") { managingAccounts = false }.keyboardShortcut(.cancelAction) }
-                    .padding(.horizontal, 22).padding(.bottom, 16)
-            }.frame(width: 640, height: 520)
         }
         .task { await accounts.send("list") }
         .onChange(of: accounts.accounts.map(\.id)) { _, ids in

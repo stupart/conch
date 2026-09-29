@@ -69,35 +69,14 @@ The durable record key intentionally stays device/provider/native ID. Moving a
 conversation between account roots or machines needs a separate migration and
 alias policy. Do not copy conversation UUIDs between roots as a migration.
 
-## claude-swap dashboard
+## Provider settings and usage
 
-The upstream project is MIT licensed. Its dashboard is Python/Textual; Conch is
-SwiftUI. `ClaudeAccountsView.swift` adapts its thin quota bars, severity thresholds and reset countdowns. The
-view uses Conch’s dark colours and typography, with compact account rows.
-Email, login and freshness details expand on demand; account management and
-attribution live in the options menu. A short cached label stays visible when
-measurements are old. The copyright
-and MIT notice ship in the app and source. See `third-party/claude-swap/README.md`
-for the exact pinned revision and adapted files.
+The Mac Settings scene uses a persistent sidebar, with Providers, General, Phone app, Permissions, and Setup. T3 Code informed the provider grouping, isolated connection directories, visible identity, and progressive disclosure. Account creation is inline; continuing opens the official Claude login and polls public auth status.
 
-**Refresh usage** calls the optional installed `cswap list --json` through
-`src/claude-swap.ts`, with a 12-second timeout, 1 MiB output limit, schema check
-and whitelisted display fields. No credential or arbitrary error output is
-returned to the app. Five-hour, weekly and per-model windows are supported;
-spend/pacing/automatic rotation are not part of this port.
+The upstream claude-swap dashboard is MIT licensed and built with Python/Textual. Conch's SwiftUI view ports its thin usage bars, severity thresholds, and reset countdowns into Conch's dark palette. Provider logos and emails remain visible; paths and maintenance actions expand on demand. See [the pinned attribution](../third-party/claude-swap/README.md).
 
-claude-swap owns its usage cache, backoff and OAuth refresh. Refreshing may
-update its credential/cache state, as its normal list command does. Conch never
-calls its switch/login/import commands. Collection runs only when requested,
-not at startup or on a timer. The UI recomputes countdowns without API polling.
+The default collector is now Claude Code's supported status-line input (2.1.251+), not an external account manager. Login/launch installs an idempotent wrapper that preserves the original command and forwards its exact input/output. It records only five-hour and weekly percentages and reset times. Public CLI auth status binds readings to the profile's email and organization; changed identities cannot inherit a cached reading. Conch-initiated login clears the previous measurement. No credential files or Keychain entries are read by Conch.
 
-Unknown usage never becomes zero. Failed reads can show explicitly tagged
-last-good usage; measurements older than five minutes are visibly cached.
-Passing the reset time does not invent a renewed allowance. Missing collector,
-empty account list and failed collection all have explicit states.
+The wrapper checks public identity on changed readings or once per minute. Settings refresh reads the cache, not a billing API. Missing windows remain unknown; passed reset windows disappear until a new Claude reading arrives. Readings older than five minutes are labelled Cached. Usage does not route sessions or rotate accounts.
 
-Usage accounts are shown separately from Conch's launch profiles. A collector
-slot can be reused, and email can repeat across organizations. **Default login**
-describes claude-swap's global login selection, not the account of every running
-session. No automatic usage-to-profile association or quota-driven rotation
-is performed.
+The optional schema-v1 claude-swap adapter remains available in source with its own tests, but is not invoked by this settings flow. External collector slots are not automatically joined to launch profiles.

@@ -448,7 +448,7 @@ function claudeProfileCommandPrefix(account: ClaudeAccount): string {
 /** Authentication stays in Anthropic's own CLI and browser flow. */
 export async function startClaudeAccountLogin(account: ClaudeAccount, dependencies: SessionLifecycleDependencies = {}): Promise<void> {
   await withUITransaction(() => runInTerminal(
-    `exec ${claudeProfileCommandPrefix(account)}claude auth login`, "claude", undefined, dependencies,
+    `exec ${claudeProfileCommandPrefix(account)}claude auth login --claudeai`, "claude", undefined, dependencies,
   ));
 }
 

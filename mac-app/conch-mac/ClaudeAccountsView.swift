@@ -71,6 +71,7 @@ private func swapDuration(_ seconds: TimeInterval) -> String {
 private struct SwapUsageRow: View {
     let account: SwapUsageAccount
     let now: Date
+    var showsIdentity = true
     @State private var expanded = false
     private var age: TimeInterval? { swapDate(account.fetchedAt).map { now.timeIntervalSince($0) } }
     private var stale: Bool { account.lastGood || age == nil || (age ?? 0) > 300 || (age ?? 0) < -60 }
@@ -80,9 +81,14 @@ private struct SwapUsageRow: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if showsIdentity {
             HStack(spacing: 8) {
+                Image("AgentClaude").resizable().scaledToFit().frame(width: 20, height: 20)
+                VStack(alignment: .leading, spacing: 3) {
                 Text(account.label).font(ConchTypography.font(size: 13, weight: .medium))
                     .lineLimit(1).help(account.email)
+                Text(account.email).font(ConchTypography.font(size: 11)).foregroundStyle(SwapPalette.secondaryText)
+                }
                 if stale, !account.windows.isEmpty {
                     Text("Cached").font(ConchTypography.font(size: 10))
                         .foregroundStyle(SwapPalette.secondaryText).help(freshness)
@@ -98,8 +104,16 @@ private struct SwapUsageRow: View {
                 .accessibilityValue(expanded ? "Expanded" : "Collapsed")
                 .help("Account details")
             }
+            }
+            if !showsIdentity, !account.windows.isEmpty {
+                HStack {
+                    Text(stale ? "Cached · \(freshness)" : freshness)
+                    Spacer()
+                    Text("Resets in")
+                }.font(ConchTypography.font(size: 10)).foregroundStyle(SwapPalette.secondaryText)
+            }
             if account.windows.isEmpty {
-                Text(account.statusLabel == "Usage available" ? "Usage unavailable" : account.statusLabel)
+                Text(account.statusLabel == "Usage available" ? "Usage appears after a Claude response in a session started from Conch." : account.statusLabel)
                     .font(ConchTypography.font(size: 11)).foregroundStyle(SwapPalette.secondaryText)
             } else {
                 VStack(spacing: 10) {
@@ -112,7 +126,7 @@ private struct SwapUsageRow: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(account.email).textSelection(.enabled)
                     if let organization = account.organization, !organization.isEmpty { Text(organization) }
-                    if account.defaultLogin { Text("Default login in claude-swap") }
+                    if account.defaultLogin { Text("Default account") }
                     Text(account.lastGood ? "Last known usage · \(account.statusLabel)" : account.statusLabel)
                     Text(freshness)
                 }
@@ -126,26 +140,26 @@ private struct SwapUsageRow: View {
     private func usageRow(_ window: SwapUsageWindow) -> some View {
         let resetDate = swapDate(window.resetsAt)
         let elapsed = resetDate.map { $0 <= now } ?? false
-        let reset = resetDate.map { $0 <= now ? "Refresh" : swapDuration($0.timeIntervalSince(now)) } ?? "—"
-        let resetDescription = resetDate.map { $0 <= now ? "Reset passed; refresh usage" : "Resets in \(swapDuration($0.timeIntervalSince(now)))" } ?? "Reset time unknown"
+        let reset = resetDate.map { $0 <= now ? "Pending" : swapDuration($0.timeIntervalSince(now)) } ?? "—"
+        let resetDescription = resetDate.map { $0 <= now ? "Waiting for a new Claude response" : "Resets in \(swapDuration($0.timeIntervalSince(now)))" } ?? "Reset time unknown"
         let name = window.name == "5 hour" ? "5h" : (window.name == "7 day" ? "7d" : window.name)
         return HStack(spacing: 12) {
             Text(name).font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(SwapPalette.secondaryText).frame(width: 46, alignment: .leading)
                 .lineLimit(1).help(window.name)
             GeometryReader { geometry in
-                let fill = geometry.size.width * min(100, max(0, window.pct)) / 100
+                let fill = elapsed ? 0 : geometry.size.width * min(100, max(0, window.pct)) / 100
                 ZStack(alignment: .leading) {
                     Rectangle().fill(SwapPalette.track).frame(height: 2)
                     Rectangle().fill(SwapPalette.severity(window.pct).opacity(stale || elapsed ? 0.5 : 1))
                         .frame(width: fill, height: 3)
-                    if window.pct > 0, window.pct < 100 {
+                    if !elapsed, window.pct > 0, window.pct < 100 {
                         Rectangle().fill(SwapPalette.background).frame(width: min(4, geometry.size.width - fill), height: 3)
                             .offset(x: fill)
                     }
                 }.frame(height: geometry.size.height)
             }.frame(height: 8).accessibilityHidden(true)
-            Text("\(Int(min(window.pct.rounded(), 9999)))%")
+            Text(elapsed ? "—" : "\(Int(min(window.pct.rounded(), 9999)))%")
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
                 .foregroundStyle(SwapPalette.severity(window.pct)).frame(width: 38, alignment: .trailing)
             Text(reset).font(ConchTypography.font(size: 11)).monospacedDigit()
@@ -184,6 +198,8 @@ final class ClaudeAccountsStore: ObservableObject {
     @Published var busy = false
     @Published var error: String?
     @Published var notice: String?
+    @Published var createdAccountId: String?
+    @Published var pendingLoginId: String?
     private let client = ConchSocketClient()
 
     @discardableResult
@@ -200,9 +216,11 @@ final class ClaudeAccountsStore: ObservableObject {
             let accounts: [ClaudeAccountProfile]?
             let error: String?
             let loginOpened: Bool?
+            let createdAccountId: String?
             let execution: ExecutionCatalog?
             let usage: SwapDashboard?
         }
+        let wasSignedIn = accounts.first(where: { $0.id == id })?.status == "signed-in"
         busy = true
         error = nil
         notice = nil
@@ -225,10 +243,16 @@ final class ClaudeAccountsStore: ObservableObject {
                 }
                 return account
             }
+            createdAccountId = reply.createdAccountId
             execution = reply.execution
             if let update = reply.usage { usage = update }
             if reply.loginOpened == true {
-                notice = "Finish signing in in Terminal, then choose Check status."
+                pendingLoginId = wasSignedIn ? nil : id
+                notice = wasSignedIn ? "Finish signing in in Terminal, then choose Check connection." : "Finish signing in with Claude in Terminal. Conch will check the connection automatically."
+            }
+            if action == "refresh", id == pendingLoginId, accounts.first(where: { $0.id == id })?.status == "signed-in" {
+                pendingLoginId = nil
+                notice = "Account connected. Choose it when starting a Claude session."
             }
             return true
         case .connectFailed:
@@ -247,89 +271,73 @@ struct ClaudeAccountsView: View {
     @State private var name = ""
     @State private var existingDirectory: String?
     @State private var removing: ClaudeAccountProfile?
-    @State private var tab = "usage"
-    @State private var showLicense = false
-    @State private var showInfo = false
-
-    init(initialTab: String = "usage") { _tab = State(initialValue: initialTab) }
+    @State private var expanded: Set<String> = []
+    @State private var showAbout = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 12) {
-                if tab == "profiles" {
-                    Button { tab = "usage" } label: { Image(systemName: "chevron.left") }
-                        .buttonStyle(.plain).help("Back to usage").accessibilityLabel("Back to usage")
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Providers").font(ConchTypography.font(size: 20, weight: .semibold))
+                    Text("Your accounts on this Mac").font(ConchTypography.font(size: 12)).foregroundStyle(SwapPalette.secondaryText)
                 }
-                Text(tab == "profiles" ? "Manage accounts" : "Accounts")
-                    .font(ConchTypography.font(size: 18, weight: .semibold))
                 Spacer()
                 if store.busy { ProgressView().controlSize(.small) }
-                if tab == "profiles" {
-                    Button("Add account…") { adding = true }.disabled(store.busy)
-                }
-                Button { Task { await store.send(tab == "profiles" ? "list" : "usage") } } label: {
+                Button { Task { await store.send("usage") } } label: {
                     Image(systemName: "arrow.clockwise").frame(width: 24, height: 24)
-                }
-                .buttonStyle(.plain).disabled(store.busy)
-                .accessibilityLabel(tab == "profiles" ? "Refresh accounts" : "Refresh usage")
-                .help(tab == "profiles" ? "Refresh accounts" : "Refresh usage")
-                Menu {
-                    if tab == "usage" { Button("Manage launch profiles…") { tab = "profiles" } }
-                    Button("About usage…") { showInfo = true }
-                } label: {
-                    Image(systemName: "ellipsis").frame(width: 24, height: 24)
-                }
-                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-                .accessibilityLabel("Account options")
+                }.buttonStyle(.plain).help("Refresh accounts and usage").accessibilityLabel("Refresh accounts and usage").disabled(store.busy)
             }
             Rectangle().fill(SwapPalette.divider).frame(height: 1)
             if let notice = store.notice { feedback(notice, isError: false) }
             if let error = store.error { feedback(error, isError: true) }
             ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    if tab == "usage" {
-                        usageContent
-                    } else {
-                        ForEach(store.accounts) { account in accountRow(account) }
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack {
+                        Image("AgentClaude").resizable().scaledToFit().frame(width: 22, height: 22)
+                        Text("Claude Code").font(ConchTypography.font(size: 14, weight: .semibold))
+                        Spacer()
+                        Button("Connect account") { adding = true }.disabled(store.busy || adding)
+                    }.padding(.bottom, 16)
+                    if adding { addForm.padding(.bottom, 20) }
+                    if store.accounts.isEmpty && !store.busy {
+                        Text("Connect to the Conch daemon to load your accounts.").font(ConchTypography.font(size: 12)).foregroundStyle(SwapPalette.secondaryText)
                     }
+                    TimelineView(.periodic(from: .now, by: 30)) { context in
+                        VStack(spacing: 0) {
+                            ForEach(store.accounts) { account in
+                                accountRow(account, now: context.date)
+                                Rectangle().fill(SwapPalette.divider).frame(height: 1)
+                            }
+                        }
+                    }
+                    DisclosureGroup("How accounts and usage work", isExpanded: $showAbout) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Choose an account when starting a new session. Resume and restart keep the session’s original account. Accounts do not switch automatically when a limit is reached.")
+                            Text("Usage comes from Claude Code’s status line after an API response (Claude 2.1.251 or later). Refresh reads the latest local measurement. An older reading is marked Cached; a passed reset becomes unknown until Claude reports again.")
+                            Text("Each account has a separate Claude configuration and conversation history on this Mac. Your sign-in stays with Claude. Accounts on other devices are separate connections.")
+                            Button("Usage bar design · claude-swap (MIT) ↗") {
+                                appStore.openLink("https://github.com/realiti4/claude-swap", cwd: nil, rowId: nil) { store.error = $0 }
+                            }
+                            Text((Bundle.main.url(forResource: "ClaudeSwapLicense", withExtension: "txt")
+                                .flatMap { try? String(contentsOf: $0, encoding: .utf8) }) ?? "See third-party/claude-swap/LICENSE in the Conch source.")
+                                .font(.system(size: 10, design: .monospaced)).textSelection(.enabled)
+                        }.font(ConchTypography.font(size: 12)).foregroundStyle(SwapPalette.secondaryText).padding(.top, 10)
+                    }.font(ConchTypography.font(size: 11)).foregroundStyle(SwapPalette.secondaryText).padding(.top, 22)
                 }.padding(1)
             }
-
         }
-        .foregroundStyle(SwapPalette.foreground)
-        .tint(SwapPalette.foreground)
-        .padding(22)
-        .background(SwapPalette.background)
-        .environment(\.colorScheme, .dark)
+        .foregroundStyle(SwapPalette.foreground).tint(SwapPalette.foreground)
+        .padding(24).background(SwapPalette.background).environment(\.colorScheme, .dark)
         .task { await store.send("list") }
-        .sheet(isPresented: $showInfo) {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("About usage").font(ConchTypography.font(size: 18, weight: .semibold))
-                Text("Usage comes from claude-swap on \(store.execution?.runtimes.first?.label ?? "this Mac"). Refresh reads its latest available measurements.")
-                if let message = store.usage?.message { Text(message) }
-                Text("Usage accounts are separate from Conch’s launch profiles. Adding a launch profile does not add it to claude-swap.")
-                HStack {
-                    Button("claude-swap setup ↗") { openProject(installation: true) }
-                    Button("MIT licence") { showInfo = false; showLicense = true }
-                }
-                HStack { Spacer(); Button("Done") { showInfo = false }.keyboardShortcut(.defaultAction) }
+        .task(id: store.pendingLoginId) {
+            guard let id = store.pendingLoginId else { return }
+            for _ in 0..<60 {
+                try? await Task.sleep(for: .seconds(2))
+                guard !Task.isCancelled, store.pendingLoginId == id else { return }
+                await store.send("refresh", id: id)
             }
-            .font(ConchTypography.font(size: 12))
-            .foregroundStyle(SwapPalette.foreground).padding(24).frame(width: 410)
-            .background(SwapPalette.background).environment(\.colorScheme, .dark)
+            store.notice = "Still waiting for sign-in. Finish in Terminal, then choose Check connection."
         }
-        .sheet(isPresented: $showLicense) {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("claude-swap · MIT licence").font(.headline)
-                ScrollView {
-                    Text((Bundle.main.url(forResource: "ClaudeSwapLicense", withExtension: "txt")
-                        .flatMap { try? String(contentsOf: $0, encoding: .utf8) }) ?? "See third-party/claude-swap/LICENSE in the Conch source.")
-                        .font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
-                }
-                HStack { Spacer(); Button("Done") { showLicense = false }.keyboardShortcut(.defaultAction) }
-            }.padding(24).frame(width: 540, height: 470)
-        }
-        .sheet(isPresented: $adding) { addSheet }
         .alert("Remove account from Conch?", isPresented: Binding(
             get: { removing != nil }, set: { if !$0 { removing = nil } }
         )) {
@@ -344,113 +352,79 @@ struct ClaudeAccountsView: View {
         }
     }
 
-    @ViewBuilder
-    private var usageContent: some View {
-        if let usage = store.usage, usage.state == "ready", !usage.accounts.isEmpty {
-            TimelineView(.periodic(from: .now, by: 30)) { context in
-                VStack(spacing: 0) {
-                    HStack {
-                        Text("Claude").font(ConchTypography.font(size: 11, weight: .medium))
-                        Spacer()
-                        Text("Resets").font(ConchTypography.font(size: 10))
-                    }.foregroundStyle(SwapPalette.secondaryText).padding(.bottom, 4)
-                    ForEach(Array(usage.accounts.enumerated()), id: \.element.id) { index, account in
-                        if index > 0 { Rectangle().fill(SwapPalette.divider).frame(height: 1) }
-                        SwapUsageRow(account: account, now: context.date)
+    private func accountRow(_ account: ClaudeAccountProfile, now: Date) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Image("AgentClaude").resizable().scaledToFit().frame(width: 26, height: 26)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 7) {
+                        Text(account.label).font(ConchTypography.font(size: 13, weight: .medium))
+                        if let plan = account.subscription { Text(plan.capitalized).font(ConchTypography.font(size: 10)).foregroundStyle(SwapPalette.secondaryText) }
                     }
+                    Text(account.email ?? account.statusLabel).font(ConchTypography.font(size: 12))
+                        .foregroundStyle(SwapPalette.secondaryText).textSelection(.enabled)
                 }
+                Spacer()
+                if account.status == "signed-out" {
+                    Button(store.pendingLoginId == account.id ? "Waiting for sign-in…" : "Sign in") {
+                        Task { await store.send("login", id: account.id) }
+                    }.disabled(store.busy || store.pendingLoginId == account.id)
+                }
+                Button { if expanded.contains(account.id) { expanded.remove(account.id) } else { expanded.insert(account.id) } } label: {
+                    Image(systemName: expanded.contains(account.id) ? "chevron.up" : "ellipsis").frame(width: 24, height: 24)
+                }.buttonStyle(.plain).accessibilityLabel("Details for \(account.label)")
             }
-        } else {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(store.usage?.state == "error" ? "Usage unavailable" : "No usage yet")
-                    .font(ConchTypography.font(size: 13, weight: .medium))
-                Button(store.usage == nil ? "Load usage" : (store.usage?.state == "error" ? "Try again" : "Set up claude-swap…")) {
-                    if store.usage == nil || store.usage?.state == "error" { Task { await store.send("usage") } }
-                    else { showInfo = true }
-                }.disabled(store.busy)
-            }.padding(.vertical, 18).frame(maxWidth: .infinity, alignment: .leading)
-
-        }
+            if let usage = store.usage?.accounts.first(where: { $0.id == account.id }) {
+                SwapUsageRow(account: usage, now: now, showsIdentity: false)
+            }
+            if expanded.contains(account.id) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(account.statusLabel).font(ConchTypography.font(size: 11))
+                    HStack {
+                        Button("Check connection") { Task { await store.send("refresh", id: account.id) } }
+                        Button("Sign in again") { Task { await store.send("login", id: account.id) } }
+                        Spacer()
+                        if account.id != "default" { Button("Remove…", role: .destructive) { removing = account } }
+                    }.disabled(store.busy)
+                    Text(account.configDir).font(.system(size: 10, design: .monospaced)).textSelection(.enabled)
+                }.foregroundStyle(SwapPalette.secondaryText).padding(.top, 4)
+            }
+        }.padding(.vertical, 18)
     }
 
-    private func openProject(installation: Bool = false) {
-        appStore.openLink("https://github.com/realiti4/claude-swap" + (installation ? "#installation" : ""), cwd: nil, rowId: nil) { store.error = $0 }
+    private var addForm: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Connect a Claude account").font(ConchTypography.font(size: 14, weight: .medium))
+            TextField("Account name, e.g. Work", text: $name).textFieldStyle(.roundedBorder)
+            Text("Claude will open its sign-in in Terminal. Choose the email for this account in your browser.")
+                .font(ConchTypography.font(size: 12)).foregroundStyle(SwapPalette.secondaryText)
+            DisclosureGroup("Use an existing account folder") {
+                if let directory = existingDirectory {
+                    Text(directory).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
+                    Button("Use a new folder instead") { existingDirectory = nil }
+                } else { Button("Choose folder…") { chooseDirectory() } }
+            }.font(ConchTypography.font(size: 11))
+            HStack {
+                Button("Cancel") { adding = false }
+                Spacer()
+                Button("Continue to Claude sign-in") {
+                    Task {
+                        if await store.send("add", label: name, configDir: existingDirectory), let id = store.createdAccountId {
+                            adding = false
+                            name = ""
+                            existingDirectory = nil
+                            await store.send("login", id: id)
+                        }
+                    }
+                }.disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.busy)
+            }
+        }.padding(16).background(SwapPalette.surface, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func feedback(_ text: String, isError: Bool) -> some View {
-        Text(text)
-            .font(ConchTypography.font(size: 12))
+        Text(text).font(ConchTypography.font(size: 12))
             .foregroundStyle(isError ? ConchPalette.statusNeeds : SwapPalette.foreground)
-            .fixedSize(horizontal: false, vertical: true)
-            .textSelection(.enabled)
-    }
-
-    private func accountRow(_ account: ClaudeAccountProfile) -> some View {
-        DisclosureGroup {
-            VStack(alignment: .leading, spacing: 10) {
-                Text([account.statusLabel, account.email, account.subscription].compactMap { $0 }.joined(separator: " · "))
-                    .font(ConchTypography.font(size: 11)).foregroundStyle(SwapPalette.secondaryText)
-                    .textSelection(.enabled)
-                HStack(spacing: 8) {
-                    Button("Sign in…") { Task { await store.send("login", id: account.id) } }
-                    Button("Check status") { Task { await store.send("refresh", id: account.id) } }
-                    Spacer()
-                    if account.id != "default" {
-                        Button("Remove…", role: .destructive) { removing = account }
-                    }
-                }
-                Text(account.configDir).font(.system(size: 10.5, design: .monospaced))
-                    .foregroundStyle(SwapPalette.secondaryText).textSelection(.enabled)
-            }.padding(.top, 10)
-        } label: {
-            HStack {
-                Text(account.label).font(ConchTypography.font(size: 13, weight: .medium))
-                Spacer()
-                if account.status == "signed-out" {
-                    Text("Sign in needed").font(ConchTypography.font(size: 11)).foregroundStyle(SwapPalette.secondaryText)
-                }
-            }.padding(.vertical, 6)
-        }
-        .padding(12)
-        .background(SwapPalette.surface, in: RoundedRectangle(cornerRadius: 8))
-        .disabled(store.busy)
-    }
-
-    private var addSheet: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Add Claude account").font(ConchTypography.font(size: 18, weight: .semibold))
-            TextField("Account name, e.g. Work", text: $name).textFieldStyle(.roundedBorder)
-            Text("Conch creates a separate account folder. You’ll sign in with Claude in Terminal after adding it.")
-                .font(ConchTypography.font(size: 12))
-                .foregroundStyle(SwapPalette.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-            if let directory = existingDirectory {
-                Text(directory).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
-                Button("Use a new folder instead") { existingDirectory = nil }
-            } else {
-                Button("Use an existing Claude account folder…") { chooseDirectory() }
-            }
-            if let error = store.error { feedback(error, isError: true) }
-            HStack {
-                Spacer()
-                Button("Cancel") { adding = false }.keyboardShortcut(.cancelAction)
-                Button("Add account") {
-                    Task {
-                        if await store.send("add", label: name, configDir: existingDirectory) {
-                            adding = false
-                            tab = "profiles"
-                            name = ""
-                            existingDirectory = nil
-                        }
-                    }
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.busy)
-            }
-        }
-        .padding(24)
-        .frame(width: 420)
-        .background(SwapPalette.background)
+            .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
     }
 
     private func chooseDirectory() {

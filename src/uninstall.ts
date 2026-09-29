@@ -5,8 +5,9 @@ import {
   rmSync,
 } from "node:fs";
 import { conchHome } from "./home.ts";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { Config } from "./config.ts";
+import { uninstallAccountUsage } from "./claude-account-usage.ts";
 
 const REVIEW_INSTRUCTIONS_BEGIN = "<!-- conch:begin -->";
 const REVIEW_INSTRUCTIONS_END = "<!-- conch:end -->";
@@ -329,6 +330,8 @@ export async function removeHooksFile(
   if (!existsSync(path)) {
     return { path, existed: false, removedHooks: 0, removedByEvent: {} };
   }
+
+  if (kind === "claude") uninstallAccountUsage({ id: "default", label: "Default", configDir: dirname(path) });
 
   const parsed: unknown = await Bun.file(path).json();
   if (!isRecord(parsed)) {

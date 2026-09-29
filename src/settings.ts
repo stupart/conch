@@ -1586,7 +1586,7 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
       id: account.id, label: account.label, configDir: account.configDir, status: account.status,
       ...(typeof account.email === "string" ? { email: account.email } : {}),
       ...(typeof account.subscription === "string" ? { subscription: account.subscription } : {}),
-    })), ...(execution ? { execution } : {}), ...(usage ? { usage } : {}), ...(value.loginOpened === true ? { loginOpened: true } : {}) } };
+    })), ...(execution ? { execution } : {}), ...(usage ? { usage } : {}), ...(validAccountId(value.createdAccountId) ? { createdAccountId: value.createdAccountId } : {}), ...(value.loginOpened === true ? { loginOpened: true } : {}) } };
   }
   if (["history-page", "history-item", "history-off", "history-error"].includes(value.kind)) return validateHistoryResponse(value);
   if (value.kind === "agent-capabilities") {

@@ -68,7 +68,7 @@ import {
 import { dirname, join } from "node:path";
 import { hostname, tmpdir } from "node:os";
 import { deviceExecutionCatalog } from "./execution-model.ts";
-import { readSwapDashboard } from "./claude-swap.ts";
+import { installAccountUsage, uninstallAccountUsage, clearAccountUsage, readAccountUsage } from "./claude-account-usage.ts";
 import { loadDeviceId } from "./device-identity.ts";
 import { clearIdentity, writeIdentity } from "./daemon-identity.ts";
 import {
@@ -233,7 +233,7 @@ import {
   type ConchState,
 } from "./status.ts";
 import { assertClaudeAccountIdle, accountRegistrySnapshot, accountResumableSessions, findAccountTranscript as findTranscript } from "./claude-account-sessions.ts";
-import { claudeAccountForLaunch, readClaudeAccounts, addClaudeAccount, removeClaudeAccount, requireClaudeAccount, readClaudeAccountStatus, type ClaudeAccountStatus } from "./claude-accounts.ts";
+import { claudeAccountForLaunch, readClaudeAccounts, addClaudeAccount, removeClaudeAccount, requireClaudeAccount, cachedClaudeAccountStatus, invalidateClaudeAccountStatus, type ClaudeAccountStatus } from "./claude-accounts.ts";
 import { runInstall as installAccountHooks } from "./install.ts";
 import {
   addressParkedWindow,
@@ -606,7 +606,10 @@ export function shouldReportMissingCodexPid(
  */
 async function launchSession(request: StartSessionRequest): Promise<void> {
   const account = claudeAccountForLaunch(request);
-  if (account) await installAccountHooks({ claudeDir: account.configDir });
+  if (account) {
+    await installAccountHooks({ claudeDir: account.configDir });
+    installAccountUsage(account);
+  }
   const { tty } = await startTerminalSession(request);
   if (request.trustFolder === true && adapterFor(request.backend).trustTypedAtLaunch && tty) {
     void acceptClaudeTrust(tty).then((outcome) => log(`trust prompt in ${tty}: ${outcome}`), () => {});
@@ -2626,27 +2629,30 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         : { claudeHome: cfg.claudeDir }),
     }, readClaudeAccounts(cfg.claudeDir)),
     claudeAccounts: async (message) => {
-      if (message.action === "add") addClaudeAccount(message.label!, message.configDir);
+      const created = message.action === "add" ? addClaudeAccount(message.label!, message.configDir) : undefined;
       if (message.action === "remove") {
-        await assertClaudeAccountIdle(requireClaudeAccount(message.id!, cfg.claudeDir));
+        const account = requireClaudeAccount(message.id!, cfg.claudeDir);
+        await assertClaudeAccountIdle(account);
+        uninstallAccountUsage(account);
+        invalidateClaudeAccountStatus(account);
         removeClaudeAccount(message.id!);
       }
       if (message.action === "login") {
         const account = requireClaudeAccount(message.id!, cfg.claudeDir);
         await assertClaudeAccountIdle(account);
         await installAccountHooks({ claudeDir: account.configDir });
+        installAccountUsage(account);
+        clearAccountUsage(account);
+        invalidateClaudeAccountStatus(account);
         await startClaudeAccountLogin(account);
       }
-      const accounts: ClaudeAccountStatus[] = readClaudeAccounts(cfg.claudeDir).map((account) => ({ ...account, status: "unchecked" }));
-      if (message.action === "refresh") {
-        const account = requireClaudeAccount(message.id!, cfg.claudeDir);
-        const status = await readClaudeAccountStatus(account);
-        accounts.splice(accounts.findIndex((item) => item.id === account.id), 1, status);
-      }
+      const accounts = await Promise.all(readClaudeAccounts(cfg.claudeDir).map(account =>
+        cachedClaudeAccountStatus(account, message.action === "refresh" && message.id === account.id)));
       void renderSessionPanel();
       return { kind: "claude-accounts", accounts,
         execution: deviceExecutionCatalog(ownerDeviceId, hostname(), accounts),
-        ...(message.action === "usage" ? { usage: await readSwapDashboard() } : {}),
+        usage: readAccountUsage(accounts),
+        ...(created ? { createdAccountId: created.id } : {}),
         ...(message.action === "login" ? { loginOpened: true as const } : {}) };
     },
     readCapabilities: (message) => {

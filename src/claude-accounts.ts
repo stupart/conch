@@ -15,6 +15,7 @@ export interface ClaudeAccountStatus extends ClaudeAccount {
   status: "unchecked" | "signed-in" | "signed-out" | "unavailable";
   email?: string;
   subscription?: string;
+  organizationId?: string;
 }
 
 export type ClaudeAccountRequest = {
@@ -28,6 +29,7 @@ export interface ClaudeAccountsReply {
   kind: "claude-accounts";
   accounts: ClaudeAccountStatus[];
   loginOpened?: true;
+  createdAccountId?: string;
   execution?: ExecutionCatalog;
   usage?: SwapDashboard;
 }
@@ -137,7 +139,8 @@ export function decodeClaudeAuth(account: ClaudeAccount, raw: string): ClaudeAcc
     const safeText = (input: unknown) => typeof input === "string" && input.length < 200 && !CONTROL.test(input) ? input : undefined;
     return { ...account, status: value.loggedIn ? "signed-in" : "signed-out",
       ...(safeText(value.email) ? { email: value.email } : {}),
-      ...(safeText(value.subscriptionType) ? { subscription: value.subscriptionType } : {}) };
+      ...(safeText(value.subscriptionType) ? { subscription: value.subscriptionType } : {}),
+      ...(safeText(value.orgId) ? { organizationId: value.orgId } : {}) };
   } catch { return { ...account, status: "unavailable" }; }
 }
 
@@ -163,4 +166,18 @@ export function claudeAccountForLaunch(request: { backend: string; claudeAccount
   if (request.claudeAccountId === undefined) return;
   if (request.backend !== "claude" || !validAccountId(request.claudeAccountId)) throw new Error("Account selection is only available for Claude");
   return requireClaudeAccount(request.claudeAccountId);
+}
+
+// Cache only public CLI status; credentials remain owned by Claude.
+const statusCache = new Map<string, { time: number; value: Promise<ClaudeAccountStatus> }>();
+export function invalidateClaudeAccountStatus(account: ClaudeAccount): void {
+  statusCache.delete(JSON.stringify([account.id, account.configDir]));
+}
+export function cachedClaudeAccountStatus(account: ClaudeAccount, refresh = false): Promise<ClaudeAccountStatus> {
+  const key = JSON.stringify([account.id, account.configDir]);
+  const cached = statusCache.get(key);
+  if (!refresh && cached && Date.now() - cached.time < 60_000) return cached.value;
+  const value = readClaudeAccountStatus(account);
+  statusCache.set(key, { time: Date.now(), value });
+  return value;
 }

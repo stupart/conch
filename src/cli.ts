@@ -293,6 +293,11 @@ switch (command) {
     if (!result.ok) process.exitCode = 1;
     break;
   }
+  case "usage-statusline": {
+    const { runAccountStatusline } = await import("./claude-account-usage.ts");
+    await runAccountStatusline(rest[0], rest[1]);
+    break;
+  }
   case "hook":
     await runHook(cfg);
     break;

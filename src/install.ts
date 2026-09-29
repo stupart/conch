@@ -30,7 +30,7 @@ const CLI_ENTRY = join(import.meta.dir, "cli.ts");
 const IS_COMPILED = !existsSync(CLI_ENTRY);
 
 /** Shell-quoted argv that re-invokes conch: `"conch"` (compiled) or `"bun" "…/cli.ts"`. */
-function conchInvocation(): string {
+export function conchInvocation(): string {
   return IS_COMPILED ? `"${process.execPath}"` : `"${process.execPath}" "${CLI_ENTRY}"`;
 }
 
