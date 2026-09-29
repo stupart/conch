@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		CCAC00000000000000000001 /* ClaudeAccountsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCAC00000000000000000002 /* ClaudeAccountsView.swift */; };
+		CCAC00000000000000000003 /* ExecutionModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCAC00000000000000000004 /* ExecutionModels.swift */; };
+		CCAC00000000000000000005 /* ClaudeSwapLicense.txt in Resources */ = {isa = PBXBuildFile; fileRef = CCAC00000000000000000006 /* ClaudeSwapLicense.txt */; };
 		A10000000000000000000901 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000901 /* Assets.xcassets */; };
 		A10000000000000000000902 /* ConversationStackView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000902 /* ConversationStackView.swift */; };
 		A10000000000000000000931 /* DaemonHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000931 /* DaemonHost.swift */; };
@@ -60,6 +63,9 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		CCAC00000000000000000002 /* ClaudeAccountsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeAccountsView.swift; sourceTree = "<group>"; };
+		CCAC00000000000000000004 /* ExecutionModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExecutionModels.swift; sourceTree = "<group>"; };
+		CCAC00000000000000000006 /* ClaudeSwapLicense.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = ClaudeSwapLicense.txt; sourceTree = "<group>"; };
 		A20000000000000000000001 /* ConchMacApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConchMacApp.swift; sourceTree = "<group>"; };
 		A20000000000000000000002 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		A20000000000000000000003 /* StateStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StateStore.swift; sourceTree = "<group>"; };
@@ -177,6 +183,9 @@
 				A2000000000000000000000E /* TranscriptContent.swift */,
 				B20000000000000000000001 /* SettingsProtocol.swift */,
 				B20000000000000000000002 /* SettingsView.swift */,
+				CCAC00000000000000000002 /* ClaudeAccountsView.swift */,
+				CCAC00000000000000000004 /* ExecutionModels.swift */,
+				CCAC00000000000000000006 /* ClaudeSwapLicense.txt */,
 				A20000000000000000000902 /* ConversationStackView.swift */,
 				A20000000000000000000931 /* DaemonHost.swift */,
 				A20000000000000000000932 /* ComposerView.swift */,
@@ -276,6 +285,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A10000000000000000000901 /* Assets.xcassets in Resources */,
+				CCAC00000000000000000005 /* ClaudeSwapLicense.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -416,6 +426,8 @@
 				A1000000000000000000000C /* TranscriptContent.swift in Sources */,
 				B10000000000000000000001 /* SettingsProtocol.swift in Sources */,
 				B10000000000000000000002 /* SettingsView.swift in Sources */,
+				CCAC00000000000000000001 /* ClaudeAccountsView.swift in Sources */,
+				CCAC00000000000000000003 /* ExecutionModels.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

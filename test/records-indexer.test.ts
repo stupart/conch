@@ -329,3 +329,14 @@ test("a batch late in a long session holds the worker's loop briefly, not for a 
   expect(longest).toBeLessThan(100);
   expect(f.store.counts().items).toBe(lines);
 });
+
+test("adding an account makes its transcripts indexable without restarting the worker", async () => {
+  const f = fixture();
+  const home = join(f.root, "second-account");
+  const path = join(home, "projects", "project", `${id(99)}.jsonl`);
+  mkdirSync(join(path, ".."), { recursive: true });
+  writeFileSync(path, message("second-account-message", "from the second account"));
+  f.indexer.prioritize({ claudeHomes: [f.claudeHome, home], live: [{ provider: "claude", nativeId: id(99), path }] });
+  await until(f.indexer, () => f.store.counts().items === 1);
+  expect(items(f.store)).toEqual([{ native_id: "second-account-message", text: "from the second account" }]);
+});

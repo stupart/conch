@@ -13,6 +13,7 @@ import type { SpeechEngineStatus } from "./speech-engine.ts";
 import type { PublishedPhone } from "./phone-setup.ts";
 import type { PublishedPractice } from "./practice.ts";
 import type { PublishedSessionSettings, SessionSettingsCatalog } from "./session-settings.ts";
+import { deviceExecutionCatalog, sessionExecution, type ExecutionCatalog, type SessionExecution } from "./execution-model.ts";
 
 export type PanelConchState = "idle" | "muted" | "paused" | "speaking" | "listening" | "recording" | "transcribing";
 
@@ -70,6 +71,8 @@ export interface PanelRowModel {
   label: string;
   /** Which agent runs this session; absent means Claude. */
   backend?: "claude" | "codex";
+  accountLabel?: string;
+  claudeAccountId?: string;
   /** A subagent row: nested under this session, never the active one (C4). */
   parentSessionId?: string;
   /** A full session another session's process started (C15): nested under its starter, otherwise ordinary. */
@@ -251,6 +254,7 @@ export interface PanelModel {
 export interface PublishedSessionRow {
   id: string;
   label: string;
+  execution?: SessionExecution;
   /**
    * Which agent this session runs, because the answer changes what a client
    * should send it. Images are the first case: Claude resizes anything past
@@ -260,6 +264,8 @@ export interface PublishedSessionRow {
    */
   /** `conch` is conch's own practice session (`practice.ts`), which has no agent and no terminal. */
   backend?: "claude" | "codex" | "conch";
+  accountLabel?: string;
+  claudeAccountId?: string;
   /**
    * Present on a subagent row: the session it runs inside. A viewer indents
    * it under that row and never treats it as a session of its own — it has
@@ -402,6 +408,7 @@ export interface PublishedState {
   };
   /** Stable identity of the daemon installation that owns every local session key. */
   ownerDeviceId: string;
+  execution?: ExecutionCatalog;
   ts: number;
   mode: DashboardMode;
   live: {
@@ -608,6 +615,7 @@ export function buildPublishedState(
   dismissed: ReadonlySet<string>,
   now: number,
   options: {
+    runtimeLabel?: string;
     transcriptPathForSessionId?(sessionId: string): string | undefined;
     /** Resolve the effective voice, including stable automatic assignment. */
     voiceForLabel?(label: string): string | undefined;
@@ -636,6 +644,8 @@ export function buildPublishedState(
     // 4: a deliverable the phone can't draw carries a snapshot of it from the Mac (`preview`).
     features: { deliverables: 4, viewedState: 1, ...(options.settingsForSessionId ? { sessionSettings: 1 as const } : {}) },
     ownerDeviceId,
+    execution: deviceExecutionCatalog(ownerDeviceId, options.runtimeLabel ?? ownerDeviceId,
+      model.rows.flatMap((row) => row.claudeAccountId ? [{ id: row.claudeAccountId, label: row.accountLabel ?? row.claudeAccountId }] : [])),
     ts: now,
     ...(options.audio ? { audioControl: options.audio.control, audioOutbox: options.audio.outbox } : {}),
     ...(options.deliveries?.length ? { deliveries: [...options.deliveries] } : {}),
@@ -663,7 +673,10 @@ export function buildPublishedState(
       return {
         id: row.sessionId,
         label: row.label,
+        execution: sessionExecution(ownerDeviceId, row.backend ?? "claude", row.claudeAccountId),
         ...(row.backend ? { backend: row.backend } : {}),
+        ...(row.accountLabel ? { accountLabel: row.accountLabel } : {}),
+        ...(row.claudeAccountId ? { claudeAccountId: row.claudeAccountId } : {}),
         ...(row.parentSessionId ? { parentSessionId: row.parentSessionId } : {}),
         ...(row.startedBySessionId ? { startedBySessionId: row.startedBySessionId } : {}),
         status: row.status,
@@ -822,6 +835,8 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
         sessionId: session.sessionId,
         label: sessionLabel(session, session.cwd),
         ...(session.backend ? { backend: session.backend } : {}),
+        ...(session.accountLabel ? { accountLabel: session.accountLabel } : {}),
+        ...(session.claudeAccountId ? { claudeAccountId: session.claudeAccountId } : {}),
         ...(session.parentSessionId ? { parentSessionId: session.parentSessionId } : {}),
         ...(session.startedBySessionId ? { startedBySessionId: session.startedBySessionId } : {}),
         ...(waitingOnAgents ? { waitingOnAgents: true as const } : {}),

@@ -121,30 +121,8 @@ struct ConchMacApp: App {
         }
 
         Settings {
-            // Pairing first, knobs second: connecting a phone is the one thing
-            // a new person must do, and it used to require a terminal.
-            TabView {
-                // "Advanced" promised something arcane and delivered the
-                // ordinary settings; "Phone" named a device rather than the
-                // job. Two tabs, named for what each one is.
-                ConchPairingView()
-                    .tabItem { Label("Phone app", systemImage: "iphone") }
-                ConchSettingsView()
-                    .tabItem { Label("Settings", systemImage: "slider.horizontal.3") }
-                // conch's four macOS permissions, read without asking (`PermissionCenter`). Not among the daemon's
-                // settings: those vanish when the daemon is down, and these are the app's.
-                ConchPermissionsView()
-                    .tabItem { Label("Permissions", systemImage: "hand.raised") }
-                // Setup, kept: each step's status and its one button, the downloads, and Run setup again.
-                SetupSettingsTab()
-                    .tabItem { Label("Setup", systemImage: "checklist") }
-            }
-            // A Settings window sizes to its content and does NOT scroll, so
-            // an ideal height taller than a laptop screen simply overflows.
-            // 560 leaves room for the tab bar and the title bar on a 13".
-            // Each tab scrolls internally, which is what actually makes long
-            // content reachable rather than relying on the window growing.
-            .frame(minWidth: 620, idealWidth: 680, minHeight: 420, idealHeight: 560)
+            ConchSettingsRootView()
+                .frame(minWidth: 760, idealWidth: 840, minHeight: 480, idealHeight: 620)
             // `Settings` is its own SCENE. Environment objects injected into
             // the WindowGroup above do not reach it, and SwiftUI answers a
             // missing @EnvironmentObject with a trap rather than a nil — so

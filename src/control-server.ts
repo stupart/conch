@@ -1,3 +1,4 @@
+import type { ClaudeAccountRequest, ClaudeAccountsReply } from "./claude-accounts.ts";
 import { ControlFrameError, ControlFrameReader, encodeControlFrame } from "./control-framing.ts";
 import type { HistoryPageRequest, HistoryItemRequest, HistoryResponse } from "./history.ts";
 import { createServer, connect } from "node:net";
@@ -278,6 +279,7 @@ export function dispatchControlMessage(
     validated.value.kind === "resumable"
     || validated.value.kind === "history-page" || validated.value.kind === "history-item"
     || validated.value.kind === "agent-capabilities"
+    || validated.value.kind === "claude-accounts"
     || validated.value.kind === "session-start"
     || validated.value.kind === "session-close"
     || validated.value.kind === "app-error"
@@ -321,6 +323,7 @@ export function applyConfigControlMessage(
 }
 
 export interface RuntimeControlDispatchOptions {
+  claudeAccounts?(message: ClaudeAccountRequest): Promise<ClaudeAccountsReply>;
   historyPage?(message: HistoryPageRequest): HistoryResponse | Promise<HistoryResponse>;
   historyItem?(message: HistoryItemRequest): HistoryResponse | Promise<HistoryResponse>;
   listResumable(
@@ -335,7 +338,7 @@ export interface RuntimeControlDispatchOptions {
   ): AgentInstall | undefined | Promise<AgentInstall | undefined>;
   start(message: Extract<RuntimeControlMessage, { kind: "session-start" }>): void | Promise<void>;
   /** Whether the agent already trusts a folder; absent or null means unknown. */
-  folderTrusted?(backend: SessionBackend, cwd: string): boolean | null;
+  folderTrusted?(backend: SessionBackend, cwd: string, accountId?: string): boolean | null;
   /** Resolves to the flags a restart did not carry over; nothing for a plain close. */
   close(sessionId: string, restart?: boolean): void | Promise<void | { notCarriedOver: string[] }>;
   report(message: Extract<RuntimeControlMessage, { kind: "app-error" }>): void | Promise<void>;
@@ -377,6 +380,10 @@ export async function applyRuntimeControlMessage(
   options: RuntimeControlDispatchOptions,
 ): Promise<SessionControlResponse> {
   try {
+    if (message.kind === "claude-accounts") {
+      if (!options.claudeAccounts) throw new Error("Account management requires an updated Conch daemon");
+      return await options.claudeAccounts(message);
+    }
     if (message.kind === "history-page") {
       const { kind, ...request } = message;
       return await options.historyPage?.(request) ?? { kind: "history-off", error: "history is off" };
@@ -416,7 +423,7 @@ export async function applyRuntimeControlMessage(
       // Claude asks the same, and takes no answer at launch — so a yes here is typed into its
       // prompt once it appears (acceptClaudeTrust). Before, conch launched it anyway and the
       // app waited on a session that couldn't register until someone found the Terminal.
-      if (message.trustFolder !== true && message.cwd && options.folderTrusted?.(message.backend, message.cwd) === false) {
+      if (message.trustFolder !== true && message.cwd && options.folderTrusted?.(message.backend, message.cwd, message.claudeAccountId) === false) {
         return { kind: "session-needs-trust", backend: message.backend, cwd: message.cwd };
       }
       await options.start(message);
@@ -1193,7 +1200,7 @@ export interface ControlServer {
 
 function isRuntimeControlCandidate(value: unknown): boolean {
   return socketRecord(value) && (
-    value.kind === "session-start" || value.kind === "session-close"
+    value.kind === "claude-accounts" || value.kind === "session-start" || value.kind === "session-close"
     || value.kind === "history-page" || value.kind === "history-item"
     || value.kind === "app-error" || value.kind === "resumable"
     || value.kind === "agent-capabilities"

@@ -908,3 +908,46 @@ private struct LoginItemRow: View {
         .onAppear { login.refresh() }
     }
 }
+
+
+/// Persistent navigation keeps provider setup, usage, and app preferences in one place.
+struct ConchSettingsRootView: View {
+    @AppStorage("conch.settings.section") private var section = "providers"
+    private let sections = [
+        ("providers", "Providers", "person.crop.circle"),
+        ("general", "General", "slider.horizontal.3"),
+        ("phone", "Phone app", "iphone"),
+        ("permissions", "Permissions", "hand.raised"),
+        ("setup", "Setup", "checklist")
+    ]
+    var body: some View {
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Settings").font(ConchTypography.font(size: 16, weight: .semibold)).padding(.bottom, 20)
+                ForEach(sections, id: \.0) { item in
+                    Button { section = item.0 } label: {
+                        Label(item.1, systemImage: item.2)
+                            .font(ConchTypography.font(size: 12, weight: section == item.0 ? .medium : .regular))
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 9)
+                            .background(section == item.0 ? ConchColor.hairline.color(.dark) : .clear, in: RoundedRectangle(cornerRadius: 6))
+                    }.buttonStyle(.plain)
+                }
+                Spacer()
+                Text("conch").font(ConchTypography.font(size: 13)).foregroundStyle(ConchColor.textSecondary.color(.dark))
+            }.padding(20).frame(width: 180).background(ConchColor.surface.color(.dark))
+            Rectangle().fill(ConchColor.hairline.color(.dark)).frame(width: 1)
+            Group {
+                switch section {
+                case "general": ConchSettingsView()
+                case "phone": ConchPairingView()
+                case "permissions": ConchPermissionsView()
+                case "setup": SetupSettingsTab()
+                default: ClaudeAccountsView()
+                }
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .foregroundStyle(ConchColor.textPrimary.color(.dark))
+        .background(ConchColor.ground.color(.dark))
+        .preferredColorScheme(.dark)
+    }
+}

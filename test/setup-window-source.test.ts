@@ -213,7 +213,8 @@ describe("You're set, Settings, the menu and Help", () => {
   });
 
   test("Settings has a Setup tab; the menu reminds while it's put away; Help has Set up conch…", () => {
-    expect(app).toContain('SetupSettingsTab()\n                    .tabItem { Label("Setup", systemImage: "checklist") }');
+    expect(app).toContain('ConchSettingsRootView()');
+    expect(read("mac-app/conch-mac/SettingsView.swift")).toContain('case "setup": SetupSettingsTab()');
     expect(app).toContain('Button("Set up conch…") { OnboardingController.shared.openFromHelp() }');
     expect(statusItem).toContain("setupLeft: OnboardingController.shared.menuReminder()");
     expect(statusItem).toContain("case .finishSetup: #selector(finishSetup)");

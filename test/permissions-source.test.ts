@@ -166,7 +166,8 @@ describe("it reads again whenever the answer may have changed", () => {
 describe("where a feature fails, the app says which permission, with the button that fixes it", () => {
   test("Settings has a Permissions tab, and the window a line for the trouble", () => {
     const app = read("mac-app/conch-mac/ConchMacApp.swift");
-    expect(app).toContain('ConchPermissionsView()\n                    .tabItem { Label("Permissions", systemImage: "hand.raised") }');
+    expect(app).toContain('ConchSettingsRootView()');
+    expect(read("mac-app/conch-mac/SettingsView.swift")).toContain('case "permissions": ConchPermissionsView()');
     expect(read("mac-app/conch-mac/Notices.swift")).toContain("    PermissionNoticeLine()\n");
     const line = member(permissionsCode, "struct PermissionNoticeLine: View {", 0);
     expect(line).toContain("daemonIsConchs: daemon.startedBy == \"app\"");

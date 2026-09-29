@@ -179,7 +179,7 @@ describe("the branch inventory", () => {
     expect(daemon).toContain("const format = path ? transcriptFormatFor(path) : null;");
     expect(daemon).toContain("contextUsageFromLines(tail, format)");
     expect(daemon).toContain("sessionSettingsFromLines(tail, format)");
-    expect(daemon).toContain("folderTrusted: (backend, cwd) => adapterFor(backend).folderTrusted(cwd),");
+    expect(daemon).toContain("folderTrusted: (backend, cwd, accountId) => accountId && accountId !== \"default\" ? null : adapterFor(backend).folderTrusted(cwd),");
     expect(read("src/session-lifecycle.ts")).toContain("const adapter = adapterFor(request.backend);");
     expect(read("src/provider-rename.ts")).toContain("adapterFor(target.backend).renameCommand(label)");
     expect(read("src/sessions.ts")).toContain("adapterFor(parent.backend).subagentSessions(parent, transcriptPath)");

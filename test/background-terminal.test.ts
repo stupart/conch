@@ -94,7 +94,7 @@ describe("Open in Terminal: claude attach <jobId>", () => {
     const body = between(daemon, "    attach: (target) => {", "\n    },\n");
     expect(body).toContain("const session = panelSessions.get(target.sessionId);");
     expect(body).toContain("if (!session?.jobId) return Promise.resolve(false);");
-    expect(body).toContain("return attachTerminalSession(session.jobId, session.cwd)");
+    expect(body).toContain("return attachTerminalSession(session.jobId, session.cwd, {}, session.claudeAccountId)");
     expect(body).toContain('"session-attach"');
     expect(daemon).toContain("...(session?.jobId ? { jobId: session.jobId } : {}),");
   });

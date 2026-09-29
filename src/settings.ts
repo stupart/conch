@@ -1,3 +1,6 @@
+import { accountRequestError, validAccountId, type ClaudeAccountRequest, type ClaudeAccountsReply } from "./claude-accounts.ts";
+import { parseExecutionCatalog } from "./execution-model.ts";
+import { parseSwapDashboard } from "./claude-swap.ts";
 import { connect } from "node:net";
 import { ControlFrameReader, encodeControlFrame } from "./control-framing.ts";
 import { validateHistoryRequest, validateHistoryResponse, type HistoryRequest, type HistoryResponse } from "./history.ts";
@@ -847,6 +850,7 @@ export type SessionControlMessage =
   | { kind: "session-command"; sessionId: string; command: "review-remove"; review?: string; artifact?: string };
 
 export type RuntimeControlMessage =
+  | ClaudeAccountRequest
   | HistoryRequest
   | { kind: "resumable"; query?: string; limit?: number }
   | {
@@ -857,6 +861,7 @@ export type RuntimeControlMessage =
   }
   | {
     kind: "session-start";
+    claudeAccountId?: string;
     backend: "claude" | "codex";
     /** Answering Codex's trust prompt in advance, for this launch only. */
     trustFolder?: boolean;
@@ -979,6 +984,7 @@ export interface PairingOpen {
 }
 
 export type RuntimeControlResponse =
+  | ClaudeAccountsReply
   | HistoryResponse
   | { kind: "resumable"; sessions: ResumableSession[]; complete: boolean }
   | {
@@ -1070,6 +1076,7 @@ export function isControlMessageCandidate(value: unknown): boolean {
     || value.kind === "resumable"
     || value.kind === "history-page" || value.kind === "history-item"
     || value.kind === "agent-capabilities"
+    || value.kind === "claude-accounts"
     || value.kind === "session-start"
     || value.kind === "session-close"
     || value.kind === "app-error"
@@ -1238,6 +1245,14 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
   if (!record(value) || typeof value.kind !== "string") {
     return { ok: false, err: "runtime control message must be a JSON object with a kind" };
   }
+  if (value.kind === "claude-accounts") {
+    const err = accountRequestError(value);
+    if (err) return { ok: false, err };
+    return { ok: true, value: { kind: "claude-accounts", action: value.action as ClaudeAccountRequest["action"],
+      ...(typeof value.id === "string" ? { id: value.id } : {}),
+      ...(typeof value.label === "string" ? { label: value.label } : {}),
+      ...(typeof value.configDir === "string" ? { configDir: value.configDir } : {}) } };
+  }
   if (value.kind === "history-page" || value.kind === "history-item") return validateHistoryRequest(value);
   if (value.kind === "resumable") {
     let query: string | undefined;
@@ -1309,6 +1324,9 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
     return { ok: true, value: { kind: "session-close", sessionId: sessionId.value, ...(value.restart ? { restart: true as const } : {}) } };
   }
   if (value.kind === "session-start") {
+    if (value.claudeAccountId !== undefined && (value.backend !== "claude" || !validAccountId(value.claudeAccountId))) {
+      return { ok: false, err: "Choose a valid Claude account" };
+    }
     if (value.backend !== "claude" && value.backend !== "codex") {
       return { ok: false, err: "session backend must be claude or codex" };
     }
@@ -1344,6 +1362,7 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
       ok: true,
       value: {
         kind: "session-start",
+        ...(typeof value.claudeAccountId === "string" ? { claudeAccountId: value.claudeAccountId } : {}),
         backend: value.backend,
         // The person answered Codex's trust question in conch. Only ever true
         // because they said so — it is never inferred.
@@ -1474,6 +1493,7 @@ export function validateControlMessage(value: unknown): ParseResult<AnyControlMe
     value.kind === "resumable"
     || value.kind === "history-page" || value.kind === "history-item"
     || value.kind === "agent-capabilities"
+    || value.kind === "claude-accounts"
     || value.kind === "session-start"
     || value.kind === "session-close"
     || value.kind === "app-error"
@@ -1553,6 +1573,21 @@ function validateTerminalScreenReply(value: Record<string, unknown>): ParseResul
 
 export function validateControlResponse(value: unknown): ParseResult<ControlResponse> {
   if (!record(value) || typeof value.kind !== "string") return { ok: false, err: "invalid control response" };
+  if (value.kind === "claude-accounts") {
+    if (!Array.isArray(value.accounts) || value.accounts.length > 17 || value.accounts.some((account) =>
+      !record(account) || !validAccountId(account.id) || typeof account.label !== "string"
+      || typeof account.configDir !== "string" || !["unchecked", "signed-in", "signed-out", "unavailable"].includes(String(account.status)))) {
+      return { ok: false, err: "invalid Claude accounts response" };
+    }
+    const execution = parseExecutionCatalog(value.execution);
+    const usage = parseSwapDashboard(value.usage);
+    if ((value.execution !== undefined && !execution) || (value.usage !== undefined && !usage)) return { ok: false, err: "invalid account dashboard response" };
+    return { ok: true, value: { kind: "claude-accounts", accounts: value.accounts.map((account) => ({
+      id: account.id, label: account.label, configDir: account.configDir, status: account.status,
+      ...(typeof account.email === "string" ? { email: account.email } : {}),
+      ...(typeof account.subscription === "string" ? { subscription: account.subscription } : {}),
+    })), ...(execution ? { execution } : {}), ...(usage ? { usage } : {}), ...(validAccountId(value.createdAccountId) ? { createdAccountId: value.createdAccountId } : {}), ...(value.loginOpened === true ? { loginOpened: true } : {}) } };
+  }
   if (["history-page", "history-item", "history-off", "history-error"].includes(value.kind)) return validateHistoryResponse(value);
   if (value.kind === "agent-capabilities") {
     if (!isAgentCapabilitiesRead(value.inventory)) {
@@ -1594,6 +1629,8 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
         label: label.value,
         cwd: cwd.value,
         updatedAt: raw.updatedAt as number,
+        ...(validAccountId(raw.claudeAccountId) ? { claudeAccountId: raw.claudeAccountId } : {}),
+        ...(typeof raw.accountLabel === "string" ? { accountLabel: raw.accountLabel } : {}),
       });
     }
     return { ok: true, value: { kind: "resumable", sessions, complete: value.complete } };

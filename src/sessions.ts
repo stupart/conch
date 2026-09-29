@@ -49,11 +49,16 @@ export interface AttachProbeOptions {
 }
 
 export interface RegistrySnapshotOptions extends CodexSessionRegistryOptions, AttachProbeOptions {
+  /** Additional Claude account roots must not enumerate Codex again. */
+  skipCodex?: boolean;
   /** Every process's parent pid; injectable so a test can hand in a fake tree. Defaults to one `ps`. */
   processParents?: () => Promise<ReadonlyMap<number, number> | null>;
 }
 
 export interface SessionInfo {
+  claudeAccountId?: string;
+  claudeConfigDir?: string;
+  accountLabel?: string;
   /**
    * What conch addresses this by — the agent's session id, unless that id is
    * shared by two live windows, in which case it names the window. See
@@ -880,7 +885,7 @@ export async function registrySnapshot(
     infos.push(keyed);
   }
 
-  const codex = readCodexSessions(options);
+  const codex = options.skipCodex ? { entries: [], complete: true, available: false } : readCodexSessions(options);
   for (const entry of codex.entries) {
     liveIds.add(entry.sessionId);
     infos.push(await toInfo(claudeDir, entry, "codex"));
@@ -895,7 +900,7 @@ export async function registrySnapshot(
   // observes those sessions without them participating at all. Hook-fed
   // entries win on conflict: they carry a real pid, so they can be TALKED to,
   // where an observed row can only be seen.
-  const observed = await readCodexThreads(options);
+  const observed = options.skipCodex ? { entries: [], complete: true } : await readCodexThreads(options);
   for (const entry of observed.entries) {
     if (liveIds.has(entry.sessionId)) continue;
     liveIds.add(entry.sessionId);
@@ -924,7 +929,7 @@ export async function registrySnapshot(
   // A readable Codex registry can still supply useful sessions when Claude's
   // directory is absent. ENOENT is known-empty; other Claude read failures
   // make the combined liveness view incomplete.
-  if (!claudeAvailable && !codex.available) return null;
+  if (!claudeAvailable && !codex.available && !(options.skipCodex && claudeMissing)) return null;
   return { infos, liveIds, complete };
 }
 

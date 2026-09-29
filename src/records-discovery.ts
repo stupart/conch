@@ -14,7 +14,7 @@ export interface RecordsCandidate {
 }
 
 /** These are provider transcript roots, not a general filesystem search. */
-export function recordsRoots(options: { claudeHome?: string; codexHome?: string }): RecordsRoot[] {
+export function recordsRoots(options: { claudeHome?: string; claudeHomes?: string[]; codexHome?: string }): RecordsRoot[] {
   const roots: RecordsRoot[] = [];
   for (const [provider, home] of [["claude", options.claudeHome], ["codex", options.codexHome]] as const) {
     if (!home) continue;
@@ -22,6 +22,10 @@ export function recordsRoots(options: { claudeHome?: string; codexHome?: string 
     for (const directory of format === "codex" ? ["sessions", "archived_sessions"] : ["projects"]) {
       roots.push({ provider, path: resolve(home, directory) });
     }
+  }
+  for (const home of options.claudeHomes ?? []) {
+    const path = resolve(home, "projects");
+    if (!roots.some((root) => root.provider === "claude" && root.path === path)) roots.push({ provider: "claude", path });
   }
   return roots;
 }

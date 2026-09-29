@@ -741,6 +741,7 @@ final class StateStore: ObservableObject {
         backend: ConchAgentBackend,
         resumeSessionId: String?,
         teleportSessionId: String? = nil,
+        claudeAccountId: String? = nil,
         cwd: String?,
         trustFolder: Bool = false,
         options: [String: ConchStartOptionValue] = [:]
@@ -752,6 +753,7 @@ final class StateStore: ObservableObject {
             backend: backend,
             resumeSessionId: resumed,
             teleportSessionId: teleport,
+            claudeAccountId: claudeAccountId,
             cwd: workingDirectory,
             trustFolder: trustFolder ? true : nil,
             options: options.isEmpty ? nil : options
@@ -1471,6 +1473,7 @@ final class StateStore: ObservableObject {
         let next = PublishedState(
             v: sourceState.v,
             ownerDeviceId: sourceState.ownerDeviceId,
+            execution: sourceState.execution,
             ts: sourceState.ts,
             mode: sourceState.mode,
             live: sourceState.live,

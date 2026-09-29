@@ -483,6 +483,10 @@ private struct StartSessionSheet: View {
     /// The session this sheet started, once it has checked in.
     let onStarted: (SessionRow.ID) -> Void
 
+    @StateObject private var accounts = ClaudeAccountsStore()
+    @State private var claudeAccountId = "default"
+    @Environment(\.openSettings) private var openAccountSettings
+    @AppStorage("conch.settings.section") private var settingsSection = "providers"
     @State private var backend = ConchAgentBackend.claude
     @State private var mode = StartMode.new
     @State private var cwd = FileManager.default.homeDirectoryForCurrentUser.path
@@ -595,6 +599,23 @@ private struct StartSessionSheet: View {
                 )
             }
 
+            if effectiveBackend == .claude {
+                if mode == .resume {
+                    if let label = resumeSelection?.accountLabel {
+                        Label(label, systemImage: "person.crop.circle")
+                            .font(ConchTypography.font(size: 12))
+                    }
+                } else {
+                    HStack {
+                        Picker("Account", selection: $claudeAccountId) {
+                            if accounts.accounts.isEmpty { Text("Default").tag("default") }
+                            ForEach(accounts.accounts) { account in Text([account.label, account.email].compactMap { $0 }.joined(separator: " · ")).tag(account.id) }
+                        }
+                        Button("Manage…") { settingsSection = "providers"; dismiss(); openAccountSettings() }
+                    }
+                }
+            }
+
             // The agent's own start-time choices, from its --help, for the
             // agent this launch will actually run. Help is a fixed recipe.
             if mode != .help {
@@ -632,6 +653,10 @@ private struct StartSessionSheet: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(!canStart)
             }
+        }
+        .task { await accounts.send("list") }
+        .onChange(of: accounts.accounts.map(\.id)) { _, ids in
+            if !ids.contains(claudeAccountId) { claudeAccountId = "default" }
         }
         .padding(24)
         .frame(width: 430)
@@ -825,6 +850,8 @@ private struct StartSessionSheet: View {
                 backend: effectiveBackend,
                 resumeSessionId: mode == .resume ? resumeSelection?.sessionId : nil,
                 teleportSessionId: mode == .teleport ? teleportSessionId : nil,
+                claudeAccountId: effectiveBackend == .claude
+                    ? (mode == .resume ? resumeSelection?.claudeAccountId : (accounts.accounts.isEmpty ? nil : claudeAccountId)) : nil,
                 cwd: effectiveCwd,
                 trustFolder: trustedFolders.contains(effectiveCwd),
                 options: sentOptions
@@ -893,13 +920,17 @@ private struct StartSessionSheet: View {
         let expected = mode == .resume ? resumeSelection?.sessionId : nil
         // Sessions only: a session's agents are rows too, and one appearing elsewhere is
         // not the session you just started.
-        let sessions = { (rows: [SessionRow]) in rows.filter { $0.parentSessionId == nil } }
+        let expectedAccount = effectiveBackend == .claude
+            ? (mode == .resume ? resumeSelection?.claudeAccountId : claudeAccountId) : nil
+        let sessions = { (rows: [SessionRow]) in rows.filter {
+            $0.parentSessionId == nil && (expectedAccount == nil || $0.claudeAccountId == expectedAccount)
+        } }
         let before = Set(sessions(store.state?.rows ?? []).map(\.id))
         for _ in 0..<rounds {
             try? await Task.sleep(nanoseconds: 800_000_000)
             guard let rows = store.state?.rows else { continue }
             if let expected {
-                if rows.contains(where: { $0.id == expected }) { return expected }
+                if sessions(rows).contains(where: { $0.id == expected }) { return expected }
             } else if let fresh = sessions(rows).first(where: { !before.contains($0.id) }) {
                 return fresh.id
             }
