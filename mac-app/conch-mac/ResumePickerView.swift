@@ -3,13 +3,15 @@ import SwiftUI
 /// One past session you could pick up again.
 struct ResumableSession: Decodable, Identifiable, Hashable, Sendable {
     let sessionId: String
+    let claudeAccountId: String?
+    let accountLabel: String?
     let backend: String
     let label: String
     let cwd: String
     /// Epoch milliseconds. Used for "3h" and for ordering.
     let updatedAt: Double
 
-    var id: String { sessionId }
+    var id: String { "\(claudeAccountId ?? "default"):\(sessionId)" }
 
     /// "3h", "2d" — the same shorthand the session list already uses, because
     /// this is the same question asked of older rows.
@@ -126,7 +128,7 @@ struct ResumePickerView: View {
     private func move(_ delta: Int) {
         guard !sessions.isEmpty else { return }
         guard let current = selection,
-              let index = sessions.firstIndex(where: { $0.sessionId == current.sessionId })
+              let index = sessions.firstIndex(where: { $0.id == current.id })
         else {
             selection = sessions.first
             return
@@ -154,7 +156,7 @@ struct ResumePickerView: View {
                     ForEach(sessions) { session in
                         ResumeRow(
                             session: session,
-                            isSelected: selection?.sessionId == session.sessionId
+                            isSelected: selection?.id == session.id
                         )
                         .contentShape(Rectangle())
                         .onTapGesture(count: 2) {
@@ -209,6 +211,9 @@ private struct ResumeRow: View {
 
             Spacer(minLength: 8)
 
+            if let account = session.accountLabel {
+                Text(account).font(.system(size: 10.5)).foregroundStyle(ConchPalette.textDim).lineLimit(1)
+            }
             Text(session.age)
                 .font(ConchTypography.font(size: 10.5))
                 .foregroundStyle(ConchPalette.textFaint)

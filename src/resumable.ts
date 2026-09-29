@@ -13,6 +13,8 @@ import {
 } from "./codex-threads.ts";
 
 export interface ResumableSession {
+  claudeAccountId?: string;
+  accountLabel?: string;
   sessionId: string;
   backend: "claude" | "codex";
   label: string;

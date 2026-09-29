@@ -25,7 +25,7 @@ test("resume watches for its exact session, not just any new row", () => {
   // unrelated session appearing at the same moment.
   const wait = content.slice(content.indexOf("private func waitForSession("));
   expect(wait).toContain("mode == .resume ? resumeSelection?.sessionId : nil");
-  expect(wait).toContain("rows.contains(where: { $0.id == expected })");
+  expect(wait).toContain("sessions(rows).contains(where: { $0.id == expected })");
   // And a fresh session, which has no id yet, is a SESSION id not there before: a count
   // grew whenever another session's agent appeared (agents are rows since #390).
   expect(wait).toContain("sessions(rows).first(where: { !before.contains($0.id) })");

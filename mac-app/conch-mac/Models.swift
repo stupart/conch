@@ -1028,6 +1028,8 @@ struct AgentMark: Decodable, Equatable, Sendable {
 }
 
 struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
+    let accountLabel: String?
+    let claudeAccountId: String?
     let id: String
     let label: String
     /// This is presentation metadata, not an implementation choice: it answers
@@ -1098,6 +1100,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id
         case label
+        case accountLabel
+        case claudeAccountId
         case backend
         case context
         case settings
@@ -1131,6 +1135,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         id: String,
         label: String,
         backend: String? = nil,
+        accountLabel: String? = nil,
+        claudeAccountId: String? = nil,
         context: SessionContext? = nil,
         settings: SessionSettingsState? = nil,
         status: RowStatus?,
@@ -1161,6 +1167,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         self.id = id
         self.label = label
         self.backend = backend
+        self.accountLabel = accountLabel
+        self.claudeAccountId = claudeAccountId
         self.context = context
         self.settings = settings
         self.status = status
@@ -1195,6 +1203,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         id = try container.decode(String.self, forKey: .id)
         label = (try? container.decodeIfPresent(String.self, forKey: .label)) ?? id
         backend = try? container.decodeIfPresent(String.self, forKey: .backend)
+        accountLabel = try? container.decodeIfPresent(String.self, forKey: .accountLabel)
+        claudeAccountId = try? container.decodeIfPresent(String.self, forKey: .claudeAccountId)
         context = try? container.decodeIfPresent(SessionContext.self, forKey: .context)
         settings = try? container.decodeIfPresent(SessionSettingsState.self, forKey: .settings)
         status = try? container.decodeIfPresent(RowStatus.self, forKey: .status)
@@ -1236,6 +1246,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             id: id,
             label: label,
             backend: backend,
+            accountLabel: accountLabel,
+            claudeAccountId: claudeAccountId,
             context: context,
             settings: settings,
             status: status,

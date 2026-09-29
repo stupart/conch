@@ -70,6 +70,8 @@ export interface PanelRowModel {
   label: string;
   /** Which agent runs this session; absent means Claude. */
   backend?: "claude" | "codex";
+  accountLabel?: string;
+  claudeAccountId?: string;
   /** A subagent row: nested under this session, never the active one (C4). */
   parentSessionId?: string;
   /** A full session another session's process started (C15): nested under its starter, otherwise ordinary. */
@@ -260,6 +262,8 @@ export interface PublishedSessionRow {
    */
   /** `conch` is conch's own practice session (`practice.ts`), which has no agent and no terminal. */
   backend?: "claude" | "codex" | "conch";
+  accountLabel?: string;
+  claudeAccountId?: string;
   /**
    * Present on a subagent row: the session it runs inside. A viewer indents
    * it under that row and never treats it as a session of its own — it has
@@ -664,6 +668,8 @@ export function buildPublishedState(
         id: row.sessionId,
         label: row.label,
         ...(row.backend ? { backend: row.backend } : {}),
+        ...(row.accountLabel ? { accountLabel: row.accountLabel } : {}),
+        ...(row.claudeAccountId ? { claudeAccountId: row.claudeAccountId } : {}),
         ...(row.parentSessionId ? { parentSessionId: row.parentSessionId } : {}),
         ...(row.startedBySessionId ? { startedBySessionId: row.startedBySessionId } : {}),
         status: row.status,
@@ -822,6 +828,8 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
         sessionId: session.sessionId,
         label: sessionLabel(session, session.cwd),
         ...(session.backend ? { backend: session.backend } : {}),
+        ...(session.accountLabel ? { accountLabel: session.accountLabel } : {}),
+        ...(session.claudeAccountId ? { claudeAccountId: session.claudeAccountId } : {}),
         ...(session.parentSessionId ? { parentSessionId: session.parentSessionId } : {}),
         ...(session.startedBySessionId ? { startedBySessionId: session.startedBySessionId } : {}),
         ...(waitingOnAgents ? { waitingOnAgents: true as const } : {}),

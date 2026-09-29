@@ -43,7 +43,7 @@ test("the daemon re-addresses a parked window's stale id before trusting a known
   const end = daemon.indexOf("\n  }\n", at);
   expect(end).toBeGreaterThan(at);
   const body = daemon.slice(at, end);
-  const parked = body.indexOf("await addressParkedWindow(cfg.claudeDir, incoming, (id) => panelSessions.has(id));");
+  const parked = body.indexOf("await addressParkedWindow(account.configDir, incoming, (id) => panelSessions.has(id));");
   expect(parked).toBeGreaterThan(-1);
   expect(body.indexOf("isKnownSessionId(id)")).toBeGreaterThan(parked);
 });

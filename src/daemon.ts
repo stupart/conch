@@ -160,6 +160,7 @@ import {
   refreshSessionForClose,
   restartRequest,
   acceptClaudeTrust,
+  startClaudeAccountLogin,
   startTerminalSession,
   terminalSessionCommand,
   type StartSessionRequest,
@@ -229,12 +230,13 @@ import {
   theaterPointerEvent,
   type ConchState,
 } from "./status.ts";
+import { assertClaudeAccountIdle, accountRegistrySnapshot, accountResumableSessions, findAccountTranscript as findTranscript } from "./claude-account-sessions.ts";
+import { claudeAccountForLaunch, readClaudeAccounts, addClaudeAccount, removeClaudeAccount, requireClaudeAccount, readClaudeAccountStatus, type ClaudeAccountStatus } from "./claude-accounts.ts";
+import { runInstall as installAccountHooks } from "./install.ts";
 import {
   addressParkedWindow,
-  registrySnapshot as readRegistrySnapshot,
   sessionGoneFromSnapshot,
   sessionLabel,
-  findTranscript,
   renameSessionLabel,
   subagentSessions,
   type RegistrySnapshot,
@@ -601,6 +603,8 @@ export function shouldReportMissingCodexPid(
  * its trust prompt there: Claude takes no such answer at launch (Codex does, as a flag).
  */
 async function launchSession(request: StartSessionRequest): Promise<void> {
+  const account = claudeAccountForLaunch(request);
+  if (account) await installAccountHooks({ claudeDir: account.configDir });
   const { tty } = await startTerminalSession(request);
   if (request.trustFolder === true && adapterFor(request.backend).trustTypedAtLaunch && tty) {
     void acceptClaudeTrust(tty).then((outcome) => log(`trust prompt in ${tty}: ${outcome}`), () => {});
@@ -873,8 +877,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   // ponytail: no invalidation beyond daemon restart; add a TTL if a stale npm
   // version reading turns out to matter in practice.
   const installVersionCache = new Map<string, string | null>();
-  const registrySnapshot = async (claudeDir: string): Promise<Awaited<ReturnType<typeof readRegistrySnapshot>>> => {
-    const snapshot = await readRegistrySnapshot(claudeDir);
+  const registrySnapshot = async (claudeDir: string): Promise<Awaited<ReturnType<typeof accountRegistrySnapshot>>> => {
+    const snapshot = await accountRegistrySnapshot(claudeDir);
     return snapshot ? { ...snapshot, infos: snapshot.infos.map((session) =>
       bindSessionProcess(session, panelSessions.get(session.sessionId), readProcessIdentity)) } : null;
   };
@@ -937,7 +941,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         if (event.sessionId === selected) selectedRef = hint;
       }
     }
-    records.prioritize({ selected: selectedRef, live });
+    records.prioritize({ selected: selectedRef, live, claudeHomes: readClaudeAccounts(cfg.claudeDir).map((account) => account.configDir) });
   }
   function labelForSessionId(id: string): string {
     const session = panelSessions.get(id);
@@ -965,7 +969,11 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
    * stale id from before the conversation moved.
    */
   async function addressWindow(incoming: unknown): Promise<unknown> {
-    const value = await addressParkedWindow(cfg.claudeDir, incoming, (id) => panelSessions.has(id));
+    let value = incoming;
+    for (const account of readClaudeAccounts(cfg.claudeDir)) {
+      value = await addressParkedWindow(account.configDir, incoming, (id) => panelSessions.has(id));
+      if (value !== incoming) break;
+    }
     if (typeof value !== "object" || value === null) return value;
     const id = (value as { sessionId?: unknown }).sessionId;
     if (typeof id !== "string" || !id || isKnownSessionId(id)) return value;
@@ -1408,6 +1416,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   // already reads a 512 KB window and not the file. A cursor would save single
   // digit milliseconds. Add one if a render ever has to run faster than 250ms.
   const transcriptRender = createPublishThrottle(() => void renderSessionPanel(), { intervalMs: 250 });
+  const accountSourcesWatch = watchChangingPaths(() => void renderSessionPanel());
   const transcriptWatch = watchChangingPaths(() => {
     breadcrumb("watch: a live transcript changed");
     transcriptRender.request();
@@ -2093,6 +2102,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       // This snapshot passed the reconciler's current() check; indexing never uses the eight-row preview cap.
       prioritizeRecords([...panelSessions.values(), ...nested], navSelectedId ?? nextActiveSessionId);
       // Re-arms only when the set of live transcripts changes; see session-watch.ts.
+      accountSourcesWatch.update(readClaudeAccounts(cfg.claudeDir).flatMap((account) => [account.configDir, join(account.configDir, "sessions")]));
       transcriptWatch.update(visible.flatMap((session) => {
         const path = session.transcriptPath ?? findTranscript(cfg.claudeDir, session.sessionId);
         return path ? [path] : [];
@@ -2473,7 +2483,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     attach: (target) => {
       const session = panelSessions.get(target.sessionId);
       if (!session?.jobId) return Promise.resolve(false);
-      return attachTerminalSession(session.jobId, session.cwd).then(() => {
+      return attachTerminalSession(session.jobId, session.cwd, {}, session.claudeAccountId).then(() => {
         log(`opened "${target.label}" in Terminal (claude attach ${session.jobId})`);
         return true;
       }, (error) => {
@@ -2602,7 +2612,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       session: historySessionFor(ownerDeviceId, message.session, { sessions: panelSessions, agents: panelAgents }) }),
     historyItem: (message) => records.historyItem({ ...message,
       session: historySessionFor(ownerDeviceId, message.session, { sessions: panelSessions, agents: panelAgents }) }),
-    listResumable: (message) => readResumableSessionsResult({
+    listResumable: (message) => accountResumableSessions({
       ...(message.query === undefined ? {} : { query: message.query }),
       ...(message.limit === undefined ? {} : { limit: message.limit }),
       ...(process.env.CONCH_CONFIG_DIR === undefined
@@ -2611,7 +2621,28 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       ...(process.env.CLAUDE_CONFIG_DIR === undefined
         ? {}
         : { claudeHome: cfg.claudeDir }),
-    }),
+    }, readClaudeAccounts(cfg.claudeDir)),
+    claudeAccounts: async (message) => {
+      if (message.action === "add") addClaudeAccount(message.label!, message.configDir);
+      if (message.action === "remove") {
+        await assertClaudeAccountIdle(requireClaudeAccount(message.id!, cfg.claudeDir));
+        removeClaudeAccount(message.id!);
+      }
+      if (message.action === "login") {
+        const account = requireClaudeAccount(message.id!, cfg.claudeDir);
+        await assertClaudeAccountIdle(account);
+        await installAccountHooks({ claudeDir: account.configDir });
+        await startClaudeAccountLogin(account);
+      }
+      const accounts: ClaudeAccountStatus[] = readClaudeAccounts(cfg.claudeDir).map((account) => ({ ...account, status: "unchecked" }));
+      if (message.action === "refresh") {
+        const account = requireClaudeAccount(message.id!, cfg.claudeDir);
+        const status = await readClaudeAccountStatus(account);
+        accounts.splice(accounts.findIndex((item) => item.id === account.id), 1, status);
+      }
+      void renderSessionPanel();
+      return { kind: "claude-accounts", accounts, ...(message.action === "login" ? { loginOpened: true as const } : {}) };
+    },
     readCapabilities: (message) => {
       const observations: AgentCapabilityObservation[] = [];
       const conversation = message.sessionId
@@ -2658,9 +2689,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         ...(process.env.CONCH_CONFIG_DIR === undefined
           ? {}
           : { configDir: process.env.CONCH_CONFIG_DIR }),
-        ...(process.env.CLAUDE_CONFIG_DIR === undefined
-          ? {}
-          : { claudeHome: cfg.claudeDir }),
+        claudeHome: panelSessions.get(message.sessionId ?? "")?.claudeConfigDir ?? cfg.claudeDir,
       });
     },
     // This session's own binary + whether a newer copy of the same agent is
@@ -2701,7 +2730,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       bypassPermissions: cfg.bypassPermissions,
       ...(message.trustFolder === true ? { trustFolder: true as const } : {}),
     }),
-    folderTrusted: (backend, cwd) => adapterFor(backend).folderTrusted(cwd),
+    folderTrusted: (backend, cwd, accountId) => accountId && accountId !== "default" ? null : adapterFor(backend).folderTrusted(cwd),
     close: closeLiveSession,
     report: (message) => {
       appendConchError(
@@ -3020,6 +3049,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     setup.close();
     panelRefresh.close();
     transcriptWatch.stop();
+    accountSourcesWatch.stop();
     onLiveDataChange(null);
     publishedStateWriter.flush();
     screen.close(); // the log's open state ends now, not with the process

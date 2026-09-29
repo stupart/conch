@@ -2,6 +2,7 @@ import { FOCUS_GUARD_LINES, focusedAction, focusSessionWindow, readTerminalTab, 
 import { runUICommand } from "./pasteboard.ts";
 import { processMatchesProvider, readProcessIdentity, sameProcessIdentity, type ProcessIdentity, type ProcessIdentityProbe } from "./process-identity.ts";
 import { conchHome } from "./home.ts";
+import { CLAUDE_ACCOUNT_ENV_REMOVE, claudeAccountForLaunch, requireClaudeAccount, type ClaudeAccount } from "./claude-accounts.ts";
 import { statSync } from "node:fs";
 import {
   adapterFor,
@@ -18,6 +19,8 @@ export type { SessionBackend };
 
 export interface StartSessionRequest {
   backend: SessionBackend;
+  /** A registered local Claude profile, never an arbitrary environment override. */
+  claudeAccountId?: string;
   resumeSessionId?: string;
   /** Claude cloud session to open as a new local copy, never a live join. */
   teleportSessionId?: string;
@@ -180,7 +183,7 @@ export function startUsage(adapter: AgentAdapter): string {
       : `--${entry.name} <value>`;
     return `  ${spelling}${entry.resumeOnly ? "  (with --resume)" : ""}\n      ${entry.help}`;
   });
-  return `usage: conch start [claude|codex] [--cwd <dir>] [--resume <id> | --teleport <id>] [options]\n`
+  return `usage: conch start [claude|codex] [--cwd <dir>] [--account <id>] [--resume <id> | --teleport <id>] [options]\n`
     + `${adapter.displayName} options:\n${lines.join("\n")}`;
 }
 
@@ -194,7 +197,7 @@ export function startRequestFromArgv(args: string[]): StartSessionRequest {
   const options: Record<string, string | boolean> = {};
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i] ?? "";
-    const fixed = arg === "--cwd" ? "cwd" : arg === "--resume" ? "resumeSessionId" : arg === "--teleport" ? "teleportSessionId" : null;
+    const fixed = arg === "--account" ? "claudeAccountId" : arg === "--cwd" ? "cwd" : arg === "--resume" ? "resumeSessionId" : arg === "--teleport" ? "teleportSessionId" : null;
     if (fixed) {
       const value = rest[++i];
       if (value === undefined) throw new Error(`${arg} needs a value\n${startUsage(adapter)}`);
@@ -226,6 +229,8 @@ export function terminalSessionCommand(request: StartSessionRequest): string {
   if (error) throw new Error(error);
   const cwd = request.cwd?.trim() || conchHome();
   const adapter = adapterFor(request.backend);
+  const account = claudeAccountForLaunch(request);
+  const environment = account ? claudeProfileCommandPrefix(account) : "";
   const resume = request.resumeSessionId?.trim();
   const teleport = request.teleportSessionId?.trim();
   const args = teleport && adapter.teleportArgs
@@ -240,7 +245,7 @@ export function terminalSessionCommand(request: StartSessionRequest): string {
     ? ` ${adapter.bypassPermissionsFlag}`
     : "";
   const trust = request.trustFolder ? adapter.trustFolderArgs(cwd) : "";
-  return `cd -- ${shellQuote(cwd)} && exec ${adapter.executable}${bypass}${trust}${args}`
+  return `cd -- ${shellQuote(cwd)} && exec ${environment}${adapter.executable}${bypass}${trust}${args}`
     + renderStartOptions(adapter, request.options);
 }
 
@@ -267,7 +272,7 @@ const CONVERSATION_SELECTORS: Record<SessionBackend, Record<string, "value" | "o
  * for values with spaces; no start-table value can contain one.
  */
 export function restartRequest(
-  session: Pick<SessionInfo, "sessionId" | "agentSessionId" | "backend" | "cwd">,
+  session: Pick<SessionInfo, "sessionId" | "agentSessionId" | "backend" | "cwd" | "claudeAccountId">,
   args: readonly string[],
 ): { request: StartSessionRequest; notCarriedOver: string[] } {
   const backend = session.backend ?? "claude";
@@ -318,7 +323,8 @@ export function restartRequest(
     }
   }
   return {
-    request: { backend, resumeSessionId, ...(session.cwd ? { cwd: session.cwd } : {}), options },
+    request: { backend, resumeSessionId, ...(session.cwd ? { cwd: session.cwd } : {}),
+      ...(session.claudeAccountId ? { claudeAccountId: session.claudeAccountId } : {}), options },
     notCarriedOver,
   };
 }
@@ -348,8 +354,10 @@ function checkedJobId(jobId: string): string {
  * running either way." No `exec`, unlike a start: exec would leave no shell
  * for Ctrl+Z to drop back to.
  */
-export function attachTerminalCommand(jobId: string, cwd?: string): string {
-  return `cd -- ${shellQuote(cwd?.trim() || conchHome())} && ${adapterFor("claude").executable} attach ${shellQuote(checkedJobId(jobId))}`;
+export function attachTerminalCommand(jobId: string, cwd?: string, accountId?: string): string {
+  const account = accountId ? requireClaudeAccount(accountId) : undefined;
+  const environment = account ? claudeProfileCommandPrefix(account) : "";
+  return `cd -- ${shellQuote(cwd?.trim() || conchHome())} && ${environment}${adapterFor("claude").executable} attach ${shellQuote(checkedJobId(jobId))}`;
 }
 
 function defaultSpawn(argv: string[]): SessionLifecycleProcess {
@@ -426,6 +434,24 @@ export async function startTerminalSession(
   return tty ? { tty } : {};
 }
 
+export function claudeAccountCommandPrefix(configDir: string, isolate = true): string {
+  return `env ${isolate ? CLAUDE_ACCOUNT_ENV_REMOVE.map((key) => `-u ${key}`).join(" ") + " " : ""}CLAUDE_CONFIG_DIR=${shellQuote(configDir)} `;
+}
+
+function claudeProfileCommandPrefix(account: ClaudeAccount): string {
+  // An unset default must stay unset: explicitly setting ~/.claude can select
+  // a different macOS Keychain entry. Additional profiles always name a root.
+  if (account.id === "default" && process.env.CLAUDE_CONFIG_DIR === undefined) return "env -u CLAUDE_CONFIG_DIR ";
+  return claudeAccountCommandPrefix(account.configDir, account.id !== "default");
+}
+
+/** Authentication stays in Anthropic's own CLI and browser flow. */
+export async function startClaudeAccountLogin(account: ClaudeAccount, dependencies: SessionLifecycleDependencies = {}): Promise<void> {
+  await withUITransaction(() => runInTerminal(
+    `exec ${claudeProfileCommandPrefix(account)}claude auth login`, "claude", undefined, dependencies,
+  ));
+}
+
 /** Claude Code's trust screen, as 2.1.280 shows it: "❯ No, exit" first and highlighted. */
 const CLAUDE_TRUST_YES = "Yes, I trust this folder";
 
@@ -498,8 +524,9 @@ export async function attachTerminalSession(
   jobId: string,
   cwd: string | undefined,
   dependencies: SessionLifecycleDependencies = {},
+  accountId?: string,
 ): Promise<void> {
-  const command = attachTerminalCommand(jobId, cwd);
+  const command = attachTerminalCommand(jobId, cwd, accountId);
   await withUITransaction(() => runInTerminal(command, adapterFor("claude").executable, cwd, dependencies));
 }
 
@@ -716,13 +743,17 @@ export async function stopBackgroundSession(
   jobId: string,
   agentPid: number | undefined,
   dependencies: SessionLifecycleDependencies = {},
+  accountId?: string,
 ): Promise<void> {
   const id = checkedJobId(jobId);
   const { executable } = adapterFor("claude");
   const which = dependencies.which ?? ((name: string) => Bun.which(name));
   const resolved = which(executable);
   if (!resolved) throw new Error(`${executable} is not installed or is not on PATH`);
-  const child = (dependencies.spawn ?? defaultSpawn)([resolved, "stop", id]);
+  const account = accountId ? requireClaudeAccount(accountId) : undefined;
+  const prefix = account ? ["/usr/bin/env", ...(account.id === "default" ? [] : CLAUDE_ACCOUNT_ENV_REMOVE.flatMap((key) => ["-u", key])),
+    ...(account.id === "default" && process.env.CLAUDE_CONFIG_DIR === undefined ? ["-u", "CLAUDE_CONFIG_DIR"] : [`CLAUDE_CONFIG_DIR=${account.configDir}`])] : [];
+  const child = (dependencies.spawn ?? defaultSpawn)([...prefix, resolved, "stop", id]);
   const [code, stderr] = await Promise.all([
     boundedExit(child, dependencies.automationTimeoutMs, `${executable} stop`),
     processText(child.stderr),
@@ -739,10 +770,10 @@ export async function stopBackgroundSession(
  * else leaves its terminal through Ctrl-D.
  */
 export async function closeSession(
-  session: Pick<SessionInfo, "pid" | "jobId" | "agentPid" | "noTerminal" | "processIdentity" | "backend">,
+  session: Pick<SessionInfo, "pid" | "jobId" | "agentPid" | "noTerminal" | "processIdentity" | "backend" | "claudeAccountId">,
   dependencies: SessionLifecycleDependencies = {},
 ): Promise<void> {
-  if (session.jobId) return stopBackgroundSession(session.jobId, session.agentPid, dependencies);
+  if (session.jobId) return stopBackgroundSession(session.jobId, session.agentPid, dependencies, session.claudeAccountId);
   if (!session.pid) throw new Error(session.noTerminal ?? "session has no routable pid");
   return closeTerminalSession(session.pid, { ...dependencies, expectedIdentity: session.processIdentity, backend: session.backend });
 }

@@ -7,6 +7,7 @@ import type { RecordStore } from "./records-store.ts";
 export interface RecordsIndexerOptions {
   ownerDeviceId: string;
   claudeHome?: string;
+  claudeHomes?: string[];
   codexHome?: string;
   batchBytes?: number;
   batchLines?: number;
@@ -16,6 +17,8 @@ export interface RecordsIndexerOptions {
 }
 interface SessionReference { provider: RecordProvider; nativeId: string }
 export interface RecordsPriorityHints {
+  /** Registered account roots, supplied only by the daemon. */
+  claudeHomes?: string[];
   selected?: SessionReference;
   live: (SessionReference & { path?: string; cwd?: string; parentNativeId?: string })[];
 }
@@ -95,6 +98,11 @@ export class RecordsIndexer {
     this.buffered = undefined;
   }
   prioritize(hints: RecordsPriorityHints): void {
+    if (hints.claudeHomes && JSON.stringify(hints.claudeHomes) !== JSON.stringify(this.options.claudeHomes)) {
+      this.options = { ...this.options, claudeHomes: [...hints.claudeHomes] };
+      this.discovery.close();
+      this.discovery = new RecordsDiscovery(recordsRoots(this.options));
+    }
     this.hints = { ...hints, live: hints.live.slice(0, 256) };
     this.live = new Set(this.hints.live.map(referenceKey));
     const selected = hints.selected && referenceKey(hints.selected);

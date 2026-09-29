@@ -218,6 +218,7 @@ enum ConchStartOptionValue: Encodable, Sendable, Equatable {
 
 struct ConchSessionStartRequest: Encodable, Sendable {
     let kind = "session-start"
+    let claudeAccountId: String?
     let backend: ConchAgentBackend
     let resumeSessionId: String?
     let teleportSessionId: String?
@@ -233,6 +234,7 @@ struct ConchSessionStartRequest: Encodable, Sendable {
         backend: ConchAgentBackend,
         resumeSessionId: String?,
         teleportSessionId: String? = nil,
+        claudeAccountId: String? = nil,
         cwd: String?,
         trustFolder: Bool? = nil,
         options: [String: ConchStartOptionValue]? = nil
@@ -240,6 +242,7 @@ struct ConchSessionStartRequest: Encodable, Sendable {
         self.backend = backend
         self.resumeSessionId = resumeSessionId
         self.teleportSessionId = teleportSessionId
+        self.claudeAccountId = claudeAccountId
         self.cwd = cwd
         self.trustFolder = trustFolder
         self.options = options

@@ -129,6 +129,8 @@ struct ConchMacApp: App {
                 // job. Two tabs, named for what each one is.
                 ConchPairingView()
                     .tabItem { Label("Phone app", systemImage: "iphone") }
+                ClaudeAccountsView()
+                    .tabItem { Label("Accounts", systemImage: "person.crop.circle") }
                 ConchSettingsView()
                     .tabItem { Label("Settings", systemImage: "slider.horizontal.3") }
                 // conch's four macOS permissions, read without asking (`PermissionCenter`). Not among the daemon's
