@@ -8,6 +8,7 @@ export interface RecordsIndexerOptions {
   ownerDeviceId: string;
   claudeHome?: string;
   claudeHomes?: string[];
+  codexHomes?: string[];
   codexHome?: string;
   batchBytes?: number;
   batchLines?: number;
@@ -17,6 +18,7 @@ export interface RecordsIndexerOptions {
 }
 interface SessionReference { provider: RecordProvider; nativeId: string }
 export interface RecordsPriorityHints {
+  codexHomes?: string[];
   /** Registered account roots, supplied only by the daemon. */
   claudeHomes?: string[];
   selected?: SessionReference;
@@ -98,8 +100,9 @@ export class RecordsIndexer {
     this.buffered = undefined;
   }
   prioritize(hints: RecordsPriorityHints): void {
-    if (hints.claudeHomes && JSON.stringify(hints.claudeHomes) !== JSON.stringify(this.options.claudeHomes)) {
-      this.options = { ...this.options, claudeHomes: [...hints.claudeHomes] };
+    if ((hints.claudeHomes && JSON.stringify(hints.claudeHomes) !== JSON.stringify(this.options.claudeHomes))
+      || (hints.codexHomes && JSON.stringify(hints.codexHomes) !== JSON.stringify(this.options.codexHomes))) {
+      this.options = { ...this.options, ...(hints.claudeHomes ? { claudeHomes: [...hints.claudeHomes] } : {}), ...(hints.codexHomes ? { codexHomes: [...hints.codexHomes] } : {}) };
       this.discovery.close();
       this.discovery = new RecordsDiscovery(recordsRoots(this.options));
     }

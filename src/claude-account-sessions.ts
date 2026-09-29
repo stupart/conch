@@ -1,14 +1,15 @@
-import { windowKey } from "./window-key.ts";
+import { windowKey, processParentTable } from "./window-key.ts";
 import { readClaudeAccounts, type ClaudeAccount } from "./claude-accounts.ts";
-import { findTranscript, registrySnapshot, type RegistrySnapshot } from "./sessions.ts";
+import { findTranscript, registrySnapshot, codexRegistrySnapshot, withStartedBy, type RegistrySnapshot } from "./sessions.ts";
 import { readResumableSessionsResult, type ReadResumableSessionsOptions, type ResumableSessionsRead } from "./resumable.ts";
 
-/** Profiles are separate roots; Codex is read once, with the default profile. */
-export async function accountRegistrySnapshot(defaultDir: string, accounts = readClaudeAccounts(defaultDir)): Promise<RegistrySnapshot | null> {
+/** Read each provider root once, retaining the account that owns its sessions.
+ * The optional Codex list preserves the legacy default-only reader for callers. */
+export async function accountRegistrySnapshot(defaultDir: string, accounts = readClaudeAccounts(defaultDir), codexAccounts?: ClaudeAccount[]): Promise<RegistrySnapshot | null> {
   const combined: RegistrySnapshot = { infos: [], liveIds: new Set(), complete: true };
   let available = false;
   for (const account of accounts) {
-    const snapshot = await registrySnapshot(account.configDir, { skipCodex: account.id !== "default" });
+    const snapshot = await registrySnapshot(account.configDir, { skipCodex: codexAccounts !== undefined || account.id !== "default", processParents: async () => null });
     if (!snapshot) { combined.complete = false; continue; }
     available = true;
     combined.complete &&= snapshot.complete;
@@ -18,6 +19,13 @@ export async function accountRegistrySnapshot(defaultDir: string, accounts = rea
       accountLabel: account.label,
       transcriptPath: session.transcriptPath ?? findTranscript(account.configDir, session.agentSessionId ?? session.sessionId),
     }));
+  }
+  for (const account of codexAccounts ?? []) {
+    const snapshot = await codexRegistrySnapshot(account.configDir, { processParents: async () => null });
+    available = true;
+    combined.complete &&= snapshot.complete;
+    for (const id of snapshot.liveIds) combined.liveIds.add(id);
+    combined.infos.push(...snapshot.infos.map(session => ({ ...session, codexAccountId: account.id, accountLabel: account.label })));
   }
   // Imported/copied histories may reuse a conversation UUID in two profiles.
   // Preserve each live window's identity instead of letting one overwrite the other.
@@ -30,6 +38,10 @@ export async function accountRegistrySnapshot(defaultDir: string, accounts = rea
     combined.liveIds.add(sessionId);
     return { ...info, sessionId, agentSessionId: info.agentSessionId ?? info.sessionId };
   }).filter((info): info is NonNullable<typeof info> => info !== undefined);
+  if (combined.infos.filter(info => info.pid).length >= 2) {
+    const parents = await processParentTable();
+    if (parents) combined.infos = withStartedBy(combined.infos, parents);
+  }
   return available ? combined : null;
 }
 
@@ -42,15 +54,20 @@ export function findAccountTranscript(defaultDir: string, id: string): string | 
   return paths.size === 1 ? [...paths][0] : undefined;
 }
 
-export function accountResumableSessions(options: ReadResumableSessionsOptions, accounts: ClaudeAccount[]): ResumableSessionsRead {
+export function accountResumableSessions(options: ReadResumableSessionsOptions, accounts: ClaudeAccount[], codexAccounts?: ClaudeAccount[]): ResumableSessionsRead {
   const result: ResumableSessionsRead = { sessions: [], complete: true };
   for (const account of accounts) {
     const read = readResumableSessionsResult({ ...options, claudeHome: account.configDir,
-      ...(account.id === "default" ? {} : { codexHome: "" }) });
+      ...(codexAccounts === undefined && account.id === "default" ? {} : { codexHome: "" }) });
     result.complete &&= read.complete;
     result.sessions.push(...read.sessions.map((session) => session.backend === "codex" ? session : {
       ...session, claudeAccountId: account.id, accountLabel: account.label,
     }));
+  }
+  for (const account of codexAccounts ?? []) {
+    const read = readResumableSessionsResult({ ...options, claudeHome: "", codexHome: account.configDir });
+    result.complete &&= read.complete;
+    result.sessions.push(...read.sessions.map(session => ({ ...session, codexAccountId: account.id, accountLabel: account.label })));
   }
   result.sessions.sort((a, b) => b.updatedAt - a.updatedAt);
   const limit = options.limit ?? 200;
@@ -63,5 +80,11 @@ export function accountResumableSessions(options: ReadResumableSessionsOptions, 
 export async function assertClaudeAccountIdle(account: ClaudeAccount): Promise<void> {
   const snapshot = await registrySnapshot(account.configDir, { skipCodex: true });
   if (!snapshot?.complete) throw new Error("Could not check this account’s live sessions. Try again before changing it.");
+  if (snapshot.liveIds.size) throw new Error("Close this account’s live sessions before signing in again or removing it from Conch.");
+}
+
+export async function assertCodexAccountIdle(account: ClaudeAccount): Promise<void> {
+  const snapshot = await codexRegistrySnapshot(account.configDir);
+  if (!snapshot.complete) throw new Error("Could not check this account’s live sessions. Try again before changing it.");
   if (snapshot.liveIds.size) throw new Error("Close this account’s live sessions before signing in again or removing it from Conch.");
 }

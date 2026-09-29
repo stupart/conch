@@ -1,4 +1,4 @@
-import { dirname, join } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import {
   closeSync,
   mkdirSync,
@@ -9,6 +9,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { conchHome } from "./home.ts";
 import { DEFAULT_CONCH_CONFIG_DIR } from "./settings.ts";
 
 export type CodexSessionStatus = "busy" | "idle";
@@ -21,6 +22,7 @@ export interface CodexSessionEntry {
   status: CodexSessionStatus;
   updatedAt: number;
   transcriptPath: string;
+  codexHome?: string;
 }
 
 export interface CodexSessionUpdate extends Omit<CodexSessionEntry, "transcriptPath"> {
@@ -78,7 +80,8 @@ function validEntry(value: unknown): value is CodexSessionEntry {
     && (entry.status === "busy" || entry.status === "idle")
     && typeof entry.updatedAt === "number"
     && Number.isFinite(entry.updatedAt)
-    && typeof entry.transcriptPath === "string";
+    && typeof entry.transcriptPath === "string"
+    && (entry.codexHome === undefined || typeof entry.codexHome === "string");
 }
 
 function readExisting(path: string): CodexSessionEntry | null {
@@ -176,6 +179,13 @@ export function readCodexSessions(
         complete = false;
       }
       continue;
+    }
+    if (options.codexHome !== undefined) {
+      const root = resolve(options.codexHome);
+      const matches = parsed.codexHome ? resolve(parsed.codexHome) === root
+        : parsed.transcriptPath ? resolve(parsed.transcriptPath).startsWith(root + sep)
+        : root === resolve(process.env.CODEX_HOME ?? join(conchHome(), ".codex"));
+      if (!matches) continue;
     }
     entries.push(parsed);
   }

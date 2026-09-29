@@ -915,6 +915,7 @@ struct ConchSettingsRootView: View {
     @AppStorage("conch.settings.section") private var section = "providers"
     private let sections = [
         ("providers", "Providers", "person.crop.circle"),
+        ("environments", "Environments", "desktopcomputer"),
         ("general", "General", "slider.horizontal.3"),
         ("phone", "Phone app", "iphone"),
         ("permissions", "Permissions", "hand.raised"),
@@ -938,6 +939,7 @@ struct ConchSettingsRootView: View {
             Rectangle().fill(ConchColor.hairline.color(.dark)).frame(width: 1)
             Group {
                 switch section {
+                case "environments": ConchEnvironmentsView()
                 case "general": ConchSettingsView()
                 case "phone": ConchPairingView()
                 case "permissions": ConchPermissionsView()
@@ -949,5 +951,49 @@ struct ConchSettingsRootView: View {
         .foregroundStyle(ConchColor.textPrimary.color(.dark))
         .background(ConchColor.ground.color(.dark))
         .preferredColorScheme(.dark)
+    }
+}
+
+
+struct ConchEnvironmentsView: View {
+    @StateObject private var accounts = ClaudeAccountsStore(providerId: "codex")
+    @State private var accountId = "default"
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Environments").font(ConchTypography.font(size: 20, weight: .semibold))
+                    Text("Where your sessions run").font(ConchTypography.font(size: 12)).foregroundStyle(ConchColor.textSecondary.color(.dark))
+                }
+                VStack(alignment: .leading, spacing: 10) {
+                    Label("This Mac", systemImage: "laptopcomputer").font(ConchTypography.font(size: 14, weight: .semibold))
+                    Text("New sessions open here in Terminal with the account you choose. Resume keeps the original account and working folder.")
+                }
+                RemoteMacPairingsView()
+                Divider()
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 8) {
+                        Image("AgentCodex").resizable().scaledToFit().frame(width: 22, height: 22)
+                        Text("Codex cloud").font(ConchTypography.font(size: 14, weight: .semibold))
+                    }
+                    Text("Browse your cloud environments and tasks in Codex’s terminal interface. Cloud environments belong to the selected OpenAI account.")
+                    Picker("Account", selection: $accountId) {
+                        if accounts.accounts.isEmpty { Text("Default").tag("default") }
+                        ForEach(accounts.accounts) { account in
+                            Text([account.label, account.email].compactMap { $0 }.joined(separator: " · ")).tag(account.id)
+                        }
+                    }
+                    Button("Open Codex cloud in Terminal") { Task { await accounts.send("cloud", id: accountId) } }
+                        .disabled(accounts.busy || accounts.accounts.first(where: { $0.id == accountId })?.authType != "chatgpt")
+                    if let error = accounts.error { Text(error).foregroundStyle(ConchPalette.statusNeeds) }
+                    if let notice = accounts.notice { Text(notice) }
+                }
+            }
+            .font(ConchTypography.font(size: 12)).padding(24)
+        }
+        .task { await accounts.send("list") }
+        .onChange(of: accounts.accounts.map(\.id)) { _, ids in
+            if !ids.contains(accountId) { accountId = "default" }
+        }
     }
 }

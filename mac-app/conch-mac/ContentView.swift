@@ -485,6 +485,8 @@ private struct StartSessionSheet: View {
 
     @StateObject private var accounts = ClaudeAccountsStore()
     @State private var claudeAccountId = "default"
+    @StateObject private var codexAccounts = ClaudeAccountsStore(providerId: "codex")
+    @State private var codexAccountId = "default"
     @Environment(\.openSettings) private var openAccountSettings
     @AppStorage("conch.settings.section") private var settingsSection = "providers"
     @State private var backend = ConchAgentBackend.claude
@@ -599,7 +601,7 @@ private struct StartSessionSheet: View {
                 )
             }
 
-            if effectiveBackend == .claude {
+            if mode != .help {
                 if mode == .resume {
                     if let label = resumeSelection?.accountLabel {
                         Label(label, systemImage: "person.crop.circle")
@@ -607,9 +609,9 @@ private struct StartSessionSheet: View {
                     }
                 } else {
                     HStack {
-                        Picker("Account", selection: $claudeAccountId) {
-                            if accounts.accounts.isEmpty { Text("Default").tag("default") }
-                            ForEach(accounts.accounts) { account in Text([account.label, account.email].compactMap { $0 }.joined(separator: " · ")).tag(account.id) }
+                        Picker("Account", selection: effectiveBackend == .codex ? $codexAccountId : $claudeAccountId) {
+                            if (effectiveBackend == .codex ? codexAccounts.accounts : accounts.accounts).isEmpty { Text("Default").tag("default") }
+                            ForEach(effectiveBackend == .codex ? codexAccounts.accounts : accounts.accounts) { account in Text([account.label, account.email].compactMap { $0 }.joined(separator: " · ")).tag(account.id) }
                         }
                         Button("Manage…") { settingsSection = "providers"; dismiss(); openAccountSettings() }
                     }
@@ -655,6 +657,10 @@ private struct StartSessionSheet: View {
             }
         }
         .task { await accounts.send("list") }
+        .task { await codexAccounts.send("list") }
+        .onChange(of: codexAccounts.accounts.map(\.id)) { _, ids in
+            if !ids.contains(codexAccountId) { codexAccountId = "default" }
+        }
         .onChange(of: accounts.accounts.map(\.id)) { _, ids in
             if !ids.contains(claudeAccountId) { claudeAccountId = "default" }
         }
@@ -852,6 +858,8 @@ private struct StartSessionSheet: View {
                 teleportSessionId: mode == .teleport ? teleportSessionId : nil,
                 claudeAccountId: effectiveBackend == .claude
                     ? (mode == .resume ? resumeSelection?.claudeAccountId : (accounts.accounts.isEmpty ? nil : claudeAccountId)) : nil,
+                codexAccountId: effectiveBackend == .codex
+                    ? (mode == .resume ? resumeSelection?.codexAccountId : (codexAccounts.accounts.isEmpty ? nil : codexAccountId)) : nil,
                 cwd: effectiveCwd,
                 trustFolder: trustedFolders.contains(effectiveCwd),
                 options: sentOptions
@@ -921,9 +929,11 @@ private struct StartSessionSheet: View {
         // Sessions only: a session's agents are rows too, and one appearing elsewhere is
         // not the session you just started.
         let expectedAccount = effectiveBackend == .claude
-            ? (mode == .resume ? resumeSelection?.claudeAccountId : claudeAccountId) : nil
+            ? (mode == .resume ? resumeSelection?.claudeAccountId : claudeAccountId)
+            : (mode == .resume ? resumeSelection?.codexAccountId : codexAccountId)
         let sessions = { (rows: [SessionRow]) in rows.filter {
-            $0.parentSessionId == nil && (expectedAccount == nil || $0.claudeAccountId == expectedAccount)
+            $0.parentSessionId == nil && $0.backend == effectiveBackend.rawValue
+                && (expectedAccount == nil || ($0.claudeAccountId ?? $0.codexAccountId) == expectedAccount)
         } }
         let before = Set(sessions(store.state?.rows ?? []).map(\.id))
         for _ in 0..<rounds {

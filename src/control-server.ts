@@ -279,7 +279,7 @@ export function dispatchControlMessage(
     validated.value.kind === "resumable"
     || validated.value.kind === "history-page" || validated.value.kind === "history-item"
     || validated.value.kind === "agent-capabilities"
-    || validated.value.kind === "claude-accounts"
+    || validated.value.kind === "claude-accounts" || validated.value.kind === "codex-accounts"
     || validated.value.kind === "session-start"
     || validated.value.kind === "session-close"
     || validated.value.kind === "app-error"
@@ -380,7 +380,7 @@ export async function applyRuntimeControlMessage(
   options: RuntimeControlDispatchOptions,
 ): Promise<SessionControlResponse> {
   try {
-    if (message.kind === "claude-accounts") {
+    if (message.kind === "claude-accounts" || message.kind === "codex-accounts") {
       if (!options.claudeAccounts) throw new Error("Account management requires an updated Conch daemon");
       return await options.claudeAccounts(message);
     }
@@ -423,7 +423,7 @@ export async function applyRuntimeControlMessage(
       // Claude asks the same, and takes no answer at launch — so a yes here is typed into its
       // prompt once it appears (acceptClaudeTrust). Before, conch launched it anyway and the
       // app waited on a session that couldn't register until someone found the Terminal.
-      if (message.trustFolder !== true && message.cwd && options.folderTrusted?.(message.backend, message.cwd, message.claudeAccountId) === false) {
+      if (message.trustFolder !== true && message.cwd && options.folderTrusted?.(message.backend, message.cwd, message.claudeAccountId ?? message.codexAccountId) === false) {
         return { kind: "session-needs-trust", backend: message.backend, cwd: message.cwd };
       }
       await options.start(message);
@@ -1200,7 +1200,7 @@ export interface ControlServer {
 
 function isRuntimeControlCandidate(value: unknown): boolean {
   return socketRecord(value) && (
-    value.kind === "claude-accounts" || value.kind === "session-start" || value.kind === "session-close"
+    value.kind === "claude-accounts" || value.kind === "codex-accounts" || value.kind === "session-start" || value.kind === "session-close"
     || value.kind === "history-page" || value.kind === "history-item"
     || value.kind === "app-error" || value.kind === "resumable"
     || value.kind === "agent-capabilities"

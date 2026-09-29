@@ -139,7 +139,7 @@ export interface AgentSessionSettings {
   /** The picker keeps the session's effort when the model changes (Claude's does; Codex's resets it). */
   readonly pickerKeepsEffort: boolean;
   /** What the agent recorded for the session outside its transcript, when the transcript has no turn yet. */
-  readonly readRecorded?: (agentSessionId: string) => SessionSettingsSample | null;
+  readonly readRecorded?: (agentSessionId: string, codexHome?: string) => SessionSettingsSample | null;
 }
 
 /**
@@ -202,8 +202,8 @@ export const AGENT_SESSION_SETTINGS: Record<SessionBackend, AgentSessionSettings
     modelLabel: (model, catalog) => codexCatalogModel(model, catalog)?.label ?? model,
     modelChoice: (model, catalog) => codexCatalogModel(model, catalog)?.id,
     pickerKeepsEffort: false,
-    readRecorded: (threadId) => {
-      const home = codexHomeDir();
+    readRecorded: (threadId, codexHome) => {
+      const home = codexHome ?? codexHomeDir();
       return home ? readCodexThreadSettings(home, threadId) : null;
     },
   },

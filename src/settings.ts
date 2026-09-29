@@ -862,6 +862,7 @@ export type RuntimeControlMessage =
   | {
     kind: "session-start";
     claudeAccountId?: string;
+  codexAccountId?: string;
     backend: "claude" | "codex";
     /** Answering Codex's trust prompt in advance, for this launch only. */
     trustFolder?: boolean;
@@ -1076,7 +1077,7 @@ export function isControlMessageCandidate(value: unknown): boolean {
     || value.kind === "resumable"
     || value.kind === "history-page" || value.kind === "history-item"
     || value.kind === "agent-capabilities"
-    || value.kind === "claude-accounts"
+    || value.kind === "claude-accounts" || value.kind === "codex-accounts"
     || value.kind === "session-start"
     || value.kind === "session-close"
     || value.kind === "app-error"
@@ -1245,10 +1246,10 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
   if (!record(value) || typeof value.kind !== "string") {
     return { ok: false, err: "runtime control message must be a JSON object with a kind" };
   }
-  if (value.kind === "claude-accounts") {
+  if (value.kind === "claude-accounts" || value.kind === "codex-accounts") {
     const err = accountRequestError(value);
     if (err) return { ok: false, err };
-    return { ok: true, value: { kind: "claude-accounts", action: value.action as ClaudeAccountRequest["action"],
+    return { ok: true, value: { kind: value.kind, action: value.action as ClaudeAccountRequest["action"],
       ...(typeof value.id === "string" ? { id: value.id } : {}),
       ...(typeof value.label === "string" ? { label: value.label } : {}),
       ...(typeof value.configDir === "string" ? { configDir: value.configDir } : {}) } };
@@ -1324,6 +1325,7 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
     return { ok: true, value: { kind: "session-close", sessionId: sessionId.value, ...(value.restart ? { restart: true as const } : {}) } };
   }
   if (value.kind === "session-start") {
+    if (value.codexAccountId !== undefined && (value.backend !== "codex" || !validAccountId(value.codexAccountId))) return { ok: false, err: "Choose a valid Codex account" };
     if (value.claudeAccountId !== undefined && (value.backend !== "claude" || !validAccountId(value.claudeAccountId))) {
       return { ok: false, err: "Choose a valid Claude account" };
     }
@@ -1363,6 +1365,7 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
       value: {
         kind: "session-start",
         ...(typeof value.claudeAccountId === "string" ? { claudeAccountId: value.claudeAccountId } : {}),
+        ...(typeof value.codexAccountId === "string" ? { codexAccountId: value.codexAccountId } : {}),
         backend: value.backend,
         // The person answered Codex's trust question in conch. Only ever true
         // because they said so — it is never inferred.
@@ -1493,7 +1496,7 @@ export function validateControlMessage(value: unknown): ParseResult<AnyControlMe
     value.kind === "resumable"
     || value.kind === "history-page" || value.kind === "history-item"
     || value.kind === "agent-capabilities"
-    || value.kind === "claude-accounts"
+    || value.kind === "claude-accounts" || value.kind === "codex-accounts"
     || value.kind === "session-start"
     || value.kind === "session-close"
     || value.kind === "app-error"
@@ -1573,7 +1576,7 @@ function validateTerminalScreenReply(value: Record<string, unknown>): ParseResul
 
 export function validateControlResponse(value: unknown): ParseResult<ControlResponse> {
   if (!record(value) || typeof value.kind !== "string") return { ok: false, err: "invalid control response" };
-  if (value.kind === "claude-accounts") {
+  if (value.kind === "claude-accounts" || value.kind === "codex-accounts") {
     if (!Array.isArray(value.accounts) || value.accounts.length > 17 || value.accounts.some((account) =>
       !record(account) || !validAccountId(account.id) || typeof account.label !== "string"
       || typeof account.configDir !== "string" || !["unchecked", "signed-in", "signed-out", "unavailable"].includes(String(account.status)))) {
@@ -1582,11 +1585,12 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
     const execution = parseExecutionCatalog(value.execution);
     const usage = parseSwapDashboard(value.usage);
     if ((value.execution !== undefined && !execution) || (value.usage !== undefined && !usage)) return { ok: false, err: "invalid account dashboard response" };
-    return { ok: true, value: { kind: "claude-accounts", accounts: value.accounts.map((account) => ({
+    return { ok: true, value: { kind: value.kind, accounts: value.accounts.map((account) => ({
       id: account.id, label: account.label, configDir: account.configDir, status: account.status,
       ...(typeof account.email === "string" ? { email: account.email } : {}),
+      ...(["chatgpt", "apiKey", "amazonBedrock"].includes(String(account.authType)) ? { authType: account.authType as string } : {}),
       ...(typeof account.subscription === "string" ? { subscription: account.subscription } : {}),
-    })), ...(execution ? { execution } : {}), ...(usage ? { usage } : {}), ...(validAccountId(value.createdAccountId) ? { createdAccountId: value.createdAccountId } : {}), ...(value.loginOpened === true ? { loginOpened: true } : {}) } };
+    })), ...(execution ? { execution } : {}), ...(usage ? { usage } : {}), ...(validAccountId(value.createdAccountId) ? { createdAccountId: value.createdAccountId } : {}), ...(value.loginOpened === true ? { loginOpened: true } : {}), ...(value.cloudOpened === true ? { cloudOpened: true } : {}) } };
   }
   if (["history-page", "history-item", "history-off", "history-error"].includes(value.kind)) return validateHistoryResponse(value);
   if (value.kind === "agent-capabilities") {
@@ -1630,6 +1634,7 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
         cwd: cwd.value,
         updatedAt: raw.updatedAt as number,
         ...(validAccountId(raw.claudeAccountId) ? { claudeAccountId: raw.claudeAccountId } : {}),
+        ...(validAccountId(raw.codexAccountId) ? { codexAccountId: raw.codexAccountId } : {}),
         ...(typeof raw.accountLabel === "string" ? { accountLabel: raw.accountLabel } : {}),
       });
     }

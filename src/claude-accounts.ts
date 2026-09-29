@@ -16,20 +16,21 @@ export interface ClaudeAccountStatus extends ClaudeAccount {
   email?: string;
   subscription?: string;
   organizationId?: string;
+  authType?: string;
 }
 
-export type ClaudeAccountRequest = {
-  kind: "claude-accounts";
-  action: "list" | "add" | "remove" | "login" | "refresh" | "usage";
+export type ClaudeAccountRequest = ({ kind: "claude-accounts" } | { kind: "codex-accounts" }) & {
+  action: "list" | "add" | "remove" | "login" | "refresh" | "usage" | "cloud";
   id?: string;
   label?: string;
   configDir?: string;
 };
 export interface ClaudeAccountsReply {
-  kind: "claude-accounts";
+  kind: "claude-accounts" | "codex-accounts";
   accounts: ClaudeAccountStatus[];
   loginOpened?: true;
   createdAccountId?: string;
+  cloudOpened?: true;
   execution?: ExecutionCatalog;
   usage?: SwapDashboard;
 }
@@ -39,9 +40,9 @@ export const validAccountId = (value: unknown): value is string =>
   typeof value === "string" && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(value);
 
 export function accountRequestError(value: Record<string, unknown>): string | undefined {
-  if (!["list", "add", "remove", "login", "refresh", "usage"].includes(String(value.action))) return "Unknown account action";
-  if (value.id !== undefined && !validAccountId(value.id)) return "Invalid Claude account id";
-  if (["remove", "login", "refresh"].includes(String(value.action)) && !validAccountId(value.id)) return "Choose a Claude account";
+  if (!["list", "add", "remove", "login", "refresh", "usage", ...(value.kind === "codex-accounts" ? ["cloud"] : [])].includes(String(value.action))) return "Unknown account action";
+  if (value.id !== undefined && !validAccountId(value.id)) return "Invalid account id";
+  if (["remove", "login", "refresh", "cloud"].includes(String(value.action)) && !validAccountId(value.id)) return "Choose an account";
   if (value.action === "add") {
     if (typeof value.label !== "string" || !value.label.trim() || value.label.trim().length > 60 || CONTROL.test(value.label)) return "Account name must be 1–60 printable characters";
     if (value.configDir !== undefined && (typeof value.configDir !== "string" || !isAbsolute(value.configDir) || value.configDir.length > 4096 || CONTROL.test(value.configDir))) return "Account directory must be an absolute path";
@@ -67,15 +68,15 @@ export function readClaudeAccounts(defaultDir = defaultClaudeDir(), file = accou
   const defaults = { id: "default", label: "Default", configDir: resolve(defaultDir) };
   if (!existsSync(file)) return [defaults];
   const data: unknown = JSON.parse(readFileSync(file, "utf8"));
-  if (!Array.isArray(data) || data.length > 16) throw new Error("Cannot read Claude account profiles");
+  if (!Array.isArray(data) || data.length > 16) throw new Error("Cannot read account profiles");
   const ids = new Set(["default"]);
   const dirs = new Set([canonical(defaults.configDir)]);
   const accounts = [defaults];
   for (const entry of data) {
     if (!entry || !validAccountId(entry.id) || ids.has(entry.id)
-      || accountRequestError({ ...entry, action: "add" }) || typeof entry.configDir !== "string") throw new Error("Invalid Claude account profile");
+      || accountRequestError({ ...entry, action: "add" }) || typeof entry.configDir !== "string") throw new Error("Invalid account profile");
     const configDir = canonical(entry.configDir);
-    if (dirs.has(configDir)) throw new Error("Claude account profiles must have separate directories");
+    if (dirs.has(configDir)) throw new Error("Account profiles must have separate directories");
     ids.add(entry.id); dirs.add(configDir);
     accounts.push({ id: entry.id, label: entry.label.trim(), configDir });
   }
@@ -93,14 +94,14 @@ function save(accounts: ClaudeAccount[], file: string): void {
   }
 }
 
-export function addClaudeAccount(label: string, configDir?: string, file = accountStorePath(), defaultDir = defaultClaudeDir()): ClaudeAccount {
+export function addClaudeAccount(label: string, configDir?: string, file = accountStorePath(), defaultDir = defaultClaudeDir(), provider: "claude" | "codex" = "claude"): ClaudeAccount {
   const error = accountRequestError({ action: "add", label, ...(configDir ? { configDir } : {}) });
   if (error) throw new Error(error);
   const accounts = readClaudeAccounts(defaultDir, file);
-  if (accounts.length >= 17) throw new Error("Conch supports up to 16 additional Claude accounts");
+  if (accounts.length >= 17) throw new Error("Conch supports up to 16 additional accounts per provider");
   if (accounts.some((account) => account.label.toLowerCase() === label.trim().toLowerCase())) throw new Error("Choose a different account name");
   const id = crypto.randomUUID();
-  const account = { id, label: label.trim(), configDir: canonical(configDir ?? join(dirname(file), "claude", id)) };
+  const account = { id, label: label.trim(), configDir: canonical(configDir ?? join(dirname(file), provider, id)) };
   if (accounts.some((existing) => canonical(existing.configDir) === account.configDir)) throw new Error("That directory is already registered");
   save([...accounts, account], file);
   return account;
@@ -110,7 +111,7 @@ export function addClaudeAccount(label: string, configDir?: string, file = accou
 export function removeClaudeAccount(id: string, file = accountStorePath(), defaultDir = defaultClaudeDir()): void {
   if (id === "default") throw new Error("The default account cannot be removed");
   const accounts = readClaudeAccounts(defaultDir, file);
-  if (!accounts.some((account) => account.id === id)) throw new Error("Claude account was not found");
+  if (!accounts.some((account) => account.id === id)) throw new Error("Account was not found");
   save(accounts.filter((account) => account.id !== id), file);
 }
 

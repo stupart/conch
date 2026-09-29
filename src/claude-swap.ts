@@ -18,7 +18,7 @@ export interface SwapUsageAccount {
   lastGood: boolean;
 }
 export interface SwapDashboard {
-  source: "claude-swap" | "claude-statusline";
+  source: "claude-swap" | "claude-statusline" | "codex-app-server";
   state: "ready" | "unavailable" | "error";
   accounts: SwapUsageAccount[];
   message?: string;
@@ -77,7 +77,7 @@ export function decodeSwapDashboard(raw: string): SwapDashboard {
 }
 
 export function parseSwapDashboard(value: unknown): SwapDashboard | undefined {
-  if (!object(value) || !["claude-swap", "claude-statusline"].includes(String(value.source)) || !["ready", "unavailable", "error"].includes(String(value.state))
+  if (!object(value) || !["claude-swap", "claude-statusline", "codex-app-server"].includes(String(value.source)) || !["ready", "unavailable", "error"].includes(String(value.state))
     || !Array.isArray(value.accounts) || value.accounts.length > 100) return;
   const accounts: SwapUsageAccount[] = [];
   for (const row of value.accounts) {

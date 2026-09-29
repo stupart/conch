@@ -14,6 +14,7 @@ import {
 
 export interface ResumableSession {
   claudeAccountId?: string;
+  codexAccountId?: string;
   accountLabel?: string;
   sessionId: string;
   backend: "claude" | "codex";

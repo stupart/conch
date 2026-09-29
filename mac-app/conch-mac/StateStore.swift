@@ -742,6 +742,7 @@ final class StateStore: ObservableObject {
         resumeSessionId: String?,
         teleportSessionId: String? = nil,
         claudeAccountId: String? = nil,
+        codexAccountId: String? = nil,
         cwd: String?,
         trustFolder: Bool = false,
         options: [String: ConchStartOptionValue] = [:]
@@ -754,6 +755,7 @@ final class StateStore: ObservableObject {
             resumeSessionId: resumed,
             teleportSessionId: teleport,
             claudeAccountId: claudeAccountId,
+            codexAccountId: codexAccountId,
             cwd: workingDirectory,
             trustFolder: trustFolder ? true : nil,
             options: options.isEmpty ? nil : options
