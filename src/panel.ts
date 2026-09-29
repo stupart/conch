@@ -73,6 +73,7 @@ export interface PanelRowModel {
   backend?: "claude" | "codex";
   accountLabel?: string;
   claudeAccountId?: string;
+  codexAccountId?: string;
   /** A subagent row: nested under this session, never the active one (C4). */
   parentSessionId?: string;
   /** A full session another session's process started (C15): nested under its starter, otherwise ordinary. */
@@ -266,6 +267,7 @@ export interface PublishedSessionRow {
   backend?: "claude" | "codex" | "conch";
   accountLabel?: string;
   claudeAccountId?: string;
+  codexAccountId?: string;
   /**
    * Present on a subagent row: the session it runs inside. A viewer indents
    * it under that row and never treats it as a session of its own — it has
@@ -645,7 +647,8 @@ export function buildPublishedState(
     features: { deliverables: 4, viewedState: 1, ...(options.settingsForSessionId ? { sessionSettings: 1 as const } : {}) },
     ownerDeviceId,
     execution: deviceExecutionCatalog(ownerDeviceId, options.runtimeLabel ?? ownerDeviceId,
-      model.rows.flatMap((row) => row.claudeAccountId ? [{ id: row.claudeAccountId, label: row.accountLabel ?? row.claudeAccountId }] : [])),
+      model.rows.flatMap((row) => row.claudeAccountId ? [{ id: row.claudeAccountId, label: row.accountLabel ?? row.claudeAccountId }] : []),
+      model.rows.flatMap((row) => row.codexAccountId ? [{ id: row.codexAccountId, label: row.accountLabel ?? row.codexAccountId }] : [])),
     ts: now,
     ...(options.audio ? { audioControl: options.audio.control, audioOutbox: options.audio.outbox } : {}),
     ...(options.deliveries?.length ? { deliveries: [...options.deliveries] } : {}),
@@ -673,10 +676,11 @@ export function buildPublishedState(
       return {
         id: row.sessionId,
         label: row.label,
-        execution: sessionExecution(ownerDeviceId, row.backend ?? "claude", row.claudeAccountId),
+        execution: sessionExecution(ownerDeviceId, row.backend ?? "claude", row.claudeAccountId ?? row.codexAccountId),
         ...(row.backend ? { backend: row.backend } : {}),
         ...(row.accountLabel ? { accountLabel: row.accountLabel } : {}),
         ...(row.claudeAccountId ? { claudeAccountId: row.claudeAccountId } : {}),
+        ...(row.codexAccountId ? { codexAccountId: row.codexAccountId } : {}),
         ...(row.parentSessionId ? { parentSessionId: row.parentSessionId } : {}),
         ...(row.startedBySessionId ? { startedBySessionId: row.startedBySessionId } : {}),
         status: row.status,
@@ -837,6 +841,7 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
         ...(session.backend ? { backend: session.backend } : {}),
         ...(session.accountLabel ? { accountLabel: session.accountLabel } : {}),
         ...(session.claudeAccountId ? { claudeAccountId: session.claudeAccountId } : {}),
+        ...(session.codexAccountId ? { codexAccountId: session.codexAccountId } : {}),
         ...(session.parentSessionId ? { parentSessionId: session.parentSessionId } : {}),
         ...(session.startedBySessionId ? { startedBySessionId: session.startedBySessionId } : {}),
         ...(waitingOnAgents ? { waitingOnAgents: true as const } : {}),

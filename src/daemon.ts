@@ -163,6 +163,7 @@ import {
   restartRequest,
   acceptClaudeTrust,
   startClaudeAccountLogin,
+  startCodexAccountTerminal,
   startTerminalSession,
   terminalSessionCommand,
   type StartSessionRequest,
@@ -232,7 +233,8 @@ import {
   theaterPointerEvent,
   type ConchState,
 } from "./status.ts";
-import { assertClaudeAccountIdle, accountRegistrySnapshot, accountResumableSessions, findAccountTranscript as findTranscript } from "./claude-account-sessions.ts";
+import { assertCodexAccountIdle, assertClaudeAccountIdle, accountRegistrySnapshot, accountResumableSessions, findAccountTranscript as findTranscript } from "./claude-account-sessions.ts";
+import { readCodexAccounts, addCodexAccount, removeCodexAccount, requireCodexAccount, cachedCodexAccount, invalidateCodexAccount, codexAccountForLaunch } from "./codex-accounts.ts";
 import { claudeAccountForLaunch, readClaudeAccounts, addClaudeAccount, removeClaudeAccount, requireClaudeAccount, cachedClaudeAccountStatus, invalidateClaudeAccountStatus, type ClaudeAccountStatus } from "./claude-accounts.ts";
 import { runInstall as installAccountHooks } from "./install.ts";
 import {
@@ -605,6 +607,8 @@ export function shouldReportMissingCodexPid(
  * its trust prompt there: Claude takes no such answer at launch (Codex does, as a flag).
  */
 async function launchSession(request: StartSessionRequest): Promise<void> {
+  const codexAccount = codexAccountForLaunch(request);
+  if (codexAccount) await runCodexInstall(codexAccount.configDir);
   const account = claudeAccountForLaunch(request);
   if (account) {
     await installAccountHooks({ claudeDir: account.configDir });
@@ -856,7 +860,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     }
     if (sample || known || sessionSettingsAsked.has(session.sessionId)) return;
     sessionSettingsAsked.add(session.sessionId);
-    const recorded = AGENT_SESSION_SETTINGS[session.backend ?? "claude"].readRecorded?.(session.agentSessionId ?? session.sessionId);
+    const recorded = AGENT_SESSION_SETTINGS[session.backend ?? "claude"].readRecorded?.(session.agentSessionId ?? session.sessionId,
+      session.codexAccountId ? requireCodexAccount(session.codexAccountId).configDir : undefined);
     if (recorded) sessionSettingsSamples.set(session.sessionId, recorded);
   };
   /** Both agents' lists and defaults, read from their own files (cached by mtime), and what each row runs. */
@@ -884,7 +889,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   // version reading turns out to matter in practice.
   const installVersionCache = new Map<string, string | null>();
   const registrySnapshot = async (claudeDir: string): Promise<Awaited<ReturnType<typeof accountRegistrySnapshot>>> => {
-    const snapshot = await accountRegistrySnapshot(claudeDir);
+    const snapshot = await accountRegistrySnapshot(claudeDir, readClaudeAccounts(claudeDir), readCodexAccounts());
     return snapshot ? { ...snapshot, infos: snapshot.infos.map((session) =>
       bindSessionProcess(session, panelSessions.get(session.sessionId), readProcessIdentity)) } : null;
   };
@@ -947,7 +952,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         if (event.sessionId === selected) selectedRef = hint;
       }
     }
-    records.prioritize({ selected: selectedRef, live, claudeHomes: readClaudeAccounts(cfg.claudeDir).map((account) => account.configDir) });
+    records.prioritize({ selected: selectedRef, live, codexHomes: readCodexAccounts().map(account => account.configDir), claudeHomes: readClaudeAccounts(cfg.claudeDir).map((account) => account.configDir) });
   }
   function labelForSessionId(id: string): string {
     const session = panelSessions.get(id);
@@ -2108,7 +2113,10 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       // This snapshot passed the reconciler's current() check; indexing never uses the eight-row preview cap.
       prioritizeRecords([...panelSessions.values(), ...nested], navSelectedId ?? nextActiveSessionId);
       // Re-arms only when the set of live transcripts changes; see session-watch.ts.
-      accountSourcesWatch.update(readClaudeAccounts(cfg.claudeDir).flatMap((account) => [account.configDir, join(account.configDir, "sessions")]));
+      accountSourcesWatch.update([
+        ...readClaudeAccounts(cfg.claudeDir).flatMap(account => [account.configDir, join(account.configDir, "sessions")]),
+        ...readCodexAccounts().flatMap(account => [account.configDir, join(account.configDir, "thread-writer-locks")]),
+      ]);
       transcriptWatch.update(visible.flatMap((session) => {
         const path = session.transcriptPath ?? findTranscript(cfg.claudeDir, session.sessionId);
         return path ? [path] : [];
@@ -2627,8 +2635,36 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       ...(process.env.CLAUDE_CONFIG_DIR === undefined
         ? {}
         : { claudeHome: cfg.claudeDir }),
-    }, readClaudeAccounts(cfg.claudeDir)),
+    }, readClaudeAccounts(cfg.claudeDir), readCodexAccounts()),
     claudeAccounts: async (message) => {
+      if (message.kind === "codex-accounts") {
+        const created = message.action === "add" ? addCodexAccount(message.label!, message.configDir) : undefined;
+        if (message.action === "remove" || message.action === "login") {
+          const account = requireCodexAccount(message.id!);
+          await assertCodexAccountIdle(account);
+          invalidateCodexAccount(account);
+          if (message.action === "remove") removeCodexAccount(account.id);
+          else {
+            await runCodexInstall(account.configDir);
+            await startCodexAccountTerminal(account, "login");
+          }
+        }
+        if (message.action === "cloud") {
+          const account = requireCodexAccount(message.id!);
+          if ((await cachedCodexAccount(account, true)).account.authType !== "chatgpt") throw new Error("Connect a ChatGPT account to use Codex cloud.");
+          await startCodexAccountTerminal(account, "cloud");
+        }
+        const reads = await Promise.all(readCodexAccounts().map(account => cachedCodexAccount(account,
+          message.action === "usage" || (message.action === "refresh" && message.id === account.id))));
+        const accounts = reads.map(read => read.account);
+        void renderSessionPanel();
+        return { kind: "codex-accounts", accounts,
+          execution: deviceExecutionCatalog(ownerDeviceId, hostname(), readClaudeAccounts(cfg.claudeDir), accounts),
+          usage: { state: "ready", source: "codex-app-server", accounts: reads.map(read => read.usage) },
+          ...(created ? { createdAccountId: created.id } : {}),
+          ...(message.action === "login" ? { loginOpened: true as const } : {}),
+          ...(message.action === "cloud" ? { cloudOpened: true as const } : {}) };
+      }
       const created = message.action === "add" ? addClaudeAccount(message.label!, message.configDir) : undefined;
       if (message.action === "remove") {
         const account = requireClaudeAccount(message.id!, cfg.claudeDir);
@@ -2650,7 +2686,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         cachedClaudeAccountStatus(account, message.action === "refresh" && message.id === account.id)));
       void renderSessionPanel();
       return { kind: "claude-accounts", accounts,
-        execution: deviceExecutionCatalog(ownerDeviceId, hostname(), accounts),
+        execution: deviceExecutionCatalog(ownerDeviceId, hostname(), accounts, readCodexAccounts()),
         usage: readAccountUsage(accounts),
         ...(created ? { createdAccountId: created.id } : {}),
         ...(message.action === "login" ? { loginOpened: true as const } : {}) };
@@ -3272,7 +3308,11 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     let ended: ReturnType<typeof detectCodexTurnEnds>;
     let approvals: ReturnType<typeof detectCodexApprovals>;
     try {
-      const snapshots = await readCodexTurnSnapshots();
+      const all = (await Promise.all(readCodexAccounts().map(account => readCodexTurnSnapshots({ codexHome: account.configDir })))).flat();
+      const counts = new Map<string, number>();
+      for (const snapshot of all) counts.set(snapshot.sessionId, (counts.get(snapshot.sessionId) ?? 0) + 1);
+      // Copied conversation IDs cannot unambiguously address a live window.
+      const snapshots = all.filter(snapshot => counts.get(snapshot.sessionId) === 1);
       ended = detectCodexTurnEnds(codexTurnMemory, snapshots);
       approvals = detectCodexApprovals(codexApprovalMemory, snapshots);
     } catch (error) {

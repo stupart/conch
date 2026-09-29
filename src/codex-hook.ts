@@ -1,3 +1,4 @@
+import { defaultCodexDir } from "./codex-accounts.ts";
 import { basename } from "node:path";
 import type { Config } from "./config.ts";
 import {
@@ -189,7 +190,7 @@ export const defaultCodexHookDependencies: CodexHookDependencies = {
   now: Date.now,
   shouldDropOrigin: hasNonInteractiveCodexAncestor,
   writeSession: (entry) => {
-    writeCodexSession(entry);
+    writeCodexSession({ ...entry, codexHome: defaultCodexDir() });
   },
   sendToDaemon,
   spokenSnippet,

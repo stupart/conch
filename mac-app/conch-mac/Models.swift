@@ -1036,6 +1036,7 @@ struct AgentMark: Decodable, Equatable, Sendable {
 struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     let accountLabel: String?
     let claudeAccountId: String?
+    let codexAccountId: String?
     let execution: SessionExecution?
     let id: String
     let label: String
@@ -1109,6 +1110,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         case label
         case accountLabel
         case claudeAccountId
+        case codexAccountId
         case execution
         case backend
         case context
@@ -1145,6 +1147,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         backend: String? = nil,
         accountLabel: String? = nil,
         claudeAccountId: String? = nil,
+        codexAccountId: String? = nil,
         execution: SessionExecution? = nil,
         context: SessionContext? = nil,
         settings: SessionSettingsState? = nil,
@@ -1178,6 +1181,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         self.backend = backend
         self.accountLabel = accountLabel
         self.claudeAccountId = claudeAccountId
+        self.codexAccountId = codexAccountId
         self.execution = execution
         self.context = context
         self.settings = settings
@@ -1214,6 +1218,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         label = (try? container.decodeIfPresent(String.self, forKey: .label)) ?? id
         backend = try? container.decodeIfPresent(String.self, forKey: .backend)
         accountLabel = try? container.decodeIfPresent(String.self, forKey: .accountLabel)
+        codexAccountId = try? container.decodeIfPresent(String.self, forKey: .codexAccountId)
         claudeAccountId = try? container.decodeIfPresent(String.self, forKey: .claudeAccountId)
         execution = try? container.decodeIfPresent(SessionExecution.self, forKey: .execution)
         context = try? container.decodeIfPresent(SessionContext.self, forKey: .context)
@@ -1259,6 +1264,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             backend: backend,
             accountLabel: accountLabel,
             claudeAccountId: claudeAccountId,
+            codexAccountId: codexAccountId,
             execution: execution,
             context: context,
             settings: settings,

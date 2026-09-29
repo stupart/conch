@@ -33,24 +33,24 @@ export interface ExecutionCatalog {
 }
 type Profile = { id: string; label: string };
 export const deviceRuntimeId = (ownerDeviceId: string) => `device:${encodeURIComponent(ownerDeviceId)}`;
-const profileKey = (ownerDeviceId: string, profileId: string) => `${deviceRuntimeId(ownerDeviceId)}:claude:${encodeURIComponent(profileId)}`;
+const profileKey = (ownerDeviceId: string, profileId: string, providerId: ProviderId = "claude") => `${deviceRuntimeId(ownerDeviceId)}:${providerId}:${encodeURIComponent(profileId)}`;
 
 /** Existing account ids name device-local registrations. Namespace them before
  * combining snapshots; both Macs are allowed to have a profile called default. */
-export function deviceExecutionCatalog(ownerDeviceId: string, label: string, profiles: readonly Profile[]): ExecutionCatalog {
+export function deviceExecutionCatalog(ownerDeviceId: string, label: string, profiles: readonly Profile[], codexProfiles: readonly Profile[] = []): ExecutionCatalog {
   const runtimeId = deviceRuntimeId(ownerDeviceId);
-  const unique = [...new Map(profiles.map((profile) => [profile.id, profile])).values()];
+  const unique = [...new Map([...profiles.map(profile => ({ ...profile, providerId: "claude" as const })), ...codexProfiles.map(profile => ({ ...profile, providerId: "codex" as const }))].map(profile => [profile.providerId + ":" + profile.id, profile])).values()];
   return {
     runtimes: [{ id: runtimeId, kind: "device", ownerDeviceId, label }],
-    accounts: unique.map((profile) => ({ id: `account:${profileKey(ownerDeviceId, profile.id)}`, providerId: "claude", label: profile.label, identity: "local-registration" })),
-    connections: unique.map((profile) => ({ id: `connection:${profileKey(ownerDeviceId, profile.id)}`, providerId: "claude", runtimeId,
-      accountId: `account:${profileKey(ownerDeviceId, profile.id)}`, profileId: profile.id })),
+    accounts: unique.map((profile) => ({ id: `account:${profileKey(ownerDeviceId, profile.id, profile.providerId)}`, providerId: profile.providerId, label: profile.label, identity: "local-registration" })),
+    connections: unique.map((profile) => ({ id: `connection:${profileKey(ownerDeviceId, profile.id, profile.providerId)}`, providerId: profile.providerId, runtimeId,
+      accountId: `account:${profileKey(ownerDeviceId, profile.id, profile.providerId)}`, profileId: profile.id })),
   };
 }
 
 export function sessionExecution(ownerDeviceId: string, providerId: ProviderId, profileId?: string): SessionExecution {
   return { providerId, runtimeId: deviceRuntimeId(ownerDeviceId),
-    ...(providerId === "claude" && profileId ? { connectionId: `connection:${profileKey(ownerDeviceId, profileId)}` } : {}) };
+    ...(profileId ? { connectionId: `connection:${profileKey(ownerDeviceId, profileId, providerId)}` } : {}) };
 }
 
 /** Public protocol projection; credential/config payloads cannot ride along. */

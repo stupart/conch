@@ -2,6 +2,7 @@ import { FOCUS_GUARD_LINES, focusedAction, focusSessionWindow, readTerminalTab, 
 import { runUICommand } from "./pasteboard.ts";
 import { processMatchesProvider, readProcessIdentity, sameProcessIdentity, type ProcessIdentity, type ProcessIdentityProbe } from "./process-identity.ts";
 import { conchHome } from "./home.ts";
+import { CODEX_ACCOUNT_ENV_REMOVE, codexAccountForLaunch, type CodexAccount } from "./codex-accounts.ts";
 import { CLAUDE_ACCOUNT_ENV_REMOVE, claudeAccountForLaunch, requireClaudeAccount, type ClaudeAccount } from "./claude-accounts.ts";
 import { statSync } from "node:fs";
 import {
@@ -21,6 +22,7 @@ export interface StartSessionRequest {
   backend: SessionBackend;
   /** A registered local Claude profile, never an arbitrary environment override. */
   claudeAccountId?: string;
+  codexAccountId?: string;
   resumeSessionId?: string;
   /** Claude cloud session to open as a new local copy, never a live join. */
   teleportSessionId?: string;
@@ -197,7 +199,7 @@ export function startRequestFromArgv(args: string[]): StartSessionRequest {
   const options: Record<string, string | boolean> = {};
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i] ?? "";
-    const fixed = arg === "--account" ? "claudeAccountId" : arg === "--cwd" ? "cwd" : arg === "--resume" ? "resumeSessionId" : arg === "--teleport" ? "teleportSessionId" : null;
+    const fixed = arg === "--account" ? `${backend}AccountId` as const : arg === "--cwd" ? "cwd" : arg === "--resume" ? "resumeSessionId" : arg === "--teleport" ? "teleportSessionId" : null;
     if (fixed) {
       const value = rest[++i];
       if (value === undefined) throw new Error(`${arg} needs a value\n${startUsage(adapter)}`);
@@ -230,7 +232,8 @@ export function terminalSessionCommand(request: StartSessionRequest): string {
   const cwd = request.cwd?.trim() || conchHome();
   const adapter = adapterFor(request.backend);
   const account = claudeAccountForLaunch(request);
-  const environment = account ? claudeProfileCommandPrefix(account) : "";
+  const codexAccount = codexAccountForLaunch(request);
+  const environment = account ? claudeProfileCommandPrefix(account) : codexAccount ? codexProfileCommandPrefix(codexAccount) : "";
   const resume = request.resumeSessionId?.trim();
   const teleport = request.teleportSessionId?.trim();
   const args = teleport && adapter.teleportArgs
@@ -272,7 +275,7 @@ const CONVERSATION_SELECTORS: Record<SessionBackend, Record<string, "value" | "o
  * for values with spaces; no start-table value can contain one.
  */
 export function restartRequest(
-  session: Pick<SessionInfo, "sessionId" | "agentSessionId" | "backend" | "cwd" | "claudeAccountId">,
+  session: Pick<SessionInfo, "sessionId" | "agentSessionId" | "backend" | "cwd" | "claudeAccountId" | "codexAccountId">,
   args: readonly string[],
 ): { request: StartSessionRequest; notCarriedOver: string[] } {
   const backend = session.backend ?? "claude";
@@ -324,7 +327,8 @@ export function restartRequest(
   }
   return {
     request: { backend, resumeSessionId, ...(session.cwd ? { cwd: session.cwd } : {}),
-      ...(session.claudeAccountId ? { claudeAccountId: session.claudeAccountId } : {}), options },
+      ...(session.claudeAccountId ? { claudeAccountId: session.claudeAccountId } : {}),
+      ...(session.codexAccountId ? { codexAccountId: session.codexAccountId } : {}), options },
     notCarriedOver,
   };
 }
@@ -794,4 +798,15 @@ export async function refreshSessionForClose(
     throw new Error("session identity changed or is unavailable; refresh before closing");
   }
   return { ...session, processIdentity: expected.processIdentity };
+}
+
+export function codexProfileCommandPrefix(account: CodexAccount): string {
+  if (account.id === "default" && process.env.CODEX_HOME === undefined) return "env -u CODEX_HOME ";
+  const remove = account.id === "default" ? "" : CODEX_ACCOUNT_ENV_REMOVE.map(key => "-u " + key).join(" ") + " ";
+  return "env " + remove + "CODEX_HOME=" + shellQuote(account.configDir) + " ";
+}
+export async function startCodexAccountTerminal(account: CodexAccount, action: "login" | "cloud", dependencies: SessionLifecycleDependencies = {}): Promise<void> {
+  await withUITransaction(() => runInTerminal(
+    "exec " + codexProfileCommandPrefix(account) + "codex " + action, "codex", undefined, dependencies,
+  ));
 }

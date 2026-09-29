@@ -110,6 +110,7 @@ export class RecordsRuntime {
     if (selected && !live.includes(selected)) { live.pop(); live.unshift(selected); }
     // Retain routing metadata only, never a caller's mutable snapshot or message content.
     this.hints = {
+      ...(hints.codexHomes ? { codexHomes: hints.codexHomes.slice(0, 17) } : {}),
       ...(hints.claudeHomes ? { claudeHomes: hints.claudeHomes.slice(0, 17) } : {}),
       ...(hints.selected ? { selected: { provider: hints.selected.provider, nativeId: hints.selected.nativeId } } : {}),
       live: live.map((item) => ({

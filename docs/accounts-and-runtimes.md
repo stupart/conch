@@ -5,7 +5,7 @@
 `SessionInfo` (`src/sessions.ts`) is a flat process/session registry. `backend`
 selects the Claude or Codex adapter. `sessionId` is a local routing key and
 `agentSessionId` is the underlying conversation ID. The account-profile work
-adds `claudeAccountId`, `claudeConfigDir` and `accountLabel`. Parent references
+adds `claudeAccountId` / `codexAccountId`, `claudeConfigDir` and `accountLabel`. Parent references
 express subagents and process ancestry, not provider or account nesting.
 
 The containing `PublishedState.ownerDeviceId` identifies the daemon installation
@@ -62,8 +62,11 @@ underlying login forever; it identifies the configured launch registration.
 
 Codex sessions without a known account get a provider and runtime reference
 without an invented account. Existing device/terminal routing remains the
-authority for commands. Cloud execution is represented in the type model only;
-no cloud connector or cross-device launch scheduler is supplied here.
+authority for commands. Settings → Environments opens the official `codex cloud`
+terminal browser with the chosen account. Cloud workspace inventories and task
+execution remain owned by Codex; Conch does not fabricate cloud runtime IDs or
+provide a cross-device launch scheduler. Other Macs use the existing paired
+connection for session viewing and typed input.
 
 The durable record key intentionally stays device/provider/native ID. Moving a
 conversation between account roots or machines needs a separate migration and
@@ -71,7 +74,11 @@ alias policy. Do not copy conversation UUIDs between roots as a migration.
 
 ## Provider settings and usage
 
-The Mac Settings scene uses a persistent sidebar, with Providers, General, Phone app, Permissions, and Setup. T3 Code informed the provider grouping, isolated connection directories, visible identity, and progressive disclosure. Account creation is inline; continuing opens the official Claude login and polls public auth status.
+The Mac Settings scene uses a persistent sidebar, with Providers, Environments, General, Phone app, Permissions, and Setup. T3 Code informed the provider grouping, isolated connection directories, visible identity, and progressive disclosure. Account creation is inline; continuing opens the selected provider’s official login and polls public auth status.
+OpenAI/Codex accounts use isolated `CODEX_HOME` folders. Account identity, the
+reported ChatGPT plan, and usage are read through Codex app-server’s public
+`account/read` and `account/rateLimits/read` methods. No tokens or credential
+files cross that interface into Conch. See [the Codex account guide](codex-accounts.md).
 
 The upstream claude-swap dashboard is MIT licensed and built with Python/Textual. Conch's SwiftUI view ports its thin usage bars, severity thresholds, and reset countdowns into Conch's dark palette. Provider logos and emails remain visible; paths and maintenance actions expand on demand. See [the pinned attribution](../third-party/claude-swap/README.md).
 

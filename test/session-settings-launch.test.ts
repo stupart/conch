@@ -133,6 +133,7 @@ describe("what the published state carries", () => {
     // A tail with no turn in it keeps what an earlier read found; the agent's own record is asked once.
     const note = daemon.slice(daemon.indexOf("const noteSessionSettings = "), daemon.indexOf("// Keyed by executable path,"));
     expect(note).toContain("if (sample || known || sessionSettingsAsked.has(session.sessionId)) return;");
-    expect(note).toContain('AGENT_SESSION_SETTINGS[session.backend ?? "claude"].readRecorded?.(session.agentSessionId ?? session.sessionId)');
+    expect(note).toContain('AGENT_SESSION_SETTINGS[session.backend ?? "claude"].readRecorded?.(session.agentSessionId ?? session.sessionId,');
+    expect(note).toContain("session.codexAccountId ? requireCodexAccount(session.codexAccountId).configDir : undefined");
   });
 });

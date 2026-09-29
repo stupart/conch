@@ -57,6 +57,7 @@ export interface RegistrySnapshotOptions extends CodexSessionRegistryOptions, At
 
 export interface SessionInfo {
   claudeAccountId?: string;
+  codexAccountId?: string;
   claudeConfigDir?: string;
   accountLabel?: string;
   /**
@@ -1146,4 +1147,20 @@ export function findTranscript(
     if (path) return path;
   }
   return undefined;
+}
+
+/** Observe one Codex profile without scanning another provider's directory. */
+export async function codexRegistrySnapshot(codexHome: string, options: RegistrySnapshotOptions = {}): Promise<RegistrySnapshot> {
+  const scoped = { ...options, codexHome };
+  const hooked = readCodexSessions(scoped);
+  const observed = await readCodexThreads(scoped);
+  const entries = new Map([...observed.entries, ...hooked.entries].map(entry => [entry.sessionId, entry]));
+  let infos = await Promise.all([...entries.values()].map(entry => toInfo("", entry, "codex")));
+  if (infos.filter(info => info.pid).length >= 2) {
+    const parents = await (options.processParents ?? processParentTable)();
+    if (parents) infos = withStartedBy(infos, parents);
+  }
+  const declared = workingFolderOverrides();
+  infos = infos.map(info => declared[info.sessionId] ? { ...info, workDirs: declared[info.sessionId] } : info);
+  return { infos, liveIds: new Set(entries.keys()), complete: hooked.complete && observed.complete };
 }

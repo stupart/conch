@@ -4,6 +4,7 @@ import SwiftUI
 struct ResumableSession: Decodable, Identifiable, Hashable, Sendable {
     let sessionId: String
     let claudeAccountId: String?
+    let codexAccountId: String?
     let accountLabel: String?
     let backend: String
     let label: String
@@ -11,7 +12,7 @@ struct ResumableSession: Decodable, Identifiable, Hashable, Sendable {
     /// Epoch milliseconds. Used for "3h" and for ordering.
     let updatedAt: Double
 
-    var id: String { "\(claudeAccountId ?? "default"):\(sessionId)" }
+    var id: String { "\(backend):\(claudeAccountId ?? codexAccountId ?? "default"):\(sessionId)" }
 
     /// "3h", "2d" — the same shorthand the session list already uses, because
     /// this is the same question asked of older rows.
