@@ -655,7 +655,7 @@ private struct StartSessionSheet: View {
         }
         .sheet(isPresented: $managingAccounts, onDismiss: { Task { await accounts.send("list") } }) {
             VStack(spacing: 0) {
-                ClaudeAccountsView()
+                ClaudeAccountsView(initialTab: "profiles")
                 HStack { Spacer(); Button("Done") { managingAccounts = false }.keyboardShortcut(.cancelAction) }
                     .padding(.horizontal, 22).padding(.bottom, 16)
             }.frame(width: 640, height: 520)

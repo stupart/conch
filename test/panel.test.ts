@@ -324,6 +324,7 @@ describe("buildPublishedState — external session snapshot", () => {
       v: 1,
       features: { deliverables: 4, viewedState: 1 },
       ownerDeviceId: "test-device",
+      execution: { runtimes: [{ id: "device:test-device", kind: "device", ownerDeviceId: "test-device", label: "test-device" }], accounts: [], connections: [] },
       ts: 1_234_567,
       mode: { muted: false, paused: true, holding: 2 },
       live: {
@@ -342,6 +343,7 @@ describe("buildPublishedState — external session snapshot", () => {
       rows: [
         {
           id: "needs",
+          execution: { providerId: "claude", runtimeId: "device:test-device" },
           at: 40,
           label: "Need",
           status: "needs",
@@ -358,6 +360,7 @@ describe("buildPublishedState — external session snapshot", () => {
         },
         {
           id: "waiting",
+          execution: { providerId: "claude", runtimeId: "device:test-device" },
           at: 30,
           label: "Wait",
           status: "waiting",

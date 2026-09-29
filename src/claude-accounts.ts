@@ -1,6 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { conchHome } from "./home.ts";
+import type { ExecutionCatalog } from "./execution-model.ts";
+import type { SwapDashboard } from "./claude-swap.ts";
 
 /** A local launch profile. Claude owns all credentials and subscription billing. */
 export interface ClaudeAccount {
@@ -17,7 +19,7 @@ export interface ClaudeAccountStatus extends ClaudeAccount {
 
 export type ClaudeAccountRequest = {
   kind: "claude-accounts";
-  action: "list" | "add" | "remove" | "login" | "refresh";
+  action: "list" | "add" | "remove" | "login" | "refresh" | "usage";
   id?: string;
   label?: string;
   configDir?: string;
@@ -26,6 +28,8 @@ export interface ClaudeAccountsReply {
   kind: "claude-accounts";
   accounts: ClaudeAccountStatus[];
   loginOpened?: true;
+  execution?: ExecutionCatalog;
+  usage?: SwapDashboard;
 }
 
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
@@ -33,7 +37,7 @@ export const validAccountId = (value: unknown): value is string =>
   typeof value === "string" && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(value);
 
 export function accountRequestError(value: Record<string, unknown>): string | undefined {
-  if (!["list", "add", "remove", "login", "refresh"].includes(String(value.action))) return "Unknown account action";
+  if (!["list", "add", "remove", "login", "refresh", "usage"].includes(String(value.action))) return "Unknown account action";
   if (value.id !== undefined && !validAccountId(value.id)) return "Invalid Claude account id";
   if (["remove", "login", "refresh"].includes(String(value.action)) && !validAccountId(value.id)) return "Choose a Claude account";
   if (value.action === "add") {

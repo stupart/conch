@@ -4,7 +4,7 @@ The Mac app can keep several Claude sign-ins available and choose one when start
 
 ## Use it
 
-1. Open **Settings → Accounts**, or **New session → Account → Manage**.
+1. Open **Settings → Accounts → Launch profiles**, or **New session → Account → Manage**.
 2. Add a name such as Work. Conch assigns a separate folder, or you can select an existing Claude configuration folder.
 3. Choose **Sign in** and finish Claude's official login in Terminal and your browser. Choose a Claude subscription account for Max or Pro.
 4. Return to Conch and choose **Check status**. The CLI supplies the sign-in state, email, and subscription type when available.
@@ -31,11 +31,13 @@ Conch adds its lifecycle hooks to the selected configuration at login/launch usi
 {"kind":"claude-accounts","action":"add","label":"Work"}
 ```
 
-Other actions are `list`, `refresh`, `login`, and `remove`; the latter three take the returned account `id`. A `session-start` request may include `claudeAccountId`. Omitting it preserves existing callers' behavior. The CLI also accepts `conch start claude --account <profile-id>`.
+Other actions are `list`, `refresh`, `login`, `remove`, and `usage`; `refresh`, `login`, and `remove` take the returned account `id`. `usage` reads the optional claude-swap collector. A `session-start` request may include `claudeAccountId`. Omitting it preserves existing callers' behavior. The CLI also accepts `conch start claude --account <profile-id>`.
 
 ## Scope
 
-This version manages account choice and reports authentication status. It does not purchase subscriptions, pool allowances, show quota/reset meters, rotate on rate limits, or move a conversation between account roots. Keep histories where Claude created them; copying the same conversation UUID between profile folders is not a migration workflow. Separate profile directories do not isolate keyless Claude Console/Anthropic profile authentication, which Claude stores outside those directories.
+This version manages account choice and reports authentication status. Its Usage tab adapts claude-swap's dashboard and reads quota/reset information when that optional collector is installed and configured. It does not purchase subscriptions, pool allowances, rotate on rate limits, or move a conversation between account roots. Keep histories where Claude created them; copying the same conversation UUID between profile folders is not a migration workflow. Separate profile directories do not isolate keyless Claude Console/Anthropic profile authentication, which Claude stores outside those directories.
+
+See [accounts and runtimes](accounts-and-runtimes.md) for the independent identity/location model, collector setup boundary, and open-source attribution.
 
 The native account UI and picker are Mac features. Other clients that omit an account continue to use their existing default behavior.
 
@@ -45,4 +47,4 @@ The native account UI and picker are Mac features. Other clients that omit an ac
 - [T3 Code's Claude provider guide, v0.0.42](https://github.com/pingdotgg/t3code/blob/v0.0.42/docs/user/providers-claude.md)
 - [T3 Code's environment construction](https://github.com/pingdotgg/t3code/blob/v0.0.42/apps/server/src/provider/Drivers/ClaudeHome.ts)
 
-The implementation is original Conch code. T3 Code informed the separate-directory approach and visible account identity.
+T3 Code informed the separate-directory approach and visible account identity. The native usage dashboard adapts claude-swap's MIT-licensed presentation; its notice is included in the source and app.

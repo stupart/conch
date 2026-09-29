@@ -66,7 +66,9 @@ import { currentTurnText } from "./transcript-turn.ts";
 import {
   existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
+import { deviceExecutionCatalog } from "./execution-model.ts";
+import { readSwapDashboard } from "./claude-swap.ts";
 import { loadDeviceId } from "./device-identity.ts";
 import { clearIdentity, writeIdentity } from "./daemon-identity.ts";
 import {
@@ -692,6 +694,7 @@ export function buildDaemonPublishedState(
     dismissedSessionIds,
     now,
     {
+      runtimeLabel: hostname(),
       transcriptPathForSessionId: (sessionId) =>
         sessionTranscriptPaths?.get(sessionId) ?? findTranscript(cfg.claudeDir, sessionId),
       voiceForLabel: (label) => voiceFor(cfg, label),
@@ -2641,7 +2644,10 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         accounts.splice(accounts.findIndex((item) => item.id === account.id), 1, status);
       }
       void renderSessionPanel();
-      return { kind: "claude-accounts", accounts, ...(message.action === "login" ? { loginOpened: true as const } : {}) };
+      return { kind: "claude-accounts", accounts,
+        execution: deviceExecutionCatalog(ownerDeviceId, hostname(), accounts),
+        ...(message.action === "usage" ? { usage: await readSwapDashboard() } : {}),
+        ...(message.action === "login" ? { loginOpened: true as const } : {}) };
     },
     readCapabilities: (message) => {
       const observations: AgentCapabilityObservation[] = [];

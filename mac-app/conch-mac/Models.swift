@@ -29,6 +29,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
     }
 
     let ownerDeviceId: String
+    let execution: ExecutionCatalog?
     let newerDaemon: Bool
     let ts: TimeInterval
     let mode: ModeState
@@ -99,6 +100,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         case v
         case features
         case ownerDeviceId
+        case execution
         case deliveries
         case ts
         case mode
@@ -122,6 +124,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
     init(
         v: Int,
         ownerDeviceId: String = "",
+        execution: ExecutionCatalog? = nil,
         ts: TimeInterval,
         mode: ModeState,
         live: LiveState,
@@ -144,6 +147,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
     ) {
         self.v = v
         self.ownerDeviceId = ownerDeviceId
+        self.execution = execution
         newerDaemon = v > Self.knownVersion
         self.ts = ts
         self.mode = mode
@@ -180,6 +184,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
 
         v = version
         ownerDeviceId = (try? container.decodeIfPresent(String.self, forKey: .ownerDeviceId)) ?? ""
+        execution = try? container.decodeIfPresent(ExecutionCatalog.self, forKey: .execution)
         features = try? container.decodeIfPresent(Features.self, forKey: .features)
         newerDaemon = version > Self.knownVersion
         rows = Self.decodeLossyArray(
@@ -229,6 +234,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
     func hasSamePresentation(as other: PublishedState) -> Bool {
         v == other.v
             && ownerDeviceId == other.ownerDeviceId
+            && execution == other.execution
             && mode == other.mode
             && live == other.live
             && reply == other.reply
@@ -1030,6 +1036,7 @@ struct AgentMark: Decodable, Equatable, Sendable {
 struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     let accountLabel: String?
     let claudeAccountId: String?
+    let execution: SessionExecution?
     let id: String
     let label: String
     /// This is presentation metadata, not an implementation choice: it answers
@@ -1102,6 +1109,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         case label
         case accountLabel
         case claudeAccountId
+        case execution
         case backend
         case context
         case settings
@@ -1137,6 +1145,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         backend: String? = nil,
         accountLabel: String? = nil,
         claudeAccountId: String? = nil,
+        execution: SessionExecution? = nil,
         context: SessionContext? = nil,
         settings: SessionSettingsState? = nil,
         status: RowStatus?,
@@ -1169,6 +1178,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         self.backend = backend
         self.accountLabel = accountLabel
         self.claudeAccountId = claudeAccountId
+        self.execution = execution
         self.context = context
         self.settings = settings
         self.status = status
@@ -1205,6 +1215,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         backend = try? container.decodeIfPresent(String.self, forKey: .backend)
         accountLabel = try? container.decodeIfPresent(String.self, forKey: .accountLabel)
         claudeAccountId = try? container.decodeIfPresent(String.self, forKey: .claudeAccountId)
+        execution = try? container.decodeIfPresent(SessionExecution.self, forKey: .execution)
         context = try? container.decodeIfPresent(SessionContext.self, forKey: .context)
         settings = try? container.decodeIfPresent(SessionSettingsState.self, forKey: .settings)
         status = try? container.decodeIfPresent(RowStatus.self, forKey: .status)
@@ -1248,6 +1259,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             backend: backend,
             accountLabel: accountLabel,
             claudeAccountId: claudeAccountId,
+            execution: execution,
             context: context,
             settings: settings,
             status: status,

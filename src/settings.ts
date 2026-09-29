@@ -1,4 +1,6 @@
 import { accountRequestError, validAccountId, type ClaudeAccountRequest, type ClaudeAccountsReply } from "./claude-accounts.ts";
+import { parseExecutionCatalog } from "./execution-model.ts";
+import { parseSwapDashboard } from "./claude-swap.ts";
 import { connect } from "node:net";
 import { ControlFrameReader, encodeControlFrame } from "./control-framing.ts";
 import { validateHistoryRequest, validateHistoryResponse, type HistoryRequest, type HistoryResponse } from "./history.ts";
@@ -1577,11 +1579,14 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
       || typeof account.configDir !== "string" || !["unchecked", "signed-in", "signed-out", "unavailable"].includes(String(account.status)))) {
       return { ok: false, err: "invalid Claude accounts response" };
     }
+    const execution = parseExecutionCatalog(value.execution);
+    const usage = parseSwapDashboard(value.usage);
+    if ((value.execution !== undefined && !execution) || (value.usage !== undefined && !usage)) return { ok: false, err: "invalid account dashboard response" };
     return { ok: true, value: { kind: "claude-accounts", accounts: value.accounts.map((account) => ({
       id: account.id, label: account.label, configDir: account.configDir, status: account.status,
       ...(typeof account.email === "string" ? { email: account.email } : {}),
       ...(typeof account.subscription === "string" ? { subscription: account.subscription } : {}),
-    })), ...(value.loginOpened === true ? { loginOpened: true } : {}) } };
+    })), ...(execution ? { execution } : {}), ...(usage ? { usage } : {}), ...(value.loginOpened === true ? { loginOpened: true } : {}) } };
   }
   if (["history-page", "history-item", "history-off", "history-error"].includes(value.kind)) return validateHistoryResponse(value);
   if (value.kind === "agent-capabilities") {

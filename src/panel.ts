@@ -13,6 +13,7 @@ import type { SpeechEngineStatus } from "./speech-engine.ts";
 import type { PublishedPhone } from "./phone-setup.ts";
 import type { PublishedPractice } from "./practice.ts";
 import type { PublishedSessionSettings, SessionSettingsCatalog } from "./session-settings.ts";
+import { deviceExecutionCatalog, sessionExecution, type ExecutionCatalog, type SessionExecution } from "./execution-model.ts";
 
 export type PanelConchState = "idle" | "muted" | "paused" | "speaking" | "listening" | "recording" | "transcribing";
 
@@ -253,6 +254,7 @@ export interface PanelModel {
 export interface PublishedSessionRow {
   id: string;
   label: string;
+  execution?: SessionExecution;
   /**
    * Which agent this session runs, because the answer changes what a client
    * should send it. Images are the first case: Claude resizes anything past
@@ -406,6 +408,7 @@ export interface PublishedState {
   };
   /** Stable identity of the daemon installation that owns every local session key. */
   ownerDeviceId: string;
+  execution?: ExecutionCatalog;
   ts: number;
   mode: DashboardMode;
   live: {
@@ -612,6 +615,7 @@ export function buildPublishedState(
   dismissed: ReadonlySet<string>,
   now: number,
   options: {
+    runtimeLabel?: string;
     transcriptPathForSessionId?(sessionId: string): string | undefined;
     /** Resolve the effective voice, including stable automatic assignment. */
     voiceForLabel?(label: string): string | undefined;
@@ -640,6 +644,8 @@ export function buildPublishedState(
     // 4: a deliverable the phone can't draw carries a snapshot of it from the Mac (`preview`).
     features: { deliverables: 4, viewedState: 1, ...(options.settingsForSessionId ? { sessionSettings: 1 as const } : {}) },
     ownerDeviceId,
+    execution: deviceExecutionCatalog(ownerDeviceId, options.runtimeLabel ?? ownerDeviceId,
+      model.rows.flatMap((row) => row.claudeAccountId ? [{ id: row.claudeAccountId, label: row.accountLabel ?? row.claudeAccountId }] : [])),
     ts: now,
     ...(options.audio ? { audioControl: options.audio.control, audioOutbox: options.audio.outbox } : {}),
     ...(options.deliveries?.length ? { deliveries: [...options.deliveries] } : {}),
@@ -667,6 +673,7 @@ export function buildPublishedState(
       return {
         id: row.sessionId,
         label: row.label,
+        execution: sessionExecution(ownerDeviceId, row.backend ?? "claude", row.claudeAccountId),
         ...(row.backend ? { backend: row.backend } : {}),
         ...(row.accountLabel ? { accountLabel: row.accountLabel } : {}),
         ...(row.claudeAccountId ? { claudeAccountId: row.claudeAccountId } : {}),
