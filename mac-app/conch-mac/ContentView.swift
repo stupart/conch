@@ -799,7 +799,7 @@ private struct StartSessionSheet: View {
     /// is a conversation about files that are not there.
     private var footnote: String {
         if mode == .new {
-            return "Opens \(backend.label) in Terminal, outside conch\u{2019}s own tmux session."
+            return "Opens \(backend.label) in Terminal on this Mac."
         }
         guard let picked = resumeSelection else {
             return "Pick a session to restart. It reopens with its own agent, in its own folder."

@@ -130,6 +130,10 @@ public struct StartAccountPicker: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let selected = catalog.accounts.first(where: { $0.id == selection }) {
+                if locked || catalog.accounts.count < 2 {
+                    identity(selected).padding(.vertical, 4)
+                        .accessibilityElement(children: .combine)
+                } else {
                 Button { expanded.toggle() } label: {
                     HStack(spacing: 12) {
                         identity(selected)
@@ -142,9 +146,9 @@ public struct StartAccountPicker: View {
                     .padding(.vertical, 4)
                 }
                 .buttonStyle(.plain)
-                .disabled(locked || catalog.accounts.count < 2)
                 .accessibilityLabel("Account: \(selected.email ?? selected.label)")
-                .accessibilityHint(locked ? "This session uses its original account" : "Show account choices and usage")
+                .accessibilityHint("Show account choices and usage")
+                }
                 usage(selected)
             } else {
                 Text("Account unavailable. Refresh or manage accounts.")
