@@ -23,6 +23,10 @@ export interface StartSessionRequest {
   /** A registered local Claude profile, never an arbitrary environment override. */
   claudeAccountId?: string;
   codexAccountId?: string;
+  /** Explicit local conversation handoff; credentials stay in their own profile. */
+  claudeSourceAccountId?: string;
+  /** Daemon-owned snapshot, never accepted from a wire request. */
+  claudeHandoff?: { transcriptPath: string; sessionId: string };
   resumeSessionId?: string;
   /** Claude cloud session to open as a new local copy, never a live join. */
   teleportSessionId?: string;
@@ -227,14 +231,15 @@ export function startRequestFromArgv(args: string[]): StartSessionRequest {
 
 /** A Terminal-started agent replaces its shell, so leaving the agent also completes the tab cleanly. */
 export function terminalSessionCommand(request: StartSessionRequest): string {
+  if (request.claudeSourceAccountId !== undefined && !request.claudeHandoff) throw new Error("Account handoff must be prepared by the daemon");
   const error = teleportRequestError(request) ?? startOptionsError(request);
   if (error) throw new Error(error);
   const cwd = request.cwd?.trim() || conchHome();
   const adapter = adapterFor(request.backend);
   const account = claudeAccountForLaunch(request);
   const codexAccount = codexAccountForLaunch(request);
-  const environment = account ? claudeProfileCommandPrefix(account) : codexAccount ? codexProfileCommandPrefix(codexAccount) : "";
-  const resume = request.resumeSessionId?.trim();
+  const environment = account ? claudeProfileCommandPrefix(account, request.claudeHandoff ? true : undefined) : codexAccount ? codexProfileCommandPrefix(codexAccount) : "";
+  const resume = request.claudeHandoff?.transcriptPath ?? request.resumeSessionId?.trim();
   const teleport = request.teleportSessionId?.trim();
   const args = teleport && adapter.teleportArgs
     ? adapter.teleportArgs(shellQuote(teleport))
@@ -249,7 +254,8 @@ export function terminalSessionCommand(request: StartSessionRequest): string {
     : "";
   const trust = request.trustFolder ? adapter.trustFolderArgs(cwd) : "";
   return `cd -- ${shellQuote(cwd)} && exec ${environment}${adapter.executable}${bypass}${trust}${args}`
-    + renderStartOptions(adapter, request.options);
+    + renderStartOptions(adapter, request.options)
+    + (request.claudeHandoff ? ` --session-id ${shellQuote(request.claudeHandoff.sessionId)}` : "");
 }
 
 /**
@@ -442,11 +448,11 @@ export function claudeAccountCommandPrefix(configDir: string, isolate = true): s
   return `env ${isolate ? CLAUDE_ACCOUNT_ENV_REMOVE.map((key) => `-u ${key}`).join(" ") + " " : ""}CLAUDE_CONFIG_DIR=${shellQuote(configDir)} `;
 }
 
-function claudeProfileCommandPrefix(account: ClaudeAccount): string {
+function claudeProfileCommandPrefix(account: ClaudeAccount, isolate = account.id !== "default"): string {
   // An unset default must stay unset: explicitly setting ~/.claude can select
   // a different macOS Keychain entry. Additional profiles always name a root.
-  if (account.id === "default" && process.env.CLAUDE_CONFIG_DIR === undefined) return "env -u CLAUDE_CONFIG_DIR ";
-  return claudeAccountCommandPrefix(account.configDir, account.id !== "default");
+  if (account.id === "default" && process.env.CLAUDE_CONFIG_DIR === undefined) return `env ${isolate ? CLAUDE_ACCOUNT_ENV_REMOVE.map(key => `-u ${key}`).join(" ") + " " : ""}-u CLAUDE_CONFIG_DIR `;
+  return claudeAccountCommandPrefix(account.configDir, isolate);
 }
 
 /** Authentication stays in Anthropic's own CLI and browser flow. */

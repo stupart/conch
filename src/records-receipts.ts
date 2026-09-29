@@ -23,6 +23,7 @@ export type RecordObserver = (event: RecordObservation) => void;
 
 const terminal = new Set<RecordReceipt["state"]>(["delivered", "staged", "failed", "unknown", "published", "opened", "completed", "interrupted"]);
 const allowedStates: Record<RecordReceipt["kind"], readonly RecordReceipt["state"][]> = {
+  handoff: ["accepted", "started", "failed"],
   delivery: ["accepted", "delivered", "staged", "failed", "unknown"],
   review: ["published", "opened", "failed", "unknown"],
   speech: ["queued", "started", "completed", "interrupted", "failed", "unknown"],

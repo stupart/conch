@@ -348,7 +348,7 @@ describe("conch start", () => {
 
   test("the daemon hands the request's options to the launcher", () => {
     const source = read("src/daemon.ts");
-    const from = source.indexOf("start: (message) =>");
+    const from = source.indexOf("start: async (message) =>");
     expect(from).toBeGreaterThan(-1);
     expect(source.slice(from, source.indexOf("folderTrusted:", from))).toContain("...message");
   });

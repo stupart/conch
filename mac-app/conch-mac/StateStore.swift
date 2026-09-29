@@ -729,7 +729,7 @@ final class StateStore: ObservableObject {
 
     /// What came back from asking the daemon to start a session.
     enum StartOutcome: Equatable {
-        case started
+        case started(sessionId: String? = nil)
         /// Codex will not run here until it is trusted, and it can be told at
         /// launch — so the person gets the choice rather than a session that
         /// silently sits on a prompt.
@@ -742,6 +742,7 @@ final class StateStore: ObservableObject {
         resumeSessionId: String?,
         teleportSessionId: String? = nil,
         claudeAccountId: String? = nil,
+        claudeSourceAccountId: String? = nil,
         codexAccountId: String? = nil,
         cwd: String?,
         trustFolder: Bool = false,
@@ -755,6 +756,7 @@ final class StateStore: ObservableObject {
             resumeSessionId: resumed,
             teleportSessionId: teleport,
             claudeAccountId: claudeAccountId,
+            claudeSourceAccountId: claudeSourceAccountId,
             codexAccountId: codexAccountId,
             cwd: workingDirectory,
             trustFolder: trustFolder ? true : nil,
@@ -762,7 +764,7 @@ final class StateStore: ObservableObject {
         )
         let outcome = await socketClient.request(
             request,
-            timeout: Self.sessionLifecycleTimeout
+            timeout: claudeSourceAccountId == nil ? Self.sessionLifecycleTimeout : 25
         )
 
         switch outcome {
@@ -785,7 +787,7 @@ final class StateStore: ObservableObject {
                 // A teleport acknowledgement only confirms the Terminal launch. A folder
                 // that needed trusting was asked about here first (`needsTrust`), and
                 // the daemon answers the agent's own prompt, so a start is a start.
-                return .started
+                return .started(sessionId: started.sessionId)
             case let .error(error):
                 let message = Self.nonempty(error.error) ?? "Could not start session"
                 reportAppError(operation: "session-start", message: message)

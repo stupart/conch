@@ -336,7 +336,7 @@ export interface RuntimeControlDispatchOptions {
   readInstall?(
     message: Extract<RuntimeControlMessage, { kind: "agent-capabilities" }>,
   ): AgentInstall | undefined | Promise<AgentInstall | undefined>;
-  start(message: Extract<RuntimeControlMessage, { kind: "session-start" }>): void | Promise<void>;
+  start(message: Extract<RuntimeControlMessage, { kind: "session-start" }>): void | { sessionId: string } | Promise<void | { sessionId: string }>;
   /** Whether the agent already trusts a folder; absent or null means unknown. */
   folderTrusted?(backend: SessionBackend, cwd: string, accountId?: string): boolean | null;
   /** Resolves to the flags a restart did not carry over; nothing for a plain close. */
@@ -426,9 +426,10 @@ export async function applyRuntimeControlMessage(
       if (message.trustFolder !== true && message.cwd && options.folderTrusted?.(message.backend, message.cwd, message.claudeAccountId ?? message.codexAccountId) === false) {
         return { kind: "session-needs-trust", backend: message.backend, cwd: message.cwd };
       }
-      await options.start(message);
+      const launched = await options.start(message);
       return {
         kind: "session-started",
+        ...(launched ? { sessionId: launched.sessionId } : {}),
         backend: message.backend,
         resumed: Boolean(message.resumeSessionId),
         ...(message.teleportSessionId ? { teleported: true as const } : {}),

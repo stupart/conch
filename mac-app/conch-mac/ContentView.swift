@@ -485,6 +485,8 @@ private struct StartSessionSheet: View {
 
     @StateObject private var accounts = ClaudeAccountsStore()
     @State private var claudeAccountId = "default"
+    @State private var resumeAccountId: String?
+    @State private var launchedSessionId: String?
     @StateObject private var codexAccounts = ClaudeAccountsStore(providerId: "codex")
     @State private var codexAccountId = "default"
     @Environment(\.openSettings) private var openAccountSettings
@@ -512,6 +514,11 @@ private struct StartSessionSheet: View {
     @State private var resumeQuery = ""
     @State private var resumeSelection: ResumableSession?
     @State private var isLoadingResumable = false
+
+    private var isAccountHandoff: Bool {
+        mode == .resume && effectiveBackend == .claude && resumeSelection != nil
+            && resumeAccountId != nil && resumeAccountId != (resumeSelection?.claudeAccountId ?? "default")
+    }
 
     private var canStart: Bool {
         guard !isStarting, !openedTeleport else { return false }
@@ -603,7 +610,24 @@ private struct StartSessionSheet: View {
 
             if mode != .help {
                 if mode == .resume {
-                    if let label = resumeSelection?.accountLabel {
+                    if let picked = resumeSelection, effectiveBackend == .claude {
+                        Picker("Continue with", selection: Binding(
+                            get: { resumeAccountId ?? picked.claudeAccountId ?? "default" },
+                            set: { resumeAccountId = $0 }
+                        )) {
+                            ForEach(accounts.accounts) { account in
+                                Text([account.label, account.email].compactMap { $0 }.joined(separator: " · "))
+                                    .tag(account.id)
+                                    .disabled(account.id != (picked.claudeAccountId ?? "default") && account.status != "signed-in")
+                            }
+                        }
+                        if isAccountHandoff {
+                            Text("Creates a new conversation with this history in the same folder. Pause the original first; both sessions share your files. Account settings and tools may differ.")
+                                .font(ConchTypography.font(size: 11.5))
+                                .foregroundStyle(ConchPalette.textDim)
+                        }
+                        Button("Add or manage accounts…") { settingsSection = "providers"; dismiss(); openAccountSettings() }
+                    } else if let label = resumeSelection?.accountLabel {
                         Label(label, systemImage: "person.crop.circle")
                             .font(ConchTypography.font(size: 12))
                     }
@@ -649,13 +673,14 @@ private struct StartSessionSheet: View {
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button(isStarting ? "Opening…" : (mode == .teleport ? "Open in Terminal" : "Start")) {
+                Button(isStarting ? "Opening…" : (mode == .teleport ? "Open in Terminal" : (isAccountHandoff ? "Continue with account" : "Start"))) {
                     start()
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(!canStart)
             }
         }
+        .onChange(of: resumeSelection?.id) { _, _ in resumeAccountId = nil; launchedSessionId = nil }
         .task { await accounts.send("list") }
         .task { await codexAccounts.send("list") }
         .onChange(of: codexAccounts.accounts.map(\.id)) { _, ids in
@@ -736,6 +761,7 @@ private struct StartSessionSheet: View {
         guard let picked = resumeSelection else {
             return "Pick a session to restart. It reopens with its own agent, in its own folder."
         }
+        if isAccountHandoff { return "Opens a fork in \(picked.shortCwd), using the selected account. The original history stays intact." }
         let agent = picked.backend.lowercased() == "codex" ? "Codex" : "Claude"
         return "Restarts \(agent) in \(picked.shortCwd), in Terminal."
     }
@@ -744,6 +770,7 @@ private struct StartSessionSheet: View {
     /// while resuming, so the sheet never shows a switch that does nothing.
     private var shownOptions: [StartOption] {
         StartOption.table(for: effectiveBackend).filter { !$0.resumeOnly || mode == .resume }
+            .filter { !(isAccountHandoff && $0.name == "fork-session") }
     }
 
     /// Exactly the shown options the person set. The daemon validates them.
@@ -857,7 +884,8 @@ private struct StartSessionSheet: View {
                 resumeSessionId: mode == .resume ? resumeSelection?.sessionId : nil,
                 teleportSessionId: mode == .teleport ? teleportSessionId : nil,
                 claudeAccountId: effectiveBackend == .claude
-                    ? (mode == .resume ? resumeSelection?.claudeAccountId : (accounts.accounts.isEmpty ? nil : claudeAccountId)) : nil,
+                    ? (mode == .resume ? (resumeAccountId ?? resumeSelection?.claudeAccountId) : (accounts.accounts.isEmpty ? nil : claudeAccountId)) : nil,
+                claudeSourceAccountId: isAccountHandoff ? (resumeSelection?.claudeAccountId ?? "default") : nil,
                 codexAccountId: effectiveBackend == .codex
                     ? (mode == .resume ? resumeSelection?.codexAccountId : (codexAccounts.accounts.isEmpty ? nil : codexAccountId)) : nil,
                 cwd: effectiveCwd,
@@ -876,8 +904,8 @@ private struct StartSessionSheet: View {
                 isStarting = false
                 pendingTrust = cwd
                 return
-            case .started:
-                break
+            case let .started(sessionId):
+                launchedSessionId = sessionId
             }
             if mode == .teleport {
                 isStarting = false
@@ -925,11 +953,11 @@ private struct StartSessionSheet: View {
     /// `rounds` of 0.8 s: 25 is long enough for a cold agent on a busy machine and short
     /// enough that a stuck one is noticed while you still remember starting it.
     private func waitForSession(rounds: Int = 25) async -> SessionRow.ID? {
-        let expected = mode == .resume ? resumeSelection?.sessionId : nil
+        let expected = launchedSessionId ?? (mode == .resume ? resumeSelection?.sessionId : nil)
         // Sessions only: a session's agents are rows too, and one appearing elsewhere is
         // not the session you just started.
         let expectedAccount = effectiveBackend == .claude
-            ? (mode == .resume ? resumeSelection?.claudeAccountId : claudeAccountId)
+            ? (mode == .resume ? (resumeAccountId ?? resumeSelection?.claudeAccountId) : claudeAccountId)
             : (mode == .resume ? resumeSelection?.codexAccountId : codexAccountId)
         let sessions = { (rows: [SessionRow]) in rows.filter {
             $0.parentSessionId == nil && $0.backend == effectiveBackend.rawValue

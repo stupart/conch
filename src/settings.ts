@@ -1,3 +1,4 @@
+import { claudeHandoffError } from "./claude-account-handoff.ts";
 import { accountRequestError, validAccountId, type ClaudeAccountRequest, type ClaudeAccountsReply } from "./claude-accounts.ts";
 import { parseExecutionCatalog } from "./execution-model.ts";
 import { parseSwapDashboard } from "./claude-swap.ts";
@@ -862,7 +863,8 @@ export type RuntimeControlMessage =
   | {
     kind: "session-start";
     claudeAccountId?: string;
-  codexAccountId?: string;
+    claudeSourceAccountId?: string;
+    codexAccountId?: string;
     backend: "claude" | "codex";
     /** Answering Codex's trust prompt in advance, for this launch only. */
     trustFolder?: boolean;
@@ -996,6 +998,8 @@ export type RuntimeControlResponse =
   }
   | {
     kind: "session-started";
+    /** Exact destination identity of a prepared account handoff. */
+    sessionId?: string;
     backend: "claude" | "codex";
     resumed: boolean;
     /** Opened in Terminal; does not verify authentication, download or checkout. */
@@ -1351,6 +1355,9 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
       if (!validated.value.startsWith("/")) return { ok: false, err: "cwd must be an absolute path" };
       cwd = validated.value;
     }
+    const handoffError = claudeHandoffError({ backend: value.backend, resumeSessionId, teleportSessionId, cwd,
+      claudeAccountId: value.claudeAccountId as string | undefined, claudeSourceAccountId: value.claudeSourceAccountId as string | undefined });
+    if (handoffError) return { ok: false, err: handoffError };
     const teleportError = teleportRequestError({ backend: value.backend, resumeSessionId, teleportSessionId, cwd });
     if (teleportError) return { ok: false, err: teleportError };
     // Every key against the agent's own table, every value against its kind;
@@ -1365,6 +1372,7 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
       value: {
         kind: "session-start",
         ...(typeof value.claudeAccountId === "string" ? { claudeAccountId: value.claudeAccountId } : {}),
+        ...(typeof value.claudeSourceAccountId === "string" ? { claudeSourceAccountId: value.claudeSourceAccountId } : {}),
         ...(typeof value.codexAccountId === "string" ? { codexAccountId: value.codexAccountId } : {}),
         backend: value.backend,
         // The person answered Codex's trust question in conch. Only ever true
@@ -1687,6 +1695,7 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
     return { ok: true, value: { kind: "session-needs-trust", backend: value.backend, cwd: value.cwd } };
   }
   if (value.kind === "session-started") {
+    if (value.sessionId !== undefined && !validateSessionId(value.sessionId).ok) return { ok: false, err: "invalid started session id" };
     if ((value.backend !== "claude" && value.backend !== "codex") || typeof value.resumed !== "boolean") {
       return { ok: false, err: "invalid session started response" };
     }
@@ -1694,6 +1703,7 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
       ok: true,
       value: {
         kind: "session-started",
+        ...(typeof value.sessionId === "string" ? { sessionId: value.sessionId } : {}),
         backend: value.backend,
         resumed: value.resumed,
         ...(value.teleported === true ? { teleported: true as const } : {}),

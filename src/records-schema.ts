@@ -128,4 +128,21 @@ ALTER TABLE items ADD COLUMN parent_native_id TEXT;
 -- Where a source used to be. A replacement taking a retired file's path is a logical
 -- rotation whichever of the two files discovery happens to reach first.
 ALTER TABLE sources ADD COLUMN previous_path TEXT;
+`, String.raw`
+DROP TRIGGER receipts_immutable_update;
+DROP TRIGGER receipts_immutable_delete;
+ALTER TABLE receipts RENAME TO receipts_before_handoff;
+CREATE TABLE receipts (
+  id TEXT PRIMARY KEY, session_id TEXT NOT NULL, action_id TEXT NOT NULL,
+  attempt_id TEXT, turn_id TEXT, item_id TEXT,
+  kind TEXT NOT NULL CHECK (kind IN ('delivery', 'review', 'speech', 'handoff')),
+  state TEXT NOT NULL, observed_at REAL NOT NULL, details_json TEXT
+);
+INSERT INTO receipts SELECT * FROM receipts_before_handoff;
+DROP TABLE receipts_before_handoff;
+CREATE INDEX receipts_action ON receipts(action_id, observed_at, id);
+CREATE TRIGGER receipts_immutable_update BEFORE UPDATE ON receipts
+BEGIN SELECT RAISE(ABORT, 'receipts are immutable'); END;
+CREATE TRIGGER receipts_immutable_delete BEFORE DELETE ON receipts
+BEGIN SELECT RAISE(ABORT, 'receipts are immutable'); END;
 `];
