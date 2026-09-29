@@ -4,11 +4,11 @@ Source: https://github.com/realiti4/claude-swap
 Revision: `3a4e5c14873eb5b32f182d55c68da98ac8c0db45` (`0.27.0b1`)
 Copyright (c) 2026 Onur Cetinkol. MIT licence: [LICENSE](LICENSE).
 
-Conch's `mac-app/conch-mac/ClaudeAccountsView.swift` adapts the account-card hierarchy,
-palette, 70%/90% severity thresholds, capped bar fill, measurement freshness and
+Conch's `mac-app/conch-mac/ClaudeAccountsView.swift` adapts the thin usage bars,
+70%/90% severity colours, capped bar fill, measurement freshness and
 reset-countdown presentation from `src/claude_swap/tui/{widgets,theme,data}.py`.
-The SwiftUI implementation uses native controls and accessible text, with higher
-contrast secondary text. It is a port of those presentation patterns, not an
+The SwiftUI implementation uses Conch’s dark colour/typography tokens, compact
+rows, on-demand account details and native controls with accessible text. It is a port of those presentation patterns, not an
 embedded Python/Textual dashboard. The licence is also bundled in the Mac app
 as `ClaudeSwapLicense.txt` and available from its Accounts screen.
 

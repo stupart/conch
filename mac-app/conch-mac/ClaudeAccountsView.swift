@@ -6,10 +6,11 @@ import ConchDesign
 // 3a4e5c14873eb5b32f182d55c68da98ac8c0db45. Copyright (c) 2026 Onur Cetinkol.
 // MIT: third-party/claude-swap/LICENSE and bundled ClaudeSwapLicense.txt.
 private enum SwapPalette {
-    static let background = Color(red: 20/255, green: 20/255, blue: 20/255)
-    static let surface = Color(red: 30/255, green: 30/255, blue: 30/255)
-    static let foreground = Color(red: 232/255, green: 228/255, blue: 222/255)
-    static let secondaryText = Color(white: 0.66)
+    static let background = ConchColor.ground.color(.dark)
+    static let surface = ConchColor.surface.color(.dark)
+    static let foreground = ConchColor.textPrimary.color(.dark)
+    static let secondaryText = ConchColor.textSecondary.color(.dark)
+    static let divider = ConchColor.hairline.color(.dark)
     static let track = Color(white: 58/255)
     static let accent = Color(red: 215/255, green: 135/255, blue: 95/255)
     static func severity(_ pct: Double) -> Color {
@@ -67,9 +68,10 @@ private func swapDuration(_ seconds: TimeInterval) -> String {
     return "\(minutes)m"
 }
 
-private struct SwapUsageCard: View {
+private struct SwapUsageRow: View {
     let account: SwapUsageAccount
     let now: Date
+    @State private var expanded = false
     private var age: TimeInterval? { swapDate(account.fetchedAt).map { now.timeIntervalSince($0) } }
     private var stale: Bool { account.lastGood || age == nil || (age ?? 0) > 300 || (age ?? 0) < -60 }
     private var freshness: String {
@@ -77,70 +79,81 @@ private struct SwapUsageCard: View {
         return age < 60 ? "Updated just now" : "Updated \(swapDuration(age)) ago"
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top, spacing: 10) {
-                Text(String(format: "%02d", account.number))
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .foregroundStyle(account.defaultLogin ? SwapPalette.accent : SwapPalette.secondaryText)
-                    .padding(7).background(SwapPalette.track.opacity(0.4), in: RoundedRectangle(cornerRadius: 5))
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(account.label).font(.system(size: 14, weight: .semibold)).textSelection(.enabled)
-                    if account.label != account.email {
-                        Text(account.email).font(.system(size: 11)).foregroundStyle(SwapPalette.secondaryText).textSelection(.enabled)
-                    }
-                    if let organization = account.organization, !organization.isEmpty {
-                        Text(organization).font(.system(size: 10)).foregroundStyle(SwapPalette.secondaryText)
-                    }
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Text(account.label).font(ConchTypography.font(size: 13, weight: .medium))
+                    .lineLimit(1).help(account.email)
+                if stale, !account.windows.isEmpty {
+                    Text("Cached").font(ConchTypography.font(size: 10))
+                        .foregroundStyle(SwapPalette.secondaryText).help(freshness)
                 }
                 Spacer(minLength: 10)
-                if account.defaultLogin {
-                    Label("Default login", systemImage: "circle.fill")
-                        .font(.system(size: 10)).foregroundStyle(SwapPalette.accent)
+                Button { expanded.toggle() } label: {
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .frame(width: 24, height: 24).contentShape(Rectangle())
                 }
+                .buttonStyle(.plain).foregroundStyle(SwapPalette.secondaryText)
+                .accessibilityLabel("\(expanded ? "Hide" : "Show") details for \(account.label)")
+                .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+                .help("Account details")
             }
             if account.windows.isEmpty {
-                Text(account.statusLabel == "Usage available" ? "No usage windows reported" : account.statusLabel)
-                    .font(.system(size: 12)).foregroundStyle(SwapPalette.secondaryText)
+                Text(account.statusLabel == "Usage available" ? "Usage unavailable" : account.statusLabel)
+                    .font(ConchTypography.font(size: 11)).foregroundStyle(SwapPalette.secondaryText)
             } else {
-                VStack(spacing: 9) {
+                VStack(spacing: 10) {
                     ForEach(Array(account.windows.enumerated()), id: \.offset) { _, window in
                         usageRow(window)
                     }
                 }
             }
-            HStack(spacing: 6) {
-                if stale { Image(systemName: "clock") }
-                Text(account.lastGood ? "Last known usage · \(account.statusLabel)" : (stale ? "Cached reading" : "Measured usage"))
-                Spacer()
-                Text(freshness)
-            }.font(.system(size: 10)).foregroundStyle(SwapPalette.secondaryText)
+            if expanded {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(account.email).textSelection(.enabled)
+                    if let organization = account.organization, !organization.isEmpty { Text(organization) }
+                    if account.defaultLogin { Text("Default login in claude-swap") }
+                    Text(account.lastGood ? "Last known usage · \(account.statusLabel)" : account.statusLabel)
+                    Text(freshness)
+                }
+                .font(ConchTypography.font(size: 11)).foregroundStyle(SwapPalette.secondaryText)
+                .padding(.top, 4)
+            }
         }
-        .padding(16)
-        .background(SwapPalette.surface, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(account.defaultLogin ? SwapPalette.accent.opacity(0.7) : SwapPalette.track, lineWidth: 1))
+        .padding(.vertical, 14)
     }
 
     private func usageRow(_ window: SwapUsageWindow) -> some View {
-        let elapsed = swapDate(window.resetsAt).map { $0 <= now } ?? false
-        let reset = swapDate(window.resetsAt).map { $0 <= now ? "Reset passed · refresh" : "Resets in \(swapDuration($0.timeIntervalSince(now)))" } ?? "Reset unknown"
-        return HStack(spacing: 10) {
-            Text(window.name).font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(SwapPalette.secondaryText).frame(width: 64, alignment: .leading)
+        let resetDate = swapDate(window.resetsAt)
+        let elapsed = resetDate.map { $0 <= now } ?? false
+        let reset = resetDate.map { $0 <= now ? "Refresh" : swapDuration($0.timeIntervalSince(now)) } ?? "—"
+        let resetDescription = resetDate.map { $0 <= now ? "Reset passed; refresh usage" : "Resets in \(swapDuration($0.timeIntervalSince(now)))" } ?? "Reset time unknown"
+        let name = window.name == "5 hour" ? "5h" : (window.name == "7 day" ? "7d" : window.name)
+        return HStack(spacing: 12) {
+            Text(name).font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(SwapPalette.secondaryText).frame(width: 46, alignment: .leading)
+                .lineLimit(1).help(window.name)
             GeometryReader { geometry in
+                let fill = geometry.size.width * min(100, max(0, window.pct)) / 100
                 ZStack(alignment: .leading) {
-                    Capsule().fill(SwapPalette.track)
-                    Capsule().fill(SwapPalette.severity(window.pct).opacity(stale || elapsed ? 0.5 : 1))
-                        .frame(width: geometry.size.width * min(100, max(0, window.pct)) / 100)
-                }
-            }.frame(height: 7).accessibilityHidden(true)
+                    Rectangle().fill(SwapPalette.track).frame(height: 2)
+                    Rectangle().fill(SwapPalette.severity(window.pct).opacity(stale || elapsed ? 0.5 : 1))
+                        .frame(width: fill, height: 3)
+                    if window.pct > 0, window.pct < 100 {
+                        Rectangle().fill(SwapPalette.background).frame(width: min(4, geometry.size.width - fill), height: 3)
+                            .offset(x: fill)
+                    }
+                }.frame(height: geometry.size.height)
+            }.frame(height: 8).accessibilityHidden(true)
             Text("\(Int(min(window.pct.rounded(), 9999)))%")
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
-                .foregroundStyle(SwapPalette.severity(window.pct)).frame(width: 44, alignment: .trailing)
-            Text(reset).font(.system(size: 10)).foregroundStyle(SwapPalette.secondaryText)
-                .frame(width: 146, alignment: .trailing)
+                .foregroundStyle(SwapPalette.severity(window.pct)).frame(width: 38, alignment: .trailing)
+            Text(reset).font(ConchTypography.font(size: 11)).monospacedDigit()
+                .foregroundStyle(SwapPalette.secondaryText).frame(width: 72, alignment: .trailing)
+                .help(resetDescription)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(window.name), \(Int(min(window.pct, 9999))) percent used, \(reset)\(stale ? ", cached reading" : "")")
+        .accessibilityLabel("\(window.name), \(Int(min(window.pct, 9999))) percent used, \(resetDescription)\(stale ? ", cached reading" : "")")
     }
 }
 
@@ -236,32 +249,40 @@ struct ClaudeAccountsView: View {
     @State private var removing: ClaudeAccountProfile?
     @State private var tab = "usage"
     @State private var showLicense = false
+    @State private var showInfo = false
 
     init(initialTab: String = "usage") { _tab = State(initialValue: initialTab) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Accounts").font(.system(size: 23, weight: .semibold))
-                    Label("This Mac · \(store.execution?.runtimes.first?.label ?? "Local runtime")", systemImage: "desktopcomputer")
-                        .font(.system(size: 11)).foregroundStyle(SwapPalette.secondaryText)
+            HStack(spacing: 12) {
+                if tab == "profiles" {
+                    Button { tab = "usage" } label: { Image(systemName: "chevron.left") }
+                        .buttonStyle(.plain).help("Back to usage").accessibilityLabel("Back to usage")
                 }
+                Text(tab == "profiles" ? "Manage accounts" : "Accounts")
+                    .font(ConchTypography.font(size: 18, weight: .semibold))
                 Spacer()
                 if store.busy { ProgressView().controlSize(.small) }
-                Button("Refresh usage") { Task { await store.send("usage") } }.disabled(store.busy)
-                Button("Add account…") { adding = true }.disabled(store.busy)
+                if tab == "profiles" {
+                    Button("Add account…") { adding = true }.disabled(store.busy)
+                }
+                Button { Task { await store.send(tab == "profiles" ? "list" : "usage") } } label: {
+                    Image(systemName: "arrow.clockwise").frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain).disabled(store.busy)
+                .accessibilityLabel(tab == "profiles" ? "Refresh accounts" : "Refresh usage")
+                .help(tab == "profiles" ? "Refresh accounts" : "Refresh usage")
+                Menu {
+                    if tab == "usage" { Button("Manage launch profiles…") { tab = "profiles" } }
+                    Button("About usage…") { showInfo = true }
+                } label: {
+                    Image(systemName: "ellipsis").frame(width: 24, height: 24)
+                }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                .accessibilityLabel("Account options")
             }
-            HStack(spacing: 14) {
-                Label("CLAUDE", systemImage: "sparkle")
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(SwapPalette.accent)
-                Picker("Account view", selection: $tab) {
-                    Text("Usage").tag("usage")
-                    Text("Launch profiles").tag("profiles")
-                }.pickerStyle(.segmented).labelsHidden().frame(maxWidth: 290)
-                Spacer()
-            }
+            Rectangle().fill(SwapPalette.divider).frame(height: 1)
             if let notice = store.notice { feedback(notice, isError: false) }
             if let error = store.error { feedback(error, isError: true) }
             ScrollView {
@@ -269,29 +290,34 @@ struct ClaudeAccountsView: View {
                     if tab == "usage" {
                         usageContent
                     } else {
-                        Text("Choose a profile when starting a session. Resuming keeps its original profile.")
-                            .font(.system(size: 12)).foregroundStyle(SwapPalette.secondaryText)
-                            .fixedSize(horizontal: false, vertical: true)
                         ForEach(store.accounts) { account in accountRow(account) }
                     }
                 }.padding(1)
             }
-            HStack(spacing: 6) {
-                Button("Dashboard adapted from claude-swap") { openProject() }.buttonStyle(.plain)
-                Text("·").foregroundStyle(SwapPalette.secondaryText)
-                Button("MIT licence") { showLicense = true }.buttonStyle(.plain)
-                Spacer()
-                if tab == "profiles" {
-                    Button("Refresh profiles") { Task { await store.send("list") } }.disabled(store.busy)
-                }
-            }.font(.system(size: 10.5)).foregroundStyle(SwapPalette.secondaryText)
+
         }
         .foregroundStyle(SwapPalette.foreground)
-        .tint(SwapPalette.accent)
+        .tint(SwapPalette.foreground)
         .padding(22)
         .background(SwapPalette.background)
         .environment(\.colorScheme, .dark)
         .task { await store.send("list") }
+        .sheet(isPresented: $showInfo) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("About usage").font(ConchTypography.font(size: 18, weight: .semibold))
+                Text("Usage comes from claude-swap on \(store.execution?.runtimes.first?.label ?? "this Mac"). Refresh reads its latest available measurements.")
+                if let message = store.usage?.message { Text(message) }
+                Text("Usage accounts are separate from Conch’s launch profiles. Adding a launch profile does not add it to claude-swap.")
+                HStack {
+                    Button("claude-swap setup ↗") { openProject(installation: true) }
+                    Button("MIT licence") { showInfo = false; showLicense = true }
+                }
+                HStack { Spacer(); Button("Done") { showInfo = false }.keyboardShortcut(.defaultAction) }
+            }
+            .font(ConchTypography.font(size: 12))
+            .foregroundStyle(SwapPalette.foreground).padding(24).frame(width: 410)
+            .background(SwapPalette.background).environment(\.colorScheme, .dark)
+        }
         .sheet(isPresented: $showLicense) {
             VStack(alignment: .leading, spacing: 16) {
                 Text("claude-swap · MIT licence").font(.headline)
@@ -320,30 +346,30 @@ struct ClaudeAccountsView: View {
 
     @ViewBuilder
     private var usageContent: some View {
-        Text("Usage read by claude-swap on this Mac. These accounts are not automatically linked to Conch launch profiles.")
-            .font(.system(size: 12)).foregroundStyle(SwapPalette.secondaryText)
-            .fixedSize(horizontal: false, vertical: true)
         if let usage = store.usage, usage.state == "ready", !usage.accounts.isEmpty {
             TimelineView(.periodic(from: .now, by: 30)) { context in
-                VStack(spacing: 12) {
-                    ForEach(usage.accounts) { account in
-                        SwapUsageCard(account: account, now: context.date)
+                VStack(spacing: 0) {
+                    HStack {
+                        Text("Claude").font(ConchTypography.font(size: 11, weight: .medium))
+                        Spacer()
+                        Text("Resets").font(ConchTypography.font(size: 10))
+                    }.foregroundStyle(SwapPalette.secondaryText).padding(.bottom, 4)
+                    ForEach(Array(usage.accounts.enumerated()), id: \.element.id) { index, account in
+                        if index > 0 { Rectangle().fill(SwapPalette.divider).frame(height: 1) }
+                        SwapUsageRow(account: account, now: context.date)
                     }
                 }
             }
         } else {
-            VStack(alignment: .leading, spacing: 12) {
-                Label(store.usage?.state == "error" ? "Usage unavailable" : "Connect claude-swap", systemImage: "chart.bar.xaxis")
-                    .font(.system(size: 16, weight: .medium))
-                Text(store.usage?.message ?? (store.usage?.state == "ready"
-                    ? "No accounts in claude-swap yet. Add an account there, then refresh usage."
-                    : "Already using claude-swap? Refresh usage to show its account cards here. Conch reads usage without switching your login."))
-                    .font(.system(size: 12)).foregroundStyle(SwapPalette.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-                Button("Open claude-swap setup ↗") { openProject(installation: true) }.buttonStyle(.plain)
-                    .font(.system(size: 12))
-            }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
-                .background(SwapPalette.surface, in: RoundedRectangle(cornerRadius: 10))
+            VStack(alignment: .leading, spacing: 10) {
+                Text(store.usage?.state == "error" ? "Usage unavailable" : "No usage yet")
+                    .font(ConchTypography.font(size: 13, weight: .medium))
+                Button(store.usage == nil ? "Load usage" : (store.usage?.state == "error" ? "Try again" : "Set up claude-swap…")) {
+                    if store.usage == nil || store.usage?.state == "error" { Task { await store.send("usage") } }
+                    else { showInfo = true }
+                }.disabled(store.busy)
+            }.padding(.vertical, 18).frame(maxWidth: .infinity, alignment: .leading)
+
         }
     }
 
@@ -360,49 +386,33 @@ struct ClaudeAccountsView: View {
     }
 
     private func accountRow(_ account: ClaudeAccountProfile) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: "person.crop.circle")
-                    .font(.system(size: 24))
-                    .foregroundStyle(SwapPalette.secondaryText)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(account.label).font(ConchTypography.font(size: 14, weight: .semibold))
-                    Text([account.statusLabel, account.email, account.subscription].compactMap { $0 }.joined(separator: " · "))
-                        .font(ConchTypography.font(size: 11.5))
-                        .foregroundStyle(SwapPalette.secondaryText)
-                        .textSelection(.enabled)
-                    if account.id == "default" {
-                        Text("Your existing Claude configuration")
-                            .font(ConchTypography.font(size: 11))
-                            .foregroundStyle(SwapPalette.secondaryText)
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 10) {
+                Text([account.statusLabel, account.email, account.subscription].compactMap { $0 }.joined(separator: " · "))
+                    .font(ConchTypography.font(size: 11)).foregroundStyle(SwapPalette.secondaryText)
+                    .textSelection(.enabled)
+                HStack(spacing: 8) {
+                    Button("Sign in…") { Task { await store.send("login", id: account.id) } }
+                    Button("Check status") { Task { await store.send("refresh", id: account.id) } }
+                    Spacer()
+                    if account.id != "default" {
+                        Button("Remove…", role: .destructive) { removing = account }
                     }
                 }
+                Text(account.configDir).font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(SwapPalette.secondaryText).textSelection(.enabled)
+            }.padding(.top, 10)
+        } label: {
+            HStack {
+                Text(account.label).font(ConchTypography.font(size: 13, weight: .medium))
                 Spacer()
-                if account.id != "default" {
-                    Button { removing = account } label: { Image(systemName: "minus.circle") }
-                        .buttonStyle(.plain)
-                        .help("Remove \(account.label) from Conch")
-                        .accessibilityLabel("Remove \(account.label)")
+                if account.status == "signed-out" {
+                    Text("Sign in needed").font(ConchTypography.font(size: 11)).foregroundStyle(SwapPalette.secondaryText)
                 }
-            }
-            HStack(spacing: 8) {
-                Button("Sign in…") { Task { await store.send("login", id: account.id) } }
-                Button("Check status") { Task { await store.send("refresh", id: account.id) } }
-                Spacer()
-            }
-            DisclosureGroup("Account folder") {
-                Text(account.configDir)
-                    .font(.system(size: 10.5, design: .monospaced))
-                    .foregroundStyle(SwapPalette.secondaryText)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .font(ConchTypography.font(size: 11))
+            }.padding(.vertical, 6)
         }
-        .padding(14)
-        .background(SwapPalette.surface)
-        .clipShape(RoundedRectangle(cornerRadius: 9))
-        .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(SwapPalette.track, lineWidth: 1))
+        .padding(12)
+        .background(SwapPalette.surface, in: RoundedRectangle(cornerRadius: 8))
         .disabled(store.busy)
     }
 

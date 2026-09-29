@@ -72,8 +72,11 @@ alias policy. Do not copy conversation UUIDs between roots as a migration.
 ## claude-swap dashboard
 
 The upstream project is MIT licensed. Its dashboard is Python/Textual; Conch is
-SwiftUI. `ClaudeAccountsView.swift` ports its account cards, colours, severity
-thresholds, quota bars, reset countdowns and freshness treatment. The copyright
+SwiftUI. `ClaudeAccountsView.swift` adapts its thin quota bars, severity thresholds and reset countdowns. The
+view uses Conch’s dark colours and typography, with compact account rows.
+Email, login and freshness details expand on demand; account management and
+attribution live in the options menu. A short cached label stays visible when
+measurements are old. The copyright
 and MIT notice ship in the app and source. See `third-party/claude-swap/README.md`
 for the exact pinned revision and adapted files.
 

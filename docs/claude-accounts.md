@@ -4,7 +4,7 @@ The Mac app can keep several Claude sign-ins available and choose one when start
 
 ## Use it
 
-1. Open **Settings → Accounts → Launch profiles**, or **New session → Account → Manage**.
+1. Open **Settings → Accounts → … → Manage launch profiles**, or **New session → Account → Manage**.
 2. Add a name such as Work. Conch assigns a separate folder, or you can select an existing Claude configuration folder.
 3. Choose **Sign in** and finish Claude's official login in Terminal and your browser. Choose a Claude subscription account for Max or Pro.
 4. Return to Conch and choose **Check status**. The CLI supplies the sign-in state, email, and subscription type when available.
@@ -35,7 +35,7 @@ Other actions are `list`, `refresh`, `login`, `remove`, and `usage`; `refresh`, 
 
 ## Scope
 
-This version manages account choice and reports authentication status. Its Usage tab adapts claude-swap's dashboard and reads quota/reset information when that optional collector is installed and configured. It does not purchase subscriptions, pool allowances, rotate on rate limits, or move a conversation between account roots. Keep histories where Claude created them; copying the same conversation UUID between profile folders is not a migration workflow. Separate profile directories do not isolate keyless Claude Console/Anthropic profile authentication, which Claude stores outside those directories.
+This version manages account choice and reports authentication status. Its main view adapts claude-swap's dashboard and reads quota/reset information when that optional collector is installed and configured. It does not purchase subscriptions, pool allowances, rotate on rate limits, or move a conversation between account roots. Keep histories where Claude created them; copying the same conversation UUID between profile folders is not a migration workflow. Separate profile directories do not isolate keyless Claude Console/Anthropic profile authentication, which Claude stores outside those directories.
 
 See [accounts and runtimes](accounts-and-runtimes.md) for the independent identity/location model, collector setup boundary, and open-source attribution.
 
