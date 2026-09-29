@@ -124,6 +124,7 @@ describe("reading what a Codex session runs, from its rollout", () => {
       db.run("INSERT INTO threads VALUES ('t1', 'gpt-6-astra', 'xhigh', 1790000000000), ('t2', NULL, NULL, 1)");
       db.close();
       expect(readCodexThreadSettings(home, "t1")).toEqual({ model: "gpt-6-astra", effort: "xhigh", at: 1790000000000 });
+      expect(AGENT_SESSION_SETTINGS.codex.readRecorded?.("t1", home)).toEqual({ model: "gpt-6-astra", effort: "xhigh", at: 1790000000000 });
       expect(readCodexThreadSettings(home, "t2")).toBeNull();
       expect(readCodexThreadSettings(home, "missing")).toBeNull();
       expect(readCodexThreadSettings(join(home, "nowhere"), "t1")).toBeNull();
