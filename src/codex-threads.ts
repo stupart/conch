@@ -1,3 +1,4 @@
+import { privateCodexSocket } from "./codex-app-delivery.ts";
 /**
  * See Codex sessions in conch without touching them.
  *
@@ -1082,6 +1083,8 @@ async function codexThreadsPass(
         cwd: String(row.cwd ?? ""),
         pid: route.pid,
         ...(route.noTerminal ? { noTerminal: route.noTerminal } : {}),
+        ...(holder && args?.get(holder) && APP_SERVER_ARGS.test(args.get(holder)!) && privateCodexSocket(join(codexHome, "ipc", "ipc.sock"))
+          ? { messageRoute: "codex-app" as const, codexHome } : {}),
         // `thread_turns` covers most threads now (34 of 36 here on 2026-09-11,
         // against 7 when this was written). The rest would sit on "waiting"
         // even mid-turn without a fallback. Recency is the stateless stand-in:

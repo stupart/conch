@@ -196,7 +196,7 @@ describe("the branch inventory", () => {
       "src/session-lifecycle.ts": 0,
       "src/provider-rename.ts": 0,
       "src/resumable.ts": 0,
-      "src/sessions.ts": 1,
+      "src/sessions.ts": 2, // Registry status and the Codex app message route.
       "src/agent-capabilities.ts": 2,
     };
     for (const [path, expected] of Object.entries(residue)) {

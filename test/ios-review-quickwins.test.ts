@@ -306,7 +306,7 @@ describe("the review screen replies through the composer's own path", () => {
     // Sent, Delivered and Not delivered with Retry: the conversation's own bubble.
     expect(bar).toContain("talk.outgoing.last(where: { $0.session == sessionId })");
     expect(bar).toMatch(/YourTurnBubble\(\s*message: latest,\s*onRetry: send,\s*onDiscard: \{ talk\.discardOutgoing\(latest\.id\) \}/);
-    expect(bar).toContain(".disabled(isSending || row?.noTerminal != nil)");
+    expect(bar).toContain(".disabled(isSending || row?.messageUnavailableReason != nil)");
     expect(sheet).toContain("ReviewReplyBar(bridge: bridge, talk: talk, sessionId: sessionId)");
   });
 });

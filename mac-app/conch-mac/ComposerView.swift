@@ -208,6 +208,8 @@ struct ComposerView: View {
     /// or one an app-server hosts). Send and Stop need one, so both are off
     /// and the field says why; the mic and recite keep working.
     var noTerminal: String? = nil
+    var messageRoute: String? = nil
+    private var messageUnavailableReason: String? { messageRoute == "codex-app" ? nil : noTerminal }
     /// Present when the session is a background job no window is attached to:
     /// the way to a terminal that can type to it, beside the reason there is none.
     var onOpenInTerminal: (() -> Void)? = nil
@@ -389,7 +391,7 @@ struct ComposerView: View {
                 .buttonStyle(.plain)
                 .disabled(!canSend)
                 .keyboardShortcut(.return, modifiers: [])
-                .help(noTerminal ?? "Send to \(sessionLabel)")
+                .help(messageUnavailableReason ?? "Send to \(sessionLabel)")
                 }
             }
             // `.cbar`: a fixed 34 tall with 2 of leading padding, so the row keeps its height
@@ -443,7 +445,7 @@ struct ComposerView: View {
             } else if rendersStatically {
                 // The field for the swoop's picture: its words where the editor lays them, in its type, leading and
                 // insets, or what it says when empty. A picture of the text view itself would be blank.
-                Text(draft.isEmpty ? (noTerminal ?? "Message \(sessionLabel)") : draft)
+                Text(draft.isEmpty ? (messageUnavailableReason ?? "Message \(sessionLabel)") : draft)
                     .font(ConchType.readingBody)
                     .lineSpacing(ConchType.readingLineSpacing)
                     .foregroundStyle(draft.isEmpty ? ConchPalette.textDim : ConchPalette.textPrimary)
@@ -510,7 +512,7 @@ struct ComposerView: View {
                     .background(ComposerPasteBridge { urls in attach(urls) })
 
                 if draft.isEmpty {
-                    Text(noTerminal ?? "Message \(sessionLabel)")
+                    Text(messageUnavailableReason ?? "Message \(sessionLabel)")
                         .font(ConchType.readingBody)
                         .foregroundStyle(ConchPalette.textDim)
                         // `.leading` centred it in the field's height, which is the whole
@@ -602,7 +604,7 @@ struct ComposerView: View {
     }
 
     private var canSend: Bool {
-        !composed.isEmpty && !isSending && noTerminal == nil
+        !composed.isEmpty && !isSending && messageUnavailableReason == nil
     }
 
     /// A send of this session's on its way, pressed here or wherever the input was when it was pressed.
@@ -895,6 +897,7 @@ struct SessionComposer: View {
             voiceLevel: WorkspaceModel.voiceLevel(of: row, in: state),
             audioHeldElsewhere: state?.audioControl.isLocal == false,
             noTerminal: row.noTerminal,
+            messageRoute: row.messageRoute,
             onOpenInTerminal: row.attachable ? { store.openInTerminal(row) } : nil,
             onSend: { text in
                 let delivery = store.send(.inject(sessionId: row.id, label: row.label, text: text))
