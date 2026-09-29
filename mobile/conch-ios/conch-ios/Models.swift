@@ -531,8 +531,11 @@ struct ResumableSession: Decodable, Identifiable, Hashable {
     let cwd: String
     /// Epoch milliseconds. Used for "3h" and for ordering.
     let updatedAt: Double
+    var claudeAccountId: String? = nil
+    var codexAccountId: String? = nil
+    var accountLabel: String? = nil
 
-    var id: String { sessionId }
+    var id: String { "\(backend):\(claudeAccountId ?? codexAccountId ?? "default"):\(sessionId)" }
 
     /// "now", "31m", "2h", "2d" — deliberately not `relativeAge(epochMilliseconds:)`
     /// above: that helper reads "<1m" for anything under a minute, where the Mac

@@ -806,6 +806,16 @@ private struct StartSessionSheet: View {
     /// agent's own default, and is not sent; `bypass-permissions` is seeded
     /// from the persisted setting once the Mac says what it is.
     @State private var optionValues: [String: StartOptionValue] = [:]
+    @State private var claudeAccounts = StartAccountCatalog(accounts: [])
+    @State private var codexAccounts = StartAccountCatalog(accounts: [])
+    @State private var claudeAccountId = "default"
+    @State private var codexAccountId = "default"
+    @State private var resumeAccountId: String?
+    @State private var loadingAccounts = false
+    @State private var accountError: String?
+    @State private var advanced = false
+    @State private var allowAtLimit = false
+    @State private var usageNow = Date()
 
     // Resume
     @State private var resumeQuery = ""
@@ -815,8 +825,39 @@ private struct StartSessionSheet: View {
 
     private var resuming: Bool { mode == .resume }
 
+    private var activeAccounts: StartAccountCatalog { effectiveBackend == .codex ? codexAccounts : claudeAccounts }
+    private var handoffSourceAccountId: String? {
+        resuming && effectiveBackend == .claude ? (resumeSelection?.claudeAccountId ?? "default") : nil
+    }
+    private var selectedAccountId: String {
+        if resuming {
+            return effectiveBackend == .codex ? (resumeSelection?.codexAccountId ?? "default")
+                : (resumeAccountId ?? resumeSelection?.claudeAccountId ?? "default")
+        }
+        return effectiveBackend == .codex ? codexAccountId : claudeAccountId
+    }
+    private var accountSelection: Binding<String> {
+        Binding(get: { selectedAccountId }, set: {
+            if resuming { resumeAccountId = $0 }
+            else if effectiveBackend == .codex { codexAccountId = $0 }
+            else { claudeAccountId = $0 }
+        })
+    }
+    private var isAccountHandoff: Bool {
+        resuming && effectiveBackend == .claude && resumeSelection != nil
+            && selectedAccountId != (resumeSelection?.claudeAccountId ?? "default")
+    }
+    private var permissionsSummary: String {
+        if case .bool(true)? = optionValues["bypass-permissions"] { return "Permission prompts bypassed" }
+        if case .bool(false)? = optionValues["bypass-permissions"] { return "Permission prompts enabled" }
+        return "Permissions use your Mac’s default"
+    }
+
     private var canStart: Bool {
         guard !starting, !openedTeleport else { return false }
+        guard !loadingAccounts,
+              !activeAccounts.availability(for: selectedAccountId, now: Date(), sourceAccountId: handoffSourceAccountId).blocksStart(allowAtLimit: allowAtLimit)
+        else { return false }
         switch mode {
         case .new: return true
         case .resume: return resumeSelection != nil
@@ -899,8 +940,32 @@ private struct StartSessionSheet: View {
                     }
                 }
 
-                // The agent's own start-time choices, from its --help, for the
-                // agent this launch will actually run.
+                if resuming { resumeSection }
+
+                if !resuming || resumeSelection != nil {
+                    Section {
+                        if !loadingAccounts || !activeAccounts.accounts.isEmpty {
+                        StartAccountPicker(catalog: activeAccounts, provider: effectiveBackend.rawValue,
+                            selection: accountSelection, now: usageNow, allowAtLimit: allowAtLimit,
+                            locked: resuming && effectiveBackend == .codex, sourceAccountId: handoffSourceAccountId)
+                        }
+                        if loadingAccounts { ProgressView("Checking accounts…") }
+                        Button("Refresh reported usage", systemImage: "arrow.clockwise") {
+                            Task { await loadAccounts(refresh: true) }
+                        }.disabled(loadingAccounts)
+                        if let accountError { Text(accountError).foregroundStyle(Palette.needs) }
+                        if isAccountHandoff {
+                            Text("Creates a new conversation with this history on your Mac. Pause the original first; both sessions share your files. Account settings and tools may differ.")
+                                .font(.caption).foregroundStyle(Palette.textDim)
+                        }
+                    } header: {
+                        Text(resuming ? "Continue with" : "Account")
+                    } footer: {
+                        Text("Runs on your Mac. Add or sign in to accounts in Conch’s Mac settings.")
+                    }
+                    .disabled(starting)
+                }
+
                 startOptionsSection
 
                 if mode == .teleport {
@@ -916,10 +981,6 @@ private struct StartSessionSheet: View {
                     }
                 }
 
-                if resuming {
-                    resumeSection
-                }
-
                 if let error {
                     Section {
                         Text(error)
@@ -930,6 +991,7 @@ private struct StartSessionSheet: View {
             .scrollContentBackground(.hidden)
             .background(Palette.bg)
             .navigationTitle(mode == .teleport ? "Teleport by ID…" : (resuming ? "Resume session" : "New session"))
+            .disabled(starting)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -937,11 +999,14 @@ private struct StartSessionSheet: View {
                         .disabled(starting)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(mode == .teleport ? "Open in Terminal" : (resuming ? "Resume" : "Start")) { start() }
+                    Button(mode == .teleport ? "Open in Terminal" : (isAccountHandoff ? "Continue" : (resuming ? "Resume" : "Start"))) { start() }
                         .disabled(!canStart)
                 }
             }
         }
+        .task(id: effectiveBackend) { await loadAccounts() }
+        .onChange(of: resumeSelection?.id) { _, _ in resumeAccountId = nil }
+        .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { usageNow = $0 }
         .alert("Opened in Terminal on your Mac", isPresented: $openedTeleport) {
             Button("Done") { dismiss() }
         } message: {
@@ -1080,6 +1145,9 @@ private struct StartSessionSheet: View {
                 backend: effectiveBackend,
                 resumeSessionId: resuming ? resumeSelection?.sessionId : nil,
                 teleportSessionId: mode == .teleport ? teleportSessionId : nil,
+                claudeAccountId: effectiveBackend == .claude ? selectedAccountId : nil,
+                claudeSourceAccountId: isAccountHandoff ? (resumeSelection?.claudeAccountId ?? "default") : nil,
+                codexAccountId: effectiveBackend == .codex ? selectedAccountId : nil,
                 cwd: cwd,
                 trustFolder: cwd.map(trustedFolders.contains) ?? false,
                 options: sentOptions
@@ -1104,6 +1172,21 @@ private struct StartSessionSheet: View {
         }
     }
 
+    private func loadAccounts(refresh: Bool = false) async {
+        let provider = effectiveBackend
+        loadingAccounts = true
+        accountError = nil
+        let catalog = await bridge.startAccounts(provider: provider, refresh: refresh)
+        guard !Task.isCancelled else { return }
+        if let catalog {
+            if provider == .codex { codexAccounts = catalog }
+            else { claudeAccounts = catalog }
+        } else {
+            accountError = "Couldn’t check accounts on your Mac. Try refreshing."
+        }
+        loadingAccounts = false
+    }
+
     private var freshWorkingFolder: String? {
         let trimmed = workingFolder.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
@@ -1113,6 +1196,7 @@ private struct StartSessionSheet: View {
     /// while resuming, so the sheet never shows a switch that does nothing.
     private var shownOptions: [StartOption] {
         StartOption.table(for: effectiveBackend).filter { !$0.resumeOnly || resuming }
+            .filter { !(isAccountHandoff && $0.name == "fork-session") }
     }
 
     /// Exactly the shown options the person set. The daemon validates them.
@@ -1125,7 +1209,11 @@ private struct StartSessionSheet: View {
     }
 
     private var startOptionsSection: some View {
-        Section("Options") {
+        Section {
+            DisclosureGroup("Advanced", isExpanded: $advanced) {
+            Toggle("Allow accounts at their included limit", isOn: $allowAtLimit)
+            Text("For accounts with extra usage already enabled. Conch doesn’t change billing settings.")
+                .font(.caption).foregroundStyle(Palette.textDim)
             ForEach(shownOptions) { option in
                 VStack(alignment: .leading, spacing: 4) {
                     switch option.kind {
@@ -1177,6 +1265,9 @@ private struct StartSessionSheet: View {
                         .foregroundStyle(Palette.textDim)
                 }
             }
+            }
+        } footer: {
+            Text(permissionsSummary)
         }
         .disabled(starting)
     }
@@ -1247,6 +1338,9 @@ private struct ResumableRow: View {
                     .foregroundStyle(Palette.textFaint)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                if let account = session.accountLabel {
+                    Text(account).font(Type.caption).foregroundStyle(Palette.textDim).lineLimit(1)
+                }
             }
 
             Spacer(minLength: 8)

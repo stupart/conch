@@ -15,6 +15,57 @@ try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories:
 /// review folder holds what it is for.
 let galleryOnly = ProcessInfo.processInfo.environment["CONCH_GALLERY_ONLY"].flatMap { $0.isEmpty ? nil : $0 }
 
+// Native start-account fixtures at desktop and phone widths. Use the host's
+// actual provider assets, just as the shared component does in either app.
+if onlyPages?.hasPrefix("start-account") == true || galleryOnly?.hasPrefix("start-account") == true {
+    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    var marks: [String: Image] = [:]
+    for name in ["AgentClaude", "AgentCodex"] {
+        let path = root.appendingPathComponent("mac-app/conch-mac/Assets.xcassets/\(name).imageset/\(name)-3x.png")
+        if let image = NSImage(contentsOf: path) { marks[name] = Image(nsImage: image).renderingMode(.template) }
+    }
+    let now = Date()
+    let stamp = ISO8601DateFormatter()
+    let profiles = [
+        StartAccountProfile(id: "work", label: "Business", status: "signed-in", email: "alex@studio.example", subscription: "Max"),
+        StartAccountProfile(id: "personal", label: "Personal", status: "signed-in", email: "alex@example.com", subscription: "Max"),
+        StartAccountProfile(id: "new", label: "New account", status: "signed-in", email: "alex@new.example")
+    ]
+    let readings = [
+        StartAccountUsage(id: "work", status: "ok", windows: [
+            StartAccountWindow(name: "5 hour", pct: 24, resetsAt: stamp.string(from: now.addingTimeInterval(7200))),
+            StartAccountWindow(name: "7 day", pct: 61, resetsAt: stamp.string(from: now.addingTimeInterval(172800)))
+        ], fetchedAt: stamp.string(from: now), lastGood: false),
+        StartAccountUsage(id: "personal", status: "ok", windows: [
+            StartAccountWindow(name: "5 hour", pct: 100, resetsAt: stamp.string(from: now.addingTimeInterval(3600))),
+            StartAccountWindow(name: "7 day", pct: 88, resetsAt: stamp.string(from: now.addingTimeInterval(86400)))
+        ], fetchedAt: stamp.string(from: now), lastGood: false)
+    ]
+    let catalog = StartAccountCatalog(accounts: profiles, usage: StartAccountUsageDashboard(accounts: readings))
+    for (name, width, selection, provider) in [
+        ("start-account-mac", 480.0, "work", "claude"),
+        ("start-account-phone-limit", 390.0, "personal", "claude"),
+        ("start-account-phone-unknown", 390.0, "new", "codex")
+    ] {
+        try render(name, width: width) {
+            VStack(alignment: .leading, spacing: 18) {
+                Text("Start a session").font(.title2.weight(.medium))
+                HStack {
+                    Text("Account").font(.caption)
+                    Spacer()
+                    Label("\(provider == "claude" ? "Claude" : "Codex") · This Mac", systemImage: "desktopcomputer").font(.caption)
+                }.foregroundStyle(ConchColor.textSecondary)
+                StartAccountPicker(catalog: catalog, provider: provider, selection: .constant(selection), now: now,
+                    providerMark: marks[provider == "codex" ? "AgentCodex" : "AgentClaude"])
+                    .padding(14).background(ConchColor.surface, in: RoundedRectangle(cornerRadius: 12))
+                Text("Advanced   ›").font(.callout)
+                Text("Component fixture · accounts are examples").font(.caption).foregroundStyle(ConchColor.textSecondary)
+            }
+        }
+    }
+}
+
 // Top-level code here is not main-actor isolated, but it does run on the main thread, which ImageRenderer needs.
 func render<Content: View>(_ name: String, width: CGFloat = 960, @ViewBuilder _ content: () -> Content) throws {
     if let galleryOnly, !name.hasPrefix(galleryOnly) { return }
