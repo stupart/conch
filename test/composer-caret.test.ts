@@ -165,7 +165,7 @@ test("the introspector finds the editor whatever the nesting, and tries again if
 test("the placeholder sits where the first typed line will", () => {
   const field = composer.slice(composer.indexOf("if draft.isEmpty {"));
   const body = field.slice(0, field.indexOf(".allowsHitTesting(false)"));
-  expect(body).toContain('Text(noTerminal ?? "Message \\(sessionLabel)")');
+  expect(body).toContain('Text(messageUnavailableReason ?? "Message \\(sessionLabel)")');
   expect(body).toContain(".font(ConchType.readingBody)");
   // Top, not centre: the editor lays its first line at the top of the box, and centring in
   // `fieldHeight` drifts further from it the taller a draft grows.

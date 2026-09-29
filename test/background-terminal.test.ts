@@ -173,7 +173,7 @@ describe("the apps offer Open in Terminal only on an attachable row", () => {
     expect(models).toContain("let attachable: Bool");
     expect(models).toContain("case attachable");
     expect(models).toContain("(try? container.decodeIfPresent(Bool.self, forKey: .attachable)) ?? false");
-    expect(models).toContain("noTerminal: noTerminal,\n            attachable: attachable,");
+    expect(models).toContain("noTerminal: noTerminal,\n            messageRoute: messageRoute,\n            attachable: attachable,");
 
     expect(between(read("mac-app/conch-mac/ConchSocketClient.swift"), "enum ConchSessionCommand", "}"))
       .toContain("case attach");
@@ -197,7 +197,7 @@ describe("the apps offer Open in Terminal only on an attachable row", () => {
   test("iPhone: decoded optionally, sent as `attach`, shown in the composer, and End stays available", () => {
     const models = read("mobile/conch-ios/conch-ios/Models.swift");
     expect(models).toContain("var attachable = false");
-    expect(models).toContain(", noTerminal, attachable\n");
+    expect(models).toContain(", noTerminal, messageRoute, attachable\n");
     expect(models).toContain("attachable = (try? c.decodeIfPresent(Bool.self, forKey: .attachable)) ?? false");
 
     expect(between(read("mobile/conch-ios/conch-ios/BridgeClient.swift"), "enum SessionCommand: String {", "}"))

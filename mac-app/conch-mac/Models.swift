@@ -1077,6 +1077,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     /// Why this row has no terminal to type into, raise or close: a closed
     /// Codex thread, or one an app-server hosts. Older daemons never send it.
     let noTerminal: String?
+    let messageRoute: String?
+    var messageUnavailableReason: String? { messageRoute == "codex-app" ? nil : noTerminal }
     /// A Claude Code background job no window is attached to: "Open in
     /// Terminal" can attach one. Older daemons never send it.
     let attachable: Bool
@@ -1131,7 +1133,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         case prioritized
         case navSelected
         case revealable
-        case noTerminal
+        case noTerminal, messageRoute
         case attachable
         case waitingOnAgents
         case approval
@@ -1168,6 +1170,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         navSelected: Bool,
         revealable: Bool = false,
         noTerminal: String? = nil,
+        messageRoute: String? = nil,
         attachable: Bool = false,
         waitingOnAgents: Bool = false,
         approval: PendingApproval? = nil,
@@ -1202,6 +1205,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         self.navSelected = navSelected
         self.revealable = revealable
         self.noTerminal = noTerminal
+        self.messageRoute = messageRoute
         self.attachable = attachable
         self.waitingOnAgents = waitingOnAgents
         self.approval = approval
@@ -1244,6 +1248,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         revealable =
             (try? container.decodeIfPresent(Bool.self, forKey: .revealable)) ?? false
         noTerminal = try? container.decodeIfPresent(String.self, forKey: .noTerminal)
+        messageRoute = try? container.decodeIfPresent(String.self, forKey: .messageRoute)
         attachable =
             (try? container.decodeIfPresent(Bool.self, forKey: .attachable)) ?? false
         waitingOnAgents =
@@ -1285,6 +1290,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             navSelected: navSelected,
             revealable: revealable,
             noTerminal: noTerminal,
+            messageRoute: messageRoute,
             attachable: attachable,
             waitingOnAgents: waitingOnAgents,
             approval: approval,

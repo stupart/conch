@@ -73,5 +73,5 @@ test("stop keeps its slot rules while send keeps its own", () => {
   const send = session.indexOf("Button(action: sendDraft) {");
   const label = session.indexOf('.accessibilityLabel("Send")', send);
   expect(label).toBeGreaterThan(send);
-  expect(session.slice(send, label)).toContain(".disabled(isSending || row?.noTerminal != nil)");
+  expect(session.slice(send, label)).toContain(".disabled(isSending || row?.messageUnavailableReason != nil)");
 });

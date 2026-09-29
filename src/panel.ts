@@ -121,6 +121,7 @@ export interface PanelRowModel {
   revealable?: boolean;
   /** Why this row has no terminal to type into or raise: a closed Codex thread, or one an app-server hosts. */
   noTerminal?: string;
+  messageRoute?: "codex-app";
   /** A background job with no window attached: "Open in Terminal" can attach one. */
   attachable?: boolean;
   /** The folder the session runs in; what a relative link in its prose is relative to. */
@@ -319,6 +320,7 @@ export interface PublishedSessionRow {
   revealable?: boolean;
   /** Why the row has no terminal to type into or raise: a closed Codex thread, or one an app-server hosts. */
   noTerminal?: string;
+  messageRoute?: "codex-app";
   /** A Claude Code background job with no window attached; an app can offer "Open in Terminal". Older apps ignore it. */
   attachable?: boolean;
   /** Same as `PanelRowModel.waitingOnAgents`. Absent means false; older apps show plain working. */
@@ -702,6 +704,7 @@ export function buildPublishedState(
         active: row.active,
         ...(row.revealable ? { revealable: true as const } : {}),
         ...(row.noTerminal ? { noTerminal: row.noTerminal } : {}),
+        ...(row.messageRoute ? { messageRoute: row.messageRoute } : {}),
         ...(row.attachable ? { attachable: true as const } : {}),
         ...(row.waitingOnAgents ? { waitingOnAgents: true as const } : {}),
         ...(approval
@@ -868,6 +871,7 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
         // A known process is what the title's click can try to raise (C10).
         ...(session.pid ? { revealable: true } : {}),
         ...(session.noTerminal ? { noTerminal: session.noTerminal } : {}),
+        ...(session.messageRoute ? { messageRoute: session.messageRoute } : {}),
         ...(session.jobId && !session.pid ? { attachable: true } : {}),
         ...(session.cwd ? { cwd: session.cwd } : {}),
         ...(session.workDirs ? { workDirs: session.workDirs } : {}),

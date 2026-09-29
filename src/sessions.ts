@@ -58,6 +58,9 @@ export interface RegistrySnapshotOptions extends CodexSessionRegistryOptions, At
 export interface SessionInfo {
   claudeAccountId?: string;
   codexAccountId?: string;
+  codexHome?: string;
+  /** Message delivery can exist independently of a terminal. */
+  messageRoute?: "codex-app";
   claudeConfigDir?: string;
   accountLabel?: string;
   /**
@@ -559,6 +562,8 @@ async function toInfo(
       : backend === "codex" && typeof entry.updatedAt === "number"
         ? entry.updatedAt
         : undefined,
+    ...(backend === "codex" && entry.messageRoute === "codex-app" && typeof entry.codexHome === "string"
+      ? { messageRoute: "codex-app" as const, codexHome: entry.codexHome } : {}),
     kind: entry.kind,
     entrypoint: entry.entrypoint,
     ...(typeof entry.transcriptPath === "string" && entry.transcriptPath

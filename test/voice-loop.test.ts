@@ -118,6 +118,7 @@ class FakeSession {
 }
 
 interface Options {
+  hostedSend?: VoiceLoopDeps["hostedSend"];
   observeRecords?: VoiceLoopDeps["observeRecords"];
   cfg?: Partial<Config>;
   paused?: boolean;
@@ -247,6 +248,7 @@ function harness(options: Options = {}) {
   });
   const deps: VoiceLoopDeps = {
     observeRecords: options.observeRecords,
+    hostedSend: options.hostedSend,
     cfg,
     sleep: async () => {},
     log: (message) => void logs.push(message),
@@ -3473,5 +3475,32 @@ describe("setup's practice turn (practice.ts), through the loop's own gates", ()
     expect(await practice(h, { queueWithinMs: 30 })).toEqual({ refused: "busy" });
     expect(h.said).toEqual(["alpha: the build is green."]);
     h.playing.get("alpha: the build is green.")!.finish();
+  });
+});
+
+
+describe("hosted message delivery", () => {
+  const hosted = (): SessionInfo => ({ sessionId: "s1", agentSessionId: "native-app-thread", backend: "codex", pid: 0, codexHome: "/fake/profile", messageRoute: "codex-app", noTerminal: "hosted", status: "busy" });
+  test("uses native thread identity and API acknowledgement without keys or clipboard", async () => {
+    const observations: RecordObservation[] = [];
+    const received: Parameters<NonNullable<VoiceLoopDeps["hostedSend"]>>[0][] = [];
+    const h = harness({ window: hosted, observeRecords: e => observations.push(e), hostedSend: async input => {
+      received.push(input); return { delivered: true, mode: "steered", turnId: "current" };
+    } });
+    expect(await h.voice.handle(inject("hello", { opId: "op-hosted" }))).toBe(true);
+    expect(received[0]).toMatchObject({ codexHome: "/fake/profile", threadId: "native-app-thread", text: "hello", messageId: "op-hosted" });
+    expect(h.texts).toEqual([]); expect(h.keys).toEqual([]); expect(h.clipboard).toEqual([]);
+    expect(observations.filter(e => e.kind === "delivery").at(-1)).toMatchObject({ state: "delivered", code: "provider-input-steered" });
+  });
+  test("an uncertain app send records uncertainty and never retries in a terminal", async () => {
+    const observations: RecordObservation[] = [];
+    const h = harness({ window: hosted, observeRecords: e => observations.push(e), hostedSend: async () => ({ delivered: false, reason: "hosted-delivery-unconfirmed", uncertain: true }) });
+    expect(await h.voice.handle(inject("keep my draft"))).toEqual({ delivered: false, reason: "hosted-delivery-unconfirmed" });
+    expect(h.texts).toEqual([]); expect(h.keys).toEqual([]); expect(h.clipboard).toEqual([]);
+    expect(observations.filter(e => e.kind === "delivery").at(-1)?.state).toBe("unknown");
+  });
+  test("auto-submit off keeps a staged draft without contacting the app", async () => {
+    const h = harness({ window: hosted, cfg: { autoSubmit: false }, hostedSend: async () => { throw Error("must not send"); } });
+    expect(await h.voice.handle(inject("draft"))).toBe("staged"); expect(h.texts).toEqual([]);
   });
 });

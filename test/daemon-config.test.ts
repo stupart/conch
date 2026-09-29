@@ -557,7 +557,7 @@ describe("daemon config controller", () => {
 
     expect(route).toContain("routeVoicePrompt(cfg.voiceQa");
     // Words for a session waiting on a question answer it; everything else is delivered.
-    expect(route).toContain("inject: async (prompt) => (await answerWithWords(event, prompt, beforeInject, options.failure, written))");
+    expect(route).toContain("inject: async (prompt) => (deps.window(event.sessionId)?.messageRoute ? undefined : await answerWithWords(event, prompt, beforeInject, options.failure, written))");
     expect(route).toContain("?? deliverToSession(");
     expect(route).not.toContain("injectText(");
     expect(injector).toContain("await injectText(");

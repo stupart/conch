@@ -752,7 +752,7 @@ struct SessionView: View {
                         .accessibilityLabel("Hearing: \(talk.livePartial.text)")
                 }
                 // The field says why Send is off on a row with no terminal.
-                TextField(row?.noTerminal ?? "Type or talk…", text: draftBinding, axis: .vertical)
+                TextField(row?.messageUnavailableReason ?? "Type or talk…", text: draftBinding, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(Type.body)
                     .foregroundStyle(Palette.textPrimary)
@@ -857,7 +857,7 @@ struct SessionView: View {
                             .foregroundStyle(Palette.bg)
                         }
                         .buttonStyle(.plain)
-                        .disabled(isSending || row?.noTerminal != nil)
+                        .disabled(isSending || row?.messageUnavailableReason != nil)
                         .accessibilityLabel("Send")
                         .transition(.scale.combined(with: .opacity))
                     }
@@ -1441,7 +1441,7 @@ struct ReviewReplyBar: View {
             }
             HStack(alignment: .bottom, spacing: 10) {
                 TextField(
-                    row?.noTerminal ?? "Reply to \(row?.label ?? "this session")…",
+                    row?.messageUnavailableReason ?? "Reply to \(row?.label ?? "this session")…",
                     text: Binding(
                         get: { talk.draft(for: sessionId) },
                         set: { talk.setDraft($0, for: sessionId) }
@@ -1467,7 +1467,7 @@ struct ReviewReplyBar: View {
                     .foregroundStyle(Palette.bg)
                 }
                 .buttonStyle(.plain)
-                .disabled(isSending || row?.noTerminal != nil)
+                .disabled(isSending || row?.messageUnavailableReason != nil)
                 .accessibilityLabel("Send reply")
             }
             .padding(.leading, 16)

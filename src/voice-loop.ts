@@ -1,3 +1,4 @@
+import { sendCodexAppMessage } from "./codex-app-delivery.ts";
 import { statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import type { Config } from "./config.ts";
@@ -444,6 +445,7 @@ export interface VoiceLoopDeps {
   accessibilityTrusted?: () => boolean | null;
   /** Pause, resume and an explicit speak, called after the loop's per-event reset. */
   control(event: TurnEvent): Promise<void>;
+  hostedSend?: typeof sendCodexAppMessage;
   terminal?: {
     injectText: typeof inject.injectText;
     injectKey: typeof inject.injectKey;
@@ -1908,7 +1910,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
   ): Promise<boolean | "staged"> {
     // What was said or typed, before choice matching rewrites it: the draft a refusal hands back.
     const written = text;
-    if (event.transcriptPath) {
+    if (event.transcriptPath && !deps.window(event.sessionId)?.messageRoute) {
       try {
         const conversation = await readConversationTail(
           event.transcriptPath,
@@ -1933,7 +1935,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     return routeVoicePrompt(cfg.voiceQa, text, event.transcriptPath, {
       askClaude: askHaiku,
       speak: (answer) => speak(cfg, answer, event.label),
-      inject: async (prompt) => (await answerWithWords(event, prompt, beforeInject, options.failure, written))
+      inject: async (prompt) => (deps.window(event.sessionId)?.messageRoute ? undefined : await answerWithWords(event, prompt, beforeInject, options.failure, written))
         ?? deliverToSession(
           event,
           prompt,
@@ -2110,6 +2112,28 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         return failedDelivery(approvalShowing(event.sessionId, transcriptPath, "waiting")
           ? "session-awaiting-permission"
           : "session-awaiting-answer");
+      }
+      if (target?.messageRoute === "codex-app" && target.backend === "codex" && target.codexHome) {
+        if (!cfg.autoSubmit) {
+          receiptCode = "staged-not-submitted";
+          publishDictation(text, event.sessionId);
+          return "staged";
+        }
+        // Tests supplying a fake terminal must never reach the real desktop.
+        const send = deps.hostedSend ?? (deps.terminal ? undefined : sendCodexAppMessage);
+        if (!send) return failedDelivery("hosted-app-unavailable");
+        const delivered = await send({
+          codexHome: target.codexHome, threadId: target.agentSessionId ?? target.sessionId,
+          text, cwd: target.cwd, messageId: event.opId, beforeSend: beforeInject,
+        });
+        if (!delivered.delivered) {
+          uncertain = delivered.uncertain === true;
+          return failedDelivery(delivered.reason);
+        }
+        receiptCode = delivered.mode === "steered" ? "provider-input-steered" : "provider-turn-started";
+        commit();
+        recordTelemetry("inject", { route: "codex-app", confirmed: true, chars: text.length });
+        return true;
       }
       const dead = await deadTargetOf(event);
       if (dead) return refused(dead);

@@ -37,6 +37,16 @@ public enum ConchSendFailure {
         // conch never found, or never held, the window to type into.
         case "window-not-focusable", "clipboard-fallback":
             "couldn't reach that session's window."
+        case "hosted-app-unavailable":
+            "the Codex app isn't reachable on this Mac. Open it, then send again."
+        case "hosted-session-not-open":
+            "open this task in the Codex app, then send again."
+        case "hosted-protocol-incompatible":
+            "this Codex app version doesn't support conch's message connection."
+        case "hosted-delivery-unconfirmed":
+            "the Codex app didn't confirm delivery. Check the task before retrying to avoid sending twice."
+        case "hosted-message-too-large":
+            "this message is too large for the Codex app connection. Shorten it and send again."
         case "session-not-routable":
             "conch can't tell which window that session is in."
         case "front-window-changed":

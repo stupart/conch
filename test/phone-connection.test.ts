@@ -250,7 +250,7 @@ describe("typing while dictation streams does not garble the draft", () => {
     inOrder(composer, [
       "if isTalkingHere, !talk.livePartial.text.isEmpty {",
       "Text(talk.livePartial.text)",
-      'TextField(row?.noTerminal ?? "Type or talk…", text: draftBinding, axis: .vertical)',
+      'TextField(row?.messageUnavailableReason ?? "Type or talk…", text: draftBinding, axis: .vertical)',
     ]);
     // Words still being heard still count toward Send.
     expect(between(talk, "func hasWords(for session: String) -> Bool {", "\n    }\n")).toContain("!partial.trimmingCharacters");

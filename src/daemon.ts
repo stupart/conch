@@ -235,7 +235,7 @@ import {
   type ConchState,
 } from "./status.ts";
 import { assertCodexAccountIdle, assertClaudeAccountIdle, accountRegistrySnapshot, accountResumableSessions, findAccountTranscript as findTranscript } from "./claude-account-sessions.ts";
-import { readCodexAccounts, addCodexAccount, removeCodexAccount, requireCodexAccount, cachedCodexAccount, invalidateCodexAccount, codexAccountForLaunch } from "./codex-accounts.ts";
+import { defaultCodexDir, readCodexAccounts, addCodexAccount, removeCodexAccount, requireCodexAccount, cachedCodexAccount, invalidateCodexAccount, codexAccountForLaunch } from "./codex-accounts.ts";
 import { claudeAccountForLaunch, readClaudeAccounts, addClaudeAccount, removeClaudeAccount, requireClaudeAccount, cachedClaudeAccountStatus, readClaudeAccountStatus, invalidateClaudeAccountStatus, type ClaudeAccountStatus } from "./claude-accounts.ts";
 import { runInstall as installAccountHooks } from "./install.ts";
 import {
@@ -2739,6 +2739,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
           ? {}
           : { configDir: process.env.CONCH_CONFIG_DIR }),
         claudeHome: panelSessions.get(message.sessionId ?? "")?.claudeConfigDir ?? cfg.claudeDir,
+        codexHome: panelSessions.get(message.sessionId ?? "")?.codexHome ?? defaultCodexDir(),
       });
     },
     // This session's own binary + whether a newer copy of the same agent is

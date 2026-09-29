@@ -22,6 +22,7 @@ export interface CodexSessionEntry {
   status: CodexSessionStatus;
   updatedAt: number;
   transcriptPath: string;
+  messageRoute?: "codex-app";
   codexHome?: string;
 }
 

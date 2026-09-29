@@ -25,7 +25,7 @@ export async function accountRegistrySnapshot(defaultDir: string, accounts = rea
     available = true;
     combined.complete &&= snapshot.complete;
     for (const id of snapshot.liveIds) combined.liveIds.add(id);
-    combined.infos.push(...snapshot.infos.map(session => ({ ...session, codexAccountId: account.id, accountLabel: account.label })));
+    combined.infos.push(...snapshot.infos.map(session => ({ ...session, codexAccountId: account.id, codexHome: account.configDir, accountLabel: account.label })));
   }
   // Imported/copied histories may reuse a conversation UUID in two profiles.
   // Preserve each live window's identity instead of letting one overwrite the other.

@@ -81,7 +81,7 @@ test("the Mac app makes the title a button only when the row says it can be rais
  * nothing to raise, type into, or close. The apps say why on the row and turn
  * off what would only fail; rename and voice need no pid and stay.
  */
-test("the Mac shows a no-terminal row's reason and offers no send, stop or close on it", () => {
+test("the Mac gates messages separately while terminal-only controls remain disabled", () => {
   const models = read("mac-app/conch-mac/Models.swift");
   expect(models).toContain("let noTerminal: String?");
   expect(models).toContain("case noTerminal");
@@ -102,10 +102,10 @@ test("the Mac shows a no-terminal row's reason and offers no send, stop or close
   expect(closeEnd).toBeGreaterThan(close);
   expect(dashboard.slice(close, closeEnd)).toContain(".disabled(row.noTerminal != nil && !row.attachable)");
   // The composer's one construction (`SessionComposer`), which the window and the panel both build.
-  expect(read("mac-app/conch-mac/ComposerView.swift")).toContain("noTerminal: row.noTerminal,\n            onOpenInTerminal:");
+  expect(read("mac-app/conch-mac/ComposerView.swift")).toContain("noTerminal: row.noTerminal,\n            messageRoute: row.messageRoute,\n            onOpenInTerminal:");
 
   const composer = read("mac-app/conch-mac/ComposerView.swift");
-  expect(composer).toContain("!composed.isEmpty && !isSending && noTerminal == nil");
+  expect(composer).toContain("!composed.isEmpty && !isSending && messageUnavailableReason == nil");
   // Return asks the button's whole gate, a send in flight included.
   expect(composer).toContain("private func send() {\n        // Return reaches here without the button, so the button's own gate is asked again here, all of it: with a send\n        // still on its way, Return sent the same words a second time.\n        guard canSend else { return }");
   const stop = composer.indexOf("Button(action: onInterrupt) {");
@@ -113,10 +113,10 @@ test("the Mac shows a no-terminal row's reason and offers no send, stop or close
   const stopEnd = composer.indexOf("Button(action: send) {", stop);
   expect(stopEnd).toBeGreaterThan(stop);
   expect(composer.slice(stop, stopEnd)).toContain(".disabled(noTerminal != nil)");
-  expect(composer).toContain('Text(noTerminal ?? "Message \\(sessionLabel)")');
+  expect(composer).toContain('Text(messageUnavailableReason ?? "Message \\(sessionLabel)")');
 });
 
-test("the iPhone shows a no-terminal row's reason and offers no send, stop or end on it", () => {
+test("the iPhone gates messages separately while terminal-only controls remain disabled", () => {
   const models = read("mobile/conch-ios/conch-ios/Models.swift");
   expect(models).toContain("var noTerminal: String?");
   // Anchored to the Row key list but not to its full contents: this test is about
@@ -138,6 +138,6 @@ test("the iPhone shows a no-terminal row's reason and offers no send, stop or en
   expect(send).toBeGreaterThan(-1);
   const sendEnd = session.indexOf('.accessibilityLabel("Send")', send);
   expect(sendEnd).toBeGreaterThan(send);
-  expect(session.slice(send, sendEnd)).toContain(".disabled(isSending || row?.noTerminal != nil)");
-  expect(session).toContain('TextField(row?.noTerminal ?? "Type or talk…"');
+  expect(session.slice(send, sendEnd)).toContain(".disabled(isSending || row?.messageUnavailableReason != nil)");
+  expect(session).toContain('TextField(row?.messageUnavailableReason ?? "Type or talk…"');
 });
