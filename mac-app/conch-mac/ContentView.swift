@@ -486,6 +486,9 @@ private struct StartSessionSheet: View {
     @StateObject private var accounts = ClaudeAccountsStore()
     @State private var claudeAccountId = "default"
     @State private var resumeAccountId: String?
+    @State private var advanced = false
+    @State private var allowAtLimit = false
+    @State private var usageNow = Date()
     @State private var launchedSessionId: String?
     @StateObject private var codexAccounts = ClaudeAccountsStore(providerId: "codex")
     @State private var codexAccountId = "default"
@@ -522,6 +525,9 @@ private struct StartSessionSheet: View {
 
     private var canStart: Bool {
         guard !isStarting, !openedTeleport else { return false }
+        guard !activeAccounts.busy,
+              !activeAccounts.startCatalog.availability(for: selectedAccountId, now: Date(), sourceAccountId: handoffSourceAccountId).blocksStart(allowAtLimit: allowAtLimit)
+        else { return false }
         switch mode {
         case .new, .help: return true
         case .resume: return resumeSelection != nil
@@ -548,11 +554,43 @@ private struct StartSessionSheet: View {
         }
     }
 
+    private var activeAccounts: ClaudeAccountsStore { effectiveBackend == .codex ? codexAccounts : accounts }
+    private var handoffSourceAccountId: String? {
+        mode == .resume && effectiveBackend == .claude ? (resumeSelection?.claudeAccountId ?? "default") : nil
+    }
+    private var selectedAccountId: String {
+        if mode == .resume {
+            return effectiveBackend == .codex ? (resumeSelection?.codexAccountId ?? "default")
+                : (resumeAccountId ?? resumeSelection?.claudeAccountId ?? "default")
+        }
+        return effectiveBackend == .codex ? codexAccountId : claudeAccountId
+    }
+    private var accountSelection: Binding<String> {
+        Binding(get: { selectedAccountId }, set: {
+            if mode == .resume { resumeAccountId = $0 }
+            else if effectiveBackend == .codex { codexAccountId = $0 }
+            else { claudeAccountId = $0 }
+        })
+    }
+    private var permissionsSummary: String {
+        if case .bool(true)? = optionValues["bypass-permissions"] { return "Permission prompts bypassed" }
+        if case .bool(false)? = optionValues["bypass-permissions"] { return "Permission prompts enabled" }
+        return "Permissions use your Mac’s default"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
+            HStack {
             Text("Start a session")
                 .font(ConchTypography.font(size: 19, weight: .medium))
                 .foregroundStyle(ConchPalette.textPrimary)
+                Spacer()
+                Label("This Mac", systemImage: "desktopcomputer")
+                    .font(.caption).foregroundStyle(ConchPalette.textDim)
+            }
+
+            ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
 
             // Mode first: it decides which of the questions below are even
             // worth asking.
@@ -608,44 +646,47 @@ private struct StartSessionSheet: View {
                 )
             }
 
-            if mode != .help {
-                if mode == .resume {
-                    if let picked = resumeSelection, effectiveBackend == .claude {
-                        Picker("Continue with", selection: Binding(
-                            get: { resumeAccountId ?? picked.claudeAccountId ?? "default" },
-                            set: { resumeAccountId = $0 }
-                        )) {
-                            ForEach(accounts.accounts) { account in
-                                Text([account.label, account.email].compactMap { $0 }.joined(separator: " · "))
-                                    .tag(account.id)
-                                    .disabled(account.id != (picked.claudeAccountId ?? "default") && account.status != "signed-in")
-                            }
-                        }
-                        if isAccountHandoff {
-                            Text("Creates a new conversation with this history in the same folder. Pause the original first; both sessions share your files. Account settings and tools may differ.")
-                                .font(ConchTypography.font(size: 11.5))
-                                .foregroundStyle(ConchPalette.textDim)
-                        }
-                        Button("Add or manage accounts…") { settingsSection = "providers"; dismiss(); openAccountSettings() }
-                    } else if let label = resumeSelection?.accountLabel {
-                        Label(label, systemImage: "person.crop.circle")
-                            .font(ConchTypography.font(size: 12))
-                    }
-                } else {
+            if mode != .resume || resumeSelection != nil {
+                VStack(alignment: .leading, spacing: 12) {
                     HStack {
-                        Picker("Account", selection: effectiveBackend == .codex ? $codexAccountId : $claudeAccountId) {
-                            if (effectiveBackend == .codex ? codexAccounts.accounts : accounts.accounts).isEmpty { Text("Default").tag("default") }
-                            ForEach(effectiveBackend == .codex ? codexAccounts.accounts : accounts.accounts) { account in Text([account.label, account.email].compactMap { $0 }.joined(separator: " · ")).tag(account.id) }
+                        Text(mode == .resume ? "Continue with" : "Account").font(.caption.weight(.medium))
+                        Spacer()
+                        Button { Task { await activeAccounts.send("usage") } } label: {
+                            Image(systemName: "arrow.clockwise")
                         }
+                        .help("Refresh reported usage").accessibilityLabel("Refresh reported usage")
+                        .disabled(activeAccounts.busy)
                         Button("Manage…") { settingsSection = "providers"; dismiss(); openAccountSettings() }
                     }
+                    if !activeAccounts.busy || !activeAccounts.accounts.isEmpty {
+                    StartAccountPicker(catalog: activeAccounts.startCatalog, provider: effectiveBackend.rawValue,
+                        selection: accountSelection, now: usageNow, allowAtLimit: allowAtLimit,
+                        locked: mode == .resume && effectiveBackend == .codex, sourceAccountId: handoffSourceAccountId)
+                    }
+                    if activeAccounts.busy { ProgressView().controlSize(.small) }
+                    if let failure = activeAccounts.error { Text(failure).font(.caption).foregroundStyle(ConchPalette.statusNeeds) }
+                    if isAccountHandoff {
+                        Text("Creates a new conversation with this history in the same folder. Pause the original first; both sessions share your files. Account settings and tools may differ.")
+                            .font(.caption).foregroundStyle(ConchPalette.textDim)
+                    }
                 }
+                .padding(14)
+                .background(ConchColor.surface, in: RoundedRectangle(cornerRadius: 12))
+                .disabled(isStarting)
             }
 
             // The agent's own start-time choices, from its --help, for the
             // agent this launch will actually run. Help is a fixed recipe.
             if mode != .help {
-                startOptionsView
+                DisclosureGroup("Advanced", isExpanded: $advanced) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Toggle("Allow accounts at their included limit", isOn: $allowAtLimit)
+                        Text("For accounts with extra usage already enabled. Conch doesn’t change billing settings.")
+                            .font(.caption).foregroundStyle(ConchPalette.textDim)
+                        startOptionsView
+                    }.padding(.top, 12)
+                }
+                Text(permissionsSummary).font(.caption).foregroundStyle(ConchPalette.textDim)
             }
 
             if mode == .teleport {
@@ -668,7 +709,14 @@ private struct StartSessionSheet: View {
                     .foregroundStyle(ConchPalette.statusNeeds)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            }
+            .padding(.trailing, 2)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(height: advanced ? 620 : (mode == .resume ? 530 : (mode == .teleport ? 510 : 440)))
+            .disabled(isStarting)
 
+            Divider()
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
@@ -683,14 +731,9 @@ private struct StartSessionSheet: View {
         .onChange(of: resumeSelection?.id) { _, _ in resumeAccountId = nil; launchedSessionId = nil }
         .task { await accounts.send("list") }
         .task { await codexAccounts.send("list") }
-        .onChange(of: codexAccounts.accounts.map(\.id)) { _, ids in
-            if !ids.contains(codexAccountId) { codexAccountId = "default" }
-        }
-        .onChange(of: accounts.accounts.map(\.id)) { _, ids in
-            if !ids.contains(claudeAccountId) { claudeAccountId = "default" }
-        }
+        .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { usageNow = $0 }
         .padding(24)
-        .frame(width: 430)
+        .frame(width: 480)
         .background(ConchPalette.bg)
         .alert("Opened in Terminal on this Mac", isPresented: $openedTeleport) {
             Button("Done") { dismiss() }
@@ -756,7 +799,7 @@ private struct StartSessionSheet: View {
     /// is a conversation about files that are not there.
     private var footnote: String {
         if mode == .new {
-            return "Opens \(backend.label) in Terminal, outside conch\u{2019}s own tmux session."
+            return "Opens \(backend.label) in Terminal on this Mac."
         }
         guard let picked = resumeSelection else {
             return "Pick a session to restart. It reopens with its own agent, in its own folder."

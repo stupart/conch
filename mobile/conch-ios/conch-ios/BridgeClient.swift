@@ -645,6 +645,9 @@ final class BridgeClient: ObservableObject {
         backend: AgentBackend,
         resumeSessionId: String?,
         teleportSessionId: String? = nil,
+        claudeAccountId: String? = nil,
+        claudeSourceAccountId: String? = nil,
+        codexAccountId: String? = nil,
         cwd: String? = nil,
         trustFolder: Bool = false,
         options: [String: Any] = [:]
@@ -656,6 +659,12 @@ final class BridgeClient: ObservableObject {
             "kind": "session-start",
             "backend": backend.rawValue,
         ]
+        if backend == .claude {
+            message["claudeAccountId"] = claudeAccountId
+            message["claudeSourceAccountId"] = claudeSourceAccountId
+        } else {
+            message["codexAccountId"] = codexAccountId
+        }
         // Only ever true because the person answered Codex's question here.
         if trustFolder {
             message["trustFolder"] = true
@@ -705,6 +714,17 @@ final class BridgeClient: ObservableObject {
         }
         lastError = nil
         return .started
+    }
+
+    /// Accounts belong to the paired Mac, which also owns sign-in and usage.
+    func startAccounts(provider: AgentBackend, refresh: Bool = false) async -> StartAccountCatalog? {
+        let kind = provider == .codex ? "codex-accounts" : "claude-accounts"
+        guard let reply = await postControlRaw(["kind": kind, "action": refresh ? "usage" : "list"]),
+              reply["kind"] as? String == kind, reply["error"] == nil,
+              let data = try? JSONSerialization.data(withJSONObject: reply),
+              let catalog = try? JSONDecoder().decode(StartAccountCatalog.self, from: data)
+        else { return nil }
+        return catalog
     }
 
     /// There is deliberately no kill fallback: a missing acknowledgement is

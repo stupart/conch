@@ -194,6 +194,18 @@ struct ClaudeAccountProfile: Decodable, Identifiable, Equatable {
 
 @MainActor
 final class ClaudeAccountsStore: ObservableObject {
+    var startCatalog: StartAccountCatalog {
+        StartAccountCatalog(accounts: accounts.map {
+            StartAccountProfile(id: $0.id, label: $0.label, status: $0.status, email: $0.email, subscription: $0.subscription)
+        }, usage: usage.map { dashboard in
+            StartAccountUsageDashboard(accounts: dashboard.accounts.map { reading in
+                StartAccountUsage(id: reading.id, status: reading.status, windows: reading.windows.map {
+                    StartAccountWindow(name: $0.name, pct: $0.pct, resetsAt: $0.resetsAt)
+                }, fetchedAt: reading.fetchedAt, lastGood: reading.lastGood)
+            })
+        })
+    }
+
     @Published var accounts: [ClaudeAccountProfile] = []
     @Published var execution: ExecutionCatalog?
     @Published var usage: SwapDashboard?
