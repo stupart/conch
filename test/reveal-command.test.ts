@@ -66,8 +66,8 @@ test("the Mac title focuses a session's own terminal instead of passively reveal
   expect(at).toBeGreaterThan(-1);
   // The bar also carries a subagent's way back (C4) ahead of the title.
   const bar = dashboard.slice(at, at + 1_600);
-  expect(bar).toContain("if row.hasAgentTerminal {");
-  expect(bar).toContain("Button { store.openAgentTerminal(row) } label: { sessionTitle(row) }");
+  expect(bar).toContain("if let location = row.location {");
+  expect(bar).toContain("Button { store.openSessionLocation(row) } label: { sessionTitle(row) }");
   expect(bar).not.toContain("store.reveal(row)");
   const store = read("mac-app/conch-mac/StateStore.swift");
   expect(store).toContain("guard row.revealable else { return Task { false } }");

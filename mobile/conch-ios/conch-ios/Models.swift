@@ -180,6 +180,10 @@ struct PublishedState: Decodable, Equatable {
         var codexAccountId: String?
         var messageRoute: String?
         var messageUnavailableReason: String? { messageRoute == "codex-app" ? nil : noTerminal }
+        var location: SessionLocation? {
+            SessionLocation.resolve(backend: backend, messageRoute: messageRoute, revealable: revealable,
+                                    noTerminal: noTerminal, parentSessionId: parentSessionId)
+        }
         /// A Claude Code background job no window is attached to: it can be
         /// opened in Terminal on the Mac. Older daemons never send it.
         var attachable = false

@@ -461,7 +461,7 @@ describe("§3's anatomy, where the app had drifted from it", () => {
       dashboard.indexOf("private func pulseForReview()"),
     );
     expect(row.length).toBeGreaterThan(1_000);
-    expect(row.match(/RoundedRectangle\(cornerRadius: 7, style: \.continuous\)/g) ?? []).toHaveLength(3);
+    expect(row.match(/RoundedRectangle\(cornerRadius: 7, style: \.continuous\)/g) ?? []).toHaveLength(4);
     expect(row).not.toContain("cornerRadius: 8");
     // 13 pt, semibold when the row wants a person: the two statuses the status mark draws as
     // waiting and needs. (Its own `wantsUser` went with the manual glyph it guarded.) Regular

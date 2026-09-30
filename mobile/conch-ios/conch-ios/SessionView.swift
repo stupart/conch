@@ -124,9 +124,9 @@ struct SessionView: View {
     @State private var closingSession = false
     @State private var closeError: String?
     @State private var showingCloseError = false
-    @State private var openingTerminal = false
-    @State private var terminalError: String?
-    @State private var showingTerminalError = false
+    @State private var openingLocation = false
+    @State private var locationError: String?
+    @State private var showingLocationError = false
     /// Four API-sized images put a 20 MB ceiling on retained upload payloads;
     /// without a count limit, the 5 MB per-image cap was not a memory bound.
     private static let attachmentLimit = 4
@@ -372,17 +372,17 @@ struct SessionView: View {
                             .foregroundStyle(Palette.textPrimary)
                             .lineLimit(1)
                             .truncationMode(.tail)
-                        if let row, row.revealable, row.noTerminal == nil, row.parentSessionId == nil {
+                        if let row, let location = row.location {
                             Button {
-                                openingTerminal = true
+                                openingLocation = true
                                 Task {
-                                    terminalError = await bridge.openAgentTerminal(sessionId: row.id)
-                                    showingTerminalError = terminalError != nil
-                                    openingTerminal = false
+                                    locationError = await bridge.openSessionLocation(row)
+                                    showingLocationError = locationError != nil
+                                    openingLocation = false
                                 }
                             } label: {
-                                Image(systemName: "terminal").font(.system(size: 13)).frame(width: 28, height: 28)
-                            }.disabled(!bridge.isConnected || openingTerminal).accessibilityLabel("Open terminal on Mac")
+                                Image(systemName: location.symbol).font(.system(size: 13)).frame(width: 28, height: 28)
+                            }.disabled(!bridge.isConnected || openingLocation).accessibilityLabel("\(location.label) on Mac")
                         }
                         AgentBadge(backend: row?.backend)
                     }
@@ -485,10 +485,10 @@ struct SessionView: View {
         } message: {
             Text(closeError ?? "The Mac didn't confirm a clean exit, so conch left the agent running.")
         }
-        .alert("Couldn't open that terminal", isPresented: $showingTerminalError) {
+        .alert("Couldn't open session location", isPresented: $showingLocationError) {
             Button("OK", role: .cancel) {}
         } message: {
-            Text(terminalError ?? "The Mac couldn't bring that terminal forward.")
+            Text(locationError ?? "The Mac couldn't open that session.")
         }
         .onAppear {
             talk.reconcile(session: sessionId, items: conversationItems)

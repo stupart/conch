@@ -118,6 +118,7 @@ import {
 import { createNarration, NARRATION_QUIET_WITHIN_MS } from "./narration.ts";
 import { INJECT_DEBUG_LOG, readSessionScreen, revealSessionWindow, withUIHold } from "./inject.ts";
 import { createTerminalMirror } from "./terminal-mirror.ts";
+import { openSessionApp } from "./session-app-open.ts";
 import { adapterFor, transcriptFormatFor } from "./agent-adapter.ts";
 import { renameProviderSession } from "./provider-rename.ts";
 import { classify } from "./commands.ts";
@@ -2783,6 +2784,13 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         ? `brought ${labelForSessionId(message.sessionId)}'s terminal forward (Terminal button)`
         : `couldn't bring ${labelForSessionId(message.sessionId)}'s terminal forward: ${focused.reason ?? "no reason given"}`);
       return focused;
+    },
+    openSessionApp: async (message) => {
+      const reply = await openSessionApp(message.sessionId, panelSessions.get(message.sessionId));
+      log(reply.opened
+        ? `opened ${labelForSessionId(message.sessionId)} in Codex (session header)`
+        : `couldn't open ${labelForSessionId(message.sessionId)} in its app: ${reply.reason}`);
+      return reply;
     },
     start: async (message) => {
       const request = { ...message, bypassPermissions: cfg.bypassPermissions };
