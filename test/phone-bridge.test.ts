@@ -424,7 +424,7 @@ describe("file serving: held deliverables, their folders, and nothing else", () 
     made.push(root);
     return root;
   };
-  type Row = { id: string; cwd?: string; review?: { link: string }; reviews?: Array<{ link: string }> };
+  type Row = { id: string; cwd?: string; review?: { link: string; roots?: string[] }; reviews?: Array<{ link: string }> };
   const appFor = (state: () => { rows: Row[]; conversations?: Record<string, unknown> }, uploadsDirectory?: string) =>
     makeApplication({ getState: state, ...(uploadsDirectory ? { uploadsDirectory } : {}) });
   /** The status for `query`, sent exactly as written — so encoded traversal arrives as a phone could send it. */
@@ -468,6 +468,31 @@ describe("file serving: held deliverables, their folders, and nothing else", () 
     const imageOnly = appFor(() => ({ rows: [{ id: "s", review: { link: image } }] }));
     expect(await status(imageOnly, q(image))).toBe(200);
     expect(await status(imageOnly, q(beside))).toBe(403);
+  });
+
+  // review-roots.ts: a filing whose files sit beyond the folder its session started in carries the folders that hold
+  // them (`roots`), and the phone checks against those as well as the row's own. Where the session is now moves on.
+  test("a deliverable under a folder the session had moved into is served by the roots it was filed with", async () => {
+    const base = scratch();
+    const saved = process.env.TMPDIR;
+    mkdirSync(join(base, "temp"));
+    // The scratch root is a temp folder, which is always allowed; point TMPDIR away so only the roots decide.
+    process.env.TMPDIR = join(base, "temp");
+    try {
+      const start = join(base, "Internal");
+      const moved = join(base, "Clients", "arch");
+      mkdirSync(start, { recursive: true });
+      const shot = put(join(moved, "shot.png"));
+      const key = put(join(moved, ".ssh", "id.png"));
+      const filed = appFor(() => ({ rows: [{ id: "s", cwd: start, review: { link: shot, roots: [moved] } }] }));
+      expect(await status(filed, q(shot))).toBe(200);
+      expect(await status(appFor(() => ({ rows: [{ id: "s", cwd: start, review: { link: shot } }] })), q(shot))).toBe(403);
+      // The roots admit a place, never a hidden file in it, and never a file nobody filed.
+      expect(await status(appFor(() => ({ rows: [{ id: "s", cwd: start, review: { link: key, roots: [moved] } }] })), q(key))).toBe(403);
+      expect(await status(filed, q(put(join(moved, "other.png"))))).toBe(403);
+    } finally {
+      process.env.TMPDIR = saved;
+    }
   });
 
   test("beside a page: a non-asset extension, a hidden file, an executable, and anything the session does not still hold are refused", async () => {

@@ -355,6 +355,10 @@ export interface PublishedSessionRow {
     preview?: ReviewPreview;
     /** A folder deliverable's paths to point at, relative to it (`SessionReview.focus`). */
     focus?: string[];
+    /** Why the link its agent gave was not published (`SessionReview.linkRefused`). Older apps ignore it. */
+    linkRefused?: string;
+    /** The session folders beyond `cwd` that held its files when it was filed (`SessionReview.roots`). */
+    roots?: string[];
   };
   /**
    * Every deliverable the session is still holding, oldest first, the last of which is
@@ -364,6 +368,7 @@ export interface PublishedSessionRow {
   reviews?: Array<{
     summary: string; link?: string; scene?: ReviewScene; at?: number; id?: string; viewedAt?: number;
     artifact?: string; version?: number; kind?: DeliverableKind; preview?: ReviewPreview; focus?: string[];
+    linkRefused?: string; roots?: string[];
   }>;
 }
 
@@ -603,7 +608,9 @@ export function panelReplyText(
  * What a reader needs to tell deliverables apart: which artifact, which version, what kind.
  * Older apps ignore all three. `kindSource` stays in the ledger: no surface acts on it.
  */
-function publishedDeliverableFacts(review: SessionReview): Pick<SessionReview, "artifact" | "version" | "kind" | "preview" | "focus"> {
+function publishedDeliverableFacts(
+  review: SessionReview,
+): Pick<SessionReview, "artifact" | "version" | "kind" | "preview" | "focus" | "linkRefused" | "roots"> {
   return {
     ...(review.artifact ? { artifact: review.artifact } : {}),
     ...(review.version !== undefined ? { version: review.version } : {}),
@@ -611,6 +618,9 @@ function publishedDeliverableFacts(review: SessionReview): Pick<SessionReview, "
     ...(review.preview ? { preview: { ...review.preview } } : {}),
     // The paths the agent pointed at, never a listing: the apps read the tree themselves.
     ...(review.focus?.length ? { focus: [...review.focus] } : {}),
+    ...(review.linkRefused ? { linkRefused: review.linkRefused } : {}),
+    // What the phone's file access checks this one's files against, beside the row's own folders.
+    ...(review.roots?.length ? { roots: [...review.roots] } : {}),
   };
 }
 
@@ -1127,6 +1137,19 @@ export interface SessionReview {
    * them and marks them. Only these travel; the apps list the folder themselves when they show it.
    */
   focus?: string[];
+  /**
+   * Why the link its agent gave was not published (`linkRefusalNote`), when one was given and refused: shown where the
+   * deliverable would be. It used to say only "No deliverable link was published for this review.", which read as an
+   * agent that never gave one. Absent when there was no link, or it was published.
+   */
+  linkRefused?: string;
+  /**
+   * The session folders that held its files (its link, its marks' images) when it was filed, where the folder the
+   * session started in did not (review-roots.ts `rootsHolding`): where it was then, a folder it declared, its
+   * repository. The phone's file access checks those files against these as well as the row's own folders, since where
+   * a session is moves on and a filed deliverable must not go with it. Set by the daemon alone; the socket refuses it.
+   */
+  roots?: string[];
 }
 
 /**
@@ -1175,7 +1198,16 @@ export function filedVersions(
  */
 export function fileReview(
   sessionId: string,
-  review: { summary: string; link?: string; scene?: ReviewScene; kind?: DeliverableKind; key?: string; focus?: string[] },
+  review: {
+    summary: string;
+    link?: string;
+    scene?: ReviewScene;
+    kind?: DeliverableKind;
+    key?: string;
+    focus?: string[];
+    linkRefused?: string;
+    roots?: string[];
+  },
   at: number,
   held: readonly SessionReview[] | undefined,
   versions?: Readonly<Record<string, number>>,
@@ -1192,6 +1224,8 @@ export function fileReview(
     ...facts,
     version,
     ...(review.focus?.length ? { focus: [...review.focus] } : {}),
+    ...(review.linkRefused && !review.link ? { linkRefused: review.linkRefused } : {}),
+    ...(review.roots?.length ? { roots: [...review.roots] } : {}),
   };
 }
 

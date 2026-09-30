@@ -4,7 +4,7 @@ import { capReviews, filedVersions, removeReviews, type PanelSessionState, type 
 import { checkFocusShape, deliverableFacts, isDeliverableKind } from "./deliverables.ts";
 import { reviewIdentity } from "./records-receipts.ts";
 import { writeSettingsFileAtomic } from "./settings.ts";
-import { checkReviewScene } from "./snippet.ts";
+import { checkReviewScene, LINK_REFUSED_MAX } from "./snippet.ts";
 import { discardPreview, previewFolderPath } from "./review-preview.ts";
 
 /**
@@ -266,6 +266,8 @@ export class SessionLedger {
       version?: unknown;
       preview?: { path?: unknown; kind?: unknown; capturedAt?: unknown };
       focus?: unknown;
+      linkRefused?: unknown;
+      roots?: unknown;
     };
     if (
       typeof review.summary !== "string" || typeof review.at !== "number" || !Number.isFinite(review.at)
@@ -291,6 +293,15 @@ export class SessionLedger {
     const saved = isDeliverableKind(review.kind) && (review.kindSource === "agent" || review.kindSource === "inferred");
     // A focus this conch can't read is dropped, like a scene: the deliverable is still the folder.
     const focus = review.focus === undefined ? undefined : checkFocusShape(review.focus);
+    // Why its link was refused, and the folders that held its files: each as it was filed
+    // (`fileReview`), or not at all.
+    const linkRefused = !review.link && typeof review.linkRefused === "string" && review.linkRefused
+      && review.linkRefused.length <= LINK_REFUSED_MAX
+      ? review.linkRefused
+      : undefined;
+    const roots = Array.isArray(review.roots)
+      ? review.roots.filter((root): root is string => typeof root === "string" && root.startsWith("/"))
+      : [];
     return {
       ...restored,
       id,
@@ -305,6 +316,8 @@ export class SessionLedger {
         ? { preview: { path: review.preview.path, kind: "image" as const, capturedAt: review.preview.capturedAt } }
         : {}),
       ...(focus?.ok ? { focus: focus.focus } : {}),
+      ...(linkRefused ? { linkRefused } : {}),
+      ...(roots.length ? { roots } : {}),
     };
   }
 
@@ -356,6 +369,8 @@ export class SessionLedger {
         ...(held.version !== undefined ? { version: held.version } : {}),
         ...(held.preview ? { preview: held.preview } : {}),
         ...(held.focus?.length ? { focus: held.focus } : {}),
+        ...(held.linkRefused ? { linkRefused: held.linkRefused } : {}),
+        ...(held.roots?.length ? { roots: held.roots } : {}),
       });
       const entry = {
         label,

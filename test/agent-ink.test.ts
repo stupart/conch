@@ -119,18 +119,18 @@ describe("a mark's image passes the rule a linked file does", () => {
   test("an image under the folder or the temp folder passes; missing, elsewhere or hidden does not", async () => {
     await withFolder(async (folder) => {
       writeFileSync(join(folder, "still.png"), "png");
-      expect(await markImagesRefusal(on(join(folder, "still.png")), folder)).toBeNull();
-      expect(await markImagesRefusal(undefined, folder)).toBeNull();
-      expect(await markImagesRefusal(on(join(folder, "gone.png")), folder))
+      expect(await markImagesRefusal(on(join(folder, "still.png")), [folder])).toBeNull();
+      expect(await markImagesRefusal(undefined, [folder])).toBeNull();
+      expect(await markImagesRefusal(on(join(folder, "gone.png")), [folder]))
         .toBe("scene marks[0] frame.image must be an existing, non-executable file");
       // The temp folder is always allowed, so "elsewhere" is a real image in the repo.
-      expect(await markImagesRefusal(on(join(root, "assets/conch-icon-1024.png")), folder))
+      expect(await markImagesRefusal(on(join(root, "assets/conch-icon-1024.png")), [folder]))
         .toContain("is outside this session's folder");
     });
     const hidden = mkdtempSync(join(tmpdir(), ".conch-hidden-"));
     try {
       writeFileSync(join(hidden, "a.png"), "png");
-      expect(await markImagesRefusal(on(join(hidden, "a.png")), hidden)).toContain("is a hidden file, in a hidden folder");
+      expect(await markImagesRefusal(on(join(hidden, "a.png")), [hidden])).toContain("is a hidden file, in a hidden folder");
     } finally { rmSync(hidden, { recursive: true, force: true }); }
   });
 
@@ -150,9 +150,9 @@ describe("a mark's image passes the rule a linked file does", () => {
       const project = join(folder, "project");
       for (const dir of [kept, project]) mkdirSync(dir, { recursive: true });
       writeFileSync(join(kept, "still.png"), "png");
-      expect(await markImagesRefusal(on(join(kept, "still.png")), project)).toContain("is a hidden file, in a hidden folder");
+      expect(await markImagesRefusal(on(join(kept, "still.png")), [project])).toContain("is a hidden file, in a hidden folder");
       copyFileSync(join(kept, "still.png"), join(project, "still.png"));
-      expect(await markImagesRefusal(on(join(project, "still.png")), project)).toBeNull();
+      expect(await markImagesRefusal(on(join(project, "still.png")), [project])).toBeNull();
     });
   });
 });

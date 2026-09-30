@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { lockSocketPath, type SocketOwnership } from "./socket-ownership.ts";
 import { isSessionStartSource, type TurnEvent } from "./hook.ts";
 import type { SendFailure } from "./inject.ts";
-import { checkReviewScene, sanitizeReviewSummary } from "./snippet.ts";
+import { checkReviewScene, LINK_REFUSED_MAX, sanitizeReviewSummary } from "./snippet.ts";
 import { ARTIFACT_KEY_MAX, checkFocusShape, deliverableKindRefusal, isDeliverableKind } from "./deliverables.ts";
 import { agentQuestions } from "./conversation.ts";
 import type { PublishedDelivery, PublishedState } from "./panel.ts";
@@ -667,6 +667,17 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
         return { ok: false, err: `review key must be one printable line of 1-${ARTIFACT_KEY_MAX} characters` };
       }
     }
+    // Why the Stop hook dropped the marker's link, for the person: words only, never a link.
+    if (value.review.linkRefused !== undefined) {
+      const note = typeof value.review.linkRefused === "string" ? sanitizeReviewSummary(value.review.linkRefused, Infinity) : "";
+      if (!note || note.length > LINK_REFUSED_MAX || note !== value.review.linkRefused) {
+        return { ok: false, err: `review linkRefused must be one printable line of 1-${LINK_REFUSED_MAX} characters` };
+      }
+      if (value.review.link !== undefined) return { ok: false, err: "review linkRefused is for a link that was not published, so it comes without one" };
+      if (type !== "turn-end") return { ok: false, err: "review linkRefused is only for turn-end" };
+    }
+    // The folders that hold a filing's files are the daemon's finding (voice-loop `filedRoots`), never an event's.
+    if (value.review.roots !== undefined) return { ok: false, err: "review roots are set by the daemon, not sent" };
   }
   if (type === "review-published" && value.review === undefined) {
     return { ok: false, err: "review is required for review-published" };

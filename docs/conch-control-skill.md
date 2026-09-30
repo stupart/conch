@@ -164,14 +164,22 @@ https://brew.sh rather than trying to install Homebrew yourself.
   older Codex that sends none, from an app-server hosting many threads under
   one process, is not. `link` must be an
   http(s) URL, an existing, non-executable file path, or a folder; a relative
-  path is resolved to an absolute path against your cwd before it is sent, so
-  the file you checked is the file the apps open. A file is sent to the phone,
-  so it must sit under your cwd or a temp folder (`/tmp`), and not be hidden,
-  in a hidden folder (`~/.ssh`, `~/.config`, `.env`; a repo's `.worktrees` is
-  fine), or a key or certificate. A folder must sit in the same places and not
-  be hidden, and must not be your home folder itself or a package (an `.app`,
-  a document saved as a bundle). If the tool isn't available to you or refuses you as
-  unverified, end your final reply with its own line instead: `conch:review <one-line spoken summary> | <link-or-path>`.
+  path is resolved to an absolute path against the folder you are in before it
+  is sent, so the file you checked is the file the apps open. A file is sent to
+  the phone, so it must sit under one of this session's folders: the one it
+  started in, the one it is in now and the git repository around that (a
+  worktree's own checkout too), any named with `conch_working_folders`, or a
+  temp folder (`/tmp`). It must not be hidden, in a hidden folder (`~/.ssh`,
+  `~/.config`, `.env`; a repo's `.worktrees` is fine), or a key or certificate.
+  A folder must sit in the same places and not be hidden, and must not be your
+  home folder itself or a package (an `.app`, a document saved as a bundle).
+  If the tool isn't available to you or refuses you as unverified, end your
+  final reply with its own line instead: `conch:review <one-line spoken summary> | <link-or-path>`.
+  The link follows the same rules; use an absolute path. Only the last such
+  line in a reply counts, so write one, and for several things link the folder
+  that holds them. A link that fails is dropped and the summary still filed:
+  the user sees which link and why where the deliverable would be, and in
+  Claude Code your next prompt carries a note saying so.
 - **Auto / manual** — `conch_mode {action, session?, scope?}` uses `pause` for lossless manual mode and `resume` for auto read-and-listen mode. Without `session` or `scope` it switches only YOUR session; `session` names another one. Switching every session at once — the whole daemon, what the user's `p` key and `conch pause` do — needs `scope: "all"` explicitly, and only when the user asked for exactly that. A `resume` from an agent is refused while the user put conch in manual themselves (the `p` key, the Mac's toggle, `conch pause`) — only a person undoes a person's pause, and a `conch_speak` is held then too: not spoken and not queued, and its result carries `held` saying so.
 - **Rename** — `conch_rename {session, label}` gives a session a name the user actually uses ("call that one 'the api work'").
 - **Say where you work** — `conch_working_folders {folders}` names the folder(s) you are actually working in when they differ from where the session started; conch's file tree, file viewer and sidebar grouping follow them. Once is enough; say it again only if you move.
@@ -195,7 +203,7 @@ Do not retry the same call; do the alternative, or tell the user in one line.
 
 - `review_to_front` naming **another session's** artifact — omit `session`; you may only surface your own work.
 - `review_to_front` from a caller conch **cannot verify** — leave the result in your reply, or use the `conch:review` line.
-- `review_to_front` with a link that is not an http(s) URL, an existing, **non-executable** regular file or a folder — a missing file, a script, a `file://` or `javascript:` URL — or a file **outside your cwd and the temp folder**, hidden, or a key or certificate; or a folder that is outside them, hidden, a package, or your home folder.
+- `review_to_front` with a link that is not an http(s) URL, an existing, **non-executable** regular file or a folder — a missing file, a script, a `file://` or `javascript:` URL — or a file **outside this session's folders and the temp folder** (the refusal lists the folders), hidden, or a key or certificate; or a folder that is outside them, hidden, a package, or your home folder. A `conch:review` line's link is held to the same rules, and dropped rather than refused.
 - `review_to_front` with a **folder** link and a `kind` other than `folder`, `kind: "folder"` without a folder link, or `focus` without a folder link, or a `focus` path that is missing, has a `..` part, leads out of the folder (a symlink too), names the folder itself, or is over the limits in *Folders* — the refusal names the path (`focus[1]`).
 - `review_to_front` with a `kind` that is not one of the kinds above, or a
   kind that needs a link (`image`, `page`, `url`…) without one, or a `key`

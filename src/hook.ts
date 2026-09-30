@@ -9,15 +9,20 @@ import {
   lastAssistantText,
   stripMarkdown,
   looksLikeAwaitingReply,
+  linkRefusalNote,
   parsePublishableReview,
+  parseReviewRequest,
+  SAFE_REVIEW_LINK,
   type ReviewScene,
 } from "./snippet.ts";
+import { reviewLinkScope, type LinkScope, type SessionFolders } from "./review-roots.ts";
+import { clearAgentNote, saveAgentNote, takeAgentNote, userPromptContext } from "./agent-notes.ts";
 import { boundedMark } from "./prompt-cursor.ts";
 import type { DeliverableKind } from "./deliverables.ts";
 import { createHash } from "node:crypto";
 import { summarizeToolUse } from "./approval.ts";
 import { currentTurnText } from "./transcript-turn.ts";
-import { findHookWindow, sessionLabel, isEngageable, type SessionInfo } from "./sessions.ts";
+import { findHookWindow, sessionLabel, isEngageable, workingFolderOverrides, type SessionInfo } from "./sessions.ts";
 import { sessionHasLiveBackgroundWork } from "./agent-activity.ts";
 import { askClaude } from "./model.ts";
 
@@ -76,8 +81,20 @@ export interface TurnEvent {
    * `kind` and `key` travel only when the agent gave them; the daemon infers the rest
    * (`deliverableFacts`). `focus` is a folder deliverable's paths to point at, relative to it
    * (`checkFocusShape`); the daemon resolves them on the disk again before filing.
+   * `linkRefused` says, to the person, why a link the marker gave was not published
+   * (`linkRefusalNote`); it travels only when the hook dropped one. `roots` is never sent (the
+   * socket refuses it): the daemon sets it on what it files (voice-loop `filedRoots`).
    */
-  review?: { summary: string; link?: string; scene?: ReviewScene; kind?: DeliverableKind; key?: string; focus?: string[] };
+  review?: {
+    summary: string;
+    link?: string;
+    scene?: ReviewScene;
+    kind?: DeliverableKind;
+    key?: string;
+    focus?: string[];
+    linkRefused?: string;
+    roots?: string[];
+  };
   /**
    * The tool a permission dialog is waiting on (B5). Attached by the daemon
    * at handle time from the transcript, never by the hook: the dialog may
@@ -177,6 +194,65 @@ export function sessionStartEvent(
   };
 }
 
+/**
+ * Where a hook's session is and has been, for its deliverable link (review-roots.ts): the folder
+ * the hook fired in, the one its registry entry says it started in, and the folders it declared
+ * (`conch_working_folders`, by the window's id, then the id two windows share, then the hook's).
+ */
+export function hookSessionFolders(
+  cwd: string | undefined,
+  session: Pick<SessionInfo, "sessionId" | "agentSessionId" | "cwd"> | null,
+  sessionId: string | undefined,
+  declared: Readonly<Record<string, string[]>> = workingFolderOverrides(),
+): SessionFolders {
+  const workDirs = (session ? declared[session.sessionId] ?? (session.agentSessionId ? declared[session.agentSessionId] : undefined) : undefined)
+    ?? (sessionId ? declared[sessionId] : undefined);
+  return { now: cwd, started: session?.cwd, ...(workDirs ? { workDirs } : {}) };
+}
+
+/** What a Stop made of a turn's `conch:review` line: the review it files, and the link it refused. */
+export interface StopReview {
+  review: NonNullable<TurnEvent["review"]> | null;
+  /** The folders a link was checked against, for the trace; absent when the line gave none. */
+  scope?: LinkScope;
+  /** A link the line gave and the hook refused, with what to tell the agent about it. */
+  refused?: { link: string; reason: string; agentNote: string };
+}
+
+/**
+ * The `conch:review` line in `text`, its link checked against the session's folders. A refused
+ * link no longer vanishes: the review carries why (`linkRefused`, for the Mac and the phone), and
+ * so does `refused` (for the trace, and the agent's next prompt).
+ */
+export async function stopReview(text: string, folders: SessionFolders): Promise<StopReview> {
+  // Most turns carry no line, and a line with no link has nothing to check.
+  const request = parseReviewRequest(text);
+  if (!request?.link) return { review: request };
+  const scope = await reviewLinkScope(folders, process.cwd());
+  const parsed = (await parsePublishableReview(text, scope.cwd, scope.roots))!;
+  const refused = parsed.refused;
+  return {
+    review: {
+      summary: parsed.summary,
+      ...(parsed.link ? { link: parsed.link } : {}),
+      ...(refused ? { linkRefused: linkRefusalNote(refused.link, refused.why) } : {}),
+    },
+    scope,
+    ...(refused
+      ? {
+        refused: {
+          link: refused.link,
+          reason: refused.reason,
+          // The bare rule says what a link must be; the agent also needs which link, and what was wrong with it.
+          agentNote: `Your last conch:review link was not published: ${refused.reason === SAFE_REVIEW_LINK
+            ? `${refused.link}: ${refused.why}; ${SAFE_REVIEW_LINK}`
+            : refused.reason}.`,
+        },
+      }
+      : {}),
+  };
+}
+
 // Notification types that actually need a human; everything else stays silent.
 const ACTIONABLE = new Set(["permission_prompt", "idle_prompt", "elicitation_dialog", ""]);
 
@@ -265,8 +341,12 @@ export async function runHook(cfg: Config): Promise<void> {
 
   // UserPromptSubmit: the session just STARTED working — a visual-only status
   // signal for the dashboard panel. No bell, no speech; if the daemon is down
-  // there's nothing to show, so just return.
+  // there's nothing to show, so just return. It prints nothing either, except a
+  // note the last Stop left for this agent (`agent-notes.ts`): Claude Code adds
+  // that to the turn's context, once.
   if (event === "UserPromptSubmit") {
+    const note = takeAgentNote(payload.session_id ?? "");
+    if (note) process.stdout.write(userPromptContext(note));
     await sendToDaemon(cfg.socketPath, {
       type: "working",
       sessionId: session?.sessionId ?? payload.session_id ?? "",
@@ -316,7 +396,16 @@ export async function runHook(cfg: Config): Promise<void> {
     const reviewSource = payload.transcript_path
       ? await currentTurnText(payload.transcript_path)
       : "";
-    const review = await parsePublishableReview(reviewSource || settledText || finalText, payload.cwd ?? process.cwd());
+    // Checked against every folder the session is and has been in, not only the one it is in
+    // now: that moves, and a link into the folder it started in was dropped (review-roots.ts).
+    const checked = await stopReview(
+      reviewSource || settledText || finalText,
+      hookSessionFolders(payload.cwd, session, payload.session_id),
+    );
+    const review = checked.review;
+    // The agent is told at its next prompt, once; a line whose link passed takes back any old note.
+    if (checked.refused) saveAgentNote(payload.session_id ?? "", checked.refused.agentNote);
+    else if (review) clearAgentNote(payload.session_id ?? "");
     // The hook is a separate short-lived process with no terminal and no log,
     // so every failure here has been invisible — three rounds of reasoning
     // about reviews from OUTSIDE the process that decides. Record what it
@@ -332,7 +421,16 @@ export async function runHook(cfg: Config): Promise<void> {
       // could not tell me WHERE.
       head: reviewSource.slice(0, 90),
       tail: reviewSource.slice(-90),
-      parsed: review ? { summary: review.summary.slice(0, 60), link: review.link ?? null } : null,
+      parsed: review
+        ? {
+          summary: review.summary.slice(0, 60),
+          link: review.link ?? null,
+          // Why a link the line gave was dropped: before this, a refusal read as a line with no link.
+          ...(checked.refused ? { refused: { link: checked.refused.link, reason: checked.refused.reason } } : {}),
+          // The folders the link was checked against, and what a relative one resolved against.
+          ...(checked.scope ? { roots: checked.scope.roots, cwd: checked.scope.cwd } : {}),
+        }
+        : null,
     });
     const backgroundWork = !review && payload.transcript_path
       ? sessionHasLiveBackgroundWork(payload.transcript_path)

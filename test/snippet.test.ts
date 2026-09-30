@@ -719,9 +719,15 @@ test("a published file sits under the session's folder or a temp folder, and is 
     symlinkSync(join(tmp, ".ssh/id_ed25519"), join(tmp, "notes.txt"));
     expect(await checkReviewLink(join(tmp, "notes.txt"), tmp)).toMatchObject({ ok: false, reason: expect.stringMatching(secret) });
 
-    // The marker route shares the rule: the link is dropped, the summary kept.
-    expect(await parsePublishableReview(`conch:review the key | ${join(tmp, ".ssh/id_ed25519")}`, tmp))
-      .toEqual({ summary: "the key" });
+    // The marker route shares the rule: the link is dropped, the summary kept, and the refusal said.
+    expect(await parsePublishableReview(`conch:review the key | ${join(tmp, ".ssh/id_ed25519")}`, tmp)).toEqual({
+      summary: "the key",
+      refused: {
+        link: join(tmp, ".ssh/id_ed25519"),
+        reason: expect.stringMatching(secret),
+        why: "it is a hidden file, in a hidden folder, or a key or certificate",
+      },
+    });
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

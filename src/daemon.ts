@@ -238,6 +238,7 @@ import {
   type ConchState,
 } from "./status.ts";
 import { assertCodexAccountIdle, assertClaudeAccountIdle, accountRegistrySnapshot, accountResumableSessions, findAccountTranscript as findTranscript } from "./claude-account-sessions.ts";
+import { transcriptFolder } from "./review-roots.ts";
 import { defaultCodexDir, readCodexAccounts, addCodexAccount, removeCodexAccount, requireCodexAccount, cachedCodexAccount, invalidateCodexAccount, codexAccountForLaunch } from "./codex-accounts.ts";
 import { claudeAccountForLaunch, readClaudeAccounts, addClaudeAccount, removeClaudeAccount, requireClaudeAccount, cachedClaudeAccountStatus, readClaudeAccountStatus, invalidateClaudeAccountStatus, type ClaudeAccountStatus } from "./claude-accounts.ts";
 import { runInstall as installAccountHooks } from "./install.ts";
@@ -1552,6 +1553,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     freshStatus: async (sessionId) => (await registrySnapshot(cfg.claudeDir))?.infos
       .find((session) => session.sessionId === sessionId)?.status,
     sessionGone: async (sessionId) => sessionGoneFromSnapshot(await registrySnapshot(cfg.claudeDir), sessionId),
+    // Where a session is now, for its deliverable's link: from its own transcript, found here, never an event's word.
+    sessionFolder: (sessionId) => transcriptFolder(panelSessions.get(sessionId)?.transcriptPath ?? findTranscript(cfg.claudeDir, sessionId)),
     render: () => void renderSessionPanel(),
     presentElsewhere,
     phoneLatch: { arm: armPhoneSpeechLatch, clear: clearPhoneSpeechLatch },
@@ -1698,9 +1701,12 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
               const state = ledger.sessionStates.get(sessionId);
               if (!state) return undefined;
               const row = lastPublishedPanelState?.rows.find((one) => one.id === sessionId);
+              const reviews = state.reviews ?? (state.review ? [state.review] : []);
               return {
-                reviews: state.reviews ?? (state.review ? [state.review] : []),
-                roots: [row?.cwd, ...(row?.workDirs ?? [])].filter((root): root is string => Boolean(root)),
+                reviews,
+                // The row's folders, and those its deliverables were filed under (`SessionReview.roots`).
+                roots: [row?.cwd, ...(row?.workDirs ?? []), ...reviews.flatMap((one) => one.roots ?? [])]
+                  .filter((root): root is string => Boolean(root)),
               };
             },
             attach: (sessionId, reviewId, preview) => {

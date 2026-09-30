@@ -324,7 +324,8 @@ struct DeliverableSheet: View {
         if review.link == nil, let typed = review.kind, Self.standInKinds.contains(typed) { return .standIn }
         // Never downloaded: the phone's file access serves files a session published, not a folder's listing.
         if review.kind == "folder", let link = review.link { return .folder(link) }
-        guard let link = review.link else { return .unavailable("No link on this review.") }
+        // A link given and refused says which and why (`linkRefused`), rather than reading as one never given.
+        guard let link = review.link else { return .unavailable(review.linkRefused ?? "No link on this review.") }
         if let url = URL(string: link),
            let scheme = url.scheme?.lowercased(),
            scheme == "http" || scheme == "https" {
@@ -345,12 +346,12 @@ struct DeliverableSheet: View {
             return .local(.markdown)
         case "html", "htm", "svgz":
             return .local(.page)
-        case "txt", "log", "json", "yaml", "yml", "toml", "csv", "diff", "patch",
-             "swift", "ts", "js", "tsx", "jsx", "py", "rb", "go", "rs", "sh", "css":
-            return .local(.text)
         default:
-            // Honest about what it cannot show, rather than rendering bytes.
-            return .local(.unsupported)
+            // Text by the name the Mac's viewer knows it by (`DeliverableText`): source, config, data, LICENSE. The phone
+            // sees the bytes only once it has fetched them, so a name that could be either (`.ts`) is shown as text, as
+            // it always was here. Anything else is said plainly, rather than rendered as bytes.
+            let ext = (link as NSString).pathExtension.lowercased()
+            return (DeliverableText.byName(link) ?? DeliverableText.ambiguous.contains(ext)) ? .local(.text) : .local(.unsupported)
         }
     }
 

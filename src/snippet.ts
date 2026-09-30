@@ -1197,13 +1197,13 @@ function checkReviewMarks(value: unknown, hasLink: boolean): { ok: true; marks: 
 /**
  * The images a scene's marks are drawn on, through `checkLocalFile`: an app draws on the image
  * itself, and the phone fetches it, so each passes the rule a linked file does. Async, so it runs
- * where the link is checked (`review_to_front`, and the daemon filing a publication). Null when
- * every one passes, else why not.
+ * where the link is checked (`review_to_front`, and the daemon filing a publication), against the
+ * same folders the link is (`reviewLinkScope`). Null when every one passes, else why not.
  */
-export async function markImagesRefusal(scene: ReviewScene | undefined, cwd: string): Promise<string | null> {
+export async function markImagesRefusal(scene: ReviewScene | undefined, roots: readonly string[]): Promise<string | null> {
   for (const [index, mark] of (scene?.marks ?? []).entries()) {
     if (!("image" in mark.frame)) continue;
-    const checked = await checkLocalFile(mark.frame.image, [cwd]);
+    const checked = await checkLocalFile(mark.frame.image, roots);
     if (!checked.ok) {
       return `scene marks[${index}] frame.image ${checked.reason === SAFE_REVIEW_LINK
         ? "must be an existing, non-executable file"
@@ -1261,6 +1261,33 @@ export function checkReviewScene(
 export const SAFE_REVIEW_LINK =
   "link must be an http(s) URL or an existing, non-executable regular file";
 
+/**
+ * A refused link, said twice: `reason` to the agent that sent it (what to do instead), `why` to
+ * the person who then sees a deliverable without it (`linkRefusalNote`), as a clause that starts
+ * "it". The Mac used to say only "No deliverable link was published for this review." for a link
+ * that was given and refused, so a refusal looked like an agent that never published one.
+ */
+export type LinkRefusal = { ok: false; reason: string; why: string };
+
+/** How a refusal names the folders a link was checked against. */
+function sessionFolders(roots: readonly string[]): string {
+  return roots.length > 1
+    ? `this session's folders (${roots.join(", ")})`
+    : `this session's folder (${roots[0] ?? "none known"})`;
+}
+
+/** The longest `linkRefusalNote` the daemon files; the socket refuses a longer one. */
+export const LINK_REFUSED_MAX = 1000;
+
+/**
+ * What the person reads where a deliverable's link was given and refused, in place of "No
+ * deliverable link was published for this review.": the link, and why, in one sentence.
+ */
+export function linkRefusalNote(link: string, why: string): string {
+  const shown = link.length > 300 ? `${link.slice(0, 299)}…` : link;
+  return sanitizeReviewSummary(`The link ${shown} wasn't published: ${why}.`, LINK_REFUSED_MAX);
+}
+
 /** Keys and certificates, in whatever folder. */
 const SECRET_FILE = /\.(pem|key|p8|p12|pfx|keychain|keychain-db)$/i;
 
@@ -1298,16 +1325,21 @@ async function isKeynoteDeck(real: string): Promise<boolean> {
 export async function checkLocalFile(
   path: string,
   roots: readonly string[],
-): Promise<{ ok: true; real: string } | { ok: false; reason: string }> {
+): Promise<{ ok: true; real: string } | LinkRefusal> {
   const real = await realpath(path).catch(() => null);
   const file = real ? await stat(real).catch(() => null) : null;
-  if (!real || !file?.isFile() || (file.mode & 0o111) !== 0) return { ok: false, reason: SAFE_REVIEW_LINK };
+  if (!real || !file?.isFile() || (file.mode & 0o111) !== 0) {
+    const why = !real ? "it does not exist" : !file?.isFile() ? "it is not a regular file" : "it is an executable file";
+    return { ok: false, reason: SAFE_REVIEW_LINK, why };
+  }
   const allowed = await Promise.all([...roots, tmpdir(), "/tmp"].map((root) => realpath(root).catch(() => null)));
   if (!allowed.some((root) => root && real.startsWith(root.endsWith("/") ? root : `${root}/`))) {
+    const where = sessionFolders(roots);
     return {
       ok: false,
-      reason: `link ${real} is outside this session's folder (${roots.join(", ") || "none known"}) and the temp folder,`
-        + " so it is not sent to the phone; publish a copy under your folder or /tmp",
+      reason: `link ${real} is outside ${where} and the temp folder, so it is not sent to the phone;`
+        + ` publish a copy under ${roots.length > 1 ? "one of those folders" : "your folder"} or /tmp`,
+      why: `it is outside ${where} and the temp folder`,
     };
   }
   if (real.split("/").some((part) => part.startsWith(".") && part !== ".worktrees") || (SECRET_FILE.test(real) && !await isKeynoteDeck(real))) {
@@ -1315,6 +1347,7 @@ export async function checkLocalFile(
       ok: false,
       reason: `link ${real} is a hidden file, in a hidden folder, or a key or certificate, so it is not`
         + " sent to the phone",
+      why: "it is a hidden file, in a hidden folder, or a key or certificate",
     };
   }
   return { ok: true, real };
@@ -1332,28 +1365,37 @@ export async function checkLocalFile(
 export async function checkLocalFolder(
   path: string,
   roots: readonly string[],
-): Promise<{ ok: true; real: string } | { ok: false; reason: string }> {
+): Promise<{ ok: true; real: string } | LinkRefusal> {
   const real = await realpath(path).catch(() => null);
   const found = real ? await stat(real).catch(() => null) : null;
-  if (!real || !found?.isDirectory()) return { ok: false, reason: `link ${path} is not a folder that exists` };
+  if (!real || !found?.isDirectory()) {
+    return { ok: false, reason: `link ${path} is not a folder that exists`, why: "it is not a folder that exists" };
+  }
   const own = (await Promise.all(roots.map((root) => realpath(root).catch(() => null)))).filter((root): root is string => Boolean(root));
   const temp = (await Promise.all([tmpdir(), "/tmp"].map((root) => realpath(root).catch(() => null)))).filter((root): root is string => Boolean(root));
   const under = (root: string) => real.startsWith(root.endsWith("/") ? root : `${root}/`);
   if (!own.some((root) => real === root || under(root)) && !temp.some(under)) {
+    const where = sessionFolders(roots);
     return {
       ok: false,
-      reason: `link ${real} is outside this session's folder (${roots.join(", ") || "none known"}) and the temp folder,`
-        + " so conch won't show it; publish a folder under your own",
+      reason: `link ${real} is outside ${where} and the temp folder, so conch won't show it;`
+        + ` publish a folder under ${roots.length > 1 ? "one of those" : "your own"}`,
+      why: `it is outside ${where} and the temp folder`,
     };
   }
   if (real === "/" || real === await realpath(homedir()).catch(() => homedir())) {
-    return { ok: false, reason: `link ${real} is the home folder, a tree of everything you own; publish the project folder inside it` };
+    return {
+      ok: false,
+      reason: `link ${real} is the home folder, a tree of everything you own; publish the project folder inside it`,
+      why: "it is the home folder, a tree of everything you own",
+    };
   }
   if (real.split("/").some((part) => part.startsWith(".") && part !== ".worktrees")) {
-    return { ok: false, reason: `link ${real} is a hidden folder, or in one, so conch won't show it` };
+    return { ok: false, reason: `link ${real} is a hidden folder, or in one, so conch won't show it`, why: "it is a hidden folder, or in one" };
   }
   if (isPackagePath(real)) {
-    return { ok: false, reason: `link ${real} is a package (an app or a document saved as a bundle), not a folder of work` };
+    const why = "it is a package (an app or a document saved as a bundle), not a folder of work";
+    return { ok: false, reason: `link ${real} is a package (an app or a document saved as a bundle), not a folder of work`, why };
   }
   return { ok: true, real };
 }
@@ -1396,39 +1438,40 @@ export async function resolveReviewFocus(
 }
 
 /**
- * The one link check for both ways a session publishes: `review_to_front` and
- * the `conch:review` marker. Returns the link as published (an http(s) URL
- * unchanged, a file made absolute against `cwd` so the apps open the file that
- * was checked rather than resolving it against their own cwd), or the reason
- * it is not safe to hand an app and the phone. A folder passes `checkLocalFolder`
- * and says so (`folder`): it is published as its tree (kind `folder`).
+ * The one link check for every way a session publishes: `review_to_front`, the
+ * `conch:review` marker, and the daemon filing either. Returns the link as
+ * published (an http(s) URL unchanged, a file made absolute against `cwd` so the
+ * apps open the file that was checked rather than resolving it against their own
+ * cwd), or why it is not safe to hand an app and the phone. A local link must sit
+ * under one of `roots`, the session's folders (`reviewLinkScope`), or a temp
+ * folder. A folder passes `checkLocalFolder` and says so (`folder`): it is
+ * published as its tree (kind `folder`).
  */
 export async function checkReviewLink(
   link: string,
   cwd: string,
-): Promise<{ ok: true; link: string; folder?: true } | { ok: false; reason: string }> {
-  const refused = { ok: false, reason: SAFE_REVIEW_LINK } as const;
+  roots: readonly string[] = [cwd],
+): Promise<{ ok: true; link: string; folder?: true } | LinkRefusal> {
+  const refused = (why: string): LinkRefusal => ({ ok: false, reason: SAFE_REVIEW_LINK, why });
   const trimmed = link.trim();
-  if (!trimmed) return refused;
+  if (!trimmed) return refused("it is empty");
   let url: URL | undefined;
   try {
     url = new URL(trimmed);
   } catch {
     // Not a URL; it may still be a filesystem path.
   }
-  if (url) return (url.protocol === "http:" || url.protocol === "https:") && url.hostname ? { ok: true, link: trimmed } : refused;
+  if (url) {
+    return (url.protocol === "http:" || url.protocol === "https:") && url.hostname
+      ? { ok: true, link: trimmed }
+      : refused(`it is a ${url.protocol} link, not an http(s) URL or a file path`);
+  }
   const path = resolve(cwd, trimmed);
-  const checked = await checkLocalFile(path, [cwd]);
+  const checked = await checkLocalFile(path, roots);
   if (checked.ok) return { ok: true, link: path };
   if (!(await stat(path).catch(() => null))?.isDirectory()) return checked;
-  const folder = await checkLocalFolder(path, [cwd]);
+  const folder = await checkLocalFolder(path, roots);
   return folder.ok ? { ok: true, link: path, folder: true } : folder;
-}
-
-/** `checkReviewLink` for a caller that can only drop an unsafe link: the link, or null. */
-export async function publishableReviewLink(link: string, cwd: string): Promise<string | null> {
-  const checked = await checkReviewLink(link, cwd);
-  return checked.ok ? checked.link : null;
 }
 
 /** Last `conch:review …` marker line in a reply, or null. */
@@ -1441,15 +1484,31 @@ export function parseReviewRequest(text: string): { summary: string; link?: stri
   return { summary, ...(match[2] ? { link: match[2] } : {}) };
 }
 
-/** A marker's review with its link through `publishableReviewLink`: an unsafe link is dropped, the summary kept. */
+/** A `conch:review` line's review, with its link checked (`checkReviewLink`). */
+export interface PublishableReview {
+  summary: string;
+  /** The link as published. */
+  link?: string;
+  /** The link the line gave, and why it was not published: the summary is still filed, without it. */
+  refused?: { link: string; reason: string; why: string };
+}
+
+/**
+ * A marker's review with its link through `checkReviewLink`: an unsafe link is dropped and the
+ * summary kept, and the refusal comes back with it (`refused`) so the hook can say so, where it
+ * used to vanish.
+ */
 export async function parsePublishableReview(
   text: string,
   cwd: string,
-): Promise<{ summary: string; link?: string } | null> {
+  roots: readonly string[] = [cwd],
+): Promise<PublishableReview | null> {
   const review = parseReviewRequest(text);
   if (!review?.link) return review;
-  const link = await publishableReviewLink(review.link, cwd);
-  return { summary: review.summary, ...(link ? { link } : {}) };
+  const checked = await checkReviewLink(review.link, cwd, roots);
+  return checked.ok
+    ? { summary: review.summary, link: checked.link }
+    : { summary: review.summary, refused: { link: review.link, reason: checked.reason, why: checked.why } };
 }
 
 const SUMMARY_PROMPT = [

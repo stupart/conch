@@ -28,6 +28,8 @@ struct ReviewItem: Identifiable, Equatable {
     let kind: String?
     /// A folder deliverable's paths to point at, relative to the folder (`focus`); empty for anything else.
     let focus: [String]
+    /// Why the link its agent gave was not published, when one was given and refused (`linkRefused`).
+    let linkRefused: String?
 
     init?(row: SessionRow) {
         guard let review = row.review else {
@@ -51,6 +53,7 @@ struct ReviewItem: Identifiable, Equatable {
         marks = review.marks
         kind = review.kind
         focus = review.focus
+        linkRefused = review.linkRefused
         // The identity the daemon minted when it filed this deliverable, which it carries
         // unchanged through every later event — so this id moves only when a NEWER deliverable
         // replaces this one. Everything keyed on it (the pane, the row pulse, the
@@ -160,7 +163,7 @@ private struct ReviewSurface: View {
                     .id(item.id)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    MissingDeliverableView()
+                    MissingDeliverableView(refusal: item.linkRefused)
                         .onAppear {
                             isWebLoading = false
                         }
@@ -389,16 +392,22 @@ struct WorkspaceFilesView: View {
     }
 }
 
+/// Where a deliverable with no link would be. When its agent gave a link and conch refused it, this says which and why
+/// (`linkRefused`): a refused link used to read exactly like one never given.
 private struct MissingDeliverableView: View {
+    var refusal: String?
+
     var body: some View {
         VStack(spacing: 9) {
             Image(systemName: "doc.badge.ellipsis")
                 .font(.system(size: 18, weight: .regular))
                 .foregroundStyle(ConchPalette.textFaint)
 
-            Text("No deliverable link was published for this review.")
+            Text(refusal ?? "No deliverable link was published for this review.")
                 .font(ConchTypography.font(size: 12.5))
                 .foregroundStyle(ConchPalette.textDim)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 460)
                 .textSelection(.enabled)
         }
         .padding(24)
@@ -952,12 +961,6 @@ enum DeliverableSource: Equatable {
         // A Figma file saved to disk: only Figma reads it, and the arrow opens it there.
         "fig",
     ])
-    // Types that are TEXT to a person even when they aren't .txt. Everything
-    // else local still falls through to the web view, which handles .html and
-    // anything WebKit natively previews.
-    private static let textExtensions = Set([
-        "txt", "log", "json", "yaml", "yml", "toml", "csv", "diff", "patch",
-    ])
 
     init(link: String) {
         if let url = URL(string: link),
@@ -1000,10 +1003,12 @@ enum DeliverableSource: Equatable {
             self = .video(localURL)
         case let ext where Self.markdownExtensions.contains(ext):
             self = .markdown(localURL)
-        case let ext where Self.textExtensions.contains(ext):
-            self = .text(localURL)
         default:
-            self = .web
+            // Text to a person (source, config, data, LICENSE) is shown as text, decided by its name and, where the
+            // name says nothing, its first bytes (`DeliverableText`). WebKit decides by its own MIME guess, which made
+            // `starter-prompts.ts` an MPEG transport stream and failed it with "Frame load interrupted". A page
+            // (`DeliverableText.pages`), and anything else WebKit previews itself (audio, say), falls through to the web view.
+            self = DeliverableText.isText(path: localURL.path) ? .text(localURL) : .web
         }
     }
 

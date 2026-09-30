@@ -2,7 +2,9 @@ import { defaultCodexDir } from "./codex-accounts.ts";
 import { basename } from "node:path";
 import type { Config } from "./config.ts";
 import {
+  hookSessionFolders,
   sendToDaemon,
+  stopReview,
   type TurnEvent,
 } from "./hook.ts";
 import {
@@ -13,10 +15,7 @@ import {
   sessionLabel,
   type SessionInfo,
 } from "./sessions.ts";
-import {
-  parsePublishableReview,
-  spokenSnippet,
-} from "./snippet.ts";
+import { spokenSnippet } from "./snippet.ts";
 import { boundedMark } from "./prompt-cursor.ts";
 import { bell, speak } from "./speak.ts";
 import { askClaude } from "./model.ts";
@@ -264,7 +263,9 @@ export async function handleCodexHookPayload(
   }
 
   const finalText = payload.last_assistant_message ?? "";
-  const review = await parsePublishableReview(finalText, payload.cwd ?? process.cwd());
+  // The rule the Claude hook applies (review-roots.ts). A Codex session's folder is fixed, and its
+  // registry entry is this hook's own, so where it is now is where it started.
+  const { review } = await stopReview(finalText, hookSessionFolders(payload.cwd, null, payload.session_id));
   const snippet = payload.transcript_path
     ? await dependencies.spokenSnippet(
       payload.transcript_path,
