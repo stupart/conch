@@ -88,7 +88,7 @@ describe("E1: the header lives in the title-bar strip", () => {
   });
 
   test("the session bar and the Cut B banners are untouched and below the strip", () => {
-    expect(dashboard).toContain('.help("Bring this session\'s terminal to the front")');
+    expect(dashboard).toContain(".help(location.help)");
     expect(dashboard).toContain("AgentBadge(backend: row.backend)");
     expect(dashboard).toContain("SessionContextMeter(context: context)");
     expect(dashboard).toContain('.help("Session actions")');
