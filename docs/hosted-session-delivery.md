@@ -1,5 +1,19 @@
 # Messages to Codex app tasks
 
+A shared Codex app-server can host terminal and desktop sessions simultaneously.
+Its writer-lock PID identifies the server, not the user's window. Discovery first
+looks for a foreground Codex TUI explicitly running `resume <thread UUID>`
+(including `codex yolo resume`). The TUI must belong to the current user and have
+the matching account's log database open. That terminal gets the PID and the
+normal terminal delivery/focus controls, even if a desktop copy also exists.
+Picker/`--last` launches and ambiguous command lines are not guessed from cwd.
+
+Remaining app-server threads are checked with read-only `thread-owner-discovery`
+on the desktop follower socket. Only acknowledged owners receive `codex-app`.
+The existence of the socket alone is insufficient. Probes are coalesced and cached
+for five seconds; sending still rechecks the owner. Missing owners and discovery
+failures never trigger a new conversation or a second writer.
+
 A Codex task can have an app-server writer and no terminal. `pid = 0` and
 `noTerminal` still describe that correctly. `messageRoute: "codex-app"` is a
 separate capability: the Mac and iOS composers permit messages while terminal

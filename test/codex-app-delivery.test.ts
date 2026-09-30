@@ -3,11 +3,11 @@ import { createServer, type Socket } from "node:net";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { privateCodexSocket, sendCodexAppMessage } from "../src/codex-app-delivery.ts";
+import { privateCodexSocket, probeCodexAppThreads, readCodexAppThreads, sendCodexAppMessage } from "../src/codex-app-delivery.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const f of cleanup.splice(0)) f(); });
-async function bridge(handler: (request: any) => any) {
+async function bridge(handler: (request: any) => any, discovery = (_request: any): any => ({ result: { supportsUntrustedAppInput: true } })) {
   const home = mkdtempSync(join(tmpdir(), "conch-ipc-"));
   mkdirSync(join(home, "ipc"), { mode: 0o700 });
   const path = join(home, "ipc", "ipc.sock"), calls: any[] = [], sockets = new Set<Socket>();
@@ -20,7 +20,7 @@ async function bridge(handler: (request: any) => any) {
         const request = JSON.parse(buffer.subarray(4, n + 4).toString()); buffer = buffer.subarray(n + 4);
         calls.push(request);
         const answer = request.method === "initialize" ? { result: { clientId: "conch-client" } }
-          : request.method === "thread-owner-discovery" ? { result: { supportsUntrustedAppInput: true } }
+          : request.method === "thread-owner-discovery" ? discovery(request)
           : handler(request);
         if (answer === null) continue;
         const bytes = Buffer.from(JSON.stringify({ type: "response", requestId: request.requestId, method: request.method, handledByClientId: "owner", resultType: "success", ...answer }));
@@ -40,6 +40,24 @@ test("steers the exact owner as Conch, accepts a provider turn ID, and never sta
   expect(b.calls.map(c => c.method)).toEqual(["initialize", "thread-owner-discovery", "thread-follower-steer-turn"]);
   expect(b.calls[0].params.clientType).toBe("conch");
   expect(b.calls[2]).toMatchObject({ targetClientId: "owner", version: 1, params: { conversationId: "native", input: [{ type: "text", text: "hello" }] } });
+});
+test("listing proves each desktop owner without sending input, and caches repeated polls", async () => {
+  const b = await bridge(() => { throw Error("no input during discovery"); }, r => r.params.conversationId === "desktop"
+    ? { result: { supportsUntrustedAppInput: true } }
+    : { resultType: "error", error: "no-client-found", handledByClientId: undefined });
+  expect([...await readCodexAppThreads(b.home, ["terminal", "desktop"])]).toEqual(["desktop"]);
+  const count = b.calls.length;
+  expect([...await readCodexAppThreads(b.home, ["desktop", "terminal"])]).toEqual(["desktop"]);
+  expect(b.calls.length).toBe(count);
+  expect(b.calls.map(c => c.method)).toEqual(["initialize", "thread-owner-discovery", "thread-owner-discovery"]);
+  chmodSync(b.path, 0o666);
+  expect((await readCodexAppThreads(b.home, ["desktop", "terminal"])).size).toBe(0);
+});
+test("missing owner acknowledgement or a discovery timeout never advertises app delivery", async () => {
+  for (const answer of [{ handledByClientId: undefined }, null]) {
+    const b = await bridge(() => null, () => answer);
+    expect((await probeCodexAppThreads(b.home, ["unknown"], 25)).size).toBe(0);
+  }
 });
 test("only an explicit inactive rejection starts a new turn, inheriting settings", async () => {
   const b = await bridge(r => r.method.endsWith("steer-turn")

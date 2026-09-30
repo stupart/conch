@@ -1,4 +1,5 @@
-import { privateCodexSocket } from "./codex-app-delivery.ts";
+import { readCodexAppThreads } from "./codex-app-delivery.ts";
+import { readCodexTerminalSessions } from "./codex-terminal-sessions.ts";
 /**
  * See Codex sessions in conch without touching them.
  *
@@ -67,6 +68,10 @@ export interface CodexThreadsOptions {
   lockProbe?: (paths: string[]) => string | null | Promise<string | null>;
   /** Each pid's command line, to name a lock's holder. Injectable: a test's fake process table. */
   processArgs?: (pids: number[]) => ReadonlyMap<number, string> | null | Promise<ReadonlyMap<number, string> | null>;
+  /** Live foreground TUIs that explicitly resumed a thread in this profile. */
+  terminalSessions?: (codexHome: string) => Promise<ReadonlyMap<string, number>>;
+  /** Desktop ownership, rather than mere existence of its IPC socket. */
+  appThreads?: (codexHome: string, threadIds: readonly string[]) => Promise<ReadonlySet<string>>;
 }
 
 /**
@@ -1067,23 +1072,30 @@ async function codexThreadsPass(
     const holderPids = [...new Set(listed.map((row) => holders.get(String(row.id)) ?? 0))]
       .filter((pid) => pid > 0);
     const args = holderPids.length ? await (options.processArgs ?? readProcessArgs)(holderPids) : null;
+    const serverThreads = listed.filter(row => {
+      const holder = holders.get(String(row.id));
+      return holder && APP_SERVER_ARGS.test(args?.get(holder) ?? "");
+    }).map(row => String(row.id));
+    const terminals = serverThreads.length
+      ? await (options.terminalSessions ?? readCodexTerminalSessions)(codexHome) : new Map<string, number>();
+    const appCandidates = serverThreads.filter(id => !terminals.has(id));
+    const appThreads = appCandidates.length
+      ? await (options.appThreads ?? readCodexAppThreads)(codexHome, appCandidates) : new Set<string>();
     const index = readCodexSessionIndex(codexHome);
     const entries = listed.map((row) => {
       const holder = holders.get(String(row.id));
-      // The terminal session holding the thread's lock (`codexThreadRoute`).
-      // Codex publishes no pid anywhere, so these rows used to arrive with
-      // pid 0 — observable but not addressable: every message typed at a Codex
-      // session fell through to the clipboard as "session-not-routable" while
-      // Claude sessions worked. A closed thread, or one an app-server hosts,
-      // still has none, and now says why.
-      const route = codexThreadRoute(holder, holder ? args?.get(holder) : undefined);
+      // A TUI connected to the shared daemon does not hold its own writer
+      // lock. Prefer its independently identified terminal; never type into
+      // the headless server PID or assume the desktop owns all of its threads.
+      const terminal = serverThreads.includes(String(row.id)) ? terminals.get(String(row.id)) : undefined;
+      const route = terminal ? { pid: terminal } : codexThreadRoute(holder, holder ? args?.get(holder) : undefined);
       const name = codexThreadLabel({ ...row, name: codexThreadName(row, index) });
       return {
         sessionId: String(row.id),
         cwd: String(row.cwd ?? ""),
         pid: route.pid,
         ...(route.noTerminal ? { noTerminal: route.noTerminal } : {}),
-        ...(holder && args?.get(holder) && APP_SERVER_ARGS.test(args.get(holder)!) && privateCodexSocket(join(codexHome, "ipc", "ipc.sock"))
+        ...(!route.pid && appThreads.has(String(row.id))
           ? { messageRoute: "codex-app" as const, codexHome } : {}),
         // `thread_turns` covers most threads now (34 of 36 here on 2026-09-11,
         // against 7 when this was written). The rest would sit on "waiting"

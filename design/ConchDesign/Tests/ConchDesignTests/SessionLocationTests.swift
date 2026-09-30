@@ -22,4 +22,9 @@ final class SessionLocationTests: XCTestCase {
         XCTAssertNil(SessionLocation.resolve(backend: "codex", messageRoute: "codex-app", revealable: true,
                                              noTerminal: nil, parentSessionId: "parent"))
     }
+
+    func testTerminalWinsWhenBothLocationsAreAvailable() {
+        XCTAssertEqual(SessionLocation.resolve(backend: "codex", messageRoute: "codex-app", revealable: true,
+                                                noTerminal: nil, parentSessionId: nil), .terminal)
+    }
 }

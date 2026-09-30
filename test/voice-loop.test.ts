@@ -3585,6 +3585,14 @@ describe("setup's practice turn (practice.ts), through the loop's own gates", ()
 
 describe("hosted message delivery", () => {
   const hosted = (): SessionInfo => ({ sessionId: "s1", agentSessionId: "native-app-thread", backend: "codex", pid: 0, codexHome: "/fake/profile", messageRoute: "codex-app", noTerminal: "hosted", status: "busy" });
+  test("a known terminal wins over leftover app metadata for message delivery", async () => {
+    const h = harness({
+      window: () => ({ ...hosted(), pid: 123, noTerminal: undefined }),
+      hostedSend: async () => { throw Error("terminal input must not go to the app"); },
+    });
+    expect(await h.voice.handle(inject("hello terminal", { pid: 123 }))).toBe(true);
+    expect(h.texts).toContain("hello terminal");
+  });
   test("uses native thread identity and API acknowledgement without keys or clipboard", async () => {
     const observations: RecordObservation[] = [];
     const received: Parameters<NonNullable<VoiceLoopDeps["hostedSend"]>>[0][] = [];

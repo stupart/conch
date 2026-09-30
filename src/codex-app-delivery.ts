@@ -79,6 +79,42 @@ class FollowerClient {
   }
 }
 
+/** Read-only ownership discovery. A socket being present says nothing about
+ * which threads the desktop has open: a shared daemon also hosts live TUIs. */
+export async function probeCodexAppThreads(codexHome: string, threadIds: readonly string[], timeoutMs = 1_000): Promise<Set<string>> {
+  const owned = new Set<string>();
+  const socketPath = join(codexHome, "ipc", "ipc.sock");
+  if (!threadIds.length || !privateCodexSocket(socketPath)) return owned;
+  const client = new FollowerClient(socketPath, timeoutMs);
+  try {
+    await client.connect();
+    await Promise.all(threadIds.map(async threadId => {
+      try {
+        const owner = await client.request("thread-owner-discovery", { hostId: "local", conversationId: threadId }, 1);
+        if (owner.resultType === "success" && owner.method === "thread-owner-discovery" && owner.handledByClientId) owned.add(threadId);
+      } catch { /* Unavailable is not proof of a desktop route. */ }
+    }));
+  } catch { /* Discovery never changes or takes over a thread. */ }
+  finally { client.close(); }
+  return owned;
+}
+
+const ownership = new Map<string, { key: string; expires: number; result: Promise<Set<string>> }>();
+export function readCodexAppThreads(codexHome: string, threadIds: readonly string[]): Promise<Set<string>> {
+  const path = join(codexHome, "ipc", "ipc.sock");
+  if (!privateCodexSocket(path)) { ownership.delete(codexHome); return Promise.resolve(new Set()); }
+  let identity: string;
+  try { const stat = lstatSync(path); identity = `${stat.dev}:${stat.ino}:${stat.ctimeMs}`; }
+  catch { return Promise.resolve(new Set()); }
+  const key = `${identity}:${[...threadIds].sort().join(",")}`;
+  const cached = ownership.get(codexHome);
+  if (cached?.key === key && cached.expires > Date.now()) return cached.result;
+  if (ownership.size > 32) ownership.clear();
+  const result = probeCodexAppThreads(codexHome, threadIds);
+  ownership.set(codexHome, { key, expires: Date.now() + 5_000, result });
+  return result;
+}
+
 export async function sendCodexAppMessage(options: {
   codexHome: string; threadId: string; text: string; cwd?: string; messageId?: string;
   beforeSend?: () => boolean | Promise<boolean>; timeoutMs?: number;
