@@ -123,23 +123,27 @@ public struct AgentSettingsCatalog: Decodable, Equatable, Sendable {
 public struct SessionSettingsCatalog: Decodable, Equatable, Sendable {
     public let claude: AgentSettingsCatalog?
     public let codex: AgentSettingsCatalog?
+    public let accounts: [String: AgentSettingsCatalog]?
 
-    public init(claude: AgentSettingsCatalog? = nil, codex: AgentSettingsCatalog? = nil) {
+    public init(claude: AgentSettingsCatalog? = nil, codex: AgentSettingsCatalog? = nil, accounts: [String: AgentSettingsCatalog]? = nil) {
         self.claude = claude
         self.codex = codex
+        self.accounts = accounts
     }
 
-    private enum CodingKeys: String, CodingKey { case claude, codex }
+    private enum CodingKeys: String, CodingKey { case claude, codex, accounts }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         claude = try? c.decodeIfPresent(AgentSettingsCatalog.self, forKey: .claude)
         codex = try? c.decodeIfPresent(AgentSettingsCatalog.self, forKey: .codex)
+        accounts = try? c.decodeIfPresent([String: AgentSettingsCatalog].self, forKey: .accounts)
     }
 
     /// A row's `backend`: absent is Claude.
-    public func agent(_ backend: String?) -> AgentSettingsCatalog? {
-        backend?.lowercased() == "codex" ? codex : claude
+    public func agent(_ backend: String?, accountId: String? = nil) -> AgentSettingsCatalog? {
+        let provider = backend?.lowercased() == "codex" ? "codex" : "claude"
+        return accounts?["\(provider):\(accountId ?? "default")"] ?? (provider == "codex" ? codex : claude)
     }
 }
 

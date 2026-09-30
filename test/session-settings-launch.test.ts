@@ -129,7 +129,7 @@ describe("what the published state carries", () => {
     expect(block).toContain("const tail = path ? await readTranscriptTailLines(path).catch(() => null) : null;");
     expect(block).toContain("noteSessionSettings(session, tail && format ? sessionSettingsFromLines(tail, format) : null);");
     expect(daemon).toContain("        publishedSessionSettingsFor(),\n      );");
-    expect(daemon).toContain("sessionSettingsCatalog = readSessionSettingsCatalog({ claudeDir: cfg.claudeDir, codexHome: codexHomeDir() });");
+    expect(daemon).toContain("sessionSettingsCatalog = accountModelCatalog({ claudeDir: cfg.claudeDir, codexHome: codexHomeDir() },");
     // A tail with no turn in it keeps what an earlier read found; the agent's own record is asked once.
     const note = daemon.slice(daemon.indexOf("const noteSessionSettings = "), daemon.indexOf("// Keyed by executable path,"));
     expect(note).toContain("if (sample || known || sessionSettingsAsked.has(session.sessionId)) return;");

@@ -174,6 +174,9 @@ struct PublishedState: Decodable, Equatable {
         /// Why this row has no terminal to type into or close: a closed Codex
         /// thread, or one an app-server hosts. Older daemons never send it.
         var noTerminal: String?
+        var revealable = false
+        var claudeAccountId: String?
+        var codexAccountId: String?
         var messageRoute: String?
         var messageUnavailableReason: String? { messageRoute == "codex-app" ? nil : noTerminal }
         /// A Claude Code background job no window is attached to: it can be
@@ -272,6 +275,7 @@ struct PublishedState: Decodable, Equatable {
 
         private enum CodingKeys: String, CodingKey {
             case id, label, status, backend, context, detail, at, live, paused, pauseExempt, review, reviews, noTerminal, messageRoute, attachable
+            case revealable, claudeAccountId, codexAccountId
             case cwd, workDirs, parentSessionId, startedBySessionId, waitingOnAgents, approval, settings
         }
 
@@ -295,6 +299,9 @@ struct PublishedState: Decodable, Equatable {
             review = try? c.decodeIfPresent(Review.self, forKey: .review)
             reviews = try? c.decodeIfPresent([Review].self, forKey: .reviews)
             noTerminal = try? c.decodeIfPresent(String.self, forKey: .noTerminal)
+            revealable = (try? c.decodeIfPresent(Bool.self, forKey: .revealable)) ?? false
+            claudeAccountId = try? c.decodeIfPresent(String.self, forKey: .claudeAccountId)
+            codexAccountId = try? c.decodeIfPresent(String.self, forKey: .codexAccountId)
             messageRoute = try? c.decodeIfPresent(String.self, forKey: .messageRoute)
             attachable = (try? c.decodeIfPresent(Bool.self, forKey: .attachable)) ?? false
             cwd = try? c.decodeIfPresent(String.self, forKey: .cwd)

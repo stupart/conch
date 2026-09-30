@@ -369,6 +369,11 @@ struct SessionView: View {
                             .foregroundStyle(Palette.textPrimary)
                             .lineLimit(1)
                             .truncationMode(.tail)
+                        if let row, row.revealable, row.noTerminal == nil {
+                            Button { Task { _ = await bridge.send(sessionCommand: .reveal, sessionId: row.id) } } label: {
+                                Image(systemName: "terminal").font(.system(size: 13)).frame(width: 28, height: 28)
+                            }.disabled(!bridge.isConnected).accessibilityLabel("Open terminal on Mac")
+                        }
                         AgentBadge(backend: row?.backend)
                     }
                     if let mark {
@@ -411,7 +416,7 @@ struct SessionView: View {
                             Menu {
                                 SessionSettingsMenuContent(
                                     state: row.settings,
-                                    catalog: bridge.state?.sessionSettings?.agent(row.backend)
+                                    catalog: bridge.state?.sessionSettings?.agent(row.backend, accountId: row.claudeAccountId ?? row.codexAccountId)
                                 ) { pick in
                                     Task { _ = await bridge.setSessionSettings(sessionId: sessionId, pick: pick) }
                                 }

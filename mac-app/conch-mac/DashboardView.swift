@@ -2226,6 +2226,19 @@ private struct ConversationPane: View {
                 sessionTitle(row)
             }
 
+            if row.revealable && row.noTerminal == nil {
+                Button { store.reveal(row) } label: {
+                    Image(systemName: "terminal")
+                        .font(.system(size: 12))
+                        .frame(width: 26, height: 26)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(ConchPalette.textDim)
+                .help("Open this session's terminal")
+                .accessibilityLabel("Open terminal for \(row.label)")
+            }
+
             AgentBadge(backend: row.backend)
             if let account = row.accountLabel {
                 Text(account)
@@ -2240,7 +2253,7 @@ private struct ConversationPane: View {
             if row.parentSessionId == nil, row.backend != "conch" {
                 SessionSettingsHeaderControl(
                     row: row,
-                    catalog: state?.sessionSettings?.agent(row.backend),
+                    catalog: state?.sessionSettings?.agent(row.backend, accountId: row.claudeAccountId ?? row.codexAccountId),
                     canChange: state?.features?.sessionSettings != nil && row.revealable && row.noTerminal == nil,
                     onPick: { store.setSessionSettings(id: row.id, pick: $0) }
                 )
