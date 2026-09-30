@@ -160,6 +160,7 @@ struct PublishedState: Decodable, Equatable {
         /// The model and effort it runs, from its own record, and a change conch is driving
         /// (src/session-settings.ts). Absent when nothing is known: the menu then says "default".
         var settings: SessionSettingsState?
+        var usageLimit: String?
         var detail: String?
         var at: Double = 0
         var live: String?
@@ -276,6 +277,7 @@ struct PublishedState: Decodable, Equatable {
         private enum CodingKeys: String, CodingKey {
             case id, label, status, backend, context, detail, at, live, paused, pauseExempt, review, reviews, noTerminal, messageRoute, attachable
             case revealable, claudeAccountId, codexAccountId
+            case usageLimit
             case cwd, workDirs, parentSessionId, startedBySessionId, waitingOnAgents, approval, settings
         }
 
@@ -299,6 +301,7 @@ struct PublishedState: Decodable, Equatable {
             review = try? c.decodeIfPresent(Review.self, forKey: .review)
             reviews = try? c.decodeIfPresent([Review].self, forKey: .reviews)
             noTerminal = try? c.decodeIfPresent(String.self, forKey: .noTerminal)
+            usageLimit = try? c.decodeIfPresent(String.self, forKey: .usageLimit)
             revealable = (try? c.decodeIfPresent(Bool.self, forKey: .revealable)) ?? false
             claudeAccountId = try? c.decodeIfPresent(String.self, forKey: .claudeAccountId)
             codexAccountId = try? c.decodeIfPresent(String.self, forKey: .codexAccountId)
@@ -422,10 +425,12 @@ extension PublishedState.Row {
 /// No mode among them. A quiet session (manual for that one) keeps working, so its mark says what it is doing and a
 /// small speaker mark beside its name says conch won't read it aloud (`SessionVoice`), as on the Mac.
 enum StatusMark {
+    case usageLimit
     /// `agentPaused` is a sub-agent that is not running (C4).
     case working, waitingOnAgents, waiting, needs, review, micOpen, speaking, idle, agentPaused
 
     init(row: PublishedState.Row) {
+        if row.usageLimit != nil, row.live != "listening", row.live != "recording" { self = .usageLimit; return }
         // The deliverable stays on a working row; the mark means it is waiting for you, and one you have looked at,
         // here or on the Mac, isn't (`ReadyForYou`, the Mac's rule): that row reads as its status.
         let held = row.reviews.flatMap { $0.isEmpty ? nil : $0 } ?? row.review.map { [$0] } ?? []
@@ -453,6 +458,7 @@ enum StatusMark {
 
     var symbol: String {
         switch self {
+        case .usageLimit: "hourglass.circle"
         case .working: "circle.fill"
         // Two figures: the agents it handed work to, still at it.
         case .waitingOnAgents: "person.2.fill"
@@ -469,6 +475,7 @@ enum StatusMark {
 
     var color: Color {
         switch self {
+        case .usageLimit: Palette.needs
         case .working: Palette.active
         // Reading aloud comes once the turn is over, when no agent is running: not working's blue.
         case .speaking: Palette.calm
@@ -489,6 +496,7 @@ enum StatusMark {
     /// happening right now.
     var showsMeaningInLedger: Bool {
         switch self {
+        case .usageLimit: true
         case .working, .idle, .agentPaused: false
         case .waitingOnAgents, .waiting, .needs, .review, .micOpen, .speaking: true
         }
@@ -507,6 +515,7 @@ enum StatusMark {
 
     var meaning: String {
         switch self {
+        case .usageLimit: "Usage limit reached"
         case .working: "Working"
         case .waitingOnAgents: "Waiting on its agents — you can talk to it"
         case .waiting: "Ready for you — its turn is over"

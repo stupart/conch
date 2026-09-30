@@ -911,6 +911,7 @@ private struct DashboardRow: View {
         if let rowMessage, !rowMessage.isEmpty {
             return rowMessage
         }
+        if let usageLimit = row.usageLimit { return usageLimit }
         if let review = row.review {
             return review.summary
         }
@@ -1108,7 +1109,7 @@ private struct DashboardRow: View {
                                 size: 13,
                                 weight: row.status == .waiting || row.status == .needs ? .semibold : .regular
                             ))
-                            .foregroundStyle(ConchPalette.textPrimary)
+                            .foregroundStyle(row.usageLimit == nil ? ConchPalette.textPrimary : ConchPalette.textDim)
                             .contentTransition(.opacity)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -1418,6 +1419,7 @@ private struct DashboardStatusGlyph: View {
 }
 
 private enum LedgerVisual: String, CaseIterable, Identifiable {
+    case usageLimit
     case idle
     case working
     case waitingOnAgents
@@ -1449,6 +1451,10 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
     }
 
     init(row: SessionRow) {
+        if row.usageLimit != nil, row.live != "listening", row.live != "recording" {
+            self = .usageLimit
+            return
+        }
         // The deliverable stays on a working row, but the mark means "waiting
         // for you to look", which a working session is not, and nor is one whose
         // work you have looked at (`ReadyForYou`): that row reads as its status.
@@ -1489,6 +1495,8 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
 
     var symbol: String {
         switch self {
+        case .usageLimit:
+            return "hourglass.circle"
         case .idle:
             return "circle.dotted"
         case .working:
@@ -1528,6 +1536,8 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
 
     var symbolSize: CGFloat {
         switch self {
+        case .usageLimit:
+            return 12
         case .needs, .review, .recording:
             return 10.5
         case .speaking, .waitingOnAgents:
@@ -1543,6 +1553,8 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
 
     var color: Color {
         switch self {
+        case .usageLimit:
+            return ConchPalette.statusNeeds
         case .working:
             // An agent at work, a session or a sub-agent: `active`'s blue (Palette.swift).
             return ConchPalette.statusActive
@@ -1585,6 +1597,8 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
 
     var accessibilityLabel: String {
         switch self {
+        case .usageLimit:
+            return "Usage limit reached"
         case .idle:
             return "Idle"
         case .working:

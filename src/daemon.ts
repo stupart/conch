@@ -145,6 +145,7 @@ import {
 import type { PendingApproval } from "./approval.ts";
 import { isWindowKey } from "./window-key.ts";
 import { contextUsageFromLines, readTranscriptTailLines, type SessionContextUsage } from "./context-meter.ts";
+import { sessionUsageLimitFromLines } from "./session-usage-limit.ts";
 import {
   AGENT_SESSION_SETTINGS,
   driveSessionSettings,
@@ -2019,6 +2020,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     breadcrumb("panel: context usage, model and effort");
     // One tail read per session for both: how full its context is, and what model and effort it runs.
     const sessionContexts = new Map<string, SessionContextUsage>();
+    const sessionUsageLimits = new Map<string, string>();
     await Promise.all(live.map(async (session) => {
       const path = session.transcriptPath
         ?? findTranscript(cfg.claudeDir, session.sessionId);
@@ -2026,6 +2028,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       const format = path ? transcriptFormatFor(path) : null;
       const context = tail && format ? contextUsageFromLines(tail, format) : null;
       if (context) sessionContexts.set(session.sessionId, context);
+      const usageLimit = tail && format ? sessionUsageLimitFromLines(tail, format, session) : undefined;
+      if (usageLimit) sessionUsageLimits.set(session.sessionId, usageLimit);
       noteSessionSettings(session, tail && format ? sessionSettingsFromLines(tail, format) : null);
     }));
     if (snap?.complete) {
@@ -2085,6 +2089,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
           : null,
         panelOpen,
         contextBySessionId: sessionContexts,
+        usageLimitBySessionId: sessionUsageLimits,
         now: Date.now(),
       });
       model.preview = previewForPanelSelection(
