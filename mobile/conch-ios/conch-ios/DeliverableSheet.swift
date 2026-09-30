@@ -346,12 +346,12 @@ struct DeliverableSheet: View {
             return .local(.markdown)
         case "html", "htm", "svgz":
             return .local(.page)
-        case "txt", "log", "json", "yaml", "yml", "toml", "csv", "diff", "patch",
-             "swift", "ts", "js", "tsx", "jsx", "py", "rb", "go", "rs", "sh", "css":
-            return .local(.text)
         default:
-            // Honest about what it cannot show, rather than rendering bytes.
-            return .local(.unsupported)
+            // Text by the name the Mac's viewer knows it by (`DeliverableText`): source, config, data, LICENSE. The phone
+            // sees the bytes only once it has fetched them, so a name that could be either (`.ts`) is shown as text, as
+            // it always was here. Anything else is said plainly, rather than rendered as bytes.
+            let ext = (link as NSString).pathExtension.lowercased()
+            return (DeliverableText.byName(link) ?? DeliverableText.ambiguous.contains(ext)) ? .local(.text) : .local(.unsupported)
         }
     }
 

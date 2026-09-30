@@ -961,12 +961,6 @@ enum DeliverableSource: Equatable {
         // A Figma file saved to disk: only Figma reads it, and the arrow opens it there.
         "fig",
     ])
-    // Types that are TEXT to a person even when they aren't .txt. Everything
-    // else local still falls through to the web view, which handles .html and
-    // anything WebKit natively previews.
-    private static let textExtensions = Set([
-        "txt", "log", "json", "yaml", "yml", "toml", "csv", "diff", "patch",
-    ])
 
     init(link: String) {
         if let url = URL(string: link),
@@ -1009,10 +1003,12 @@ enum DeliverableSource: Equatable {
             self = .video(localURL)
         case let ext where Self.markdownExtensions.contains(ext):
             self = .markdown(localURL)
-        case let ext where Self.textExtensions.contains(ext):
-            self = .text(localURL)
         default:
-            self = .web
+            // Text to a person (source, config, data, LICENSE) is shown as text, decided by its name and, where the
+            // name says nothing, its first bytes (`DeliverableText`). WebKit decides by its own MIME guess, which made
+            // `starter-prompts.ts` an MPEG transport stream and failed it with "Frame load interrupted". A page
+            // (`DeliverableText.pages`), and anything else WebKit previews itself (audio, say), falls through to the web view.
+            self = DeliverableText.isText(path: localURL.path) ? .text(localURL) : .web
         }
     }
 
