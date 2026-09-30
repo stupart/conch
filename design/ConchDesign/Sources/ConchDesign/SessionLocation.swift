@@ -8,8 +8,9 @@ public enum SessionLocation: Equatable, Sendable {
     public static func resolve(backend: String?, messageRoute: String?, revealable: Bool,
                                noTerminal: String?, parentSessionId: String?) -> Self? {
         guard parentSessionId == nil else { return nil }
+        if revealable && noTerminal == nil { return .terminal }
         if backend == "codex", messageRoute == "codex-app" { return .codexApp }
-        return revealable && noTerminal == nil ? .terminal : nil
+        return nil
     }
 
     public var symbol: String { self == .terminal ? "terminal" : "macwindow" }

@@ -2155,7 +2155,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
           ? "session-awaiting-permission"
           : "session-awaiting-answer");
       }
-      if (target?.messageRoute === "codex-app" && target.backend === "codex" && target.codexHome) {
+      if (target?.messageRoute === "codex-app" && target.backend === "codex" && target.codexHome && !target.pid) {
         if (!cfg.autoSubmit) {
           receiptCode = "staged-not-submitted";
           publishDictation(text, event.sessionId);

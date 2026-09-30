@@ -786,6 +786,37 @@ describe("where keystrokes for a Codex thread may go: its lock's holder", () => 
   const rows = async (home: string, table: ReturnType<typeof processTable>, now = NOW) =>
     (await readCodexThreads({ codexHome: home, now, ...table })).entries as CodexRow[];
 
+  test("a shared daemon's explicit terminal takes precedence; only confirmed desktop owners get the app route", async () => {
+    const home = realCodexHome({
+      threads: [{ id: "terminal" }, { id: "desktop" }, { id: "headless" }, { id: "closed" }],
+      locks: ["terminal", "desktop", "headless"],
+    });
+    try {
+      let terminals = new Map([["terminal", 48984], ["closed", 8888]]);
+      const options = {
+        codexHome: home, now: NOW,
+        ...processTable(home, [{ pid: 7057, args: "codex app-server --listen unix://", holds: ["terminal", "desktop", "headless"] }]),
+        terminalSessions: async () => terminals,
+        appThreads: async (_home: string, ids: readonly string[]) => {
+          expect(ids).not.toContain("closed");
+          if (terminals.has("terminal")) expect(ids).not.toContain("terminal");
+          return new Set(["terminal", "desktop"]); // Both have an app copy; the terminal wins.
+        },
+      };
+      let byId = new Map((await readCodexThreads(options)).entries.map(row => [row.sessionId, row as CodexRow]));
+      expect(byId.get("terminal")).toMatchObject({ pid: 48984 });
+      expect(byId.get("terminal")!.messageRoute).toBeUndefined();
+      expect(byId.get("terminal")!.noTerminal).toBeUndefined();
+      expect(byId.get("desktop")).toMatchObject({ pid: 0, messageRoute: "codex-app", codexHome: home });
+      expect(byId.get("headless")!.messageRoute).toBeUndefined();
+      expect(byId.get("closed")).toMatchObject({ pid: 0, noTerminal: expect.stringContaining("closed") });
+      // A terminal that closes must not stick to the thread while its daemon stays alive.
+      terminals = new Map();
+      byId = new Map((await readCodexThreads(options)).entries.map(row => [row.sessionId, row as CodexRow]));
+      expect(byId.get("terminal")).toMatchObject({ pid: 0, messageRoute: "codex-app" });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
   test("a thread no process holds is closed: pid 0, and the row says so", async () => {
     // A lock FILE with no holder is what a reboot leaves behind; still closed.
     const home = realCodexHome({ threads: [{ id: "t1", name: "yesterday" }], locks: ["t1"] });
