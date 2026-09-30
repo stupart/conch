@@ -27,4 +27,8 @@ Each explicit handoff saves an owner-only transcript snapshot and `manifest.json
 
 When Records is enabled, append-only `handoff` receipts also link the source and destination in `records/history.sqlite`. These survive derived-history reindexing. With Records off, the manifest still preserves provenance; enabling Records later does not backfill these receipts. Conch does not silently turn on history indexing.
 
-The existing database contains normalized visible conversation content and tool activity. It is not a complete native transcript or a restorable machine image. Handoff therefore preserves the original native bytes for the CLI and uses the database for provenance. No native JSONL entries are rewritten. Missing/ambiguous histories, incomplete records, changed working folders, unsupported CLI versions, and unsigned-in destinations fail before a terminal is opened. Snapshots are limited to 128 MB.
+The existing database contains normalized visible conversation content and tool activity. It is not a complete native transcript or a restorable machine image. Handoff therefore preserves the original native bytes for the CLI and uses the database for provenance. No native JSONL entries are rewritten. Missing/ambiguous histories, incomplete records, changed working folders, unsupported CLI versions, and unsigned-in destinations fail before a terminal is opened.
+
+The fork launches in the original working folder shown by the resume picker; later shell directory changes in transcript records do not change that folder.
+
+Snapshots are streamed to disk and hashed incrementally, so long conversations are not capped at 128 MB or loaded into memory all at once. Identity validation decodes one JSONL record at a time; memory use depends on the largest individual record. A changing, incomplete, or invalid transcript is refused and its partial snapshot is removed.
