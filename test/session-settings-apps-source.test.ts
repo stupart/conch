@@ -53,7 +53,7 @@ describe("Mac", () => {
     expect(badge).toBeGreaterThan(-1);
     expect(control).toBeGreaterThan(badge);
     expect(bar).toContain('if row.parentSessionId == nil, row.backend != "conch" {');
-    expect(bar).toContain("catalog: state?.sessionSettings?.agent(row.backend),");
+    expect(bar).toContain("catalog: state?.sessionSettings?.agent(row.backend, accountId: row.claudeAccountId ?? row.codexAccountId),");
     expect(bar).toContain("canChange: state?.features?.sessionSettings != nil && row.revealable && row.noTerminal == nil,");
     expect(bar).toContain("onPick: { store.setSessionSettings(id: row.id, pick: $0) }");
   });
@@ -108,7 +108,7 @@ describe("iPhone", () => {
     const menu = view.slice(view.indexOf("// The model and effort it runs, and (when the Mac's daemon can)"));
     expect(menu).toContain("if let row, row.parentSessionId == nil {");
     expect(menu).toContain("if bridge.isConnected, bridge.state?.sessionSettings != nil, row.noTerminal == nil {");
-    expect(menu).toContain("catalog: bridge.state?.sessionSettings?.agent(row.backend)");
+    expect(menu).toContain("catalog: bridge.state?.sessionSettings?.agent(row.backend, accountId: row.claudeAccountId ?? row.codexAccountId)");
     expect(menu).toContain("Task { _ = await bridge.setSessionSettings(sessionId: sessionId, pick: pick) }");
     expect(menu.indexOf("Label(title, systemImage: \"cpu\")")).toBeLessThan(menu.indexOf("Button(\"End session…\""));
   });

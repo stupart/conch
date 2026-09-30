@@ -1,3 +1,4 @@
+import { accountToolsRequestError, isAccountToolsReply, type AccountToolsRequest, type AccountToolsReply } from "./account-tools.ts";
 import { claudeHandoffError } from "./claude-account-handoff.ts";
 import { accountRequestError, validAccountId, type ClaudeAccountRequest, type ClaudeAccountsReply } from "./claude-accounts.ts";
 import { parseExecutionCatalog } from "./execution-model.ts";
@@ -852,6 +853,7 @@ export type SessionControlMessage =
 
 export type RuntimeControlMessage =
   | ClaudeAccountRequest
+  | AccountToolsRequest
   | HistoryRequest
   | { kind: "resumable"; query?: string; limit?: number }
   | {
@@ -988,6 +990,7 @@ export interface PairingOpen {
 
 export type RuntimeControlResponse =
   | ClaudeAccountsReply
+  | AccountToolsReply
   | HistoryResponse
   | { kind: "resumable"; sessions: ResumableSession[]; complete: boolean }
   | {
@@ -1081,7 +1084,7 @@ export function isControlMessageCandidate(value: unknown): boolean {
     || value.kind === "resumable"
     || value.kind === "history-page" || value.kind === "history-item"
     || value.kind === "agent-capabilities"
-    || value.kind === "claude-accounts" || value.kind === "codex-accounts"
+    || value.kind === "account-tools" || value.kind === "claude-accounts" || value.kind === "codex-accounts"
     || value.kind === "session-start"
     || value.kind === "session-close"
     || value.kind === "app-error"
@@ -1249,6 +1252,12 @@ function boundedPrintable(value: unknown, name: string, max: number): ParseResul
 export function validateRuntimeControlMessage(value: unknown): ParseResult<RuntimeControlMessage> {
   if (!record(value) || typeof value.kind !== "string") {
     return { ok: false, err: "runtime control message must be a JSON object with a kind" };
+  }
+  if (value.kind === "account-tools") {
+    const err = accountToolsRequestError(value);
+    if (err) return { ok: false, err };
+    const { kind, backend, accountId, action, requestId, id, source, url, command, args, enabled } = value;
+    return { ok: true, value: { kind, backend, accountId, action, requestId, id, source, url, command, args, enabled } as AccountToolsRequest };
   }
   if (value.kind === "claude-accounts" || value.kind === "codex-accounts") {
     const err = accountRequestError(value);
@@ -1504,7 +1513,7 @@ export function validateControlMessage(value: unknown): ParseResult<AnyControlMe
     value.kind === "resumable"
     || value.kind === "history-page" || value.kind === "history-item"
     || value.kind === "agent-capabilities"
-    || value.kind === "claude-accounts" || value.kind === "codex-accounts"
+    || value.kind === "account-tools" || value.kind === "claude-accounts" || value.kind === "codex-accounts"
     || value.kind === "session-start"
     || value.kind === "session-close"
     || value.kind === "app-error"
@@ -1584,6 +1593,8 @@ function validateTerminalScreenReply(value: Record<string, unknown>): ParseResul
 
 export function validateControlResponse(value: unknown): ParseResult<ControlResponse> {
   if (!record(value) || typeof value.kind !== "string") return { ok: false, err: "invalid control response" };
+  if (value.kind === "account-tools") return isAccountToolsReply(value)
+    ? { ok: true, value } : { ok: false, err: "Invalid account tools response" };
   if (value.kind === "claude-accounts" || value.kind === "codex-accounts") {
     if (!Array.isArray(value.accounts) || value.accounts.length > 17 || value.accounts.some((account) =>
       !record(account) || !validAccountId(account.id) || typeof account.label !== "string"

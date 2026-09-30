@@ -588,6 +588,7 @@ final class BridgeClient: ObservableObject {
     }
 
     enum SessionCommand: String {
+        case reveal
         case dismiss
         case restore
         case attach
@@ -996,6 +997,15 @@ final class BridgeClient: ObservableObject {
         let reply = await postControlRaw(["kind": "set-config", "key": key, "value": wire])
         // The daemon acks with the resolved setting; an error carries `error`.
         return reply != nil && reply?["error"] == nil
+    }
+
+    func accountTools(_ request: AccountToolsRequest) async throws -> Data {
+        let data = try JSONEncoder().encode(request)
+        guard let message = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let reply = await postControlRaw(message) else {
+            throw NSError(domain: "ConchTools", code: 1, userInfo: [NSLocalizedDescriptionKey: "Could not reach your Mac."])
+        }
+        return try JSONSerialization.data(withJSONObject: reply)
     }
 
     private func postControlRaw(_ message: [String: Any]) async -> [String: Any]? {

@@ -1,4 +1,5 @@
 import SwiftUI
+import ConchDesign
 
 /// conch's settings, rendered from the daemon's own registry.
 ///
@@ -41,6 +42,14 @@ struct SettingsView: View {
                     .padding(24)
                 } else {
                     List {
+                        Section {
+                            NavigationLink {
+                                AccountToolsView { request in try await bridge.accountTools(request) }
+                                    .navigationTitle("Plugins & MCP")
+                            } label: { Label("Plugins & MCP", systemImage: "puzzlepiece.extension") }
+                            .listRowBackground(Palette.bg)
+                        }
+
                         ForEach($entries) { $entry in
                             SettingRow(setting: $entry) { value in
                                 await apply(entry.key, value)

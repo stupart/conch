@@ -82,6 +82,7 @@ export interface AgentModelChoice {
   /** The efforts this model takes, in the agent's order; empty means none; absent means the agent's list. */
   efforts?: string[];
   defaultEffort?: string;
+  resolvedModel?: string;
 }
 
 /** The agent's own defaults for a new session, read from its config. Read-only in conch. */
@@ -105,7 +106,7 @@ export interface AgentSettingsCatalog {
   defaults: AgentSettingsDefaults;
 }
 
-export type SessionSettingsCatalog = Record<SessionBackend, AgentSettingsCatalog>;
+export type SessionSettingsCatalog = Record<SessionBackend, AgentSettingsCatalog> & { accounts?: Record<string, AgentSettingsCatalog> };
 
 /**
  * One setting conch can set per session: how it is read, how a new session gets it, how a
@@ -174,7 +175,9 @@ export const AGENT_SESSION_SETTINGS: Record<SessionBackend, AgentSessionSettings
     promptText: claudeInputBoxText,
     pickerDepth: (screen) => (pickerBlock(screen, CLAUDE_TITLES, CLAUDE_FOOTER) ? 1 : 0),
     modelLabel: (model) => claudeModelLabel(model),
-    modelChoice: (model) => CLAUDE_FAMILY.exec(model)?.[1]?.toLowerCase(),
+    modelChoice: (model, catalog) => catalog?.models.find(choice => choice.id === model)?.id
+      ?? catalog?.models.find(choice => choice.id !== "default" && choice.resolvedModel?.replace(/\[1m\]/gi, "") === model.replace(/\[1m\]/gi, ""))?.id
+      ?? CLAUDE_FAMILY.exec(model)?.[1]?.toLowerCase(),
     pickerKeepsEffort: true,
   },
   codex: {
@@ -631,7 +634,14 @@ function claudeRowFor(rows: readonly PickerRow[], model: string): PickerRow | un
   const wanted = model.trim().toLowerCase();
   if (wanted === "default") return rows.find((row) => /^default\b/i.test(row.label));
   const family = CLAUDE_FAMILY.exec(wanted)?.[1]?.toLowerCase() ?? wanted;
-  const matching = rows.filter((row) => row.label.split(/[\s(]/)[0]!.toLowerCase() === family);
+  let matching = rows.filter((row) => row.label.split(/[\s(]/)[0]!.toLowerCase() === family);
+  const version = /(?:opus|fable|sonnet|haiku)[ -](\d+(?:[.-]\d+)?)/i.exec(wanted)?.[1]?.replace("-", ".");
+  if (version) {
+    const rowVersion = (row: PickerRow) => /^(?:opus|fable|sonnet|haiku)\s+(\d+(?:\.\d+)?)/i.exec(row.label)?.[1];
+    const exact = matching.filter(row => rowVersion(row) === version);
+    // Old pickers display aliases ("Fable"). A versioned row must match exactly.
+    matching = exact.length ? exact : matching.filter(row => !rowVersion(row));
+  }
   const oneM = /\[1m\]|1m context/.test(wanted);
   return matching.find((row) => (oneM ? /1M context/i.test(row.label) : row.label.toLowerCase() === family))
     ?? matching[0];

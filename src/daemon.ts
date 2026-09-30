@@ -1,3 +1,5 @@
+import { handleAccountTools } from "./account-tools.ts";
+import { accountModelCatalog, modelCatalogForSession } from "./provider-models.ts";
 import { prepareClaudeHandoff, settleClaudeHandoff, claudeHandoffReceipt, requireClaudeHandoffSupport } from "./claude-account-handoff.ts";
 import { SessionReconciler } from "./session-reconciler.ts";
 import { RecordsRuntime } from "./records-runtime.ts";
@@ -147,7 +149,6 @@ import {
   AGENT_SESSION_SETTINGS,
   driveSessionSettings,
   publishedSessionSettings,
-  readSessionSettingsCatalog,
   sessionSettingsFromLines,
   withCarriedEffort,
   type PublishedSessionSettings,
@@ -649,6 +650,7 @@ function traceQueue(message: string): void {
 export function injectTimeoutFor(line: string): number {
   try {
     const kind = JSON.parse(line)?.type ?? JSON.parse(line)?.kind;
+    if (kind === "account-tools") return 20_000;
     if (kind === "inject") return 25_000;
     // A truthful close waits for the agent pid to disappear after Ctrl-D; the
     // bridge must not invent a failure while that clean shutdown is in flight.
@@ -867,7 +869,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   };
   /** Both agents' lists and defaults, read from their own files (cached by mtime), and what each row runs. */
   const publishedSessionSettingsFor = () => {
-    sessionSettingsCatalog = readSessionSettingsCatalog({ claudeDir: cfg.claudeDir, codexHome: codexHomeDir() });
+    sessionSettingsCatalog = accountModelCatalog({ claudeDir: cfg.claudeDir, codexHome: codexHomeDir() }, () => { void renderSessionPanel(); });
     const catalog = sessionSettingsCatalog;
     return {
       catalog,
@@ -875,9 +877,12 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         backend,
         sessionSettingsSamples.get(sessionId),
         sessionSettingsChanges.get(sessionId),
-        catalog,
+        accountSessionCatalog(sessionId, backend, catalog),
       ),
     };
+  };
+  const accountSessionCatalog = (sessionId: string, backend: "claude" | "codex", catalog = sessionSettingsCatalog): SessionSettingsCatalog | undefined => {
+    return modelCatalogForSession(backend, catalog, panelSessions.get(sessionId));
   };
   /** The live agents listed under those sessions (C4), by row id: what an agent row's history read resolves against. */
   let panelAgents = new Map<string, SessionInfo>();
@@ -2516,7 +2521,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     // new session and reached Codex as a message to the model.
     setSettings: async (target, requested) => {
       const backend = target.backend ?? "claude";
-      const change = withCarriedEffort(backend, requested, sessionSettingsSamples.get(target.sessionId), sessionSettingsCatalog);
+      const change = withCarriedEffort(backend, requested, sessionSettingsSamples.get(target.sessionId), accountSessionCatalog(target.sessionId, backend));
       const settle = (state: SessionSettingsChangeState): void => {
         sessionSettingsChanges.set(target.sessionId, state);
         void renderSessionPanel();
@@ -2637,6 +2642,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         ? {}
         : { claudeHome: cfg.claudeDir }),
     }, readClaudeAccounts(cfg.claudeDir), readCodexAccounts()),
+    accountTools: message => handleAccountTools(message, cfg.claudeDir),
     claudeAccounts: async (message) => {
       if (message.kind === "codex-accounts") {
         const created = message.action === "add" ? addCodexAccount(message.label!, message.configDir) : undefined;

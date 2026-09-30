@@ -36,6 +36,16 @@ final class SessionSettingsTests: XCTestCase {
         XCTAssertEqual(try decode(SessionSettingsCatalog.self, "{}"), SessionSettingsCatalog())
     }
 
+    func testAccountCatalogOverridesOnlyTheSelectedProfile() throws {
+        let catalog = try decode(SessionSettingsCatalog.self, """
+        {"claude":{"models":[{"id":"opus","label":"Opus"}]},
+         "accounts":{"claude:business":{"models":[{"id":"claude-fable-5-1[1m]","label":"Fable 5.1","efforts":["high","max"]}]}}}
+        """)
+        XCTAssertEqual(catalog.agent("claude", accountId: "business")?.models.first?.id, "claude-fable-5-1[1m]")
+        XCTAssertEqual(catalog.agent("claude", accountId: "default")?.models.first?.id, "opus")
+        XCTAssertEqual(catalog.agent("claude", accountId: "removed"), catalog.claude)
+    }
+
     func testDecodesARowsSettingsAndAChangeInFlight() throws {
         let state = try decode(SessionSettingsState.self, """
         {"model": "claude-opus-5-5", "modelLabel": "Opus 5.5", "modelChoice": "opus", "effort": "xhigh", "at": 5,

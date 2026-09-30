@@ -916,6 +916,7 @@ struct ConchSettingsRootView: View {
     private let sections = [
         ("providers", "Providers", "person.crop.circle"),
         ("environments", "Environments", "desktopcomputer"),
+        ("tools", "Plugins & MCP", "puzzlepiece.extension"),
         ("general", "General", "slider.horizontal.3"),
         ("phone", "Phone app", "iphone"),
         ("permissions", "Permissions", "hand.raised"),
@@ -939,6 +940,13 @@ struct ConchSettingsRootView: View {
             Rectangle().fill(ConchColor.hairline.color(.dark)).frame(width: 1)
             Group {
                 switch section {
+                case "tools": AccountToolsView { request in
+                    switch await ConchSocketClient().request(request, timeout: 22) {
+                    case .reply(let data): return data
+                    case .connectFailed, .timeout:
+                        throw NSError(domain: "ConchTools", code: 1, userInfo: [NSLocalizedDescriptionKey: "Could not reach the Conch daemon."])
+                    }
+                }
                 case "environments": ConchEnvironmentsView()
                 case "general": ConchSettingsView()
                 case "phone": ConchPairingView()
