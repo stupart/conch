@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync, symlinkSync, realpathSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync, symlinkSync, realpathSync, appendFileSync, createReadStream, openSync, closeSync, writeSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { addClaudeAccount, readClaudeAccounts } from "../src/claude-accounts.ts";
@@ -48,6 +49,74 @@ test("snapshot is byte-identical and private; official resume forks into the sel
   expect(command).toContain(readClaudeAccounts().find(a => a.id === request.claudeAccountId)!.configDir);
   await settleClaudeHandoff(result.directory, result.manifest, "terminal-opened");
   expect(JSON.parse(readFileSync(join(result.directory, "manifest.json"), "utf8")).state).toBe("terminal-opened");
+});
+
+async function sha256(path: string): Promise<string> {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  return hash.digest("hex");
+}
+
+function appendHistory(megabytes: number): void {
+  const line = JSON.stringify({ type: "progress", data: "x".repeat(64 * 1024) }) + "\n";
+  const block = Buffer.from(line.repeat(16));
+  const fd = openSync(file, "a");
+  try { for (let i = 0; i < megabytes; i++) writeSync(fd, block); }
+  finally { closeSync(fd); }
+}
+
+test("histories larger than 128 MB retain every byte and the original without whole-file buffering", async () => {
+  appendHistory(129);
+  const before = statSync(file, { bigint: true });
+  const sourceHash = await sha256(file);
+  expect(before.size).toBeGreaterThan(128n * 1024n * 1024n);
+  const result = await prepare();
+  const snapshot = result.request.claudeHandoff!.transcriptPath;
+  expect(statSync(snapshot).size).toBe(Number(before.size));
+  expect(await sha256(snapshot)).toBe(sourceHash);
+  expect(result.manifest.source).toMatchObject({ sha256: sourceHash, bytes: Number(before.size) });
+  const after = statSync(file, { bigint: true });
+  expect(after.size).toBe(before.size);
+  expect(after.mtimeNs).toBe(before.mtimeNs);
+  expect(await sha256(file)).toBe(sourceHash);
+}, 15_000);
+
+test("records and UTF-8 characters spanning copy chunks preserve native bytes and original main-session cwd", async () => {
+  const prefix = JSON.stringify({ type: "user", sessionId: original, cwd }).slice(0, -1) + ',"message":"';
+  const line = prefix + "x".repeat(1024 * 1024 - Buffer.byteLength(prefix) - 1) + "🦀" + "y".repeat(2 * 1024 * 1024) + '"}\r\n';
+  writeFileSync(file, line + JSON.stringify({ type: "assistant", sessionId: original, cwd: root }) + "\n"
+    + JSON.stringify({ type: "user", sessionId: original, cwd: root, isSidechain: true }) + "\n");
+  const result = await prepare();
+  expect(result.manifest.environment.cwd).toBe(cwd);
+  expect(readFileSync(result.request.claudeHandoff!.transcriptPath)).toEqual(readFileSync(file));
+  expect(result.manifest.source.sha256).toBe(await sha256(file));
+});
+
+test("failed validation removes all staged history and never publishes a manifest", async () => {
+  const originalBytes = readFileSync(file);
+  for (const [bytes, error] of [
+    [Buffer.alloc(0), "empty"],
+    [Buffer.concat([originalBytes, Buffer.from('{invalid}\n')]), "invalid record"],
+    [originalBytes.subarray(0, originalBytes.length - 1), "still being written"],
+  ] as const) {
+    writeFileSync(file, bytes);
+    await expect(prepare()).rejects.toThrow(error);
+    expect(readdirSync(join(process.env.CONCH_CONFIG_DIR!, "handoffs"))).toEqual([]);
+    expect(readFileSync(file)).toEqual(bytes);
+  }
+  writeFileSync(file, originalBytes);
+  await expect(prepare({ ...request, cwd: root })).rejects.toThrow("working folder changed");
+  expect(readdirSync(join(process.env.CONCH_CONFIG_DIR!, "handoffs"))).toEqual([]);
+});
+
+test("a conversation modified during streaming is refused and its partial copy is removed", async () => {
+  appendHistory(32);
+  let changes = 0;
+  const timer = setInterval(() => { appendFileSync(file, "\n"); changes++; }, 1);
+  try { await expect(prepare()).rejects.toThrow("still being written"); }
+  finally { clearInterval(timer); }
+  expect(changes).toBeGreaterThan(1);
+  expect(readdirSync(join(process.env.CONCH_CONFIG_DIR!, "handoffs"))).toEqual([]);
 });
 
 test("wire requests choose registered identities, never an arbitrary transcript or destination UUID", () => {
