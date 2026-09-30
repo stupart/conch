@@ -893,6 +893,9 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
     /// A folder deliverable's paths to point at, relative to the folder (`focus`). Empty from an older daemon and for
     /// anything but a folder; one this build can't read is none, never a review that fails.
     let focus: [String]
+    /// Why the link its agent gave was not published, when one was given and refused (`linkRefused`, one sentence
+    /// naming the link and the reason). Nil when there was no link, and from an older daemon.
+    let linkRefused: String?
 
     private enum CodingKeys: String, CodingKey {
         case summary
@@ -905,6 +908,7 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
         case version
         case kind
         case focus
+        case linkRefused
     }
 
     private struct Scene: Decodable {
@@ -930,6 +934,7 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
         version = try? container.decodeIfPresent(Int.self, forKey: .version)
         kind = try? container.decodeIfPresent(String.self, forKey: .kind)
         focus = (try? container.decodeIfPresent([String].self, forKey: .focus)) ?? []
+        linkRefused = try? container.decodeIfPresent(String.self, forKey: .linkRefused)
     }
 
     private static func decodeTimestamp(

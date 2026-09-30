@@ -229,6 +229,9 @@ struct PublishedState: Decodable, Equatable {
             /// A folder deliverable's paths to point at, relative to the folder (`focus`). Empty for anything else, and
             /// from an older daemon.
             var focus: [String] = []
+            /// Why the link its agent gave was not published, when one was given and refused (`linkRefused`). Nil when
+            /// there was no link, and from an older daemon.
+            var linkRefused: String?
 
             struct Preview: Decodable, Equatable {
                 var path: String
@@ -236,7 +239,7 @@ struct PublishedState: Decodable, Equatable {
                 var capturedAt: Double
             }
 
-            private enum CodingKeys: String, CodingKey { case summary, link, at, scene, id, viewedAt, artifact, version, kind, preview, focus }
+            private enum CodingKeys: String, CodingKey { case summary, link, at, scene, id, viewedAt, artifact, version, kind, preview, focus, linkRefused }
             private struct Scene: Decodable {
                 var inspect: String?
                 var marks: AgentMark.List?
@@ -267,6 +270,7 @@ struct PublishedState: Decodable, Equatable {
                 kind = try? c.decodeIfPresent(String.self, forKey: .kind)
                 preview = try? c.decodeIfPresent(Preview.self, forKey: .preview)
                 focus = (try? c.decodeIfPresent([String].self, forKey: .focus)) ?? []
+                linkRefused = try? c.decodeIfPresent(String.self, forKey: .linkRefused)
             }
         }
 

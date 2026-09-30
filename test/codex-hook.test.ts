@@ -132,8 +132,11 @@ describe("handleCodexHookPayload", () => {
     });
     expect((await handleCodexHookPayload(stop("hand off.md"), h.cfg, h.dependencies))?.review)
       .toEqual({ summary: "The handoff", link: file });
-    expect((await handleCodexHookPayload(stop("javascript:alert(1)"), h.cfg, h.dependencies))?.review)
-      .toEqual({ summary: "The handoff" });
+    // Dropped, and the review says which link and why, for the person who opens it.
+    expect((await handleCodexHookPayload(stop("javascript:alert(1)"), h.cfg, h.dependencies))?.review).toEqual({
+      summary: "The handoff",
+      linkRefused: "The link javascript:alert(1) wasn't published: it is a javascript: link, not an http(s) URL or a file path.",
+    });
   });
 
   test("Stop writes an idle registry entry and sends an exact review TurnEvent", async () => {

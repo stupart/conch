@@ -324,7 +324,8 @@ struct DeliverableSheet: View {
         if review.link == nil, let typed = review.kind, Self.standInKinds.contains(typed) { return .standIn }
         // Never downloaded: the phone's file access serves files a session published, not a folder's listing.
         if review.kind == "folder", let link = review.link { return .folder(link) }
-        guard let link = review.link else { return .unavailable("No link on this review.") }
+        // A link given and refused says which and why (`linkRefused`), rather than reading as one never given.
+        guard let link = review.link else { return .unavailable(review.linkRefused ?? "No link on this review.") }
         if let url = URL(string: link),
            let scheme = url.scheme?.lowercased(),
            scheme == "http" || scheme == "https" {

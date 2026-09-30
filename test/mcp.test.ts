@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync, rmSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 import {
   chmod,
@@ -1315,6 +1315,50 @@ describe("real MCP tool handlers with injected dependencies", () => {
       expect(h.calls.daemon).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // review-roots.ts: the same folders the hook and the daemon check with. Where the session is now comes from its
+  // transcript, since this process's cwd is only where it started.
+  test("review_to_front checks a link against the session's folders: where it started, and where its transcript says it is", async () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "conch-mcp-roots-")));
+    const saved = process.env.TMPDIR;
+    mkdirSync(join(base, "temp"));
+    // Temp folders are always allowed; point TMPDIR away so only the session's folders decide.
+    process.env.TMPDIR = join(base, "temp");
+    try {
+      const start = join(base, "Internal");
+      const now = join(base, "Internal", "monorepo", ".worktrees", "task");
+      const moved = join(base, "Clients", "arch");
+      for (const dir of [join(start, "review-2026-09-30"), now, moved, join(base, "Outside")]) mkdirSync(dir, { recursive: true });
+      writeFileSync(join(now, "page.html"), "<h1>ok</h1>");
+      writeFileSync(join(moved, "page.html"), "<h1>ok</h1>");
+      writeFileSync(join(base, "Outside", "page.html"), "<h1>no</h1>");
+      const transcript = join(base, "session.jsonl");
+      const publish = async (where: string, link: string) => {
+        writeFileSync(transcript, `${JSON.stringify({ type: "user", cwd: start })}\n${JSON.stringify({ type: "assistant", cwd: where })}\n`);
+        const h = fakeHarness({
+          parentPid: 4321,
+          transcriptPath: transcript,
+          session: { sessionId: "session-123", name: "Build", cwd: start, pid: 4321, status: "idle" },
+        });
+        const response = await callTool(createMcpToolHandlers({ claudeDir: "/virtual/claude", socketPath: "/virtual/conch.sock" }, h.dependencies),
+          "review_to_front", { summary: "the pack", link });
+        return { response, sent: (h.calls.daemon[0]?.event as { review?: { link?: string } } | undefined)?.review?.link };
+      };
+      // In a nested worktree: the folder it started in is still its folder, and a relative link is the worktree's.
+      expect((await publish(now, join(start, "review-2026-09-30"))).sent).toBe(join(start, "review-2026-09-30"));
+      expect((await publish(now, "page.html")).sent).toBe(join(now, "page.html"));
+      // Moved outside it altogether: the folder it is in now counts too.
+      expect((await publish(moved, "page.html")).sent).toBe(join(moved, "page.html"));
+      // Outside both: refused, naming the folders it checked.
+      const refused = await publish(moved, join(base, "Outside", "page.html"));
+      expect(rpcResult(refused.response)).toMatchObject({ isError: true });
+      expect(toolText(refused.response)).toContain(`is outside this session's folders (${start}, ${moved}) and the temp folder`);
+      expect(refused.sent).toBeUndefined();
+    } finally {
+      process.env.TMPDIR = saved;
+      rmSync(base, { recursive: true, force: true });
     }
   });
 

@@ -388,5 +388,6 @@ test("the daemon hands the bridge the requester, which files the snapshot on the
   expect(wiring).toContain("const next = attachReviewPreview(state?.reviews ?? (state?.review ? [state.review] : undefined), reviewId, preview);");
   expect(wiring).toContain("ledger.saveReviews();");
   expect(wiring).toContain("void renderSessionPanel();");
-  expect(wiring).toContain("roots: [row?.cwd, ...(row?.workDirs ?? [])].filter((root): root is string => Boolean(root)),");
+  // The row's folders, and those its deliverables were filed under (review-roots.ts).
+  expect(wiring).toContain("roots: [row?.cwd, ...(row?.workDirs ?? []), ...reviews.flatMap((one) => one.roots ?? [])]");
 });

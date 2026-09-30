@@ -868,6 +868,8 @@ interface HeldReview {
   link?: string;
   scene?: { marks?: Array<{ frame?: { image?: unknown } }> };
   preview?: { path?: unknown };
+  /** The session folders beyond the row's `cwd` that held its files when filed (`SessionReview.roots`). */
+  roots?: unknown;
 }
 
 /** How often a transcript still being made says it is (`/transcript`). */
@@ -965,8 +967,14 @@ async function servableFile(
   const refused = { ok: false, status: 403, reason: "not a file conch is publishing" } as const;
   if (!requested.startsWith("/") || requested.includes("\0")) return refused;
   const rows = state?.rows ?? [];
+  // The session's folders: where it started, what it declared, and what its deliverables were filed under
+  // (review-roots.ts), since the folder it is in now moves on and a filed link must not go with it.
   const rootsOf = (row: (typeof rows)[number] | undefined): string[] =>
-    [row?.cwd, ...(row?.workDirs ?? [])].filter((root): root is string => typeof root === "string" && root.startsWith("/"));
+    [
+      row?.cwd,
+      ...(row?.workDirs ?? []),
+      ...[...(row?.reviews ?? []), ...(row?.review ? [row.review] : [])].flatMap((held) => Array.isArray(held.roots) ? held.roots : []),
+    ].filter((root, index, all): root is string => typeof root === "string" && root.startsWith("/") && all.indexOf(root) === index);
   const heldLinks = (row: (typeof rows)[number]): string[] =>
     [...(row.reviews ?? []), ...(row.review ? [row.review] : [])]
       .map((held) => held.link)

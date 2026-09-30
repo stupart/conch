@@ -68,6 +68,7 @@ import {
   LINKLESS_DELIVERABLE_KINDS,
 } from "./deliverables.ts";
 import { reviewIdentity } from "./records-receipts.ts";
+import { reviewLinkScope, transcriptFolder } from "./review-roots.ts";
 import { windowKey } from "./window-key.ts";
 import { appServerNoTerminal } from "./codex-threads.ts";
 import { transcriptFormatFor } from "./agent-adapter.ts";
@@ -921,6 +922,8 @@ interface HeldDeliverable {
   focus?: string[];
   at?: number;
   viewedAt?: number;
+  /** Why the link a `conch:review` line gave was not published (`SessionReview.linkRefused`). */
+  linkRefused?: string;
 }
 
 /**
@@ -1404,6 +1407,7 @@ export function createMcpToolHandlers(
           ...(one.kind ? { kind: one.kind } : {}),
           summary: one.summary,
           ...(one.link ? { link: one.link } : {}),
+          ...(typeof one.linkRefused === "string" && one.linkRefused ? { linkRefused: one.linkRefused } : {}),
           ...(Array.isArray(one.focus) && one.focus.length ? { focus: one.focus } : {}),
           ...(one.at !== undefined ? { at: one.at } : {}),
           ...(one.viewedAt !== undefined ? { viewedAt: one.viewedAt } : {}),
@@ -1442,7 +1446,7 @@ export function createMcpToolHandlers(
     async review_to_front(argumentsValue, meta) {
       // Accepted, refused or failed, and each says which. A refusal names its
       // reason and nothing reaches the daemon.
-      const { summary, truncatedFrom, link, scene, kind, key, focus, session } = await (async () => {
+      const { summary, truncatedFrom, link, scene, kind, key, focus, session, transcriptPath } = await (async () => {
         const argumentsObject = toolArguments(argumentsValue);
         allowOnly(argumentsObject, ["summary", "link", "kind", "key", "session", "scene", "focus"]);
         const cleaned = sanitizeReviewSummary(requiredString(argumentsObject, "summary"), Infinity);
@@ -1463,11 +1467,20 @@ export function createMcpToolHandlers(
           throw new ToolInputError(`key must be 1 to ${ARTIFACT_KEY_MAX} printable characters; it names the artifact, it does not describe it`);
         }
         const session = await requiredReviewSession(argumentsObject, config, dependencies, meta);
+        const transcriptPath = dependencies.findTranscript(config.claudeDir, session.sessionId);
+        // The folders the hook and the daemon check a link against (review-roots.ts): where the
+        // session is now, as its transcript last says, where it started, and what it declared.
+        // This process's own cwd is where the session started, and stands in for either unknown.
+        const scope = await reviewLinkScope({
+          now: await transcriptFolder(transcriptPath) ?? process.cwd(),
+          started: session.cwd ?? process.cwd(),
+          workDirs: session.workDirs,
+        }, process.cwd());
         const rawLink = optionalString(argumentsObject, "link");
-        // Absolute by the time it leaves here, resolved against this process's
-        // cwd (the session's): the raw relative string reached the Mac app,
-        // which resolved it against its own cwd and previewed a missing file.
-        const checked = rawLink === undefined ? undefined : await checkReviewLink(rawLink, process.cwd());
+        // Absolute by the time it leaves here, resolved against the folder the session is in:
+        // the raw relative string reached the Mac app, which resolved it against its own cwd
+        // and previewed a missing file.
+        const checked = rawLink === undefined ? undefined : await checkReviewLink(rawLink, scope.cwd, scope.roots);
         if (checked && !checked.ok) throw new ToolInputError(checked.reason);
         const hasFocus = Object.hasOwn(argumentsObject, "focus");
         const mismatch = folderRefusal({ kind, isFolder: checked?.ok === true && checked.folder === true, hasFocus });
@@ -1475,7 +1488,7 @@ export function createMcpToolHandlers(
         // Inside the folder on the disk as it is now, and published relative to it: never a listing.
         const focus = hasFocus && checked?.ok ? await resolveReviewFocus(checked.link, argumentsObject.focus) : undefined;
         if (focus && !focus.ok) throw new ToolInputError(focus.reason);
-        const images = await markImagesRefusal(scene?.ok ? scene.scene : undefined, process.cwd());
+        const images = await markImagesRefusal(scene?.ok ? scene.scene : undefined, scope.roots);
         if (images) throw new ToolInputError(images);
         return {
           summary: cleaned.slice(0, REVIEW_SUMMARY_MAX),
@@ -1486,6 +1499,7 @@ export function createMcpToolHandlers(
           key,
           focus: focus?.ok ? focus.focus : undefined,
           session,
+          transcriptPath,
         };
       })().catch((error) => {
         throw new ToolInputError(`refused: ${errorMessage(error)}`);
@@ -1509,7 +1523,6 @@ export function createMcpToolHandlers(
       // read low. conch_deliverables says what was filed. A reply from the daemon if it bites.
       const version = nextVersion(await heldDeliverables(sessionsPath, session.sessionId, dependencies) ?? [], facts.artifact);
       const sent = await (async () => {
-        const transcriptPath = dependencies.findTranscript(config.claudeDir, session.sessionId);
         // Not a turn-end: publishing happens mid-turn, and the turn's own Stop
         // says when it finished.
         return dependencies.sendToDaemon(config.socketPath, {

@@ -1,6 +1,6 @@
 import type { AnswerKey } from "../src/agent-adapter.ts";
 import { afterAll, describe, expect, test, setSystemTime } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, type Config } from "../src/config.ts";
@@ -129,6 +129,8 @@ interface Options {
   holdCues?: boolean;
   sessionGone?: (sessionId: string) => boolean | Promise<boolean>;
   window?: (sessionId: string) => SessionInfo | undefined;
+  /** Where the session's transcript says it is now; absent means the daemon reads no transcript. */
+  sessionFolder?: (sessionId: string) => string | undefined;
   inject?: (text: string) => InjectTextResult;
   key?: (key: string) => InjectTextResult;
   answerKeys?: (keys: readonly AnswerKey[]) => InjectTextResult;
@@ -259,6 +261,7 @@ function harness(options: Options = {}) {
     audio: { lease, holder },
     quietOverrideBlocked: () => false,
     window: options.window ?? (() => undefined),
+    ...(options.sessionFolder ? { sessionFolder: async (sessionId: string) => options.sessionFolder!(sessionId) } : {}),
     sessionGone: async (sessionId) => {
       gone.push(sessionId);
       return options.sessionGone ? await options.sessionGone(sessionId) : false;
@@ -2230,7 +2233,108 @@ describe("the daemon checks a deliverable's link itself", () => {
       const review = h.ledger.sessionStates.get("s1")?.review;
       expect(review).toMatchObject({ summary: "done" });
       expect(review?.link).toBeUndefined();
+      // And says why where the link would be, rather than looking like a review that never had one.
+      expect(review?.linkRefused).toBe(`The link /etc/hosts wasn't published: it is outside this session's folder (${folder}) and the temp folder.`);
       expect(h.errors.map(([operation]) => operation)).toEqual(["review-link"]);
+    });
+  });
+});
+
+/**
+ * The daemon checks a link against the same folders the hook and `review_to_front` do (review-roots.ts), from what it
+ * knows itself: the folder the registry says the session started in, the ones it declared, and the one its own
+ * transcript says it is in now (`sessionFolder`). A link it files outside the folder the session started in carries
+ * the folders it was checked against (`roots`), which the phone's file access checks again.
+ */
+describe("the daemon files what the hook published, by the same folders", () => {
+  const onDisk = async (run: (disk: string) => Promise<void>): Promise<void> => {
+    // Outside every temp folder, which are always allowed: TMPDIR points elsewhere while it runs.
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "conch-daemon-roots-")));
+    const saved = process.env.TMPDIR;
+    mkdirSync(join(base, "temp"));
+    process.env.TMPDIR = join(base, "temp");
+    try {
+      await run(base);
+    } finally {
+      process.env.TMPDIR = saved;
+      rmSync(base, { recursive: true, force: true });
+    }
+  };
+  const tree = (base: string) => {
+    const start = join(base, "Internal");
+    const now = join(base, "Clients", "arch");
+    for (const dir of [join(start, "review-2026-09-30"), now]) mkdirSync(dir, { recursive: true });
+    writeFileSync(join(now, "page.html"), "<h1>ok</h1>");
+    writeFileSync(join(start, "review-2026-09-30", "emails.md"), "# emails");
+    return { start, now };
+  };
+  const published = (review: TurnEvent["review"], over: Partial<TurnEvent> = {}): TurnEvent => ({
+    type: "review-published", sessionId: "s1", label: "alpha", announce: "alpha has work ready", eventAt: 2_000, review, ...over,
+  });
+  const row = (h: ReturnType<typeof harness>) => buildPublishedState("device", buildPanelModel({
+    sessions: [{ sessionId: "s1", name: "alpha" } as SessionInfo],
+    sessionStates: h.ledger.sessionStates,
+    pausedSessionIds: new Set(),
+    live: { state: "idle", label: "", partial: "" },
+    mode: { muted: false, paused: false, holding: 0 },
+    activeSessionId: null,
+    navSelectedId: null,
+  }), new Map(), new Set(), Date.now()).rows[0]!;
+
+  test("a link under the folder the transcript says the session is in now is filed, with that folder as a root", async () => {
+    await onDisk(async (base) => {
+      const { start, now } = tree(base);
+      const h = harness({ paused: true, window: () => ({ sessionId: "s1", cwd: start } as SessionInfo), sessionFolder: () => now });
+      await h.voice.handle(accepted(h, turnEnd({ eventAt: 3_000, review: { summary: "the page", link: join(now, "page.html") } })));
+      expect(h.ledger.sessionStates.get("s1")?.review).toMatchObject({ link: join(now, "page.html"), roots: [now] });
+      expect(row(h).review).toMatchObject({ link: join(now, "page.html"), roots: [now] });
+      // Under the folder it started in: nothing more to carry, the row's own folder covers it.
+      await h.voice.handle(accepted(h, published({ summary: "the pack", link: join(start, "review-2026-09-30") }, { eventAt: 4_000 })));
+      const pack = h.ledger.sessionStates.get("s1")?.review;
+      expect(pack).toMatchObject({ link: join(start, "review-2026-09-30"), kind: "folder" });
+      expect(pack?.roots).toBeUndefined();
+      expect(h.errors).toEqual([]);
+    });
+  });
+
+  test("without the transcript's word, the same link is refused, and the refusal says why", async () => {
+    await onDisk(async (base) => {
+      const { start, now } = tree(base);
+      const h = harness({ paused: true, window: () => ({ sessionId: "s1", cwd: start } as SessionInfo) });
+      // The event's own cwd is no root while the daemon knows the session.
+      await h.voice.handle(accepted(h, turnEnd({ eventAt: 3_000, cwd: now, review: { summary: "the page", link: join(now, "page.html") } })));
+      const review = h.ledger.sessionStates.get("s1")?.review;
+      expect(review?.link).toBeUndefined();
+      expect(review?.linkRefused)
+        .toBe(`The link ${join(now, "page.html")} wasn't published: it is outside this session's folder (${start}) and the temp folder.`);
+      expect(row(h).review?.linkRefused).toBe(review?.linkRefused);
+      expect(h.errors.map(([operation]) => operation)).toEqual(["review-link"]);
+    });
+  });
+
+  test("a turn whose link the hook refused files its summary with the hook's reason", async () => {
+    const h = harness({ paused: true, window: () => ({ sessionId: "s1", cwd: "/work" } as SessionInfo) });
+    const linkRefused = "The link /x/y wasn't published: it is outside this session's folder (/work) and the temp folder.";
+    await h.voice.handle(accepted(h, turnEnd({ eventAt: 3_000, review: { summary: "done", linkRefused } })));
+    expect(h.ledger.sessionStates.get("s1")?.review).toMatchObject({ summary: "done", linkRefused });
+    expect(row(h).review?.linkRefused).toBe(linkRefused);
+    expect(row(h).reviews?.at(-1)?.linkRefused).toBe(linkRefused);
+  });
+
+  test("a saved deliverable keeps its refusal and its folders across a restart", async () => {
+    await onDisk(async (base) => {
+      const { start, now } = tree(base);
+      const path = join(base, "reviews.json");
+      const ledger = new SessionLedger(path);
+      const h = harness({ ledger, paused: true, window: () => ({ sessionId: "s1", cwd: start } as SessionInfo), sessionFolder: () => now });
+      await h.voice.handle(accepted(h, turnEnd({ eventAt: 3_000, review: { summary: "done", linkRefused: "The link /x wasn't published: it does not exist." } })));
+      await h.voice.handle(accepted(h, turnEnd({ eventAt: 4_000, review: { summary: "the page", link: join(now, "page.html") } })));
+      const after = new SessionLedger(path);
+      after.restoreReviews();
+      expect(after.sessionStates.get("s1")?.reviews?.map(({ summary, link, linkRefused, roots }) => ({ summary, link, linkRefused, roots }))).toEqual([
+        { summary: "done", link: undefined, linkRefused: "The link /x wasn't published: it does not exist.", roots: undefined },
+        { summary: "the page", link: join(now, "page.html"), linkRefused: undefined, roots: [now] },
+      ]);
     });
   });
 });

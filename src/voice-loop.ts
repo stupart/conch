@@ -25,7 +25,7 @@ import {
 import { adapterForTranscript, inputBoxHoldsWords, transcriptFormatFor } from "./agent-adapter.ts";
 import { injectProviderCommand as providerCommand, isProviderCommandLine } from "./provider-rename.ts";
 import { classifyReadingGap, parseNameAddress, wordOverlapRatio } from "./commands.ts";
-import { checkReviewLink, markImagesRefusal, resolveReviewFocus, lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince, transcriptMark, promptSince } from "./snippet.ts";
+import { checkReviewLink, linkRefusalNote, markImagesRefusal, resolveReviewFocus, lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince, transcriptMark, promptSince } from "./snippet.ts";
 import {
   lastAssistantReply,
   latestAnswerableQuestion,
@@ -40,6 +40,7 @@ import {
 } from "./conversation.ts";
 import { isWindowKey } from "./window-key.ts";
 import { folderRefusal } from "./deliverables.ts";
+import { reviewLinkScope, rootsHolding, type LinkScope } from "./review-roots.ts";
 import { deadTarget, type DeadTarget } from "./dead-target.ts";
 import { clipboardFallbackError } from "./app-errors.ts";
 import { recordTelemetry } from "./telemetry.ts";
@@ -428,6 +429,12 @@ export interface VoiceLoopDeps {
   window(sessionId: string): SessionInfo | undefined;
   /** Claude Code's registry status for a session, read now rather than from the last snapshot. */
   freshStatus?(sessionId: string): Promise<string | undefined>;
+  /**
+   * The folder a session is in now, from its own transcript (`transcriptFolder`), never from what an event
+   * claims. Optional so a test that doesn't give it reads no transcript: a link is then checked against the
+   * folders the registry knows alone.
+   */
+  sessionFolder?(sessionId: string): Promise<string | undefined>;
   /** The registry check: true when a complete snapshot says the session exited. */
   sessionGone(sessionId: string): Promise<boolean>;
   render(): void;
@@ -971,24 +978,41 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
   }
 
   /**
+   * The folders a session's deliverable may sit under (review-roots.ts), from what the daemon knows
+   * about the session itself: the folder its registry entry started in, the ones it declared, and the
+   * one its transcript says it is in now. Never the event's own `cwd` while the session is known: the
+   * socket is not only the hooks', and a raw write controls that. The same rule the hook and
+   * `review_to_front` check with, so what they publish the daemon files.
+   */
+  async function linkScope(event: TurnEvent): Promise<LinkScope> {
+    const window = deps.window(event.sessionId);
+    const now = window ? await deps.sessionFolder?.(event.sessionId).catch(() => undefined) : undefined;
+    return reviewLinkScope({ now, started: window?.cwd ?? event.cwd, workDirs: window?.workDirs }, tmpdir());
+  }
+
+  /**
    * The daemon's own check of a deliverable's link: `checkReviewLink`, the one `review_to_front`
    * and the `conch:review` marker already pass. The socket checked only that a link was a
    * string, and it is not only the MCP server's, so a raw write could file `/etc/hosts` for the
-   * phone to fetch. Checked against the folder the daemon knows the session by, not the one the
-   * event claims. The link as checked (absolute), and whether it is a folder (kind `folder`, its tree); undefined for
-   * none, null when refused. A folder link with another kind said for it is refused here too (`folderRefusal`).
+   * phone to fetch. Checked against the folders the daemon knows the session by (`linkScope`), not
+   * the one the event claims. The link as checked (absolute) and whether it is a folder (kind
+   * `folder`, its tree); undefined for none; refused with a note for the person (`linkRefusalNote`).
+   * A folder link with another kind said for it is refused here too (`folderRefusal`).
    */
-  async function vettedReviewLink(event: TurnEvent): Promise<{ link: string; folder: boolean } | undefined | null> {
+  async function vettedReviewLink(
+    event: TurnEvent,
+    scope: LinkScope,
+  ): Promise<{ ok: true; link: string; folder: boolean } | { ok: false; note: string } | undefined> {
     const link = event.review?.link;
     if (link === undefined) return undefined;
-    const checked = await checkReviewLink(link, deps.window(event.sessionId)?.cwd ?? event.cwd ?? tmpdir());
+    const checked = await checkReviewLink(link, scope.cwd, scope.roots);
     const reason = !checked.ok
       ? checked.reason
       : folderRefusal({ kind: event.review?.kind, isFolder: checked.folder === true, hasFocus: event.review?.focus !== undefined });
-    if (checked.ok && !reason) return { link: checked.link, folder: checked.folder === true };
+    if (checked.ok && !reason) return { ok: true, link: checked.link, folder: checked.folder === true };
     log(`refused a deliverable link from "${event.label}": ${reason}`);
     recordDaemonError("review-link", `Refused a deliverable's link: ${reason}`, event.sessionId, { link });
-    return null;
+    return { ok: false, note: linkRefusalNote(link, checked.ok ? reason! : checked.why) };
   }
 
   /**
@@ -1005,9 +1029,21 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     return null;
   }
 
+  /**
+   * The folders beyond the one the session started in that hold a filing's files, its link and its marks' images
+   * (`SessionReview.roots`): the phone checks them against these as well as the row's own folders, since where the
+   * session is now moves on. Undefined when the folder it started in, or a temp folder, holds them all.
+   */
+  async function filedRoots(event: TurnEvent, scope: LinkScope, link: string | undefined): Promise<string[] | undefined> {
+    const images = (event.review?.scene?.marks ?? []).flatMap((mark) => "image" in mark.frame ? [mark.frame.image] : []);
+    const paths = [...(link?.startsWith("/") ? [link] : []), ...images];
+    const held = paths.length ? await rootsHolding(paths, scope.roots, deps.window(event.sessionId)?.cwd ?? event.cwd) : [];
+    return held.length ? held : undefined;
+  }
+
   /** The same check for the images a publication's marks are drawn on (`markImagesRefusal`); false when refused. */
-  async function vettedMarkImages(event: TurnEvent): Promise<boolean> {
-    const refusal = await markImagesRefusal(event.review?.scene, deps.window(event.sessionId)?.cwd ?? event.cwd ?? tmpdir());
+  async function vettedMarkImages(event: TurnEvent, scope: LinkScope): Promise<boolean> {
+    const refusal = await markImagesRefusal(event.review?.scene, scope.roots);
     if (!refusal) return true;
     log(`refused a deliverable's marks from "${event.label}": ${refusal}`);
     recordDaemonError("review-marks", `Refused a deliverable's marks: ${refusal}`, event.sessionId);
@@ -1030,18 +1066,20 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
   async function publishReview(event: TurnEvent): Promise<void> {
     const { sessionId, label } = event;
     if (!sessionId || !event.review) return;
-    const vetted = await vettedReviewLink(event);
-    if (vetted === null || !(await vettedMarkImages(event))) return;
+    const scope = await linkScope(event);
+    const vetted = await vettedReviewLink(event, scope);
+    if (vetted?.ok === false || !(await vettedMarkImages(event, scope))) return;
     const focus = await vettedFocus(event, vetted?.folder ? vetted.link : undefined);
     if (focus === null) return;
     const at = eventTimestamp(event.eventAt);
     const prior = sessionStates.get(sessionId);
     // A replayed or reordered older publication never displaces a newer one.
     if (prior?.review && prior.review.at > at) return;
-    const { focus: _asSent, ...sent } = event.review;
+    const { focus: _asSent, linkRefused: _unsent, ...sent } = event.review;
     const review = fileReview(
       sessionId,
-      { ...sent, ...(vetted ? { link: vetted.link } : {}), ...(focus ? { focus } : {}) },
+      // `roots` only as the daemon found them, whatever the event carried.
+      { ...sent, ...(vetted ? { link: vetted.link } : {}), roots: await filedRoots(event, scope, vetted?.link), ...(focus ? { focus } : {}) },
       at,
       prior?.reviews,
       prior?.versions,
@@ -1490,11 +1528,15 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       setSessionState(event.sessionId, event.label, "needs", kind, event.eventAt);
       if (!approval) return; // stripped: no bell, no announcement, no permission mic
     }
-    // A marker's review keeps its summary when its link is refused, as the hook's own check does.
-    if (event.type === "turn-end" && event.review?.link !== undefined) {
-      const { link: _unchecked, ...rest } = event.review;
-      const vetted = await vettedReviewLink(event);
-      event.review = vetted ? { ...rest, link: vetted.link } : rest;
+    // A marker's review keeps its summary when its link is refused, as the hook's own check does,
+    // and says why where the link would be (`linkRefused`): the hook's reason, or the daemon's own.
+    if (event.type === "turn-end" && event.review) {
+      const { link: _unchecked, linkRefused, ...rest } = event.review;
+      const scope = event.review.link === undefined ? undefined : await linkScope(event);
+      const vetted = scope && await vettedReviewLink(event, scope);
+      event.review = vetted?.ok
+        ? { ...rest, link: vetted.link, roots: await filedRoots(event, scope!, vetted.link) }
+        : { ...rest, roots: undefined, ...(vetted ? { linkRefused: vetted.note } : linkRefused ? { linkRefused } : {}) };
     }
     if (event.type === "turn-end" && !setSessionState(
       event.sessionId,
