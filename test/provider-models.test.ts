@@ -2,11 +2,19 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decodeProviderModels, discoverProviderModels } from "../src/provider-models.ts";
+import { accountModelCatalog, decodeProviderModels, discoverProviderModels } from "../src/provider-models.ts";
 import { AGENT_SESSION_SETTINGS, planClaudePicker } from "../src/session-settings.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+test("redirected state keeps model discovery inside the provided files", () => {
+  const dir = mkdtempSync(join(tmpdir(), "conch-models-")); dirs.push(dir);
+  writeFileSync(join(dir, "settings.json"), JSON.stringify({ model: "haiku" }));
+  const catalog = accountModelCatalog({ claudeDir: dir, codexHome: null }, () => { throw new Error("No probe should be started"); });
+  expect(catalog.claude.defaults.model).toBe("haiku");
+  expect(catalog.codex.models).toEqual([]);
+  expect(catalog.accounts).toBeUndefined();
+});
 test("native catalogs preserve exact IDs, resolved versions and supported efforts", () => {
   const rows = decodeProviderModels("claude", [
     { value: "default", resolvedModel: "claude-opus-5-5[1m]", supportedEffortLevels: ["high", "max"] },

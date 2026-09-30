@@ -82,6 +82,8 @@ export function providerModels(backend: Backend, account: ClaudeAccount, changed
 
 export function accountModelCatalog(homes: { claudeDir: string; codexHome: string | null }, changed: () => void): SessionSettingsCatalog {
   const catalog = readSessionSettingsCatalog(homes);
+  // Preserve the existing redirected-state boundary: no real profiles or CLI probes.
+  if (homes.codexHome === null) return catalog;
   catalog.accounts = {};
   for (const backend of ["claude", "codex"] as const) {
     for (const account of backend === "claude" ? readClaudeAccounts(homes.claudeDir) : readCodexAccounts(homes.codexHome ?? undefined)) {
