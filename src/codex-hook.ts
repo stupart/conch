@@ -19,6 +19,7 @@ import { spokenSnippet } from "./snippet.ts";
 import { boundedMark } from "./prompt-cursor.ts";
 import { bell, speak } from "./speak.ts";
 import { askClaude } from "./model.ts";
+import { managedBackgroundSession } from "./background-sessions.ts";
 
 export interface CodexHookPayload {
   hook_event_name?: string;
@@ -170,10 +171,32 @@ export async function hasNonInteractiveCodexAncestor(
   );
 }
 
+/** A private app-server below a Conch-launched TUI inherits its exact process
+ * marker. SessionStart supplies the actual conversation, including /resume
+ * changes. Never attribute a shared daemon or a nested exec job to that TUI. */
+export async function backgroundCodexHookPid(parent: number, marker: string | undefined, lookup: ProcessLookup = processRecord): Promise<number | undefined> {
+  if (!marker || !/^[1-9]\d*$/.test(marker)) return;
+  const expected = Number(marker);
+  const seen = new Set<number>();
+  for (let pid = parent, depth = 0; pid > 1 && depth < 32 && !seen.has(pid); depth++) {
+    seen.add(pid);
+    let row: ProcessRecord | null;
+    try { row = await lookup(pid); } catch { return; }
+    if (!row || isCodexHeadlessProcess(row.command)) return;
+    if (pid === expected) {
+      const args = row.command.trim().split(/\s+/);
+      if (codexCliArgumentOffset(args) !== null && args.includes("--no-daemon") && !isCodexDesktopProcess(row.command)) return pid;
+      return;
+    }
+    pid = row.ppid;
+  }
+}
+
 export interface CodexHookDependencies {
   parentPid(): number;
   now(): number;
   shouldDropOrigin(pid: number): Promise<boolean>;
+  backgroundPid?(parent: number): Promise<number | undefined>;
   writeSession(entry: CodexSessionEntry): void | Promise<void>;
   sendToDaemon(socketPath: string, event: TurnEvent): Promise<boolean>;
   spokenSnippet: typeof spokenSnippet;
@@ -188,6 +211,10 @@ export const defaultCodexHookDependencies: CodexHookDependencies = {
   parentPid: () => process.ppid,
   now: Date.now,
   shouldDropOrigin: hasNonInteractiveCodexAncestor,
+  backgroundPid: async (parent) => {
+    const pid = await backgroundCodexHookPid(parent, process.env.CONCH_BACKGROUND_PID);
+    return pid && await managedBackgroundSession(pid) ? pid : undefined;
+  },
   writeSession: (entry) => {
     writeCodexSession({ ...entry, codexHome: defaultCodexDir() });
   },
@@ -222,8 +249,10 @@ export async function handleCodexHookPayload(
   }
 
   const eventAt = dependencies.now();
-  const pid = dependencies.parentPid();
-  if (await dependencies.shouldDropOrigin(pid)) return null;
+  const parent = dependencies.parentPid();
+  const background = await dependencies.backgroundPid?.(parent);
+  const pid = background ?? parent;
+  if (!background && await dependencies.shouldDropOrigin(pid)) return null;
 
   const status = hookEvent === "UserPromptSubmit" ? "busy" : "idle";
   const registryEntry: CodexSessionEntry = {

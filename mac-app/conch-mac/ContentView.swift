@@ -486,10 +486,14 @@ private struct StartSessionSheet: View {
     @StateObject private var accounts = ClaudeAccountsStore()
     @State private var claudeAccountId = "default"
     @State private var resumeAccountId: String?
+    @AppStorage("conch.session.host") private var host = "terminal"
+    private var sessionHost: String { mode == .teleport || mode == .help ? "terminal" : host }
     @State private var advanced = false
     @State private var allowAtLimit = false
     @State private var usageNow = Date()
     @State private var launchedSessionId: String?
+    @State private var backgroundId: String?
+    @State private var sessionsBeforeLaunch: Set<String> = []
     @StateObject private var codexAccounts = ClaudeAccountsStore(providerId: "codex")
     @State private var codexAccountId = "default"
     @Environment(\.openSettings) private var openAccountSettings
@@ -524,7 +528,8 @@ private struct StartSessionSheet: View {
     }
 
     private var canStart: Bool {
-        guard !isStarting, !openedTeleport else { return false }
+        guard backgroundId == nil, !isStarting, !openedTeleport else { return false }
+        guard sessionHost != "background" || store.state?.features?.sessionHosts == 1 else { return false }
         guard !activeAccounts.busy,
               !activeAccounts.startCatalog.availability(for: selectedAccountId, now: Date(), sourceAccountId: handoffSourceAccountId).blocksStart(allowAtLimit: allowAtLimit)
         else { return false }
@@ -675,6 +680,23 @@ private struct StartSessionSheet: View {
                 .disabled(isStarting)
             }
 
+            if mode == .new || mode == .resume {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Run in").font(.caption.weight(.medium))
+                    Picker("Run in", selection: $host) {
+                        Label("Terminal", systemImage: "terminal").tag("terminal")
+                        Label("Background", systemImage: "server.rack").tag("background")
+                    }.pickerStyle(.segmented)
+                    Text(host == "background"
+                        ? "Runs on this Mac without a window. Chat here; open its terminal whenever you need it. Keeps running when Conch closes."
+                        : "Opens a Terminal window on this Mac. You can also chat from Conch.")
+                        .font(.caption).foregroundStyle(ConchPalette.textDim)
+                    if host == "background", store.state?.features?.sessionHosts != 1 {
+                        Text("Update the Conch daemon to use background sessions.").font(.caption).foregroundStyle(ConchPalette.statusNeeds)
+                    }
+                }
+            }
+
             // The agent's own start-time choices, from its --help, for the
             // agent this launch will actually run. Help is a fixed recipe.
             if mode != .help {
@@ -703,6 +725,12 @@ private struct StartSessionSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            if let backgroundId {
+                Button("Open startup terminal", systemImage: "terminal") { store.openStartupTerminal(backgroundId) }
+                if let failure = store.rowMessages[backgroundId] {
+                    Text(failure).font(.caption).foregroundStyle(ConchPalette.statusNeeds)
+                }
+            }
             if let error {
                 Text(error)
                     .font(ConchTypography.font(size: 11.5))
@@ -799,14 +827,14 @@ private struct StartSessionSheet: View {
     /// is a conversation about files that are not there.
     private var footnote: String {
         if mode == .new {
-            return "Opens \(backend.label) in Terminal on this Mac."
+            return "Opens \(backend.label) \(sessionHost == "background" ? "in the background" : "in Terminal") on this Mac."
         }
         guard let picked = resumeSelection else {
             return "Pick a session to restart. It reopens with its own agent, in its own folder."
         }
         if isAccountHandoff { return "Opens a fork in \(picked.shortCwd), using the selected account. The original history stays intact." }
         let agent = picked.backend.lowercased() == "codex" ? "Codex" : "Claude"
-        return "Restarts \(agent) in \(picked.shortCwd), in Terminal."
+        return "Resumes \(agent) in \(picked.shortCwd), \(sessionHost == "background" ? "in the background" : "in Terminal")."
     }
 
     /// The table for the agent this launch will run; a resume-only entry only
@@ -921,9 +949,11 @@ private struct StartSessionSheet: View {
         guard canStart else { return }
         isStarting = true
         error = nil
+        sessionsBeforeLaunch = Set((store.state?.rows ?? []).map(\.id))
         Task { @MainActor in
             let outcome = await store.startSession(
                 backend: effectiveBackend,
+                host: sessionHost,
                 resumeSessionId: mode == .resume ? resumeSelection?.sessionId : nil,
                 teleportSessionId: mode == .teleport ? teleportSessionId : nil,
                 claudeAccountId: effectiveBackend == .claude
@@ -947,8 +977,9 @@ private struct StartSessionSheet: View {
                 isStarting = false
                 pendingTrust = cwd
                 return
-            case let .started(sessionId):
+            case let .started(sessionId, background):
                 launchedSessionId = sessionId
+                backgroundId = background
             }
             if mode == .teleport {
                 isStarting = false
@@ -975,7 +1006,7 @@ private struct StartSessionSheet: View {
                 dismiss()
                 return
             }
-            let notice = "Started, but it hasn\u{2019}t checked in. Terminal may be "
+            let notice = backgroundId != nil ? "Started in the background, but it hasn’t checked in. Open its startup terminal to answer any login or setup prompt." : "Started, but it hasn\u{2019}t checked in. Terminal may be "
                 + "waiting for you to answer something \u{2014} take a look there."
             error = notice
             // And keep watching: answered in Terminal, it checks in a minute later, and the
@@ -1006,7 +1037,7 @@ private struct StartSessionSheet: View {
             $0.parentSessionId == nil && $0.backend == effectiveBackend.rawValue
                 && (expectedAccount == nil || ($0.claudeAccountId ?? $0.codexAccountId) == expectedAccount)
         } }
-        let before = Set(sessions(store.state?.rows ?? []).map(\.id))
+        let before = sessionsBeforeLaunch
         for _ in 0..<rounds {
             try? await Task.sleep(nanoseconds: 800_000_000)
             guard let rows = store.state?.rows else { continue }

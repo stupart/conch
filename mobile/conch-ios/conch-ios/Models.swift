@@ -32,6 +32,7 @@ struct PublishedState: Decodable, Equatable {
     struct Features: Decodable, Equatable {
         var deliverables: Int?
         var viewedState: Int?
+        var sessionHosts: Int?
     }
 
     struct Delivery: Decodable, Equatable {

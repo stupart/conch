@@ -349,11 +349,13 @@ describe("Open in Terminal", () => {
     expect(paneForPid(1000, "500 %9", chain)).toBe("%9");
   });
 
-  test("a tmux session nothing is attached to says so, and brings nothing forward", async () => {
+  test("a detached tmux session opens an attached Terminal without starting another agent", async () => {
     const mac = tmuxMac({ clients: "" });
     expect(await createTerminalMirror(mac.deps).focus("s6", { pid: 900 }))
-      .toEqual({ kind: "terminal-focus", sessionId: "s6", focused: false, reason: "No terminal window is attached to this session's tmux." });
-    expect(mac.focused).toEqual([]);
+      .toEqual({ kind: "terminal-focus", sessionId: "s6", focused: true });
+    expect(mac.focused[0]).toContain("attach-session");
+    expect(mac.focused[0]).toContain("$3");
+    expect(mac.focused[0]).not.toContain("new-session");
   });
 
   test("a window Terminal can't find is a refusal in words", async () => {
@@ -498,7 +500,8 @@ describe("on the wire", () => {
     expect(screen).toContain("terminalScreen: (message) => terminalMirror.screen(message.sessionId, panelSessions.get(message.sessionId), {");
     expect(screen).toContain("...(message.text ? { text: true } : {}),");
     expect(screen).toContain("...(message.history ? { history: message.history } : {}),");
-    expect(daemon).toContain("const focused = await terminalMirror.focus(message.sessionId, panelSessions.get(message.sessionId));");
+    expect(daemon).toContain("panelSessions.get(message.sessionId) ?? (startupPid ? { pid: startupPid } : undefined)");
+    expect(daemon).toContain("await backgroundStartupPid(message.sessionId)");
   });
 });
 

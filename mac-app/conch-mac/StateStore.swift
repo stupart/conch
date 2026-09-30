@@ -577,8 +577,12 @@ final class StateStore: ObservableObject {
     /// row, in the daemon's words, like any other refused action.
     func openAgentTerminal(_ row: SessionRow) {
         guard row.hasAgentTerminal else { return }
-        rowMessages[row.id] = nil
-        let request = ConchTerminalFocusRequest(sessionId: row.id)
+        openStartupTerminal(row.id)
+    }
+
+    func openStartupTerminal(_ sessionId: String) {
+        rowMessages[sessionId] = nil
+        let request = ConchTerminalFocusRequest(sessionId: sessionId)
         let socketClient = socketClient
         Task { [weak self] in
             let failure: String?
@@ -593,7 +597,7 @@ final class StateStore: ObservableObject {
             case .connectFailed: failure = "daemon not running"
             case .timeout: failure = "daemon did not reply"
             }
-            self?.rowMessages[row.id] = failure
+            self?.rowMessages[sessionId] = failure
         }
     }
 
@@ -753,7 +757,7 @@ final class StateStore: ObservableObject {
 
     /// What came back from asking the daemon to start a session.
     enum StartOutcome: Equatable {
-        case started(sessionId: String? = nil)
+        case started(sessionId: String? = nil, backgroundId: String? = nil)
         /// Codex will not run here until it is trusted, and it can be told at
         /// launch — so the person gets the choice rather than a session that
         /// silently sits on a prompt.
@@ -763,6 +767,7 @@ final class StateStore: ObservableObject {
 
     func startSession(
         backend: ConchAgentBackend,
+        host: String = "terminal",
         resumeSessionId: String?,
         teleportSessionId: String? = nil,
         claudeAccountId: String? = nil,
@@ -777,6 +782,7 @@ final class StateStore: ObservableObject {
         let workingDirectory = Self.nonempty(cwd)
         let request = ConchSessionStartRequest(
             backend: backend,
+            host: host,
             resumeSessionId: resumed,
             teleportSessionId: teleport,
             claudeAccountId: claudeAccountId,
@@ -811,7 +817,7 @@ final class StateStore: ObservableObject {
                 // A teleport acknowledgement only confirms the Terminal launch. A folder
                 // that needed trusting was asked about here first (`needsTrust`), and
                 // the daemon answers the agent's own prompt, so a start is a start.
-                return .started(sessionId: started.sessionId)
+                return .started(sessionId: started.sessionId, backgroundId: started.backgroundId)
             case let .error(error):
                 let message = Self.nonempty(error.error) ?? "Could not start session"
                 reportAppError(operation: "session-start", message: message)

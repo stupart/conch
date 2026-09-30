@@ -865,6 +865,7 @@ export type RuntimeControlMessage =
   }
   | {
     kind: "session-start";
+    host?: "terminal" | "background";
     claudeAccountId?: string;
     claudeSourceAccountId?: string;
     codexAccountId?: string;
@@ -1004,6 +1005,7 @@ export type RuntimeControlResponse =
   }
   | {
     kind: "session-started";
+    backgroundId?: string;
     /** Exact destination identity of a prepared account handoff. */
     sessionId?: string;
     backend: "claude" | "codex";
@@ -1343,6 +1345,7 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
     return { ok: true, value: { kind: "session-close", sessionId: sessionId.value, ...(value.restart ? { restart: true as const } : {}) } };
   }
   if (value.kind === "session-start") {
+    if (value.host !== undefined && value.host !== "terminal" && value.host !== "background") return { ok: false, err: "Session host must be terminal or background" };
     if (value.codexAccountId !== undefined && (value.backend !== "codex" || !validAccountId(value.codexAccountId))) return { ok: false, err: "Choose a valid Codex account" };
     if (value.claudeAccountId !== undefined && (value.backend !== "claude" || !validAccountId(value.claudeAccountId))) {
       return { ok: false, err: "Choose a valid Claude account" };
@@ -1385,6 +1388,7 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
       ok: true,
       value: {
         kind: "session-start",
+        ...(value.host ? { host: value.host as "terminal" | "background" } : {}),
         ...(typeof value.claudeAccountId === "string" ? { claudeAccountId: value.claudeAccountId } : {}),
         ...(typeof value.claudeSourceAccountId === "string" ? { claudeSourceAccountId: value.claudeSourceAccountId } : {}),
         ...(typeof value.codexAccountId === "string" ? { codexAccountId: value.codexAccountId } : {}),
@@ -1722,6 +1726,7 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
     return { ok: true, value: { kind: "session-needs-trust", backend: value.backend, cwd: value.cwd } };
   }
   if (value.kind === "session-started") {
+    if (value.backgroundId !== undefined && (typeof value.backgroundId !== "string" || !/^conch-[0-9a-f-]{36}$/.test(value.backgroundId))) return { ok: false, err: "invalid background session id" };
     if (value.sessionId !== undefined && !validateSessionId(value.sessionId).ok) return { ok: false, err: "invalid started session id" };
     if ((value.backend !== "claude" && value.backend !== "codex") || typeof value.resumed !== "boolean") {
       return { ok: false, err: "invalid session started response" };
@@ -1730,6 +1735,7 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
       ok: true,
       value: {
         kind: "session-started",
+        ...(typeof value.backgroundId === "string" ? { backgroundId: value.backgroundId } : {}),
         ...(typeof value.sessionId === "string" ? { sessionId: value.sessionId } : {}),
         backend: value.backend,
         resumed: value.resumed,

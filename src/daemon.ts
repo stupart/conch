@@ -1,3 +1,4 @@
+import { backgroundStartupPid, managedBackgroundSession } from "./background-sessions.ts";
 import { handleAccountTools } from "./account-tools.ts";
 import { accountModelCatalog, modelCatalogForSession } from "./provider-models.ts";
 import { prepareClaudeHandoff, settleClaudeHandoff, claudeHandoffReceipt, requireClaudeHandoffSupport } from "./claude-account-handoff.ts";
@@ -169,6 +170,7 @@ import {
   startClaudeAccountLogin,
   startCodexAccountTerminal,
   startTerminalSession,
+  startBackgroundSession,
   terminalSessionCommand,
   type StartSessionRequest,
 } from "./session-lifecycle.ts";
@@ -611,7 +613,7 @@ export function shouldReportMissingCodexPid(
  * Open a session in Terminal and, for Claude in a folder you just trusted in the app, answer
  * its trust prompt there: Claude takes no such answer at launch (Codex does, as a flag).
  */
-async function launchSession(request: StartSessionRequest): Promise<void> {
+async function launchSession(request: StartSessionRequest): Promise<void | { backgroundId: string }> {
   const codexAccount = codexAccountForLaunch(request);
   if (codexAccount) await runCodexInstall(codexAccount.configDir);
   const account = claudeAccountForLaunch(request);
@@ -619,6 +621,7 @@ async function launchSession(request: StartSessionRequest): Promise<void> {
     await installAccountHooks({ claudeDir: account.configDir });
     installAccountUsage(account);
   }
+  if (request.host === "background") return startBackgroundSession(request);
   const { tty } = await startTerminalSession(request);
   if (request.trustFolder === true && adapterFor(request.backend).trustTypedAtLaunch && tty) {
     void acceptClaudeTrust(tty).then((outcome) => log(`trust prompt in ${tty}: ${outcome}`), () => {});
@@ -2373,6 +2376,10 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       const args = session.pid ? await readProcessArgs(session.pid) : null;
       if (!args) throw new Error("could not read the session's command line, so it was not closed");
       relaunch = restartRequest(session, args);
+      if (session.pid && await managedBackgroundSession(session.pid)) {
+        relaunch.request.host = "background";
+        relaunch.notCarriedOver = relaunch.notCarriedOver.filter(flag => flag !== "--no-daemon");
+      }
       // The session already ran in this folder. If its trust came from a
       // launch override (Codex's `-c projects…`), the relaunch needs the same
       // answer; an agent that can't take one at launch ignores the flag.
@@ -2785,7 +2792,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       ...(message.history ? { history: message.history } : {}),
     }),
     terminalFocus: async (message) => {
-      const focused = await terminalMirror.focus(message.sessionId, panelSessions.get(message.sessionId));
+      const startupPid = panelSessions.has(message.sessionId) ? undefined : await backgroundStartupPid(message.sessionId);
+      const focused = await terminalMirror.focus(message.sessionId, panelSessions.get(message.sessionId) ?? (startupPid ? { pid: startupPid } : undefined));
       log(focused.focused
         ? `brought ${labelForSessionId(message.sessionId)}'s terminal forward (Terminal button)`
         : `couldn't bring ${labelForSessionId(message.sessionId)}'s terminal forward: ${focused.reason ?? "no reason given"}`);
@@ -2800,6 +2808,15 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     },
     start: async (message) => {
       const request = { ...message, bypassPermissions: cfg.bypassPermissions };
+      if (message.host === "background" && message.resumeSessionId && !message.claudeSourceAccountId && message.options?.["fork-session"] !== true) {
+        const account = message.claudeAccountId ?? message.codexAccountId ?? "default";
+        const alreadyRunning = [...panelSessions.values()].some(session =>
+          (session.agentSessionId ?? session.sessionId) === message.resumeSessionId
+          && (session.backend ?? "claude") === message.backend
+          && (session.claudeAccountId ?? session.codexAccountId ?? "default") === account
+          && (session.pid || session.agentPid || session.messageRoute));
+        if (alreadyRunning) throw new Error("This conversation is already running. Close it before resuming in Background, or continue in its current session.");
+      }
       if (message.claudeSourceAccountId === undefined) return launchSession(request);
       await requireClaudeHandoffSupport();
       const target = requireClaudeAccount(message.claudeAccountId!);
@@ -2812,17 +2829,18 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         void records.appendReceipt(claudeHandoffReceipt(prepared.manifest, state)).catch(() => log("Could not record account handoff receipt"));
       };
       record("accepted");
-      try { await launchSession(prepared.request); }
+      let launch: Awaited<ReturnType<typeof launchSession>>;
+      try { launch = await launchSession(prepared.request); }
       catch (error) {
         await settleClaudeHandoff(prepared.directory, prepared.manifest, "launch-failed").catch(() => {});
         record("failed");
         throw error;
       }
       // An opened Terminal is not proof of a successful authenticated model response.
-      await settleClaudeHandoff(prepared.directory, prepared.manifest, "terminal-opened")
-        .catch(() => log("Terminal opened; could not update the account handoff manifest"));
+      await settleClaudeHandoff(prepared.directory, prepared.manifest, launch?.backgroundId ? "background-started" : "terminal-opened")
+        .catch(() => log("Session launched; could not update the account handoff manifest"));
       record("started");
-      return { sessionId: prepared.manifest.destination.nativeId };
+      return { sessionId: prepared.manifest.destination.nativeId, ...launch };
     },
     folderTrusted: (backend, cwd, accountId) => accountId && accountId !== "default" ? null : adapterFor(backend).folderTrusted(cwd),
     close: closeLiveSession,

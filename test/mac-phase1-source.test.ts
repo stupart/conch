@@ -108,7 +108,7 @@ describe("the Mac conversation stays readable while it grows", () => {
     // on every revision (2576 for a bottom of 2590, measured 2026-09-20), nudged a clip
     // AppKit had clamped to the real end 14 pt UP, and — 14 being past the 8 pt the follow
     // test allows — let the next trackpad touch read as "scrolled away" and stop the follow.
-    expect(conversation).toMatch(/Color\.clear\s+\.frame\(height: 14\)\s+\.id\(Self\.bottomAnchor\)/);
+    expect(conversation).toMatch(/Color\.clear\s+\.frame\(height: 14 \+ max\(0, bottomInset\)\)\s+\.id\(Self\.bottomAnchor\)/);
     expect(conversation).toContain(".padding(.top, 14)");
     expect(conversation).not.toContain(".padding(.vertical, 14)");
   });

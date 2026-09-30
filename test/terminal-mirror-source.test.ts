@@ -89,8 +89,9 @@ describe("the Terminal button brings the real terminal forward, and does nothing
   test("the store sends terminal-focus on the press, only for a session with a terminal, and a refusal lands on the row", () => {
     const open = section(store, "func openAgentTerminal(_ row: SessionRow) {", "\n    func openInTerminal(");
     expect(open).toContain("guard row.hasAgentTerminal else { return }");
-    expect(open).toContain("let request = ConchTerminalFocusRequest(sessionId: row.id)");
-    expect(open).toContain("self?.rowMessages[row.id] = failure");
+    expect(open).toContain("openStartupTerminal(row.id)");
+    expect(open).toContain("let request = ConchTerminalFocusRequest(sessionId: sessionId)");
+    expect(open).toContain("self?.rowMessages[sessionId] = failure");
     expect(open).toContain("failure = reply.focused ? nil : (reply.reason ?? \"conch couldn't bring its terminal forward.\")");
     expect(open).not.toContain("ConchTerminalScreenRequest");
     // The one place in the app that brings a terminal forward this way.

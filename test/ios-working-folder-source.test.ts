@@ -36,7 +36,7 @@ describe("phone working folder for fresh sessions", () => {
     // Remembered only after the daemon accepted it, and never for a resume,
     // whose folder belongs to the picked session.
     const remember = "recents = RecentFolders.remember(folder)";
-    const accepted = "case .started:";
+    const accepted = "case let .started(sessionId, background):";
     const refused = "case .failed:";
     expect(ledger).toContain(remember);
     expect(ledger).toContain(accepted);
@@ -53,7 +53,7 @@ describe("phone working folder for fresh sessions", () => {
     expect(ledger).toContain("Text(freshFootnote)");
     expect(ledger).toContain('freshWorkingFolder.map(shortHomePath) ?? "your Mac home folder"');
     expect(ledger).toContain(
-      'return "Opens \\(backend.title) in \\(folder), in a new Terminal window on your Mac."',
+      'return "Opens \\(backend.title) in \\(folder), \\(sessionHost == "background" ? "in the background" : "in a new Terminal window") on your Mac."',
     );
     expect(ledger).not.toContain('Text("The agent opens in a new Terminal window on your Mac.")');
   });
@@ -71,7 +71,7 @@ describe("phone working folder for fresh sessions", () => {
     expect(bridge).toMatch(
       /reply\["kind"\] as\? String == "session-error",\s*let failure = reply\["error"\] as\? String \{\s*lastError = failure\s*_ = await reportAppError\(operation: "session-start", message: failure\)/,
     );
-    expect(ledger).toContain('error = bridge.lastError ?? "Couldn\'t open that session in Terminal."');
+    expect(ledger).toContain('error = bridge.lastError ?? "Couldn\'t start that session."');
   });
 
   test("Codex trust keeps working with a cwd, the way the Mac does it", () => {

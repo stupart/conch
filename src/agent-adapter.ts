@@ -133,6 +133,8 @@ export interface AgentAdapter {
    * passed through.
    */
   readonly startOptions: readonly StartOption[];
+  /** Extra CLI flags for a Conch-owned detached terminal. */
+  readonly backgroundFlags: string;
   /** A per-launch "trust this folder" override, or "" where the agent takes none on its command line. */
   trustFolderArgs(cwd: string): string;
   /**
@@ -304,6 +306,7 @@ export const claudeAdapter: AgentAdapter = {
   backend: "claude",
   displayName: "Claude Code",
   executable: "claude",
+  backgroundFlags: "",
   exitKeystrokes: 2,
   questionKeys: claudeQuestionKeys,
   inputBoxText: claudeInputBoxText,
@@ -395,6 +398,9 @@ export const codexAdapter: AgentAdapter = {
   backend: "codex",
   displayName: "Codex",
   executable: "codex",
+  // A private server keeps hooks under the TUI’s ancestry, so SessionStart
+  // identifies the actual conversation without guessing from cwd or title.
+  backgroundFlags: " --no-daemon",
   exitKeystrokes: 1,
   // Codex's request_user_input picker hasn't been measured; its answer stays a message.
   questionKeys: null,

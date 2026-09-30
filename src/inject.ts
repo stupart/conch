@@ -1,3 +1,4 @@
+import { defaultTmuxExecutable } from "./tmux-binary.ts";
 import { appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Config } from "./config.ts";
@@ -249,7 +250,7 @@ function safeOsa(run: OsaRunner): OsaRunner {
   };
 }
 const sendTmuxKeys = (pane: string, text: string, literal: boolean) => runUICommand([
-  "tmux", "send-keys", "-t", pane, ...(literal ? ["-l", "--"] : []), text,
+  defaultTmuxExecutable(), "send-keys", "-t", pane, ...(literal ? ["-l", "--"] : []), text,
 ]);
 
 /**
@@ -477,7 +478,7 @@ export async function readSessionScreen(sessionPid: number | undefined): Promise
   try {
     const pane = await findTmuxPane(sessionPid);
     if (pane) {
-      const shown = await runUICommand(["tmux", "capture-pane", "-p", "-t", pane]);
+      const shown = await runUICommand([defaultTmuxExecutable(), "capture-pane", "-p", "-t", pane]);
       return shown.timedOut || shown.exitCode !== 0 ? null : shown.text;
     }
     return await readTerminalTab(await ttyOf(sessionPid));
@@ -675,7 +676,7 @@ async function writeClipboard(text: string): Promise<void> {
 async function findTmuxPane(sessionPid: number): Promise<string | null> {
   let panes: Array<{ pid: number; id: string }>;
   try {
-    const result = await runUICommand(["tmux", "list-panes", "-a", "-F", "#{pane_pid} #{pane_id}"]);
+    const result = await runUICommand([defaultTmuxExecutable(), "list-panes", "-a", "-F", "#{pane_pid} #{pane_id}"]);
     if (result.timedOut || result.exitCode !== 0) return null;
     const out = result.text;
     panes = out

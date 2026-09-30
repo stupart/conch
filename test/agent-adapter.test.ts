@@ -72,6 +72,7 @@ describe("a third backend is one row", () => {
     backend,
     displayName: "Fable",
     executable: "fable",
+    backgroundFlags: "",
     exitKeystrokes: 1,
     questionKeys: null,
     inputBoxText: null,

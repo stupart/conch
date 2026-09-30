@@ -87,3 +87,39 @@ The default collector is now Claude Code's supported status-line input (2.1.251+
 The wrapper checks public identity on changed readings or once per minute. Settings refresh reads the cache, not a billing API. Missing windows remain unknown; passed reset windows disappear until a new Claude reading arrives. Readings older than five minutes are labelled Cached. Usage does not route sessions or rotate accounts.
 
 The optional schema-v1 claude-swap adapter remains available in source with its own tests, but is not invoked by this settings flow. External collector slots are not automatically joined to launch profiles.
+
+## Terminal and background launches
+
+The Mac and iPhone New/Resume sheets send `host: terminal | background`.
+Terminal remains the initial default; each app remembers the person's choice.
+Both run on the selected Mac and retain the provider, account, working folder,
+permission options and native resume ID. Teleport and Help still use Terminal.
+`features.sessionHosts` prevents a new client offering Background against an
+older daemon that would silently ignore the field.
+
+Background uses a detached, Conch-named tmux session on the normal local tmux
+server. This is a local CLI with a persistent PTY, not provider cloud hosting
+or a Codex desktop task. Existing tmux delivery, approval, interrupt and screen
+inspection paths work without raising a window or borrowing the clipboard.
+Conch/app/daemon shutdown does not end the process. Mac sleep pauses local work;
+logging out or rebooting can end the runtime, so resume the saved conversation.
+“Open Terminal” attaches to that same running tmux session. Close sends the
+provider's normal EOF sequence after verifying process identity. Restart
+retains Background. An already-running conversation cannot be resumed a second
+time into Background; close it first or explicitly fork it.
+
+Codex uses the installed CLI's `--no-daemon` mode (verified in 0.159.2) so its
+private app-server inherits the launcher's process marker. Only hooks whose
+ancestry reaches that CLI and whose PID belongs to the exact Conch tmux pane
+may register it; shared daemon and nested `codex exec` hooks stay excluded.
+SessionStart supplies the conversation ID, including later in-TUI resumes.
+Claude uses its normal interactive CLI and profile-scoped Conch hooks.
+Background launches clear inherited provider API/token overrides, including
+for the default profile, so an old tmux server cannot select a different
+account. Authentication comes from the selected profile’s saved credentials.
+
+Startup acknowledges a `backgroundId` before the provider has a conversation
+ID. Both apps offer an “Open startup terminal” recovery action if login, hook
+trust, or another first-run prompt prevents check-in. The daemon resolves this
+opaque Conch name to its own tmux pane PID; callers never supply a PID. Conch
+only answers Claude's folder-trust prompt when the user has already agreed.

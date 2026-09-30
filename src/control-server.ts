@@ -340,7 +340,7 @@ export interface RuntimeControlDispatchOptions {
   readInstall?(
     message: Extract<RuntimeControlMessage, { kind: "agent-capabilities" }>,
   ): AgentInstall | undefined | Promise<AgentInstall | undefined>;
-  start(message: Extract<RuntimeControlMessage, { kind: "session-start" }>): void | { sessionId: string } | Promise<void | { sessionId: string }>;
+  start(message: Extract<RuntimeControlMessage, { kind: "session-start" }>): void | { sessionId?: string; backgroundId?: string } | Promise<void | { sessionId?: string; backgroundId?: string }>;
   /** Whether the agent already trusts a folder; absent or null means unknown. */
   folderTrusted?(backend: SessionBackend, cwd: string, accountId?: string): boolean | null;
   /** Resolves to the flags a restart did not carry over; nothing for a plain close. */
@@ -432,13 +432,15 @@ export async function applyRuntimeControlMessage(
       // Claude asks the same, and takes no answer at launch — so a yes here is typed into its
       // prompt once it appears (acceptClaudeTrust). Before, conch launched it anyway and the
       // app waited on a session that couldn't register until someone found the Terminal.
-      if (message.trustFolder !== true && message.cwd && options.folderTrusted?.(message.backend, message.cwd, message.claudeAccountId ?? message.codexAccountId) === false) {
+      const trusted = message.cwd ? options.folderTrusted?.(message.backend, message.cwd, message.claudeAccountId ?? message.codexAccountId) : undefined;
+      if (message.trustFolder !== true && message.cwd && (trusted === false || (message.host === "background" && trusted !== true))) {
         return { kind: "session-needs-trust", backend: message.backend, cwd: message.cwd };
       }
       const launched = await options.start(message);
       return {
         kind: "session-started",
-        ...(launched ? { sessionId: launched.sessionId } : {}),
+        ...(launched?.sessionId ? { sessionId: launched.sessionId } : {}),
+        ...(launched?.backgroundId ? { backgroundId: launched.backgroundId } : {}),
         backend: message.backend,
         resumed: Boolean(message.resumeSessionId),
         ...(message.teleportSessionId ? { teleported: true as const } : {}),

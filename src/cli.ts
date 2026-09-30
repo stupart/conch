@@ -747,7 +747,7 @@ switch (command) {
   case "start": {
     // Launched directly, like help-session: the person is at this Terminal,
     // so an agent's own trust prompt is theirs to answer.
-    const { startRequestFromArgv, startTerminalSession, startUsage } = await import("./session-lifecycle.ts");
+    const { startRequestFromArgv, startTerminalSession, startBackgroundSession, startUsage } = await import("./session-lifecycle.ts");
     const { adapterFor, agentAdapters } = await import("./agent-adapter.ts");
     if (rest.includes("--help") || rest.includes("-h")) {
       console.log(agentAdapters().map(startUsage).join("\n\n"));
@@ -762,14 +762,14 @@ switch (command) {
     }
     try {
       // The persisted default; the request's own toggle, when given, wins.
-      await startTerminalSession({ bypassPermissions: cfg.bypassPermissions, ...request });
+      await (request.host === "background" ? startBackgroundSession : startTerminalSession)({ bypassPermissions: cfg.bypassPermissions, ...request });
     } catch (error) {
       // A refused flag pair, a missing binary, a folder that is not there: one
       // line, the way the parse errors above print, rather than a stack trace.
       console.error(error instanceof Error ? error.message : String(error));
       process.exit(1);
     }
-    console.log(`[conch] opened ${adapterFor(request.backend).displayName} in Terminal, in ${request.cwd ?? "~"}`);
+    console.log(`[conch] opened ${adapterFor(request.backend).displayName} ${request.host === "background" ? "in the background" : "in Terminal"}, in ${request.cwd ?? "~"}`);
     break;
   }
   case "help-session": {
