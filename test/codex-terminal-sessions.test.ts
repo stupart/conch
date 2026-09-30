@@ -17,6 +17,8 @@ test("prompts, exec jobs, forks, and ambiguous selections never borrow a thread'
     `codex explain resume ${THREAD}`, `codex exec resume ${THREAD}`, `codex fork ${THREAD}`,
     `node codex resume ${THREAD}`, `codex resume --last`, `codex resume`,
     `codex -c 'prompt=please resume ${THREAD}'`, `codex app-server resume ${THREAD}`,
+    `codex resume ${THREAD} --remote wss://another-host`, `codex --remote unix:// resume ${THREAD}`,
+    `codex resume ${THREAD} --help`,
   ]) expect(resumedCodexThread(args)).toBeUndefined();
 });
 test("only this user's foreground, non-stopped TUI with a tty is eligible", () => {

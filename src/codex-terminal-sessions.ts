@@ -12,6 +12,9 @@ const VALUES = new Set(["-c", "--config", "-m", "--model", "-p", "--profile", "-
 export function resumedCodexThread(args: string): string | undefined {
   const words = args.trim().split(/\s+/);
   if (!/(?:^|\/)codex$/.test(words.shift() ?? "")) return;
+  // Options can appear after the UUID too. A remote TUI's local log database
+  // identifies its config, not the machine hosting its conversation.
+  if (words.some(word => /^(?:--remote(?:=|-|$)|--help$|-h$|--version$)/.test(word))) return;
   while (words.length) {
     const word = words.shift()!;
     if (word === "resume") return UUID.test(words[0] ?? "") ? words[0]!.toLowerCase() : undefined;
