@@ -124,6 +124,9 @@ struct SessionView: View {
     @State private var closingSession = false
     @State private var closeError: String?
     @State private var showingCloseError = false
+    @State private var openingTerminal = false
+    @State private var terminalError: String?
+    @State private var showingTerminalError = false
     /// Four API-sized images put a 20 MB ceiling on retained upload payloads;
     /// without a count limit, the 5 MB per-image cap was not a memory bound.
     private static let attachmentLimit = 4
@@ -369,10 +372,17 @@ struct SessionView: View {
                             .foregroundStyle(Palette.textPrimary)
                             .lineLimit(1)
                             .truncationMode(.tail)
-                        if let row, row.revealable, row.noTerminal == nil {
-                            Button { Task { _ = await bridge.send(sessionCommand: .reveal, sessionId: row.id) } } label: {
+                        if let row, row.revealable, row.noTerminal == nil, row.parentSessionId == nil {
+                            Button {
+                                openingTerminal = true
+                                Task {
+                                    terminalError = await bridge.openAgentTerminal(sessionId: row.id)
+                                    showingTerminalError = terminalError != nil
+                                    openingTerminal = false
+                                }
+                            } label: {
                                 Image(systemName: "terminal").font(.system(size: 13)).frame(width: 28, height: 28)
-                            }.disabled(!bridge.isConnected).accessibilityLabel("Open terminal on Mac")
+                            }.disabled(!bridge.isConnected || openingTerminal).accessibilityLabel("Open terminal on Mac")
                         }
                         AgentBadge(backend: row?.backend)
                     }
@@ -474,6 +484,11 @@ struct SessionView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(closeError ?? "The Mac didn't confirm a clean exit, so conch left the agent running.")
+        }
+        .alert("Couldn't open that terminal", isPresented: $showingTerminalError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(terminalError ?? "The Mac couldn't bring that terminal forward.")
         }
         .onAppear {
             talk.reconcile(session: sessionId, items: conversationItems)

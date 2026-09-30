@@ -588,7 +588,6 @@ final class BridgeClient: ObservableObject {
     }
 
     enum SessionCommand: String {
-        case reveal
         case dismiss
         case restore
         case attach
@@ -909,6 +908,29 @@ final class BridgeClient: ObservableObject {
         }
         lastError = nil
         return true
+    }
+
+    /// Focus the session's existing terminal on the Mac. Nil means it was focused;
+    /// otherwise return the reason to the button, rather than a passive reveal ack.
+    func openAgentTerminal(sessionId: String) async -> String? {
+        let failure: String?
+        if !sessionId.isEmpty, let reply = await postControlRaw([
+            "kind": "terminal-focus", "sessionId": sessionId,
+        ]) {
+            if reply["kind"] as? String == "terminal-focus",
+               reply["sessionId"] as? String == sessionId {
+                failure = reply["focused"] as? Bool == true ? nil
+                    : (reply["reason"] as? String ?? "The Mac couldn't bring that terminal forward.")
+            } else {
+                failure = reply["error"] as? String ?? "The Mac sent something unexpected."
+            }
+        } else {
+            failure = "Couldn't reach your Mac."
+        }
+        if let failure {
+            Task { await reportAppError(operation: "terminal-focus", message: failure, sessionId: sessionId) }
+        }
+        return failure
     }
 
     /// Change a session's model and/or effort for that session only: a session command like the
