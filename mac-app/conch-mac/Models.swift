@@ -1080,6 +1080,10 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     let noTerminal: String?
     let messageRoute: String?
     var messageUnavailableReason: String? { messageRoute == "codex-app" ? nil : noTerminal }
+    var location: SessionLocation? {
+        SessionLocation.resolve(backend: backend, messageRoute: messageRoute, revealable: revealable,
+                                noTerminal: noTerminal, parentSessionId: parentSessionId)
+    }
     /// A Claude Code background job no window is attached to: "Open in
     /// Terminal" can attach one. Older daemons never send it.
     let attachable: Bool

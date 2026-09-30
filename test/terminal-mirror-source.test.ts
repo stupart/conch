@@ -40,8 +40,11 @@ const button = () => section(tabs(), "if strip.showsButton {", "if strip.showsMi
 describe("the Terminal button brings the real terminal forward, and does nothing else", () => {
   test("the always-available Mac header uses the strip's focus action for both the title and icon", () => {
     const header = section(pane, "private func sessionBar(for row: SessionRow)", "AgentBadge(backend: row.backend)");
-    expect(header.split("if row.hasAgentTerminal {").length - 1).toBe(2);
-    expect(header.split("Button { store.openAgentTerminal(row) }").length - 1).toBe(2);
+    expect(header.split("if let location = row.location {").length - 1).toBe(2);
+    expect(header.split("Button { store.openSessionLocation(row) }").length - 1).toBe(2);
+    expect(header).toContain("Image(systemName: location.symbol)");
+    expect(store).toContain("if location == .terminal { openAgentTerminal(row); return }");
+    expect(store).toContain("SessionAppOpenRequest(sessionId: row.id)");
     expect(header).not.toContain("store.reveal(");
     expect(header).not.toContain("hasWorkTabs");
     expect(header).not.toContain("TerminalMirrorAsk");
@@ -57,10 +60,11 @@ describe("the Terminal button brings the real terminal forward, and does nothing
     expect(open).toContain('reply["focused"] as? Bool == true');
     expect(open).toContain('reply["reason"] as? String');
     expect(open).not.toContain('"session-command"');
-    expect(phone).toContain("row.revealable, row.noTerminal == nil, row.parentSessionId == nil");
-    expect(phone).toContain("terminalError = await bridge.openAgentTerminal(sessionId: row.id)");
-    expect(phone).toContain("showingTerminalError = terminalError != nil");
-    expect(phone).toContain('.alert("Couldn\'t open that terminal", isPresented: $showingTerminalError)');
+    expect(phone).toContain("if let row, let location = row.location {");
+    expect(bridge).toContain("if location == .terminal { return await openAgentTerminal(sessionId: row.id) }");
+    expect(phone).toContain("locationError = await bridge.openSessionLocation(row)");
+    expect(phone).toContain("showingLocationError = locationError != nil");
+    expect(phone).toContain('.alert("Couldn\'t open session location", isPresented: $showingLocationError)');
     expect(phone).not.toContain("sessionCommand: .reveal");
   });
 

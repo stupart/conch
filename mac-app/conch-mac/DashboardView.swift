@@ -627,6 +627,7 @@ private struct SessionLedger: View {
                                                 row: row,
                                                 now: timeline.date,
                                                 isSelected: selectedSessionID == row.id,
+                                                isFollowing: selectedSessionID == nil && focusID == row.id,
                                                 isRenaming: renamingSessionID == row.id,
                                                 renameDraft: $renameDraft,
                                                 rowMessage: rowMessages[row.id],
@@ -865,6 +866,7 @@ private struct DashboardRow: View {
     let row: SessionRow
     let now: Date
     let isSelected: Bool
+    let isFollowing: Bool
     let isRenaming: Bool
     @Binding var renameDraft: String
     let rowMessage: String?
@@ -974,7 +976,7 @@ private struct DashboardRow: View {
                 // The whole name, which the row may fade, and the summary it no longer draws.
                 .help(SidebarRowText.tooltip(name: row.label, snippet: detailLine, startedBy: startedByLabel))
                 .accessibilityLabel(accessibilityName)
-                .accessibilityValue([detailLine, age ?? ""].filter { !$0.isEmpty }.joined(separator: ", "))
+                .accessibilityValue([isFollowing ? "Currently shown in All sessions" : "", detailLine, age ?? ""].filter { !$0.isEmpty }.joined(separator: ", "))
                 // The quiet mark is a button inside this one. Its toggle is an action here too, so
                 // relabelling the row cannot take it from VoiceOver.
                 .accessibilityAction(named: Text(voice.togglesToQuiet ? "Make Quiet" : "Let It Speak"), onToggleQuiet)
@@ -993,6 +995,13 @@ private struct DashboardRow: View {
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(ConchPalette.raised)
                     .opacity(reviewPulseOpacity)
+
+                // All sessions is still selected. Outline the row being shown without
+                // borrowing the filled selection or the session's voice/status mark.
+                if isFollowing && !isSelected {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .strokeBorder(ConchPalette.textDim.opacity(0.28), lineWidth: 1)
+                }
             }
         }
         .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
@@ -2228,28 +2237,26 @@ private struct ConversationPane: View {
                 .accessibilityLabel("Back to \(parent.label)")
             }
 
-            // Explicit clicks use the same focus action as the Terminal strip:
-            // passive reveal can select a tab without bringing Terminal forward.
-            if row.hasAgentTerminal {
-                Button { store.openAgentTerminal(row) } label: { sessionTitle(row) }
+            if let location = row.location {
+                Button { store.openSessionLocation(row) } label: { sessionTitle(row) }
                     .buttonStyle(.plain)
-                    .help("Bring this session's terminal to the front")
-                    .accessibilityLabel("Bring \(row.label) to the front")
+                    .help(location.help)
+                    .accessibilityLabel("\(location.label): \(row.label)")
             } else {
                 sessionTitle(row)
             }
 
-            if row.hasAgentTerminal {
-                Button { store.openAgentTerminal(row) } label: {
-                    Image(systemName: "terminal")
+            if let location = row.location {
+                Button { store.openSessionLocation(row) } label: {
+                    Image(systemName: location.symbol)
                         .font(.system(size: 12))
                         .frame(width: 26, height: 26)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(ConchPalette.textDim)
-                .help("Open this session's terminal")
-                .accessibilityLabel("Open terminal for \(row.label)")
+                .help(location.help)
+                .accessibilityLabel("\(location.label): \(row.label)")
             }
 
             AgentBadge(backend: row.backend)

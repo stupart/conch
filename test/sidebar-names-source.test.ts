@@ -73,7 +73,7 @@ describe("the details move", () => {
     expect(code(rowContent)).not.toContain("detailLine");
     expect(code(rowContent)).not.toContain("inlineDetail");
     expect(row).toContain(".help(SidebarRowText.tooltip(name: row.label, snippet: detailLine, startedBy: startedByLabel))");
-    expect(row).toContain('.accessibilityValue([detailLine, age ?? ""].filter { !$0.isEmpty }.joined(separator: ", "))');
+    expect(row).toContain('.accessibilityValue([isFollowing ? "Currently shown in All sessions" : "", detailLine, age ?? ""].filter { !$0.isEmpty }.joined(separator: ", "))');
     // The tooltip is no longer the bare label, which a faded name would leave half-said.
     expect(code(row)).not.toContain(".help(row.label)");
   });

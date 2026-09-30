@@ -547,6 +547,30 @@ final class StateStore: ObservableObject {
         }
     }
 
+    /// Both the title and its shortcut open the existing host; terminal focus keeps its established path.
+    func openSessionLocation(_ row: SessionRow) {
+        guard let location = row.location else { return }
+        if location == .terminal { openAgentTerminal(row); return }
+        rowMessages[row.id] = nil
+        let socketClient = socketClient
+        Task { [weak self] in
+            let failure: String?
+            switch await socketClient.request(SessionAppOpenRequest(sessionId: row.id), timeout: 6) {
+            case let .reply(data):
+                if let reply = try? JSONDecoder().decode(SessionAppOpenReply.self, from: data),
+                   reply.kind == "session-open-app", reply.sessionId == row.id {
+                    failure = reply.opened ? nil : (reply.reason ?? "Couldn't open this chat in Codex.")
+                } else {
+                    failure = (try? JSONDecoder().decode(ConchSessionErrorReply.self, from: data))?.error
+                        ?? "Couldn't open this chat in Codex."
+                }
+            case .connectFailed: failure = "daemon not running"
+            case .timeout: failure = "daemon did not reply"
+            }
+            self?.rowMessages[row.id] = failure
+        }
+    }
+
     /// The strip's Terminal button: bring the session's own terminal forward — its Terminal window and tab, out of the
     /// Dock, or its tmux window and pane in the terminal attached to it (`terminal-focus`, src/terminal-mirror.ts). Only
     /// on a press, and nothing else moves: the pane stays where it was and nothing is read. Why it couldn't goes on the

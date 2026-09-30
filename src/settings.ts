@@ -29,6 +29,7 @@ import { startOptionsError, teleportRequestError } from "./session-lifecycle.ts"
 import { normalizeSessionLabel } from "./sessions.ts";
 import { isValidVoiceName } from "./speak.ts";
 import { MAX_HISTORY_LINES, type TerminalFocusReply, type TerminalScreenReply } from "./terminal-mirror.ts";
+import type { SessionAppOpenReply } from "./session-app-open.ts";
 
 export const DEFAULT_CONCH_CONFIG_DIR = join(conchHome(), ".config", "conch");
 export const SETTINGS_FILE = "settings.json";
@@ -911,7 +912,9 @@ export type RuntimeControlMessage =
    */
   | { kind: "terminal-screen"; sessionId: string; text?: true; history?: number }
   /** Bring the session's terminal forward to type in: the strip's Terminal button, on a press only. */
-  | { kind: "terminal-focus"; sessionId: string };
+  | { kind: "terminal-focus"; sessionId: string }
+  /** Open the exact conversation in its known desktop host, on a press only. */
+  | { kind: "session-open-app"; sessionId: string };
 
 export type ControlMessage = ConfigControlMessage | SessionControlMessage;
 export type AnyControlMessage = ControlMessage | RuntimeControlMessage;
@@ -1036,7 +1039,8 @@ export type RuntimeControlResponse =
   }
   | { kind: "config-rollback"; file: string; restoredFrom: string }
   | TerminalScreenReply
-  | TerminalFocusReply;
+  | TerminalFocusReply
+  | SessionAppOpenReply;
 
 export type SessionControlResponse = SessionAck | SessionError | PairingOpen | RuntimeControlResponse;
 export type ControlResponse = ConfigControlResponse | SessionControlResponse;
@@ -1091,7 +1095,8 @@ export function isControlMessageCandidate(value: unknown): boolean {
     || value.kind === "config-toggle"
     || value.kind === "config-rollback"
     || value.kind === "terminal-screen"
-    || value.kind === "terminal-focus";
+    || value.kind === "terminal-focus"
+    || value.kind === "session-open-app";
 }
 
 const MAX_SESSION_ID_LENGTH = 256;
@@ -1481,9 +1486,10 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
     if (!file.value.startsWith("/")) return { ok: false, err: "config-rollback: file must be an absolute path" };
     return { ok: true, value: { kind: "config-rollback", file: file.value } };
   }
-  if (value.kind === "terminal-screen" || value.kind === "terminal-focus") {
+  if (value.kind === "terminal-screen" || value.kind === "terminal-focus" || value.kind === "session-open-app") {
     const sessionId = validateSessionId(value.sessionId);
     if (!sessionId.ok) return sessionId;
+    if (value.kind === "session-open-app") return { ok: true, value: { kind: "session-open-app", sessionId: sessionId.value } };
     if (value.kind === "terminal-focus") return { ok: true, value: { kind: "terminal-focus", sessionId: sessionId.value } };
     if (value.text !== undefined && value.text !== true) return { ok: false, err: "terminal-screen: text must be true when present" };
     const history = value.history;
@@ -1521,6 +1527,7 @@ export function validateControlMessage(value: unknown): ParseResult<AnyControlMe
     || value.kind === "config-rollback"
     || value.kind === "terminal-screen"
     || value.kind === "terminal-focus"
+    || value.kind === "session-open-app"
   ) {
     return validateRuntimeControlMessage(value);
   }
@@ -1680,6 +1687,15 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
     };
   }
   if (value.kind === "terminal-screen") return validateTerminalScreenReply(value);
+  if (value.kind === "session-open-app") {
+    return typeof value.sessionId === "string" && typeof value.opened === "boolean"
+      && (value.reason === undefined || typeof value.reason === "string")
+      ? { ok: true, value: {
+        kind: "session-open-app", sessionId: value.sessionId, opened: value.opened,
+        ...(value.reason === undefined ? {} : { reason: value.reason }),
+      } }
+      : { ok: false, err: "invalid session-open-app response" };
+  }
   if (value.kind === "terminal-focus") {
     return typeof value.sessionId === "string" && typeof value.focused === "boolean"
       && (value.reason === undefined || typeof value.reason === "string")

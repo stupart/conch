@@ -27,6 +27,7 @@ import type { AgentCapabilitiesRead } from "./agent-capabilities.ts";
 import { decodeNarrationRequest, type Narration, type NarrationReply } from "./narration.ts";
 import type { AgentInstall } from "./agent-install.ts";
 import type { TerminalFocusReply, TerminalScreenReply } from "./terminal-mirror.ts";
+import type { SessionAppOpenReply } from "./session-app-open.ts";
 import { applyPlan, planToggle, rollbackFile, type ConfigWriteHomes, type ConfigWriteIo } from "./config-write.ts";
 import { decodeSetupRequest, type Setup, type SetupReply } from "./setup.ts";
 import { decodePracticeRequest, practiceRefusal, type Practice, type PracticeReply } from "./practice.ts";
@@ -288,6 +289,7 @@ export function dispatchControlMessage(
     || validated.value.kind === "config-rollback"
     || validated.value.kind === "terminal-screen"
     || validated.value.kind === "terminal-focus"
+    || validated.value.kind === "session-open-app"
   ) return { handled: false };
 
   return { handled: true, response: applyConfigControlMessage(validated.value, controller, configPersistence) };
@@ -350,6 +352,7 @@ export interface RuntimeControlDispatchOptions {
   terminalScreen?(message: Extract<RuntimeControlMessage, { kind: "terminal-screen" }>): Promise<TerminalScreenReply>;
   /** The strip's Terminal button: bring it forward to type in, on a press. */
   terminalFocus?(message: Extract<RuntimeControlMessage, { kind: "terminal-focus" }>): Promise<TerminalFocusReply>;
+  openSessionApp?(message: Extract<RuntimeControlMessage, { kind: "session-open-app" }>): Promise<SessionAppOpenReply>;
 }
 
 /** Process/UI controls stay outside the synchronous settings controller so AppleScript cannot block config reads. */
@@ -479,6 +482,10 @@ export async function applyRuntimeControlMessage(
     if (message.kind === "terminal-focus") {
       return await options.terminalFocus?.(message)
         ?? { kind: "terminal-focus", sessionId: message.sessionId, focused: false, reason: "This conch can't open terminals." };
+    }
+    if (message.kind === "session-open-app") {
+      return await options.openSessionApp?.(message)
+        ?? { kind: "session-open-app", sessionId: message.sessionId, opened: false, reason: "Update conch on your Mac to open app-hosted chats." };
     }
     await options.report(message);
     return { kind: "app-error-ack" };
@@ -1213,6 +1220,7 @@ function isRuntimeControlCandidate(value: unknown): boolean {
     || value.kind === "agent-capabilities"
     || value.kind === "config-toggle" || value.kind === "config-rollback"
     || value.kind === "terminal-screen" || value.kind === "terminal-focus"
+    || value.kind === "session-open-app"
   );
 }
 

@@ -53,3 +53,18 @@ this change does not migrate conversations or create cloud jobs.
   uncertainty, no terminal/clipboard fallback, and auto-submit off.
 - Mac and iOS decode the additive capability; older daemon rows retain their
   previous disabled behavior.
+
+## Open the host app
+
+The session header uses a window icon for a known Codex desktop chat and keeps
+the terminal icon for terminal sessions. Clicking the title takes the same
+route. `session-open-app` carries only a Conch session ID; the daemon resolves
+its native UUID and asks macOS to open `codex://threads/<UUID>`. This exact-chat
+link was verified against the installed app's URL handler on 2026-09-30.
+The response confirms Launch Services accepted the link, not that the window
+was observed in front. Failed launches are displayed in the Mac row or phone
+alert. The phone requests this on its paired Mac, not on the phone itself.
+
+Subagents and unknown/headless hosts have no app shortcut. This command neither
+creates a conversation nor sends a message. Terminal sessions continue through
+`terminal-focus`; passive reveals and the debug terminal mirror are unchanged.

@@ -910,6 +910,27 @@ final class BridgeClient: ObservableObject {
         return true
     }
 
+    /// The phone asks its paired Mac to open the existing host, never opens a desktop link locally.
+    func openSessionLocation(_ row: PublishedState.Row) async -> String? {
+        guard let location = row.location else { return "This session has no app or terminal to open." }
+        if location == .terminal { return await openAgentTerminal(sessionId: row.id) }
+        let failure: String?
+        if let reply = await postControlRaw(["kind": "session-open-app", "sessionId": row.id]) {
+            if reply["kind"] as? String == "session-open-app", reply["sessionId"] as? String == row.id {
+                failure = reply["opened"] as? Bool == true ? nil
+                    : (reply["reason"] as? String ?? "Couldn't open this chat in Codex on your Mac.")
+            } else {
+                failure = reply["error"] as? String ?? "The Mac sent something unexpected."
+            }
+        } else {
+            failure = "Couldn't reach your Mac."
+        }
+        if let failure {
+            Task { await reportAppError(operation: "session-open-app", message: failure, sessionId: row.id) }
+        }
+        return failure
+    }
+
     /// Focus the session's existing terminal on the Mac. Nil means it was focused;
     /// otherwise return the reason to the button, rather than a passive reveal ack.
     func openAgentTerminal(sessionId: String) async -> String? {
