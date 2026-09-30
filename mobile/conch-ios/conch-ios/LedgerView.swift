@@ -621,7 +621,7 @@ struct SessionRowView: View {
                 HStack(spacing: 7) {
                     Text(row.label)
                         .font(Type.sessionName)
-                        .foregroundStyle(Palette.textPrimary)
+                        .foregroundStyle(row.usageLimit == nil ? Palette.textPrimary : Palette.textDim)
                         .lineLimit(1)
                         .truncationMode(.middle)
                     AgentBadge(backend: row.backend)
@@ -640,7 +640,7 @@ struct SessionRowView: View {
                     }
                 }
 
-                if let summary = row.review?.summary ?? row.detail ?? row.noTerminal, !summary.isEmpty {
+                if let summary = row.usageLimit ?? row.review?.summary ?? row.detail ?? row.noTerminal, !summary.isEmpty {
                     Text(summary)
                         .font(Type.summary)
                         .foregroundStyle(Palette.textDim)

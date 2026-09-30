@@ -1044,6 +1044,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     /// which agent the person is about to address.
     let backend: String?
     let context: SessionContext?
+    let usageLimit: String?
     /// The model and effort it runs, from its own record, and a change conch is driving (src/session-settings.ts).
     /// Absent from an older daemon, and when nothing is known: the header then says "default".
     let settings: SessionSettingsState?
@@ -1116,6 +1117,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         case execution
         case backend
         case context
+        case usageLimit
         case settings
         case status
         case at
@@ -1152,6 +1154,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         codexAccountId: String? = nil,
         execution: SessionExecution? = nil,
         context: SessionContext? = nil,
+        usageLimit: String? = nil,
         settings: SessionSettingsState? = nil,
         status: RowStatus?,
         at: Double?,
@@ -1187,6 +1190,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         self.codexAccountId = codexAccountId
         self.execution = execution
         self.context = context
+        self.usageLimit = usageLimit
         self.settings = settings
         self.status = status
         self.at = at
@@ -1226,6 +1230,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         claudeAccountId = try? container.decodeIfPresent(String.self, forKey: .claudeAccountId)
         execution = try? container.decodeIfPresent(SessionExecution.self, forKey: .execution)
         context = try? container.decodeIfPresent(SessionContext.self, forKey: .context)
+        usageLimit = try? container.decodeIfPresent(String.self, forKey: .usageLimit)
         settings = try? container.decodeIfPresent(SessionSettingsState.self, forKey: .settings)
         status = try? container.decodeIfPresent(RowStatus.self, forKey: .status)
         at = Timestamp.decode(from: container, forKey: .at)
@@ -1272,6 +1277,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             codexAccountId: codexAccountId,
             execution: execution,
             context: context,
+            usageLimit: usageLimit,
             settings: settings,
             status: status,
             at: at,

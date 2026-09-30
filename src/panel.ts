@@ -80,6 +80,8 @@ export interface PanelRowModel {
   startedBySessionId?: string;
   /** Known context usage for the TUI row; absent is unknown, never zero. */
   context?: SessionContextUsage;
+  /** Last attempted turn hit a provider usage limit; cleared by a successful response. */
+  usageLimit?: string;
   status: SessionStatus | null;
   /**
    * `working` only because agents it started are still running: its own turn
@@ -282,6 +284,7 @@ export interface PublishedSessionRow {
    */
   startedBySessionId?: string;
   context?: SessionContextUsage;
+  usageLimit?: string;
   /**
    * The model and effort the session runs, from its own record, and a change conch is driving
    * or just drove (session-settings.ts). Absent values are unknown: a viewer says "default".
@@ -683,6 +686,7 @@ export function buildPublishedState(
         ...(row.accountLabel ? { accountLabel: row.accountLabel } : {}),
         ...(row.claudeAccountId ? { claudeAccountId: row.claudeAccountId } : {}),
         ...(row.codexAccountId ? { codexAccountId: row.codexAccountId } : {}),
+        ...(row.usageLimit ? { usageLimit: row.usageLimit } : {}),
         ...(row.parentSessionId ? { parentSessionId: row.parentSessionId } : {}),
         ...(row.startedBySessionId ? { startedBySessionId: row.startedBySessionId } : {}),
         status: row.status,
@@ -799,6 +803,7 @@ export interface BuildPanelModelOptions {
   reply?: PanelReplyModel | null;
   panelOpen?: boolean;
   contextBySessionId?: ReadonlyMap<string, SessionContextUsage>;
+  usageLimitBySessionId?: ReadonlyMap<string, string>;
   /** Epoch-ms the rows are built for; decides whether a latch is past `LATCH_GRACE_MS`. */
   now?: number;
 }
@@ -845,6 +850,8 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
         ...(session.accountLabel ? { accountLabel: session.accountLabel } : {}),
         ...(session.claudeAccountId ? { claudeAccountId: session.claudeAccountId } : {}),
         ...(session.codexAccountId ? { codexAccountId: session.codexAccountId } : {}),
+        ...(options.usageLimitBySessionId?.get(session.sessionId)
+          ? { usageLimit: options.usageLimitBySessionId.get(session.sessionId)! } : {}),
         ...(session.parentSessionId ? { parentSessionId: session.parentSessionId } : {}),
         ...(session.startedBySessionId ? { startedBySessionId: session.startedBySessionId } : {}),
         ...(waitingOnAgents ? { waitingOnAgents: true as const } : {}),
