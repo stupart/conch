@@ -1,6 +1,8 @@
+import { defaultTmuxExecutable } from "./tmux-binary.ts";
 import { CONTROL_FRAME_MAX_BYTES } from "./control-framing.ts";
 import { runUICommand, type UICommandResult, type UICommandScope } from "./pasteboard.ts";
 import { withUITransaction } from "./inject.ts";
+import { shellQuote } from "./agent-adapter.ts";
 
 /**
  * The agent's own terminal: where the session's Claude Code or Codex is running, and what that terminal shows, read
@@ -117,6 +119,13 @@ export const NOT_IN_TERMINAL = "This session isn't running in a terminal conch c
 export const NO_PROCESS = "conch doesn't know this session's process, so it can't find its terminal.";
 export const UNKNOWN_SESSION = "conch doesn't know this session.";
 
+/** Attach by tmux's exact server-local session ID, without starting another agent. */
+export function tmuxAttachScript(tmux: string[], session: string): string {
+  if (!/^\$\d+$/.test(session)) throw new Error("Invalid tmux session");
+  const command = [...tmux, "attach-session", "-t", session].map(shellQuote).join(" ");
+  return `tell application "Terminal"\nactivate\ndo script ${JSON.stringify(command)}\nend tell\nreturn "ok"`;
+}
+
 const mirrorScope: UICommandScope = { unreaped: new Set() };
 
 /** osascript's argv for a script given line by line. */
@@ -131,7 +140,7 @@ export function defaultTerminalMirrorDeps(): TerminalMirrorDeps {
     focusOsa: (script) => runUICommand(osaArgv(script), undefined, { timeoutMs: 4_000 }),
     transaction: withUITransaction,
     now: () => Date.now(),
-    tmux: ["tmux"],
+    tmux: [defaultTmuxExecutable()],
   };
 }
 
@@ -424,7 +433,14 @@ export function createTerminalMirror(deps: TerminalMirrorDeps = defaultTerminalM
             .map((line) => line.trim().split(" "))
             .filter(([activity, path]) => activity && path?.startsWith("/dev/"))
             .sort((a, b) => Number(b[0]) - Number(a[0]))[0];
-          if (!newest) return refused("No terminal window is attached to this session's tmux.");
+          if (!newest) {
+            const selected = await deps.run([...deps.tmux, "select-window", "-t", host.pane, ";", "select-pane", "-t", host.pane]);
+            if (!ok(selected)) return refused("This background pane is no longer available.");
+            const attached = await deps.focusOsa(tmuxAttachScript(deps.tmux, clientsOf));
+            return ok(attached) && attached.text.trim() === "ok"
+              ? { kind: "terminal-focus", sessionId, focused: true }
+              : refused("Could not open this background session in Terminal. Check Conch’s Automation permission.");
+          }
           // Its window and pane, so the terminal that comes forward is showing the session.
           await deps.run([...deps.tmux, "select-window", "-t", host.pane, ";", "select-pane", "-t", host.pane]);
           tty = newest[1]!.slice("/dev/".length);

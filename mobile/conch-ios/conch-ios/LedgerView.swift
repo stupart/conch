@@ -793,6 +793,7 @@ private struct StartSessionSheet: View {
     @State private var mode = StartMode.new
     @State private var teleportSessionId = ""
     @State private var openedTeleport = false
+    @State private var backgroundId: String?
     // The last folder this phone used is the likeliest next one.
     @State private var workingFolder = RecentFolders.load().first ?? ""
     @State private var recents = RecentFolders.load()
@@ -813,6 +814,8 @@ private struct StartSessionSheet: View {
     @State private var resumeAccountId: String?
     @State private var loadingAccounts = false
     @State private var accountError: String?
+    @AppStorage("conch.session.host") private var host = "terminal"
+    private var sessionHost: String { mode == .teleport ? "terminal" : host }
     @State private var advanced = false
     @State private var allowAtLimit = false
     @State private var usageNow = Date()
@@ -854,7 +857,8 @@ private struct StartSessionSheet: View {
     }
 
     private var canStart: Bool {
-        guard !starting, !openedTeleport else { return false }
+        guard backgroundId == nil, !starting, !openedTeleport else { return false }
+        guard sessionHost != "background" || bridge.state?.features?.sessionHosts == 1 else { return false }
         guard !loadingAccounts,
               !activeAccounts.availability(for: selectedAccountId, now: Date(), sourceAccountId: handoffSourceAccountId).blocksStart(allowAtLimit: allowAtLimit)
         else { return false }
@@ -966,6 +970,22 @@ private struct StartSessionSheet: View {
                     .disabled(starting)
                 }
 
+                if mode != .teleport {
+                    Section {
+                        Picker("Run in", selection: $host) {
+                            Label("Terminal", systemImage: "terminal").tag("terminal")
+                            Label("Background", systemImage: "server.rack").tag("background")
+                        }.pickerStyle(.segmented)
+                        if host == "background", bridge.state?.features?.sessionHosts != 1 {
+                            Text("Update Conch on your Mac to use background sessions.").foregroundStyle(Palette.needs)
+                        }
+                    } header: { Text("Run on your Mac") } footer: {
+                        Text(host == "background"
+                            ? "Runs without a window. Chat here or open its terminal on your Mac. Keeps running when Conch closes."
+                            : "Opens a Terminal window on your Mac. You can also chat here.")
+                    }.disabled(starting)
+                }
+
                 startOptionsSection
 
                 if mode == .teleport {
@@ -981,6 +1001,13 @@ private struct StartSessionSheet: View {
                     }
                 }
 
+                if let backgroundId {
+                    Section {
+                        Button("Open startup terminal on Mac", systemImage: "terminal") {
+                            Task { error = await bridge.openAgentTerminal(sessionId: backgroundId) }
+                        }
+                    }
+                }
                 if let error {
                     Section {
                         Text(error)
@@ -1124,7 +1151,7 @@ private struct StartSessionSheet: View {
             return "Pick a session to restart. It reopens with its own agent, in its own folder."
         }
         let agent = picked.backend.lowercased() == "codex" ? "Codex" : "Claude"
-        return "Restarts \(agent) in \(picked.shortCwd), in a new Terminal window on your Mac."
+        return "Restarts \(agent) in \(picked.shortCwd), \(sessionHost == "background" ? "in the background" : "in a new Terminal window") on your Mac."
     }
 
     /// Say where a fresh session will land, the way the resume footnote does:
@@ -1132,7 +1159,7 @@ private struct StartSessionSheet: View {
     /// is worth reading before tapping Start.
     private var freshFootnote: String {
         let folder = freshWorkingFolder.map(shortHomePath) ?? "your Mac home folder"
-        return "Opens \(backend.title) in \(folder), in a new Terminal window on your Mac."
+        return "Opens \(backend.title) in \(folder), \(sessionHost == "background" ? "in the background" : "in a new Terminal window") on your Mac."
     }
 
     private func start() {
@@ -1140,9 +1167,11 @@ private struct StartSessionSheet: View {
         starting = true
         error = nil
         Task {
+            let before = Set((bridge.state?.rows ?? []).map(\.id))
             let cwd = resuming ? resumeSelection?.cwd : freshWorkingFolder
             let outcome = await bridge.startSession(
                 backend: effectiveBackend,
+                host: sessionHost,
                 resumeSessionId: resuming ? resumeSelection?.sessionId : nil,
                 teleportSessionId: mode == .teleport ? teleportSessionId : nil,
                 claudeAccountId: effectiveBackend == .claude ? selectedAccountId : nil,
@@ -1157,14 +1186,25 @@ private struct StartSessionSheet: View {
             case .failed:
                 // The daemon's words when it has them ("session directory
                 // does not exist: …"); the generic line only when it has none.
-                error = bridge.lastError ?? "Couldn't open that session in Terminal."
+                error = bridge.lastError ?? "Couldn't start that session."
             case let .needsTrust(cwd):
                 pendingTrust = cwd
-            case .started:
-                // Remembered only once the daemon accepted it: a folder it
-                // refused is not one worth offering again.
+            case let .started(sessionId, background):
                 if !resuming, let folder = freshWorkingFolder {
                     recents = RecentFolders.remember(folder)
+                }
+                backgroundId = background
+                if let background {
+                    let expected = sessionId ?? (resuming ? resumeSelection?.sessionId : nil)
+                    for _ in 0..<40 {
+                        let rows = (bridge.state?.rows ?? []).filter { $0.backend == effectiveBackend.rawValue && ($0.claudeAccountId ?? $0.codexAccountId ?? "default") == selectedAccountId }
+                        if rows.contains(where: { $0.parentSessionId == nil && (expected != nil ? $0.id == expected : !before.contains($0.id)) }) { dismiss(); return }
+                        try? await Task.sleep(for: .milliseconds(250))
+                        if Task.isCancelled { return }
+                    }
+                    error = "Started in the background. If it hasn’t appeared, open its startup terminal on your Mac to answer any login or setup prompt."
+                    backgroundId = background
+                    return
                 }
                 if mode == .teleport { openedTeleport = true }
                 else { dismiss() }

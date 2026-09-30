@@ -41,19 +41,14 @@ describe("the composer floats over the transcript", () => {
     expect(stack).toContain("var bottomInset: CGFloat = 0");
   });
 
-  /**
-   * THE ordering that matters. The anchor is the stack's own bottom margin and scrolling to it
-   * must still reach the document's true end (measured 2026-09-20: as a 1 pt line inside the
-   * padding it stopped 14 pt short every revision and broke the streaming follow). Put the
-   * composer's room ABOVE the anchor and the same bug returns, a composer's height deep.
-   */
-  test("the room sits below the anchor, so the bottom is still the bottom", () => {
-    const anchor = stack.indexOf(".id(Self.bottomAnchor)");
-    const inset = stack.indexOf("Color.clear.frame(height: bottomInset)");
-    expect(anchor).toBeGreaterThan(-1);
-    expect(inset).toBeGreaterThan(anchor);
-    // And yesterday's fix is untouched.
-    expect(stack).toMatch(/Color\.clear\s+\.frame\(height: 14\)\s+\.id\(Self\.bottomAnchor\)/);
+  test("the follow anchor includes the composer and ends at the real document bottom", () => {
+    expect(stack).toMatch(/Color\.clear\s+\.frame\(height: 14 \+ max\(0, bottomInset\)\)\s+\.id\(Self\.bottomAnchor\)/);
+    const footer = stack.slice(stack.indexOf(".id(Self.bottomAnchor)"), stack.indexOf(".padding(.horizontal, 18)"));
+    expect(footer).not.toContain("Color.clear");
+    expect(footer).not.toContain(".padding(.bottom");
+    expect(stack).toContain(".onChange(of: bottomInset)");
+    // A queued refresh must yield to someone scrolling up before layout finishes.
+    expect(stack).toContain("guard generation == scrollRequestGeneration, pinnedToBottom else { return }");
   });
 
   /**

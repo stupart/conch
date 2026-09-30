@@ -44,7 +44,7 @@ export interface ClaudeHandoffManifest {
   destination: { accountId: string; nativeId: string };
   environment: { cwd: string; gitRoot?: string; gitCommit?: string; gitBranch?: string; dirty?: boolean };
   createdAt: number;
-  state: "prepared" | "terminal-opened" | "launch-failed";
+  state: "prepared" | "terminal-opened" | "background-started" | "launch-failed";
 }
 
 async function git(cwd: string, args: string[]): Promise<string | undefined> {

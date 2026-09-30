@@ -285,13 +285,13 @@ struct SessionView: View {
                     // reports its own visibility answers the same question:
                     // are we at the bottom right now?
                     Color.clear
-                        .frame(height: 1)
+                        .frame(height: 32)
                         .id(Self.bottomAnchor)
                         .onAppear { pinnedToBottom = true }
                         .onDisappear { pinnedToBottom = false }
                 }
-                .padding(20)
-                .padding(.bottom, 12)
+                .padding(.horizontal, 20)
+                .padding(.top, 20)
             }
             .onAppear {
                 // Everything above the live window, for this session. Before the

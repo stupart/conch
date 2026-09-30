@@ -336,11 +336,11 @@ describe("conch start", () => {
     const block = cli.slice(from, cli.indexOf('case "help-session": {', from));
     expect(block).toContain("startRequestFromArgv(rest)");
     expect(block).toContain("agentAdapters().map(startUsage)");
-    expect(block).toContain("startTerminalSession({ bypassPermissions: cfg.bypassPermissions, ...request })");
+    expect(block).toContain('(request.host === "background" ? startBackgroundSession : startTerminalSession)({ bypassPermissions: cfg.bypassPermissions, ...request })');
     // A refused flag pair or a missing binary prints one line, not a stack
     // trace. Measured from the launch, because the argument parser above it
     // has a catch of its own — the first one in the block is not this one.
-    const launch = block.indexOf("startTerminalSession({ bypassPermissions: cfg.bypassPermissions, ...request })");
+    const launch = block.indexOf('(request.host === "background" ? startBackgroundSession : startTerminalSession)({ bypassPermissions: cfg.bypassPermissions, ...request })');
     expect(block.indexOf("} catch (error) {", launch)).toBeGreaterThan(launch);
     expect(block.indexOf("console.error(error instanceof Error ? error.message : String(error));", launch)).toBeGreaterThan(launch);
     expect(cli).toContain("start [claude|codex] [options]");

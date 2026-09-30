@@ -19,12 +19,14 @@ struct PublishedState: Decodable, Equatable, Sendable {
         /// `set-settings` and each row's model and effort (src/session-settings.ts). Absent from an older
         /// daemon, which has no safe way to change them: the header then shows no picker.
         let sessionSettings: Int?
+        let sessionHosts: Int?
 
-        init(deliverables: Int? = nil, viewedState: Int? = nil, practice: Int? = nil, sessionSettings: Int? = nil) {
+        init(deliverables: Int? = nil, viewedState: Int? = nil, practice: Int? = nil, sessionSettings: Int? = nil, sessionHosts: Int? = nil) {
             self.deliverables = deliverables
             self.viewedState = viewedState
             self.practice = practice
             self.sessionSettings = sessionSettings
+            self.sessionHosts = sessionHosts
         }
     }
 

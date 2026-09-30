@@ -221,6 +221,7 @@ struct ConchSessionStartRequest: Encodable, Sendable {
     let claudeAccountId: String?
     let claudeSourceAccountId: String?
     let codexAccountId: String?
+    let host: String?
     let backend: ConchAgentBackend
     let resumeSessionId: String?
     let teleportSessionId: String?
@@ -234,6 +235,7 @@ struct ConchSessionStartRequest: Encodable, Sendable {
 
     init(
         backend: ConchAgentBackend,
+        host: String? = nil,
         resumeSessionId: String?,
         teleportSessionId: String? = nil,
         claudeAccountId: String? = nil,
@@ -244,6 +246,7 @@ struct ConchSessionStartRequest: Encodable, Sendable {
         options: [String: ConchStartOptionValue]? = nil
     ) {
         self.backend = backend
+        self.host = host
         self.resumeSessionId = resumeSessionId
         self.teleportSessionId = teleportSessionId
         self.claudeAccountId = claudeAccountId
@@ -325,6 +328,7 @@ struct ConchSessionCloseRequest: Encodable, Sendable {
 }
 
 struct ConchSessionStartedReply: Decodable, Equatable, Sendable {
+    var backgroundId: String? = nil
     var sessionId: String? = nil
     let backend: String
     let resumed: Bool

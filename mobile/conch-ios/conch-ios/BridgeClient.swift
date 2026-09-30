@@ -634,7 +634,7 @@ final class BridgeClient: ObservableObject {
     /// `cwd` is either the fresh folder the person typed or the folder carried
     /// by a picked historical session.
     enum SessionStart {
-        case started
+        case started(sessionId: String? = nil, backgroundId: String? = nil)
         /// Nothing was started: Codex would stop on its trust prompt in this
         /// folder, so the daemon asks first. The same reply the Mac handles.
         case needsTrust(cwd: String)
@@ -643,6 +643,7 @@ final class BridgeClient: ObservableObject {
 
     func startSession(
         backend: AgentBackend,
+        host: String = "terminal",
         resumeSessionId: String?,
         teleportSessionId: String? = nil,
         claudeAccountId: String? = nil,
@@ -658,6 +659,7 @@ final class BridgeClient: ObservableObject {
         var message: [String: Any] = [
             "kind": "session-start",
             "backend": backend.rawValue,
+            "host": host,
         ]
         if backend == .claude {
             message["claudeAccountId"] = claudeAccountId
@@ -684,7 +686,7 @@ final class BridgeClient: ObservableObject {
             message["cwd"] = workingDirectory
         }
         guard let reply = await postControlRaw(message) else {
-            let failure = "The Mac didn't confirm that \(backend.title) opened in Terminal."
+            let failure = "The Mac didn't confirm that \(backend.title) started."
             lastError = failure
             _ = await reportAppError(operation: "session-start", message: failure)
             return .failed
@@ -707,13 +709,13 @@ final class BridgeClient: ObservableObject {
               reply["backend"] as? String == backend.rawValue,
               reply["resumed"] as? Bool == !resumeID.isEmpty,
               (reply["teleported"] as? Bool == true) == !teleportID.isEmpty else {
-            let failure = "The Mac didn't confirm that \(backend.title) opened in Terminal."
+            let failure = "The Mac didn't confirm that \(backend.title) started."
             lastError = failure
             _ = await reportAppError(operation: "session-start", message: failure)
             return .failed
         }
         lastError = nil
-        return .started
+        return .started(sessionId: reply["sessionId"] as? String, backgroundId: reply["backgroundId"] as? String)
     }
 
     /// Accounts belong to the paired Mac, which also owns sign-in and usage.

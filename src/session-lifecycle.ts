@@ -1,3 +1,4 @@
+import { defaultTmuxExecutable } from "./tmux-binary.ts";
 import { FOCUS_GUARD_LINES, focusedAction, focusSessionWindow, readTerminalTab, withUITransaction, type OsaRunner } from "./inject.ts";
 import { runUICommand } from "./pasteboard.ts";
 import { processMatchesProvider, readProcessIdentity, sameProcessIdentity, type ProcessIdentity, type ProcessIdentityProbe } from "./process-identity.ts";
@@ -15,11 +16,14 @@ import {
 } from "./agent-adapter.ts";
 import { ensureHelpSession, helpSessionDir } from "./help-session.ts";
 import type { SessionInfo } from "./sessions.ts";
+import { acceptBackgroundTrust, managedBackgroundSession, startBackgroundProcess } from "./background-sessions.ts";
+import { probeCommand } from "./probe.ts";
 
 export type { SessionBackend };
 
 export interface StartSessionRequest {
   backend: SessionBackend;
+  host?: "terminal" | "background";
   /** A registered local Claude profile, never an arbitrary environment override. */
   claudeAccountId?: string;
   codexAccountId?: string;
@@ -80,6 +84,8 @@ export interface SessionLifecycleDependencies {
   automationTimeoutMs?: number;
   exitPollAttempts?: number;
   exitPollIntervalMs?: number;
+  backgroundSession?: typeof managedBackgroundSession;
+  probe?: typeof probeCommand;
 }
 
 /** Extra launch constraints for a cloud id passed as a CLI option's value. */
@@ -189,7 +195,7 @@ export function startUsage(adapter: AgentAdapter): string {
       : `--${entry.name} <value>`;
     return `  ${spelling}${entry.resumeOnly ? "  (with --resume)" : ""}\n      ${entry.help}`;
   });
-  return `usage: conch start [claude|codex] [--cwd <dir>] [--account <id>] [--resume <id> | --teleport <id>] [options]\n`
+  return `usage: conch start [claude|codex] [--cwd <dir>] [--account <id>] [--terminal | --background] [--resume <id> | --teleport <id>] [options]\n`
     + `${adapter.displayName} options:\n${lines.join("\n")}`;
 }
 
@@ -203,6 +209,10 @@ export function startRequestFromArgv(args: string[]): StartSessionRequest {
   const options: Record<string, string | boolean> = {};
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i] ?? "";
+    if (arg === "--background" || arg === "--terminal") {
+      request.host = arg === "--background" ? "background" : "terminal";
+      continue;
+    }
     const fixed = arg === "--account" ? `${backend}AccountId` as const : arg === "--cwd" ? "cwd" : arg === "--resume" ? "resumeSessionId" : arg === "--teleport" ? "teleportSessionId" : null;
     if (fixed) {
       const value = rest[++i];
@@ -238,7 +248,7 @@ export function terminalSessionCommand(request: StartSessionRequest): string {
   const adapter = adapterFor(request.backend);
   const account = claudeAccountForLaunch(request);
   const codexAccount = codexAccountForLaunch(request);
-  const environment = account ? claudeProfileCommandPrefix(account, request.claudeHandoff ? true : undefined) : codexAccount ? codexProfileCommandPrefix(codexAccount) : "";
+  const environment = account ? claudeProfileCommandPrefix(account, request.claudeHandoff || request.host === "background" ? true : undefined) : codexAccount ? codexProfileCommandPrefix(codexAccount, request.host === "background" ? true : undefined) : "";
   const resume = request.claudeHandoff?.transcriptPath ?? request.resumeSessionId?.trim();
   const teleport = request.teleportSessionId?.trim();
   const args = teleport && adapter.teleportArgs
@@ -253,7 +263,8 @@ export function terminalSessionCommand(request: StartSessionRequest): string {
     ? ` ${adapter.bypassPermissionsFlag}`
     : "";
   const trust = request.trustFolder ? adapter.trustFolderArgs(cwd) : "";
-  return `cd -- ${shellQuote(cwd)} && exec ${environment}${adapter.executable}${bypass}${trust}${args}`
+  const hostFlags = request.host === "background" ? adapter.backgroundFlags : "";
+  return `cd -- ${shellQuote(cwd)} && exec ${environment}${adapter.executable}${hostFlags}${bypass}${trust}${args}`
     + renderStartOptions(adapter, request.options)
     + (request.claudeHandoff ? ` --session-id ${shellQuote(request.claudeHandoff.sessionId)}` : "");
 }
@@ -442,6 +453,21 @@ export async function startTerminalSession(
   const command = terminalSessionCommand(request);
   const tty = await withUITransaction(() => runInTerminal(command, adapterFor(request.backend).executable, request.cwd, dependencies));
   return tty ? { tty } : {};
+}
+
+export async function startBackgroundSession(request: StartSessionRequest): Promise<{ backgroundId: string }> {
+  // A pre-existing tmux server may carry another account's environment.
+  // Explicitly select the registered profile and clear provider overrides.
+  const command = terminalSessionCommand({ ...request, host: "background",
+    [`${request.backend}AccountId`]: request.claudeAccountId ?? request.codexAccountId ?? "default" });
+  if (!Bun.which(adapterFor(request.backend).executable)) throw new Error(`${request.backend} is not installed or is not on PATH`);
+  const cwd = request.cwd?.trim() || conchHome();
+  if (cwd === helpSessionDir()) ensureHelpSession();
+  try { if (!statSync(cwd).isDirectory()) throw new Error(); }
+  catch { throw new Error(`session directory does not exist: ${cwd}`); }
+  const { name, pane } = await startBackgroundProcess(command, cwd);
+  if (request.trustFolder && adapterFor(request.backend).trustTypedAtLaunch) void acceptBackgroundTrust(pane);
+  return { backgroundId: name };
 }
 
 export function claudeAccountCommandPrefix(configDir: string, isolate = true): string {
@@ -633,6 +659,18 @@ async function closeTerminalSessionInTransaction(
       || !sameProcessIdentity(expected, probe(pid))) throw new Error("session process identity changed or is unavailable; refresh before closing");
   };
   verify();
+  const background = await (dependencies.backgroundSession ?? (dependencies.spawn ? async () => undefined : managedBackgroundSession))(pid);
+  if (background) {
+    for (let press = 0; press < adapterFor(dependencies.backend).exitKeystrokes; press++) {
+      verify();
+      if (await (dependencies.probe ?? probeCommand)([defaultTmuxExecutable(), "send-keys", "-t", background.pane, "C-d"], [0]) === null) {
+        throw new Error("Could not stop the background session");
+      }
+      if (press + 1 < adapterFor(dependencies.backend).exitKeystrokes) await (dependencies.sleep ?? Bun.sleep)(150);
+    }
+    await waitForExit(pid, dependencies, "background session did not exit cleanly after Ctrl-D");
+    return;
+  }
   const tty = await (dependencies.ttyForPid ?? defaultTtyForPid)(pid);
   if (!tty || tty === "??") throw new Error("session is not attached to a Terminal tty");
 
@@ -806,9 +844,9 @@ export async function refreshSessionForClose(
   return { ...session, processIdentity: expected.processIdentity };
 }
 
-export function codexProfileCommandPrefix(account: CodexAccount): string {
-  if (account.id === "default" && process.env.CODEX_HOME === undefined) return "env -u CODEX_HOME ";
-  const remove = account.id === "default" ? "" : CODEX_ACCOUNT_ENV_REMOVE.map(key => "-u " + key).join(" ") + " ";
+export function codexProfileCommandPrefix(account: CodexAccount, isolate = account.id !== "default"): string {
+  const remove = isolate ? CODEX_ACCOUNT_ENV_REMOVE.map(key => "-u " + key).join(" ") + " " : "";
+  if (account.id === "default" && process.env.CODEX_HOME === undefined) return "env " + remove + "-u CODEX_HOME ";
   return "env " + remove + "CODEX_HOME=" + shellQuote(account.configDir) + " ";
 }
 export async function startCodexAccountTerminal(account: CodexAccount, action: "login" | "cloud", dependencies: SessionLifecycleDependencies = {}): Promise<void> {

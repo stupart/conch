@@ -27,6 +27,12 @@ export interface TmuxBinary {
   found: boolean;
 }
 
+/** Keep talking to an existing user's default server with their client.
+ * On a Mac without tmux on PATH, use Conch's bundled client for that server. */
+export function defaultTmuxExecutable(): string {
+  return Bun.which("tmux") ? "tmux" : resolveTmux().path;
+}
+
 export interface ResolveTmuxOptions {
   env?: Readonly<Record<string, string | undefined>>;
   home?: string;
