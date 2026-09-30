@@ -38,6 +38,32 @@ const tabs = () => section(pane, "private func deliverableTabs(", ".padding(.ver
 const button = () => section(tabs(), "if strip.showsButton {", "if strip.showsMirror {");
 
 describe("the Terminal button brings the real terminal forward, and does nothing else", () => {
+  test("the always-available Mac header uses the strip's focus action for both the title and icon", () => {
+    const header = section(pane, "private func sessionBar(for row: SessionRow)", "AgentBadge(backend: row.backend)");
+    expect(header.split("if row.hasAgentTerminal {").length - 1).toBe(2);
+    expect(header.split("Button { store.openAgentTerminal(row) }").length - 1).toBe(2);
+    expect(header).not.toContain("store.reveal(");
+    expect(header).not.toContain("hasWorkTabs");
+    expect(header).not.toContain("TerminalMirrorAsk");
+  });
+
+  test("the iPhone header waits for terminal-focus and displays refusal instead of accepting a reveal ack", () => {
+    const phone = swift("mobile/conch-ios/conch-ios/SessionView.swift");
+    const bridge = swift("mobile/conch-ios/conch-ios/BridgeClient.swift");
+    const open = section(bridge, "func openAgentTerminal(sessionId: String)", "func setSessionSettings(");
+    expect(open).toContain('"kind": "terminal-focus", "sessionId": sessionId');
+    expect(open).toContain('reply["kind"] as? String == "terminal-focus"');
+    expect(open).toContain('reply["sessionId"] as? String == sessionId');
+    expect(open).toContain('reply["focused"] as? Bool == true');
+    expect(open).toContain('reply["reason"] as? String');
+    expect(open).not.toContain('"session-command"');
+    expect(phone).toContain("row.revealable, row.noTerminal == nil, row.parentSessionId == nil");
+    expect(phone).toContain("terminalError = await bridge.openAgentTerminal(sessionId: row.id)");
+    expect(phone).toContain("showingTerminalError = terminalError != nil");
+    expect(phone).toContain('.alert("Couldn\'t open that terminal", isPresented: $showingTerminalError)');
+    expect(phone).not.toContain("sessionCommand: .reveal");
+  });
+
   test("it is there only for a session with a terminal of its own: a known process, no reason it has none, not a subagent", () => {
     const has = section(mirror, "var hasAgentTerminal: Bool {", "\n    }");
     expect(has).toContain("revealable && noTerminal == nil && parentSessionId == nil");

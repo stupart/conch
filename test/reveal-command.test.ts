@@ -26,9 +26,8 @@ function harness(target: SessionActionsTarget | null) {
 }
 
 /**
- * Click a session's title to bring its window to the front (C10). The raise
- * is `revealSessionWindow`, which `revealOnTurn` already uses; what is new is
- * a socket command for it. The ack says whether there was a process to try —
+ * Passive reveals use `revealSessionWindow`, as `revealOnTurn` does. The
+ * ack says whether there was a process to try —
  * a session conch only observes has nothing to raise — and it comes back
  * before the AppleScript does, because a click must not block on Terminal.
  */
@@ -61,14 +60,15 @@ test("the daemon raises through revealSessionWindow, via the one logged door, an
   expect(panel).toContain("...(row.revealable ? { revealable: true as const } : {}),");
 });
 
-test("the Mac app makes the title a button only when the row says it can be raised", () => {
+test("the Mac title focuses a session's own terminal instead of passively revealing it", () => {
   const dashboard = read("mac-app/conch-mac/DashboardView.swift");
   const at = dashboard.indexOf("private func sessionBar(for row: SessionRow) -> some View {");
   expect(at).toBeGreaterThan(-1);
   // The bar also carries a subagent's way back (C4) ahead of the title.
   const bar = dashboard.slice(at, at + 1_600);
-  expect(bar).toContain("if row.revealable {");
-  expect(bar).toContain("Button { store.reveal(row) } label: { sessionTitle(row) }");
+  expect(bar).toContain("if row.hasAgentTerminal {");
+  expect(bar).toContain("Button { store.openAgentTerminal(row) } label: { sessionTitle(row) }");
+  expect(bar).not.toContain("store.reveal(row)");
   const store = read("mac-app/conch-mac/StateStore.swift");
   expect(store).toContain("guard row.revealable else { return Task { false } }");
   expect(store).toContain("ConchSessionCommandRequest(sessionId: row.id, command: .reveal)");

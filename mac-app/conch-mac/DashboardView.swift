@@ -2214,11 +2214,10 @@ private struct ConversationPane: View {
                 .accessibilityLabel("Back to \(parent.label)")
             }
 
-            // Click the title to raise the session's terminal (C10). It is a
-            // button only when the daemon knows the process: a session conch
-            // merely observes has nothing to raise and must not look clickable.
-            if row.revealable {
-                Button { store.reveal(row) } label: { sessionTitle(row) }
+            // Explicit clicks use the same focus action as the Terminal strip:
+            // passive reveal can select a tab without bringing Terminal forward.
+            if row.hasAgentTerminal {
+                Button { store.openAgentTerminal(row) } label: { sessionTitle(row) }
                     .buttonStyle(.plain)
                     .help("Bring this session's terminal to the front")
                     .accessibilityLabel("Bring \(row.label) to the front")
@@ -2226,8 +2225,8 @@ private struct ConversationPane: View {
                 sessionTitle(row)
             }
 
-            if row.revealable && row.noTerminal == nil {
-                Button { store.reveal(row) } label: {
+            if row.hasAgentTerminal {
+                Button { store.openAgentTerminal(row) } label: {
                     Image(systemName: "terminal")
                         .font(.system(size: 12))
                         .frame(width: 26, height: 26)
