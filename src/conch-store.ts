@@ -9,8 +9,9 @@ import { conchHome } from "./home.ts";
  * Not the temp folder: macOS empties /tmp at every restart and sweeps the per-user folder of files nobody opened for
  * days, and these are what the user opens days later. Not `~/.config/conch` either, beside the settings: that is a
  * hidden folder, which the publish rule refuses outright (`checkLocalFile`), so nothing kept there could reach the
- * apps or the phone. This one root is the exception that rule makes beyond a session's folders and the temp folders,
- * because only conch writes in it. One root, so the two stores can't drift apart in what the rule lets through.
+ * apps or the phone. Its two stores are the exception that rule makes beyond a session's folders and the temp folders,
+ * because only conch writes in them (`servedStoreFolders`): named here once, so the two can't drift apart in what the
+ * rule lets through, and never the root itself, so nothing else that comes to live under it is sent to the phone.
  *
  * The Mac app's own data lives under its bundle id (`ai.blueprintstudio.conch`), not here. A leaf module, so the
  * publish rule in snippet.ts can name it without importing either store.
@@ -19,4 +20,11 @@ export const CONCH_STORE_PARTS = ["Library", "Application Support", "conch"] as 
 
 export function conchStoreRoot(home: string = conchHome()): string {
   return join(home, ...CONCH_STORE_PARTS);
+}
+
+/** The store's folders the publish rule lets through: conch's page captures and its copies of deliverables. */
+export const SERVED_STORE_FOLDERS = ["captures", "deliverables"] as const;
+
+export function servedStoreFolders(home: string = conchHome()): string[] {
+  return SERVED_STORE_FOLDERS.map((folder) => join(conchStoreRoot(home), folder));
 }

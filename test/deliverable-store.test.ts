@@ -173,6 +173,22 @@ describe("reading a copy back", () => {
     }
   });
 
+  test("only the store's two folders, never the rest of conch's folder: whatever comes to live beside them stays put", async () => {
+    const { temp, store, session, put } = world();
+    const root = dirname(store);
+    const saved = process.env.CONCH_USER_TEMP_DIR;
+    process.env.CONCH_USER_TEMP_DIR = join(temp, "not-temp");
+    try {
+      expect((await checkLocalFile(put(join(root, "captures", "page.png")), [session])).ok).toBe(true);
+      expect((await checkLocalFile(put(join(root, "deliverables", "a", "v1-x", "hero.png")), [session])).ok).toBe(true);
+      for (const beside of [join(root, "settings.png"), join(root, "pairing", "phone.png")]) {
+        expect((await checkLocalFile(put(beside), [session])).ok, beside).toBe(false);
+      }
+    } finally {
+      process.env.CONCH_USER_TEMP_DIR = saved;
+    }
+  });
+
   test("the phone's /file serves a held copy after its original is gone, and nothing else in the store", async () => {
     const { temp, store, session, put } = world();
     const shot = put(join(temp, "x", "hero.png"));

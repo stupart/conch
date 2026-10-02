@@ -6,7 +6,7 @@ import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { selectWindowBranch, type WindowIdentity } from "./conversation.ts";
 import { checkFocusShape, FOCUS_MAX, inferDeliverableKind, isPackagePath } from "./deliverables.ts";
 import { describeTempFolders, tempFolders } from "./temp-folders.ts";
-import { conchStoreRoot } from "./conch-store.ts";
+import { servedStoreFolders } from "./conch-store.ts";
 
 const BARE_URL = /(?:<)?\bhttps?:\/\/[^\s<>"'`]+(?:>)?/gi;
 const FILESYSTEM_PATH = /(^|[\s([{'":=])((?:(?:~?|\.\.?)\/|[A-Za-z0-9_.-]+\/)[^\s)\]}>,"'`]+)/g;
@@ -1321,8 +1321,8 @@ async function isKeynoteDeck(real: string): Promise<boolean> {
  * non-executable file under one of `roots` (the session's folder and the folders it works in) or
  * a temp folder, where screenshots and renders go: `/tmp` or macOS's per-user one, named the same
  * in every process whatever its `$TMPDIR` (temp-folders.ts), since the MCP server and the daemon
- * once disagreed and a publication said "accepted" was dropped. Or conch's own store
- * (conch-store.ts, `~/Library/Application Support/conch`), where `conch_capture` keeps the pages it
+ * once disagreed and a publication said "accepted" was dropped. Or conch's own two stores
+ * (conch-store.ts, under `~/Library/Application Support/conch`), where `conch_capture` keeps the pages it
  * drew and conch keeps its copies of deliverables that sat in a temp folder: only conch writes
  * there, and it outlives the temp folders' sweeps. It must not be hidden or sit in a hidden folder
  * (~/.ssh, ~/.config, ~/.codex, ~/.claude, .env, .git), and it must not be a key or certificate.
@@ -1339,7 +1339,7 @@ export async function checkLocalFile(
     const why = !real ? "it does not exist" : !file?.isFile() ? "it is not a regular file" : "it is an executable file";
     return { ok: false, reason: SAFE_REVIEW_LINK, why };
   }
-  const allowed = await Promise.all([...roots, ...tempFolders(), conchStoreRoot()].map((root) => realpath(root).catch(() => null)));
+  const allowed = await Promise.all([...roots, ...tempFolders(), ...servedStoreFolders()].map((root) => realpath(root).catch(() => null)));
   if (!allowed.some((root) => root && real.startsWith(root.endsWith("/") ? root : `${root}/`))) {
     const where = sessionFolders(roots);
     return {
