@@ -3355,6 +3355,15 @@ describe("a send to a terminal the session has left", () => {
     expect(state).toMatchObject({ code: "session-stopped", pid: 10231, jobId: "f31f0d15", detail: stoppedJob.detail });
   });
 
+  test("the check reads the session's own account, whose roster holds its jobs", async () => {
+    // A job on another account is in that account's roster, never the default one's.
+    const dirs: string[] = [];
+    const accountRow = { ...attachRow, claudeConfigDir: "/accounts/work" } as SessionInfo;
+    const h = harness({ window: () => accountRow, deadTarget: async (claudeDir) => { dirs.push(claudeDir); return null; } });
+    expect(await h.voice.handle(inject("words", { pid: 10231 }))).toBe(true);
+    expect(dirs).toEqual(["/accounts/work"]);
+  });
+
   test("a live target is typed into as before", async () => {
     const h = harness({ window: () => attachRow, deadTarget: async () => null });
     expect(await h.voice.handle(inject("words", { pid: 10231 }))).toBe(true);
