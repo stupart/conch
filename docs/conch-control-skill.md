@@ -56,6 +56,27 @@ https://brew.sh rather than trying to install Homebrew yourself.
   becomes a newer version of that artifact instead — the user sees the newest,
   with the earlier versions listed under it by summary and time.
 
+  **Where it landed.** The call waits for conch to file it. `outcome: "filed"`
+  means it is filed, under the `id`, `artifact`, `version`, `kind` and `link`
+  the result gives; a refusal fails the call with conch's reason. `surfaces`
+  says who can see it now, and is what you tell the user, never an assumption:
+
+  - `mac`: `showing` (conch's window is in front on the Mac), `running` (the
+    Mac app is open; it waits behind the Ready pill) or `not-running` (it will
+    be there when they open the app).
+  - `phone`: `connected` (the iPhone app is connected now; one just put away
+    can still count for a moment), `paired-not-connected` (they see it next time
+    the app connects), `unpaired` or `off`.
+  - `audio`: `mac` (announced aloud on this Mac), `phone` (the phone has
+    conch's voice and reads it), `other-mac` (another Mac has the voice) or
+    `manual` (filed silently: manual mode, or the session is hidden).
+
+  So "It's filed in conch; the Mac app isn't open and your phone isn't
+  connected, so you'll see it when you open either" — not "it's on your
+  screen". `outcome: "accepted"` with `unconfirmed` comes from an older conch
+  that doesn't say: the handles are predicted, and `conch_deliverables` says
+  what was filed.
+
   **What to link.** The best single artifact for the result:
 
   - a site or page → the URL (`http://localhost:3000/pricing`)
@@ -93,11 +114,12 @@ https://brew.sh rather than trying to install Homebrew yourself.
   file's real path, a URL without its fragment), else the summary; pass `key`
   to name it yourself when there is no link, or the link changes between
   versions (`hero-v3.png`, `hero-v4.png`). The result returns `id`,
-  `artifact`, `version` and `kind`. To show a change (a photo edit, a
-  restyled page), save the after as its own file and publish it under the
-  before's `key`: conch compares two versions with a slider or side by side,
-  so build no before/after composite. A file overwritten in place leaves
-  nothing earlier to compare.
+  `artifact`, `version` and `kind`, as conch filed them. To show a change (a
+  photo edit, a restyled page), save the after as its own file and publish it
+  under the before's `key`: conch compares two versions with a slider or side
+  by side, so build no before/after composite. A file overwritten in place
+  leaves nothing earlier to compare, unless it sat in a temp folder: conch
+  copied each version of that when it was filed.
 
   **Your own deliverables.** `conch_deliverables` lists the ones your session
   holds, newest first, each marked `superseded` when a newer version of it is
@@ -106,6 +128,13 @@ https://brew.sh rather than trying to install Homebrew yourself.
   A newer version already supersedes an older one, so remove only what should
   not be looked at: a wrong result, or one filed by mistake. Both act on your
   own session only.
+
+  **A label that drifted.** When what you publish no longer matches your
+  session's label (it was named after the first task and the work moved on),
+  the result carries `relabel: {label, hint}`, once per label. If your focus
+  has moved, call `conch_rename` with a short new label for what you are doing
+  now. conch never renames a session itself, and never offers this for a label
+  the user chose.
 
   **The scene.** Optional: `scene: {v: 1, target: {kind}, inspect?, marks?}`.
 
@@ -145,12 +174,20 @@ https://brew.sh rather than trying to install Homebrew yourself.
     - `{image: "/tmp/still.png"}`: an absolute path to an image file. It must
       pass the same check as `link`, which refuses conch's own hidden folders,
       where a still sent from the phone or a canvas's frames are kept: to mark
-      one, copy it under your folder or /tmp first and mark the copy.
+      one, copy it under your folder or a temp folder first and mark the copy.
+      One in a temp folder is copied into conch with the publication, as a
+      link is.
   - On a canvas or an image, numbers are fractions of it, 0 to 1 from the top
     left. `arrow` takes `at` (its tail) and `to` (its head) as `[x, y]`; `box`,
     `ellipse` and `highlight` take `rect: [x, y, width, height]`; `pin` and
     `text` take `at`; `stroke` takes 2 to 64 `pts`, and only on a canvas or an
     image.
+  - Or in pixels: add `units: "px"`, and the numbers are pixels of
+    `size: [width, height]`, or, on an image with no `size`, of the image
+    file's own pixel size (PNG, JPEG, GIF, WebP, BMP); conch turns them into
+    fractions. Pass `size` when you measured on a resized view of the image
+    (you were shown a screenshot scaled down), and on a canvas always. A pixel
+    mark that reaches outside the picture is refused, naming the size.
   - `label`: at most 80 characters, the note beside the mark. `text` needs one:
     it is the text.
   - No colour: conch draws your marks in your colour. 4096 bytes in all.
@@ -173,8 +210,17 @@ https://brew.sh rather than trying to install Homebrew yourself.
   the phone, so it must sit under one of this session's folders: the one it
   started in, the one it is in now and the git repository around that (a
   worktree's own checkout too), any named with `conch_working_folders`, or a
-  temp folder (`/tmp`). It must not be hidden, in a hidden folder (`~/.ssh`,
-  `~/.config`, `.env`; a repo's `.worktrees` is fine), or a key or certificate.
+  temp folder: `/tmp`, or the per-user one `$TMPDIR` names
+  (`/var/folders/…/T`), the same two whatever your own `$TMPDIR` says. A file
+  or folder in a temp folder is copied into conch's own store
+  (`~/Library/Application Support/conch/deliverables`) when it is filed (a
+  page or a markdown document brings the folder it is in), and filed
+  against the copy: the result's `copiedFrom` names the original, and cleaning
+  the temp folder or a reboot can't take it away. Over 64 MB or 500 files it is
+  filed where it is, and `notCopied` says why. One under your own folders is
+  linked where it is, live, never copied. It must not be hidden, in a hidden
+  folder (`~/.ssh`, `~/.config`, `.env`; a repo's `.worktrees` is fine), or a
+  key or certificate.
   A folder must sit in the same places and not be hidden, and must not be your
   home folder itself or a package (an `.app`, a document saved as a bundle).
   If the tool isn't available to you or refuses you as unverified, end your
@@ -192,7 +238,7 @@ https://brew.sh rather than trying to install Homebrew yourself.
   numbers by eye.
 
   - `url`: an http(s) URL, or a local `.html` file under this session's folders
-    or `/tmp` (the same rule as a `review_to_front` link).
+    or a temp folder (the same rule as a `review_to_front` link).
   - `target`: `{selector: ".pricing .plan-pro"}` or `{quote: "Start free
     trial"}`, at most 120 characters, as a mark's frame names one. conch waits
     for the page to load and its fonts, scrolls the target to the middle of the
@@ -250,7 +296,8 @@ Do not retry the same call; do the alternative, or tell the user in one line.
 
 - `review_to_front` naming **another session's** artifact — omit `session`; you may only surface your own work.
 - `review_to_front` from a caller conch **cannot verify** — leave the result in your reply, or use the `conch:review` line.
-- `review_to_front` with a link that is not an http(s) URL, an existing, **non-executable** regular file or a folder — a missing file, a script, a `file://` or `javascript:` URL — or a file **outside this session's folders and the temp folder** (the refusal lists the folders), hidden, or a key or certificate; or a folder that is outside them, hidden, a package, or your home folder. A `conch:review` line's link is held to the same rules, and dropped rather than refused.
+- `review_to_front` with a link that is not an http(s) URL, an existing, **non-executable** regular file or a folder — a missing file, a script, a `file://` or `javascript:` URL — or a file **outside this session's folders and the temp folders** (the refusal lists them), hidden, or a key or certificate; or a folder that is outside them, hidden, a package, or your home folder. A `conch:review` line's link is held to the same rules, and dropped rather than refused.
+- `review_to_front` that conch's daemon **refuses as it files it** — "refused: conch's daemon did not file it: …" with its reason: it checks the link again against the folders it knows your session by, and refuses a publication from a session the user dismissed, or one older than a publication it already filed. Fix what it names, or tell the user.
 - `review_to_front` with a **folder** link and a `kind` other than `folder`, `kind: "folder"` without a folder link, or `focus` without a folder link, or a `focus` path that is missing, has a `..` part, leads out of the folder (a symlink too), names the folder itself, or is over the limits in *Folders* — the refusal names the path (`focus[1]`).
 - `review_to_front` with a `kind` that is not one of the kinds above, or a
   kind that needs a link (`image`, `page`, `url`…) without one, or a `key`
@@ -259,7 +306,7 @@ Do not retry the same call; do the alternative, or tell the user in one line.
   "nothing removed"; list yours with `conch_deliverables`. It takes exactly
   one of the two.
 - `review_to_front` with a **scene** that is not `v: 1`, has an unknown kind or field, asks for `kind: "link"` with no link, has an `inspect` that is empty or over 200 characters, or carries `target.ref` — the refusal says which; fix the scene or omit it.
-- `review_to_front` with **marks** that don't fit *Marks* above: an unknown kind or field (a colour is one), numbers outside 0 to 1, geometry the kind doesn't take, a `selector` or `quote` with no link, an image that fails the link check, more than 12, or over 4096 bytes. The refusal names the mark (`marks[2]`) and what to fix.
+- `review_to_front` with **marks** that don't fit *Marks* above: an unknown kind or field (a colour is one), numbers outside 0 to 1, geometry the kind doesn't take, a `selector` or `quote` with no link, an image that fails the link check, more than 12, or over 4096 bytes; or `units: "px"` with no `size` on a canvas, on an image conch can't read the size of, or reaching outside the picture. The refusal names the mark (`marks[2]`) and what to fix.
 - `conch_capture` with a `url` that is not an http(s) URL or a local `.html` file that passes the link rule, a `target` that is not exactly one of `selector` or `quote`, a `viewport` outside its limits, a `mark` without a `target`, or `publish` from a caller conch cannot verify. When it runs but can't capture, it fails with why: conch's Mac app isn't running (open it and try again), the page didn't load, the target **wasn't found** (the error names the page's title, its headings, whether it was a sign-in screen, and a picture of what conch saw), or it didn't finish in time.
 - A `session` name that **matches several sessions** — the refusal lists them by id and label; pass the id.
 - `conch_wake` / `conch_recite` **without `session`** when your caller is unverified — pass the session's id.

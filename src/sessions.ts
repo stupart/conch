@@ -773,6 +773,29 @@ export function sessionLabel(
 }
 
 /**
+ * Who chose `sessionLabel`'s answer, by the same precedence: a person (a conch override, from the
+ * Mac app, `conch rename` or `conch_rename`; a `/rename` Claude Code marks `nameSource: "user"`;
+ * conch's own help session's name), the agent (a title generated from the first prompt, a Codex
+ * thread's name, or a registry name from before `nameSource`, which conch can't tell apart), or
+ * nobody (the folder's name). `review_to_front` offers a relabel only for the agent's
+ * (label-drift.ts): a person's label is theirs, and a folder's name was never a topic.
+ */
+export function sessionLabelSource(
+  info: SessionInfo | null,
+  cwd: string | undefined,
+  options: LabelOverrideOptions = {},
+): "user" | "agent" | "folder" {
+  if (info?.sessionId) {
+    const overrides = labelOverrides(options);
+    if ([info.sessionId, info.agentSessionId].some((key) => key && Object.hasOwn(overrides, key) && overrides[key])) return "user";
+  }
+  const dir = cwd ?? info?.cwd ?? process.cwd();
+  if (dir === helpSessionDir()) return "user";
+  if (!info?.name) return "folder";
+  return info.nameSource === "user" ? "user" : "agent";
+}
+
+/**
  * A single read of the session registry.
  *  - `infos`: engageable (top-level interactive CLI) sessions, for the panel + wake.
  *  - `liveIds`: EVERY live sessionId (engageable or not, plus ids salvaged from a

@@ -259,7 +259,7 @@ final class DaemonHealthTests: XCTestCase {
         defer { server.close() }
         server.serve(reply: "{\"kind\":\"pong\",\"pid\":4242,\"uptimeMs\":10}\n")
         XCTAssertEqual(DaemonHealth.pingNow(socketPath: server.path, timeout: 2), .answered(pid: 4242))
-        XCTAssertEqual(server.requests, ["{\"kind\":\"ping\"}"])
+        XCTAssertEqual(server.requests, ["{\"kind\":\"ping\",\"from\":\"mac-app\"}"])
     }
 
     func testAnOlderDaemonsErrorIsStillAnAnswer() throws {

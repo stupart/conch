@@ -6,6 +6,7 @@ import { reviewIdentity } from "./records-receipts.ts";
 import { writeSettingsFileAtomic } from "./settings.ts";
 import { checkReviewScene, LINK_REFUSED_MAX } from "./snippet.ts";
 import { discardPreview, previewFolderPath } from "./review-preview.ts";
+import { deliverableStoreDir, discardStoredCopy, storeEntry, sweepStore } from "./deliverable-store.ts";
 
 /**
  * The saved-deliverables file stops growing here: newest reviews first, a session that doesn't fit
@@ -109,10 +110,14 @@ export class SessionLedger {
     readonly legacyReviewsPath?: string,
     /** conch's snapshot folder (`previewFolder`): the one place a deliverable's snapshot is deleted from. */
     readonly previewsFolder: string = previewFolderPath(),
+    /** conch's store of copies (deliverable-store.ts): the one place a deliverable's copy is deleted from. */
+    readonly deliverablesFolder: string = deliverableStoreDir(),
   ) {}
   #savedReviews = "";
   /** The snapshots (`preview`) held deliverables named at the last save. */
   #savedPreviews = new Set<string>();
+  /** The store's version folders held deliverables named at the last save (`storeEntry`). */
+  #savedCopies = new Set<string>();
   // session -> last time conch drove it. Cleanup is still the TTL in markInjected.
   readonly injectedAt = new Map<string, number>();
   // Sessions that finished while paused; latest per session.
@@ -242,6 +247,8 @@ export class SessionLedger {
         ...(versions ? { versions } : {}),
       });
     }
+    // Named as saved, like the snapshots, so one the cap or a removal drops later goes at that save.
+    this.#savedCopies = this.#heldCopies();
   }
 
   /** The saved `versions`, each a whole number above 0 by a non-empty artifact; anything else is dropped. */
@@ -347,6 +354,7 @@ export class SessionLedger {
    */
   saveReviews(): void {
     this.#discardDroppedPreviews();
+    this.#discardDroppedCopies();
     if (!this.reviewsPath) return;
     // A session holding nothing is saved for its `versions` alone, after every one that holds something.
     const newestFirst = [...this.sessionStates]
@@ -411,6 +419,45 @@ export class SessionLedger {
     }
     for (const path of this.#savedPreviews) if (!held.has(path)) discardPreview(path, this.previewsFolder);
     this.#savedPreviews = held;
+  }
+
+  /** The store's version folders every held deliverable names: its link, and its marks' images. */
+  #heldCopies(): Set<string> {
+    const held = new Set<string>();
+    for (const state of this.sessionStates.values()) {
+      for (const one of [...(state.reviews ?? []), ...(state.review ? [state.review] : [])]) {
+        const images = (one.scene?.marks ?? []).flatMap((mark) => "image" in mark.frame ? [mark.frame.image] : []);
+        for (const path of [...(one.link ? [one.link] : []), ...images]) {
+          const entry = storeEntry(path, this.deliverablesFolder);
+          if (entry) held.add(entry);
+        }
+      }
+    }
+    return held;
+  }
+
+  /**
+   * A copy goes with its deliverable, as a snapshot does (`#discardDroppedPreviews`): removed
+   * (`review_remove`, the Mac's menu), pushed out by the six-deliverable cap, or its session
+   * forgotten. One the last save named and nothing holds now is deleted, from the store alone
+   * (`discardStoredCopy`). A copy made for a filing still being filed was never named, so it is
+   * never deleted from under it.
+   */
+  #discardDroppedCopies(): void {
+    const held = this.#heldCopies();
+    for (const dir of this.#savedCopies) if (!held.has(dir)) discardStoredCopy(dir, this.deliverablesFolder);
+    this.#savedCopies = held;
+  }
+
+  /**
+   * At daemon start, after `restoreReviews`: delete every copy in the store no restored deliverable
+   * names (a crash between a copy and its save, a filing refused after its copy, one the saved file
+   * had no room for). Returns what it deleted, for the log.
+   */
+  sweepStoredCopies(): string[] {
+    const held = this.#heldCopies();
+    this.#savedCopies = held;
+    return sweepStore(held, this.deliverablesFolder);
   }
 
   forgetGone(liveIds: ReadonlySet<string>): void {

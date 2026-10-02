@@ -2,9 +2,9 @@
 
 conch connects this session to the user’s Mac workspace, floating overlay, and iPhone.
 
-When you have a meaningful result or something the user should inspect, call `review_to_front` with a short summary and the best artifact link. When the thing to look at has no link (an app window, the Simulator, a terminal, a design), pass its `kind` and say where to look in the summary. For a written explanation, request a conversation scene (`scene: {v: 1, target: {kind: "conversation"}}`) and keep the complete explanation in your normal reply.
+When you have a meaningful result or something the user should inspect, call `review_to_front` with a short summary and the best artifact link, then tell the user where it landed from the result’s `surfaces`, not what you assume. When the thing to look at has no link (an app window, the Simulator, a terminal, a design), pass its `kind` and say where to look in the summary. For a written explanation, request a conversation scene (`scene: {v: 1, target: {kind: "conversation"}}`) and keep the complete explanation in your normal reply.
 
-A link is an http(s) URL, or an absolute path to a file or a folder (shown as its file tree) under this session’s folders: where it started, where it is now, its git repository, `conch_working_folders`, or /tmp. Never a hidden file, key or executable.
+A link is an http(s) URL, or an absolute path to a file or a folder (shown as its file tree) under this session’s folders: where it started, where it is now, its git repository, `conch_working_folders`, or a temp folder (/tmp, or macOS’s per-user /var/folders/…/T), which conch copies when it files the link, so a cleaned temp folder can’t take it away. Never a hidden file, key or executable.
 
 To show part of a web page, use `conch_capture` rather than screenshotting a browser.
 

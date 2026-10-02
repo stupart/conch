@@ -12,6 +12,7 @@ import { decodeNarrationRequest } from "./narration.ts";
 import { decodePracticeRequest } from "./practice.ts";
 import { decodeSetupRequest } from "./setup.ts";
 import { checkLocalFile } from "./snippet.ts";
+import { tempFolders } from "./temp-folders.ts";
 import { breadcrumb } from "./loop-watchdog.ts";
 import type { PreviewAnswer } from "./review-preview.ts";
 import { localhostPort, resolveScreen, SCREEN_RESOLVERS, screenContextFromPublished, type PortListener } from "./screen-context.ts";
@@ -907,7 +908,7 @@ const READS_ITS_FOLDER = /\.(html?|md|markdown)$/i;
  */
 async function neverWidened(folder: string): Promise<boolean> {
   const [temps, homes] = await Promise.all([
-    Promise.all(["/tmp", tmpdir()].map((root) => realpath(root).catch(() => root))),
+    Promise.all([...tempFolders(), tmpdir()].map((root) => realpath(root).catch(() => root))),
     Promise.all([homedir(), conchHome()].map((root) => realpath(root).catch(() => root))),
   ]);
   return folder === "/" || temps.includes(folder) || homes.some((home) => home === folder || home.startsWith(`${folder}/`));
@@ -961,7 +962,9 @@ async function ownReceiptPicture(requested: string, uploads: string): Promise<st
  * - a web asset under the folder of a held page or markdown document, which is what lets a page
  *   bring its styles and pictures (`WEB_ASSET`, never at a `neverWidened` folder).
  * Every one of them then passes `checkLocalFile`, the rule a session publishes under, against
- * that session's own folders, and is served at the real path that rule checked.
+ * that session's own folders, and is served at the real path that rule checked. The rule lets
+ * conch's own store through (conch-store.ts), so a deliverable filed as conch's copy of a temp file
+ * (deliverable-store.ts) is served after the temp folder is cleaned or the Mac restarts.
  */
 async function servableFile(
   requested: string,

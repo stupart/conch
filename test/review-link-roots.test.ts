@@ -1,3 +1,4 @@
+import { describeTempFolders } from "../src/temp-folders.ts";
 import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,9 +25,10 @@ import { checkReviewLink } from "../src/snippet.ts";
  */
 async function onDisk(run: (disk: string) => Promise<void> | void): Promise<void> {
   const base = realpathSync(mkdtempSync(join(tmpdir(), "conch-link-roots-")));
-  const saved = process.env.TMPDIR;
+  const saved = { tmpdir: process.env.TMPDIR, userTemp: process.env.CONCH_USER_TEMP_DIR };
   mkdirSync(join(base, "temp"));
   process.env.TMPDIR = join(base, "temp");
+  process.env.CONCH_USER_TEMP_DIR = join(base, "temp");
   try {
     const disk = join(base, "disk");
     mkdirSync(disk);
@@ -34,7 +36,8 @@ async function onDisk(run: (disk: string) => Promise<void> | void): Promise<void
     expect(disk.startsWith(`${realpathSync(tmpdir())}/`)).toBe(false);
     await run(disk);
   } finally {
-    process.env.TMPDIR = saved;
+    process.env.TMPDIR = saved.tmpdir;
+    process.env.CONCH_USER_TEMP_DIR = saved.userTemp;
     rmSync(base, { recursive: true, force: true });
   }
 }
@@ -69,7 +72,7 @@ describe("a link is checked against every folder the session is and has been in"
     const { start, worktree, pack } = incident(disk);
     // The rule it used to be: only where the session is now. This is the drop the trace showed.
     const before = await checkReviewLink(pack, worktree);
-    expect(before).toMatchObject({ ok: false, why: `it is outside this session's folder (${worktree}) and the temp folder` });
+    expect(before).toMatchObject({ ok: false, why: `it is outside this session's folder (${worktree}) and the temp folders` });
 
     const session = { sessionId: "e32bb468", cwd: start };
     const checked = await stopReview(line(pack), hookSessionFolders(worktree, session, "e32bb468", {}));
@@ -126,18 +129,18 @@ describe("a link is checked against every folder the session is and has been in"
     const { worktree, elsewhere, monorepo, outside } = incident(disk);
     const link = join(outside, "secret.md");
     const checked = await stopReview(line(link), { now: worktree, started: elsewhere });
-    const folders = `this session's folders (${elsewhere}, ${monorepo}) and the temp folder`;
+    const folders = `this session's folders (${elsewhere}, ${monorepo})`;
     // The summary is still filed; the link is not, and the review says why, for the Mac and the phone.
     expect(checked.review).toEqual({
       summary: "The review pack",
-      linkRefused: `The link ${link} wasn't published: it is outside ${folders}.`,
+      linkRefused: `The link ${link} wasn't published: it is outside ${folders} and the temp folders.`,
     });
-    // The trace and the agent's next prompt get the agent-facing reason.
-    expect(checked.refused).toEqual({
-      link,
-      reason: `link ${link} is outside ${folders}, so it is not sent to the phone; publish a copy under one of those folders or /tmp`,
-      agentNote: `Your last conch:review link was not published: link ${link} is outside ${folders}, so it is not sent to the phone; publish a copy under one of those folders or /tmp.`,
-    });
+    // The trace and the agent's next prompt get the agent-facing reason, which names the temp folders: the same two in
+    // every process, whatever its $TMPDIR (temp-folders.ts).
+    const reason = `link ${link} is outside ${folders} and ${describeTempFolders()}, so it is not sent to the phone;`
+      + " publish a copy under one of those folders or /tmp";
+    expect(reason).toContain("the temp folders (/tmp, /");
+    expect(checked.refused).toEqual({ link, reason, agentNote: `Your last conch:review link was not published: ${reason}.` });
     // A link that is not a file at all says which one it was, and the rule.
     const missing = await stopReview(line(join(elsewhere, "gone.md")), { now: worktree, started: elsewhere });
     expect(missing.review?.linkRefused).toBe(`The link ${join(elsewhere, "gone.md")} wasn't published: it does not exist.`);
@@ -295,11 +298,13 @@ describe("what agents are told", () => {
 
   test("the always-on text says what a link is, what a folder does, which line counts, and what a refusal does", () => {
     expect(told).toContain("A link is an http(s) URL, or an absolute path to a file or a folder (shown as its file tree) under this session’s folders");
-    expect(told).toContain("where it started, where it is now, its git repository, `conch_working_folders`, or /tmp");
+    expect(told).toContain("where it started, where it is now, its git repository, `conch_working_folders`, or a temp folder (/tmp, or macOS’s per-user /var/folders/…/T)");
+    // And what a temp folder means now: a copy that outlives it.
+    expect(told).toContain("which conch copies when it files the link, so a cleaned temp folder can’t take it away");
     expect(told).toContain("only the last counts, so link a folder for several things");
     expect(told).toContain("A refused link is dropped and the summary kept; conch tells the user and you why.");
     // Every session carries it: short, and no longer "use your cwd".
-    expect(told.split(/\s+/).length).toBeLessThan(340);
+    expect(told.split(/\s+/).length).toBeLessThan(380);
     expect(renderAgentsMd()).toContain(told);
   });
 
@@ -309,7 +314,7 @@ describe("what agents are told", () => {
     expect(skill).toContain("the one it is in now and the git repository around that");
     expect(skill).toContain("Only the last such\n  line in a reply counts");
     expect(skill).toContain("the user sees which link and why where the deliverable would be");
-    expect(skill).toContain("**outside this session's folders and the temp folder** (the refusal lists the folders)");
+    expect(skill).toContain("**outside this session's folders and the temp folders** (the refusal lists them)");
     expect(AGENT_INSTRUCTIONS.tools.conch_working_folders).toContain("your deliverable links may sit under them");
   });
 });

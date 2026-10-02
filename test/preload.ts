@@ -22,6 +22,10 @@ for (const name of readdirSync(systemTemp)) {
 }
 const runRoot = mkdtempSync(join(systemTemp, "conch-test-run-"));
 process.env.TMPDIR = runRoot;
+// conch's temp folders are /tmp and the system's per-user one, whatever TMPDIR says (temp-folders.ts), and every
+// fixture lives under the latter, so no test could build a folder outside a temp folder. The run root stands in for
+// it, as TMPDIR did before: a test that needs a disk outside every temp folder builds one beside it.
+process.env.CONCH_USER_TEMP_DIR = runRoot;
 afterAll(() => rmSync(runRoot, { recursive: true, force: true }));
 
 // Default config/provider discovery and IPC must stay away from a running install.

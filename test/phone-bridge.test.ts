@@ -475,9 +475,11 @@ describe("file serving: held deliverables, their folders, and nothing else", () 
   test("a deliverable under a folder the session had moved into is served by the roots it was filed with", async () => {
     const base = scratch();
     const saved = process.env.TMPDIR;
+    const savedUserTemp = process.env.CONCH_USER_TEMP_DIR;
     mkdirSync(join(base, "temp"));
     // The scratch root is a temp folder, which is always allowed; point TMPDIR away so only the roots decide.
     process.env.TMPDIR = join(base, "temp");
+    process.env.CONCH_USER_TEMP_DIR = join(base, "temp");
     try {
       const start = join(base, "Internal");
       const moved = join(base, "Clients", "arch");
@@ -492,6 +494,7 @@ describe("file serving: held deliverables, their folders, and nothing else", () 
       expect(await status(filed, q(put(join(moved, "other.png"))))).toBe(403);
     } finally {
       process.env.TMPDIR = saved;
+      process.env.CONCH_USER_TEMP_DIR = savedUserTemp;
     }
   });
 

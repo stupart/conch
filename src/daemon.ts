@@ -212,6 +212,8 @@ import {
   type RelayPairing,
 } from "./phone-relay.ts";
 import { computerName, PhoneSetup, resolveComputerName } from "./phone-setup.ts";
+import { refusedVerdict, type ReviewVerdict } from "./review-verdict.ts";
+import { MacAppPresence, phoneSurface, type ReviewSurfaces } from "./surfaces.ts";
 import { breadcrumb, loopWatchdogEnabled, startLoopWatchdog } from "./loop-watchdog.ts";
 import {
   transcribeWavSegments,
@@ -821,6 +823,10 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   for (const id of loadDismissed(dismissedFile)) ledger.dismissedSessionIds.add(id);
   const saveDismissed = dismissedWriter(dismissedFile, ledger.dismissedSessionIds);
   ledger.restoreReviews(); // each session's deliverable, as it was before the restart
+  // Copies of deliverables nothing holds now (a crash between a copy and its save): deliverable-store.ts.
+  for (const dir of ledger.sweepStoredCopies()) log(`removed a copy no deliverable holds: ${dir}`);
+  /** When the Mac app was last heard from (its health check's pings, its screen reports): `surfaces.mac`. */
+  const macApp = new MacAppPresence();
   // The ledger owns the per-session/window runtime facts, but exposes the raw
   // collections so render and controller paths keep their existing shape.
   const {
@@ -1353,7 +1359,9 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   }
 
   function enqueue(incoming: TurnEvent): void | Promise<SocketTurnOutcome> {
-    if (shuttingDown) return;
+    if (shuttingDown) {
+      return incoming.type === "review-published" ? Promise.resolve(refusedVerdict("conch's daemon is shutting down; publish again in a moment")) : undefined;
+    }
     const event = incoming;
     // The agent's own word that it took a prompt, before anything can turn the event away: a delivery
     // watching for its words reads it (`delivery-evidence.ts`).
@@ -1399,6 +1407,25 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         return false;
       });
     }
+    // A publication is filed the moment it arrives, so `review_to_front` hears whether it was and where it can be
+    // seen (review-verdict.ts). It used to wait in the queue behind whatever was being said, and its sender was told
+    // "accepted" either way. Only its announcement takes a turn in the queue, since that makes a sound.
+    if (event.type === "review-published") {
+      traceQueue(`immediate file:${event.label}`);
+      return voice.filePublication(event).then(
+        (verdict): ReviewVerdict => {
+          if (verdict.kind !== "review-filed") return verdict;
+          // Its announcement, in its turn: the voice loop knows this one is filed already (`filePublication`).
+          void eventQueue.submit(incoming);
+          const { audio, ...filed } = verdict;
+          return { ...filed, surfaces: publicationSurfaces(audio ?? "mac") };
+        },
+        (error) => {
+          log(`error filing a publication from "${event.label}": ${error}`);
+          return refusedVerdict(`conch's daemon failed while filing it: ${error instanceof Error ? error.message : String(error)}`);
+        },
+      );
+    }
 
     if (shouldHandleTurnAudibly(event, cfg.workingMic)) {
       latestTurnBySession.set(event.sessionId, event);
@@ -1432,6 +1459,23 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       if (transition) resumeTransitions.set(event, transition);
     }
     void eventQueue.submit(event);
+  }
+
+  /**
+   * Who can see a publication now, as this daemon knows it (surfaces.ts): the Mac app by its last word to the socket and
+   * whether conch's own window was last in front, the phone by the bridge's live clients and whether one ever paired.
+   */
+  function publicationSurfaces(audio: ReviewSurfaces["audio"]): ReviewSurfaces {
+    const now = Date.now();
+    return {
+      mac: macApp.surface(now, screen.showing()?.surface.kind),
+      phone: phoneSurface({
+        enabled: cfg.phoneEnabled,
+        clients: phoneApplication?.clientCount() ?? 0,
+        paired: phoneSetup.published(cfg.phoneEnabled).paired,
+      }),
+      audio,
+    };
   }
 
   // The at-rest status reflects the one lossless quiet mode.
@@ -3219,6 +3263,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       device: deviceCommand,
     },
     onDelivery: rememberDelivery,
+    // The Mac app heard from (its health check every 5 s, a screen report): `surfaces.mac` for a publication.
+    onMacApp: () => macApp.seen(Date.now()),
     // Resolving can wait on a port lookup now; whatever goes wrong there is logged, never thrown at the daemon.
     onScreenObservation: (observation) => void screen.observe(observation).catch((error) => log(`screen: ${error}`)),
     narration,

@@ -34,6 +34,8 @@ import { decodeSetupRequest, type Setup, type SetupReply } from "./setup.ts";
 import { decodePracticeRequest, practiceRefusal, type Practice, type PracticeReply } from "./practice.ts";
 import { breadcrumb } from "./loop-watchdog.ts";
 import type { PageCaptureService } from "./page-capture.ts";
+import { refusedVerdict, REVIEW_VERDICT_WAIT_MS, verdictWithin, type ReviewPending, type ReviewVerdict } from "./review-verdict.ts";
+import { isMacAppPing } from "./surfaces.ts";
 import {
   isControlMessageCandidate,
   validateControlMessage,
@@ -716,6 +718,9 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
   if (value.awaitDelivery !== undefined && value.awaitDelivery !== true) {
     return { ok: false, err: "awaitDelivery must be true when present" };
   }
+  if (value.awaitVerdict !== undefined && (value.awaitVerdict !== true || type !== "review-published")) {
+    return { ok: false, err: "awaitVerdict is true, on review-published only" };
+  }
   if (value.approval !== undefined) {
     // From the PermissionRequest hook: what a dialog is asking, shown and spoken, never typed.
     const approval = value.approval;
@@ -832,7 +837,7 @@ export function enrichTargetedAudioCommand(
   };
 }
 
-export type SocketTurnOutcome = boolean | "staged" | SendFailure | void;
+export type SocketTurnOutcome = boolean | "staged" | SendFailure | ReviewVerdict | void;
 
 /**
  * A failure that names its cause, as `voice.handle` returns for an inject that did not land.
@@ -920,7 +925,12 @@ export function dispatchSocketTurnEvent(
     // a resume moves it to a new process, and the turn held for its restore
     // must be typed into that one. `session-start` is silent and never
     // un-dismisses (voice-loop `sessionStarted`).
-    if (event.type !== "session-start" && callbacks.isDismissedSession?.(event.sessionId)) return;
+    if (event.type !== "session-start" && callbacks.isDismissedSession?.(event.sessionId)) {
+      // A publisher waiting on its verdict hears why nothing was filed, where it used to hear "accepted".
+      return event.type === "review-published"
+        ? Promise.resolve(refusedVerdict("the user dismissed this session from conch, so nothing it publishes is shown until they restore it"))
+        : undefined;
+    }
     if (event.type === "pause" || event.type === "resume") {
       callbacks.setSessionPaused(event.sessionId, event.type === "pause", event.origin);
       return;
@@ -1181,6 +1191,13 @@ export interface ControlServerOptions {
   application: ControlApplication;
   /** How long an `awaitDelivery` inject is held open. Tests shorten it. */
   deliveryWaitMs?: number;
+  /** How long an `awaitVerdict` publication is held open for its filing (`REVIEW_VERDICT_WAIT_MS`). Tests shorten it. */
+  verdictWaitMs?: number;
+  /**
+   * Told when the Mac app is heard from: its health check's ping (`isMacAppPing`), or a screen report, which only the
+   * app sends. The daemon's evidence that the app is running (surfaces.ts `MacAppPresence`).
+   */
+  onMacApp?(): void;
   /**
    * Told what became of a send that carried an `opId`, including one that settles after its
    * request was answered and closed. The daemon publishes it; nothing retries on its own.
@@ -1283,11 +1300,14 @@ export function createControlServer(options: ControlServerOptions): ControlServe
           reason?: string; onClipboard?: true;
         }
         | { kind: "inject-accepted" }
-        | { kind: "session-delivered" } | undefined;
+        | { kind: "session-delivered" }
+        | ReviewVerdict | ReviewPending | undefined;
       try {
         let body: unknown;
         try { body = JSON.parse(line); } catch (error) { framingError(error); return; }
         if (socketRecord(body) && body.kind === "ping") {
+          // The Mac app's health check: how the daemon knows the app is running (surfaces.ts). A timestamp, nothing awaited.
+          if (isMacAppPing(body)) options.onMacApp?.();
           sock.end(JSON.stringify(pong()) + "\n");
           return;
         }
@@ -1346,6 +1366,8 @@ export function createControlServer(options: ControlServerOptions): ControlServe
         if (socketRecord(body) && body.kind === "screen-observation") {
           const observed = validateScreenObservation(body.observation);
           let answer: { kind: "screen-ack" } | { kind: "screen-error"; error: string };
+          // Only the Mac app reports what is on screen (the phone bridge refuses to forward one), so it is running.
+          if (observed.ok) options.onMacApp?.();
           if (!observed.ok) answer = { kind: "screen-error", error: observed.err };
           else if (!options.onScreenObservation) answer = { kind: "screen-error", error: "screen context is unavailable" };
           else {
@@ -1393,8 +1415,11 @@ export function createControlServer(options: ControlServerOptions): ControlServe
             ? await options.pageCapture.request(body, async (event) => {
               const turn = validateSocketTurnEvent(await sessions.resolve(event));
               if (!turn.ok) return { ok: false, error: turn.err };
-              void Promise.resolve(application.turn(turn.value)).catch(() => log("a capture's publication failed to file"));
-              return { ok: true };
+              // The daemon's verdict, as `review_to_front` hears it (review-verdict.ts): a refusal is said, not dropped.
+              const verdict = await verdictWithin(Promise.resolve(application.turn(turn.value)).catch(() => {
+                log("a capture's publication failed to file");
+              }), options.verdictWaitMs ?? REVIEW_VERDICT_WAIT_MS);
+              return verdict?.kind === "review-refused" ? { ok: false, error: verdict.reason } : { ok: true };
             })
             : { kind: "page-capture-error" as const, error: "this conch can't capture pages; update it" };
           sock.end(encodeControlFrame(JSON.stringify(reply)));
@@ -1505,6 +1530,12 @@ export function createControlServer(options: ControlServerOptions): ControlServe
               // A hook's event is how setup hears from an agent for the first time (setup.ts).
               options.setup?.noteTurn(turn.value);
               const work = application.turn(turn.value);
+              // `review_to_front` waits to hear whether its publication was filed, and where it can be seen, rather
+              // than being told "accepted" about something the daemon then refused (review-verdict.ts). Bounded; past
+              // it, the filing is still running and the answer says so.
+              if (turn.value.type === "review-published" && turn.value.awaitVerdict) {
+                response = await verdictWithin(work, options.verdictWaitMs ?? REVIEW_VERDICT_WAIT_MS);
+              }
               // The Mac app and the phone ask to hear when the keystrokes are
               // DONE: the app to take the front back from the Terminal window
               // conch raised, the phone to show "delivered" or "not delivered".
