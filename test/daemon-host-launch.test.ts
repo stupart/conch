@@ -25,7 +25,8 @@ beforeAll(() => {
   const binary = join(root, "launch");
   const compile = Bun.spawnSync(
     ["swiftc", "-swift-version", "5", repo("mac-app/conch-mac/DaemonHost.swift"),
-      repo("design/ConchDesign/Sources/ConchDesign/DaemonHealth.swift"), join(root, "main.swift"), "-o", binary],
+      repo("design/ConchDesign/Sources/ConchDesign/DaemonHealth.swift"),
+      repo("design/ConchDesign/Sources/ConchDesign/DaemonEnvironment.swift"), join(root, "main.swift"), "-o", binary],
     { stdout: "pipe", stderr: "pipe" },
   );
   if (compile.exitCode !== 0) throw new Error(`swiftc failed:\n${compile.stderr.toString()}`);

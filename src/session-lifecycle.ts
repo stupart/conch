@@ -1,4 +1,4 @@
-import { defaultTmuxExecutable } from "./tmux-binary.ts";
+import { paneTarget } from "./tmux-binary.ts";
 import { FOCUS_GUARD_LINES, focusedAction, focusSessionWindow, readTerminalTab, withUITransaction, type OsaRunner } from "./inject.ts";
 import { runUICommand } from "./pasteboard.ts";
 import { processMatchesProvider, readProcessIdentity, sameProcessIdentity, type ProcessIdentity, type ProcessIdentityProbe } from "./process-identity.ts";
@@ -661,9 +661,12 @@ async function closeTerminalSessionInTransaction(
   verify();
   const background = await (dependencies.backgroundSession ?? (dependencies.spawn ? async () => undefined : managedBackgroundSession))(pid);
   if (background) {
+    // On whichever server it is (`paneTarget`): conch's own, or the default one for a session started before it.
+    const target = paneTarget(background.pane);
+    if (!target) throw new Error("Could not stop the background session");
     for (let press = 0; press < adapterFor(dependencies.backend).exitKeystrokes; press++) {
       verify();
-      if (await (dependencies.probe ?? probeCommand)([defaultTmuxExecutable(), "send-keys", "-t", background.pane, "C-d"], [0]) === null) {
+      if (await (dependencies.probe ?? probeCommand)([...target.tmux, "send-keys", "-t", target.pane, "C-d"], [0]) === null) {
         throw new Error("Could not stop the background session");
       }
       if (press + 1 < adapterFor(dependencies.backend).exitKeystrokes) await (dependencies.sleep ?? Bun.sleep)(150);
