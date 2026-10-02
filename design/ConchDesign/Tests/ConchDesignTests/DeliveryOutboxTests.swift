@@ -149,3 +149,35 @@ final class DeliveryOutboxTests: XCTestCase {
         XCTAssertEqual(outbox.entries.map(\.text), ["never resolved", "failed"])
     }
 }
+
+final class OutboxSupersededTests: XCTestCase {
+    func testAFailedSendGoesOnceALaterMessageLandsAndNothingElseDoes() {
+        let sent = Date(timeIntervalSince1970: 1_000)
+        var outbox = ConchOutbox()
+        outbox.begin(ConchOutboxEntry(id: "failed", session: "s", text: "resume them", state: .failed("Not delivered"), sentAt: sent))
+        outbox.begin(ConchOutboxEntry(id: "other", session: "t", text: "elsewhere", state: .failed("Not delivered"), sentAt: sent))
+        // A message from before it, or one within the clocks' skew of it, says nothing about it.
+        outbox.retireSuperseded(in: "s", lastUserMessageAt: sent.addingTimeInterval(3))
+        XCTAssertEqual(outbox.entries.map(\.id), ["failed", "other"])
+        outbox.retireSuperseded(in: "s", lastUserMessageAt: sent.addingTimeInterval(60))
+        XCTAssertEqual(outbox.entries.map(\.id), ["other"])
+    }
+
+    func testASendInFlightOrStagedIsNeverCleared() {
+        let sent = Date(timeIntervalSince1970: 1_000)
+        for state in [ConchDeliveryState.sent, .staged] {
+            var outbox = ConchOutbox()
+            outbox.begin(ConchOutboxEntry(id: "x", session: "s", text: "words", state: state, sentAt: sent))
+            outbox.retireSuperseded(in: "s", lastUserMessageAt: sent.addingTimeInterval(600))
+            XCTAssertEqual(outbox.entries.count, 1)
+        }
+    }
+
+    func testAnUnconfirmedSendGoesTooOnceTheConversationHasMovedOn() {
+        let sent = Date(timeIntervalSince1970: 1_000)
+        var outbox = ConchOutbox()
+        outbox.begin(ConchOutboxEntry(id: "x", session: "s", text: "words", state: .unknown("Not confirmed"), sentAt: sent))
+        outbox.retireSuperseded(in: "s", lastUserMessageAt: sent.addingTimeInterval(600))
+        XCTAssertTrue(outbox.entries.isEmpty)
+    }
+}
