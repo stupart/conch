@@ -30,6 +30,8 @@ When you have a meaningful result or something the user should inspect, call \`r
 
 A link is an http(s) URL, or an absolute path to a file or a folder (shown as its file tree) under this session’s folders: where it started, where it is now, its git repository, \`conch_working_folders\`, or /tmp. Never a hidden file, key or executable.
 
+To show part of a web page, use \`conch_capture\` rather than screenshotting a browser.
+
 Publishing makes the result available. The user chooses when to open it. Do not open applications, rearrange windows, or start the microphone as a publication side effect. Publish again when the result materially changes, not after every edit: the same link or \`key\` files the artifact's next version. \`conch_deliverables\` lists what you have published; \`review_remove\` takes back one that is wrong or obsolete.
 
 Omit \`session\` when publishing. Never attribute work to another session or invent surface references.
@@ -79,6 +81,8 @@ If publication is unavailable, leave the result in your reply and end it with on
       "List the deliverables your session holds, newest first: each filing's id, artifact, version, kind, summary, link, when it was filed and looked at, and whether a newer version supersedes it. Your own session only.",
     review_remove:
       "Remove a deliverable you published that is wrong or obsolete: one filing by id, or every version of an artifact. Your own session only. A newer version already supersedes an older one, so remove only what should not be looked at.",
+    conch_capture:
+      "Capture a web page, or one part of it, as a PNG drawn by conch's Mac app rather than a browser you drive: it loads the page at the viewport size, waits for it to settle (fonts, the images near the part, the layout no longer moving), scrolls the target (a selector or a quote) to the middle and captures it with a margin. Returns the file's path, its size in pixels, the target's box in them, the page's final URL and title, and whether it showed a sign-in screen; with mark, review_to_front marks round the target on the image; with publish, files it as your deliverable in the same call. Pages are drawn with the sign-ins of conch's own review pane, not your browser's, so a page behind a login needs the user to sign in there once. Needs conch's Mac app open; takes up to about 40 seconds.",
   },
 };
 

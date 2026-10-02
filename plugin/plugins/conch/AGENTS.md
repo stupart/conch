@@ -6,6 +6,8 @@ When you have a meaningful result or something the user should inspect, call `re
 
 A link is an http(s) URL, or an absolute path to a file or a folder (shown as its file tree) under this session’s folders: where it started, where it is now, its git repository, `conch_working_folders`, or /tmp. Never a hidden file, key or executable.
 
+To show part of a web page, use `conch_capture` rather than screenshotting a browser.
+
 Publishing makes the result available. The user chooses when to open it. Do not open applications, rearrange windows, or start the microphone as a publication side effect. Publish again when the result materially changes, not after every edit: the same link or `key` files the artifact's next version. `conch_deliverables` lists what you have published; `review_remove` takes back one that is wrong or obsolete.
 
 Omit `session` when publishing. Never attribute work to another session or invent surface references.

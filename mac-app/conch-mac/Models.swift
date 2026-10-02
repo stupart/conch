@@ -57,6 +57,9 @@ struct PublishedState: Decodable, Equatable, Sendable {
     /// Window snapshots the daemon is waiting on this app to take, for the phone (`WindowPreviewer`). Absent from an
     /// older daemon, and whenever none is waiting.
     let previewRequests: [PreviewRequest]
+    /// Pages the daemon is waiting on this app to draw for an agent's `conch_capture` (`PageCaptureRequests`). Only ever
+    /// on this Mac's own sessions file, never sent to a phone or another Mac; absent whenever none is waiting.
+    let captureRequests: [CaptureRequest]
     /// Setup's practice turn while one runs (src/practice.ts): where it is and what it heard, for the tour.
     let practice: PracticeReport?
     /// Each agent's model and effort choices, and its own defaults (src/session-settings.ts).
@@ -70,6 +73,31 @@ struct PublishedState: Decodable, Equatable, Sendable {
         let review: String
         /// Where the daemon wants it written: its snapshot folder (`PreviewOwner.folder` checks it).
         let folder: String
+    }
+
+    /// A page to draw (src/page-capture.ts `CaptureRequest`).
+    struct CaptureRequest: Decodable, Equatable, Sendable {
+        let id: String
+        /// An http(s) address, or a local page's absolute path.
+        let url: String
+        let target: Target?
+        let viewport: Viewport
+        let fullPage: Bool
+        /// Where to write it: conch's capture folder (`PageCapture.folder` checks it).
+        let folder: String
+        /// Epoch-ms by which to give up, and say so.
+        let deadline: Double
+
+        /// Exactly one of the two.
+        struct Target: Decodable, Equatable, Sendable {
+            let selector: String?
+            let quote: String?
+        }
+
+        struct Viewport: Decodable, Equatable, Sendable {
+            let width: Double
+            let height: Double
+        }
     }
 
     struct Showing: Decodable, Equatable, Sendable {
@@ -118,6 +146,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         case audioOutbox
         case showing
         case previewRequests
+        case captureRequests
         case practice
         case sessionSettings
         case naturalVoices
@@ -143,6 +172,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         features: Features? = nil,
         showing: Showing? = nil,
         previewRequests: [PreviewRequest] = [],
+        captureRequests: [CaptureRequest] = [],
         practice: PracticeReport? = nil,
         sessionSettings: SessionSettingsCatalog? = nil,
         naturalVoices: NaturalVoicesReport? = nil
@@ -167,6 +197,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         self.features = features
         self.showing = showing
         self.previewRequests = previewRequests
+        self.captureRequests = captureRequests
         self.practice = practice
         self.sessionSettings = sessionSettings
         self.naturalVoices = naturalVoices
@@ -212,6 +243,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         deliveries = Self.decodeLossyArray(DeliveryOutcome.self, from: container, forKey: .deliveries)
         showing = try? container.decodeIfPresent(Showing.self, forKey: .showing)
         previewRequests = Self.decodeLossyArray(PreviewRequest.self, from: container, forKey: .previewRequests)
+        captureRequests = Self.decodeLossyArray(CaptureRequest.self, from: container, forKey: .captureRequests)
         practice = try? container.decodeIfPresent(PracticeReport.self, forKey: .practice)
         sessionSettings = try? container.decodeIfPresent(SessionSettingsCatalog.self, forKey: .sessionSettings)
         naturalVoices = try? container.decodeIfPresent(NaturalVoicesReport.self, forKey: .naturalVoices)

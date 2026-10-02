@@ -180,6 +180,49 @@ https://brew.sh rather than trying to install Homebrew yourself.
   that holds them. A link that fails is dropped and the summary still filed:
   the user sees which link and why where the deliverable would be, and in
   Claude Code your next prompt carries a note saying so.
+- **Capture a page** — `conch_capture {url, target?, viewport?, fullPage?, mark?, publish?}`
+  draws a web page in conch's Mac app and returns a PNG of it. Use it whenever
+  the thing to show is part of a web page (the section you changed, a component
+  on a preview deployment, a page on your dev server) instead of driving a
+  browser to it, waiting, screenshotting, copying the file and guessing a box's
+  numbers by eye.
+
+  - `url`: an http(s) URL, or a local `.html` file under this session's folders
+    or `/tmp` (the same rule as a `review_to_front` link).
+  - `target`: `{selector: ".pricing .plan-pro"}` or `{quote: "Start free
+    trial"}`, at most 120 characters, as a mark's frame names one. conch waits
+    for the page to load and its fonts, scrolls the target to the middle of the
+    view, waits again until the images near it have loaded and it has stopped
+    moving (at most a few seconds; a page that never settles is captured anyway
+    and the result says `unsettled`), and captures it with a margin. Without a
+    target it captures the top of the page.
+  - `viewport`: `{width, height}` in CSS pixels, 1440 by 900 when omitted; a
+    phone is about 390 by 844. `fullPage: true` captures the whole page instead
+    of one view, drawn at its full height (so a section sized to the window
+    grows with it).
+  - The result: `path`, `width` and `height` in pixels, `devicePixelRatio`,
+    `element` (the target's box in those pixels: `{x, y, w, h}`), `finalUrl`,
+    `title`, and `loginWall` when the page showed a sign-in screen instead. A
+    target taller than the view comes back `clipped`.
+  - `mark`: `"box"`, `"highlight"`, or `{kind, label}` with kind `box`,
+    `highlight`, `ellipse`, `arrow`, `pin` or `text` (`text` needs its label).
+    The result's `marks` are ready for `review_to_front`'s `scene.marks`, on the
+    image (`frame.image`), in its 0 to 1 numbers.
+  - `publish: {summary, key?}` files the capture as your deliverable in the same
+    call (kind `image`, the mark drawn on it) and returns `filed` with its `id`,
+    `artifact` and `version`, as `review_to_front` would. The artifact defaults
+    to the page and the target, so capturing the same part again after a fix is
+    its next version. It needs a verified `caller`, and a capture of a sign-in
+    screen is never filed.
+
+  Pages are drawn with the sign-ins of **conch's own review pane**, not the
+  user's browser. A page behind a login (a Vercel preview, a dashboard) comes
+  back with `loginWall: true` and a picture of the sign-in screen: publish the
+  URL with `review_to_front` and ask the user to open it in conch's window and
+  sign in there once (the review pane browses, with an address field), then
+  capture again.
+  conch's Mac app must be open; a capture takes a few seconds and at most about
+  40, and conch draws at most three at a time.
 - **Auto / manual** — `conch_mode {action, session?, scope?}` uses `pause` for lossless manual mode and `resume` for auto read-and-listen mode. Without `session` or `scope` it switches only YOUR session; `session` names another one. Switching every session at once — the whole daemon, what the user's `p` key and `conch pause` do — needs `scope: "all"` explicitly, and only when the user asked for exactly that. A `resume` from an agent is refused while the user put conch in manual themselves (the `p` key, the Mac's toggle, `conch pause`) — only a person undoes a person's pause, and a `conch_speak` is held then too: not spoken and not queued, and its result carries `held` saying so.
 - **Rename** — `conch_rename {session, label}` gives a session a name the user actually uses ("call that one 'the api work'").
 - **Say where you work** — `conch_working_folders {folders}` names the folder(s) you are actually working in when they differ from where the session started; conch's file tree, file viewer and sidebar grouping follow them. Once is enough; say it again only if you move.
@@ -213,6 +256,7 @@ Do not retry the same call; do the alternative, or tell the user in one line.
   one of the two.
 - `review_to_front` with a **scene** that is not `v: 1`, has an unknown kind or field, asks for `kind: "link"` with no link, has an `inspect` that is empty or over 200 characters, or carries `target.ref` — the refusal says which; fix the scene or omit it.
 - `review_to_front` with **marks** that don't fit *Marks* above: an unknown kind or field (a colour is one), numbers outside 0 to 1, geometry the kind doesn't take, a `selector` or `quote` with no link, an image that fails the link check, more than 12, or over 4096 bytes. The refusal names the mark (`marks[2]`) and what to fix.
+- `conch_capture` with a `url` that is not an http(s) URL or a local `.html` file that passes the link rule, a `target` that is not exactly one of `selector` or `quote`, a `viewport` outside its limits, a `mark` without a `target`, or `publish` from a caller conch cannot verify. When it runs but can't capture, it fails with why: conch's Mac app isn't running (open it and try again), the page didn't load, the target **wasn't found** (the error names the page's title, its headings, whether it was a sign-in screen, and a picture of what conch saw), or it didn't finish in time.
 - A `session` name that **matches several sessions** — the refusal lists them by id and label; pass the id.
 - `conch_wake` / `conch_recite` **without `session`** when your caller is unverified — pass the session's id.
 - `conch_config` setting or unsetting a key that is **not on the list** above — the refusal names the `conch set <key> <value>` (or `conch unset <key>`) command the user can run themselves.

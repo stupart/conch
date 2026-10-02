@@ -141,6 +141,7 @@ import { lastAssistantText, stripMarkdown, firstSentences, userRespondedSince, t
 import { promptCursorPublisher } from "./prompt-cursor.ts";
 import { PhoneUploads } from "./phone-uploads.ts";
 import { createPreviewRequester, previewFolder, PreviewLimiter, WindowPreviews, type PreviewRequest } from "./review-preview.ts";
+import { captureFolder, createPageCaptureService, PageCaptures, pruneCaptures, withCaptureRequests } from "./page-capture.ts";
 import { CONCH_DATA } from "./config.ts";
 import {
   publishedConversation,
@@ -1487,6 +1488,37 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     folder: () => previewFolder(),
     now: Date.now,
   });
+  /**
+   * `conch_capture`'s pages, drawn by the Mac app (page-capture.ts). The requests go on the sessions file alone, which
+   * only this Mac's app reads (`writeSessionsFile` below), never on `lastPublishedPanelState`: that is what the phone
+   * and a second Mac are sent, and a request names an address to draw with the review pane's cookies.
+   */
+  const pageCaptures = new PageCaptures({
+    // The sessions file alone, at once: nothing the phone is sent has changed.
+    publish: () => writeSessionsFile(),
+    folder: () => captureFolder(),
+    now: Date.now,
+  });
+  const pageCapture = createPageCaptureService({
+    captures: pageCaptures,
+    held: (sessionId) => {
+      const state = ledger.sessionStates.get(sessionId);
+      return state ? { reviews: state.reviews ?? (state.review ? [state.review] : []), versions: state.versions } : undefined;
+    },
+    // Whatever a held deliverable links or draws on is kept, however old (`pruneCaptures`).
+    prune: () => {
+      const folder = captureFolder();
+      const referenced = new Set<string>();
+      for (const state of ledger.sessionStates.values()) {
+        for (const held of state.reviews ?? (state.review ? [state.review] : [])) {
+          if (held.link) referenced.add(held.link);
+          for (const mark of held.scene?.marks ?? []) if ("image" in mark.frame) referenced.add(mark.frame.image);
+        }
+      }
+      pruneCaptures(folder, Date.now(), referenced);
+    },
+    now: Date.now,
+  });
   // One lookup, and one cache, for the screen context and the phone's dev pages.
   const portListeners = portListenerLookup();
   const screen = createScreenContext({
@@ -1852,9 +1884,17 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   }, WAKE_TICK_MS);
   wakeWatch.unref?.();
 
+  /**
+   * The sessions file: the published state, and the pages the Mac app is to draw for agents (`pageCaptures`). Only this
+   * Mac's app reads the file; the phone, and a second Mac through it, read `lastPublishedPanelState`, which never has them.
+   */
+  function writeSessionsFile(): void {
+    if (lastPublishedPanelState) publishSessionsFile(withCaptureRequests(lastPublishedPanelState, pageCaptures.requests()));
+  }
+
   const publishedStateWriter = createPublishThrottle(() => {
     breadcrumb("published state: writing the sessions file");
-    if (lastPublishedPanelState) publishSessionsFile(lastPublishedPanelState);
+    writeSessionsFile();
     breadcrumb("published state: sending it to the phone");
     phoneApplication?.publish();
   });
@@ -3170,6 +3210,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     onScreenObservation: (observation) => void screen.observe(observation).catch((error) => log(`screen: ${error}`)),
     narration,
     onReviewPreview: (message) => windowPreviews.answer(message),
+    pageCapture,
     setup,
     practice: practiceTurns,
   });

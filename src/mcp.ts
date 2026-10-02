@@ -36,6 +36,7 @@ import { AGENT_INSTRUCTIONS, MAX_SPEAK_CHARS, type AgentInstructions } from "./a
 /** A session works in a few folders, not a filesystem. */
 const WORKING_FOLDERS_MAX = 8;
 import {
+  checkLocalFile,
   checkReviewLink,
   checkReviewScene,
   markImagesRefusal,
@@ -50,6 +51,7 @@ import {
   REVIEW_SCENE_KINDS,
   type ReviewScene,
   REVIEW_SUMMARY_MAX,
+  SAFE_REVIEW_LINK,
   sanitizeReviewSummary,
   splitSentences,
   transcriptMark,
@@ -68,7 +70,25 @@ import {
   LINKLESS_DELIVERABLE_KINDS,
 } from "./deliverables.ts";
 import { reviewIdentity } from "./records-receipts.ts";
-import { reviewLinkScope, transcriptFolder } from "./review-roots.ts";
+import { reviewLinkScope, transcriptFolder, type LinkScope } from "./review-roots.ts";
+import { fileURLToPath } from "node:url";
+import {
+  CAPTURE_MARK_KINDS,
+  CAPTURE_REPLY_MS,
+  CAPTURE_VIEWPORT_DEFAULT,
+  CAPTURE_VIEWPORT_MAX,
+  CAPTURE_VIEWPORT_MIN,
+  parseCaptureMark,
+  parseCaptureTarget,
+  parseCaptureViewport,
+  requestPageCapture,
+  type CaptureMarkSpec,
+  type CaptureTarget,
+  type CaptureViewport,
+  type PageCaptureMessage,
+  type PageCaptureReply,
+  type PageCaptureSend,
+} from "./page-capture.ts";
 import { windowKey } from "./window-key.ts";
 import { appServerNoTerminal } from "./codex-threads.ts";
 import { transcriptFormatFor } from "./agent-adapter.ts";
@@ -515,6 +535,71 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
         additionalProperties: false,
       },
     },
+    {
+      name: "conch_capture",
+      description: text.tools.conch_capture,
+      inputSchema: {
+        type: "object",
+        properties: {
+          url: {
+            type: "string",
+            minLength: 1,
+            description: "The page: an http(s) URL (a live site, a preview deployment, a dev server on localhost), or a local .html file under this session's folders or /tmp, absolute or relative to your cwd.",
+          },
+          target: {
+            type: "object",
+            description: `Optional. The one part of the page to capture, exactly one of: selector (CSS, querySelector's first match) or quote (words as they appear on the page; the first place they are visible), at most ${REVIEW_MARK_FRAME_MAX.selector} characters. conch scrolls it to the middle of the view, waits for it to settle, and captures it with a margin round it. Omit to capture the top of the page.`,
+            properties: {
+              selector: { type: "string", minLength: 1, maxLength: REVIEW_MARK_FRAME_MAX.selector },
+              quote: { type: "string", minLength: 1, maxLength: REVIEW_MARK_FRAME_MAX.quote },
+            },
+            additionalProperties: false,
+          },
+          viewport: {
+            type: "object",
+            description: `Optional. The window the page is drawn in, in CSS pixels: width ${CAPTURE_VIEWPORT_MIN.width}-${CAPTURE_VIEWPORT_MAX.width}, height ${CAPTURE_VIEWPORT_MIN.height}-${CAPTURE_VIEWPORT_MAX.height}. Defaults to ${CAPTURE_VIEWPORT_DEFAULT.width} by ${CAPTURE_VIEWPORT_DEFAULT.height}; a phone is about 390 by 844.`,
+            properties: {
+              width: { type: "integer", minimum: CAPTURE_VIEWPORT_MIN.width, maximum: CAPTURE_VIEWPORT_MAX.width },
+              height: { type: "integer", minimum: CAPTURE_VIEWPORT_MIN.height, maximum: CAPTURE_VIEWPORT_MAX.height },
+            },
+            required: ["width", "height"],
+            additionalProperties: false,
+          },
+          fullPage: {
+            type: "boolean",
+            default: false,
+            description: "Optional. The whole page top to bottom rather than one view of it (drawn at its full height, so a section sized to the window grows with it). With a target, the target is boxed where it is on the page.",
+          },
+          mark: {
+            anyOf: [
+              { type: "string", enum: ["box", "highlight"] },
+              {
+                type: "object",
+                properties: {
+                  kind: { type: "string", enum: CAPTURE_MARK_KINDS },
+                  label: { type: "string", minLength: 1, maxLength: REVIEW_MARK_LABEL_MAX },
+                },
+                required: ["kind"],
+                additionalProperties: false,
+              },
+            ],
+            description: "Optional, with target: a mark round it on the capture, \"box\" or \"highlight\", or {kind, label} with kind box, highlight, ellipse, arrow, pin or text (text needs its label). Returned as review_to_front scene marks on the image, and drawn on it when publish files it.",
+          },
+          publish: {
+            type: "object",
+            description: "Optional. File the capture as your deliverable (kind image, with the mark) in one step, as review_to_front would: summary is its one line, key names the artifact (defaults to the page and the target, so capturing the same part again is its next version). Not filed when the page showed a sign-in screen.",
+            properties: {
+              summary: { type: "string", minLength: 1 },
+              key: { type: "string", minLength: 1, maxLength: ARTIFACT_KEY_MAX },
+            },
+            required: ["summary"],
+            additionalProperties: false,
+          },
+        },
+        required: ["url"],
+        additionalProperties: false,
+      },
+    },
   ] as const satisfies readonly McpToolDefinition[];
 }
 
@@ -561,6 +646,8 @@ export interface McpDependencies {
   now(): number;
   /** The process that spawned this server: the calling session, when it is one. */
   parentPid(): number;
+  /** `conch_capture`'s request to the daemon, held open for its answer (`requestPageCapture`). */
+  capturePage?(socketPath: string, message: PageCaptureMessage, timeoutMs?: number): Promise<PageCaptureSend>;
 }
 
 export const defaultMcpDependencies: McpDependencies = {
@@ -596,6 +683,7 @@ export const defaultMcpDependencies: McpDependencies = {
   splitSentences,
   now: Date.now,
   parentPid: () => process.ppid,
+  capturePage: requestPageCapture,
 };
 
 class ToolInputError extends Error {
@@ -988,6 +1076,93 @@ function snapshotControlResult(result: ControlResult): ConfigSnapshot {
   return response.snapshot;
 }
 
+/** `conch_capture`'s `publish`: a summary as review_to_front takes one, and a key by its rule. */
+function capturePublishArguments(value: unknown): { summary: string; key?: string } {
+  if (!isRecord(value)) throw new ToolInputError("publish must be {summary, key?}");
+  allowOnly(value, ["summary", "key"]);
+  const summary = sanitizeReviewSummary(requiredString(value, "summary"), Infinity);
+  if (!summary) throw new ToolInputError("publish.summary must be a non-empty string");
+  const rawKey = optionalString(value, "key");
+  const key = rawKey === undefined ? undefined : sanitizeReviewSummary(rawKey, Infinity);
+  if (key !== undefined && (!key || key.length > ARTIFACT_KEY_MAX)) {
+    throw new ToolInputError(`publish.key must be 1 to ${ARTIFACT_KEY_MAX} printable characters; it names the artifact, it does not describe it`);
+  }
+  return { summary: summary.slice(0, REVIEW_SUMMARY_MAX), ...(key ? { key } : {}) };
+}
+
+/**
+ * The page `conch_capture` is to draw: an http(s) URL as given, or a local .html file made absolute and held to the
+ * publish rule against the session's folders (`checkLocalFile`), as a linked page is. A `file://` URL is its path.
+ */
+async function capturePageUrl(raw: string, scope: LinkScope): Promise<string> {
+  let url: URL | undefined;
+  try {
+    url = new URL(raw);
+  } catch {
+    // Not a URL; it may be a path.
+  }
+  let path = raw;
+  if (url) {
+    if ((url.protocol === "http:" || url.protocol === "https:") && url.hostname) return raw;
+    if (url.protocol !== "file:") {
+      throw new ToolInputError(`url must be an http(s) URL or a local .html file, not a ${url.protocol} link (a dev server is http://localhost:<port>)`);
+    }
+    path = fileURLToPath(url);
+  }
+  const absolute = resolve(scope.cwd, path);
+  if (!/\.html?$/i.test(absolute)) {
+    throw new ToolInputError(`url ${absolute} is not an .html page; conch_capture draws web pages: an http(s) URL or a local .html file`);
+  }
+  const checked = await checkLocalFile(absolute, scope.roots);
+  if (!checked.ok) {
+    throw new ToolInputError(checked.reason === SAFE_REVIEW_LINK ? `url ${absolute} can't be drawn: ${checked.why}` : checked.reason.replace(/^link /, "url "));
+  }
+  return absolute;
+}
+
+/** What a sign-in screen in place of the page means, and the one fix, said wherever conch saw one. */
+const CAPTURE_SIGN_IN_NOTE = "the page showed a sign-in screen, not the page itself. conch draws pages with the sign-ins of its"
+  + " own review pane, not your browser's: publish the URL with review_to_front and ask the user to open it in conch's"
+  + " window and sign in there once (the review pane browses, with an address field), then capture again";
+
+/** The daemon's answer as the agent reads it: the capture and what to do with it, or why there is none, in words. */
+function captureToolResult(reply: PageCaptureReply): Record<string, unknown> {
+  if (reply.kind === "page-capture-error") {
+    const seen = reply.seen;
+    const parts = [reply.error.replace(/[.\s]+$/, "")];
+    if (seen?.title || seen?.finalUrl) {
+      parts.push(`What conch got: ${seen.title ? `"${seen.title}"` : "a page"}${seen.finalUrl ? ` at ${seen.finalUrl}` : ""}`);
+    }
+    if (seen?.headings?.length) parts.push(`Its headings: ${seen.headings.map((heading) => `"${heading}"`).join(", ")}`);
+    if (seen?.loginWall) parts.push(CAPTURE_SIGN_IN_NOTE.replace(/^the page/, "It"));
+    if (seen?.path) parts.push(`A picture of what it showed: ${seen.path}`);
+    throw new Error(`failed: ${parts.join(". ")}.`);
+  }
+  const { capture, marks, filed, notFiled } = reply;
+  const notes = [
+    ...(capture.loginWall ? [CAPTURE_SIGN_IN_NOTE] : []),
+    ...(capture.clipped ? ["the target is larger than the view, so only what the view held of it is in the picture; capture it with fullPage, or a taller viewport"] : []),
+    ...(capture.unsettled ? ["the page was still moving when conch's wait ran out (images loading, or the layout shifting), so look at the picture before you rely on it"] : []),
+    ...(notFiled ? [notFiled] : []),
+  ];
+  return {
+    outcome: "captured",
+    path: capture.path,
+    width: capture.width,
+    height: capture.height,
+    devicePixelRatio: capture.devicePixelRatio,
+    ...(capture.element ? { element: capture.element } : {}),
+    finalUrl: capture.finalUrl,
+    title: capture.title,
+    ...(capture.loginWall ? { loginWall: true } : {}),
+    ...(capture.clipped ? { clipped: true } : {}),
+    ...(capture.unsettled ? { unsettled: true } : {}),
+    ...(marks?.length ? { marks } : {}),
+    ...(filed ? { filed } : {}),
+    ...(notes.length ? { note: notes.join("; ") } : {}),
+  };
+}
+
 export function createMcpToolHandlers(
   config: McpRuntimeConfig,
   dependencies: McpDependencies = defaultMcpDependencies,
@@ -1050,7 +1225,9 @@ export function createMcpToolHandlers(
         if (raw !== null) {
           const parsed: unknown = JSON.parse(raw);
           if (!isRecord(parsed)) throw new Error("published state is not a JSON object");
-          return { ...(parsed as unknown as PublishedState), caller };
+          // The pages the Mac app is drawing for agents (page-capture.ts) are the app's to-do list, not session state.
+          const { captureRequests: _drawing, ...state } = parsed;
+          return { ...(state as unknown as PublishedState), caller };
         }
       } catch {
         // The daemon snapshot is advisory. A missing, unreadable, or malformed file
@@ -1560,6 +1737,76 @@ export function createMcpToolHandlers(
           ? {}
           : { summaryTruncated: { from: truncatedFrom, to: REVIEW_SUMMARY_MAX } }),
       };
+    },
+
+    async conch_capture(argumentsValue, meta) {
+      const { message } = await (async () => {
+        const argumentsObject = toolArguments(argumentsValue);
+        allowOnly(argumentsObject, ["url", "target", "viewport", "fullPage", "mark", "publish"]);
+        const rawUrl = requiredString(argumentsObject, "url").trim();
+        const target = Object.hasOwn(argumentsObject, "target") ? parseCaptureTarget(argumentsObject.target) : undefined;
+        if (target && !target.ok) throw new ToolInputError(target.reason);
+        const viewport = Object.hasOwn(argumentsObject, "viewport")
+          ? parseCaptureViewport(argumentsObject.viewport)
+          : { ok: true as const, value: { ...CAPTURE_VIEWPORT_DEFAULT } };
+        if (!viewport.ok) throw new ToolInputError(viewport.reason);
+        if (Object.hasOwn(argumentsObject, "fullPage") && typeof argumentsObject.fullPage !== "boolean") {
+          throw new ToolInputError("fullPage must be true or false");
+        }
+        const mark = Object.hasOwn(argumentsObject, "mark") ? parseCaptureMark(argumentsObject.mark) : undefined;
+        if (mark && !mark.ok) throw new ToolInputError(mark.reason);
+        if (mark && !target) throw new ToolInputError("mark is drawn round the target; pass target ({selector} or {quote}) too");
+        const publish = Object.hasOwn(argumentsObject, "publish") ? capturePublishArguments(argumentsObject.publish) : undefined;
+        // Whose folders a local page is checked against, and whose deliverable a published capture is. A capture alone
+        // needs no verified caller: an unverified one is checked against the folder this server started in.
+        const binding = await callerBinding(config, dependencies, meta);
+        if (publish && binding.status !== "verified") {
+          throw new ToolInputError(
+            `conch cannot verify which session is calling (${binding.reason}), so it will not file a capture as any`
+              + " session's deliverable. Capture without publish, and leave the picture's path in your reply.",
+          );
+        }
+        const session = binding.status === "verified" ? binding.session : undefined;
+        const transcriptPath = session ? dependencies.findTranscript(config.claudeDir, session.sessionId) : undefined;
+        const scope = await reviewLinkScope({
+          now: await transcriptFolder(transcriptPath) ?? process.cwd(),
+          started: session?.cwd ?? process.cwd(),
+          workDirs: session?.workDirs,
+        }, process.cwd());
+        const url = await capturePageUrl(rawUrl, scope);
+        const message: PageCaptureMessage = {
+          kind: "page-capture",
+          url,
+          roots: scope.roots,
+          ...(target?.ok ? { target: target.value as CaptureTarget } : {}),
+          viewport: viewport.value as CaptureViewport,
+          fullPage: argumentsObject.fullPage === true,
+          ...(mark?.ok ? { mark: mark.value as CaptureMarkSpec } : {}),
+          ...(publish && session
+            ? {
+              publish: {
+                sessionId: session.sessionId,
+                label: dependencies.sessionLabel(session, session.cwd),
+                ...(session.cwd ? { cwd: session.cwd } : {}),
+                ...(session.pid !== undefined ? { pid: session.pid } : {}),
+                ...(transcriptPath ? { transcriptPath, transcriptMark: await dependencies.transcriptMark(transcriptPath) } : {}),
+                summary: publish.summary,
+                ...(publish.key ? { key: publish.key } : {}),
+              },
+            }
+            : {}),
+        };
+        return { message };
+      })().catch((error) => {
+        throw new ToolInputError(`refused: ${errorMessage(error)}`);
+      });
+      const sent = await (dependencies.capturePage ?? requestPageCapture)(config.socketPath, message, CAPTURE_REPLY_MS);
+      if (!sent.ok) {
+        throw new Error(sent.reason === "daemon-down"
+          ? "failed: conch daemon is not running, so nothing was captured"
+          : `failed: conch's daemon didn't answer the capture${sent.diagnostic ? ` (${sent.diagnostic})` : ""}`);
+      }
+      return captureToolResult(sent.reply);
     },
 
     // Anyone may ask, verified or not: it names what is on screen, and changes nothing.
