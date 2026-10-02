@@ -1,6 +1,6 @@
 import { paneTarget } from "./tmux-binary.ts";
 import { FOCUS_GUARD_LINES, focusedAction, focusSessionWindow, readTerminalTab, withUITransaction, type OsaRunner } from "./inject.ts";
-import { runUICommand } from "./pasteboard.ts";
+import { runUICommand, type UICommandScope } from "./pasteboard.ts";
 import { processMatchesProvider, readProcessIdentity, sameProcessIdentity, type ProcessIdentity, type ProcessIdentityProbe } from "./process-identity.ts";
 import { conchHome } from "./home.ts";
 import { CODEX_ACCOUNT_ENV_REMOVE, codexAccountForLaunch, type CodexAccount } from "./codex-accounts.ts";
@@ -82,6 +82,12 @@ export interface SessionLifecycleDependencies {
   isDirectory?(path: string): boolean;
   sleep?(ms: number): Promise<void>;
   automationTimeoutMs?: number;
+  /**
+   * Whose UI children these are. A helper that never exits seals its scope until it does, so a test standing in
+   * a wedged one keeps that to itself: in the process-wide scope it held every later real send in the same run
+   * at "input is suspended" (2026-10-03).
+   */
+  uiScope?: UICommandScope;
   exitPollAttempts?: number;
   exitPollIntervalMs?: number;
   backgroundSession?: typeof managedBackgroundSession;
@@ -432,6 +438,7 @@ async function runTerminalAutomation(argv: string[], dependencies: SessionLifecy
 async function runTerminalUI(argv: string[], dependencies: SessionLifecycleDependencies) {
   const result = await runUICommand(argv, undefined, {
     timeoutMs: dependencies.automationTimeoutMs,
+    scope: dependencies.uiScope,
     spawn: dependencies.spawn && ((args) => {
       const child = dependencies.spawn!(args);
       return {

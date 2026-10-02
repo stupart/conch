@@ -148,7 +148,7 @@ import {
   withHeldQuestion,
 } from "./conversation.ts";
 import type { PendingApproval } from "./approval.ts";
-import { isWindowKey } from "./window-key.ts";
+import { isWindowKey, parseWindowKey } from "./window-key.ts";
 import { contextUsageFromLines, readTranscriptTailLines, type SessionContextUsage } from "./context-meter.ts";
 import { sessionUsageLimitFromLines } from "./session-usage-limit.ts";
 import {
@@ -178,6 +178,7 @@ import {
   type StartSessionRequest,
 } from "./session-lifecycle.ts";
 import { SessionStartOverlay } from "./session-start-overlay.ts";
+import { PromptSubmissions } from "./delivery-evidence.ts";
 import { TerminalComposer } from "./terminal-composer.ts";
 import {
   answerableTerminalQuestion,
@@ -933,6 +934,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   let sessionActionsOverlay: SessionActionsOverlay | null = null;
   let restoreSessionsOverlay: RestoreSessionsOverlay | null = null;
   let sessionStartOverlay: SessionStartOverlay | null = null;
+  /** Prompts the agents' UserPromptSubmit hooks reported, by fingerprint: a typed send's confirmation. */
+  const promptSubmissions = new PromptSubmissions();
   let terminalComposer: TerminalComposer | null = null;
   let terminalQuestionController: TerminalQuestionController | null = null;
   let meetingMic: MicClaimPoller | null = null;
@@ -1351,6 +1354,9 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   function enqueue(incoming: TurnEvent): void | Promise<SocketTurnOutcome> {
     if (shuttingDown) return;
     const event = incoming;
+    // The agent's own word that it took a prompt, before anything can turn the event away: a delivery
+    // watching for its words reads it (`delivery-evidence.ts`).
+    if (event.type === "working" && event.promptDigest) promptSubmissions.note(parseWindowKey(event.sessionId).sessionId, event.promptDigest);
     // Setup's practice session is conch's own (practice.ts): anything naming it is the practice's to answer, and never
     // reaches the queue, the voice loop or a terminal, whichever door it came in by.
     if (event.sessionId === PRACTICE_SESSION_ID) return practice?.turn(event);
@@ -1563,6 +1569,13 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   const voice = createVoiceLoop({
     cfg,
     log,
+    // A window key names its session's hook reports: the hook knows the session, not the window.
+    promptSubmitted: (sessionId, since, words) => promptSubmissions.submitted(parseWindowKey(sessionId).sessionId, since, words),
+    // Looked up again on each read: a new session's transcript appears only with its first prompt, under its own account.
+    transcriptFor: (sessionId) => {
+      const row = panelSessions.get(sessionId);
+      return row?.transcriptPath ?? findTranscript(row?.claudeConfigDir ?? cfg.claudeDir, sessionId);
+    },
     ledger,
     pause,
     queue: eventQueue,

@@ -1,4 +1,5 @@
 import type { AccountToolsRequest, AccountToolsReply } from "./account-tools.ts";
+import { PROMPT_DIGEST } from "./delivery-evidence.ts";
 import type { ClaudeAccountRequest, ClaudeAccountsReply } from "./claude-accounts.ts";
 import { ControlFrameError, ControlFrameReader, encodeControlFrame } from "./control-framing.ts";
 import type { HistoryPageRequest, HistoryItemRequest, HistoryResponse } from "./history.ts";
@@ -746,6 +747,11 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
   if (value.answers !== undefined) {
     const err = type === "inject" ? questionAnswersError(value.answers) : "answers are only for inject";
     if (err) return { ok: false, err };
+  }
+  // A fingerprint, never words (`delivery-evidence.ts`): the hook says which prompt it saw submitted.
+  if (value.promptDigest !== undefined && (type !== "working" || typeof value.promptDigest !== "string"
+    || !PROMPT_DIGEST.test(value.promptDigest))) {
+    return { ok: false, err: "promptDigest is a 16-hex fingerprint, on working" };
   }
   if (value.startSource !== undefined && (type !== "session-start" || !isSessionStartSource(value.startSource))) {
     return { ok: false, err: "startSource is startup, resume, clear or compact, on session-start" };

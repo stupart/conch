@@ -20,6 +20,7 @@ import { clearAgentNote, saveAgentNote, takeAgentNote, userPromptContext } from 
 import { boundedMark } from "./prompt-cursor.ts";
 import type { DeliverableKind } from "./deliverables.ts";
 import { createHash } from "node:crypto";
+import { promptDigest } from "./delivery-evidence.ts";
 import { summarizeToolUse } from "./approval.ts";
 import { currentTurnText } from "./transcript-turn.ts";
 import { findHookWindow, sessionLabel, isEngageable, workingFolderOverrides, type SessionInfo } from "./sessions.ts";
@@ -38,6 +39,8 @@ interface HookPayload {
   tool_input?: unknown;
   /** SessionStart: why the session started (`SESSION_START_SOURCES`). */
   source?: string;
+  /** UserPromptSubmit: what was submitted. Only its fingerprint leaves this process. */
+  prompt?: string;
 }
 
 /** What Claude Code's SessionStart hook says started the session. */
@@ -57,6 +60,11 @@ export interface TurnEvent {
   announce: string;
   /** full reply lives here — the daemon reads it for the "continue" command */
   transcriptPath?: string;
+  /**
+   * On `working` from UserPromptSubmit: the submitted prompt's fingerprint (`promptDigest`), never its words.
+   * A send conch typed is confirmed by its own words coming back this way (`delivery-evidence.ts`).
+   */
+  promptDigest?: string;
   /** notification_type for needs-you events (permission_prompt, idle_prompt, ...) */
   ntype?: string;
   /** transcript line count when this fired — used to detect you already responded since */
@@ -355,6 +363,7 @@ export async function runHook(cfg: Config): Promise<void> {
       pid: session?.pid,
       announce: "",
       eventAt,
+      ...(typeof payload.prompt === "string" && payload.prompt.trim() ? { promptDigest: promptDigest(payload.prompt) } : {}),
     });
     return;
   }
