@@ -17,6 +17,7 @@ import {
 } from "./sessions.ts";
 import { spokenSnippet } from "./snippet.ts";
 import { boundedMark } from "./prompt-cursor.ts";
+import { promptDigest } from "./delivery-evidence.ts";
 import { bell, speak } from "./speak.ts";
 import { askClaude } from "./model.ts";
 import { managedBackgroundSession } from "./background-sessions.ts";
@@ -30,6 +31,8 @@ export interface CodexHookPayload {
   last_assistant_message?: string;
   agent_type?: unknown | null;
   stop_hook_active?: boolean;
+  /** UserPromptSubmit: what was submitted. Only its fingerprint leaves this process (`delivery-evidence.ts`). */
+  prompt?: string;
 }
 
 interface ProcessRecord {
@@ -286,6 +289,7 @@ export async function handleCodexHookPayload(
       pid,
       announce: "",
       eventAt,
+      ...(typeof payload.prompt === "string" && payload.prompt.trim() ? { promptDigest: promptDigest(payload.prompt) } : {}),
     };
     await dependencies.sendToDaemon(cfg.socketPath, working);
     return working;

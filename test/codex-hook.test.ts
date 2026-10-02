@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { promptDigest } from "../src/delivery-evidence.ts";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -263,6 +264,17 @@ describe("handleCodexHookPayload", () => {
     expect(event?.announce).toBe(
       "codex-project: Updated snippet.ts. See a link.",
     );
+  });
+
+  test("UserPromptSubmit names the prompt by its fingerprint, never its words", async () => {
+    // How a send conch typed is confirmed (`delivery-evidence.ts`).
+    const h = harness();
+    const event = await handleCodexHookPayload({
+      hook_event_name: "UserPromptSubmit", session_id: "session-busy", cwd: "/work/codex-project", agent_type: null,
+      prompt: "my private words",
+    }, h.cfg, h.dependencies);
+    expect(event?.promptDigest).toBe(promptDigest("my private words"));
+    expect(JSON.stringify(h.calls.sends)).not.toContain("private");
   });
 
   test("UserPromptSubmit writes busy and sends the same visual working signal as Claude Code", async () => {

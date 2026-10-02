@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { promptDigest } from "../src/delivery-evidence.ts";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -239,4 +240,17 @@ describe("the daemon", () => {
     expect(daemon).toContain('if (event.type === "inject" || event.type === "interrupt" || event.type === "session-start") {');
     expect(daemon).toContain('if (event.type !== "inject" && event.type !== "interrupt" && event.type !== "session-start") await ttsStartup;');
   });
+});
+
+describe("the UserPromptSubmit hook, run", () => {
+  test("names the submitted prompt by its fingerprint, never its words: a typed send's confirmation", async () => {
+    const { received, sounds } = await runHook({
+      hook_event_name: "UserPromptSubmit", session_id: SESSION, cwd: "/work", prompt: "my private words",
+    }, { daemon: true });
+    expect(sounds).toBe("");
+    expect(received).toHaveLength(1);
+    expect(received[0]).toMatchObject({ type: "working", sessionId: SESSION, promptDigest: promptDigest("my private words") });
+    expect(JSON.stringify(received[0])).not.toContain("private");
+    expect(validateSocketTurnEvent(received[0]).ok).toBe(true);
+  }, 30_000);
 });

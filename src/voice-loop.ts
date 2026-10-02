@@ -22,7 +22,8 @@ import {
   pendingApproval,
   type PendingApproval,
 } from "./approval.ts";
-import { adapterForTranscript, inputBoxHoldsWords, transcriptFormatFor } from "./agent-adapter.ts";
+import { adapterFor, adapterForTranscript, inputBoxHoldsWords, transcriptFormatFor } from "./agent-adapter.ts";
+import { claudeTranscriptSince } from "./delivery-evidence.ts";
 import { injectProviderCommand as providerCommand, isProviderCommandLine } from "./provider-rename.ts";
 import { classifyReadingGap, parseNameAddress, wordOverlapRatio } from "./commands.ts";
 import { checkReviewLink, linkRefusalNote, markImagesRefusal, resolveReviewFocus, lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince, transcriptMark, promptSince } from "./snippet.ts";
@@ -437,6 +438,17 @@ export interface VoiceLoopDeps {
   sessionFolder?(sessionId: string): Promise<string | undefined>;
   /** The registry check: true when a complete snapshot says the session exited. */
   sessionGone(sessionId: string): Promise<boolean>;
+  /**
+   * Whether this session's agent reported submitting these words at or after `since` (epoch ms): its
+   * `UserPromptSubmit` hook's fingerprint (`delivery-evidence.ts`). Optional so a test that doesn't give it
+   * keeps the rule it was written to: a send with no transcript to watch is trusted on its keystrokes.
+   */
+  promptSubmitted?(sessionId: string, since: number, words: string): boolean;
+  /**
+   * Where a session's transcript is now, looked up again. Claude Code writes a new session's file only with
+   * its first prompt, so a send to a session that had none yet finds it here, afterwards.
+   */
+  transcriptFor?(sessionId: string): string | undefined;
   render(): void;
   // Property signatures, not methods, for these two: the exact-site guards count their calls by name and open paren.
   presentElsewhere: (holder: string, text: string, voice: string, label: string, localSessionKey: string) => void;
@@ -1194,8 +1206,10 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
    * Whether the session's input box still holds these words: null when the box can't be
    * read (Codex, a terminal conch can't see, no box on screen), which leaves today's rules.
    */
-  async function inputBoxHolds(event: TurnEvent, words: string): Promise<boolean | null> {
-    const boxOf = event.transcriptPath ? adapterForTranscript(event.transcriptPath).inputBoxText : null;
+  async function inputBoxHolds(event: TurnEvent, words: string, backend?: SessionInfo["backend"]): Promise<boolean | null> {
+    // A session with no transcript yet is known by its row's agent instead, when the caller names it.
+    const boxOf = event.transcriptPath ? adapterForTranscript(event.transcriptPath).inputBoxText
+      : backend ? adapterFor(backend).inputBoxText : null;
     if (!boxOf || !readSessionScreen) return null;
     const screen = await readSessionScreen(event.pid);
     const box = screen === null ? null : boxOf(screen);
@@ -2141,6 +2155,62 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         return false;
       };
 
+      /**
+       * A send to a Claude session with no transcript yet, confirmed only by what the agent itself says: its hook
+       * naming these words, the file it writes with them, or them queued behind its turn. Words still in the box
+       * get Return again, twice at most, as a counted send's do. An answer of `{ box }` is "never confirmed", and
+       * the caller says so with the rest; a boolean is the outcome itself.
+       */
+      const confirmFirstPrompt = async (
+        via: inject.InjectTextResult["via"],
+        since: number,
+      ): Promise<boolean | { box: boolean | null; resends: number }> => {
+        const said = async (): Promise<string | null> => {
+          if (deps.promptSubmitted?.(event.sessionId, since, text)) return "prompt-hook-confirmed";
+          const written = await claudeTranscriptSince(
+            deps.transcriptFor?.(event.sessionId) ?? deps.window(event.sessionId)?.transcriptPath, since, text);
+          return written.submitted ? "transcript-advanced" : written.queued ? "provider-input-queued" : null;
+        };
+        let resends = 0;
+        let box: boolean | null = null;
+        // Claude Code reports a prompt within a second of the Return; a fresh one still drawing its
+        // first screen takes longer, so each wait is longer than a counted send's.
+        for (let attempt = 0; attempt < 3; attempt++) {
+          for (let waited = 0; waited < 1_500 + attempt * 600; waited += 300) {
+            await (deps.sleep ?? Bun.sleep)(300);
+            if (beforeInject && !(await beforeInject())) return false;
+            const code = await said();
+            if (!code) continue;
+            receiptCode = code;
+            commit();
+            log(`injected into "${event.label}" via ${via} — the agent confirmed it (${code})`);
+            recordTelemetry("inject", {
+              route: via, confirmed: true, firstPrompt: true, resends, chars: text.length, latencyMs: Date.now() - since,
+            });
+            if (resends) reportSend(`The Return was lost; the prompt went in after ${resends} re-send${resends > 1 ? "s" : ""}.`, { route: via, resends });
+            return true;
+          }
+          // A dialog opened since the words went in; a Return now would answer it.
+          if (deps.window(event.sessionId)?.status === "waiting") break;
+          box = await inputBoxHolds(event, text, "claude");
+          // An empty box is no proof: a session still starting drops keys before it draws one.
+          if (box !== true || attempt === 2) continue;
+          const stopped = await deadTargetOf(event);
+          if (stopped) return refused(stopped);
+          resends++;
+          log(`words still in the input box of "${event.label}" — pressing Return again (try ${resends})`);
+          let retry: inject.InjectTextResult;
+          try {
+            retry = await injectKey(cfg, event.pid, "Enter", beforeInject);
+          } catch {
+            return failedDelivery("submit-error");
+          }
+          if (retry.interrupted) { receiptCode = "delivery-interrupted"; uncertain = true; publishDictation(text, event.sessionId); return false; }
+          if (("failed" in retry && retry.failed) || retry.via === "none" || retry.via === "clipboard") return failedDelivery(retry.reason);
+        }
+        return { box, resends };
+      };
+
       // A hookless Codex session's rollout is known only to the live session list:
       // `findTranscript` reads conch's hook registry and Claude's projects folder, and
       // the inject routes resolved the path that way alone. So every send to Codex
@@ -2267,7 +2337,23 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         recordTelemetry("inject", { route: via, confirmed: false, staged: true, chars: text.length });
         return "staged";
       }
-      if (beforeCount === null) {
+      // Only routes that put real keystrokes into a real pane can be read back: a blind or
+      // clipboard fallback has no box to read and no Return worth pressing again.
+      const keysLanded = via === "tmux" || via === "osascript-focused";
+      let stuckInBox = false;
+      let resends = 0;
+      // No transcript to count against: a Claude session that has not taken its first prompt yet, whose file
+      // Claude Code writes only with that prompt. Every first message to a new background session was reported
+      // delivered here on its keystrokes alone, and on 2026-10-02 one sat unsent in its input box while the
+      // phone said "Sent". What the agent itself says decides instead (`delivery-evidence.ts`).
+      const firstPrompt = beforeCount === null && keysLanded && (target?.backend ?? "claude") === "claude"
+        && deps.promptSubmitted !== undefined;
+      if (firstPrompt) {
+        const first = await confirmFirstPrompt(via, injectStartedAt);
+        if (typeof first === "boolean") return first;
+        stuckInBox = first.box === true;
+        resends = first.resends;
+      } else if (beforeCount === null) {
         receiptCode = "transport-submitted";
         commit();
         log(`injected into "${event.label}" via ${via}`); // no transcript to confirm against — trust it
@@ -2283,18 +2369,14 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       // working session, and a message that queued perfectly gets reported as
       // failed. The phone then keeps the draft and you send it twice.
       //
-      // Only routes that put real keystrokes into a real pane qualify: a blind
-      // or clipboard fallback has no such evidence and must still be proven.
-      const keysLanded = via === "tmux" || via === "osascript-focused";
       // A busy session can't be confirmed from its transcript, but its input box can be
       // read: words still sitting there after the Return were never sent. Tyler: "its
       // sitting there in the input box it just needs to hit enter". 27 of 75 sends on
       // 2026-09-23 took this path, each trusted on one Return.
-      let stuckInBox = false;
-      if (keysLanded && deps.window(event.sessionId)?.status === "busy") {
+      if (!firstPrompt && keysLanded && deps.window(event.sessionId)?.status === "busy") {
         stuckInBox = (await submitWhatIsInTheBox(event, text, beforeInject)) === "stuck";
       }
-      if (keysLanded && !stuckInBox && deps.window(event.sessionId)?.status === "busy") {
+      if (!firstPrompt && keysLanded && !stuckInBox && deps.window(event.sessionId)?.status === "busy") {
         receiptCode = "provider-input-queued";
         commit();
         log(`injected into "${event.label}" via ${via} — queued behind the running turn`);
@@ -2317,16 +2399,20 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       // prompt on this window's branch confirms, and one nobody can attribute
       // stays unknown.
       let landed: boolean | "unknown" = false;
-      let resends = 0;
       // Codex writes the prompt 1.5–4s after the Return (its rollouts, 9/14–9/23);
       // Claude Code well inside the first wait. Look every 300ms so neither waits
       // longer than it must, and press Return again only after a whole wait with nothing.
       const firstWaitMs = target?.backend === "codex" ? 4_000 : 900;
-      for (let attempt = 0; attempt < 3 && !stuckInBox; attempt++) {
+      // A first prompt was watched for already, by what the agent says rather than a count.
+      for (let attempt = 0; attempt < 3 && !stuckInBox && !firstPrompt; attempt++) {
         for (let waited = 0; landed === false && waited < firstWaitMs + attempt * 600; waited += 300) {
           await (deps.sleep ?? Bun.sleep)(300);
           if (beforeInject && !(await beforeInject())) return false;
-          landed = await promptSince(transcriptPath, beforeCount, sharedWindow(event.sessionId));
+          // The agent's hook naming these words settles it, and says whose they are, which a shared
+          // transcript's count cannot.
+          landed = deps.promptSubmitted?.(event.sessionId, injectStartedAt, text)
+            ? true
+            : await promptSince(transcriptPath, beforeCount ?? undefined, sharedWindow(event.sessionId));
         }
         if (landed === true) {
           receiptCode = "transcript-advanced";

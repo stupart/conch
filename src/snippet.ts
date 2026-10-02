@@ -289,7 +289,7 @@ function parsedEntry(lineBytes: Uint8Array): { parsed: boolean; entry?: any } {
   }
 }
 
-function isRealUserPrompt(entry: any): boolean {
+export function isRealUserPrompt(entry: any): boolean {
   if (entry.origin?.kind === "task-notification" || entry.promptSource === "system") return false;
   // Hook-injected turns wear isMeta. A /goal loop re-prompts its session
   // through the Stop hook, which lands as a user entry — so conch read it as

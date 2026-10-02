@@ -246,6 +246,8 @@ describe("native Terminal session lifecycle", () => {
       pidIsAlive: async () => false,
       sleep: async () => {},
       automationTimeoutMs: 5,
+      // The helper below never exits, which seals its scope for good: its own, not the run's.
+      uiScope: { unreaped: new Set() },
       spawn(args) {
         calls.push(args);
         if (args.join(" ").includes('tell application "conch"')) {

@@ -1,5 +1,6 @@
 import type { AnswerKey } from "../src/agent-adapter.ts";
 import { afterAll, describe, expect, test, setSystemTime } from "bun:test";
+import { PromptSubmissions, promptDigest } from "../src/delivery-evidence.ts";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +14,12 @@ import { SpeechManager, type SpeechBackend } from "../src/speech-manager.ts";
 import type { WatchdogProcess } from "../src/audio-watchdog.ts";
 import { DictationController, type CapturedAudio, type DictationEvent, type RecorderHandle } from "../src/dictation-controller.ts";
 import type { InjectTextResult } from "../src/inject.ts";
+import * as realInject from "../src/inject.ts";
+import { hasUnreapedUIChild } from "../src/pasteboard.ts";
+import { startBackgroundProcess } from "../src/background-sessions.ts";
+import { paneTarget, resolveTmux } from "../src/tmux-binary.ts";
+import { probeCommand } from "../src/probe.ts";
+import { shellQuote } from "../src/agent-adapter.ts";
 import type { ProviderCommandResult } from "../src/provider-rename.ts";
 import { collectContinuousResult, createDictationSession, type ListenHooks, type ListenResult, type RuntimeDictationSession } from "../src/listen.ts";
 import { addressParkedWindow, registrySnapshot, type SessionInfo } from "../src/sessions.ts";
@@ -150,6 +157,13 @@ interface Options {
   ledger?: SessionLedger;
   /** What macOS says of the daemon's Accessibility; absent means the loop is never told, as before. */
   accessibilityTrusted?: boolean;
+  /** The agent's hook reports (`delivery-evidence.ts`); absent means a send with no transcript is trusted, as before. */
+  promptSubmitted?: VoiceLoopDeps["promptSubmitted"];
+  /** Where a session's transcript is now, looked up again. */
+  transcriptFor?: VoiceLoopDeps["transcriptFor"];
+  /** A real terminal in place of the recording one, and real waits: the end-to-end tests over tmux. */
+  terminal?: VoiceLoopDeps["terminal"];
+  realTime?: boolean;
 }
 
 function harness(options: Options = {}) {
@@ -252,7 +266,7 @@ function harness(options: Options = {}) {
     observeRecords: options.observeRecords,
     hostedSend: options.hostedSend,
     cfg,
-    sleep: async () => {},
+    ...(options.realTime ? {} : { sleep: async () => {} }),
     log: (message) => void logs.push(message),
     ledger,
     pause,
@@ -274,7 +288,9 @@ function harness(options: Options = {}) {
     prewarmEar: () => void order.push("prewarm"),
     control: async () => {},
     ...(options.accessibilityTrusted === undefined ? {} : { accessibilityTrusted: () => options.accessibilityTrusted! }),
-    terminal: {
+    ...(options.promptSubmitted ? { promptSubmitted: options.promptSubmitted } : {}),
+    ...(options.transcriptFor ? { transcriptFor: options.transcriptFor } : {}),
+    terminal: options.terminal ?? {
       injectText: async (_cfg, pid, text, beforeInject) => {
         texts.push(text);
         textPids.push(pid);
@@ -648,6 +664,221 @@ describe("a send that did not submit is caught, not reported delivered", () => {
       expect(h.errors[0]?.[3]).toMatchObject({ code: "transcript-advanced", resends: 1, route: "tmux" });
     } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
   });
+});
+
+describe("a first message to a new session is confirmed by the agent, never by its keystrokes", () => {
+  // 2026-10-02: a new background session's first message was reported delivered on its keystrokes, because
+  // Claude Code had written no transcript yet to count against, and it sat unsent in the input box while the
+  // phone said "Sent".
+  const fresh = () => ({ sessionId: "s1", backend: "claude", status: "idle" }) as SessionInfo;
+  const screenWith = (box: string) => [
+    "─────────────────────────────────────────── alpha ─", `❯ ${box}`,
+    "────────────────────────────────────────────────────", "  ⏵⏵ bypass permissions on",
+  ].join("\n");
+  const codeOf = (events: RecordObservation[]) => events.filter(({ kind }) => kind === "delivery").at(-1);
+
+  test("its hook naming the words confirms it", async () => {
+    const seen = new PromptSubmissions();
+    const events: RecordObservation[] = [];
+    const h = harness({
+      window: fresh,
+      observeRecords: (event) => events.push(event),
+      promptSubmitted: (id, since, words) => seen.submitted(id, since, words),
+      inject: (text) => { seen.note("s1", promptDigest(text)); return { via: "tmux" }; },
+    });
+    expect(await h.voice.handle(inject("hello there"))).toBe(true);
+    expect(codeOf(events)).toMatchObject({ state: "delivered", code: "prompt-hook-confirmed" });
+    expect(h.keys).toEqual([]);
+    expect(h.errors).toEqual([]);
+  });
+
+  test("the transcript it writes with its first prompt confirms it", async () => {
+    const path = join(mkdtempSync(join(tmpdir(), "conch-first-prompt-")), "s1.jsonl");
+    const events: RecordObservation[] = [];
+    try {
+      const h = harness({
+        window: fresh,
+        observeRecords: (event) => events.push(event),
+        promptSubmitted: () => false,
+        transcriptFor: () => path,
+        inject: (text) => {
+          writeFileSync(path, JSON.stringify({ type: "user", timestamp: new Date().toISOString(), message: { role: "user", content: text } }) + "\n");
+          return { via: "tmux" };
+        },
+      });
+      expect(await h.voice.handle(inject("hello"))).toBe(true);
+      expect(codeOf(events)).toMatchObject({ state: "delivered", code: "transcript-advanced" });
+    } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
+  });
+
+  test("words left in the box get Return again, and count once the agent takes them", async () => {
+    const seen = new PromptSubmissions();
+    let enters = 0;
+    const h = harness({
+      window: fresh,
+      promptSubmitted: (id, since, words) => seen.submitted(id, since, words),
+      key: () => { enters += 1; seen.note("s1", promptDigest("hello")); return { via: "tmux" }; },
+      screen: () => screenWith(enters ? "" : "hello"),
+    });
+    expect(await h.voice.handle(inject("hello"))).toBe(true);
+    expect(h.keys).toEqual(["Enter"]);
+    expect(h.errors.map((entry) => entry[1])).toEqual(["The Return was lost; the prompt went in after 1 re-send."]);
+  });
+
+  test("keys a starting session dropped: nothing confirms them, so they are not reported delivered", async () => {
+    const events: RecordObservation[] = [];
+    const h = harness({ window: fresh, observeRecords: (event) => events.push(event), promptSubmitted: () => false, screen: () => screenWith("") });
+    expect(await h.voice.handle(inject("hello"))).toEqual({ delivered: false, reason: "delivery-unconfirmed", onClipboard: true });
+    // An empty box is no proof either way, so no Return goes after words that may not be there.
+    expect(h.keys).toEqual([]);
+    expect(codeOf(events)).toMatchObject({ state: "unknown", code: "delivery-unconfirmed" });
+    expect(h.said.at(-1)).toBe("I typed that but it didn't send. Your words are on the clipboard — just paste and press return.");
+  });
+
+  test("words that stay in the box through three Returns are reported as still there", async () => {
+    const h = harness({ window: fresh, promptSubmitted: () => false, screen: () => screenWith("hello") });
+    expect(await h.voice.handle(inject("hello"))).toMatchObject({ delivered: false, reason: "delivery-unconfirmed" });
+    expect(h.keys).toEqual(["Enter", "Enter"]);
+    expect(h.said.at(-1)).toBe("I typed that but it didn't send. It's still in the session's input box — press return there.");
+  });
+
+  test("a dialog that opens meanwhile never gets a Return meant for the words", async () => {
+    let reads = 0;
+    const h = harness({
+      window: () => (reads ? { ...fresh(), status: "waiting" } as SessionInfo : fresh()),
+      promptSubmitted: () => { reads += 1; return false; },
+      screen: () => screenWith("hello"),
+    });
+    expect(await h.voice.handle(inject("hello"))).toMatchObject({ delivered: false });
+    expect(h.keys).toEqual([]);
+  });
+
+  test("a Codex row, or a loop given no hook reports, keeps the rule it had", async () => {
+    const cases: Options[] = [
+      { window: () => ({ ...fresh(), backend: "codex" }) as SessionInfo, promptSubmitted: () => false },
+      { window: fresh },
+    ];
+    for (const options of cases) {
+      const events: RecordObservation[] = [];
+      const h = harness({ ...options, observeRecords: (event) => events.push(event) });
+      expect(await h.voice.handle(inject("hello"))).toBe(true);
+      expect(codeOf(events)?.code).toBe("transport-submitted");
+    }
+  });
+
+  test("a counted send is confirmed by the hook too, before its transcript moves", async () => {
+    const path = transcript(user({ type: "text", text: "prior" }));
+    const seen = new PromptSubmissions();
+    const events: RecordObservation[] = [];
+    try {
+      const h = harness({
+        window: fresh,
+        observeRecords: (event) => events.push(event),
+        promptSubmitted: (id, since, words) => seen.submitted(id, since, words),
+        inject: (text) => { seen.note("s1", promptDigest(text)); return { via: "tmux" }; },
+      });
+      expect(await h.voice.handle(inject("hello", { transcriptPath: path }))).toBe(true);
+      expect(codeOf(events)?.code).toBe("transcript-advanced");
+      expect(h.keys).toEqual([]);
+    } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
+  });
+});
+
+/**
+ * The same, end to end over real tmux: a stand-in for Claude Code's terminal (`fixtures/fake-claude-tui.ts`) in a
+ * pane on the suite's own conch server (`CONCH_TMUX_SOCKET`, test/preload.ts), real keys sent to it, its real
+ * screen read back. Only its hook is a stand-in: a file of the fingerprints it took. The Mac's clipboard and
+ * windows are never touched: the clipboard is a list here, and there is no keystroke fallback.
+ */
+const suiteTmux = process.env.CONCH_TMUX_SOCKET?.startsWith("conch-test-") ?? false;
+describe.skipIf(!resolveTmux().found || !suiteTmux)("a first message, typed into a real terminal", () => {
+  const fixture = join(import.meta.dir, "fixtures", "fake-claude-tui.ts");
+
+  async function agent(options: { startingMs?: number; lostReturns?: number } = {}) {
+    // Real sends share one process-wide UI scope: a test before this one that left a fake helper running in it
+    // holds every send here at "input is suspended", which reads as a delivery bug when it is a leak.
+    expect(hasUnreapedUIChild(), "an earlier test left a UI child running in the process-wide scope").toBe(false);
+    const dir = mkdtempSync(join(tmpdir(), "conch-first-prompt-e2e-"));
+    const evidence = join(dir, "submitted.txt");
+    writeFileSync(evidence, "");
+    const { name, pane } = await startBackgroundProcess(
+      `exec ${shellQuote(process.execPath)} ${shellQuote(fixture)} ${shellQuote(evidence)} ${options.startingMs ?? 0} ${options.lostReturns ?? 0}`, dir);
+    const target = paneTarget(pane)!;
+    const pid = Number((await probeCommand([...target.tmux, "display-message", "-p", "-t", target.pane, "#{pane_pid}"], [0]))?.trim());
+    // Typed only once it has drawn: keys a shell takes before the agent runs are not the case under test.
+    for (let tries = 0; tries < 50; tries++) {
+      const screen = await probeCommand([...target.tmux, "capture-pane", "-p", "-t", target.pane], [0]);
+      if (screen && /ready|Starting/.test(screen)) break;
+      await Bun.sleep(100);
+    }
+    const submitted: NonNullable<VoiceLoopDeps["promptSubmitted"]> = (_id, since, words) =>
+      readFileSync(evidence, "utf8").split("\n").some((line) => {
+        const [at, digest] = line.split(" ");
+        return Number(at) >= since && digest === promptDigest(words);
+      });
+    const clipboard: string[] = [];
+    const terminal: NonNullable<VoiceLoopDeps["terminal"]> = {
+      injectText: (cfg, sessionPid, text, beforeInject, opts) =>
+        realInject.injectText({ ...cfg, keystrokeFallback: false }, sessionPid, text, beforeInject, { ...opts, clipboardFallback: false }),
+      injectKey: (cfg, sessionPid, key, beforeInject) => realInject.injectKey({ ...cfg, keystrokeFallback: false }, sessionPid, key, beforeInject),
+      injectProviderCommand: async () => { throw new Error("no provider commands here"); },
+      toClipboard: async (text) => void clipboard.push(text),
+      readSessionScreen: realInject.readSessionScreen,
+    };
+    const cleanup = async () => {
+      await probeCommand([...target.tmux, "kill-session", "-t", name], [0, 1]);
+      rmSync(dir, { recursive: true, force: true });
+    };
+    return { pid, evidence, submitted, terminal, clipboard, cleanup };
+  }
+
+  const run = async (a: Awaited<ReturnType<typeof agent>>) => {
+    const events: RecordObservation[] = [];
+    const h = harness({
+      realTime: true,
+      terminal: a.terminal,
+      window: () => ({ sessionId: "s1", backend: "claude", status: "idle", pid: a.pid }) as SessionInfo,
+      promptSubmitted: a.submitted,
+      observeRecords: (event) => events.push(event),
+    });
+    const outcome = await h.voice.handle(inject("hello from conch", { pid: a.pid }));
+    return { outcome, h, receipt: events.filter(({ kind }) => kind === "delivery").at(-1) };
+  };
+
+  test("an agent that takes the prompt confirms it", async () => {
+    const a = await agent();
+    try {
+      const { outcome, receipt } = await run(a);
+      expect(outcome).toBe(true);
+      expect(receipt).toMatchObject({ state: "delivered", code: "prompt-hook-confirmed" });
+      expect(readFileSync(a.evidence, "utf8").trim().split("\n")).toHaveLength(1);
+    } finally { await a.cleanup(); }
+  }, 20_000);
+
+  test("a lost Return: the words are read in its box, Return is pressed again, and then it counts", async () => {
+    const a = await agent({ lostReturns: 1 });
+    try {
+      const { outcome, receipt, h } = await run(a);
+      expect(outcome).toBe(true);
+      expect(receipt).toMatchObject({ state: "delivered", code: "prompt-hook-confirmed" });
+      expect(h.logs).toContain('words still in the input box of "alpha" — pressing Return again (try 1)');
+      // Sent once: the second Return did not send it twice.
+      expect(readFileSync(a.evidence, "utf8").trim().split("\n")).toHaveLength(1);
+    } finally { await a.cleanup(); }
+  }, 20_000);
+
+  test("an agent still starting drops the keys: never reported delivered (the 2026-10-02 'Sent')", async () => {
+    const a = await agent({ startingMs: 60_000 });
+    try {
+      const { outcome, receipt, h } = await run(a);
+      expect(outcome).toEqual({ delivered: false, reason: "delivery-unconfirmed", onClipboard: true });
+      expect(receipt).toMatchObject({ state: "unknown", code: "delivery-unconfirmed" });
+      expect(readFileSync(a.evidence, "utf8")).toBe("");
+      // No box was drawn, so no Return was sent after words that were never there.
+      expect(h.logs.some((line) => line.includes("pressing Return again"))).toBe(false);
+      expect(a.clipboard).toEqual(["hello from conch"]);
+    } finally { await a.cleanup(); }
+  }, 20_000);
 });
 
 describe("A14: an immediate interrupt leaves the running exchange's stop and mic alone", () => {
