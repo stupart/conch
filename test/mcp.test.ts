@@ -10,10 +10,15 @@ import {
 import { CONCH_VERSION } from "../src/version.ts";
 import { homedir, tmpdir } from "node:os";
 import { join, relative, isAbsolute, resolve } from "node:path";
+import { AGENT_INSTRUCTIONS } from "../src/agent-instructions.ts";
 import {
   AGENT_TUNABLE_SETTINGS,
   MAX_SPEAK_CHARS,
   MCP_PROTOCOL_VERSION,
+  MCP_PROTOCOL_VERSIONS,
+  negotiateProtocolVersion,
+  dispatchJsonRpcBatch,
+  runMcpServer,
   MCP_HISTORY_MAX_BYTES,
   MCP_TOOLS,
   createMcpToolHandlers,
@@ -51,6 +56,7 @@ import { HISTORY_PAYLOAD_MAX_BYTES, type HistoryRequest, type HistoryResponse } 
 import { artifactIdentity } from "../src/deliverables.ts";
 import { reviewIdentity } from "../src/records-receipts.ts";
 import { MAC_APP_DOWN, type PageCaptureMessage, type PageCaptureReply, type PageCaptureSend } from "../src/page-capture.ts";
+import type { PublishReply } from "../src/review-verdict.ts";
 
 const TOOL_NAMES = [
   "conch_sessions",
@@ -720,15 +726,17 @@ describe("schemas state what the handlers enforce", () => {
     }
   });
 
-  test("review_to_front describes publishing, not opening or finishing", () => {
+  test("review_to_front describes publishing, not opening or finishing, and what its answer means", () => {
     expect(MCP_TOOLS.find((tool) => tool.name === "review_to_front")!.description).toBe(
-      "Publish your session’s result for the user to inspect, with a concise summary, an optional artifact link and kind, and an optional scene: the conversation to bring forward, or marks drawn over the result at the one thing to check. To show a set of files or a structure you created or changed (a new module layout, generated assets), link the folder (kind folder, its file tree in conch) and name the paths in it to look at with focus. Publishing the same artifact again (the same link, or the same key) adds its next version rather than a second entry: the user sees the newest, with earlier versions listed under it by summary and time. Returns the filing's id, its artifact, version and kind. The user's pill click stages it. Publishing does not open applications or finish the running turn.",
+      "Publish your session’s result for the user to inspect, with a concise summary, an optional artifact link and kind, and an optional scene: the conversation to bring forward, or marks drawn over the result at the one thing to check. To show a set of files or a structure you created or changed (a new module layout, generated assets), link the folder (kind folder, its file tree in conch) and name the paths in it to look at with focus. Publishing the same artifact again (the same link, or the same key) adds its next version rather than a second entry: the user sees the newest, with earlier versions listed under it by summary and time. A file or folder in a temp folder (/tmp, or macOS's per-user /var/folders/…/T) is filed as conch's own copy (copiedFrom names the original), so cleaning the temp folder can't take it away. It waits for conch to file it and returns the filing's id, its artifact, version and kind, or conch's reason for refusing it, and surfaces: where the user can see it (mac: showing, running or not-running; phone: connected, paired-not-connected, unpaired or off; audio: mac, phone, other-mac or manual). Tell the user where it landed from surfaces; don't assume they saw it. When the result carries relabel, your session's label no longer matches your recent work: if your focus has moved, call conch_rename with a short new label. The user's pill click stages it. Publishing does not open applications or finish the running turn.",
     );
+    // Claude Code cuts a tool description past 2048 characters (CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH, 2.1.280).
+    for (const tool of MCP_TOOLS) expect(tool.description.length).toBeLessThan(2048);
   });
 });
 
 describe("MCP dispatch", () => {
-  test("initialize advertises the supported protocol and tool capability", async () => {
+  test("initialize advertises the newest protocol it speaks to a client it doesn't, the tool capability, and its instructions", async () => {
     const response = await dispatchJsonRpc({
       jsonrpc: "2.0",
       id: "initialize",
@@ -740,7 +748,47 @@ describe("MCP dispatch", () => {
       protocolVersion: MCP_PROTOCOL_VERSION,
       capabilities: { tools: {} },
       serverInfo: { name: "conch", version: CONCH_VERSION },
+      instructions: AGENT_INSTRUCTIONS.serverInstructions,
     });
+    expect(MCP_PROTOCOL_VERSION).toBe("2025-06-18");
+  });
+
+  // Claude Code 2.1.280 asks for 2025-11-25 and lists 2025-06-18, 2025-03-26 and 2024-11-05 as fine; it used to be
+  // told 2024-11-05 whatever it asked. The spec: answer the client's own revision when the server speaks it.
+  test("initialize answers the client's own protocol revision when it speaks it, else its newest", async () => {
+    const answered = async (protocolVersion: unknown) => (rpcResult(await dispatchJsonRpc({
+      jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion, capabilities: {}, clientInfo: { name: "t", version: "1" } },
+    }, recordingHandlers([]))) as { protocolVersion: string }).protocolVersion;
+    expect(MCP_PROTOCOL_VERSIONS).toEqual(["2025-06-18", "2025-03-26", "2024-11-05"]);
+    for (const version of MCP_PROTOCOL_VERSIONS) expect(await answered(version)).toBe(version);
+    expect(await answered("2025-11-25")).toBe("2025-06-18");
+    expect(await answered("2024-10-07")).toBe("2025-06-18");
+    expect(await answered(undefined)).toBe("2025-06-18");
+    expect(await answered(20250618)).toBe("2025-06-18");
+    expect(negotiateProtocolVersion("2025-03-26")).toBe("2025-03-26");
+  });
+
+  // 2025-03-26 is one of the revisions it agrees to, and that revision lets a client batch.
+  test("a JSON-RPC batch is answered in order in one array, and a batch of notifications not at all", async () => {
+    const calls: Array<{ name: McpToolName; argumentsValue: unknown }> = [];
+    const handlers = recordingHandlers(calls);
+    const answered = await dispatchJsonRpcBatch([
+      { jsonrpc: "2.0", id: "a", method: "tools/call", params: { name: "conch_sessions", arguments: {} } },
+      { jsonrpc: "2.0", method: "notifications/initialized" },
+      { jsonrpc: "2.0", id: "b", method: "tools/list" },
+    ], handlers);
+    expect(Array.isArray(answered)).toBe(true);
+    expect((answered as JsonRpcResponse[]).map((response) => response.id)).toEqual(["a", "b"]);
+    expect(calls.map((call) => call.name)).toEqual(["conch_sessions"]);
+    expect(await dispatchJsonRpcBatch([{ jsonrpc: "2.0", method: "notifications/initialized" }], handlers)).toBeNull();
+    expect(await dispatchJsonRpcBatch([], handlers)).toMatchObject({ id: null, error: { code: -32600 } });
+
+    // Over stdio, as a client sends it: one line in, one line out.
+    const lines: string[] = [];
+    const input = new Blob([`${JSON.stringify([{ jsonrpc: "2.0", id: 7, method: "tools/list" }, { jsonrpc: "2.0", id: 8, method: "nope" }])}\n`]).stream();
+    await runMcpServer({ handlers, input, writeLine: (line) => void lines.push(line) });
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0]!).map((response: JsonRpcResponse) => response.id)).toEqual([7, 8]);
   });
 
   test("tools/call routes every name to only its handler and wraps its value as text", async () => {
@@ -1328,9 +1376,11 @@ describe("real MCP tool handlers with injected dependencies", () => {
   test("review_to_front checks a link against the session's folders: where it started, and where its transcript says it is", async () => {
     const base = realpathSync(mkdtempSync(join(tmpdir(), "conch-mcp-roots-")));
     const saved = process.env.TMPDIR;
+    const savedUserTemp = process.env.CONCH_USER_TEMP_DIR;
     mkdirSync(join(base, "temp"));
     // Temp folders are always allowed; point TMPDIR away so only the session's folders decide.
     process.env.TMPDIR = join(base, "temp");
+    process.env.CONCH_USER_TEMP_DIR = join(base, "temp");
     try {
       const start = join(base, "Internal");
       const now = join(base, "Internal", "monorepo", ".worktrees", "task");
@@ -1359,10 +1409,11 @@ describe("real MCP tool handlers with injected dependencies", () => {
       // Outside both: refused, naming the folders it checked.
       const refused = await publish(moved, join(base, "Outside", "page.html"));
       expect(rpcResult(refused.response)).toMatchObject({ isError: true });
-      expect(toolText(refused.response)).toContain(`is outside this session's folders (${start}, ${moved}) and the temp folder`);
+      expect(toolText(refused.response)).toContain(`is outside this session's folders (${start}, ${moved}) and the temp folders`);
       expect(refused.sent).toBeUndefined();
     } finally {
       process.env.TMPDIR = saved;
+      process.env.CONCH_USER_TEMP_DIR = savedUserTemp;
       rmSync(base, { recursive: true, force: true });
     }
   });
@@ -1421,16 +1472,21 @@ describe("real MCP tool handlers with injected dependencies", () => {
     expect(event.review).toBe(review);
   });
 
-  test("review_to_front says it was accepted, and reports a summary it had to cut", async () => {
+  test("review_to_front from a daemon that says nothing is accepted, unconfirmed, and reports a summary it had to cut", async () => {
     const h = fakeHarness({ parentPid: 4321 });
     const handlers = createMcpToolHandlers({
       claudeDir: "/virtual/claude",
       socketPath: "/virtual/conch.sock",
     }, h.dependencies);
 
+    // This harness's daemon takes a publication without a word (`sendToDaemon`), as one from before verdicts does:
+    // taken, and said to be unconfirmed, never "filed".
+    const unconfirmed = "this conch daemon does not say whether it filed a publication; the id and version below are"
+      + " predicted, and conch_deliverables says what was filed";
     const long = await callTool(handlers, "review_to_front", { summary: "x".repeat(250), session: "Build" });
     expect(JSON.parse(toolText(long))).toEqual({
       outcome: "accepted",
+      unconfirmed,
       sessionId: "session-123",
       label: "Build label",
       id: reviewIdentity("session-123", { summary: "x".repeat(200), at: 1_234_567 }),
@@ -1449,6 +1505,7 @@ describe("real MCP tool handlers with injected dependencies", () => {
     });
     expect(JSON.parse(toolText(short))).toEqual({
       outcome: "accepted",
+      unconfirmed,
       sessionId: "session-123",
       label: "Build label",
       id: reviewIdentity("session-123", { summary: "the dashboard", link: "https://example.com/review", at: 1_234_567 }),
@@ -2500,5 +2557,166 @@ describe("conch_capture", () => {
     const state = JSON.parse(toolText(await callTool(createMcpToolHandlers(runtime, h.dependencies), "conch_sessions", {})));
     expect(state).not.toHaveProperty("captureRequests");
     expect(state.rows).toEqual([]);
+  });
+});
+
+/**
+ * `review_to_front` used to send fire-and-forget and say "accepted" with a version it predicted, whatever the daemon
+ * then did. It waits for the daemon's verdict now (review-verdict.ts), returns what was really filed and who can see it
+ * (`surfaces`), and says a refusal in the daemon's own words.
+ */
+describe("review_to_front waits for the daemon's verdict", () => {
+  const runtime = { claudeDir: "/virtual/claude", socketPath: "/virtual/conch.sock" };
+  const surfaces = { mac: "running", phone: "paired-not-connected", audio: "mac" } as const;
+  const withVerdict = (reply: (event: TurnEvent) => PublishReply, over: Partial<McpDependencies> = {}, options: FakeOptions = {}) => {
+    const h = fakeHarness({ parentPid: 4321, ...options });
+    const sent: TurnEvent[] = [];
+    const dependencies: McpDependencies = {
+      ...h.dependencies,
+      async publishForVerdict(_socket, event) {
+        sent.push(event);
+        return reply(event);
+      },
+      ...over,
+    };
+    return { h, sent, handlers: createMcpToolHandlers(runtime, dependencies) };
+  };
+
+  test("filed: the daemon's id, version and link, the original it copied, and where the user can see it", async () => {
+    const { handlers, sent } = withVerdict(() => ({
+      kind: "verdict",
+      verdict: {
+        kind: "review-filed",
+        filing: { id: "daemon-id", artifact: "art-1", version: 4, kind: "image", link: "/cfg/deliverables/art-1/v4-x/hero.png" },
+        copiedFrom: "/tmp/hero.png",
+        surfaces,
+      },
+    }));
+    const result = JSON.parse(toolText(await callTool(handlers, "review_to_front", { summary: "the hero", link: "https://x.test/hero" })));
+    expect(result).toEqual({
+      outcome: "filed",
+      sessionId: "session-123",
+      label: "Build label",
+      id: "daemon-id",
+      artifact: "art-1",
+      version: 4,
+      kind: "image",
+      link: "/cfg/deliverables/art-1/v4-x/hero.png",
+      copiedFrom: "/tmp/hero.png",
+      surfaces,
+      summary: "the hero",
+    });
+    // What was sent is the publication itself; asking for the verdict is the client's (`publishForVerdict`).
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ type: "review-published", sessionId: "session-123", review: { summary: "the hero", link: "https://x.test/hero" } });
+  });
+
+  test("a temp file the daemon could not copy says why, and the user is told it may go", async () => {
+    const notCopied = "it was filed where it is, not copied into conch: it comes to more than 64 MB or 500 files, over what conch copies;"
+      + " a temp folder can be cleaned (a reboot empties /tmp), and it goes with it";
+    const { handlers } = withVerdict(() => ({
+      kind: "verdict",
+      verdict: { kind: "review-filed", filing: { id: "i", artifact: "a", version: 1, kind: "video", link: "/tmp/big.mov" }, notCopied, surfaces },
+    }));
+    expect(JSON.parse(toolText(await callTool(handlers, "review_to_front", { summary: "the demo", link: "https://x.test/demo" }))))
+      .toMatchObject({ outcome: "filed", notCopied, link: "/tmp/big.mov" });
+  });
+
+  test("refused by the daemon: the call fails with its reason, where it used to say accepted", async () => {
+    const { handlers } = withVerdict(() => ({
+      kind: "verdict",
+      verdict: { kind: "review-refused", reason: "the user dismissed this session from conch, so nothing it publishes is shown until they restore it" },
+    }));
+    const response = await callTool(handlers, "review_to_front", { summary: "the hero", link: "https://x.test/hero" });
+    expect(rpcResult(response)).toMatchObject({ isError: true });
+    expect(toolText(response)).toBe("refused: conch's daemon did not file it: the user dismissed this session from conch, so nothing it publishes is shown until they restore it");
+  });
+
+  test("no daemon is a failure; a daemon that took it without a word is accepted, unconfirmed, with predicted handles", async () => {
+    const down = withVerdict(() => ({ kind: "down" }));
+    const failed = await callTool(down.handlers, "review_to_front", { summary: "x" });
+    expect(toolText(failed)).toBe("failed: conch daemon is not running, so nothing was published");
+    const older = withVerdict(() => ({ kind: "unconfirmed", why: "this conch daemon is older and does not say whether it filed a publication" }));
+    const result = JSON.parse(toolText(await callTool(older.handlers, "review_to_front", { summary: "the sim", kind: "simulator" })));
+    expect(result).toMatchObject({
+      outcome: "accepted",
+      unconfirmed: "this conch daemon is older and does not say whether it filed a publication; the id and version below are predicted, and conch_deliverables says what was filed",
+      version: 1,
+      kind: "simulator",
+    });
+    expect(result.surfaces).toBeUndefined();
+  });
+
+  test("a label its work drifted from is offered for renaming once, never for the user's own, and again for a new label", async () => {
+    let label = "Remove Jaidon from blueprintstudio.ai";
+    let source: "user" | "agent" | "folder" = "agent";
+    const held = (summaries: string[]) => JSON.stringify({ v: 1, rows: [{ id: "session-123", label, reviews: summaries.map((summary, n) => ({
+      summary, id: `r-${n}`, at: n, artifact: `a-${n}`, version: 1, kind: "other",
+    })) }] });
+    let published = held(["Hero with the new headline"]);
+    const filed = (): PublishReply => ({ kind: "verdict", verdict: { kind: "review-filed", filing: { id: "i", artifact: "a", version: 1, kind: "other" }, surfaces } });
+    const h = fakeHarness({ parentPid: 4321 });
+    const handlers = createMcpToolHandlers(runtime, {
+      ...h.dependencies,
+      readSessionsFile: async () => published,
+      sessionLabel: () => label,
+      labelSource: () => source,
+      publishForVerdict: async () => filed(),
+    });
+    const publish = async (summary: string) => JSON.parse(toolText(await callTool(handlers, "review_to_front", { summary })));
+    expect((await publish("Team photo swapped on the about section")).relabel).toEqual({
+      label,
+      hint: `Your session is still labelled '${label}' but your recent work is about 'Team photo swapped on the about section'. If the focus has moved, call conch_rename with a short new label.`,
+    });
+    published = held(["Hero with the new headline", "Team photo swapped on the about section"]);
+    expect((await publish("Headline copy final")).relabel).toBeUndefined();
+    // The user's own label is never second-guessed.
+    label = "my hero work";
+    source = "user";
+    published = held(["Invoices", "Billing export"]);
+    expect((await publish("CSV columns")).relabel).toBeUndefined();
+    // A new label the agent's side chose starts afresh.
+    source = "agent";
+    label = "Hero headline";
+    expect((await publish("CSV columns")).relabel?.label).toBe("Hero headline");
+  });
+
+  test("marks in pixels are sent as fractions of the image they are measured on", async () => {
+    const folder = mkdtempSync(join(tmpdir(), "conch-mcp-px-"));
+    try {
+      const shot = join(folder, "shot.png");
+      const header = Buffer.alloc(24);
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(header);
+      header.write("IHDR", 12, "latin1");
+      header.writeUInt32BE(2000, 16);
+      header.writeUInt32BE(1000, 20);
+      writeFileSync(shot, header);
+      const { handlers, sent } = withVerdict(() => ({ kind: "verdict", verdict: { kind: "review-filed", filing: { id: "i", artifact: "a", version: 1, kind: "image", link: shot }, surfaces } }));
+      const scene = { v: 1, target: { kind: "link" }, marks: [
+        { id: "a", kind: "arrow", frame: { image: shot }, at: [0, 0], to: [1000, 500], units: "px" },
+        { id: "b", kind: "box", frame: { image: shot }, rect: [100, 100, 200, 100], units: "px", size: [1000, 500] },
+        { id: "c", kind: "pin", frame: { image: shot }, at: [0.5, 0.5] },
+      ] };
+      const response = await callTool(handlers, "review_to_front", { summary: "the shot", link: shot, scene });
+      expect(rpcResult(response)).not.toMatchObject({ isError: true });
+      expect(sent[0]?.review?.scene?.marks).toEqual([
+        { id: "a", kind: "arrow", frame: { image: shot }, at: [0, 0], to: [0.5, 0.5] },
+        { id: "b", kind: "box", frame: { image: shot }, rect: [0.1, 0.2, 0.2, 0.2] },
+        { id: "c", kind: "pin", frame: { image: shot }, at: [0.5, 0.5] },
+      ]);
+      const outside = await callTool(handlers, "review_to_front", { summary: "the shot", link: shot, scene: {
+        v: 1, target: { kind: "link" }, marks: [{ id: "x", kind: "pin", frame: { image: shot }, at: [2400, 10], units: "px" }],
+      } });
+      expect(toolText(outside)).toBe("refused: scene marks[0] at reaches outside the 2000×1000 image it is measured on");
+      expect(sent).toHaveLength(1);
+      // The schema says so, and no longer caps the numbers at 1.
+      const marks = (MCP_TOOLS.find((tool) => tool.name === "review_to_front")!.inputSchema.properties as Record<string, any>).scene.properties.marks;
+      expect(marks.items.properties.units).toMatchObject({ type: "string", enum: ["px"] });
+      expect(marks.items.properties.size).toMatchObject({ type: "array", minItems: 2, maxItems: 2 });
+      expect(marks.items.properties.rect.items).toEqual({ type: "number", minimum: 0 });
+      expect(marks.description).toContain('or pixels with units "px"');
+    } finally {
+      rmSync(folder, { recursive: true, force: true });
+    }
   });
 });

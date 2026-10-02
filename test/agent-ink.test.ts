@@ -143,7 +143,9 @@ describe("a mark's image passes the rule a linked file does", () => {
     const skill = readFileSync(join(root, "docs/conch-control-skill.md"), "utf8");
     expect(skill).not.toContain("such as a\n      still the user sent");
     expect(skill).toContain("Mark a canvas this way, never by its picture's path.");
-    expect(skill).toContain("copy it under your folder or /tmp first and mark the copy.");
+    expect(skill).toContain("copy it under your folder or a temp folder first and mark the copy.");
+    // A temp folder is copied into conch with the publication now, so the still outlives the folder it was copied to.
+    expect(skill).toContain("One in a temp folder is copied into conch with the publication, as a\n      link is.");
     expect(readFileSync(join(root, "src/snippet.ts"), "utf8")).not.toContain("such as a still the user sent");
     await withFolder(async (folder) => {
       const kept = join(folder, "home", ".cache", "conch", "uploads");

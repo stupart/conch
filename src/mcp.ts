@@ -17,6 +17,7 @@ import {
   renameSessionLabel,
   sessionLabel,
   setWorkingFolders,
+  sessionLabelSource,
   type RegistrySnapshot,
   type SessionInfo,
 } from "./sessions.ts";
@@ -32,6 +33,9 @@ import {
   type SettingKey,
 } from "./settings.ts";
 import { AGENT_INSTRUCTIONS, MAX_SPEAK_CHARS, type AgentInstructions } from "./agent-instructions.ts";
+import { publishForVerdict, REVIEW_VERDICT_TIMEOUT_MS, type PublishReply } from "./review-verdict.ts";
+import { MARK_PIXELS_MAX, MARK_UNITS, scenePixelsToFractions } from "./mark-pixels.ts";
+import { RelabelHints, type LabelSource } from "./label-drift.ts";
 
 /** A session works in a few folders, not a filesystem. */
 const WORKING_FOLDERS_MAX = 8;
@@ -98,8 +102,26 @@ import {
   type HistoryRequest, type HistoryResponse,
 } from "./history.ts";
 
-export const MCP_PROTOCOL_VERSION = "2024-11-05";
-export const MCP_SESSIONS_FILE = "/tmp/conch-sessions.json";
+/**
+ * The MCP revisions this server speaks, newest first. `initialize` answers the client's own when
+ * it is one of these, else the newest (the spec's negotiation): Claude Code 2.1.280 asks for
+ * 2025-11-25 and takes 2025-06-18; it used to be told 2024-11-05 whatever it asked. A tools-only
+ * server meets each of these as it is, and 2025-03-26's JSON-RPC batches are answered
+ * (`runMcpServer`).
+ */
+export const MCP_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"] as const;
+export const MCP_PROTOCOL_VERSION = MCP_PROTOCOL_VERSIONS[0];
+
+/** The revision to answer a client's `initialize` with: its own when this server speaks it, else the newest. */
+export function negotiateProtocolVersion(requested: unknown): string {
+  return MCP_PROTOCOL_VERSIONS.find((version) => version === requested) ?? MCP_PROTOCOL_VERSION;
+}
+/**
+ * The daemon's published state, by the name the daemon and the Mac app read (status.ts
+ * `SESSIONS_FILE`): an MCP server started beside a daemon in a temp home reads that daemon's, not
+ * the live one's.
+ */
+export const MCP_SESSIONS_FILE = process.env.CONCH_SESSIONS_FILE || "/tmp/conch-sessions.json";
 export const MCP_HISTORY_MAX_BYTES = 64 * 1024;
 
 type PublishedSessionStatus = "working" | "waiting" | "needs";
@@ -409,7 +431,7 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
                 type: "array",
                 minItems: 1,
                 maxItems: REVIEW_MARKS_MAX,
-                description: `Optional agent ink: marks conch draws over what you published where conch shows it (its own panel or side panel, or the user's canvas; never over a browser or another app, so a result with marks opens in conch's panel), each pointing at one thing you changed or want checked. frame is what a mark is drawn on: selector or quote, an element or text in the linked page, which conch finds in its own view of the page and marks itself (no at, to, rect or pts); canvas, the user's canvas you are answering, by the id conch gave you with it; image, an absolute path to an image file (it passes the same check as link). On a canvas or an image, numbers are 0-1 of it from the top left: arrow takes at (its tail) and to (its head), box, ellipse and highlight take rect [x, y, width, height], pin and text take at, stroke takes 2-${REVIEW_MARK_POINTS_MAX} pts. text needs a label; any mark may have one, the note beside it. conch colours marks itself. At most ${REVIEW_MARKS_MAX_BYTES} bytes in all.`,
+                description: `Optional agent ink: marks conch draws over what you published where conch shows it (its own panel or side panel, or the user's canvas; never over a browser or another app, so a result with marks opens in conch's panel), each pointing at one thing you changed or want checked. frame is what a mark is drawn on: selector or quote, an element or text in the linked page, which conch finds in its own view of the page and marks itself (no at, to, rect or pts); canvas, the user's canvas you are answering, by the id conch gave you with it; image, an absolute path to an image file (it passes the same check as link). On a canvas or an image, numbers are 0-1 of it from the top left, or pixels with units "px": of size [width, height] when given (the size of the view you measured on, if the image was shown to you resized), else of the image file's own pixel size; conch turns them into 0-1. arrow takes at (its tail) and to (its head), box, ellipse and highlight take rect [x, y, width, height], pin and text take at, stroke takes 2-${REVIEW_MARK_POINTS_MAX} pts. text needs a label; any mark may have one, the note beside it. conch colours marks itself. At most ${REVIEW_MARKS_MAX_BYTES} bytes in all.`,
                 items: {
                   type: "object",
                   properties: {
@@ -426,14 +448,27 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
                       },
                       additionalProperties: false,
                     },
-                    at: { type: "array", items: { type: "number", minimum: 0, maximum: 1 }, minItems: 2, maxItems: 2 },
-                    to: { type: "array", items: { type: "number", minimum: 0, maximum: 1 }, minItems: 2, maxItems: 2 },
-                    rect: { type: "array", items: { type: "number", minimum: 0, maximum: 1 }, minItems: 4, maxItems: 4 },
+                    // No maximum: with units "px" these are pixels. The fractions' 0-1 is the handler's to refuse.
+                    at: { type: "array", items: { type: "number", minimum: 0 }, minItems: 2, maxItems: 2 },
+                    to: { type: "array", items: { type: "number", minimum: 0 }, minItems: 2, maxItems: 2 },
+                    rect: { type: "array", items: { type: "number", minimum: 0 }, minItems: 4, maxItems: 4 },
                     pts: {
                       type: "array",
-                      items: { type: "array", items: { type: "number", minimum: 0, maximum: 1 }, minItems: 2, maxItems: 2 },
+                      items: { type: "array", items: { type: "number", minimum: 0 }, minItems: 2, maxItems: 2 },
                       minItems: 2,
                       maxItems: REVIEW_MARK_POINTS_MAX,
+                    },
+                    units: {
+                      type: "string",
+                      enum: MARK_UNITS,
+                      description: "\"px\": at, to, rect and pts are pixels (of size, else of the image file); leave it out for fractions 0-1.",
+                    },
+                    size: {
+                      type: "array",
+                      items: { type: "number", minimum: 1, maximum: MARK_PIXELS_MAX },
+                      minItems: 2,
+                      maxItems: 2,
+                      description: "With units \"px\": [width, height] of the picture the pixels were measured on. Needed on a canvas; on an image, defaults to the file's own size.",
                     },
                     label: { type: "string", minLength: 1, maxLength: REVIEW_MARK_LABEL_MAX },
                   },
@@ -633,6 +668,14 @@ export interface McpDependencies {
   ): Promise<ProviderRenameResult>;
   setWorkingFolders(sessionId: string, folders: readonly string[]): void;
   sendToDaemon(socketPath: string, event: TurnEvent): Promise<boolean>;
+  /**
+   * Send a publication and wait for the daemon's verdict (review-verdict.ts). Absent, a
+   * publication goes by `sendToDaemon` and is reported taken but unconfirmed, as an older
+   * daemon's is.
+   */
+  publishForVerdict?(socketPath: string, event: TurnEvent, timeoutMs?: number): Promise<PublishReply>;
+  /** Who chose a session's label (`sessionLabelSource`); absent, no relabel hint is offered. */
+  labelSource?(session: Readonly<SessionInfo>): LabelSource;
   sendControlMessage(
     socketPath: string,
     message: ControlMessage | HistoryRequest,
@@ -665,6 +708,8 @@ export const defaultMcpDependencies: McpDependencies = {
   },
   setWorkingFolders,
   sendToDaemon,
+  publishForVerdict,
+  labelSource: (session) => sessionLabelSource(session, session.cwd),
   sendControlMessage,
   getSettingDescriptor,
   parseSetting,
@@ -1173,6 +1218,8 @@ export function createMcpToolHandlers(
   // ponytail: the window is audioTimeoutMs's estimate, because sendToDaemon
   // never reads a reply; upgrade to the daemon's ack if speak ever gets one.
   let speakingUntil = 0;
+  // A relabel is offered once per label (label-drift.ts); this server lives as long as its session.
+  const relabelHints = new RelabelHints();
 
   async function readHistory(request: HistoryRequest, meta: unknown): Promise<HistoryResponse> {
     if (request.session === "self") {
@@ -1621,15 +1668,19 @@ export function createMcpToolHandlers(
     },
 
     async review_to_front(argumentsValue, meta) {
-      // Accepted, refused or failed, and each says which. A refusal names its
-      // reason and nothing reaches the daemon.
+      // Filed, refused or failed, and each says which. A refusal names its reason: this server's,
+      // before anything reaches the daemon, or the daemon's own, which it used to only log.
       const { summary, truncatedFrom, link, scene, kind, key, focus, session, transcriptPath } = await (async () => {
         const argumentsObject = toolArguments(argumentsValue);
         allowOnly(argumentsObject, ["summary", "link", "kind", "key", "session", "scene", "focus"]);
         const cleaned = sanitizeReviewSummary(requiredString(argumentsObject, "summary"), Infinity);
         if (!cleaned) throw new ToolInputError("summary must be a non-empty string");
-        const scene = Object.hasOwn(argumentsObject, "scene")
-          ? checkReviewScene(argumentsObject.scene, Object.hasOwn(argumentsObject, "link"))
+        // Marks measured in pixels become fractions first (mark-pixels.ts): everything after this, the
+        // socket and the apps included, sees 0 to 1.
+        const pixels = Object.hasOwn(argumentsObject, "scene") ? await scenePixelsToFractions(argumentsObject.scene) : undefined;
+        if (pixels && !pixels.ok) throw new ToolInputError(pixels.reason);
+        const scene = pixels?.ok
+          ? checkReviewScene(pixels.scene, Object.hasOwn(argumentsObject, "link"))
           : undefined;
         if (scene && !scene.ok) throw new ToolInputError(scene.reason);
         const kind = optionalString(argumentsObject, "kind");
@@ -1682,8 +1733,6 @@ export function createMcpToolHandlers(
         throw new ToolInputError(`refused: ${errorMessage(error)}`);
       });
       const label = dependencies.sessionLabel(session, session.cwd);
-      // What the daemon will file, computed by the same rules it files with, so the agent gets
-      // its handles back from a send that has no reply (`sendToDaemon` is fire-and-forget).
       const at = dependencies.now();
       const review = {
         summary,
@@ -1694,48 +1743,82 @@ export function createMcpToolHandlers(
         ...(focus ? { focus } : {}),
       };
       const facts = deliverableFacts(review);
-      // ponytail: the version is predicted from the published state by the daemon's own rule
-      // (`nextVersion`); a publication still queued behind speech isn't published yet, and the
-      // numbers a Remove took (`PanelSessionState.versions`) aren't published at all, so either can
-      // read low. conch_deliverables says what was filed. A reply from the daemon if it bites.
-      const version = nextVersion(await heldDeliverables(sessionsPath, session.sessionId, dependencies) ?? [], facts.artifact);
-      const sent = await (async () => {
+      // What it already holds, oldest first: the version an older daemon will give it (`nextVersion`, its own
+      // rule), and the summaries a drifting label is judged against.
+      const held = await heldDeliverables(sessionsPath, session.sessionId, dependencies) ?? [];
+      const event: TurnEvent = {
         // Not a turn-end: publishing happens mid-turn, and the turn's own Stop
         // says when it finished.
-        return dependencies.sendToDaemon(config.socketPath, {
-          type: "review-published",
-          sessionId: session.sessionId,
-          label,
-          cwd: session.cwd,
-          pid: session.pid,
-          announce: `${label} has work ready for your review: ${summary}`,
-          ...(transcriptPath
-            ? { transcriptPath, mark: await dependencies.transcriptMark(transcriptPath) }
-            : {}),
-          eventAt: at,
-          review,
-        });
-      })().catch((error) => {
-        throw new Error(`failed: ${errorMessage(error)}`);
-      });
-      if (!sent) throw new Error("failed: conch daemon is not running, so nothing was published");
-      return {
-        outcome: "accepted",
+        type: "review-published",
         sessionId: session.sessionId,
         label,
-        // This filing's own id, the artifact it is a version of, and which version: what
-        // conch_deliverables lists and review_remove takes.
-        id: reviewIdentity(session.sessionId, { summary, link, at }),
-        artifact: facts.artifact,
-        version,
-        kind: facts.kind,
+        cwd: session.cwd,
+        pid: session.pid,
+        announce: `${label} has work ready for your review: ${summary}`,
+        ...(transcriptPath
+          ? { transcriptPath, mark: await dependencies.transcriptMark(transcriptPath) }
+          : {}),
+        eventAt: at,
+        review,
+      };
+      const reply = await (dependencies.publishForVerdict
+        ? dependencies.publishForVerdict(config.socketPath, event, REVIEW_VERDICT_TIMEOUT_MS)
+        : dependencies.sendToDaemon(config.socketPath, event).then((sent): PublishReply => sent
+          ? { kind: "unconfirmed", why: "this conch daemon does not say whether it filed a publication" }
+          : { kind: "down" })
+      ).catch((error): never => {
+        throw new Error(`failed: ${errorMessage(error)}`);
+      });
+      if (reply.kind === "down") throw new Error("failed: conch daemon is not running, so nothing was published");
+      const verdict = reply.kind === "verdict" ? reply.verdict : undefined;
+      if (verdict?.kind === "review-refused") {
+        throw new ToolInputError(`refused: conch's daemon did not file it: ${verdict.reason}`);
+      }
+      // Offered once per label, and only for a label the agent's side chose (label-drift.ts).
+      const relabel = dependencies.labelSource
+        ? relabelHints.take(session.sessionId, label, dependencies.labelSource(session), [summary, ...held.map((one) => one.summary).reverse()])
+        : undefined;
+      const said = {
         summary,
-        ...(link ? { link } : {}),
         ...(focus ? { focus } : {}),
         ...(scene ? { scene } : {}),
         ...(truncatedFrom === undefined
           ? {}
           : { summaryTruncated: { from: truncatedFrom, to: REVIEW_SUMMARY_MAX } }),
+        ...(relabel ? { relabel } : {}),
+      };
+      if (verdict) {
+        const { filing, copiedFrom, notCopied, surfaces } = verdict;
+        return {
+          outcome: "filed",
+          sessionId: session.sessionId,
+          label,
+          // This filing's own id, the artifact it is a version of, and which version, as the daemon filed them:
+          // what conch_deliverables lists and review_remove takes.
+          id: filing.id,
+          artifact: filing.artifact,
+          version: filing.version,
+          kind: filing.kind,
+          ...(filing.link ? { link: filing.link } : {}),
+          ...(copiedFrom ? { copiedFrom } : {}),
+          ...(notCopied ? { notCopied } : {}),
+          ...(surfaces ? { surfaces } : {}),
+          ...said,
+        };
+      }
+      // Taken, with no word on the filing: an older daemon, or one that didn't answer in time. The handles are
+      // predicted by the daemon's own rules, and said to be.
+      return {
+        outcome: "accepted",
+        unconfirmed: `${reply.kind === "unconfirmed" ? reply.why : "the daemon said nothing"}; the id and version below are predicted, and conch_deliverables says what was filed`,
+        sessionId: session.sessionId,
+        label,
+        id: reviewIdentity(session.sessionId, { summary, link, at }),
+        artifact: facts.artifact,
+        version: nextVersion(held, facts.artifact),
+        kind: facts.kind,
+        ...(link ? { link } : {}),
+        ...said,
       };
     },
 
@@ -1911,6 +1994,21 @@ function historyRpcResult(id: JsonRpcId, result: unknown): JsonRpcResponse {
 }
 
 /**
+ * The answer to `initialize`: the revision negotiated from the client's (`negotiateProtocolVersion`),
+ * and `instructions`, which tell every session that loads the plugin that conch is watching and what
+ * to do about it, from the one source (agent-instructions.ts). A Claude Code session used to hear it
+ * only from a skill it had to think of loading.
+ */
+export function initializeResult(params: unknown, text: AgentInstructions = AGENT_INSTRUCTIONS) {
+  return {
+    protocolVersion: negotiateProtocolVersion(isRecord(params) ? params.protocolVersion : undefined),
+    capabilities: { tools: {} },
+    serverInfo: { name: "conch", version: CONCH_VERSION },
+    instructions: text.serverInstructions,
+  };
+}
+
+/**
  * Dispatch one already-parsed JSON-RPC message. All failures are converted to
  * JSON-RPC errors or MCP isError tool results; this function never rejects.
  */
@@ -1933,13 +2031,7 @@ export async function dispatchJsonRpc(
 
     switch (message.method) {
       case "initialize": {
-        return shouldReply
-          ? jsonRpcResult(requestId, {
-            protocolVersion: MCP_PROTOCOL_VERSION,
-            capabilities: { tools: {} },
-            serverInfo: { name: "conch", version: CONCH_VERSION },
-          })
-          : null;
+        return shouldReply ? jsonRpcResult(requestId, initializeResult(message.params)) : null;
       }
 
       case "notifications/initialized":
@@ -2002,6 +2094,24 @@ export async function dispatchJsonRpc(
   }
 }
 
+/**
+ * A JSON-RPC batch, which MCP 2025-03-26 lets a client send: each message dispatched in order, the
+ * answers in one array, and nothing at all for a batch of notifications. An empty batch is an
+ * invalid request, as JSON-RPC says.
+ */
+export async function dispatchJsonRpcBatch(
+  messages: readonly unknown[],
+  handlers: McpToolHandlers,
+): Promise<JsonRpcResponse | JsonRpcResponse[] | null> {
+  if (!messages.length) return jsonRpcError(null, -32600, "Invalid Request");
+  const responses: JsonRpcResponse[] = [];
+  for (const message of messages) {
+    const response = await dispatchJsonRpc(message, handlers);
+    if (response) responses.push(response);
+  }
+  return responses.length ? responses : null;
+}
+
 export interface RunMcpServerOptions {
   config?: McpRuntimeConfig;
   dependencies?: McpDependencies;
@@ -2035,7 +2145,7 @@ export async function runMcpServer(options: RunMcpServerOptions = {}): Promise<v
       process.stderr.write(`[conch:mcp] ${message}\n`);
     });
 
-  const writeResponse = async (response: JsonRpcResponse): Promise<void> => {
+  const writeResponse = async (response: JsonRpcResponse | JsonRpcResponse[]): Promise<void> => {
     await writeLine(serializeJsonRpcLine(response));
   };
   const processLine = async (line: string): Promise<void> => {
@@ -2047,7 +2157,9 @@ export async function runMcpServer(options: RunMcpServerOptions = {}): Promise<v
       await writeResponse(jsonRpcError(null, -32700, "Parse error"));
       return;
     }
-    const response = await dispatchJsonRpc(message, handlers);
+    const response = Array.isArray(message)
+      ? await dispatchJsonRpcBatch(message, handlers)
+      : await dispatchJsonRpc(message, handlers);
     if (response) await writeResponse(response);
   };
 

@@ -1,11 +1,12 @@
 /** Turn a markdown reply into something worth hearing. */
 
 import { open as openFile, realpath, stat, type FileHandle } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
-import { captureFolderPath } from "./capture-folder.ts";
 import { selectWindowBranch, type WindowIdentity } from "./conversation.ts";
 import { checkFocusShape, FOCUS_MAX, inferDeliverableKind, isPackagePath } from "./deliverables.ts";
+import { describeTempFolders, tempFolders } from "./temp-folders.ts";
+import { conchStoreRoot } from "./conch-store.ts";
 
 const BARE_URL = /(?:<)?\bhttps?:\/\/[^\s<>"'`]+(?:>)?/gi;
 const FILESYSTEM_PATH = /(^|[\s([{'":=])((?:(?:~?|\.\.?)\/|[A-Za-z0-9_.-]+\/)[^\s)\]}>,"'`]+)/g;
@@ -1318,9 +1319,13 @@ async function isKeynoteDeck(real: string): Promise<boolean> {
  *
  * A file sent to the phone has to be work, not whatever an agent can read. It must be a regular,
  * non-executable file under one of `roots` (the session's folder and the folders it works in) or
- * a temp folder, where screenshots and renders go, or conch's own capture folder, where `conch_capture` keeps the
- * pages it drew (capture-folder.ts: only conch writes there, and it outlives temp's sweeps). It must not be hidden or
- * sit in a hidden folder (~/.ssh, ~/.config, ~/.codex, ~/.claude, .env, .git), and it must not be a key or certificate.
+ * a temp folder, where screenshots and renders go: `/tmp` or macOS's per-user one, named the same
+ * in every process whatever its `$TMPDIR` (temp-folders.ts), since the MCP server and the daemon
+ * once disagreed and a publication said "accepted" was dropped. Or conch's own store
+ * (conch-store.ts, `~/Library/Application Support/conch`), where `conch_capture` keeps the pages it
+ * drew and conch keeps its copies of deliverables that sat in a temp folder: only conch writes
+ * there, and it outlives the temp folders' sweeps. It must not be hidden or sit in a hidden folder
+ * (~/.ssh, ~/.config, ~/.codex, ~/.claude, .env, .git), and it must not be a key or certificate.
  * `.worktrees` is the one hidden folder allowed: a repo's worktrees live there. All of it is
  * judged on the real path, so a symlink can't launder its target.
  */
@@ -1334,14 +1339,14 @@ export async function checkLocalFile(
     const why = !real ? "it does not exist" : !file?.isFile() ? "it is not a regular file" : "it is an executable file";
     return { ok: false, reason: SAFE_REVIEW_LINK, why };
   }
-  const allowed = await Promise.all([...roots, tmpdir(), "/tmp", captureFolderPath()].map((root) => realpath(root).catch(() => null)));
+  const allowed = await Promise.all([...roots, ...tempFolders(), conchStoreRoot()].map((root) => realpath(root).catch(() => null)));
   if (!allowed.some((root) => root && real.startsWith(root.endsWith("/") ? root : `${root}/`))) {
     const where = sessionFolders(roots);
     return {
       ok: false,
-      reason: `link ${real} is outside ${where} and the temp folder, so it is not sent to the phone;`
+      reason: `link ${real} is outside ${where} and ${describeTempFolders()}, so it is not sent to the phone;`
         + ` publish a copy under ${roots.length > 1 ? "one of those folders" : "your folder"} or /tmp`,
-      why: `it is outside ${where} and the temp folder`,
+      why: `it is outside ${where} and the temp folders`,
     };
   }
   if (real.split("/").some((part) => part.startsWith(".") && part !== ".worktrees") || (SECRET_FILE.test(real) && !await isKeynoteDeck(real))) {
@@ -1374,15 +1379,15 @@ export async function checkLocalFolder(
     return { ok: false, reason: `link ${path} is not a folder that exists`, why: "it is not a folder that exists" };
   }
   const own = (await Promise.all(roots.map((root) => realpath(root).catch(() => null)))).filter((root): root is string => Boolean(root));
-  const temp = (await Promise.all([tmpdir(), "/tmp"].map((root) => realpath(root).catch(() => null)))).filter((root): root is string => Boolean(root));
+  const temp = (await Promise.all(tempFolders().map((root) => realpath(root).catch(() => null)))).filter((root): root is string => Boolean(root));
   const under = (root: string) => real.startsWith(root.endsWith("/") ? root : `${root}/`);
   if (!own.some((root) => real === root || under(root)) && !temp.some(under)) {
     const where = sessionFolders(roots);
     return {
       ok: false,
-      reason: `link ${real} is outside ${where} and the temp folder, so conch won't show it;`
+      reason: `link ${real} is outside ${where} and ${describeTempFolders()}, so conch won't show it;`
         + ` publish a folder under ${roots.length > 1 ? "one of those" : "your own"}`,
-      why: `it is outside ${where} and the temp folder`,
+      why: `it is outside ${where} and the temp folders`,
     };
   }
   if (real === "/" || real === await realpath(homedir()).catch(() => homedir())) {

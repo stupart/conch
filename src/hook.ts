@@ -147,6 +147,13 @@ export interface TurnEvent {
    */
   awaitDelivery?: true;
   /**
+   * A `review-published` whose sender waits for the daemon's verdict on this connection: filed
+   * (with the filing's real id, version and link, and where it can be seen) or refused, and why
+   * (review-verdict.ts). Only `review_to_front` asks; without it the socket acks at once, as a
+   * daemon from before this does whatever is sent.
+   */
+  awaitVerdict?: true;
+  /**
    * An inject that answers the question the session is waiting on: one answer
    * per question, in order. Typed into the agent's picker as its own keys;
    * `announce` is then only the readable summary.

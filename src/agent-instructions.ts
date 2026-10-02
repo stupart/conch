@@ -16,6 +16,7 @@ import conchControlProse from "../docs/conch-control-skill.md" with { type: "tex
  * - the conch-control SKILL.md (`renderSkillMd`), frontmatter and `{{ALWAYS_ON}}`
  * - the help session's conch section (`renderHelpConchSection`)
  * - every MCP tool description (`buildMcpTools` in mcp.ts)
+ * - the MCP server's `instructions` (`initialize` in mcp.ts), which Claude Code carries always-on
  *
  * A leaf module: the help session imports it, and must stay a leaf.
  */
@@ -23,12 +24,19 @@ import conchControlProse from "../docs/conch-control-skill.md" with { type: "tex
 /** A `conch_speak` is a confirmation, not a narration; longer is refused, never cut. */
 export const MAX_SPEAK_CHARS = 600;
 
+/**
+ * The longest the server's `instructions` may be. Claude Code cuts them at 2048 characters
+ * (`CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH`, 2.1.280) and adds "… [truncated]"; well under that,
+ * so every line of it arrives, and short enough to sit in every session's context for nothing.
+ */
+export const SERVER_INSTRUCTIONS_MAX = 500;
+
 export const AGENT_INSTRUCTIONS = {
   alwaysOn: `conch connects this session to the user’s Mac workspace, floating overlay, and iPhone.
 
-When you have a meaningful result or something the user should inspect, call \`review_to_front\` with a short summary and the best artifact link. When the thing to look at has no link (an app window, the Simulator, a terminal, a design), pass its \`kind\` and say where to look in the summary. For a written explanation, request a conversation scene (\`scene: {v: 1, target: {kind: "conversation"}}\`) and keep the complete explanation in your normal reply.
+When you have a meaningful result or something the user should inspect, call \`review_to_front\` with a short summary and the best artifact link, then tell the user where it landed from the result’s \`surfaces\`, not what you assume. When the thing to look at has no link (an app window, the Simulator, a terminal, a design), pass its \`kind\` and say where to look in the summary. For a written explanation, request a conversation scene (\`scene: {v: 1, target: {kind: "conversation"}}\`) and keep the complete explanation in your normal reply.
 
-A link is an http(s) URL, or an absolute path to a file or a folder (shown as its file tree) under this session’s folders: where it started, where it is now, its git repository, \`conch_working_folders\`, or /tmp. Never a hidden file, key or executable.
+A link is an http(s) URL, or an absolute path to a file or a folder (shown as its file tree) under this session’s folders: where it started, where it is now, its git repository, \`conch_working_folders\`, or a temp folder (/tmp, or macOS’s per-user /var/folders/…/T), which conch copies when it files the link, so a cleaned temp folder can’t take it away. Never a hidden file, key or executable.
 
 To show part of a web page, use \`conch_capture\` rather than screenshotting a browser.
 
@@ -42,9 +50,19 @@ For user-requested session, audio, or settings control, load the \`conch-control
 
 If publication is unavailable, leave the result in your reply and end it with one \`conch:review <summary> | <link>\` line (only the last counts, so link a folder for several things); do not retry under another session’s identity. A refused link is dropped and the summary kept; conch tells the user and you why.`,
 
+  /**
+   * What the MCP server says in its `initialize` reply (`instructions`), which Claude Code puts in
+   * every session that loads the plugin, where the skill is only a name until it is loaded and
+   * AGENTS.md reaches Codex alone. A Claude Code session used to learn conch was watching only if
+   * it went looking. Short on purpose: Claude Code cuts server instructions past 2048 characters,
+   * and this is a pointer, the skill is the manual (`SERVER_INSTRUCTIONS_MAX`).
+   */
+  serverInstructions:
+    "This session is watched by conch: the user follows it from conch’s Mac app and their iPhone, often away from the desk. When they should look at something (a page, image, file, folder, build or app state), publish it with review_to_front instead of only mentioning a path, then tell them where it landed from the result’s surfaces. A file in /tmp or macOS’s /var/folders/…/T is copied into conch when filed. Load the conch-control skill (conch:conch-control) for the details.",
+
   /** The skill's frontmatter description, which Claude Code carries always-on. */
   skillDescription:
-    "Publish a meaningful result for the user to inspect with review_to_front, and see or steer their other Claude Code and Codex sessions when asked. Use when you have a result worth inspecting, or when asked what the other sessions are doing.",
+    "Publish what the user should look at (a page, image, file, folder, build or app state) with review_to_front, and see or steer their other Claude Code and Codex sessions when asked. Use when you have a result worth inspecting, or when asked what the other sessions are doing.",
 
   /** What a session with no conch tools should conclude, and not do. */
   missingTools:
@@ -68,7 +86,7 @@ If publication is unavailable, leave the result in your reply and end it with on
     conch_transcript_tail:
       "Read the last sentences of a live session’s latest assistant reply. Does not retrieve full history or verify tool results.",
     review_to_front:
-      "Publish your session’s result for the user to inspect, with a concise summary, an optional artifact link and kind, and an optional scene: the conversation to bring forward, or marks drawn over the result at the one thing to check. To show a set of files or a structure you created or changed (a new module layout, generated assets), link the folder (kind folder, its file tree in conch) and name the paths in it to look at with focus. Publishing the same artifact again (the same link, or the same key) adds its next version rather than a second entry: the user sees the newest, with earlier versions listed under it by summary and time. Returns the filing's id, its artifact, version and kind. The user's pill click stages it. Publishing does not open applications or finish the running turn.",
+      "Publish your session’s result for the user to inspect, with a concise summary, an optional artifact link and kind, and an optional scene: the conversation to bring forward, or marks drawn over the result at the one thing to check. To show a set of files or a structure you created or changed (a new module layout, generated assets), link the folder (kind folder, its file tree in conch) and name the paths in it to look at with focus. Publishing the same artifact again (the same link, or the same key) adds its next version rather than a second entry: the user sees the newest, with earlier versions listed under it by summary and time. A file or folder in a temp folder (/tmp, or macOS's per-user /var/folders/…/T) is filed as conch's own copy (copiedFrom names the original), so cleaning the temp folder can't take it away. It waits for conch to file it and returns the filing's id, its artifact, version and kind, or conch's reason for refusing it, and surfaces: where the user can see it (mac: showing, running or not-running; phone: connected, paired-not-connected, unpaired or off; audio: mac, phone, other-mac or manual). Tell the user where it landed from surfaces; don't assume they saw it. When the result carries relabel, your session's label no longer matches your recent work: if your focus has moved, call conch_rename with a short new label. The user's pill click stages it. Publishing does not open applications or finish the running turn.",
     conch_history:
       "Read a page of recorded session history, including coverage and continuation cursors.",
     conch_item:

@@ -332,7 +332,9 @@ public enum DaemonHealth {
         }
         let peer = peerPID(descriptor)
 
-        let request = Array("{\"kind\":\"ping\"}\n".utf8)
+        // `from` says it is the Mac app asking: the daemon counts the app running while these arrive, and tells an
+        // agent publishing a result whether the Mac can show it (surfaces.ts, 2026-10-03). A daemon from before ignores it.
+        let request = Array("{\"kind\":\"ping\",\"from\":\"mac-app\"}\n".utf8)
         var written = 0
         while written < request.count {
             let result = request.withUnsafeBytes { bytes in

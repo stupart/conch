@@ -134,8 +134,9 @@ try {
 
   const first = await call("review_to_front", { summary: "The new module layout", link: module, focus: ["src/setup.ts", "test/"] });
   const accepted = first.isError ? null : JSON.parse(first.text);
-  check(accepted?.outcome === "accepted" && accepted.kind === "folder" && accepted.version === 1,
-    `review_to_front accepted the folder: ${first.text.slice(0, 200)}`);
+  // The daemon's own verdict now (review-verdict.ts): filed, under the version it gave it.
+  check(accepted?.outcome === "filed" && accepted.kind === "folder" && accepted.version === 1,
+    `review_to_front filed the folder: ${first.text.slice(0, 200)}`);
   const one = await until("the folder deliverable", 10_000, () => ourRow()?.review?.kind === "folder" ? ourRow()!.review! : null);
   const artifact = artifactIdentity(realpathSync(module));
   check(one?.link === module && one.version === 1 && one.artifact === artifact, `published: kind folder, v1, link ${one?.link}`);
@@ -144,7 +145,7 @@ try {
     "…and no listing: nothing the folder holds is in the sessions file but the paths named");
 
   const second = await call("review_to_front", { summary: "The layout, with its tests", link: `${module}/`, kind: "folder", focus: ["test/setup.test.ts"] });
-  check(!second.isError && JSON.parse(second.text).version === 2, `filed again, the tool predicts version 2: ${second.text.slice(0, 120)}`);
+  check(!second.isError && JSON.parse(second.text).version === 2, `filed again, the daemon says version 2: ${second.text.slice(0, 120)}`);
   const two = await until("version 2", 10_000, () => ourRow()?.review?.version === 2 ? ourRow()! : null);
   check(two?.review?.artifact === artifact && two.reviews?.length === 2 && two.reviews.every((held) => held.artifact === artifact),
     `the daemon filed it as the same artifact's version 2, beside version 1 (${two?.reviews?.map((held) => `v${held.version}`).join(", ")})`);

@@ -280,7 +280,7 @@ describe("the socket's page-capture, checked again where it lands", () => {
 });
 
 /** A control server with the real service behind it, the way the daemon wires it, and a pretend Mac app. */
-async function served(options: { held?: SessionReview[]; versions?: Record<string, number> } = {}) {
+async function served(options: { held?: SessionReview[]; versions?: Record<string, number>; verdict?: unknown } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "cs-"));
   const socketPath = join(dir, "s.sock");
   const folder = captureFolder(join(dir, "captures"));
@@ -299,7 +299,7 @@ async function served(options: { held?: SessionReview[]; versions?: Record<strin
     ownerDeviceId: "mac",
     log: () => {},
     sessions: { resolve: (value) => { resolved.push(value); return value; }, current: () => ({ published: false }) },
-    application: { turn: (event: TurnEvent) => { turns.push(event); } } as unknown as ControlApplication,
+    application: { turn: (event: TurnEvent) => { turns.push(event); return options.verdict; } } as unknown as ControlApplication,
     pageCapture: service,
   });
   expect(await server.start()).toBe(true);
@@ -400,6 +400,21 @@ describe("over the socket: the agent's request held open until the app has drawn
         kind: "image",
         summary: "the Pro plan card",
       });
+    } finally {
+      await h.close();
+    }
+  });
+
+  // The daemon's verdict reaches a capture's publication as it reaches review_to_front's (review-verdict.ts).
+  test("a publication the daemon refuses comes back not filed, with the daemon's reason", async () => {
+    const h = await served({ verdict: Promise.resolve({ kind: "review-refused", reason: "the user dismissed this session from conch" }) });
+    try {
+      const [reply] = await Promise.all([
+        requestPageCapture(h.socketPath, message({ publish }), 5_000),
+        h.app((id) => ({ path: h.png(id), devicePixelRatio: 2, element: { x: 48, y: 48, w: 800, h: 320 }, finalUrl: "https://acme.dev/pricing", title: "Pricing" })),
+      ]);
+      expect(reply).toMatchObject({ ok: true, reply: { kind: "page-capture-result", notFiled: "conch didn't file it: the user dismissed this session from conch" } });
+      expect(h.turns).toHaveLength(1);
     } finally {
       await h.close();
     }

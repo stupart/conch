@@ -26,7 +26,7 @@ import { adapterFor, adapterForTranscript, inputBoxHoldsWords, transcriptFormatF
 import { claudeTranscriptSince } from "./delivery-evidence.ts";
 import { injectProviderCommand as providerCommand, isProviderCommandLine } from "./provider-rename.ts";
 import { classifyReadingGap, parseNameAddress, wordOverlapRatio } from "./commands.ts";
-import { checkReviewLink, linkRefusalNote, markImagesRefusal, resolveReviewFocus, lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince, transcriptMark, promptSince } from "./snippet.ts";
+import { checkReviewLink, linkRefusalNote, markImagesRefusal, resolveReviewFocus, lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince, transcriptMark, promptSince, type ReviewScene } from "./snippet.ts";
 import {
   lastAssistantReply,
   latestAnswerableQuestion,
@@ -40,7 +40,10 @@ import {
   type WindowIdentity,
 } from "./conversation.ts";
 import { isWindowKey } from "./window-key.ts";
-import { folderRefusal } from "./deliverables.ts";
+import { artifactKey, deliverableFacts, folderRefusal } from "./deliverables.ts";
+import { discardStoredCopy, storeTempDeliverable, type StoredDeliverable } from "./deliverable-store.ts";
+import { refusedVerdict, type ReviewVerdict } from "./review-verdict.ts";
+import type { AudioSurface } from "./surfaces.ts";
 import { reviewLinkScope, rootsHolding, type LinkScope } from "./review-roots.ts";
 import { deadTarget, type DeadTarget } from "./dead-target.ts";
 import { clipboardFallbackError } from "./app-errors.ts";
@@ -60,7 +63,7 @@ import { findSessionBySpokenName, findTranscript, sessionLabel, type SessionInfo
 import { eventTimestamp, refreshTurnIdentity, type SessionLedger } from "./session-ledger.ts";
 import type { EventQueue } from "./event-queue.ts";
 import { sessionHasLiveBackgroundWork } from "./agent-activity.ts";
-import { carriedReview, carriedReviews, fileReview, filedVersions, latestLatchedState, type SessionStatus } from "./panel.ts";
+import { carriedReview, carriedReviews, fileReview, filedVersions, latestLatchedState, nextVersion, type SessionStatus } from "./panel.ts";
 import { gateTurnForControls } from "./instant-controls.ts";
 import {
   emitRecorderTrace,
@@ -491,6 +494,11 @@ export interface VoiceLoop {
    * `SendFailure` naming what stopped it — which is what the phone and the Mac app show.
    */
   handle(event: TurnEvent): Promise<boolean | "staged" | inject.SendFailure | void>;
+  /**
+   * File a `review-published` now and say what became of it (review-verdict.ts). Its later turn
+   * through `handle` only announces it. The daemon's door for publications, off the speech queue.
+   */
+  filePublication(event: TurnEvent): Promise<ReviewVerdict>;
   speak(speechCfg: Config, text: string, label?: string, volunteered?: boolean, sessionId?: string): Promise<void>;
   speakBlocker(volunteered: boolean): "mic-open" | "manual" | null;
   /** Exactly the mic gate, narration included — never just `micOpen` (see the stop contract in control-server.ts). */
@@ -1008,13 +1016,14 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
    * string, and it is not only the MCP server's, so a raw write could file `/etc/hosts` for the
    * phone to fetch. Checked against the folders the daemon knows the session by (`linkScope`), not
    * the one the event claims. The link as checked (absolute) and whether it is a folder (kind
-   * `folder`, its tree); undefined for none; refused with a note for the person (`linkRefusalNote`).
+   * `folder`, its tree); undefined for none; refused with a note for the person (`linkRefusalNote`)
+   * and the reason for the agent, which hears it in `review_to_front`'s verdict (review-verdict.ts).
    * A folder link with another kind said for it is refused here too (`folderRefusal`).
    */
   async function vettedReviewLink(
     event: TurnEvent,
     scope: LinkScope,
-  ): Promise<{ ok: true; link: string; folder: boolean } | { ok: false; note: string } | undefined> {
+  ): Promise<{ ok: true; link: string; folder: boolean } | { ok: false; note: string; reason: string } | undefined> {
     const link = event.review?.link;
     if (link === undefined) return undefined;
     const checked = await checkReviewLink(link, scope.cwd, scope.roots);
@@ -1024,42 +1033,89 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     if (checked.ok && !reason) return { ok: true, link: checked.link, folder: checked.folder === true };
     log(`refused a deliverable link from "${event.label}": ${reason}`);
     recordDaemonError("review-link", `Refused a deliverable's link: ${reason}`, event.sessionId, { link });
-    return { ok: false, note: linkRefusalNote(link, checked.ok ? reason! : checked.why) };
+    return { ok: false, note: linkRefusalNote(link, checked.ok ? reason! : checked.why), reason: reason! };
   }
 
   /**
    * A folder deliverable's `focus`, resolved on the disk again (`resolveReviewFocus`): the socket checked only its shape,
-   * and the socket is not only the MCP server's. The paths as filed, undefined for none, null when refused.
+   * and the socket is not only the MCP server's. The paths as filed (none for none), or why it was refused.
    */
-  async function vettedFocus(event: TurnEvent, folder: string | undefined): Promise<string[] | undefined | null> {
+  async function vettedFocus(event: TurnEvent, folder: string | undefined): Promise<{ ok: true; focus?: string[] } | { ok: false; reason: string }> {
     const focus = event.review?.focus;
-    if (focus === undefined) return undefined;
+    if (focus === undefined) return { ok: true };
     const resolved = folder ? await resolveReviewFocus(folder, focus) : { ok: false as const, reason: "focus needs a folder link" };
-    if (resolved.ok) return resolved.focus;
+    if (resolved.ok) return { ok: true, focus: resolved.focus };
     log(`refused a deliverable's focus from "${event.label}": ${resolved.reason}`);
     recordDaemonError("review-focus", `Refused a deliverable's focus: ${resolved.reason}`, event.sessionId);
-    return null;
+    return resolved;
   }
 
   /**
    * The folders beyond the one the session started in that hold a filing's files, its link and its marks' images
    * (`SessionReview.roots`): the phone checks them against these as well as the row's own folders, since where the
-   * session is now moves on. Undefined when the folder it started in, or a temp folder, holds them all.
+   * session is now moves on. Undefined when the folder it started in, a temp folder, or conch's own store of copies
+   * (deliverable-store.ts) holds them all. Of the paths as FILED: a copy's, where one was made.
    */
-  async function filedRoots(event: TurnEvent, scope: LinkScope, link: string | undefined): Promise<string[] | undefined> {
-    const images = (event.review?.scene?.marks ?? []).flatMap((mark) => "image" in mark.frame ? [mark.frame.image] : []);
+  async function filedRoots(event: TurnEvent, scope: LinkScope, link: string | undefined, scene: ReviewScene | undefined): Promise<string[] | undefined> {
+    const images = (scene?.marks ?? []).flatMap((mark) => "image" in mark.frame ? [mark.frame.image] : []);
     const paths = [...(link?.startsWith("/") ? [link] : []), ...images];
     const held = paths.length ? await rootsHolding(paths, scope.roots, deps.window(event.sessionId)?.cwd ?? event.cwd) : [];
     return held.length ? held : undefined;
   }
 
-  /** The same check for the images a publication's marks are drawn on (`markImagesRefusal`); false when refused. */
-  async function vettedMarkImages(event: TurnEvent, scope: LinkScope): Promise<boolean> {
+  /** The same check for the images a publication's marks are drawn on (`markImagesRefusal`); why it was refused, or null. */
+  async function vettedMarkImages(event: TurnEvent, scope: LinkScope): Promise<string | null> {
     const refusal = await markImagesRefusal(event.review?.scene, scope.roots);
-    if (!refusal) return true;
+    if (!refusal) return null;
     log(`refused a deliverable's marks from "${event.label}": ${refusal}`);
     recordDaemonError("review-marks", `Refused a deliverable's marks: ${refusal}`, event.sessionId);
-    return false;
+    return refusal;
+  }
+
+  /**
+   * A deliverable's files that sit in a temp folder, copied into conch's own store before it is filed
+   * (`storeTempDeliverable`), and the review to file in their place: the link and its marks' images
+   * pointing at the copies, and the artifact still named by the original (`key`), so publishing
+   * /tmp/hero.png again is its next version rather than a new artifact. A reboot used to take the
+   * file and leave the deliverable listed, "Couldn't find hero.png" (2026-10-03).
+   */
+  async function storedReview(
+    sessionId: string,
+    review: NonNullable<TurnEvent["review"]>,
+    vetted: { link: string; folder: boolean } | undefined,
+    scope: LinkScope,
+  ): Promise<{ review: NonNullable<TurnEvent["review"]>; stored: StoredDeliverable }> {
+    const images = (review.scene?.marks ?? []).flatMap((mark) => "image" in mark.frame ? [mark.frame.image] : []);
+    const facts = deliverableFacts({ ...review, ...(vetted ? { link: vetted.link } : {}) });
+    const prior = sessionStates.get(sessionId);
+    const stored = await storeTempDeliverable({
+      ...(vetted ? { link: vetted.link } : {}),
+      folder: vetted?.folder === true,
+      markImages: images,
+      roots: scope.roots,
+      artifact: facts.artifact,
+      version: nextVersion(prior?.reviews ?? [], facts.artifact, prior?.versions),
+    });
+    if (stored.notCopied) log(`kept a deliverable of "${sessionId}" where it is: ${stored.notCopied}`);
+    if (!stored.copies.size) return { review: { ...review, ...(vetted ? { link: vetted.link } : {}) }, stored };
+    const copied = (path: string) => stored.copies.get(path) ?? path;
+    const scene = review.scene?.marks
+      ? {
+        ...review.scene,
+        marks: review.scene.marks.map((mark) => "image" in mark.frame ? { ...mark, frame: { image: copied(mark.frame.image) } } : mark),
+      }
+      : review.scene;
+    const link = vetted ? copied(vetted.link) : undefined;
+    return {
+      review: {
+        ...review,
+        ...(link ? { link } : {}),
+        ...(scene ? { scene } : {}),
+        // Named by the original, as it would have been uncopied (`deliverableFacts`).
+        ...(link !== vetted?.link ? { key: review.key ?? artifactKey(vetted!.link, review.summary) } : {}),
+      },
+      stored,
+    };
   }
 
   /**
@@ -1074,24 +1130,63 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
    * deliverable onto whatever status the session has and says so once. Status,
    * reading, the mic and `lastTurn` stay with the turn's own hooks, and nothing
    * is held for replay: the row keeps the deliverable.
+   *
+   * Filing and saying so are two steps (`filePublication`, `announceReview`): the daemon files a
+   * publication the moment it arrives, so its sender hears whether it was filed, and only the
+   * announcement waits its turn in the queue. Arriving through `handle` alone, it does both.
    */
   async function publishReview(event: TurnEvent): Promise<void> {
+    const verdict = await filePublication(event);
+    if (verdict.kind === "review-filed") await announceReview(event);
+  }
+
+  /** One filing at a time: each reads what the session holds and writes it back, across awaits. */
+  let filingTail: Promise<unknown> = Promise.resolve();
+
+  /**
+   * File a publication now, and say what became of it (review-verdict.ts): filed, under its real
+   * id, artifact, version and link, or refused and why. Every refusal used to end in the log and
+   * an errors file, with the agent already told "accepted". `audio` is what the announcement will
+   * do, by the gate `announceReview` keeps.
+   */
+  function filePublication(event: TurnEvent): Promise<ReviewVerdict> {
+    const run = filingTail.then(() => fileNow(event));
+    filingTail = run.catch(() => {});
+    return run;
+  }
+
+  async function fileNow(event: TurnEvent): Promise<ReviewVerdict> {
     const { sessionId, label } = event;
-    if (!sessionId || !event.review) return;
+    if (!sessionId || !event.review) return refusedVerdict("a publication names its session and carries a review");
     const scope = await linkScope(event);
     const vetted = await vettedReviewLink(event, scope);
-    if (vetted?.ok === false || !(await vettedMarkImages(event, scope))) return;
+    if (vetted?.ok === false) return refusedVerdict(vetted.reason);
+    const images = await vettedMarkImages(event, scope);
+    if (images) return refusedVerdict(images);
     const focus = await vettedFocus(event, vetted?.folder ? vetted.link : undefined);
-    if (focus === null) return;
+    if (!focus.ok) return refusedVerdict(focus.reason);
     const at = eventTimestamp(event.eventAt);
+    // Refused before anything is copied, and asked again below: something may file meanwhile.
+    const newer = () => {
+      const prior = sessionStates.get(sessionId)?.review;
+      return prior !== undefined && prior.at > at;
+    };
+    const supersededReason = "a newer publication from this session was filed after this one was sent, so this older one was not";
+    if (newer()) return refusedVerdict(supersededReason);
+    const { focus: _asSent, linkRefused: _unsent, roots: _claimed, ...sent } = event.review;
+    const { review: toFile, stored } = await storedReview(sessionId, sent, vetted, scope);
+    // `roots` only as the daemon found them, of the paths as filed, whatever the event carried.
+    const roots = await filedRoots(event, scope, toFile.link, toFile.scene);
+    // From here to the save, nothing awaits: what the session holds is read and written in one go.
     const prior = sessionStates.get(sessionId);
     // A replayed or reordered older publication never displaces a newer one.
-    if (prior?.review && prior.review.at > at) return;
-    const { focus: _asSent, linkRefused: _unsent, ...sent } = event.review;
+    if (newer()) {
+      if (stored.dir) discardStoredCopy(stored.dir);
+      return refusedVerdict(supersededReason);
+    }
     const review = fileReview(
       sessionId,
-      // `roots` only as the daemon found them, whatever the event carried.
-      { ...sent, ...(vetted ? { link: vetted.link } : {}), roots: await filedRoots(event, scope, vetted?.link), ...(focus ? { focus } : {}) },
+      { ...toFile, roots, ...(focus.focus ? { focus: focus.focus } : {}) },
       at,
       prior?.reviews,
       prior?.versions,
@@ -1109,7 +1204,38 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     ledger.saveReviews();
     emitRecordObservation(deps.observeRecords, reviewPublicationObservation(recordScope(sessionId, event.transcriptPath), review));
     void renderSessionPanel();
+    filedPublications.add(event);
+    return {
+      kind: "review-filed",
+      filing: {
+        id: review.id,
+        artifact: review.artifact!,
+        version: review.version!,
+        kind: review.kind!,
+        ...(review.link ? { link: review.link } : {}),
+        ...(review.focus?.length ? { focus: review.focus } : {}),
+      },
+      ...(vetted?.ok && review.link !== vetted.link ? { copiedFrom: vetted.link } : {}),
+      ...(stored.notCopied ? { notCopied: stored.notCopied } : {}),
+      audio: announcedTo(sessionId),
+    };
+  }
 
+  /** Publications `filePublication` filed, whose turn in the queue only says so. */
+  const filedPublications = new WeakSet<TurnEvent>();
+  /** Turns whose `conch:review` link was filed as conch's copy: a replay files that same copy. */
+  const copiedMarkers = new WeakSet<TurnEvent>();
+
+  /** Where a publication's announcement goes: the gate `announceReview` keeps, as it stands now (surfaces.ts `audio`). */
+  function announcedTo(sessionId: string): AudioSurface {
+    if (pause.paused || pausedSessionIds.has(sessionId) || dismissedSessionIds.has(sessionId)) return "manual";
+    if (audioLease.sink !== "mac") return "phone";
+    return audioHolder.isLocal() ? "mac" : "other-mac";
+  }
+
+  /** Say a filed publication once, unless manual mode, the phone or another Mac has the voice. */
+  async function announceReview(event: TurnEvent): Promise<void> {
+    const { sessionId, label } = event;
     if (pause.paused || pausedSessionIds.has(sessionId) || dismissedSessionIds.has(sessionId)) {
       return log(`filed a review for "${label}" — manual, not announced`);
     }
@@ -1470,7 +1596,8 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
   async function handleTurn(event: TurnEvent, pauseGeneration: number): Promise<void> {
     const interruptedByPause = (): boolean => pause.interrupted(pauseGeneration);
     if (!eventOrder.isCurrent(event)) return;
-    if (event.type === "review-published") return publishReview(event);
+    // Filed already by the daemon's own door (`filePublication`): only the announcement is left.
+    if (event.type === "review-published") return filedPublications.delete(event) ? announceReview(event) : publishReview(event);
 
     if (
       event.type === "turn-end"
@@ -1544,13 +1671,23 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     }
     // A marker's review keeps its summary when its link is refused, as the hook's own check does,
     // and says why where the link would be (`linkRefused`): the hook's reason, or the daemon's own.
-    if (event.type === "turn-end" && event.review) {
+    // A link in a temp folder is filed as conch's own copy, as a publication's is (`storedReview`). A
+    // turn held for manual mode is handled again when it replays: one already filed against a copy is
+    // filed as it was (the same link, so the same deliverable), not vetted again, since the copy sits
+    // in conch's hidden store, which the link check refuses by design.
+    let markerCopy: string | undefined;
+    if (event.type === "turn-end" && event.review && !copiedMarkers.has(event)) {
       const { link: _unchecked, linkRefused, ...rest } = event.review;
       const scope = event.review.link === undefined ? undefined : await linkScope(event);
       const vetted = scope && await vettedReviewLink(event, scope);
-      event.review = vetted?.ok
-        ? { ...rest, link: vetted.link, roots: await filedRoots(event, scope!, vetted.link) }
-        : { ...rest, roots: undefined, ...(vetted ? { linkRefused: vetted.note } : linkRefused ? { linkRefused } : {}) };
+      if (vetted?.ok) {
+        const { review, stored } = await storedReview(event.sessionId, rest, vetted, scope!);
+        markerCopy = stored.dir;
+        if (stored.dir) copiedMarkers.add(event);
+        event.review = { ...review, roots: await filedRoots(event, scope!, review.link, undefined) };
+      } else {
+        event.review = { ...rest, roots: undefined, ...(vetted ? { linkRefused: vetted.note } : linkRefused ? { linkRefused } : {}) };
+      }
     }
     if (event.type === "turn-end" && !setSessionState(
       event.sessionId,
@@ -1559,7 +1696,11 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       event.review?.summary,
       event.eventAt,
       event.review,
-    )) return;
+    )) {
+      // Older than what the row has: nothing was filed, so its copy is nobody's.
+      if (markerCopy) discardStoredCopy(markerCopy);
+      return;
+    }
 
     if (eventQueue.consumeCancellation(event)) {
       return log(`cancelled queued ${event.type} for "${event.label}"`);
@@ -4101,6 +4242,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
 
   return {
     handle,
+    filePublication,
     speak,
     speakBlocker,
     capturing: normalMicOpen,

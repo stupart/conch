@@ -1,7 +1,7 @@
 import type { AnswerKey } from "../src/agent-adapter.ts";
 import { afterAll, describe, expect, test, setSystemTime } from "bun:test";
 import { PromptSubmissions, promptDigest } from "../src/delivery-evidence.ts";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, type Config } from "../src/config.ts";
@@ -26,6 +26,7 @@ import { addressParkedWindow, registrySnapshot, type SessionInfo } from "../src/
 import { buildPanelModel, buildPublishedState, reviewReady } from "../src/panel.ts";
 import { reviewIdentity } from "../src/records-receipts.ts";
 import { deliverableFacts } from "../src/deliverables.ts";
+import { deliverableStoreDir } from "../src/deliverable-store.ts";
 
 /** A filed deliverable as the daemon stamps it: the same identity and facts, from the same recipe. */
 const filedAs = <R extends { summary: string; link?: string; at: number }>(sessionId: string, review: R, version = 1) =>
@@ -34,6 +35,11 @@ const filedAs = <R extends { summary: string; link?: string; at: number }>(sessi
 const onWire = <R extends { kindSource?: unknown }>({ kindSource: _decided, ...wire }: R) => wire;
 /** The daemon re-checks a deliverable's file, so the one these tests publish has to exist. */
 const HERO_V3 = join(mkdtempSync(join(tmpdir(), "conch-voice-loop-hero-")), "hero-v3.png");
+/**
+ * The session's own folder, where HERO_V3 is its live work. Without one, a file in a temp folder is
+ * filed as conch's own copy (deliverable-store.ts), and these tests are about identity, not copies.
+ */
+const HERO_DIR = join(HERO_V3, "..");
 writeFileSync(HERO_V3, "png");
 afterAll(() => rmSync(join(HERO_V3, ".."), { recursive: true, force: true }));
 import { voiceFor } from "../src/speak.ts";
@@ -2129,7 +2135,7 @@ describe("a deliverable keeps one identity from filing until a newer one", () =>
   test("routine events neither re-stamp it nor hide it while the session works", async () => {
     const h = harness({ paused: true });
     const review = { summary: "hero v3", link: HERO_V3 };
-    await h.voice.handle(accepted(h, turnEnd({ eventAt: 1_000, review })));
+    await h.voice.handle(accepted(h, turnEnd({ eventAt: 1_000, review, cwd: HERO_DIR })));
     const filed = filedAs("s1", { ...review, at: 1_000 });
     expect(h.ledger.sessionStates.get("s1")?.review).toEqual(filed);
     expect(rowFor(h).review).toEqual(filed);
@@ -2153,7 +2159,7 @@ describe("a deliverable keeps one identity from filing until a newer one", () =>
     expect(reviewReady(rowFor(h))).toBe(true);
 
     // Sending it again, even unchanged, is a newer deliverable.
-    await h.voice.handle(accepted(h, turnEnd({ eventAt: 5_000, review })));
+    await h.voice.handle(accepted(h, turnEnd({ eventAt: 5_000, review, cwd: HERO_DIR })));
     // …and the next version of the same artifact.
     expect(publishedReview(h)).toEqual(onWire(filedAs("s1", { ...review, at: 5_000 }, 2)));
   });
@@ -2161,7 +2167,7 @@ describe("a deliverable keeps one identity from filing until a newer one", () =>
   test("its identity is minted once at filing, survives republishing, and moves only for a newer one", async () => {
     const h = harness({ paused: true });
     const review = { summary: "hero v3", link: HERO_V3 };
-    await h.voice.handle(accepted(h, turnEnd({ eventAt: 1_000, review })));
+    await h.voice.handle(accepted(h, turnEnd({ eventAt: 1_000, review, cwd: HERO_DIR })));
     const first = rowFor(h).review?.id;
     expect(first).toBeTruthy();
 
@@ -2172,7 +2178,7 @@ describe("a deliverable keeps one identity from filing until a newer one", () =>
     expect(publishedReview(h)?.id).toBe(first);
 
     // A newer deliverable is a different one, even filing the identical text again.
-    await h.voice.handle(accepted(h, turnEnd({ eventAt: 5_000, review })));
+    await h.voice.handle(accepted(h, turnEnd({ eventAt: 5_000, review, cwd: HERO_DIR })));
     expect(rowFor(h).review?.id).not.toBe(first);
 
     // Two deliverables differing only in what they say are still two deliverables: the
@@ -2193,7 +2199,7 @@ describe("a deliverable keeps one identity from filing until a newer one", () =>
     try {
       const before = harness({ paused: true, ledger: new SessionLedger(reviewsPath) });
       const review = { summary: "hero v3", link: HERO_V3 };
-      await before.voice.handle(accepted(before, turnEnd({ eventAt: 1_000, review })));
+      await before.voice.handle(accepted(before, turnEnd({ eventAt: 1_000, review, cwd: HERO_DIR })));
       const filed = filedAs("s1", { ...review, at: 1_000 });
 
       // The restart: a new ledger over the same file, and nothing else carried.
@@ -2243,7 +2249,7 @@ describe("a publication is not the end of a turn", () => {
   const review = { summary: "hero v3", link: HERO_V3 };
   const announce = "alpha has work ready for your review: hero v3";
   const published = (over: Partial<TurnEvent> = {}): TurnEvent => ({
-    type: "review-published", sessionId: "s1", label: "alpha", announce, eventAt: 2_000, review, ...over,
+    type: "review-published", sessionId: "s1", label: "alpha", announce, eventAt: 2_000, review, cwd: HERO_DIR, ...over,
   });
 
   test("mid-turn it files the deliverable and says so once; the turn works on until its own Stop", async () => {
@@ -2465,7 +2471,7 @@ describe("the daemon checks a deliverable's link itself", () => {
       expect(review).toMatchObject({ summary: "done" });
       expect(review?.link).toBeUndefined();
       // And says why where the link would be, rather than looking like a review that never had one.
-      expect(review?.linkRefused).toBe(`The link /etc/hosts wasn't published: it is outside this session's folder (${folder}) and the temp folder.`);
+      expect(review?.linkRefused).toBe(`The link /etc/hosts wasn't published: it is outside this session's folder (${folder}) and the temp folders.`);
       expect(h.errors.map(([operation]) => operation)).toEqual(["review-link"]);
     });
   });
@@ -2482,12 +2488,15 @@ describe("the daemon files what the hook published, by the same folders", () => 
     // Outside every temp folder, which are always allowed: TMPDIR points elsewhere while it runs.
     const base = realpathSync(mkdtempSync(join(tmpdir(), "conch-daemon-roots-")));
     const saved = process.env.TMPDIR;
+    const savedUserTemp = process.env.CONCH_USER_TEMP_DIR;
     mkdirSync(join(base, "temp"));
     process.env.TMPDIR = join(base, "temp");
+    process.env.CONCH_USER_TEMP_DIR = join(base, "temp");
     try {
       await run(base);
     } finally {
       process.env.TMPDIR = saved;
+      process.env.CONCH_USER_TEMP_DIR = savedUserTemp;
       rmSync(base, { recursive: true, force: true });
     }
   };
@@ -2537,7 +2546,7 @@ describe("the daemon files what the hook published, by the same folders", () => 
       const review = h.ledger.sessionStates.get("s1")?.review;
       expect(review?.link).toBeUndefined();
       expect(review?.linkRefused)
-        .toBe(`The link ${join(now, "page.html")} wasn't published: it is outside this session's folder (${start}) and the temp folder.`);
+        .toBe(`The link ${join(now, "page.html")} wasn't published: it is outside this session's folder (${start}) and the temp folders.`);
       expect(row(h).review?.linkRefused).toBe(review?.linkRefused);
       expect(h.errors.map(([operation]) => operation)).toEqual(["review-link"]);
     });
@@ -3854,5 +3863,182 @@ describe("hosted message delivery", () => {
   test("auto-submit off keeps a staged draft without contacting the app", async () => {
     const h = harness({ window: hosted, cfg: { autoSubmit: false }, hostedSend: async () => { throw Error("must not send"); } });
     expect(await h.voice.handle(inject("draft"))).toBe("staged"); expect(h.texts).toEqual([]);
+  });
+});
+
+/**
+ * `review_to_front` waits for the daemon's verdict now (review-verdict.ts): the daemon files a publication the moment it
+ * arrives (`filePublication`) and says what became of it, and only the announcement takes a turn in the queue. Every
+ * refusal used to end in the log, with the agent already told "accepted"; a file in a temp folder used to be filed by a
+ * path a reboot took away.
+ */
+describe("a publication's verdict, and what it files", () => {
+  // A home of its own, so the store of copies is its own: ~/Library/Application Support/conch/deliverables under it.
+  const scratch = () => {
+    const base = mkdtempSync(join(tmpdir(), "conch-verdict-loop-"));
+    const saved = process.env.CONCH_HOME;
+    process.env.CONCH_HOME = join(base, "home");
+    const store = deliverableStoreDir();
+    const project = join(base, "project");
+    mkdirSync(project, { recursive: true });
+    return {
+      base, store, project,
+      ledger: () => new SessionLedger(undefined, undefined, join(base, "previews"), store),
+      done: () => {
+        process.env.CONCH_HOME = saved;
+        rmSync(base, { recursive: true, force: true });
+      },
+    };
+  };
+  const publication = (review: TurnEvent["review"], over: Partial<TurnEvent> = {}): TurnEvent => ({
+    type: "review-published", sessionId: "s1", label: "alpha", announce: "alpha has work ready", eventAt: 2_000, review, ...over,
+  });
+
+  test("filed: the id, artifact, version, kind and link it was filed under, and what conch's voice does with it", async () => {
+    const s = scratch();
+    try {
+      writeFileSync(join(s.project, "page.html"), "<h1>ok</h1>");
+      const h = harness({ ledger: s.ledger(), window: () => ({ sessionId: "s1", cwd: s.project } as SessionInfo) });
+      const event = publication({ summary: "the page", link: join(s.project, "page.html") });
+      const verdict = await h.voice.filePublication(event);
+      const held = h.ledger.sessionStates.get("s1")!.review!;
+      expect(verdict).toEqual({
+        kind: "review-filed",
+        filing: { id: held.id, artifact: held.artifact!, version: 1, kind: "page", link: join(s.project, "page.html") },
+        audio: "mac",
+      });
+      // Filed already: its turn in the queue only announces, and files nothing twice.
+      expect(h.said).toEqual([]);
+      await h.voice.handle(event);
+      expect(h.said).toEqual(["alpha has work ready"]);
+      expect(h.ledger.sessionStates.get("s1")!.reviews).toHaveLength(1);
+      // Arriving through `handle` alone, as before, it does both.
+      await h.voice.handle(publication({ summary: "the page again", link: join(s.project, "page.html") }, { eventAt: 3_000 }));
+      expect(h.ledger.sessionStates.get("s1")!.reviews!.map((one) => one.version)).toEqual([1, 2]);
+    } finally {
+      s.done();
+    }
+  });
+
+  test("audio says where the announcement goes: manual, the phone, another Mac, or this Mac", async () => {
+    const s = scratch();
+    try {
+      writeFileSync(join(s.project, "a.md"), "# a");
+      const link = join(s.project, "a.md");
+      const audio = async (h: ReturnType<typeof harness>, at: number) =>
+        ((await h.voice.filePublication(publication({ summary: `a ${at}`, link }, { eventAt: at }))) as { audio?: string }).audio;
+      const window = () => ({ sessionId: "s1", cwd: s.project } as SessionInfo);
+      expect(await audio(harness({ paused: true, ledger: s.ledger(), window }), 1)).toBe("manual");
+      const phone = harness({ ledger: s.ledger(), window });
+      phone.lease.request("phone", 1);
+      expect(await audio(phone, 2)).toBe("phone");
+      const yielded = harness({ ledger: s.ledger(), window });
+      yielded.holder.yield("mac-2", 9, 60_000);
+      expect(await audio(yielded, 3)).toBe("other-mac");
+      expect(await audio(harness({ ledger: s.ledger(), window }), 4)).toBe("mac");
+    } finally {
+      s.done();
+    }
+  });
+
+  test("refused, with the daemon's own reason: a link outside its folders, a mark's image, a focus, an older publication", async () => {
+    const s = scratch();
+    try {
+      mkdirSync(join(s.project, "pack"), { recursive: true });
+      writeFileSync(join(s.project, "page.html"), "<h1>ok</h1>");
+      const h = harness({ ledger: s.ledger(), window: () => ({ sessionId: "s1", cwd: s.project } as SessionInfo) });
+      const reason = async (review: TurnEvent["review"], at = 2_000) => {
+        const verdict = await h.voice.filePublication(publication(review, { eventAt: at }));
+        return verdict.kind === "review-refused" ? verdict.reason : `filed ${JSON.stringify(verdict)}`;
+      };
+      expect(await reason({ summary: "hosts", link: "/etc/hosts" })).toMatch(/^link \/private\/etc\/hosts is outside this session's folder/);
+      const hidden = join(s.base, ".secret", "still.png");
+      mkdirSync(join(hidden, ".."), { recursive: true });
+      writeFileSync(hidden, "png");
+      expect(await reason({ summary: "ink", link: join(s.project, "page.html"),
+        scene: { v: 1, target: { kind: "link" }, marks: [{ id: "m", kind: "pin", frame: { image: hidden }, at: [0.5, 0.5] }] } }))
+        .toStartWith("scene marks[0] frame.image ");
+      expect(await reason({ summary: "pack", link: join(s.project, "pack"), focus: ["missing.ts"] })).toBe("focus[0] missing.ts is not in the folder");
+      expect(await reason({ summary: "newer", link: join(s.project, "page.html") }, 5_000)).toStartWith("filed");
+      expect(await reason({ summary: "older", link: join(s.project, "page.html") }, 4_000))
+        .toBe("a newer publication from this session was filed after this one was sent, so this older one was not");
+      expect(await reason(undefined)).toBe("a publication names its session and carries a review");
+      // Nothing refused was filed.
+      expect(h.ledger.sessionStates.get("s1")!.reviews!.map((one) => one.summary)).toEqual(["newer"]);
+    } finally {
+      s.done();
+    }
+  });
+
+  test("a file in a temp folder is filed as conch's copy, named by the original, its marks on the copy, and outlives the original", async () => {
+    const s = scratch();
+    try {
+      const shots = join(s.base, "shots");
+      mkdirSync(shots);
+      const shot = join(shots, "hero.png");
+      writeFileSync(shot, "png");
+      const h = harness({ ledger: s.ledger(), window: () => ({ sessionId: "s1", cwd: s.project } as SessionInfo) });
+      const scene = { v: 1 as const, target: { kind: "link" as const }, marks: [{ id: "cta", kind: "pin" as const, frame: { image: shot }, at: [0.5, 0.5] as [number, number] }] };
+      const verdict = await h.voice.filePublication(publication({ summary: "the hero", link: shot, scene }));
+      if (verdict.kind !== "review-filed") throw new Error(verdict.reason);
+      const copy = verdict.filing.link!;
+      expect(copy).toStartWith(join(s.store, verdict.filing.artifact));
+      expect(verdict.copiedFrom).toBe(shot);
+      // The artifact is the original's, as if it had not been copied: publishing it again is its next version.
+      expect(verdict.filing.artifact).toBe(deliverableFacts({ summary: "the hero", link: shot }).artifact);
+      const held = h.ledger.sessionStates.get("s1")!.review!;
+      expect(held.link).toBe(copy);
+      expect(held.scene?.marks?.[0]?.frame).toEqual({ image: copy });
+      // The id is the filing's own, minted from the link it was filed under: what review_remove takes.
+      expect(verdict.filing.id).toBe(reviewIdentity("s1", { summary: "the hero", link: copy, at: 2_000 }));
+      rmSync(shots, { recursive: true });
+      expect(readFileSync(copy, "utf8")).toBe("png");
+      const again = await h.voice.filePublication(publication({ summary: "the hero, v2", link: copy.replace(copy, shot) }, { eventAt: 3_000 }));
+      // The original is gone now, so a second publication of it is refused, in words.
+      expect(again).toMatchObject({ kind: "review-refused" });
+    } finally {
+      s.done();
+    }
+  });
+
+  test("a conch:review line's link in a temp folder is copied too, as a publication's is", async () => {
+    const s = scratch();
+    try {
+      const shot = join(s.base, "render.png");
+      writeFileSync(shot, "png");
+      const h = harness({ paused: true, ledger: s.ledger(), window: () => ({ sessionId: "s1", cwd: s.project } as SessionInfo) });
+      const turn = accepted(h, turnEnd({ eventAt: 3_000, review: { summary: "the render", link: shot } }));
+      await h.voice.handle(turn);
+      const held = h.ledger.sessionStates.get("s1")!.review!;
+      expect(held.link).toStartWith(`${s.store}/`);
+      expect(held.artifact).toBe(deliverableFacts({ summary: "the render", link: shot }).artifact);
+      // Held for manual mode and replayed on resume, the same turn files the same copy: one deliverable, not a second
+      // one refused for sitting in conch's hidden store.
+      await h.voice.handle(turn);
+      const after = h.ledger.sessionStates.get("s1")!;
+      expect(after.reviews).toHaveLength(1);
+      expect(after.review).toMatchObject({ id: held.id, link: held.link });
+      expect(after.review!.linkRefused).toBeUndefined();
+      expect(readdirSync(join(s.store, held.artifact!))).toHaveLength(1);
+    } finally {
+      s.done();
+    }
+  });
+
+  test("two publications at once are both filed: each reads what the session holds after the other wrote it", async () => {
+    const s = scratch();
+    try {
+      writeFileSync(join(s.project, "a.md"), "# a");
+      writeFileSync(join(s.project, "b.md"), "# b");
+      const h = harness({ ledger: s.ledger(), window: () => ({ sessionId: "s1", cwd: s.project } as SessionInfo) });
+      const [a, b] = await Promise.all([
+        h.voice.filePublication(publication({ summary: "a", link: join(s.project, "a.md") }, { eventAt: 2_000 })),
+        h.voice.filePublication(publication({ summary: "b", link: join(s.project, "b.md") }, { eventAt: 2_001 })),
+      ]);
+      expect([a.kind, b.kind]).toEqual(["review-filed", "review-filed"]);
+      expect(h.ledger.sessionStates.get("s1")!.reviews!.map((one) => one.summary)).toEqual(["a", "b"]);
+    } finally {
+      s.done();
+    }
   });
 });
