@@ -353,7 +353,7 @@ struct ConversationStackView: View {
                     // checkmark". The daemon reads transcripts on a poll, so a sent message had
                     // seconds of saying nothing at all.
                     ForEach(store.outbox.entries(for: conversation.sessionId)) { pending in
-                        PendingMessage(entry: pending)
+                        PendingMessage(entry: pending, onDismiss: { store.discardOutgoing(pending.id) })
                             .conversationSelectionRow(pending.id, in: selection)
                             .id(pending.id)
                     }
@@ -1987,6 +1987,10 @@ private struct DiffLine: View {
 /// sent and confirmed, staged, or why it did not land.
 private struct PendingMessage: View {
     let entry: ConchOutboxEntry
+    /// Takes a send that did not land off the conversation. Its words are already back in the composer; without
+    /// this a failed send sat under everything that came after it for good, reading as a fresh failure hours later
+    /// (2026-10-02: "Not delivered" under a session that had been working fine since).
+    let onDismiss: () -> Void
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 3) {
@@ -2031,16 +2035,27 @@ private struct PendingMessage: View {
         // Not a failure and not a confirmation: conch could not tell. It says so, and waits for
         // the outcome the daemon publishes afterwards.
         case let .unknown(reason):
-            Text(reason)
-                .font(.system(size: 11))
-                .foregroundStyle(ConchPalette.statusWaiting)
-                .multilineTextAlignment(.trailing)
+            unsettled(reason, color: ConchPalette.statusWaiting)
         case let .failed(reason):
-            Text(reason)
-                .font(.system(size: 11))
-                .foregroundStyle(ConchPalette.statusNeeds)
-                .multilineTextAlignment(.trailing)
+            unsettled(reason, color: ConchPalette.statusNeeds)
         }
+    }
+
+    /// What became of a send that did not land, when it was sent — so an old one never reads as news — and a way to
+    /// clear it.
+    private func unsettled(_ reason: String, color: Color) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text("\(entry.sentAt.formatted(date: .omitted, time: .shortened)) · \(reason)")
+                .font(.system(size: 11))
+                .foregroundStyle(color)
+                .multilineTextAlignment(.trailing)
+            Button("Dismiss", action: onDismiss)
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(ConchPalette.textDim)
+                .help("Take this off the conversation. Its words are in the composer.")
+        }
+        .contextMenu { Button("Dismiss", action: onDismiss) }
     }
 }
 

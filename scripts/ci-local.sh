@@ -66,7 +66,9 @@ run() { # <check>
   echo "→ $name"
   case "$name" in
     install) bun install --frozen-lockfile ;;
-    test)    bun test ;;
+    # Without $TMUX: a suite started inside a tmux pane (a conch background session) would otherwise hand it to every
+    # tmux a test spawns, and a bare tmux there reaches the real server (test/preload.ts can't clear it for children).
+    test)    env -u TMUX -u TMUX_PANE bun test ;;
     tsc)     bunx tsc --noEmit ;;
     swift)   swift test --package-path design/ConchDesign ;;
     mac)     xcodebuild -project mac-app/conch-mac.xcodeproj -scheme conch-mac -configuration Debug \

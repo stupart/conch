@@ -1379,6 +1379,13 @@ final class StateStore: ObservableObject {
         ))
     }
 
+    /// A send the person cleared from the conversation: one that failed, or that conch could not confirm.
+    func discardOutgoing(_ id: String) {
+        var cleared = outbox
+        cleared.remove(id)
+        if cleared != outbox { outbox = cleared }
+    }
+
     /// Retire bubbles the transcript now shows for itself.
     ///
     /// The phone's rule (`TalkController.reconcile`), for the same reason: a NEW user item with

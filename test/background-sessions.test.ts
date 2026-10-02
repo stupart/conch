@@ -1,4 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
 import { backgroundStartupPid, conchServerSessions, managedBackgroundSession, startBackgroundProcess } from "../src/background-sessions.ts";
 import { shellQuote } from "../src/agent-adapter.ts";
 import { conchTmux, paneTarget, resolveTmux } from "../src/tmux-binary.ts";
@@ -92,9 +93,11 @@ test.skipIf(!tmux)("a detached session runs on conch's own server and accepts me
  * did that day. It must reach no server of conch's: the session has no `$TMUX` to be steered by, so the command goes
  * to the default server (here the suite's own, empty) and every background session lives on.
  */
-// Only ever against the suite's own tmux folder: never a real server, even by mistake.
-const suiteTmux = process.env.TMUX_TMPDIR?.startsWith("/tmp/ctmux-") ? process.env.TMUX_TMPDIR : undefined;
-test.skipIf(!tmux || !suiteTmux)("a tmux kill-server run inside a background session ends none of them", async () => {
+// Only against the suite's own server name, and the kill-server below only ever against an empty folder of its own:
+// never a real server, even by mistake.
+const suiteServer = process.env.CONCH_TMUX_SOCKET?.startsWith("conch-test-");
+test.skipIf(!tmux || !suiteServer)("a tmux kill-server run inside a background session ends none of them", async () => {
+  const suiteTmux = mkdtempSync("/tmp/ctmux-");
   const first = await startBackgroundProcess("exec /bin/cat", "/tmp");
   const tmuxBin = conchTmux()[0]!;
   const killer = await startBackgroundProcess(
@@ -112,6 +115,23 @@ test.skipIf(!tmux || !suiteTmux)("a tmux kill-server run inside a background ses
   const sessions = await conchServerSessions();
   expect(sessions?.has(first.name)).toBe(true);
   expect(sessions?.has(killer.name)).toBe(true);
+  rmSync(suiteTmux, { recursive: true, force: true });
+}, 15_000);
+
+/**
+ * Closing the app closes its daemon: the sessions must not go with it. tmux's server is its own process, so a
+ * session outlives whatever started it; here the starter is a separate process that exits, as the daemon does.
+ */
+test.skipIf(!tmux)("a background session outlives the process that started it, as it outlives a closed app", async () => {
+  const starter = Bun.spawn([process.execPath, "-e", `
+    const { startBackgroundProcess } = await import(${JSON.stringify(new URL("../src/background-sessions.ts", import.meta.url).pathname)});
+    const { name } = await startBackgroundProcess("exec /bin/cat", "/tmp");
+    console.log(name);
+  `], { stdout: "pipe", stderr: "inherit", env: process.env });
+  const name = (await new Response(starter.stdout).text()).trim();
+  expect(await starter.exited).toBe(0);
+  await Bun.sleep(300);
+  expect((await conchServerSessions())?.has(name)).toBe(true);
 }, 15_000);
 
 test.skipIf(!tmux)("conch's server stays up when its last session ends, so a missing server always means it was stopped", async () => {

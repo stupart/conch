@@ -151,12 +151,12 @@ describe("the guard, end to end over a fake tmux", () => {
 });
 
 /**
- * End to end over real tmux: conch's own server (the suite's, `CONCH_TMUX_SOCKET` under its own `TMUX_TMPDIR`,
- * test/preload.ts), real sessions on it, the real server readings, then the server killed outright as on
+ * End to end over real tmux: conch's own server (the suite's own name, `CONCH_TMUX_SOCKET`, test/preload.ts),
+ * real sessions on it, the real server readings, then the server killed outright as on
  * 2026-10-02. Only the agent is a stand-in (`sleep`), and "resume" starts another one, recording what it was asked.
  */
 
-const suiteTmux = process.env.TMUX_TMPDIR?.startsWith("/tmp/ctmux-") && process.env.CONCH_TMUX_SOCKET?.startsWith("conch-test-");
+const suiteTmux = process.env.CONCH_TMUX_SOCKET?.startsWith("conch-test-");
 describe.skipIf(!resolveTmux().found || !suiteTmux)("a killed tmux server, for real", () => {
   const pidOf = async (pane: string) => {
     const target = paneTarget(pane)!;
