@@ -1,0 +1,63 @@
+{
+  "v": 1,
+  "features": { "deliverables": 4, "viewedState": 1 },
+  "ownerDeviceId": "fixture-mac",
+  "ts": 1760000000000,
+  "mode": { "muted": false, "paused": false, "holding": 0 },
+  "live": { "state": "idle", "label": "" },
+  "conversations": {},
+  "dismissed": [],
+  "dismissedRows": [],
+  "rows": [
+    {
+      "needsResponse": true,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": true,
+      "id": "login-dashboard",
+      "label": "deployments filters",
+      "backend": "claude",
+      "status": "waiting",
+      "at": 1759999940000,
+      "cwd": "/Users/you/Projects/acme-web",
+      "review": {
+        "summary": "Status and date filters on the deployments dashboard",
+        "link": "https://acme-web.vercel.app/deployments",
+        "at": 1759999940000,
+        "id": "dash-v1",
+        "artifact": "6465706c6f796d65",
+        "version": 1,
+        "kind": "url",
+        "kindSource": "inferred",
+        "snapshot": { "path": "mobile/conch-ios/fixtures/deliverables/dashboard-snapshot.png", "capturedAt": 1759999941000 },
+        "access": { "mac": "page", "anonymous": "sign-in" }
+      }
+    },
+    {
+      "needsResponse": true,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": false,
+      "id": "login-public",
+      "label": "deployments, public",
+      "backend": "claude",
+      "status": "waiting",
+      "at": 1759999900000,
+      "cwd": "/Users/you/Projects/acme-web",
+      "review": {
+        "summary": "The deployments dashboard, now public",
+        "link": "https://acme-web.vercel.app/deployments",
+        "at": 1759999900000,
+        "id": "dash-public-v1",
+        "artifact": "6465706c6f796d66",
+        "version": 1,
+        "kind": "url",
+        "kindSource": "inferred",
+        "snapshot": { "path": "mobile/conch-ios/fixtures/deliverables/dashboard-snapshot.png", "capturedAt": 1759999901000 },
+        "access": { "mac": "page", "anonymous": "page" }
+      }
+    }
+  ]
+}

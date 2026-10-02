@@ -32,6 +32,9 @@ struct ReviewItem: Identifiable, Equatable {
     let focus: [String]
     /// Why the link its agent gave was not published, when one was given and refused (`linkRefused`).
     let linkRefused: String?
+    /// What a live page's login-wall check found when it was published (`access`): the banner over a page that asked
+    /// conch to sign in (`PageAccess.macBanner`).
+    let access: PageAccess.Found?
 
     init?(row: SessionRow) {
         guard let review = row.review else {
@@ -57,6 +60,7 @@ struct ReviewItem: Identifiable, Equatable {
         kind = review.kind
         focus = review.focus
         linkRefused = review.linkRefused
+        access = review.access
         // The identity the daemon minted when it filed this deliverable, which it carries
         // unchanged through every later event — so this id moves only when a NEWER deliverable
         // replaces this one. Everything keyed on it (the pane, the row pulse, the
@@ -169,7 +173,8 @@ private struct ReviewSurface: View {
                         link: link,
                         rowID: item.rowID,
                         isWebLoading: $isWebLoading,
-                        liveAddress: $liveAddress
+                        liveAddress: $liveAddress,
+                        signInBanner: PageAccess.macBanner(item.access)
                     )
                     .id(item.id)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -488,6 +493,12 @@ private struct ReviewContent: View {
     /// are looking at rather than the one that was filed. The pane browses, so those diverge
     /// the moment you follow a link or type an address — and the arrow used to ignore it.
     @Binding var liveAddress: String?
+    /// Said over the live page when conch's own look at it, as it was published, was shown a sign-in page
+    /// (`PageAccess.macBanner`, 2026-10-03 feedback item 3). This pane's web view keeps the sign-ins conch draws pages
+    /// with, so signing in here once is the fix. Nil draws nothing.
+    var signInBanner: String?
+    /// The banner was closed, for as long as this deliverable is shown.
+    @State private var signInBannerClosed = false
     @State private var navigationFailure: DeliverableNavigationFailure?
     @State private var reloadID = UUID()
     /// A page on this Mac whose server didn't answer the knock (`LocalServer`), shown in its place (`ServerDownView`).
@@ -725,6 +736,13 @@ private struct ReviewContent: View {
                     )
                 }
                 }
+                .overlay(alignment: .top) {
+                    if let signInBanner, !signInBannerClosed, navigationFailure == nil, downPage == nil {
+                        SignInBanner(text: signInBanner) { signInBannerClosed = true }
+                            .padding(10)
+                            .transition(.opacity)
+                    }
+                }
             }
             .background(ConchPalette.surface)
             // Before the filed page loads, a knock on its port when it is on this Mac: a dev server that has stopped
@@ -768,6 +786,49 @@ private struct ReviewContent: View {
 
     static func startServerPrompt(_ page: URL) -> String {
         "The page you filed for review, \(page.absoluteString), isn't loading: nothing is listening on \(LocalServer.name(of: page)). Please start its server again and tell me when it's up."
+    }
+}
+
+/// Over a live page whose login-wall check found conch's own look asked to sign in: the page you see may be the
+/// sign-in page, and this pane is where to sign in, since its web view keeps the sign-ins conch draws pages with
+/// (PageCapturer.swift uses the same default website data store). Small and closable: the page under it is the point.
+private struct SignInBanner: View {
+    let text: String
+    let onClose: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "person.badge.key")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(ConchPalette.statusNeeds)
+                .accessibilityHidden(true)
+            Text(text)
+                .font(ConchTypography.font(size: 11.5))
+                .foregroundStyle(ConchPalette.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(ConchPalette.textDim)
+                    .frame(width: 18, height: 18)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: 520, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(ConchPalette.raised)
+                .shadow(color: .black.opacity(0.25), radius: 10, y: 3)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(ConchPalette.divider, lineWidth: 0.5)
+        )
+        .accessibilityElement(children: .combine)
     }
 }
 

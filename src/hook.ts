@@ -154,6 +154,12 @@ export interface TurnEvent {
    */
   awaitVerdict?: true;
   /**
+   * With `awaitVerdict`: the sender also waits for a `url` deliverable's login-wall check (page-access.ts), whose
+   * `access`, `warning` and `snapshot` the verdict then carries. Absent, the daemon answers once it is filed and puts
+   * what the check finds on the deliverable afterwards: an older MCP server waits only 10 s.
+   */
+  awaitAccess?: true;
+  /**
    * An inject that answers the question the session is waiting on: one answer
    * per question, in order. Typed into the agent's picker as its own keys;
    * `announce` is then only the readable summary.

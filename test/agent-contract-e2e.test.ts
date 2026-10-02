@@ -11,7 +11,7 @@ import { join } from "node:path";
  * script's, and nothing from a tmux pane reaches it. HOME is the real one only so the script's guard can refuse a path
  * that would land in the live ~/.config/conch; it writes nothing there.
  */
-test("the agent contract end to end: instructions, the daemon's verdict and surfaces, temp copies that outlive the temp folder", async () => {
+test("the agent contract end to end: instructions, the daemon's verdict and surfaces, temp copies that outlive the temp folder, and login walls", async () => {
   const run = Bun.spawn([process.execPath, join(import.meta.dir, "..", "scripts", "agent-contract-e2e.ts")], {
     env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: homedir() },
     stdout: "pipe",
@@ -23,5 +23,5 @@ test("the agent contract end to end: instructions, the daemon's verdict and surf
   expect(out).toContain("✓ all passed");
   expect(exit).toBe(0);
   // Every promise the script makes is checked, not skipped.
-  expect(out.split("\n").filter((line) => line.includes("✓")).length).toBeGreaterThanOrEqual(30);
+  expect(out.split("\n").filter((line) => line.includes("✓")).length).toBeGreaterThanOrEqual(50);
 }, 120_000);

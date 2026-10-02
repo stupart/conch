@@ -396,6 +396,8 @@ struct DeliverableSheet: View {
     /// A link tapped in here that turned out to be a Mac file, opened the
     /// same way as any other deliverable (`openLink`'s `onFile`).
     @State private var openFile: FileLink?
+    /// A live page with a picture of it from the Mac (`snapshot`) opens on the picture; this is the live page instead.
+    @State private var showLive = false
 
     private enum LocalKind { case image, video, pdf, markdown, page, text, unsupported }
     private enum Kind {
@@ -448,13 +450,25 @@ struct DeliverableSheet: View {
         }
     }
 
+    /// The Mac's picture of a live page, shown first (`PageSnapshotView`): Tyler (2026-10-03, item 3) tapped a page
+    /// behind a login here and got its sign-in page, since this phone has none of the Mac's sign-ins. Nil once the live
+    /// page is asked for, and for anything but a live page.
+    private var pageSnapshot: PublishedState.Row.Review.Preview? {
+        guard !showLive, let snapshot = review.snapshot else { return nil }
+        switch kind {
+        case .web, .macLocal: return snapshot
+        default: return nil
+        }
+    }
+
     /// The page on screen, if there is one: what Back, Reload and Safari act on.
     private var pageURL: URL? {
+        if pageSnapshot != nil { return nil }
         switch kind {
-        case let .web(url): url
-        case let .macLocal(url): lanPage ?? devPage(url)?.entry
-        case .local(.page): review.link.flatMap { ConchPagePath.entry(host: pageHost, page: $0) }
-        default: nil
+        case let .web(url): return url
+        case let .macLocal(url): return lanPage ?? devPage(url)?.entry
+        case .local(.page): return review.link.flatMap { ConchPagePath.entry(host: pageHost, page: $0) }
+        default: return nil
         }
     }
 
@@ -570,7 +584,14 @@ struct DeliverableSheet: View {
 
     @ViewBuilder
     private var content: some View {
-        if documentStandIn {
+        if let pageSnapshot {
+            PageSnapshotView(
+                bridge: bridge,
+                snapshot: pageSnapshot,
+                note: PageAccess.phoneNote(review.access),
+                onOpenLive: { showLive = true }
+            )
+        } else if documentStandIn {
             StandInView(bridge: bridge, review: review, sessionId: sessionId)
         } else {
             routed
@@ -673,6 +694,16 @@ struct DeliverableSheet: View {
                 Image(systemName: "arrow.clockwise").frame(width: 44, height: 44)
             }
             .accessibilityLabel("Reload")
+            // Back to the Mac's picture of it, when there is one.
+            if review.snapshot != nil {
+                Button {
+                    failure = nil
+                    showLive = false
+                } label: {
+                    Image(systemName: "photo").frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("Snapshot from your Mac")
+            }
             Spacer(minLength: 0)
             if url.scheme == "http" || url.scheme == "https" {
                 Button {
@@ -1412,6 +1443,78 @@ struct FolderDeliverableView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .accessibilityElement(children: .contain)
+    }
+}
+
+/// A live page as conch's Mac drew it when it was published (`snapshot`, src/page-access.ts), with the Mac's sign-ins:
+/// shown before the live page, which this phone may only see as a sign-in page. Tyler (2026-10-03, feedback item 3)
+/// tapped a published Vercel dashboard here and got its sign-in page. Pinch to zoom; it says whose view it is and when,
+/// says when the live page needs a sign-in this phone doesn't have (`PageAccess.phoneNote`), and opens the live page
+/// on request.
+struct PageSnapshotView: View {
+    @ObservedObject var bridge: BridgeClient
+    let snapshot: PublishedState.Row.Review.Preview
+    let note: String?
+    let onOpenLive: () -> Void
+    @State private var image: UIImage?
+    @State private var failure: String?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Group {
+                if let image {
+                    MarkedImageView(image: image, marks: [], agent: "")
+                        .accessibilityLabel("The page as conch saw it on your Mac")
+                } else if let failure {
+                    Text(failure)
+                        .font(Type.summary)
+                        .foregroundStyle(Palette.textDim)
+                        .multilineTextAlignment(.center)
+                        .padding(24)
+                } else {
+                    ProgressView()
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Rectangle().fill(Palette.divider).frame(height: 1)
+            VStack(alignment: .leading, spacing: 10) {
+                Label(PageAccess.snapshotCaption(capturedAt: Date(timeIntervalSince1970: snapshot.capturedAt / 1000)), systemImage: "macbook")
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.textDim)
+                if let note {
+                    Label(note, systemImage: "person.badge.key")
+                        .font(Type.caption)
+                        .foregroundStyle(Palette.needs)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Button(action: onOpenLive) {
+                    Label(PageAccess.openLiveTitle, systemImage: "globe")
+                        .font(Type.label(15, weight: .medium))
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .buttonStyle(.bordered)
+                .tint(Palette.micOpen)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(Palette.bg)
+        }
+        .task(id: snapshot.path) { await load() }
+    }
+
+    @MainActor
+    private func load() async {
+        image = nil
+        failure = nil
+        do {
+            let file = try await bridge.fetchFile(path: snapshot.path)
+            defer { try? FileManager.default.removeItem(at: file) }
+            let decoded = await ImageDownsampler.filePreview(at: file, maxBytes: 64 * 1024 * 1024, forWidth: 4_096)
+            guard !Task.isCancelled else { return }
+            if case let .image(picture) = decoded { image = UIImage(cgImage: picture) } else { failure = "iPhone couldn't read the snapshot. Open the live page instead." }
+        } catch {
+            if !Task.isCancelled { failure = "\(BridgeClient.fileFailure(error)) Open the live page instead." }
+        }
     }
 }
 

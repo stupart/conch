@@ -1,4 +1,5 @@
 import type { PreviewRequest, ReviewPreview } from "./review-preview.ts";
+import type { AccessState, ReviewSnapshot } from "./page-access.ts";
 import { sessionLabel, type SessionInfo } from "./sessions.ts";
 import type { PublishedConversation } from "./conversation.ts";
 import type { SessionContextUsage } from "./context-meter.ts";
@@ -359,6 +360,9 @@ export interface PublishedSessionRow {
     linkRefused?: string;
     /** The session folders beyond `cwd` that held its files when it was filed (`SessionReview.roots`). */
     roots?: string[];
+    /** A `url` deliverable's picture from the Mac, and what each look at it found (`SessionReview.snapshot`, `.access`). */
+    snapshot?: ReviewSnapshot;
+    access?: ReviewAccess;
   };
   /**
    * Every deliverable the session is still holding, oldest first, the last of which is
@@ -368,7 +372,7 @@ export interface PublishedSessionRow {
   reviews?: Array<{
     summary: string; link?: string; scene?: ReviewScene; at?: number; id?: string; viewedAt?: number;
     artifact?: string; version?: number; kind?: DeliverableKind; preview?: ReviewPreview; focus?: string[];
-    linkRefused?: string; roots?: string[];
+    linkRefused?: string; roots?: string[]; snapshot?: ReviewSnapshot; access?: ReviewAccess;
   }>;
 }
 
@@ -611,7 +615,7 @@ export function panelReplyText(
  */
 function publishedDeliverableFacts(
   review: SessionReview,
-): Pick<SessionReview, "artifact" | "version" | "kind" | "preview" | "focus" | "linkRefused" | "roots"> {
+): Pick<SessionReview, "artifact" | "version" | "kind" | "preview" | "focus" | "linkRefused" | "roots" | "snapshot" | "access"> {
   return {
     ...(review.artifact ? { artifact: review.artifact } : {}),
     ...(review.version !== undefined ? { version: review.version } : {}),
@@ -622,6 +626,9 @@ function publishedDeliverableFacts(
     ...(review.linkRefused ? { linkRefused: review.linkRefused } : {}),
     // What the phone's file access checks this one's files against, beside the row's own folders.
     ...(review.roots?.length ? { roots: [...review.roots] } : {}),
+    // The Mac's picture of a page, which the phone shows first, and whether either device was shown a sign-in page.
+    ...(review.snapshot ? { snapshot: { ...review.snapshot } } : {}),
+    ...(review.access ? { access: { ...review.access } } : {}),
   };
 }
 
@@ -1151,6 +1158,25 @@ export interface SessionReview {
    * a session is moves on and a filed deliverable must not go with it. Set by the daemon alone; the socket refuses it.
    */
   roots?: string[];
+  /**
+   * A `url` deliverable's picture as conch's Mac app drew it when it was published, with the review pane's sign-ins
+   * (page-access.ts): the phone has none of the Mac's cookies, so it shows this first, as the Mac saw the page then, and
+   * the live page a tap away. Only when the Mac drew the page itself, never a sign-in screen. A file in conch's capture
+   * folder, kept while this deliverable is held and deleted with it (`SessionLedger`). Set by the daemon alone.
+   */
+  snapshot?: ReviewSnapshot;
+  /**
+   * What the login-wall check found when it was published (page-access.ts): `mac`, conch's review pane, and
+   * `anonymous`, a device with none of its cookies, the phone. The Mac says "sign in here once" over a page that asked it
+   * to; the phone says the live page needs sign-in. Set by the daemon alone.
+   */
+  access?: ReviewAccess;
+}
+
+/** What a deliverable keeps of its login-wall check: the two looks, without the words the agent was told. */
+export interface ReviewAccess {
+  mac: AccessState;
+  anonymous: AccessState;
 }
 
 /**
@@ -1376,6 +1402,23 @@ export function attachReviewPreview(
 ): SessionReview[] | undefined {
   if (!held?.some((one) => one.id === review)) return undefined;
   return held.map((one) => one.id === review ? { ...one, preview: { ...preview } } : one);
+}
+
+/**
+ * Put what a login-wall check found on one held deliverable (page-access.ts): its access, and the Mac's picture when it
+ * drew the page. Like `attachReviewPreview`, an identity this session does not hold changes nothing (`undefined`).
+ */
+export function attachReviewAccess(
+  held: readonly SessionReview[] | undefined,
+  review: string,
+  found: { access: ReviewAccess; snapshot?: ReviewSnapshot },
+): SessionReview[] | undefined {
+  if (!held?.some((one) => one.id === review)) return undefined;
+  return held.map((one) => {
+    if (one.id !== review) return one;
+    const { snapshot: _replaced, ...rest } = one;
+    return { ...rest, access: { mac: found.access.mac, anonymous: found.access.anonymous }, ...(found.snapshot ? { snapshot: { ...found.snapshot } } : {}) };
+  });
 }
 
 /**

@@ -2,6 +2,7 @@ import { connect } from "node:net";
 import { ControlFrameReader, encodeControlFrame } from "./control-framing.ts";
 import { isDeliverableKind, type DeliverableKind } from "./deliverables.ts";
 import type { TurnEvent } from "./hook.ts";
+import { ACCESS_CHECK_MS, isPageAccess, type PageAccess } from "./page-access.ts";
 import { isReviewSurfaces, type AudioSurface, type ReviewSurfaces } from "./surfaces.ts";
 
 /**
@@ -21,10 +22,16 @@ import { isReviewSurfaces, type AudioSurface, type ReviewSurfaces } from "./surf
  * and says so, rather than inventing a verdict.
  */
 
-/** How long the daemon holds the connection for its filing before answering `review-pending`. */
-export const REVIEW_VERDICT_WAIT_MS = 8_000;
-/** How long `review_to_front` waits for that answer: the daemon's wait, plus the trip. */
-export const REVIEW_VERDICT_TIMEOUT_MS = 10_000;
+/** How long a filing alone is waited for: a publication with no page to check, and `conch_capture`'s own. */
+export const REVIEW_FILING_WAIT_MS = 7_000;
+/**
+ * How long the daemon holds the connection for its filing before answering `review-pending`. A `url` deliverable's
+ * login-wall check (page-access.ts) runs beside its filing and is bounded at `ACCESS_CHECK_MS`; this leaves the filing
+ * its own wait past that. It was 8 s until the check (2026-10-03, feedback item 3).
+ */
+export const REVIEW_VERDICT_WAIT_MS = ACCESS_CHECK_MS + REVIEW_FILING_WAIT_MS;
+/** How long `review_to_front` waits for that answer: the daemon's wait, plus the trip. It was 10 s until the check. */
+export const REVIEW_VERDICT_TIMEOUT_MS = REVIEW_VERDICT_WAIT_MS + 3_000;
 
 /** What the daemon filed, as `conch_deliverables` will list it. */
 export interface FiledReview {
@@ -48,6 +55,15 @@ export type ReviewVerdict =
     /** What conch's voice does with it; the daemon adds `mac` and `phone` to make `surfaces`. */
     audio?: AudioSurface;
     surfaces?: ReviewSurfaces;
+    /**
+     * A `url` deliverable's login-wall check (page-access.ts): what conch's Mac and a device without its cookies were
+     * shown. Absent for any other kind, from a daemon before the check, and when the publisher doesn't wait for it.
+     */
+    access?: PageAccess;
+    /** One sentence to act on when either look said sign-in (`accessWarning`). */
+    warning?: string;
+    /** The Mac's picture of the page, filed on the deliverable for the phone (`SessionReview.snapshot`): its path. */
+    snapshot?: string;
   }
   | { kind: "review-refused"; reason: string; surfaces?: ReviewSurfaces };
 
@@ -78,7 +94,10 @@ export function isReviewVerdict(value: unknown): value is ReviewVerdict {
     && (filing.link === undefined || typeof filing.link === "string")
     && (filing.focus === undefined || (Array.isArray(filing.focus) && filing.focus.every((path) => typeof path === "string")))
     && (value.copiedFrom === undefined || typeof value.copiedFrom === "string")
-    && (value.notCopied === undefined || typeof value.notCopied === "string");
+    && (value.notCopied === undefined || typeof value.notCopied === "string")
+    && (value.access === undefined || isPageAccess(value.access))
+    && (value.warning === undefined || typeof value.warning === "string")
+    && (value.snapshot === undefined || typeof value.snapshot === "string");
 }
 
 /** What `review_to_front` heard back. */
@@ -92,6 +111,10 @@ export type PublishReply =
  * Send one publication with `awaitVerdict` and read the daemon's answer on the same connection.
  * Like `sendControlMessage`, the request is one complete line with no client FIN, since Bun can
  * close both halves on `end()`. Never rejects.
+ *
+ * It says `awaitAccess` too: this sender waits long enough for a `url` deliverable's login-wall
+ * check (`REVIEW_VERDICT_TIMEOUT_MS`), so the daemon holds the verdict for it. An MCP server from
+ * before the check waited 10 s and doesn't say so, and is answered as soon as it is filed.
  */
 export function publishForVerdict(
   socketPath: string,
@@ -101,7 +124,7 @@ export function publishForVerdict(
   return new Promise((resolve) => {
     let frame: Buffer;
     try {
-      frame = encodeControlFrame(JSON.stringify({ ...event, awaitVerdict: true }));
+      frame = encodeControlFrame(JSON.stringify({ ...event, awaitVerdict: true, awaitAccess: true }));
     } catch (error) {
       resolve({ kind: "verdict", verdict: refusedVerdict(`the publication is too large to send: ${error instanceof Error ? error.message : String(error)}`) });
       return;

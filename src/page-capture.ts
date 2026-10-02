@@ -420,8 +420,15 @@ export class PageCaptures {
     return [...this.#pending.values()].map((pending) => pending.request);
   }
 
-  /** Ask the Mac app to draw a page; its capture, or why there is none. */
-  ask(spec: { url: string; target?: CaptureTarget; viewport: CaptureViewport; fullPage: boolean }): Promise<CaptureOutcome> {
+  /**
+   * Ask the Mac app to draw a page; its capture, or why there is none. `bounds` are this request's own, inside the
+   * broker's: a publication's login-wall check (page-access.ts) has a verdict to answer within, an agent's capture
+   * doesn't.
+   */
+  ask(
+    spec: { url: string; target?: CaptureTarget; viewport: CaptureViewport; fullPage: boolean },
+    bounds: { ackMs?: number; timeoutMs?: number; renderMs?: number } = {},
+  ): Promise<CaptureOutcome> {
     const limit = this.#options.limit ?? CAPTURES_IN_FLIGHT;
     if (this.#pending.size >= limit) {
       return Promise.resolve({ ok: false, error: `conch is already drawing ${this.#pending.size} pages; wait for them, then try again` });
@@ -441,9 +448,9 @@ export class PageCaptures {
       viewport: spec.viewport,
       fullPage: spec.fullPage,
       folder,
-      deadline: now + (this.#options.renderMs ?? CAPTURE_RENDER_MS),
+      deadline: now + (bounds.renderMs ?? this.#options.renderMs ?? CAPTURE_RENDER_MS),
     };
-    const timeoutMs = this.#options.timeoutMs ?? CAPTURE_TIMEOUT_MS;
+    const timeoutMs = bounds.timeoutMs ?? this.#options.timeoutMs ?? CAPTURE_TIMEOUT_MS;
     return new Promise((resolve) => {
       const timer = setTimeout(() => finish({
         ok: false,
@@ -451,7 +458,7 @@ export class PageCaptures {
       }), timeoutMs);
       const ackTimer = setTimeout(() => {
         if (!this.#pending.get(id)?.started) finish({ ok: false, error: MAC_APP_DOWN });
-      }, this.#options.ackMs ?? CAPTURE_ACK_MS);
+      }, bounds.ackMs ?? this.#options.ackMs ?? CAPTURE_ACK_MS);
       const finish = (outcome: CaptureOutcome) => {
         if (!this.#pending.delete(id)) return;
         clearTimeout(timer);

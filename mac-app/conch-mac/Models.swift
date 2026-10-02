@@ -930,6 +930,9 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
     /// Why the link its agent gave was not published, when one was given and refused (`linkRefused`, one sentence
     /// naming the link and the reason). Nil when there was no link, and from an older daemon.
     let linkRefused: String?
+    /// A live page's login-wall check (src/page-access.ts): whether conch's own look, with the review pane's sign-ins, and
+    /// a look with none were shown the page or a sign-in page. Nil for anything but a live page, and from an older daemon.
+    let access: PageAccess.Found?
 
     private enum CodingKeys: String, CodingKey {
         case summary
@@ -943,6 +946,7 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
         case kind
         case focus
         case linkRefused
+        case access
     }
 
     private struct Scene: Decodable {
@@ -969,6 +973,7 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
         kind = try? container.decodeIfPresent(String.self, forKey: .kind)
         focus = (try? container.decodeIfPresent([String].self, forKey: .focus)) ?? []
         linkRefused = try? container.decodeIfPresent(String.self, forKey: .linkRefused)
+        access = try? container.decodeIfPresent(PageAccess.Found.self, forKey: .access)
     }
 
     private static func decodeTimestamp(

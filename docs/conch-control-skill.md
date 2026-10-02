@@ -87,6 +87,35 @@ https://brew.sh rather than trying to install Homebrew yourself.
     generated assets) → the folder, with `focus` on the paths to look at
   - a build, a chart, a recording → the artifact itself
 
+  **Pages behind a login.** A live page (`kind: "url"`) may need sign-in: a
+  Vercel dashboard, a private preview deployment, an admin page. conch's Mac
+  app has the sign-ins of its own review pane, not the user's browser's, and
+  the phone has none of them. So when you publish a URL, conch looks twice
+  while it files it: its Mac app draws the page with the review pane's
+  sign-ins (only while the app is running), and conch fetches it with no
+  cookies or credentials at all, as the phone would. `access` says what each
+  was shown: `mac` and `anonymous`, each `page`, `sign-in` or `unchecked`, and
+  `why`. When the Mac drew the page, its picture is attached as `snapshot`, and
+  the phone shows that first, labelled as the Mac's view at that time, with the
+  live page a tap away. `warning` is there when either look was a sign-in page.
+  Act on it, and tell the user what it means for them:
+
+  - `mac: "sign-in"`: the user sees a login page on the Mac too. Ask them to
+    open it in conch's window and sign in there once (the review pane browses,
+    with an address field), and conch sees it from then on. Or publish a picture
+    instead: `conch_capture` once they have signed in, or a screenshot.
+  - `mac: "page"` with `anonymous: "sign-in"`: fine on the Mac, and the phone
+    shows the attached snapshot; opening the live page there asks for sign-in.
+  - `mac: "unchecked"` with `anonymous: "sign-in"`: no snapshot (the Mac app
+    isn't running, or couldn't draw it in time). Publish a capture or a
+    screenshot instead, or ask the user to sign in in conch's review pane.
+
+  The check takes a few seconds, at most about 15, before the call returns. A
+  page whose sign-in form is built by its scripts can read as `page` without
+  cookies; only the Mac's look catches that. An address with a credential in
+  its query (a magic link's `token`, an OAuth `code`, a `signature`) is never
+  opened by conch, so both looks are `unchecked` and `why` says so.
+
   **What kind of thing it is.** `kind` is one of `page` (a local html file),
   `image`, `video`, `audio`, `pdf`, `markdown`, `text`, `folder` (a directory,
   shown as its file tree), `url` (a live web page or dev server), `app` (a Mac

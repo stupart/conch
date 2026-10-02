@@ -19,10 +19,19 @@
  *   comes back refused, with the daemon's reason;
  * - a copy nothing holds is swept when the daemon starts again, and the held ones survive the restart.
  *
+ * And login walls (item 3): a local server whose `/dashboard` and `/admin` send anyone without cookies to a `/login`
+ * with a password form, and whose `/pricing` is public; a fake Mac app that pings and answers the daemon's capture
+ * requests over the socket as PageCaptureRequests.swift does, "signed in" to the dashboard and not the admin page:
+ * - with the Mac app not running, a URL's check skips the capture and says so, and the anonymous look sees sign-in;
+ * - with it running, `access`, `warning` and `snapshot` say what each device was shown; the snapshot is filed only
+ *   when the Mac drew the page, the phone's `/file` serves it, the capture sweep keeps it however old, and
+ *   review_remove takes it with the filing; an older MCP server (no `awaitAccess`) is answered once filed and the
+ *   snapshot lands on the deliverable afterwards; and the server never saw a cookie or an Authorization header.
+ *
  * Never plays audio, never opens the microphone, never downloads a model (the engine paths point at nothing), no phone
  * transport, and every process it stops is one it started, by pid.
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createPhoneBridgeApplication } from "../src/phone-bridge.ts";
 import { publishForVerdict } from "../src/review-verdict.ts";
@@ -219,6 +228,66 @@ async function ask(body: unknown): Promise<any> {
   });
 }
 
+/**
+ * A site behind a login, on this Mac: `/dashboard` and `/admin` send anyone without the session cookie to `/login`, a
+ * password form; `/pricing` is public. Every request's headers are kept, to show the daemon's own look sent nothing.
+ */
+const siteRequests: Array<{ path: string; headers: Record<string, string> }> = [];
+const site = Bun.serve({
+  hostname: "127.0.0.1",
+  port: 0,
+  fetch(request) {
+    const url = new URL(request.url);
+    siteRequests.push({ path: url.pathname, headers: Object.fromEntries(request.headers.entries()) });
+    const html = (title: string, body: string) => new Response(`<!doctype html><title>${title}</title>${body}`, { headers: { "content-type": "text/html" } });
+    if (url.pathname === "/pricing") return html("Pricing", "<h1>Pricing</h1><button>Log in</button>");
+    if (url.pathname === "/login") return html("Log in", '<form><input name="email"><input type="password" name="password"><button>Log in</button></form>');
+    if (request.headers.get("cookie")?.includes("session=")) return html("Dashboard", "<h1>Deployments</h1>");
+    return new Response(null, { status: 302, headers: { location: `/login?next=${encodeURIComponent(url.pathname)}` } });
+  },
+});
+const siteUrl = (path: string) => `http://127.0.0.1:${site.port}${path}`;
+
+/**
+ * conch's Mac app, as far as the daemon can tell: its health ping, and its answers to the pages the daemon asks it to
+ * draw (the sessions file's `captureRequests`), as PageCaptureRequests.swift gives them: `ack`, then a 0600 PNG named
+ * for the request in the folder it names, and what it saw. Its review pane is signed in to the dashboard, not the
+ * admin page.
+ */
+function fakeMacApp() {
+  const handled = new Set<string>();
+  const drawn: string[] = [];
+  let running = true;
+  let pinged = 0;
+  const loop = (async () => {
+    while (running) {
+      if (Date.now() - pinged > 4_000) {
+        const pong = await ask({ kind: "ping", from: "mac-app" }).catch(() => null);
+        if (pong?.kind === "pong") pinged = Date.now();
+      }
+      let requests: Array<{ id: string; url: string; folder: string }> = [];
+      try { requests = (published() as { captureRequests?: typeof requests }).captureRequests ?? []; } catch {}
+      for (const request of requests) {
+        if (handled.has(request.id)) continue;
+        handled.add(request.id);
+        await ask({ kind: "page-capture-answer", request: request.id, ack: true });
+        const path = join(request.folder, `${request.id}.png`);
+        writeFileSync(path, png(2880, 1800));
+        chmodSync(path, 0o600);
+        const walled = new URL(request.url).pathname === "/admin";
+        await ask({
+          kind: "page-capture-answer", request: request.id, path, devicePixelRatio: 2, settled: true,
+          finalUrl: walled ? siteUrl("/login?next=%2Fadmin") : request.url, title: walled ? "Log in" : "Dashboard", loginWall: walled,
+        });
+        drawn.push(request.url);
+      }
+      await Bun.sleep(50);
+    }
+  })();
+  return { drawn, pinged: () => pinged > 0, stop: async () => { running = false; await loop; } };
+}
+let macApp: ReturnType<typeof fakeMacApp> | null = null;
+
 const mode = (path: string) => statSync(path).mode & 0o777;
 let daemon = startDaemon();
 say(`temp root ${root}; per-user temp scratch ${scratch}`);
@@ -345,9 +414,89 @@ try {
   const stored = readdirSync(store).flatMap((artifact) => readdirSync(join(store, artifact)).map((version) => join(store, artifact, version)));
   const named = new Set(held().map((one) => join(one.link ?? "", "..")).concat(held().map((one) => join(one.link ?? "", "..", ".."))));
   check(stored.every((dir) => named.has(dir)), `the store holds only what the deliverables name (${stored.length} version folders)`);
+
+  // ── Login walls (item 3). The restarted daemon hasn't heard from a Mac app: the check skips the capture and says so.
+  const captures = join(home, "Library", "Application Support", "conch", "captures");
+  const alone = await mcp.call("review_to_front", { summary: "The deployments dashboard", link: siteUrl("/dashboard") });
+  check(alone.json?.outcome === "filed" && alone.json?.kind === "url" && alone.json?.surfaces?.mac === "not-running",
+    `a live page is filed as url while the Mac app is not running: ${alone.text.slice(0, 160)}`);
+  check(alone.json?.access?.mac === "unchecked" && /Mac app isn't running/.test(alone.json?.access?.why ?? "") && alone.json?.snapshot === undefined,
+    `…its capture is skipped, and the verdict says why: ${JSON.stringify(alone.json?.access)}`);
+  check(alone.json?.access?.anonymous === "sign-in" && /redirected to a sign-in page/.test(alone.json?.access?.why ?? "")
+    && /couldn't draw it on the Mac to attach a snapshot/.test(alone.json?.warning ?? ""),
+    `…the look without cookies was sent to /login, and the warning says there is no snapshot: ${alone.json?.warning}`);
+
+  // The Mac app opens: it pings, and draws what it is asked to.
+  macApp = fakeMacApp();
+  check(Boolean(await until("the fake Mac app's first ping", 10_000, () => macApp!.pinged())), "the fake Mac app's health ping is answered");
+  const signedIn = await mcp.call("review_to_front", { summary: "The deployments dashboard, with the new filters", link: siteUrl("/dashboard") });
+  const dash = signedIn.json;
+  check(dash?.outcome === "filed" && dash?.surfaces?.mac !== "not-running" && macApp.drawn.includes(siteUrl("/dashboard")),
+    `with the Mac app running, conch's Mac drew the page (${macApp.drawn.length} drawn), surfaces.mac ${dash?.surfaces?.mac}`);
+  check(JSON.stringify([dash?.access?.mac, dash?.access?.anonymous]) === JSON.stringify(["page", "sign-in"]),
+    `…access: the Mac, signed in, saw the page; without cookies it was sent to sign in: ${dash?.access?.why}`);
+  check(dash?.warning === "The page needs sign-in, so the phone (without the Mac's cookies) would show a login page. conch attached the Mac's snapshot, so the phone shows the page as the Mac saw it.",
+    `…warning: ${dash?.warning}`);
+  const snapshot: string = dash?.snapshot ?? "";
+  check(snapshot.startsWith(`${captures}/`) && existsSync(snapshot) && mode(snapshot) === 0o600, `…snapshot: the Mac's picture, 0600 in conch's capture folder: ${snapshot}`);
+  const dashHeld = await until("the snapshot on the row", 10_000, () => {
+    const one = held().find((candidate) => candidate.id === dash?.id) as (Held & { snapshot?: { path: string }; access?: { mac: string; anonymous: string } }) | undefined;
+    return one?.snapshot ? one : null;
+  });
+  check(dashHeld?.snapshot?.path === snapshot && dashHeld?.access?.mac === "page" && dashHeld?.access?.anonymous === "sign-in",
+    `the published deliverable carries the snapshot and the access the phone and the Mac show: ${JSON.stringify({ snapshot: dashHeld?.snapshot, access: dashHeld?.access })}`);
+  check(await fetched(snapshot) === 200, "the phone's /file serves the snapshot (200)");
+
+  // Signed in nowhere: the Mac's picture is of a sign-in page, so nothing is filed as a snapshot and it is deleted.
+  const before = new Set(readdirSync(captures));
+  const admin = (await mcp.call("review_to_front", { summary: "The admin page", link: siteUrl("/admin") })).json;
+  check(JSON.stringify([admin?.access?.mac, admin?.access?.anonymous]) === JSON.stringify(["sign-in", "sign-in"]) && admin?.snapshot === undefined,
+    `a page that asked the Mac to sign in too: ${JSON.stringify(admin?.access)}, no snapshot`);
+  check(admin?.warning === "The page asked for sign-in on the Mac too, so the user will see a login page. Ask them to sign in once in conch's review pane, or publish a capture/screenshot instead.",
+    `…warning: ${admin?.warning}`);
+  check(readdirSync(captures).filter((name) => !before.has(name)).length === 0, "…and the Mac's picture of the sign-in page was deleted, not kept");
+
+  // The sweep: a held snapshot is kept however old, a stray capture of the same age is not. Each capture prunes first.
+  const monthAgo = (Date.now() - 30 * 24 * 60 * 60 * 1000) / 1000;
+  utimesSync(snapshot, monthAgo, monthAgo);
+  const stray = join(captures, "stray-0001.png");
+  writeFileSync(stray, png(1, 1));
+  chmodSync(stray, 0o600);
+  utimesSync(stray, monthAgo, monthAgo);
+  const pricing = (await mcp.call("review_to_front", { summary: "The pricing page", link: siteUrl("/pricing") })).json;
+  check(JSON.stringify([pricing?.access?.mac, pricing?.access?.anonymous]) === JSON.stringify(["page", "page"]) && pricing?.warning === undefined
+    && typeof pricing?.snapshot === "string" && existsSync(pricing.snapshot),
+    `a public page: page on both, no warning, and the Mac's snapshot attached: ${JSON.stringify(pricing?.access)}`);
+  check(!existsSync(stray) && existsSync(snapshot), "the capture sweep took a month-old stray and kept the month-old snapshot a deliverable holds");
+
+  // review_remove takes the snapshot with the filing.
+  const pricingShot: string = pricing?.snapshot ?? "";
+  check((await mcp.call("review_remove", { id: pricing?.id })).json?.outcome === "removed", "review_remove takes the pricing page back");
+  check(Boolean(await until("its snapshot to go", 10_000, () => !existsSync(pricingShot))) && await fetched(pricingShot) !== 200,
+    "…its snapshot is deleted with it, and the phone is no longer served it");
+  check(existsSync(snapshot), "…while the dashboard's snapshot stays");
+
+  // An MCP server from before the check doesn't say it waits for it: it is answered once filed, and the snapshot lands
+  // on the deliverable afterwards.
+  const old = await ask({
+    type: "review-published", sessionId, label: "e2e", cwd: project, announce: "older", eventAt: Date.now(), awaitVerdict: true,
+    review: { summary: "The dashboard, from an older MCP server", link: siteUrl("/dashboard?from=old") },
+  });
+  check(old?.kind === "review-filed" && old?.access === undefined && old?.snapshot === undefined,
+    `an older MCP server's publication is answered once filed, without the check: ${JSON.stringify(old).slice(0, 160)}`);
+  const late = await until("the older publication's snapshot", 10_000, () => {
+    const one = held().find((candidate) => candidate.id === old?.filing?.id) as (Held & { snapshot?: { path: string } }) | undefined;
+    return one?.snapshot ? one : null;
+  });
+  check(Boolean(late?.snapshot?.path.startsWith(`${captures}/`)), `…and the snapshot is put on its deliverable once drawn: ${late?.snapshot?.path}`);
+
+  check(siteRequests.length > 0 && siteRequests.every((request) => !request.headers.cookie && !request.headers.authorization),
+    `the site saw ${siteRequests.length} requests from conch's own look, none with a cookie or an Authorization header`);
 } catch (error) {
   check(false, `the run threw: ${error instanceof Error ? error.stack : String(error)}`);
 } finally {
+  await macApp?.stop();
+  site.stop(true);
   mcp.server.stdin.end();
   await stop(mcp.server, "mcp server");
   await stop(daemon, "daemon");

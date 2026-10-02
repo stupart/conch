@@ -34,6 +34,7 @@ import {
 } from "./settings.ts";
 import { AGENT_INSTRUCTIONS, MAX_SPEAK_CHARS, type AgentInstructions } from "./agent-instructions.ts";
 import { publishForVerdict, REVIEW_VERDICT_TIMEOUT_MS, type PublishReply } from "./review-verdict.ts";
+import { isPageAccess } from "./page-access.ts";
 import { MARK_PIXELS_MAX, MARK_UNITS, scenePixelsToFractions } from "./mark-pixels.ts";
 import { RelabelHints, type LabelSource } from "./label-drift.ts";
 
@@ -1057,6 +1058,9 @@ interface HeldDeliverable {
   viewedAt?: number;
   /** Why the link a `conch:review` line gave was not published (`SessionReview.linkRefused`). */
   linkRefused?: string;
+  /** A live page's login-wall check, and the Mac's picture of it (`SessionReview.access`, `.snapshot`). */
+  access?: unknown;
+  snapshot?: { path?: unknown };
 }
 
 /**
@@ -1633,6 +1637,8 @@ export function createMcpToolHandlers(
           ...(one.link ? { link: one.link } : {}),
           ...(typeof one.linkRefused === "string" && one.linkRefused ? { linkRefused: one.linkRefused } : {}),
           ...(Array.isArray(one.focus) && one.focus.length ? { focus: one.focus } : {}),
+          ...(isPageAccess(one.access) ? { access: { mac: one.access.mac, anonymous: one.access.anonymous } } : {}),
+          ...(typeof one.snapshot?.path === "string" ? { snapshot: one.snapshot.path } : {}),
           ...(one.at !== undefined ? { at: one.at } : {}),
           ...(one.viewedAt !== undefined ? { viewedAt: one.viewedAt } : {}),
           superseded: held.slice(index + 1).some((later) => artifactOf(later) === artifactOf(one)),
@@ -1788,7 +1794,7 @@ export function createMcpToolHandlers(
         ...(relabel ? { relabel } : {}),
       };
       if (verdict) {
-        const { filing, copiedFrom, notCopied, surfaces } = verdict;
+        const { filing, copiedFrom, notCopied, surfaces, access, warning, snapshot } = verdict;
         return {
           outcome: "filed",
           sessionId: session.sessionId,
@@ -1803,6 +1809,11 @@ export function createMcpToolHandlers(
           ...(copiedFrom ? { copiedFrom } : {}),
           ...(notCopied ? { notCopied } : {}),
           ...(surfaces ? { surfaces } : {}),
+          // A live page's login-wall check (page-access.ts): who was shown the page and who a sign-in screen, what to
+          // do about it, and the Mac's picture the phone shows first.
+          ...(access ? { access } : {}),
+          ...(warning ? { warning } : {}),
+          ...(snapshot ? { snapshot } : {}),
           ...said,
         };
       }
