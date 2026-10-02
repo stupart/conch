@@ -1145,6 +1145,9 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     let cwd: String?
     /// The folder(s) its agent said it actually works in (`conch_working_folders`), when not `cwd`.
     let workDirs: [String]?
+    /// What its agent is doing right now, while it works on its own turn: the sidebar's second line
+    /// (src/live-activity.ts; `SidebarActivity`). Older daemons never send it.
+    let activity: Activity?
 
     /// Where the session's work is: the first folder its agent declared, else where it started.
     /// `cwd` stays what a relative link is relative to.
@@ -1186,6 +1189,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         case startedBySessionId
         case cwd
         case workDirs
+        case activity
     }
 
     init(
@@ -1223,7 +1227,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         parentSessionId: String? = nil,
         startedBySessionId: String? = nil,
         cwd: String? = nil,
-        workDirs: [String]? = nil
+        workDirs: [String]? = nil,
+        activity: Activity? = nil
     ) {
         self.id = id
         self.label = label
@@ -1260,6 +1265,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         self.startedBySessionId = startedBySessionId
         self.cwd = cwd
         self.workDirs = workDirs
+        self.activity = activity
     }
 
     init(from decoder: Decoder) throws {
@@ -1308,6 +1314,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             try? container.decodeIfPresent(String.self, forKey: .startedBySessionId)
         cwd = try? container.decodeIfPresent(String.self, forKey: .cwd)
         workDirs = try? container.decodeIfPresent([String].self, forKey: .workDirs)
+        // A line this build can't read is no line, never a row that fails.
+        activity = try? container.decodeIfPresent(Activity.self, forKey: .activity)
     }
 
     func replacingLabel(with label: String) -> SessionRow {
@@ -1346,12 +1354,22 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             parentSessionId: parentSessionId,
             startedBySessionId: startedBySessionId,
             cwd: cwd,
-            workDirs: workDirs
+            workDirs: workDirs,
+            activity: activity
         )
     }
 }
 
 extension SessionRow {
+    /// What a working agent is doing right now (`rows[].activity`): its running step, or its words from the last minute.
+    struct Activity: Decodable, Equatable, Sendable {
+        let text: String
+        /// "step" or "commentary"; a kind a newer daemon adds is still a line.
+        let kind: String?
+        /// Epoch milliseconds the step started or the words were written.
+        let at: Double?
+    }
+
     /// A permission prompt: which tool, and the one line that names what it wants to do.
     struct PendingApproval: Decodable, Equatable, Sendable {
         let id: String

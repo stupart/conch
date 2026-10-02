@@ -860,7 +860,7 @@ private struct DashboardRow: View {
     /// `.row{height:var(--rowH)}` with `--rowH:30px`. The row is ONE line — mark, name, then
     /// the agent, quiet mark and age small at its end — and carried 42, which is a line and a
     /// half of air. At a sidebar's usual height that is nine sessions you could not see. A row
-    /// that asks something of you grows a second line under its name (`subtitle`).
+    /// that asks something of you, or is working, grows a second line under its name (`secondLine`).
     static let rowHeight: CGFloat = 30
 
     let row: SessionRow
@@ -908,7 +908,7 @@ private struct DashboardRow: View {
     /// Everything the row knows beyond its name, as one line of words: conch's own word about it,
     /// the deliverable's summary, the question it is blocked on, or why it has no terminal. It is
     /// no longer drawn beside the name, where it left the name "Co…egy" and itself "Screen…": the
-    /// tooltip and VoiceOver carry it, and the parts that ask something of you earn `subtitle`.
+    /// tooltip and VoiceOver carry it, and the parts that ask something of you earn `secondLine`.
     private var detailLine: String {
         if let rowMessage, !rowMessage.isEmpty {
             return rowMessage
@@ -934,13 +934,28 @@ private struct DashboardRow: View {
         isHovered || isSelected
     }
 
+    /// What its agent is doing right now (2026-10-03), while the row's mark says working: never on
+    /// an idle, waiting or blocked row, one whose turn is over while its agents run, one stopped by a
+    /// usage limit, or one conch is speaking or listening for (`SidebarActivity.line`).
+    private var activity: String? {
+        guard LedgerVisual(row: row) == .working else { return nil }
+        return SidebarActivity.line(
+            row.activity?.text,
+            working: row.status == .working,
+            waitingOnAgents: row.waitingOnAgents,
+            usageLimited: row.usageLimit != nil
+        )
+    }
+
     /// The line under the name, for the rows that have earned one: a word from conch about this
-    /// row, the question it is blocked on, or who started it (`SidebarRowText.subtitle`).
-    private var subtitle: String? {
+    /// row, the question it is blocked on, what its agent is doing, or who started it
+    /// (`SidebarRowText.secondLine`).
+    private var secondLine: SidebarRowText.SecondLine? {
         guard !isRenaming else { return nil }
-        return SidebarRowText.subtitle(
+        return SidebarRowText.secondLine(
             message: rowMessage,
             blockedOn: row.status == .needs ? row.detail : nil,
+            activity: activity,
             startedBy: startedByLabel
         )
     }
@@ -953,7 +968,8 @@ private struct DashboardRow: View {
             state: LedgerVisual(row: row).accessibilityLabel,
             agent: AgentBadge.name(for: row.backend),
             voice: voice.mark,
-            startedBy: startedByLabel
+            startedBy: startedByLabel,
+            activity: activity
         )
     }
 
@@ -1180,23 +1196,17 @@ private struct DashboardRow: View {
                 }
                 .alignmentGuide(.nameLine) { $0[VerticalAlignment.center] }
 
-                // Only what asks something of you: conch's word about this row in the needs
-                // colour, the question it is blocked on, or who started it.
-                if let subtitle {
-                    TailFadeText(subtitle, fade: 24)
-                        .font(ConchTypography.font(size: 11))
-                        .foregroundStyle(
-                            rowMessage == nil
-                                ? ConchPalette.textDim
-                                : ConchPalette.statusNeeds.opacity(0.90)
-                        )
-                        .contentTransition(.opacity)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                // Only what asks something of you or says what is happening: conch's word about
+                // this row in the needs colour, the question it is blocked on, what its agent is
+                // doing (faintest, and crossfaded as it changes), or who started it. Under the name's
+                // line, which it never moves: the name, marks and age stay where they were.
+                if let secondLine {
+                    SidebarSecondLine(secondLine, font: ConchTypography.font(size: 11))
                 }
             }
         }
         .padding(.trailing, 4)
-        .padding(.vertical, subtitle == nil ? 0 : 5)
+        .padding(.vertical, secondLine == nil ? 0 : 5)
         .frame(maxWidth: .infinity, minHeight: Self.rowHeight, alignment: .leading)
         .contentShape(Rectangle())
     }
@@ -3347,16 +3357,24 @@ private struct AgentGroup: View {
         VStack(alignment: .leading, spacing: 1) {
             ForEach(agents, id: \.id) { agent in
                 Button { onSelect(agent) } label: {
-                    HStack(spacing: 7) {
-                        DashboardStatusGlyph(visual: LedgerVisual(row: agent))
-                            .scaleEffect(0.75)
-                            .frame(width: 12, height: 12)
-                        // The session rows' rules, a size down: the name has the line and fades
-                        // at its end, regular unless it is blocked on you; the fill says selected.
-                        TailFadeText(agent.label, fade: 24)
-                            .font(ConchTypography.font(size: 11.5, weight: agent.status == .needs ? .semibold : .regular))
-                            .foregroundStyle(selectedID == agent.id ? ConchPalette.textPrimary : ConchPalette.textDim)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 1) {
+                        HStack(spacing: 7) {
+                            DashboardStatusGlyph(visual: LedgerVisual(row: agent))
+                                .scaleEffect(0.75)
+                                .frame(width: 12, height: 12)
+                            // The session rows' rules, a size down: the name has the line and fades
+                            // at its end, regular unless it is blocked on you; the fill says selected.
+                            TailFadeText(agent.label, fade: 24)
+                                .font(ConchTypography.font(size: 11.5, weight: agent.status == .needs ? .semibold : .regular))
+                                .foregroundStyle(selectedID == agent.id ? ConchPalette.textPrimary : ConchPalette.textDim)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        // What it is doing, as its session's row says it, a size down and under its
+                        // name (past the 12 pt mark and its 7 pt gap).
+                        if let activity = activity(of: agent) {
+                            SidebarSecondLine(SidebarRowText.SecondLine(text: activity, kind: .activity), font: ConchTypography.font(size: 10.5))
+                                .padding(.leading, 19)
+                        }
                     }
                     .padding(.horizontal, 6)
                     .padding(.vertical, 3)
@@ -3373,13 +3391,20 @@ private struct AgentGroup: View {
                     state: LedgerVisual(row: agent).accessibilityLabel,
                     agent: AgentBadge.name(for: agent.backend),
                     voice: nil,
-                    startedBy: nil
+                    startedBy: nil,
+                    activity: activity(of: agent)
                 ))
             }
         }
         // `.row.child{padding-left:30px}`, the lab's indent for anything under a session.
         .padding(.leading, 30)
         .padding(.bottom, 2)
+    }
+
+    /// A running agent's line, by the session rows' rule (`SidebarActivity.line`).
+    private func activity(of agent: SessionRow) -> String? {
+        guard LedgerVisual(row: agent) == .working else { return nil }
+        return SidebarActivity.line(agent.activity?.text, working: agent.status == .working, usageLimited: agent.usageLimit != nil)
     }
 }
 

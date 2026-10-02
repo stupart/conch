@@ -33,6 +33,67 @@ final class SidebarRowTests: XCTestCase {
         XCTAssertEqual(SidebarRowText.subtitle(message: " ", blockedOn: " Allow rm? ", startedBy: nil), "Allow rm?")
     }
 
+    // MARK: What a working agent is doing (2026-10-03)
+
+    func testAWorkingRowSaysWhatItsAgentIsDoing() {
+        XCTAssertEqual(SidebarActivity.line("Running the test suite", working: true), "Running the test suite")
+        XCTAssertEqual(
+            SidebarRowText.secondLine(message: nil, blockedOn: nil, activity: "Editing src/voice-loop.ts", startedBy: nil),
+            SidebarRowText.SecondLine(text: "Editing src/voice-loop.ts", kind: .activity)
+        )
+    }
+
+    /// Idle, waiting and blocked rows stay their name alone, as does one whose own turn is over while only its agents
+    /// run, and one a usage limit stopped: whatever the daemon sent, nothing changes for them.
+    func testOnlyARowWorkingOnItsOwnTurnShowsTheLine() {
+        XCTAssertNil(SidebarActivity.line("Running the test suite", working: false))
+        XCTAssertNil(SidebarActivity.line("Running the test suite", working: true, waitingOnAgents: true))
+        XCTAssertNil(SidebarActivity.line("Running the test suite", working: true, usageLimited: true))
+        XCTAssertNil(SidebarActivity.line(nil, working: true))
+        XCTAssertNil(SidebarActivity.line(" \n\t ", working: true))
+    }
+
+    func testTheLineIsOneLineOfAtMostNinetyCharacters() throws {
+        XCTAssertEqual(SidebarActivity.clean("Reading\n  three\tfiles "), "Reading three files")
+        let long = "Running the full local CI on the settings branch, then rebuilding the Mac app and the iPhone app and comparing"
+        let line = try XCTUnwrap(SidebarActivity.clean(long))
+        XCTAssertLessThanOrEqual(line.count, SidebarActivity.maxCharacters)
+        XCTAssertTrue(line.hasSuffix("…"))
+        XCTAssertFalse(line.contains("\n"))
+        // Cut on a word: what is left before the ellipsis is a whole-word prefix of the original.
+        let kept = String(line.dropLast())
+        XCTAssertTrue(long.hasPrefix(kept))
+        XCTAssertTrue([" ", ","].contains(long[long.index(long.startIndex, offsetBy: kept.count)]))
+        // A line exactly at the cap is kept whole, and characters are counted as a reader sees them.
+        let exact = String(repeating: "é", count: SidebarActivity.maxCharacters)
+        XCTAssertEqual(SidebarActivity.clean(exact), exact)
+        let emoji = String(repeating: "👩‍💻", count: SidebarActivity.maxCharacters + 5)
+        XCTAssertEqual(SidebarActivity.clean(emoji)?.count, SidebarActivity.maxCharacters)
+    }
+
+    /// conch's word and the question a blocked row waits on outrank what the agent is doing; what it is doing outranks
+    /// which session started it, which its indent under the starter already says.
+    func testTheActivitySitsBelowConchsWordAndTheQuestionAndAboveTheStarter() {
+        XCTAssertEqual(
+            SidebarRowText.secondLine(message: "Couldn't rename", blockedOn: nil, activity: "Running tests", startedBy: "Parent")?.kind,
+            .message
+        )
+        XCTAssertEqual(
+            SidebarRowText.secondLine(message: nil, blockedOn: "Allow rm?", activity: "Running tests", startedBy: "Parent")?.kind,
+            .question
+        )
+        XCTAssertEqual(
+            SidebarRowText.secondLine(message: nil, blockedOn: nil, activity: "Running tests", startedBy: "Parent"),
+            SidebarRowText.SecondLine(text: "Running tests", kind: .activity)
+        )
+        XCTAssertEqual(
+            SidebarRowText.secondLine(message: nil, blockedOn: nil, activity: "  ", startedBy: "Parent"),
+            SidebarRowText.SecondLine(text: "started by Parent", kind: .startedBy)
+        )
+        // The old rule's answers are unchanged for every row with no activity.
+        XCTAssertEqual(SidebarRowText.subtitle(message: nil, blockedOn: nil, startedBy: "Parent"), "started by Parent")
+    }
+
     // MARK: The tooltip
 
     /// The whole name, which the row may fade, then the summary the row no longer draws.
@@ -58,6 +119,19 @@ final class SidebarRowTests: XCTestCase {
             name: name, state: "Ready for you — work to look at", agent: "Codex", voice: nil, startedBy: nil
         )
         XCTAssertEqual(label, "\(name), Ready for you — work to look at, Codex")
+    }
+
+    /// What a working agent is doing is read with its state, before the agent's name: "Working, Running the test suite".
+    func testVoiceOverHearsWhatAWorkingAgentIsDoing() {
+        let label = SidebarRowText.accessibilityLabel(
+            name: "conch brand", state: "Working", agent: "Claude", voice: nil, startedBy: nil,
+            activity: "Running the test suite"
+        )
+        XCTAssertEqual(label, "conch brand, Working, Running the test suite, Claude")
+        XCTAssertEqual(
+            SidebarRowText.accessibilityLabel(name: "conch brand", state: "Working", agent: "Claude", voice: nil, startedBy: nil, activity: " "),
+            "conch brand, Working, Claude"
+        )
     }
 
     func testVoiceOverHearsQuietAndTheStarterWhenTheyApply() {
