@@ -49,6 +49,22 @@ process.env.CLAUDE_CONFIG_DIR = testClaudeDir;
 process.env.CONCH_TEST_ROOT = testConfigRoot;
 
 process.env.CONCH_SOCKET ??= join(testConfigRoot, "conch.sock");
+
+// tmux, likewise. A suite run from inside a tmux pane (a conch background session) inherits `$TMUX`, which
+// points every bare `tmux` at that real server — on 2026-10-02 one `tmux kill-server` meant for a test server
+// ended every background session on the Mac. So the suite gets a tmux folder of its own (short: a socket path
+// has a ~104-byte limit), no `$TMUX`, and its own name for conch's server.
+const tmuxRoot = mkdtempSync("/tmp/ctmux-");
+process.env.TMUX_TMPDIR = tmuxRoot;
+delete process.env.TMUX;
+delete process.env.TMUX_PANE;
+process.env.CONCH_TMUX_SOCKET = `conch-test-${process.pid}`;
+afterAll(() => {
+  for (const tmux of ["tmux", "/Applications/conch.app/Contents/Helpers/tmux"]) {
+    try { Bun.spawnSync([tmux, "-L", process.env.CONCH_TMUX_SOCKET!, "kill-server"], { stdout: "ignore", stderr: "ignore" }); } catch {}
+  }
+  rmSync(tmuxRoot, { recursive: true, force: true });
+});
 process.on("exit", () => rmSync(testConfigRoot, { recursive: true, force: true }));
 
 // Runs before any test module is imported. The daemon log path is read once

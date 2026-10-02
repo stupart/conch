@@ -79,3 +79,59 @@ export function describeTmux(tmux: TmuxBinary): string {
   const from = tmux.source === "conch.app" ? "the app" : tmux.source === "explicit" ? "CONCH_TMUX" : tmux.source === "homebrew" ? "Homebrew" : "PATH";
   return `tmux from ${from} (${tmux.path}) — conch's own sessions run in it`;
 }
+
+/**
+ * conch's own tmux server, by socket name (`tmux -L conch`). Background sessions run here, never on the
+ * user's default server.
+ *
+ * They used to share the default one, and anything that cleared it took every session with it: on
+ * 2026-10-02 a `tmux kill-server` run inside one of them (by an agent, aimed at a test server, but
+ * steered to the real one by the pane's own `$TMUX`) ended all seven of the user's background sessions
+ * mid-task. A bare `tmux kill-server` — the user's, or any agent's — now never reaches this server, and
+ * the sessions on it carry no `$TMUX` pointing back at it (`startBackgroundProcess`). `CONCH_TMUX_SOCKET`
+ * names another one, for tests.
+ */
+export function conchTmuxSocket(env: Readonly<Record<string, string | undefined>> = process.env): string {
+  const named = env.CONCH_TMUX_SOCKET?.trim();
+  return named && /^[A-Za-z0-9._-]{1,64}$/.test(named) ? named : "conch";
+}
+
+/** conch's own server: the tmux conch resolves (its client and its server one build), on conch's socket. */
+export function conchTmux(): string[] {
+  return [resolveTmux().path, "-L", conchTmuxSocket()];
+}
+
+/** The user's default server, with their own client (`defaultTmuxExecutable`). */
+export function defaultTmux(): string[] {
+  return [defaultTmuxExecutable()];
+}
+
+/**
+ * Every server a session's pane can be on, conch's own first. The default server still holds the user's own
+ * tmux sessions, and background sessions started before conch had a server of its own.
+ */
+export function tmuxServers(): string[][] {
+  return [conchTmux(), defaultTmux()];
+}
+
+/**
+ * A pane, named with its server: `conch:%3` on conch's own, a bare `%3` on the default one. A pane id means
+ * something on one server only — `%3` on each is a different pane — so a pane is never passed around bare once
+ * conch has two servers to speak to.
+ */
+export const PANE_REF = /^(?:conch:)?%\d+$/;
+
+export function conchPane(pane: string): string {
+  return `conch:${pane}`;
+}
+
+/** The server a pane ref is on, as argv, and the pane id to give it; null for anything that is not a pane ref. */
+export function paneTarget(ref: string): { tmux: string[]; pane: string } | null {
+  if (!PANE_REF.test(ref)) return null;
+  return ref.startsWith("conch:") ? { tmux: conchTmux(), pane: ref.slice("conch:".length) } : { tmux: defaultTmux(), pane: ref };
+}
+
+/** Name a pane found on `server` (one of `tmuxServers()`): qualified on conch's own. */
+export function qualifyPane(server: readonly string[], pane: string): string {
+  return server.includes("-L") ? conchPane(pane) : pane;
+}

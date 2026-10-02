@@ -115,7 +115,11 @@ echo "Verifying the bundled daemon and speech engine:"
 if [[ -n "$WAS_RUNNING" ]]; then
   echo "Relaunching conch.app"
   # -g: in the background, so a deploy never takes focus from whatever you're typing in.
-  open -g -a "$INSTALLED_APP_PATH"
+  # A clean environment: run from inside an agent session, `open` hands the app that session's (its account
+  # folder, its tmux), and the daemon the app starts would inherit them (2026-10-02). The app cleans its daemon's
+  # environment too (DaemonEnvironment); this keeps the app itself out of it.
+  env -i HOME="$HOME" USER="${USER:-$(id -un)}" LOGNAME="${LOGNAME:-${USER:-$(id -un)}}" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+    open -g -a "$INSTALLED_APP_PATH"
 fi
 
 echo "Installed $INSTALLED_APP_PATH"

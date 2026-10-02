@@ -1,4 +1,4 @@
-import { defaultTmuxExecutable } from "./tmux-binary.ts";
+import { defaultTmux, tmuxServers } from "./tmux-binary.ts";
 import { CONTROL_FRAME_MAX_BYTES } from "./control-framing.ts";
 import { runUICommand, type UICommandResult, type UICommandScope } from "./pasteboard.ts";
 import { withUITransaction } from "./inject.ts";
@@ -93,15 +93,17 @@ export interface TerminalMirrorDeps {
   /** Serialise with every other UI action (typing, reveal). */
   transaction<T>(work: () => Promise<T>): Promise<T>;
   now(): number;
-  /** The tmux command, with any socket flags, as argv. */
+  /** The tmux command, with any socket flags, as argv: the user's default server. */
   tmux: string[];
+  /** Every server a pane can be on, conch's own first (`tmuxServers`); absent means `tmux` alone. */
+  tmuxServers?: string[][];
 }
 
 /**
  * A pid's host, as found. A pane is kept until reading it fails: a process never changes pane. Anything else is looked
  * for again after a while, so one slow `tmux list-panes` can't leave a tmux session read as a bare tty for good.
  */
-type Host = { kind: "tmux"; pane: string } | { kind: "tty"; tty: string } | { kind: "none"; reason: string };
+type Host = { kind: "tmux"; pane: string; tmux: string[] } | { kind: "tty"; tty: string } | { kind: "none"; reason: string };
 
 /** How long "not in tmux" is believed before looking again. */
 export const HOST_RETRY_MS = 15_000;
@@ -140,7 +142,8 @@ export function defaultTerminalMirrorDeps(): TerminalMirrorDeps {
     focusOsa: (script) => runUICommand(osaArgv(script), undefined, { timeoutMs: 4_000 }),
     transaction: withUITransaction,
     now: () => Date.now(),
-    tmux: [defaultTmuxExecutable()],
+    tmux: defaultTmux(),
+    tmuxServers: tmuxServers(),
   };
 }
 
@@ -326,12 +329,18 @@ export function createTerminalMirror(deps: TerminalMirrorDeps = defaultTerminalM
       return known.host;
     }
     let host: Host = { kind: "none", reason: NOT_IN_TERMINAL };
-    // No tmux server is the common case, and an instant non-zero exit.
-    const panes = await deps.run([...deps.tmux, "list-panes", "-a", "-F", "#{pane_pid} #{pane_id}"]);
-    if (ok(panes) && panes.text.trim()) {
-      const processes = await deps.run(["ps", "-A", "-o", "pid=,ppid="]);
-      const pane = ok(processes) ? paneForPid(pid, panes.text, processes.text) : null;
-      if (pane) host = { kind: "tmux", pane };
+    // No tmux server is the common case, and an instant non-zero exit. conch's own server first: its background
+    // sessions run there, and a pane id means something on one server only.
+    let processes: string | null | undefined;
+    for (const server of deps.tmuxServers ?? [deps.tmux]) {
+      const panes = await deps.run([...server, "list-panes", "-a", "-F", "#{pane_pid} #{pane_id}"]);
+      if (!ok(panes) || !panes.text.trim()) continue;
+      if (processes === undefined) {
+        const table = await deps.run(["ps", "-A", "-o", "pid=,ppid="]);
+        processes = ok(table) ? table.text : null;
+      }
+      const pane = processes ? paneForPid(pid, panes.text, processes) : null;
+      if (pane) { host = { kind: "tmux", pane, tmux: server }; break; }
     }
     if (host.kind === "none") {
       const tty = await deps.run(["ps", "-o", "tty=", "-p", String(pid)]);
@@ -344,12 +353,12 @@ export function createTerminalMirror(deps: TerminalMirrorDeps = defaultTerminalM
 
   const none = (sessionId: string, reason: string): TerminalScreenReply => ({ kind: "terminal-screen", sessionId, host: "none", reason });
 
-  const captureTmux = async (sessionId: string, pane: string, history?: number): Promise<TerminalScreenReply | null> => {
-    const result = await deps.run(tmuxCaptureArgv(deps.tmux, pane));
+  const captureTmux = async (sessionId: string, tmux: string[], pane: string, history?: number): Promise<TerminalScreenReply | null> => {
+    const result = await deps.run(tmuxCaptureArgv(tmux, pane));
     if (!ok(result)) return null;
     const parsed = parseTmuxCapture(result.text);
     if (!parsed) return null;
-    const scrollback = history ? await deps.run(tmuxHistoryArgv(deps.tmux, pane, history)) : null;
+    const scrollback = history ? await deps.run(tmuxHistoryArgv(tmux, pane, history)) : null;
     return {
       kind: "terminal-screen",
       sessionId,
@@ -398,12 +407,12 @@ export function createTerminalMirror(deps: TerminalMirrorDeps = defaultTerminalM
       : undefined;
     let host = await locate(session.pid);
     if (host.kind === "tmux") {
-      const shown = await captureTmux(sessionId, host.pane, history);
+      const shown = await captureTmux(sessionId, host.tmux, host.pane, history);
       if (shown) return shown;
       // The pane is gone (the session moved out of tmux, or the server restarted): find it again, once.
       hosts.delete(session.pid);
       host = await locate(session.pid);
-      if (host.kind === "tmux") return await captureTmux(sessionId, host.pane, history) ?? none(sessionId, "tmux didn't answer conch just now.");
+      if (host.kind === "tmux") return await captureTmux(sessionId, host.tmux, host.pane, history) ?? none(sessionId, "tmux didn't answer conch just now.");
     }
     if (host.kind === "tty") return await locateTerminal(sessionId, host.tty, options.text === true, history);
     return none(sessionId, host.reason);
@@ -425,24 +434,24 @@ export function createTerminalMirror(deps: TerminalMirrorDeps = defaultTerminalM
         let tty: string;
         if (host.kind === "tmux") {
           // The terminal tmux is attached in: the most recently used client of the pane's own session.
-          const owner = await deps.run([...deps.tmux, "display-message", "-p", "-t", host.pane, "#{session_id}"]);
+          const owner = await deps.run([...host.tmux, "display-message", "-p", "-t", host.pane, "#{session_id}"]);
           const clientsOf = ok(owner) ? owner.text.trim() : "";
           if (!clientsOf) return refused("tmux didn't answer conch just now.");
-          const clients = await deps.run([...deps.tmux, "list-clients", "-t", clientsOf, "-F", "#{client_activity} #{client_tty}"]);
+          const clients = await deps.run([...host.tmux, "list-clients", "-t", clientsOf, "-F", "#{client_activity} #{client_tty}"]);
           const newest = (ok(clients) ? clients.text : "").split("\n")
             .map((line) => line.trim().split(" "))
             .filter(([activity, path]) => activity && path?.startsWith("/dev/"))
             .sort((a, b) => Number(b[0]) - Number(a[0]))[0];
           if (!newest) {
-            const selected = await deps.run([...deps.tmux, "select-window", "-t", host.pane, ";", "select-pane", "-t", host.pane]);
+            const selected = await deps.run([...host.tmux, "select-window", "-t", host.pane, ";", "select-pane", "-t", host.pane]);
             if (!ok(selected)) return refused("This background pane is no longer available.");
-            const attached = await deps.focusOsa(tmuxAttachScript(deps.tmux, clientsOf));
+            const attached = await deps.focusOsa(tmuxAttachScript(host.tmux, clientsOf));
             return ok(attached) && attached.text.trim() === "ok"
               ? { kind: "terminal-focus", sessionId, focused: true }
               : refused("Could not open this background session in Terminal. Check Conch’s Automation permission.");
           }
           // Its window and pane, so the terminal that comes forward is showing the session.
-          await deps.run([...deps.tmux, "select-window", "-t", host.pane, ";", "select-pane", "-t", host.pane]);
+          await deps.run([...host.tmux, "select-window", "-t", host.pane, ";", "select-pane", "-t", host.pane]);
           tty = newest[1]!.slice("/dev/".length);
           if (!TTY.test(tty)) return refused(NOT_IN_TERMINAL);
         } else {

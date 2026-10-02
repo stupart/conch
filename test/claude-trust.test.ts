@@ -116,7 +116,8 @@ describe("asking before a Claude session starts in a folder it doesn't trust", (
     expect(adapterFor("codex").trustTypedAtLaunch).toBe(false);
     const daemon = readFileSync(`${import.meta.dir}/../src/daemon.ts`, "utf8");
     expect(daemon).toContain("if (request.trustFolder === true && adapterFor(request.backend).trustTypedAtLaunch && tty) {");
-    expect(daemon.match(/await launchSession\(|=> launchSession\(/g)?.length).toBe(3);
+    // Start, restart, account handoff, and bringing back a session its tmux server took with it (background-recovery.ts).
+    expect(daemon.match(/await launchSession\(|=> launchSession\(/g)?.length).toBe(4);
     // Every launch goes through launchSession: its own call is the only direct one.
     expect(daemon.match(/await startTerminalSession\(/g)?.length).toBe(1);
   });
