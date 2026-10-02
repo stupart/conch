@@ -78,27 +78,36 @@ describe("the details move", () => {
     expect(code(row)).not.toContain(".help(row.label)");
   });
 
-  test("only conch's word, the question it is blocked on, or its starter earn a second line", () => {
-    const subtitle = section(row, "private var subtitle: String? {", "\n    }\n");
-    expect(subtitle).toContain("message: rowMessage,");
-    expect(subtitle).toContain("blockedOn: row.status == .needs ? row.detail : nil,");
-    expect(subtitle).toContain("startedBy: startedByLabel");
-    expect(code(subtitle)).not.toContain("review");
-    expect(code(subtitle)).not.toContain("noTerminal");
-    // Drawn under the name, a size down, faded like it; the needs colour for conch's own word.
-    const line = section(rowContent, "if let subtitle {", "\n                }\n");
-    expect(line).toContain("TailFadeText(subtitle, fade: 24)");
-    expect(line).toContain(".font(ConchTypography.font(size: 11))");
-    expect(line).toContain("? ConchPalette.textDim\n                                : ConchPalette.statusNeeds.opacity(0.90)");
+  test("only conch's word, the question it is blocked on, what a working agent is doing, or its starter earn a second line", () => {
+    const secondLine = section(row, "private var secondLine: SidebarRowText.SecondLine? {", "\n    }\n");
+    expect(secondLine).toContain("message: rowMessage,");
+    expect(secondLine).toContain("blockedOn: row.status == .needs ? row.detail : nil,");
+    expect(secondLine).toContain("activity: activity,");
+    expect(secondLine).toContain("startedBy: startedByLabel");
+    expect(code(secondLine)).not.toContain("review");
+    expect(code(secondLine)).not.toContain("noTerminal");
+    // Drawn under the name, a size down, faded like it, in the colour of what earned it (SidebarSecondLine: the needs
+    // colour for conch's own word, the secondary ink for a question or a starter, the faintest for activity).
+    const line = section(rowContent, "if let secondLine {", "\n                }\n");
+    expect(line).toContain("SidebarSecondLine(secondLine, font: ConchTypography.font(size: 11))");
+    const view = section(design, "public struct SidebarSecondLine: View {", "\n}\n");
+    expect(view).toContain("TailFadeText(line.text, fade: 24)");
+    expect(view).toContain("case .message: return AnyShapeStyle(ConchColor.attention.opacity(0.9))");
+    expect(view).toContain("case .question, .startedBy: return AnyShapeStyle(ConchColor.textSecondary)");
+    expect(view).toContain("case .activity: return AnyShapeStyle(ConchColor.textTertiary)");
     // The "started by" that sat on the name's line is gone from it.
     expect(code(rowContent)).not.toContain('Text("started by');
   });
 
   test("the rule for the second line never offers a summary", () => {
-    const rule = section(design, "public static func subtitle(", "\n    }\n");
-    expect(rule).toContain("if let message = present(message) { return message }");
-    expect(rule).toContain("if let blockedOn = present(blockedOn) { return blockedOn }");
-    expect(rule).toContain('return present(startedBy).map { "started by \\($0)" }');
+    const rule = section(design, "public static func secondLine(", "\n    }\n");
+    expect(rule).toContain("if let message = present(message) { return SecondLine(text: message, kind: .message) }");
+    expect(rule).toContain("if let blockedOn = present(blockedOn) { return SecondLine(text: blockedOn, kind: .question) }");
+    expect(rule).toContain("if let activity = SidebarActivity.clean(activity) { return SecondLine(text: activity, kind: .activity) }");
+    expect(rule).toContain('return present(startedBy).map { SecondLine(text: "started by \\($0)", kind: .startedBy) }');
+    // The old entry point is the same rule with no activity, so nothing else that asks it changes.
+    expect(section(design, "public static func subtitle(", "\n    }\n"))
+      .toContain("secondLine(message: message, blockedOn: blockedOn, activity: nil, startedBy: startedBy)?.text");
   });
 
   test("the agent and the age show for the hovered and the selected row; quiet and priority always", () => {

@@ -204,6 +204,18 @@ struct PublishedState: Decodable, Equatable {
         var waitingOnAgents = false
         /// The permission prompt a row that needs you is showing. Older daemons never send it.
         var approval: PendingApproval?
+        /// What its agent is doing right now, while it works on its own turn: the ledger's second line
+        /// (src/live-activity.ts; `SidebarActivity`). Older daemons never send it.
+        var activity: Activity?
+
+        /// What a working agent is doing right now: its running step, or its words from the last minute.
+        struct Activity: Decodable, Equatable {
+            var text = ""
+            /// "step" or "commentary"; a kind a newer daemon adds is still a line.
+            var kind: String?
+            /// Epoch milliseconds the step started or the words were written.
+            var at: Double?
+        }
 
         /// A permission prompt: which tool, and the one line that names what it wants to do.
         struct PendingApproval: Decodable, Equatable {
@@ -298,6 +310,7 @@ struct PublishedState: Decodable, Equatable {
             case revealable, claudeAccountId, codexAccountId
             case usageLimit
             case cwd, workDirs, parentSessionId, startedBySessionId, waitingOnAgents, approval, settings
+            case activity
         }
 
         init() {}
@@ -332,6 +345,8 @@ struct PublishedState: Decodable, Equatable {
             startedBySessionId = try? c.decodeIfPresent(String.self, forKey: .startedBySessionId)
             waitingOnAgents = (try? c.decodeIfPresent(Bool.self, forKey: .waitingOnAgents)) ?? false
             approval = try? c.decodeIfPresent(PendingApproval.self, forKey: .approval)
+            // A line this build can't read is no line, never a row that fails.
+            activity = try? c.decodeIfPresent(Activity.self, forKey: .activity)
         }
     }
 

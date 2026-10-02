@@ -24,6 +24,11 @@
 # DEBUG-only -conchFixture mode, and shuts that simulator down on exit. It never
 # picks a simulator someone else booted, so it never shuts one down either.
 # The showcase's long markdown reply is session `claude-readability`.
+#
+# CONCH_SNAPSHOT_APPEARANCE=dark photographs the dark theme (light otherwise: it is
+# set on every run, so one run's choice never carries into the next). Two runs at
+# once each want their own simulator: CONCH_SNAPSHOT_SIMULATOR=<udid or name> narrows
+# the pick, still only among shut-down iPhone 17-class ones.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -48,6 +53,7 @@ ios)
   out="$(cd "$out" && pwd)"
 
   udid="$(xcrun simctl list devices available | grep -E '^ +iPhone 17' | grep '(Shutdown)' \
+    | grep -F -- "${CONCH_SNAPSHOT_SIMULATOR:-}" \
     | head -1 | grep -oE '[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}' || true)"
   [[ -n "$udid" ]] || { echo "no shut-down iPhone 17-class simulator available" >&2; exit 1; }
 
@@ -74,6 +80,7 @@ ios)
   trap 'xcrun simctl shutdown "$udid" >/dev/null 2>&1 || true' EXIT
   xcrun simctl boot "$udid"
   xcrun simctl bootstatus "$udid" >/dev/null
+  xcrun simctl ui "$udid" appearance "${CONCH_SNAPSHOT_APPEARANCE:-light}" >/dev/null 2>&1 || true
   # A fixed clock, so two runs differ only where the UI did.
   xcrun simctl status_bar "$udid" override --time 9:41 >/dev/null 2>&1 || true
   xcrun simctl install "$udid" "$app"

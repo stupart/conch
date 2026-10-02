@@ -274,7 +274,7 @@ describe("the theater, the Mac sidebar and the wire agree", () => {
     expect(body).toContain(".help(SidebarRowText.tooltip(name: row.label, snippet: detailLine, startedBy: startedByLabel))");
     expect(body).toContain("AgentBadge(backend: row.backend)");
     const rule = read("design/ConchDesign/Sources/ConchDesign/SidebarRow.swift");
-    expect(rule).toContain('return present(startedBy).map { "started by \\($0)" }');
+    expect(rule).toContain('return present(startedBy).map { SecondLine(text: "started by \\($0)", kind: .startedBy) }');
     // A started session is a session: the composer, close and reveal checks
     // key on parentSessionId alone and must not have grown a second condition.
     // Matched without its indentation: the composer moved into a ZStack so it can float over

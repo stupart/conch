@@ -153,6 +153,7 @@ import {
 import type { PendingApproval } from "./approval.ts";
 import { isWindowKey, parseWindowKey } from "./window-key.ts";
 import { contextUsageFromLines, readTranscriptTailLines, type SessionContextUsage } from "./context-meter.ts";
+import { LiveActivity, withLiveActivity, type ActivitySource } from "./live-activity.ts";
 import { sessionUsageLimitFromLines } from "./session-usage-limit.ts";
 import {
   AGENT_SESSION_SETTINGS,
@@ -1584,6 +1585,32 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   }, { debounceMs: 50 });
   let lastPublishedPanelState: PublishedState | null = null;
   let lastPanelModel: PanelModel | null = null;
+  /**
+   * What each working row's agent is doing now, the sidebar's second line (live-activity.ts). Read during a full
+   * render, cached per transcript version, and put on the published rows at most once a second per row. When a held
+   * line is due or commentary goes stale with nothing else moving, the timer patches the last snapshot from the cache
+   * alone: no registry scan and no read, and no write at all when no row's line moved.
+   */
+  const liveActivity = new LiveActivity();
+  let liveActivityTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Put the rows' lines on the last snapshot; true when one moved. Arms the timer for the next due change. */
+  function applyLiveActivity(): boolean {
+    if (liveActivityTimer) clearTimeout(liveActivityTimer);
+    liveActivityTimer = null;
+    if (!lastPublishedPanelState || shuttingDown) return false;
+    const now = Date.now();
+    const applied = withLiveActivity(lastPublishedPanelState, liveActivity, now);
+    if (applied.changed) lastPublishedPanelState = { ...applied.state, ts: now };
+    if (applied.dueAt !== null) {
+      liveActivityTimer = setTimeout(() => {
+        liveActivityTimer = null;
+        breadcrumb("published state: a live activity line is due");
+        if (applyLiveActivity()) publishedStateWriter.request();
+      }, Math.max(50, applied.dueAt - now));
+      (liveActivityTimer as { unref?: () => void }).unref?.();
+    }
+    return applied.changed;
+  }
   /** Setup's practice turn (practice.ts), made once the voice loop is: its session merged into every published state. */
   let practice: Practice | null = null;
   /**
@@ -2194,6 +2221,24 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         return readConversationTail(path, sessionId, transcriptFormatFor(path), { window: session }).catch(() => null);
       })(),
     ]);
+    // Every row working on its own turn, sub-agents included, not only the eight with a conversation: one `stat`
+    // each, and a bounded tail read for a transcript that moved (live-activity.ts). Started here so it runs beside
+    // the conversation reads below.
+    breadcrumb("panel: live activity");
+    const visibleById = new Map(visible.map((session) => [session.sessionId, session]));
+    const liveActivityObserved = liveActivity.observe(orderedRows.flatMap((row): ActivitySource[] => {
+      const session = visibleById.get(row.sessionId);
+      if (row.status !== "working" || row.waitingOnAgents || !session) return [];
+      const path = session.transcriptPath ?? findTranscript(cfg.claudeDir, session.sessionId);
+      if (!path) return [];
+      return [{
+        id: session.sessionId,
+        transcriptPath: path,
+        format: transcriptFormatFor(path),
+        places: [...(session.workDirs ?? []), ...(session.cwd ? [session.cwd] : [])],
+        window: session,
+      }];
+    })).catch((error) => log(`live activity: ${error}`));
     // One per visible row. The reads are tail-only and bounded, and doing them
     // together means a viewer can show whichever session it is focused on
     // without the daemon having to guess which that is.
@@ -2221,6 +2266,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         }),
       )).filter((entry): entry is NonNullable<typeof entry> => entry !== null),
     );
+    await liveActivityObserved;
     breadcrumb("panel: context usage, model and effort");
     // One tail read per session for both: how full its context is, and what model and effort it runs.
     const sessionContexts = new Map<string, SessionContextUsage>();
@@ -2379,6 +2425,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       lastPublishedPanelState.phone = phoneSetup.published(cfg.phoneEnabled);
       // Setup's practice session, first among the rows while it runs, and `features.practice` always (practice.ts).
       if (practice) lastPublishedPanelState = practice.publish(lastPublishedPanelState);
+      // Each working row's line, through its throttle: a fresh build carries none until this puts them back.
+      applyLiveActivity();
       publishedStateWriter.request();
       if (theaterMode) theaterNavigation.commitFrame(nextActiveSessionId, navSelectedId);
     }
@@ -3358,6 +3406,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     // An agent's installer still running goes too, its whole process group: nothing is left installing unwatched.
     setup.close();
     panelRefresh.close();
+    if (liveActivityTimer) clearTimeout(liveActivityTimer);
     transcriptWatch.stop();
     accountSourcesWatch.stop();
     onLiveDataChange(null);

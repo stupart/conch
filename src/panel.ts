@@ -8,6 +8,7 @@ import type { ReviewScene } from "./snippet.ts";
 import { deliverableFacts, type DeliverableKind, type DeliverableKindSource } from "./deliverables.ts";
 import { reviewIdentity } from "./records-receipts.ts";
 import type { PendingApproval } from "./approval.ts";
+import type { RowActivity } from "./live-activity.ts";
 import type { PublishedShowing } from "./screen-context.ts";
 import type { NaturalVoicesStatus } from "./voice-env.ts";
 import type { SpeechEngineStatus } from "./speech-engine.ts";
@@ -329,6 +330,12 @@ export interface PublishedSessionRow {
   attachable?: boolean;
   /** Same as `PanelRowModel.waitingOnAgents`. Absent means false; older apps show plain working. */
   waitingOnAgents?: true;
+  /**
+   * What a working row's agent is doing right now, as one line for the sidebar (`live-activity.ts`): its running step
+   * ("Running the test suite"), else its words from the last minute. Only on a row working on its own turn, a live
+   * sub-agent's included; changes at most once a second. Absent from older daemons, which older apps never read.
+   */
+  activity?: RowActivity;
   /**
    * The permission prompt a `needs` row is showing, so an app can put Allow /
    * Deny in front of the person rather than only a red mark. `answerable:

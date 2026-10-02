@@ -576,8 +576,14 @@ struct AgentRowView: View {
     let row: PublishedState.Row
     private var mark: StatusMark { StatusMark(row: row) }
 
+    /// What it is doing, by its session row's rule (`SidebarActivity.line`), while its mark says working.
+    private var activity: String? {
+        guard mark == .working else { return nil }
+        return SidebarActivity.line(row.activity?.text, working: row.status == "working", usageLimited: row.usageLimit != nil)
+    }
+
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
             // Working breathes, as the session's own does; paused is the hollow ring (`StatusMark`).
             Image(systemName: mark.symbol)
                 .font(.system(size: 11))
@@ -585,11 +591,17 @@ struct AgentRowView: View {
                 .activeBreath(pointSize: 11, breathes: mark == .working)
                 .frame(width: 16)
                 .accessibilityLabel(mark.meaning)
-            Text(row.label)
-                .font(Type.caption)
-                .foregroundStyle(Palette.textDim)
-                .lineLimit(1)
-                .truncationMode(.tail)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(row.label)
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.textDim)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                // As the Mac's agent rows: what it is doing, a size down and faint, under its name.
+                if let activity {
+                    SidebarSecondLine(SidebarRowText.SecondLine(text: activity, kind: .activity), font: Type.caption)
+                }
+            }
             Spacer(minLength: 0)
         }
         .padding(.vertical, 1)
@@ -605,6 +617,18 @@ struct SessionRowView: View {
 
     private var mark: StatusMark { StatusMark(row: row) }
     private var voice: SessionVoice { row.voice(everythingQuiet: everythingQuiet) }
+
+    /// What its agent is doing right now, while its mark says working (`SidebarActivity.line`): never on an idle,
+    /// waiting or blocked row, nor one whose turn is over while only its agents run.
+    private var activity: String? {
+        guard mark == .working else { return nil }
+        return SidebarActivity.line(
+            row.activity?.text,
+            working: row.status == "working",
+            waitingOnAgents: row.waitingOnAgents,
+            usageLimited: row.usageLimit != nil
+        )
+    }
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
@@ -640,7 +664,12 @@ struct SessionRowView: View {
                     }
                 }
 
-                if let summary = row.usageLimit ?? row.review?.summary ?? row.detail ?? row.noTerminal, !summary.isEmpty {
+                // While it works on its own turn, what its agent is doing now (2026-10-03), in the summary's
+                // place: one faint line that crossfades as it changes. A held deliverable's summary is the
+                // last turn's news and comes back when this one ends; a usage limit always shows instead.
+                if let activity {
+                    SidebarSecondLine(SidebarRowText.SecondLine(text: activity, kind: .activity), font: Type.summary)
+                } else if let summary = row.usageLimit ?? row.review?.summary ?? row.detail ?? row.noTerminal, !summary.isEmpty {
                     Text(summary)
                         .font(Type.summary)
                         .foregroundStyle(Palette.textDim)

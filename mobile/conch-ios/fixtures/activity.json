@@ -1,0 +1,204 @@
+{
+  "v": 1,
+  "ownerDeviceId": "fixture-mac",
+  "ts": 1760000000000,
+  "features": {
+    "deliverables": 4,
+    "viewedState": 1
+  },
+  "mode": {
+    "muted": false,
+    "paused": false,
+    "holding": 0
+  },
+  "live": {
+    "state": "idle",
+    "label": ""
+  },
+  "rows": [
+    {
+      "needsResponse": false,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": false,
+      "id": "claude-brand",
+      "label": "conch brand",
+      "backend": "claude",
+      "status": "working",
+      "at": 1759999760000,
+      "cwd": "/Users/you/Projects/conch-design",
+      "activity": {
+        "text": "Running the test suite",
+        "kind": "step",
+        "at": 1759999996000
+      }
+    },
+    {
+      "needsResponse": false,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": false,
+      "id": "claude-seashell",
+      "label": "seashell",
+      "backend": "claude",
+      "status": "waiting",
+      "at": 1759998200000,
+      "cwd": "/Users/you/Projects/conch-design",
+      "review": {
+        "summary": "rc23: 18x faster speaker labels",
+        "at": 1759998200000
+      }
+    },
+    {
+      "needsResponse": false,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": false,
+      "id": "claude-cobra",
+      "label": "Cobra doc in documents/healthcare",
+      "backend": "claude",
+      "status": null,
+      "at": 1759992800000,
+      "cwd": "/Users/you/Projects/conch-design"
+    },
+    {
+      "needsResponse": false,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": false,
+      "id": "claude-relay-audit",
+      "label": "relay audit",
+      "backend": "claude",
+      "status": "working",
+      "at": 1759999940000,
+      "cwd": "/Users/you/Projects/conch",
+      "waitingOnAgents": true
+    },
+    {
+      "needsResponse": false,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": false,
+      "id": "agent-a1f3",
+      "label": "Explore: relay reconnect paths",
+      "backend": "claude",
+      "status": "working",
+      "at": 1759999940000,
+      "cwd": "/Users/you/Projects/conch",
+      "parentSessionId": "claude-relay-audit",
+      "activity": {
+        "text": "Searching for “reconnect”",
+        "kind": "step",
+        "at": 1759999997000
+      }
+    },
+    {
+      "needsResponse": false,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": false,
+      "id": "agent-b7e2",
+      "label": "Explore: pairing store",
+      "backend": "claude",
+      "status": "working",
+      "at": 1759999880000,
+      "cwd": "/Users/you/Projects/conch",
+      "parentSessionId": "claude-relay-audit",
+      "activity": {
+        "text": "Reading src/phone-relay.ts",
+        "kind": "step",
+        "at": 1759999999000
+      }
+    },
+    {
+      "needsResponse": false,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": false,
+      "id": "claude-login-walls",
+      "label": "login-walled URL handling",
+      "backend": "claude",
+      "status": "working",
+      "at": 1759999580000,
+      "cwd": "/Users/you/Projects/conch",
+      "activity": {
+        "text": "I'll downscale it into the iOS fixtures folder and write the fixture.",
+        "kind": "commentary",
+        "at": 1759999980000
+      }
+    },
+    {
+      "needsResponse": false,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": false,
+      "id": "codex-listen-flake",
+      "label": "flaky listen test",
+      "backend": "codex",
+      "status": "working",
+      "at": 1759999640000,
+      "cwd": "/Users/you/Projects/conch",
+      "activity": {
+        "text": "Running bun test test/listen.test.ts",
+        "kind": "step",
+        "at": 1759999991000
+      }
+    },
+    {
+      "needsResponse": false,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": false,
+      "id": "claude-live-activity",
+      "label": "Live activity line in sidebar",
+      "backend": "claude",
+      "status": "working",
+      "at": 1759999400000,
+      "cwd": "/Users/you/Projects/conch",
+      "activity": {
+        "text": "Editing src/live-activity.ts",
+        "kind": "step",
+        "at": 1759999998000
+      }
+    },
+    {
+      "needsResponse": true,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": false,
+      "id": "claude-question",
+      "label": "settings migration",
+      "backend": "claude",
+      "status": "needs",
+      "at": 1759999760000,
+      "cwd": "/Users/you/Projects/conch",
+      "detail": "Claude is asking what to do with three legacy settings"
+    },
+    {
+      "needsResponse": false,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": false,
+      "id": "codex-release-notes",
+      "label": "release notes",
+      "backend": "codex",
+      "status": "waiting",
+      "at": 1759994300000,
+      "cwd": "/Users/you/Projects/conch",
+      "noTerminal": "closed: no Codex process has this thread open"
+    }
+  ],
+  "dismissed": [],
+  "dismissedRows": []
+}
