@@ -35,7 +35,7 @@ import { splitSentences } from "./snippet.ts";
 export interface RowActivity {
   /** One line, at most `ACTIVITY_MAX_CHARS`, no markdown. */
   text: string;
-  /** A running step, or the agent's own words between steps. */
+  /** A step (running, or the turn's last), or the agent's own words between steps. */
   kind: "step" | "commentary";
   /** Epoch-ms the step started or the words were written. */
   at: number;
@@ -43,8 +43,6 @@ export interface RowActivity {
 
 /** A sidebar's second line at a sidebar's width: anything longer is cut on a word, with an ellipsis. */
 export const ACTIVITY_MAX_CHARS = 90;
-/** How long the agent's last words stand for what it is doing, once no step is running. */
-export const COMMENTARY_FRESH_MS = 60_000;
 /** A row's line changes at most this often. */
 export const ACTIVITY_MIN_INTERVAL_MS = 1_000;
 /**
@@ -332,8 +330,9 @@ export function stepPhrase(item: ConversationItem, places: readonly string[] = [
       const named = NAMED_STEPS[wire.replace(/[^a-z]/g, "")];
       if (named) return named(text);
       if (!text || looksLikeCode(text)) return `Using ${name}`;
-      // A tool handed a description of its own (Codex's `js` calls carry one) is said like a command's.
-      return saidAsDoing(text) ?? `${name}: ${text}`;
+      // A tool handed a description of its own (Codex's `js` calls carry one) is said like a command's, or as written:
+      // "js: Recover and inspect the credential visibility state safely" named a tool where the words said the work.
+      return saidAsDoing(text) ?? `${text[0]!.toUpperCase()}${text.slice(1)}`;
     }
   }
 }
@@ -387,8 +386,11 @@ function isLiveStep(item: ConversationItem): boolean {
 export interface ActivityFacts {
   /** The current turn's running steps, oldest first, each already phrased. */
   steps: Array<{ text: string; group: string; at?: number }>;
-  /** The newest words the agent wrote in the current turn, as one line. */
-  commentary?: { text: string; at: number };
+  /**
+   * With no step running: the newest thing the current turn holds, its last step or its last words, whichever came
+   * later. It stands until the turn moves on, however old: the row shows a line only while the session works.
+   */
+  latest?: { text: string; kind: "step" | "commentary"; at: number };
 }
 
 /**
@@ -414,35 +416,36 @@ export function activityFacts(conversation: Conversation, places: readonly strin
     group: stepGroup(item),
     ...(item.at ? { at: item.at } : {}),
   }));
+  // Newest first, the turn's last step or last words. On 2026-10-03 a busy Codex session showed no line at all: its
+  // commands each finished inside a second, so none was ever caught running, and a 60-second limit on its last words
+  // ("I'm fixing that limit and testing against the observed response…", three minutes old and still true) hid those.
   for (let index = turn.length - 1; index >= 0; index -= 1) {
     const item = turn[index]!;
+    if (item.kind === "tool" && item.tool && item.tool.kind !== "question" && item.tool.kind !== "subagent") {
+      const text = stepPhrase(item, places);
+      if (text) return { steps, latest: { text, kind: "step", at: item.at ?? 0 } };
+      continue;
+    }
     if (item.kind !== "assistant" && item.kind !== "thinking") continue;
     const text = commentaryLine(item.text);
-    // Words with no time can't be shown as recent: the line would never go.
-    if (text && item.at) return { steps, commentary: { text, at: item.at } };
+    if (text) return { steps, latest: { text, kind: "commentary", at: item.at ?? 0 } };
   }
   return { steps };
 }
 
 /**
- * The line a row would show at `now`: its running step (several of one kind as "Reading 3 files"), else commentary no
- * older than `freshMs`, else none. `expiresAt` is when commentary stops counting, so a caller can look again then.
+ * The line a row shows: its running step (several of one kind as "Reading 3 files"), else the turn's newest step or
+ * words (`ActivityFacts.latest`), else none. Nothing here expires on a clock; the turn moving on, or ending, changes it.
  */
-export function activityAt(
-  facts: ActivityFacts,
-  now: number,
-  freshMs = COMMENTARY_FRESH_MS,
-): { activity: RowActivity | null; expiresAt?: number } {
+export function activityAt(facts: ActivityFacts, now: number): { activity: RowActivity | null } {
   const newest = facts.steps.at(-1);
   if (newest) {
     const together = facts.steps.length > 1 && facts.steps.every((step) => step.group === newest.group);
     const text = together ? groupPhrase(newest.group, facts.steps.length) : newest.text;
     return { activity: { text: oneLine(text), kind: "step", at: newest.at ?? now } };
   }
-  const said = facts.commentary;
-  if (said && now - said.at <= freshMs) {
-    return { activity: { text: oneLine(said.text), kind: "commentary", at: said.at }, expiresAt: said.at + freshMs };
-  }
+  const latest = facts.latest;
+  if (latest) return { activity: { text: oneLine(latest.text), kind: latest.kind, at: latest.at || now } };
   return { activity: null };
 }
 
@@ -577,13 +580,11 @@ export class ActivityReader {
 export class LiveActivity {
   readonly reader: ActivityReader;
   readonly throttle: ActivityThrottle;
-  readonly freshMs: number;
   #facts = new Map<string, ActivityFacts>();
 
-  constructor(options: { reader?: ActivityReader; throttle?: ActivityThrottle; freshMs?: number } = {}) {
+  constructor(options: { reader?: ActivityReader; throttle?: ActivityThrottle } = {}) {
     this.reader = options.reader ?? new ActivityReader();
     this.throttle = options.throttle ?? new ActivityThrottle();
-    this.freshMs = options.freshMs ?? COMMENTARY_FRESH_MS;
   }
 
   /** Read what changed for every working row; a row not among them has nothing to say. */
@@ -599,7 +600,7 @@ export class LiveActivity {
 
   /**
    * What each of `ids` shows at `now`, through the throttle, and the earliest time any of them is due to change on
-   * its own: a held line's interval ending, or commentary going stale.
+   * its own: a held line's interval ending.
    */
   select(ids: Iterable<string>, now: number): { activities: Map<string, RowActivity>; dueAt: number | null } {
     const activities = new Map<string, RowActivity>();
@@ -611,12 +612,10 @@ export class LiveActivity {
     for (const id of ids) {
       seen.add(id);
       const facts = this.#facts.get(id);
-      const { activity, expiresAt } = facts ? activityAt(facts, now, this.freshMs) : { activity: null };
+      const { activity } = facts ? activityAt(facts, now) : { activity: null };
       const settled = this.throttle.settle(id, activity, now);
       if (settled.shown) activities.set(id, settled.shown);
       due(settled.dueAt);
-      due(expiresAt);
-      if (settled.shown?.kind === "commentary") due(settled.shown.at + this.freshMs);
     }
     this.throttle.retain(seen);
     return { activities, dueAt };

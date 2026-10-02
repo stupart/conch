@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildConversation } from "../src/conversation.ts";
 import {
+  stepPhrase,
   ACTIVITY_MAX_CHARS,
   ActivityReader,
   ActivityThrottle,
@@ -99,7 +100,7 @@ describe("what a working row says", () => {
     expect(activityAt(facts, T0 + 2_000).activity?.text).toBe("Reading 3 files");
   });
 
-  test("a finished step is not activity, and the agent's newest words from the last minute stand in", () => {
+  test("a finished step is not running, and the agent's newest words after it stand in", () => {
     const facts = factsOf("claude", jsonl(
       claude.you("u1", "fix it", 0),
       claude.calls("a1", "c1", "Bash", { description: "Run the test suite", command: "bun test" }, 1_000),
@@ -122,14 +123,36 @@ describe("what a working row says", () => {
     expect(activityAt(facts, T0 + 3_000).activity?.text).toBe("Let me measure the tail read first.");
   });
 
-  test("commentary older than a minute is gone, and the line goes with it", () => {
+  test("the turn's last words stand however old they are: the line goes when the turn does", () => {
+    // 2026-10-03: a Codex session's words were three minutes old and still what it was doing; a minute's limit hid them.
     const facts = factsOf("claude", jsonl(
       claude.you("u1", "go", 0),
       claude.says("a1", "Building the app now, then the phone.", 1_000),
     ));
-    expect(activityAt(facts, T0 + 1_000 + 60_000).activity?.kind).toBe("commentary");
-    expect(activityAt(facts, T0 + 1_000 + 60_000).expiresAt).toBe(T0 + 61_000);
-    expect(activityAt(facts, T0 + 1_000 + 60_001).activity).toBeNull();
+    expect(activityAt(facts, T0 + 10 * 60_000).activity).toEqual({ text: "Building the app now, then the phone.", kind: "commentary", at: T0 + 1_000 });
+  });
+
+  test("steps that finish too fast to be caught running still show: the turn's last one, when it is newer than its words", () => {
+    // The same session ran a command every few seconds, each done inside one, so none was ever seen running.
+    const facts = factsOf("claude", jsonl(
+      claude.you("u1", "deploy it", 0),
+      claude.says("a1", "Checking the limit, then deploying.", 1_000),
+      claude.calls("a2", "c1", "Bash", { description: "Run the test suite", command: "bun test" }, 2_000),
+      claude.result("u2", "c1", 2_400),
+    ));
+    expect(facts.steps).toEqual([]);
+    expect(activityAt(facts, T0 + 3_000).activity).toEqual({ text: "Running the test suite", kind: "step", at: T0 + 2_000 });
+  });
+
+  test("a tool that describes its own work is said by the description, not by the tool's name", () => {
+    const step = (text: string) => stepPhrase({ id: "x", rev: 1, kind: "tool", text, tool: { name: "js", status: "done" } } as never);
+    expect(step("recover and inspect the credential visibility state safely")).toBe("Recover and inspect the credential visibility state safely");
+    expect(step("Run the migration")).toBe("Running the migration");
+  });
+
+  test("a turn with nothing in it yet says nothing", () => {
+    const facts = factsOf("claude", jsonl(claude.says("a0", "Earlier turn's words.", 0), claude.you("u1", "next", 1_000)));
+    expect(activityAt(facts, T0 + 2_000).activity).toBeNull();
   });
 
   test("a step left running by an earlier, interrupted turn is not what the agent is doing now", () => {
@@ -292,7 +315,7 @@ function stateWith(rows: Array<Partial<PublishedSessionRow> & { id: string }>): 
 }
 
 /** A LiveActivity whose reads return these conversations by row id, counting each. */
-function liveFrom(bodies: Record<string, { format: "claude" | "codex"; body: string }>, options: { freshMs?: number } = {}) {
+function liveFrom(bodies: Record<string, { format: "claude" | "codex"; body: string }>) {
   const reads: string[] = [];
   const reader = new ActivityReader({
     stat: () => ({ size: 1, mtimeMs: 1, ino: 1 }),
@@ -302,7 +325,7 @@ function liveFrom(bodies: Record<string, { format: "claude" | "codex"; body: str
       return buildConversation(sessionId, body.split("\n"), format);
     },
   });
-  return { live: new LiveActivity({ reader, ...options }), reads };
+  return { live: new LiveActivity({ reader }), reads };
 }
 
 describe("which rows carry a line", () => {
@@ -355,7 +378,7 @@ describe("reading costs one stat until the transcript moves", () => {
     const second = await reader.facts(source);
     expect(reader.reads).toBe(2);
     expect(second?.steps).toEqual([]);
-    expect(second?.commentary?.text).toBe("Built; signing it next.");
+    expect(second?.latest).toEqual({ text: "Built; signing it next.", kind: "commentary", at: T0 + 4_000 });
 
     // Same size, newer mtime: a rewrite in place is read again too.
     const later = new Date(Date.now() + 5_000);
@@ -454,13 +477,9 @@ describe("the line moves at most once a second", () => {
     const due = withLiveActivity(held.state, live, T0 + 2_000);
     expect(due.changed).toBe(true);
     expect(due.state.rows[0]!.activity).toEqual({ text: "That file is the culprit; editing it.", kind: "commentary", at: T0 + 1_300 });
-    // Next due: the moment those words stop counting as recent.
-    expect(due.dueAt).toBe(T0 + 1_300 + 60_000);
-    expect(withLiveActivity(due.state, live, T0 + 30_000).changed).toBe(false);
-    const stale = withLiveActivity(due.state, live, T0 + 61_301);
-    expect(stale.changed).toBe(true);
-    expect(stale.state.rows[0]).not.toHaveProperty("activity");
-    expect(stale.dueAt).toBeNull();
+    // Nothing is due on a clock: the words stand until the turn moves on.
+    expect(due.dueAt).toBeNull();
+    expect(withLiveActivity(due.state, live, T0 + 30 * 60_000).changed).toBe(false);
   });
 });
 

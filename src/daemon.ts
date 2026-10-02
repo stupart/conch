@@ -1588,7 +1588,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   /**
    * What each working row's agent is doing now, the sidebar's second line (live-activity.ts). Read during a full
    * render, cached per transcript version, and put on the published rows at most once a second per row. When a held
-   * line is due or commentary goes stale with nothing else moving, the timer patches the last snapshot from the cache
+   * line is due with nothing else moving, the timer patches the last snapshot from the cache
    * alone: no registry scan and no read, and no write at all when no row's line moved.
    */
   const liveActivity = new LiveActivity();
