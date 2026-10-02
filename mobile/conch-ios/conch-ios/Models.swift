@@ -241,6 +241,12 @@ struct PublishedState: Decodable, Equatable {
             /// Why the link its agent gave was not published, when one was given and refused (`linkRefused`). Nil when
             /// there was no link, and from an older daemon.
             var linkRefused: String?
+            /// A live page as conch's Mac drew it when it was published, with the Mac's sign-ins (src/page-access.ts):
+            /// shown first, since this phone has none of them. Nil when the Mac didn't draw the page, and from an older daemon.
+            var snapshot: Preview?
+            /// What the login-wall check found: whether the Mac, and a device without its sign-ins like this phone, were
+            /// shown the page or a sign-in page (`PageAccess`). Nil for anything but a live page, and from an older daemon.
+            var access: PageAccess.Found?
 
             struct Preview: Decodable, Equatable {
                 var path: String
@@ -248,7 +254,9 @@ struct PublishedState: Decodable, Equatable {
                 var capturedAt: Double
             }
 
-            private enum CodingKeys: String, CodingKey { case summary, link, at, scene, id, viewedAt, artifact, version, kind, preview, focus, linkRefused }
+            private enum CodingKeys: String, CodingKey {
+                case summary, link, at, scene, id, viewedAt, artifact, version, kind, preview, focus, linkRefused, snapshot, access
+            }
             private struct Scene: Decodable {
                 var inspect: String?
                 var marks: AgentMark.List?
@@ -280,6 +288,8 @@ struct PublishedState: Decodable, Equatable {
                 preview = try? c.decodeIfPresent(Preview.self, forKey: .preview)
                 focus = (try? c.decodeIfPresent([String].self, forKey: .focus)) ?? []
                 linkRefused = try? c.decodeIfPresent(String.self, forKey: .linkRefused)
+                snapshot = try? c.decodeIfPresent(Preview.self, forKey: .snapshot)
+                access = try? c.decodeIfPresent(PageAccess.Found.self, forKey: .access)
             }
         }
 

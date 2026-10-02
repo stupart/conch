@@ -7,6 +7,8 @@ import { writeSettingsFileAtomic } from "./settings.ts";
 import { checkReviewScene, LINK_REFUSED_MAX } from "./snippet.ts";
 import { discardPreview, previewFolderPath } from "./review-preview.ts";
 import { deliverableStoreDir, discardStoredCopy, storeEntry, sweepStore } from "./deliverable-store.ts";
+import { captureFolderPath } from "./capture-folder.ts";
+import { ACCESS_STATES, discardCapture, type AccessState } from "./page-access.ts";
 
 /**
  * The saved-deliverables file stops growing here: newest reviews first, a session that doesn't fit
@@ -112,10 +114,14 @@ export class SessionLedger {
     readonly previewsFolder: string = previewFolderPath(),
     /** conch's store of copies (deliverable-store.ts): the one place a deliverable's copy is deleted from. */
     readonly deliverablesFolder: string = deliverableStoreDir(),
+    /** conch's capture folder (capture-folder.ts): the one place a `url` deliverable's snapshot is deleted from. */
+    readonly capturesFolder: string = captureFolderPath(),
   ) {}
   #savedReviews = "";
   /** The snapshots (`preview`) held deliverables named at the last save. */
   #savedPreviews = new Set<string>();
+  /** The Mac's pictures of pages (`snapshot`) held deliverables named at the last save. */
+  #savedSnapshots = new Set<string>();
   /** The store's version folders held deliverables named at the last save (`storeEntry`). */
   #savedCopies = new Set<string>();
   // session -> last time conch drove it. Cleanup is still the TTL in markInjected.
@@ -228,6 +234,7 @@ export class SessionLedger {
         .sort((a, b) => a.at - b.at);
       // Named as saved, so one the cap drops below goes at the first save.
       for (const one of sorted) if (one.preview) this.#savedPreviews.add(one.preview.path);
+      for (const one of sorted) if (one.snapshot) this.#savedSnapshots.add(one.snapshot.path);
       // A file from before versions numbers each artifact's filings in the order they were filed.
       const highest = new Map<string, number>();
       for (const one of sorted) {
@@ -275,6 +282,8 @@ export class SessionLedger {
       focus?: unknown;
       linkRefused?: unknown;
       roots?: unknown;
+      snapshot?: { path?: unknown; capturedAt?: unknown };
+      access?: { mac?: unknown; anonymous?: unknown };
     };
     if (
       typeof review.summary !== "string" || typeof review.at !== "number" || !Number.isFinite(review.at)
@@ -325,6 +334,14 @@ export class SessionLedger {
       ...(focus?.ok ? { focus: focus.focus } : {}),
       ...(linkRefused ? { linkRefused } : {}),
       ...(roots.length ? { roots } : {}),
+      // A live page's picture from the Mac, as filed; `/file` checks the file itself when the phone asks.
+      ...(typeof review.snapshot?.path === "string" && review.snapshot.path.startsWith("/")
+        && typeof review.snapshot.capturedAt === "number" && Number.isFinite(review.snapshot.capturedAt)
+        ? { snapshot: { path: review.snapshot.path, capturedAt: review.snapshot.capturedAt } }
+        : {}),
+      ...(ACCESS_STATES.includes(review.access?.mac as AccessState) && ACCESS_STATES.includes(review.access?.anonymous as AccessState)
+        ? { access: { mac: review.access!.mac as AccessState, anonymous: review.access!.anonymous as AccessState } }
+        : {}),
     };
   }
 
@@ -355,6 +372,7 @@ export class SessionLedger {
   saveReviews(): void {
     this.#discardDroppedPreviews();
     this.#discardDroppedCopies();
+    this.#discardDroppedSnapshots();
     if (!this.reviewsPath) return;
     // A session holding nothing is saved for its `versions` alone, after every one that holds something.
     const newestFirst = [...this.sessionStates]
@@ -379,6 +397,8 @@ export class SessionLedger {
         ...(held.focus?.length ? { focus: held.focus } : {}),
         ...(held.linkRefused ? { linkRefused: held.linkRefused } : {}),
         ...(held.roots?.length ? { roots: held.roots } : {}),
+        ...(held.snapshot ? { snapshot: held.snapshot } : {}),
+        ...(held.access ? { access: held.access } : {}),
       });
       const entry = {
         label,
@@ -419,6 +439,39 @@ export class SessionLedger {
     }
     for (const path of this.#savedPreviews) if (!held.has(path)) discardPreview(path, this.previewsFolder);
     this.#savedPreviews = held;
+  }
+
+  /**
+   * Every file a held deliverable names: its link, its marks' images, and its snapshot. What the capture folder's sweep
+   * keeps however old (page-capture.ts `pruneCaptures`), and what a dropped snapshot is checked against before it goes.
+   */
+  heldFiles(): Set<string> {
+    const held = new Set<string>();
+    for (const state of this.sessionStates.values()) {
+      for (const one of [...(state.reviews ?? []), ...(state.review ? [state.review] : [])]) {
+        if (one.link) held.add(one.link);
+        for (const mark of one.scene?.marks ?? []) if ("image" in mark.frame) held.add(mark.frame.image);
+        if (one.snapshot) held.add(one.snapshot.path);
+      }
+    }
+    return held;
+  }
+
+  /**
+   * A snapshot goes with its deliverable, as a preview does (`#discardDroppedPreviews`): removed (`review_remove`, the
+   * Mac's menu), pushed out by the six-deliverable cap, replaced on a refiling, or its session forgotten. One the last
+   * save named and no held deliverable names now, as its snapshot, link or a mark's image (a capture can be all three),
+   * is deleted, and only from the capture folder (`discardCapture`). One still being drawn was never named, so it can't
+   * be deleted from under its check.
+   */
+  #discardDroppedSnapshots(): void {
+    const held = this.heldFiles();
+    const named = new Set<string>();
+    for (const state of this.sessionStates.values()) {
+      for (const one of [...(state.reviews ?? []), ...(state.review ? [state.review] : [])]) if (one.snapshot) named.add(one.snapshot.path);
+    }
+    for (const path of this.#savedSnapshots) if (!held.has(path)) discardCapture(path, this.capturesFolder);
+    this.#savedSnapshots = named;
   }
 
   /** The store's version folders every held deliverable names: its link, and its marks' images. */

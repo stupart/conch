@@ -96,7 +96,8 @@ describe("the publisher's side: publishForVerdict", () => {
   test("sends the publication asking for its verdict, and returns the daemon's filing", async () => {
     const daemon = await fakeDaemon(() => `${JSON.stringify(filed)}\n`);
     expect(await publishForVerdict(daemon.path, publication())).toEqual({ kind: "verdict", verdict: filed });
-    expect(JSON.parse(daemon.lines[0]!)).toEqual({ ...publication(), awaitVerdict: true });
+    // It waits long enough for a live page's login-wall check, and says so (page-access.ts).
+    expect(JSON.parse(daemon.lines[0]!)).toEqual({ ...publication(), awaitVerdict: true, awaitAccess: true });
   });
 
   test("a refusal comes back with the daemon's own reason, and so does the socket's own check", async () => {

@@ -34,7 +34,7 @@ import { decodeSetupRequest, type Setup, type SetupReply } from "./setup.ts";
 import { decodePracticeRequest, practiceRefusal, type Practice, type PracticeReply } from "./practice.ts";
 import { breadcrumb } from "./loop-watchdog.ts";
 import type { PageCaptureService } from "./page-capture.ts";
-import { refusedVerdict, REVIEW_VERDICT_WAIT_MS, verdictWithin, type ReviewPending, type ReviewVerdict } from "./review-verdict.ts";
+import { refusedVerdict, REVIEW_FILING_WAIT_MS, REVIEW_VERDICT_WAIT_MS, verdictWithin, type ReviewPending, type ReviewVerdict } from "./review-verdict.ts";
 import { isMacAppPing } from "./surfaces.ts";
 import {
   isControlMessageCandidate,
@@ -684,6 +684,11 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
     }
     // The folders that hold a filing's files are the daemon's finding (voice-loop `filedRoots`), never an event's.
     if (value.review.roots !== undefined) return { ok: false, err: "review roots are set by the daemon, not sent" };
+    // So is what a login-wall check found (page-access.ts): a snapshot named on the socket would be a file for the
+    // phone's `/file` to serve that no check of the daemon's ever drew.
+    for (const field of ["snapshot", "access"] as const) {
+      if (value.review[field] !== undefined) return { ok: false, err: `review ${field} is set by the daemon, not sent` };
+    }
   }
   if (type === "review-published" && value.review === undefined) {
     return { ok: false, err: "review is required for review-published" };
@@ -720,6 +725,9 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
   }
   if (value.awaitVerdict !== undefined && (value.awaitVerdict !== true || type !== "review-published")) {
     return { ok: false, err: "awaitVerdict is true, on review-published only" };
+  }
+  if (value.awaitAccess !== undefined && (value.awaitAccess !== true || value.awaitVerdict !== true)) {
+    return { ok: false, err: "awaitAccess is true, with awaitVerdict only" };
   }
   if (value.approval !== undefined) {
     // From the PermissionRequest hook: what a dialog is asking, shown and spoken, never typed.
@@ -1415,10 +1423,12 @@ export function createControlServer(options: ControlServerOptions): ControlServe
             ? await options.pageCapture.request(body, async (event) => {
               const turn = validateSocketTurnEvent(await sessions.resolve(event));
               if (!turn.ok) return { ok: false, error: turn.err };
-              // The daemon's verdict, as `review_to_front` hears it (review-verdict.ts): a refusal is said, not dropped.
+              // The daemon's verdict, as `review_to_front` hears it (review-verdict.ts): a refusal is said, not dropped. The
+              // filing's own wait, not a live page's: a capture is an image with no page to check, and it already took its
+              // time inside the agent's (`CAPTURE_TIMEOUT_MS` + this < `CAPTURE_REPLY_MS`).
               const verdict = await verdictWithin(Promise.resolve(application.turn(turn.value)).catch(() => {
                 log("a capture's publication failed to file");
-              }), options.verdictWaitMs ?? REVIEW_VERDICT_WAIT_MS);
+              }), options.verdictWaitMs ?? REVIEW_FILING_WAIT_MS);
               return verdict?.kind === "review-refused" ? { ok: false, error: verdict.reason } : { ok: true };
             })
             : { kind: "page-capture-error" as const, error: "this conch can't capture pages; update it" };

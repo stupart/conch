@@ -56,14 +56,17 @@ ios)
     -derivedDataPath "$derived" CODE_SIGNING_ALLOWED=NO -quiet build
   app="$derived/Build/Products/Debug-iphonesimulator/conch-ios.app"
 
-  # Ages are relative to now, and relative review links to the repo, so the
-  # checked-in fixture reads "2m" rather than "400d" and finds its documents.
+  # Ages are relative to now, and relative review links and snapshots to the
+  # repo, so the checked-in fixture reads "2m" rather than "400d" and finds its
+  # documents (fixtures/login-wall.json: a live page's snapshot from the Mac).
   prepared="$(mktemp -d)/fixture.json"
   jq --argjson now "$(date +%s)000" --arg root "$root" '
     .ts as $then
     | walk(if type == "object" and (.at | type) == "number" then .at += ($now - $then) else . end)
+    | walk(if type == "object" and (.capturedAt | type) == "number" then .capturedAt += ($now - $then) else . end)
     | .ts = $now
-    | ((.rows[].review.link | strings), (.rows[].reviews[]?.link | strings))
+    | ((.rows[].review.link | strings), (.rows[].reviews[]?.link | strings),
+       (.rows[].review.snapshot.path | strings), (.rows[].reviews[]?.snapshot.path | strings))
       |= (if test("^(/|https?:)") then . else "\($root)/\(.)" end)
   ' "$fixture" > "$prepared"
 

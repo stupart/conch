@@ -873,6 +873,8 @@ interface HeldReview {
   link?: string;
   scene?: { marks?: Array<{ frame?: { image?: unknown } }> };
   preview?: { path?: unknown };
+  /** A live page's picture from the Mac (`SessionReview.snapshot`), which the phone shows first. */
+  snapshot?: { path?: unknown };
   /** The session folders beyond the row's `cwd` that held its files when filed (`SessionReview.roots`). */
   roots?: unknown;
 }
@@ -954,7 +956,8 @@ async function ownReceiptPicture(requested: string, uploads: string): Promise<st
  * - an image one of those deliverables' marks is drawn on (`scene.marks[].frame.image`, agent ink),
  *   which an app has to show before it can draw the marks over it;
  * - a snapshot of one of them from the Mac (`preview`, review-preview.ts), for a kind the phone
- *   can't draw;
+ *   can't draw, or a live page's picture as the Mac drew it when it was published (`snapshot`,
+ *   page-access.ts), in conch's capture folder, which the publish rule lets through;
  * - a file on its own line in a conversation (`material.path`), which used to be served with no
  *   rule at all: any absolute image, PDF or text path an agent wrote became readable;
  * - the picture on a receipt of something Tyler sent (`receipt.thumb`), from conch's own folders
@@ -993,7 +996,7 @@ async function servableFile(
       .filter((image): image is string => typeof image === "string" && image.startsWith("/"));
   const previews = (row: (typeof rows)[number]): string[] =>
     [...(row.reviews ?? []), ...(row.review ? [row.review] : [])]
-      .map((held) => held.preview?.path)
+      .flatMap((held) => [held.preview?.path, held.snapshot?.path])
       .filter((path): path is string => typeof path === "string" && path.startsWith("/"));
   const check = async (roots: string[]) => {
     const checked = await checkLocalFile(requested, roots);

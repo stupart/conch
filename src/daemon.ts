@@ -142,6 +142,8 @@ import { promptCursorPublisher } from "./prompt-cursor.ts";
 import { PhoneUploads } from "./phone-uploads.ts";
 import { createPreviewRequester, previewFolder, PreviewLimiter, WindowPreviews, type PreviewRequest } from "./review-preview.ts";
 import { captureFolder, createPageCaptureService, PageCaptures, pruneCaptures, withCaptureRequests } from "./page-capture.ts";
+import { accessCheckedLink, checkAnonymously, checkPageAccess, discardCapture, type AccessCheck } from "./page-access.ts";
+import { captureFolderPath } from "./capture-folder.ts";
 import { CONCH_DATA } from "./config.ts";
 import {
   publishedConversation,
@@ -272,6 +274,7 @@ import {
   buildPanelRows,
   buildPublishedState,
   markReviewViewed,
+  attachReviewAccess,
   attachReviewPreview,
   panelReplyText,
   numberPanelSessionRows,
@@ -1412,16 +1415,43 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     // "accepted" either way. Only its announcement takes a turn in the queue, since that makes a sound.
     if (event.type === "review-published") {
       traceQueue(`immediate file:${event.label}`);
+      // A live page's login-wall check (page-access.ts), from now, beside the filing: never under its lock, so a page
+      // that takes seconds to draw holds up no other session's filing, and the filing doesn't wait on the page.
+      const checking = accessCheckFor(event);
       return voice.filePublication(event).then(
-        (verdict): ReviewVerdict => {
-          if (verdict.kind !== "review-filed") return verdict;
+        async (verdict): Promise<ReviewVerdict> => {
+          if (verdict.kind !== "review-filed") {
+            // Nothing to put its picture on.
+            void checking?.then((found) => discardCapture(found.snapshot?.path, captureFolderPath()));
+            return verdict;
+          }
           // Its announcement, in its turn: the voice loop knows this one is filed already (`filePublication`).
           void eventQueue.submit(incoming);
           const { audio, ...filed } = verdict;
-          return { ...filed, surfaces: publicationSurfaces(audio ?? "mac") };
+          const answered = { ...filed, surfaces: publicationSurfaces(audio ?? "mac") };
+          if (!checking) return answered;
+          const attached = checking.then((found) => {
+            try {
+              return { found, onIt: attachAccess(event.sessionId, filed.filing.id, found) };
+            } catch (error) {
+              log(`couldn't put the login-wall check on "${event.label}"'s deliverable: ${error}`);
+              return { found, onIt: false };
+            }
+          });
+          // An MCP server from before the check waits 10 s: it hears at once, and the deliverable gets the check's
+          // findings when they come.
+          if (!event.awaitAccess) return answered;
+          const { found, onIt } = await attached;
+          return {
+            ...answered,
+            access: found.access,
+            ...(found.warning ? { warning: found.warning } : {}),
+            ...(found.snapshot && onIt ? { snapshot: found.snapshot.path } : {}),
+          };
         },
         (error) => {
           log(`error filing a publication from "${event.label}": ${error}`);
+          void checking?.then((found) => discardCapture(found.snapshot?.path, captureFolderPath()));
           return refusedVerdict(`conch's daemon failed while filing it: ${error instanceof Error ? error.message : String(error)}`);
         },
       );
@@ -1459,6 +1489,44 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       if (transition) resumeTransitions.set(event, transition);
     }
     void eventQueue.submit(event);
+  }
+
+  /**
+   * A `url` deliverable's login-wall check (page-access.ts), or nothing for any other publication: the Mac app draws it
+   * with the review pane's sign-ins while it is running (`surfaces.mac`), and the daemon looks without any, side by side.
+   */
+  function accessCheckFor(event: TurnEvent): Promise<AccessCheck> | undefined {
+    const link = accessCheckedLink(event.review);
+    if (!link) return undefined;
+    const macRunning = macApp.surface(Date.now(), undefined) !== "not-running";
+    if (macRunning) pruneHeldCaptures();
+    return checkPageAccess(link, {
+      macRunning,
+      capture: (spec, bounds) => pageCaptures.ask(spec, bounds),
+      anonymous: (url) => checkAnonymously(url),
+      discard: (path) => discardCapture(path, captureFolderPath()),
+      now: Date.now,
+    }).catch((error): AccessCheck => {
+      log(`login-wall check of ${link} failed: ${error}`);
+      return { access: { mac: "unchecked", anonymous: "unchecked", why: "conch's check failed" } };
+    });
+  }
+
+  /**
+   * Put what a check found on the deliverable it was of, and republish, so the phone shows the Mac's picture and both
+   * apps can say who was shown a sign-in page. False, and the picture deleted, when the session no longer holds it.
+   */
+  function attachAccess(sessionId: string, reviewId: string, found: AccessCheck): boolean {
+    const state = ledger.sessionStates.get(sessionId);
+    const next = attachReviewAccess(state?.reviews ?? (state?.review ? [state.review] : undefined), reviewId, found);
+    if (!state || !next) {
+      discardCapture(found.snapshot?.path, captureFolderPath());
+      return false;
+    }
+    ledger.sessionStates.set(sessionId, { ...state, reviews: next, review: next.at(-1)! });
+    ledger.saveReviews();
+    void renderSessionPanel();
+    return true;
   }
 
   /**
@@ -1555,20 +1623,21 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       const state = ledger.sessionStates.get(sessionId);
       return state ? { reviews: state.reviews ?? (state.review ? [state.review] : []), versions: state.versions } : undefined;
     },
-    // Whatever a held deliverable links or draws on is kept, however old (`pruneCaptures`).
-    prune: () => {
-      const folder = captureFolder();
-      const referenced = new Set<string>();
-      for (const state of ledger.sessionStates.values()) {
-        for (const held of state.reviews ?? (state.review ? [state.review] : [])) {
-          if (held.link) referenced.add(held.link);
-          for (const mark of held.scene?.marks ?? []) if ("image" in mark.frame) referenced.add(mark.frame.image);
-        }
-      }
-      pruneCaptures(folder, Date.now(), referenced);
-    },
+    prune: () => pruneHeldCaptures(),
     now: Date.now,
   });
+  /**
+   * Delete the captures nothing holds (`pruneCaptures`): whatever a held deliverable links, draws its marks on, or keeps
+   * as a page's snapshot (`SessionLedger.heldFiles`) is kept, however old. Before each new capture; tidying is never a
+   * reason not to draw one.
+   */
+  function pruneHeldCaptures(): void {
+    try {
+      pruneCaptures(captureFolder(), Date.now(), ledger.heldFiles());
+    } catch (error) {
+      log(`couldn't tidy the capture folder: ${error}`);
+    }
+  }
   // One lookup, and one cache, for the screen context and the phone's dev pages.
   const portListeners = portListenerLookup();
   const screen = createScreenContext({

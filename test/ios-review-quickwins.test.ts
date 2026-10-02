@@ -145,6 +145,8 @@ describe("a review's scene on the iPhone", () => {
         "import CoreGraphics",
         review,
         declaration(models, "struct AgentMark: Decodable"),
+        // A live page's login-wall check is read with ConchDesign's own type (`access`).
+        read("design/ConchDesign/Sources/ConchDesign/PageAccess.swift").replace(/^import Foundation\n/m, ""),
         "func show(_ json: String) {",
         "  let r = try! JSONDecoder().decode(Review.self, from: Data(json.utf8))",
         '  print("\\(r.summary)|\\(r.link ?? "-")|\\(r.inspect ?? "-")|\\(r.marks.map(\\.id))")',
