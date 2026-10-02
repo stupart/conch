@@ -1,0 +1,149 @@
+{
+  "v": 1,
+  "ts": 1760000000000,
+  "mode": { "muted": false, "paused": false, "holding": 0 },
+  "live": { "state": "idle", "label": "" },
+  "ownerDeviceId": "fixture-mac",
+  "dismissed": [],
+  "dismissedRows": [],
+  "features": { "deliverables": 4, "viewedState": 1 },
+  "rows": [
+    {
+      "needsResponse": true,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": true,
+      "id": "compare-photo",
+      "label": "lake photo grade",
+      "backend": "claude",
+      "status": "waiting",
+      "at": 1759999940000,
+      "cwd": "/Users/you/Projects/photos",
+      "review": {
+        "summary": "Warmer grade, lifted shadows, more colour in the sky",
+        "link": "mobile/conch-ios/fixtures/deliverables/photo-after.jpg",
+        "at": 1759999940000,
+        "id": "photo-v2",
+        "artifact": "6c616b6570686f74",
+        "version": 2,
+        "kind": "image",
+        "kindSource": "agent"
+      },
+      "reviews": [
+        {
+          "summary": "The photo as shot: flat and cool",
+          "link": "mobile/conch-ios/fixtures/deliverables/photo-before.jpg",
+          "at": 1759992800000,
+          "id": "photo-v1",
+          "artifact": "6c616b6570686f74",
+          "version": 1,
+          "kind": "image",
+          "kindSource": "agent",
+          "viewedAt": 1759993000000
+        },
+        {
+          "summary": "Warmer grade, lifted shadows, more colour in the sky",
+          "link": "mobile/conch-ios/fixtures/deliverables/photo-after.jpg",
+          "at": 1759999940000,
+          "id": "photo-v2",
+          "artifact": "6c616b6570686f74",
+          "version": 2,
+          "kind": "image",
+          "kindSource": "agent"
+        }
+      ]
+    },
+    {
+      "needsResponse": true,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": false,
+      "id": "compare-notes",
+      "label": "launch notes",
+      "backend": "claude",
+      "status": "waiting",
+      "at": 1759999700000,
+      "cwd": "/Users/you/Projects/conch",
+      "review": {
+        "summary": "Moved the date, added the compare feature, dropped a fixed risk",
+        "link": "mobile/conch-ios/fixtures/deliverables/launch-notes-v2.md",
+        "at": 1759999700000,
+        "id": "notes-v2",
+        "artifact": "6c61756e63686e6f",
+        "version": 2,
+        "kind": "markdown",
+        "kindSource": "inferred"
+      },
+      "reviews": [
+        {
+          "summary": "First draft of the launch notes",
+          "link": "mobile/conch-ios/fixtures/deliverables/launch-notes-v1.md",
+          "at": 1759996400000,
+          "id": "notes-v1",
+          "artifact": "6c61756e63686e6f",
+          "version": 1,
+          "kind": "markdown",
+          "kindSource": "inferred"
+        },
+        {
+          "summary": "Moved the date, added the compare feature, dropped a fixed risk",
+          "link": "mobile/conch-ios/fixtures/deliverables/launch-notes-v2.md",
+          "at": 1759999700000,
+          "id": "notes-v2",
+          "artifact": "6c61756e63686e6f",
+          "version": 2,
+          "kind": "markdown",
+          "kindSource": "inferred"
+        }
+      ]
+    },
+    {
+      "needsResponse": true,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": false,
+      "id": "compare-same",
+      "label": "ledger edited in place",
+      "backend": "codex",
+      "status": "waiting",
+      "at": 1759999500000,
+      "cwd": "/Users/you/Projects/conch",
+      "review": {
+        "summary": "Ledger with the spacing pass, saved over the first",
+        "link": "mobile/conch-ios/fixtures/deliverables/ledger-shot.png",
+        "at": 1759999500000,
+        "id": "ledger-v2",
+        "artifact": "6c65646765727368",
+        "version": 2,
+        "kind": "image",
+        "kindSource": "inferred"
+      },
+      "reviews": [
+        {
+          "summary": "Ledger before the spacing pass",
+          "link": "mobile/conch-ios/fixtures/deliverables/ledger-shot.png",
+          "at": 1759995000000,
+          "id": "ledger-v1",
+          "artifact": "6c65646765727368",
+          "version": 1,
+          "kind": "image",
+          "kindSource": "inferred"
+        },
+        {
+          "summary": "Ledger with the spacing pass, saved over the first",
+          "link": "mobile/conch-ios/fixtures/deliverables/ledger-shot.png",
+          "at": 1759999500000,
+          "id": "ledger-v2",
+          "artifact": "6c65646765727368",
+          "version": 2,
+          "kind": "image",
+          "kindSource": "inferred"
+        }
+      ]
+    }
+  ],
+  "conversations": {}
+}

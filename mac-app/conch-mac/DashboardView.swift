@@ -1672,6 +1672,9 @@ private struct ConversationPane: View {
     /// The address the deliverable pane is showing, published upward by it. The arrow and ⌘3
     /// both open THIS, so neither can send you back to a page you already left.
     @State private var deliverableAddress: String?
+    /// Two versions of one artifact in the deliverable pane, when the reader asked to compare them
+    /// (`DeliverableCompareView`). Opening a version from the tab strip ends it.
+    @State private var comparison: DeliverableComparison?
     /// §3: the header grows a hairline only once the transcript has scrolled under it.
     @State private var transcriptScrolled = false
 
@@ -1897,13 +1900,31 @@ private struct ConversationPane: View {
             // The mirror, a debug view. Keyed on the session too: one session's reads and picture
             // must never go on showing under another's name.
             AgentTerminalPaneView(row: row).id(row.id)
+        } else if let compared = shownComparison(for: row) {
+            DeliverableCompareView(
+                versions: compared.versions,
+                pair: compared.pair,
+                mode: comparison?.mode,
+                changed: changedFiles(for: row),
+                onPick: { comparison?.pair = $0 },
+                onMode: { comparison?.mode = $0 },
+                onOpenInPlace: { item in
+                    guard let link = item.link else { return }
+                    fallbackLinkFailure = nil
+                    store.openLink(link, cwd: row.cwd, rowId: row.id) { fallbackLinkFailure = $0 }
+                },
+                onClose: { comparison = nil }
+            )
         } else if let selectedReview {
             InlineReviewView(
                 item: selectedReview,
                 onOpenInPlace: openDeliverableInPlace,
                 liveAddress: $deliverableAddress,
                 // A folder deliverable's tree marks what this session changed, as the Files tab does.
-                changed: changedFiles(for: row)
+                changed: changedFiles(for: row),
+                // Only where the session holds another version of it: a lone deliverable's pane is unchanged.
+                onCompare: VersionCompare.defaultPair(in: versions(of: selectedReview.id), from: selectedReview.id)
+                    .map { pair in { startComparing(pair, in: row) } }
             )
             // Only the WEB pane publishes an address, but this state belongs to the pane, which
             // outlives the deliverable it was showing. So opening a web deliverable and then
@@ -1931,6 +1952,33 @@ private struct ConversationPane: View {
     /// The rule is shared and tested in ConchDesign/Workspace, not decided here.
     private var deliverableGroups: [DeliverableGroup] {
         DeliverableGroups.grouped(deliverables.map { DeliverableVersion(id: $0.id, link: $0.link, artifact: $0.artifact) })
+    }
+
+    /// Every version held of the artifact `id` is a version of, newest first; empty when it isn't held.
+    private func versions(of id: String) -> [String] {
+        deliverableGroups.first { $0.versions.contains(id) }?.versions ?? []
+    }
+
+    /// The comparison on screen for this session: both versions still held, else none — a version taken off, or dropped
+    /// past the daemon's cap, ends it rather than leaving half a comparison (`VersionCompare.resolve`).
+    private func shownComparison(for row: SessionRow) -> (pair: VersionPair, versions: [ReviewItem])? {
+        guard let comparison, comparison.rowID == row.id else { return nil }
+        let held = versions(of: comparison.pair.after)
+        guard let pair = VersionCompare.resolve(comparison.pair, in: held) else { return nil }
+        let byID = Dictionary(deliverables.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+        return (pair, held.compactMap { byID[$0] })
+    }
+
+    /// Put two versions in the pane. The tab stands for the after, so the strip still says which artifact this is; both
+    /// are on screen, so both are looked at, by the same rule a tab's click marks one (`markReviewViewed`).
+    private func startComparing(_ pair: VersionPair, in row: SessionRow) {
+        workspace.show(work: .deliverable, for: row.id)
+        workspace.select(deliverable: pair.after, for: row.id)
+        comparison = DeliverableComparison(rowID: row.id, pair: pair)
+        guard state?.features?.viewedState != nil else { return }
+        for item in deliverables where (item.id == pair.before || item.id == pair.after) && item.viewedAt == nil {
+            store.markReviewViewed(sessionId: row.id, review: item.id)
+        }
     }
 
     private var watchesTranscriptForRow: SessionRow? {
@@ -2463,6 +2511,8 @@ private struct ConversationPane: View {
                                 isSelected: shown.map(group.versions.contains) ?? false,
                                 now: timeline.date,
                                 open: { item in
+                                    // A version opened from the strip is a look at that one: any comparison ends.
+                                    comparison = nil
                                     workspace.show(work: .deliverable, for: row.id)
                                     workspace.select(deliverable: item.id, for: row.id)
                                     // Looking at it is what marks it, and only the daemon's copy
@@ -2479,7 +2529,8 @@ private struct ConversationPane: View {
                                 // Only a daemon that can remove one is offered the item.
                                 remove: (state?.features?.deliverables ?? 0) >= 2
                                     ? { store.removeDeliverable(sessionId: row.id, artifact: group.id) }
-                                    : nil
+                                    : nil,
+                                compare: { pair in startComparing(pair, in: row) }
                             )
                         }
                     }
@@ -2911,6 +2962,8 @@ private struct DeliverableTab: View {
     let open: (ReviewItem) -> Void
     /// Take this artifact off the session, every version; nil where the daemon cannot.
     let remove: (() -> Void)?
+    /// Compare two of its versions in the pane (`DeliverableCompareView`).
+    let compare: (VersionPair) -> Void
 
     @State private var isHovered = false
 
@@ -2998,6 +3051,19 @@ private struct DeliverableTab: View {
                                 Image(systemName: "checkmark")
                             }
                             Text(Self.menuLine(version, now: now))
+                        }
+                    }
+                    Divider()
+                    // A before and an after, in the pane: the one it stands for against another, the version before it
+                    // first (`VersionCompare.partners`). The agent that hand-stitched a PIL composite to show a photo
+                    // edit (2026-10-03) only had to publish the after under the same key.
+                    let ids = versions.map(\.id)
+                    Menu("Compare with\u{2026}") {
+                        ForEach(VersionCompare.partners(of: current.id, in: ids), id: \.self) { partner in
+                            if let version = versions.first(where: { $0.id == partner }),
+                               let pair = VersionCompare.pair(current.id, partner, in: ids) {
+                                Button(Self.menuLine(version, now: now)) { compare(pair) }
+                            }
                         }
                     }
                 } label: {

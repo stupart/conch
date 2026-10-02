@@ -20,6 +20,14 @@ struct ReviewSheet: View {
     @State private var confirmingRemove = false
     /// The daemon's own words when a Remove did nothing, so it never looks like one that worked.
     @State private var removeFailure: String?
+    /// Two versions of the artifact on screen being compared (`VersionCompareSheet`), by key; nil is the one deliverable.
+    @State private var comparing: VersionPair?
+    @State private var compareMode: CompareMode?
+    #if DEBUG
+    /// `-conchFixtureCompare slider|sideBySide|diff|flip` opens on a comparison of the shown artifact's newest two, in that
+    /// mode, for the snapshot script.
+    @State private var fixtureCompare = UserDefaults.standard.string(forKey: "conchFixtureCompare").flatMap(CompareMode.init(rawValue:))
+    #endif
     @Environment(\.dismiss) private var dismiss
 
     private var row: PublishedState.Row? {
@@ -40,6 +48,54 @@ struct ReviewSheet: View {
     private var shown: PublishedState.Row.Review? {
         held.first { picked != nil && key($0) == picked } ?? row?.review
     }
+
+    /// Every version held of the artifact `review` is a version of, by key, NEWEST FIRST: the Mac's grouping
+    /// (`DeliverableGroups`), so the two apps agree on what is one artifact.
+    private func versions(of review: PublishedState.Row.Review) -> [String] {
+        let groups = DeliverableGroups.grouped(held.reversed().map { DeliverableVersion(id: key($0), link: $0.link, artifact: $0.artifact) })
+        return groups.first { $0.versions.contains(key(review)) }?.versions ?? []
+    }
+
+    private func held(_ key: String) -> PublishedState.Row.Review? {
+        held.first { self.key($0) == key }
+    }
+
+    /// The comparison on screen: both versions still held, else none (`VersionCompare.resolve`), so a Remove or the
+    /// daemon's cap ends it rather than leaving half of one.
+    private var shownComparison: (before: PublishedState.Row.Review, after: PublishedState.Row.Review, versions: [String])? {
+        guard let shown else { return nil }
+        let ids = versions(of: shown)
+        guard let pair = VersionCompare.resolve(comparing, in: ids), let before = held(pair.before), let after = held(pair.after)
+        else { return nil }
+        return (before, after, ids)
+    }
+
+    /// "v1 · 2h ago — summary": a version as a side of a comparison names it (`VersionLabel`).
+    private func compareLine(_ review: PublishedState.Row.Review, in ids: [String]) -> String {
+        VersionLabel.line(version: review.version, place: place(review, in: ids), filedAt: review.at, summary: review.summary, now: Date())
+    }
+
+    private func place(_ review: PublishedState.Row.Review, in ids: [String]) -> Int {
+        ids.count - (ids.firstIndex(of: key(review)) ?? 0)
+    }
+
+    /// Compare two versions: the after is what the sheet stands for, so the title and Remove still name the artifact.
+    private func startComparing(_ pair: VersionPair) {
+        picked = pair.after == held.first.map(key) ? nil : pair.after
+        comparing = pair
+    }
+
+    #if DEBUG
+    private func applyFixtureCompare() {
+        guard let mode = fixtureCompare, let shown,
+              let pair = VersionCompare.defaultPair(in: versions(of: shown), from: key(shown)) else { return }
+        fixtureCompare = nil
+        compareMode = mode
+        startComparing(pair)
+    }
+    #else
+    private func applyFixtureCompare() {}
+    #endif
 
     private func title(_ review: PublishedState.Row.Review) -> String {
         let name = review.summary.isEmpty ? ((review.link ?? "Deliverable") as NSString).lastPathComponent : review.summary
@@ -90,7 +146,22 @@ struct ReviewSheet: View {
         let more = ready.filter { $0.key != currentKey }.count
         NavigationStack {
             Group {
-                if let review = shown {
+                if let compared = shownComparison {
+                    VersionCompareSheet(
+                        bridge: bridge,
+                        before: compared.before,
+                        after: compared.after,
+                        sessionId: sessionId,
+                        names: (
+                            VersionLabel.number(compared.before.version, place: place(compared.before, in: compared.versions)),
+                            VersionLabel.number(compared.after.version, place: place(compared.after, in: compared.versions))
+                        ),
+                        lines: (compareLine(compared.before, in: compared.versions), compareLine(compared.after, in: compared.versions)),
+                        mode: $compareMode,
+                        onClose: { comparing = nil }
+                    )
+                    .id("\(key(compared.before))\u{1F}\(key(compared.after))")
+                } else if let review = shown {
                     DeliverableSheet(bridge: bridge, review: review, sessionId: sessionId)
                         // A different review is a different viewer: nothing of
                         // the last one's download, page or failure carries over.
@@ -128,6 +199,7 @@ struct ReviewSheet: View {
                                 }
                                 sessionId = next
                                 picked = nil
+                                comparing = nil
                             } label: {
                                 HStack(spacing: 6) {
                                     Text("Next")
@@ -163,7 +235,10 @@ struct ReviewSheet: View {
                             .font(Type.sessionName)
                             .foregroundStyle(Palette.textPrimary)
                             .lineLimit(1)
-                        Text(shown?.summary ?? "")
+                        Text(shownComparison.map { compared in
+                            let name = { VersionLabel.number($0.version, place: place($0, in: compared.versions)) }
+                            return "Comparing \(name(compared.before)) and \(name(compared.after))"
+                        } ?? shown?.summary ?? "")
                             .font(Type.caption)
                             .foregroundStyle(Palette.textDim)
                             .lineLimit(1)
@@ -177,7 +252,10 @@ struct ReviewSheet: View {
                                 Section("Held by \(row?.label ?? "this session")") {
                                     ForEach(held.indices, id: \.self) { index in
                                         let one = held[index]
-                                        Button { picked = index == 0 ? nil : key(one) } label: {
+                                        Button {
+                                            picked = index == 0 ? nil : key(one)
+                                            comparing = nil
+                                        } label: {
                                             if key(one) == key(shown) {
                                                 Label(title(one), systemImage: "checkmark")
                                             } else {
@@ -185,6 +263,20 @@ struct ReviewSheet: View {
                                             }
                                         }
                                     }
+                                }
+                            }
+                            // A before and an after: the version on screen against another of the same artifact, the
+                            // one before it first (`VersionCompare.partners`).
+                            let ids = versions(of: shown)
+                            if VersionCompare.canCompare(ids) {
+                                Menu {
+                                    ForEach(VersionCompare.partners(of: key(shown), in: ids), id: \.self) { partner in
+                                        if let one = held(partner), let pair = VersionCompare.pair(key(shown), partner, in: ids) {
+                                            Button(title(one)) { startComparing(pair) }
+                                        }
+                                    }
+                                } label: {
+                                    Label("Compare with\u{2026}", systemImage: CompareMode.sideBySide.symbol)
                                 }
                             }
                             if shown.artifact != nil || shown.id != nil {
@@ -202,6 +294,7 @@ struct ReviewSheet: View {
                     Button("Done") { dismiss() }
                 }
             }
+            .task(id: shown.map(key)) { applyFixtureCompare() }
             .confirmationDialog(
                 "Remove \(shown.map(title) ?? "this") from \(row?.label ?? "the session")?",
                 isPresented: $confirmingRemove,

@@ -131,7 +131,8 @@ describe("the review screen lists a session's deliverables and removes one", () 
     expect(body).toContain("Array((row?.reviews ?? row?.review.map { [$0] } ?? []).reversed())");
     expect(body).toContain("held.first { picked != nil && key($0) == picked } ?? row?.review");
     expect(body).toContain("if let review = shown {");
-    expect(body).toContain("Button { picked = index == 0 ? nil : key(one) } label: {");
+    // Picking one also ends a before/after comparison (`VersionCompareSheet`): a pick is a look at that one.
+    expect(body).toMatch(/Button \{\s*picked = index == 0 \? nil : key\(one\)\s*comparing = nil\s*\} label: \{/);
     expect(body).toMatch(/sessionId = next\s*picked = nil/);
   });
 

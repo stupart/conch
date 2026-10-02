@@ -22,6 +22,8 @@ struct ReviewItem: Identifiable, Equatable {
     let viewedAt: Double?
     /// The artifact this filing is a version of, as the daemon filed it; nil from an older one.
     let artifact: String?
+    /// Which filing of its artifact this is, from 1, as the daemon numbered it; nil from an older one (`VersionLabel`).
+    let version: Int?
     /// What the agent drew over it (`scene.marks`), for the canvas to draw where it shows (`AgentInkController`).
     let marks: [AgentMark]
     /// What kind of thing it is, as the daemon filed it (src/deliverables.ts); nil from an older daemon.
@@ -50,6 +52,7 @@ struct ReviewItem: Identifiable, Equatable {
         isReady = ReadyForYou.isReady(working: row.status == .working, viewedAt: [review.viewedAt])
         viewedAt = review.viewedAt
         artifact = review.artifact
+        version = review.version
         marks = review.marks
         kind = review.kind
         focus = review.focus
@@ -91,6 +94,12 @@ struct InlineReviewView: View {
     @Binding var liveAddress: String?
     /// What the session changed, for a folder deliverable's tree to mark as the Files tab does (`SessionRow.changedFiles`).
     var changed = ConchFileChanges(changed: [], relativeTo: "")
+    /// Compare this with another version of its artifact (`DeliverableCompareView`): a button beside the arrow, only where
+    /// the session holds another version. Nil draws no button.
+    var onCompare: (() -> Void)?
+    /// Whether the page or picture below says it shows this review, for the agent's marks to be drawn on it. Off for the
+    /// two sides of a comparison: marks are drawn for one review at a time, and two would take the canvas in turns.
+    var showsInk = true
 
     @State private var isWebLoading = false
 
@@ -113,11 +122,12 @@ struct InlineReviewView: View {
             // one row below doing exactly this while the arrow opened the original link, so the
             // two controls looked like duplicates and quietly disagreed. One control now.
             action: item.link == nil ? nil : onOpenInPlace,
+            onCompare: onCompare,
             isWebLoading: $isWebLoading,
             liveAddress: $liveAddress
         )
         // The page or image below says it shows this review, for its marks to find (`AgentInkController`).
-        .environment(\.agentInkItem, item)
+        .environment(\.agentInkItem, showsInk ? item : nil)
     }
 
     /// Read from where the pane IS, as the arrow opens.
@@ -133,6 +143,7 @@ private struct ReviewSurface: View {
     let actionHelp: String
     let actionAccessibilityLabel: String
     let action: (() -> Void)?
+    let onCompare: (() -> Void)?
     @Binding var isWebLoading: Bool
     @Binding var liveAddress: String?
 
@@ -199,27 +210,44 @@ private struct ReviewSurface: View {
     /// NOT the origin bar below this, which looks similar and is not decoration: a deliverable is
     /// an agent-authored URL rendered full-bleed in conch's own chrome, so naming the origin is
     /// what keeps a third-party sign-in page distinguishable from conch's UI.
-    @ViewBuilder
+    ///
+    /// The compare button sits beside it, and only on an artifact with another version held: a before/after is the one
+    /// other thing done with a deliverable from here (`DeliverableCompareView`), and with nothing to compare it is not
+    /// drawn at all, so the pane of a lone deliverable is exactly what it was.
     private var stageControl: some View {
-        if let action {
-            Button(action: action) {
-                Image(systemName: actionSymbol)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(ConchPalette.textDim)
-                    .frame(width: 28, height: 28)
-                    .background(
-                        Circle().fill(ConchPalette.raised.opacity(0.92))
-                    )
-                    .overlay(
-                        Circle().strokeBorder(ConchPalette.divider, lineWidth: 0.5)
-                    )
-                    .contentShape(Circle())
+        HStack(spacing: 6) {
+            if let onCompare {
+                circleButton(
+                    symbol: "rectangle.split.2x1",
+                    help: "Compare with the version before",
+                    label: "Compare with another version",
+                    action: onCompare
+                )
             }
-            .buttonStyle(ReviewPressButtonStyle())
-            .help(actionHelp)
-            .accessibilityLabel(actionAccessibilityLabel)
-            .padding(10)
+            if let action {
+                circleButton(symbol: actionSymbol, help: actionHelp, label: actionAccessibilityLabel, action: action)
+            }
         }
+        .padding(10)
+    }
+
+    private func circleButton(symbol: String, help: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(ConchPalette.textDim)
+                .frame(width: 28, height: 28)
+                .background(
+                    Circle().fill(ConchPalette.raised.opacity(0.92))
+                )
+                .overlay(
+                    Circle().strokeBorder(ConchPalette.divider, lineWidth: 0.5)
+                )
+                .contentShape(Circle())
+        }
+        .buttonStyle(ReviewPressButtonStyle())
+        .help(help)
+        .accessibilityLabel(label)
     }
 }
 
