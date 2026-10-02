@@ -59,6 +59,10 @@ function macOnlyBodies(): Array<{ kind: string; body: Record<string, unknown> }>
     "narration-cancel": { canvasId: CANVAS },
     "screen-observation": { observation: {} },
     "review-preview": { request: "r", path: "/tmp/x.png" },
+    // conch_capture's request (an agent's, through the MCP server) and the Mac app's answer to it: a page drawn with
+    // the review pane's sign-ins is never a phone's to ask for.
+    "page-capture": { url: "https://acme.dev", roots: [], viewport: { width: 1440, height: 900 } },
+    "page-capture-answer": { request: "r", path: "/tmp/x.png" },
   };
   const kinds = [...SETUP_REQUEST_KINDS, ...PRACTICE_REQUEST_KINDS, ...narrationKinds(), ...MAC_APP_ONLY_KINDS];
   return kinds.flatMap((kind) => [

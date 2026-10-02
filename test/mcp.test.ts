@@ -50,6 +50,7 @@ import { appServerNoTerminal } from "../src/codex-threads.ts";
 import { HISTORY_PAYLOAD_MAX_BYTES, type HistoryRequest, type HistoryResponse } from "../src/history.ts";
 import { artifactIdentity } from "../src/deliverables.ts";
 import { reviewIdentity } from "../src/records-receipts.ts";
+import { MAC_APP_DOWN, type PageCaptureMessage, type PageCaptureReply, type PageCaptureSend } from "../src/page-capture.ts";
 
 const TOOL_NAMES = [
   "conch_sessions",
@@ -67,6 +68,7 @@ const TOOL_NAMES = [
   "conch_on_screen",
   "conch_deliverables",
   "review_remove",
+  "conch_capture",
 ] as const satisfies readonly McpToolName[];
 
 const DEFERRED_TOOL_NAMES = [
@@ -360,6 +362,7 @@ function recordingHandlers(
     conch_on_screen: handler("conch_on_screen"),
     conch_deliverables: handler("conch_deliverables"),
     review_remove: handler("review_remove"),
+    conch_capture: handler("conch_capture"),
   };
 }
 
@@ -487,7 +490,7 @@ describe("recorded history MCP tools", () => {
 });
 
 describe("MCP tool discovery", () => {
-  test("tools/list returns exactly the fifteen tools with valid closed schemas", async () => {
+  test("tools/list returns exactly the sixteen tools with valid closed schemas", async () => {
     const handlers = recordingHandlers([]);
     const response = await dispatchJsonRpc({
       jsonrpc: "2.0",
@@ -501,8 +504,8 @@ describe("MCP tool discovery", () => {
 
     expect(response?.id).toBe(11);
     expect(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).toEqual([...TOOL_NAMES]);
-    expect(result.tools).toHaveLength(15);
-    expect(new Set(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).size).toBe(15);
+    expect(result.tools).toHaveLength(16);
+    expect(new Set(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).size).toBe(16);
     for (const deferred of DEFERRED_TOOL_NAMES) {
       expect(result.tools.some((tool: unknown) => isRecord(tool) && tool.name === deferred)).toBe(false);
     }
@@ -523,6 +526,7 @@ describe("MCP tool discovery", () => {
       conch_on_screen: [],
       conch_deliverables: [],
       review_remove: ["id", "artifact"],
+      conch_capture: ["url", "target", "viewport", "fullPage", "mark", "publish"],
     };
     const expectedRequired: Record<McpToolName, string[]> = {
       conch_sessions: [],
@@ -542,6 +546,7 @@ describe("MCP tool discovery", () => {
       conch_deliverables: [],
       // Exactly one of id or artifact, which the handler enforces.
       review_remove: [],
+      conch_capture: ["url"],
     };
 
     for (const tool of result.tools) {
@@ -2296,5 +2301,204 @@ describe("typed deliverables: filing, listing and removing your own", () => {
     const down = fakeHarness({ parentPid: 4321, controlResult: { ok: false, reason: "daemon-down" } });
     expect(toolText(await callTool(createMcpToolHandlers(runtime, down.dependencies), "review_remove", { id: "a" })))
       .toContain("daemon is not running, so nothing was removed");
+  });
+});
+
+/**
+ * conch_capture (page-capture.ts): an agent names a page and the part of it to show, and conch draws it in its Mac app.
+ * The tool checks everything it can before anything reaches the daemon, sends the page as an absolute, checked address,
+ * and turns the daemon's answer into what the agent needs: the picture, the target's box, the marks ready for
+ * review_to_front, what was filed, or why there is nothing, in words.
+ */
+describe("conch_capture", () => {
+  const runtime = { claudeDir: "/virtual/claude", socketPath: "/virtual/conch.sock" };
+  const shot = {
+    path: "/Users/t/Library/Application Support/conch/captures/r1.png",
+    width: 896,
+    height: 416,
+    devicePixelRatio: 2,
+    element: { x: 48, y: 48, w: 800, h: 320 },
+    finalUrl: "https://acme.dev/pricing",
+    title: "Pricing",
+    loginWall: false,
+  };
+  function harness(options: { parentPid?: number; session?: SessionInfo; reply?: PageCaptureReply; send?: PageCaptureSend } = {}) {
+    const h = fakeHarness({ parentPid: options.parentPid ?? 4321, ...(options.session ? { session: options.session } : {}) });
+    const sent: Array<{ socketPath: string; message: PageCaptureMessage; timeoutMs?: number }> = [];
+    const dependencies: McpDependencies = {
+      ...h.dependencies,
+      async capturePage(socketPath, message, timeoutMs) {
+        sent.push({ socketPath, message, timeoutMs });
+        return options.send ?? { ok: true, reply: options.reply ?? { kind: "page-capture-result", capture: shot } };
+      },
+    };
+    return { handlers: createMcpToolHandlers(runtime, dependencies), sent, calls: h.calls };
+  }
+
+  test("refuses what it can tell is wrong before the daemon hears of it", async () => {
+    const { handlers, sent } = harness();
+    const refusals: Array<[Record<string, unknown>, string]> = [
+      [{}, "url must be a non-empty string"],
+      [{ url: "javascript:alert(1)" }, "not a javascript: link"],
+      [{ url: "localhost:3000" }, "http://localhost:<port>"],
+      [{ url: "/nowhere/at/all/page.html" }, "it does not exist"],
+      [{ url: "package.json" }, "is not an .html page"],
+      [{ url: "https://acme.dev", target: { selector: "#a", quote: "b" } }, "exactly one of {selector} or {quote}"],
+      [{ url: "https://acme.dev", target: { selector: "" } }, "target.selector must be one line"],
+      [{ url: "https://acme.dev", target: { quote: "x".repeat(121) } }, "target.quote must be one line of 1 to 120"],
+      [{ url: "https://acme.dev", viewport: { width: 100, height: 900 } }, "width 320-3840"],
+      [{ url: "https://acme.dev", viewport: { width: 1440.5, height: 900 } }, "whole CSS pixels"],
+      [{ url: "https://acme.dev", fullPage: "yes" }, "fullPage must be true or false"],
+      [{ url: "https://acme.dev", mark: "box" }, "pass target"],
+      [{ url: "https://acme.dev", target: { selector: "#a" }, mark: "circle" }, "mark kind must be one of"],
+      [{ url: "https://acme.dev", target: { selector: "#a" }, mark: { kind: "text" } }, "a text mark needs a label"],
+      [{ url: "https://acme.dev", target: { selector: "#a" }, mark: { kind: "box", colour: "red" } }, 'mark must be "box"'],
+      [{ url: "https://acme.dev", publish: { summary: "" } }, "summary must be a non-empty string"],
+      [{ url: "https://acme.dev", publish: { summary: "x", link: "/tmp/x" } }, 'unknown argument "link"'],
+      [{ url: "https://acme.dev", session: "Other" }, 'unknown argument "session"'],
+    ];
+    for (const [args, reason] of refusals) {
+      const response = await callTool(handlers, "conch_capture", args);
+      expect(rpcResult(response), JSON.stringify(args)).toMatchObject({ isError: true });
+      expect(toolText(response), JSON.stringify(args)).toContain(reason);
+    }
+    expect(sent).toEqual([]);
+  });
+
+  test("a capture alone needs no verified caller; filing one as a deliverable does", async () => {
+    const unverified = harness({ parentPid: 0 });
+    expect(JSON.parse(toolText(await callTool(unverified.handlers, "conch_capture", { url: "https://acme.dev/pricing" }))))
+      .toMatchObject({ outcome: "captured", path: shot.path });
+    expect(unverified.sent[0]!.message).not.toHaveProperty("publish");
+    const refused = await callTool(unverified.handlers, "conch_capture", { url: "https://acme.dev", publish: { summary: "the pricing table" } });
+    expect(toolText(refused)).toContain("cannot verify which session is calling");
+    expect(unverified.sent).toHaveLength(1);
+  });
+
+  test("sends the page, the target, the size and the mark as the daemon decodes them, defaults filled in", async () => {
+    const { handlers, sent } = harness();
+    await callTool(handlers, "conch_capture", { url: "https://acme.dev/pricing", target: { selector: ".plan-pro" }, mark: "box" });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.socketPath).toBe(runtime.socketPath);
+    // Past the daemon's own deadline, so its words arrive first.
+    expect(sent[0]!.timeoutMs).toBe(50_000);
+    expect(sent[0]!.message).toMatchObject({
+      kind: "page-capture",
+      url: "https://acme.dev/pricing",
+      target: { selector: ".plan-pro" },
+      viewport: { width: 1440, height: 900 },
+      fullPage: false,
+      mark: { kind: "box" },
+    });
+    expect(Array.isArray(sent[0]!.message.roots)).toBe(true);
+  });
+
+  test("a local page is sent as its absolute path, checked against the session's folders", async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "conch-capture-page-")));
+    try {
+      await mkdir(join(dir, "site"));
+      await writeFile(join(dir, "site", "index.html"), "<h1>hi</h1>");
+      const session: SessionInfo = { sessionId: "session-123", cwd: dir, pid: 4321, status: "idle" };
+      const { handlers, sent } = harness({ session });
+      // Relative to the folder the session is in (here, with no transcript to say, where this server started).
+      const local = await callTool(handlers, "conch_capture", { url: relative(process.cwd(), join(dir, "site", "index.html")), viewport: { width: 390, height: 844 }, fullPage: true });
+      expect(rpcResult(local), toolText(local)).not.toMatchObject({ isError: true });
+      const byUrl = await callTool(handlers, "conch_capture", { url: `file://${dir}/site/index.html` });
+      expect(rpcResult(byUrl), toolText(byUrl)).not.toMatchObject({ isError: true });
+      expect(sent.map((one) => one.message.url)).toEqual([join(dir, "site", "index.html"), join(dir, "site", "index.html")]);
+      expect(sent[0]!.message).toMatchObject({ viewport: { width: 390, height: 844 }, fullPage: true });
+      expect(sent[0]!.message.roots).toContain(dir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("publish carries the verified session as review_to_front would, and the filing comes back", async () => {
+    const filed = { id: "session-123:9:abc", artifact: "capture https://acme.dev/pricing .plan-pro", version: 2, kind: "image" as const, summary: "the Pro plan card" };
+    const marks: ReviewMark[] = [{ id: "capture", kind: "box", frame: { image: shot.path }, rect: [0.0357, 0.0769, 0.9286, 0.8462] }];
+    const { handlers, sent, calls } = harness({ reply: { kind: "page-capture-result", capture: shot, marks, filed } });
+    const result = JSON.parse(toolText(await callTool(handlers, "conch_capture", {
+      url: "https://acme.dev/pricing",
+      target: { selector: ".plan-pro" },
+      mark: "box",
+      publish: { summary: "the Pro plan card", key: "pricing-pro" },
+    })));
+    expect(sent[0]!.message.publish).toEqual({
+      sessionId: "session-123",
+      label: "Build label",
+      cwd: "/work/build",
+      pid: 4321,
+      transcriptPath: "/virtual/session-123.jsonl",
+      transcriptMark: 7,
+      summary: "the Pro plan card",
+      key: "pricing-pro",
+    });
+    expect(calls.daemon).toEqual([]);
+    expect(result).toEqual({
+      outcome: "captured",
+      path: shot.path,
+      width: 896,
+      height: 416,
+      devicePixelRatio: 2,
+      element: shot.element,
+      finalUrl: shot.finalUrl,
+      title: "Pricing",
+      marks,
+      filed,
+    });
+  });
+
+  test("a sign-in screen, a clipped target and an unsettled page are said, with the fix", async () => {
+    const { handlers } = harness({
+      reply: {
+        kind: "page-capture-result",
+        capture: { ...shot, loginWall: true, clipped: true, unsettled: true },
+        notFiled: "the page showed a sign-in screen, so it wasn't filed as your deliverable",
+      },
+    });
+    const result = JSON.parse(toolText(await callTool(handlers, "conch_capture", { url: "https://acme.vercel.app", publish: { summary: "x" } })));
+    expect(result).toMatchObject({ outcome: "captured", loginWall: true, clipped: true, unsettled: true });
+    expect(result.note).toContain("open it in conch's window and sign in there once");
+    expect(result.note).toContain("then capture again");
+    expect(result.note).toContain("its own review pane, not your browser's");
+    expect(result.note).toContain("wasn't filed");
+    expect(result.note).toContain("fullPage");
+    expect(result).not.toHaveProperty("filed");
+  });
+
+  test("no capture: the daemon's reason, what the page was, and a picture of it", async () => {
+    const { handlers } = harness({
+      reply: {
+        kind: "page-capture-error",
+        error: 'nothing on the page matches the selector ".plan-pro"',
+        seen: { path: "/c/r1-seen.png", finalUrl: "https://vercel.com/login", title: "Log in to Vercel", loginWall: true, headings: ["Log in to Vercel"] },
+      },
+    });
+    const response = await callTool(handlers, "conch_capture", { url: "https://acme.vercel.app", target: { selector: ".plan-pro" } });
+    expect(rpcResult(response)).toMatchObject({ isError: true });
+    const text = toolText(response);
+    expect(text).toStartWith('failed: nothing on the page matches the selector ".plan-pro"');
+    expect(text).toContain('What conch got: "Log in to Vercel" at https://vercel.com/login');
+    expect(text).toContain('Its headings: "Log in to Vercel"');
+    expect(text).toContain("showed a sign-in screen");
+    expect(text).toContain("A picture of what it showed: /c/r1-seen.png");
+  });
+
+  test("the Mac app not running, and the daemon not running, are each said plainly", async () => {
+    const app = harness({ reply: { kind: "page-capture-error", error: MAC_APP_DOWN } });
+    expect(toolText(await callTool(app.handlers, "conch_capture", { url: "https://acme.dev" })))
+      .toBe("failed: conch's Mac app isn't running, so it can't render pages; open it and try again.");
+    const daemon = harness({ send: { ok: false, reason: "daemon-down" } });
+    expect(toolText(await callTool(daemon.handlers, "conch_capture", { url: "https://acme.dev" })))
+      .toBe("failed: conch daemon is not running, so nothing was captured");
+  });
+
+  test("conch_sessions doesn't hand an agent the Mac app's drawing list", async () => {
+    const published = { v: 1, ts: 1, mode: { muted: false, paused: false, holding: 0 }, live: { state: "idle", label: "" }, rows: [], dismissed: [],
+      captureRequests: [{ id: "r1", url: "https://acme.dev", viewport: { width: 1440, height: 900 }, fullPage: false, folder: "/c", deadline: 1 }] };
+    const h = fakeHarness({ parentPid: 4321, sessionsFile: JSON.stringify(published) });
+    const state = JSON.parse(toolText(await callTool(createMcpToolHandlers(runtime, h.dependencies), "conch_sessions", {})));
+    expect(state).not.toHaveProperty("captureRequests");
+    expect(state.rows).toEqual([]);
   });
 });

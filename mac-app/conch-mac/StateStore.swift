@@ -478,6 +478,9 @@ final class StateStore: ObservableObject {
     /// Takes the window snapshots the daemon asks for, for the phone.
     private lazy var windowPreviewer = WindowPreviewer(socket: socketClient)
 
+    /// Draws the pages agents ask conch to capture (`conch_capture`).
+    private lazy var pageCaptures = PageCaptureRequests(socket: socketClient)
+
     /// The conch-staged observer (docs/screen-context.md): tell the daemon what conch just put on
     /// screen and whose it is, so `showing` and `conch_on_screen` can say. Fire and forget, like
     /// markReviewViewed. Without `staged` it is conch's window showing a session, which counts only
@@ -1321,6 +1324,7 @@ final class StateStore: ObservableObject {
         if snapshot.showing == nil { screenGate.forget() }
         applyDeliveryOutcomes(snapshot.deliveries)
         windowPreviewer.handle(snapshot.previewRequests, rows: snapshot.rows)
+        pageCaptures.handle(snapshot.captureRequests)
         reconcileOutbox(with: snapshot)
         reconcilePresentationOverlays(with: snapshot)
         rebuildPresentedState()
@@ -1539,6 +1543,7 @@ final class StateStore: ObservableObject {
             features: sourceState.features,
             showing: sourceState.showing,
             previewRequests: sourceState.previewRequests,
+            captureRequests: sourceState.captureRequests,
             practice: sourceState.practice,
             sessionSettings: sourceState.sessionSettings,
             naturalVoices: sourceState.naturalVoices

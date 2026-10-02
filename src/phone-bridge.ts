@@ -163,12 +163,16 @@ function historyRequest(pathname: string, value: unknown): ReturnType<typeof val
  * phone forwarding one would be speaking as the Mac app: a paired phone could run `curl … | bash`
  * on the Mac, rewrite `~/.claude/settings.json`, or stop a practice the Mac is running.
  *
+ * An agent's page capture (`page-capture`) and the Mac app's answers to it (`page-capture-answer`) are on this side too:
+ * a capture draws an address with the cookies of conch's own review pane, where the user may be signed in, and leaves
+ * the picture on this Mac, so it is for an agent on this Mac to ask (page-capture.ts), never a phone.
+ *
  * The requests with a decoder are refused by that decoder, the one the control server dispatches
  * with (`createControlServer`), so a kind added to setup's or the practice's is refused here the day
  * it is added. test/phone-mac-only.test.ts holds every branch the control server takes before a
  * session is resolved to one side or the other.
  */
-export const MAC_APP_ONLY_KINDS: ReadonlySet<string> = new Set(["review-preview", "screen-observation"]);
+export const MAC_APP_ONLY_KINDS: ReadonlySet<string> = new Set(["review-preview", "screen-observation", "page-capture", "page-capture-answer"]);
 export const MAC_APP_ONLY_DECODERS: Readonly<Record<string, (value: unknown) => unknown>> = {
   decodeNarrationRequest,
   decodeSetupRequest,

@@ -3,6 +3,7 @@
 import { open as openFile, realpath, stat, type FileHandle } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { captureFolderPath } from "./capture-folder.ts";
 import { selectWindowBranch, type WindowIdentity } from "./conversation.ts";
 import { checkFocusShape, FOCUS_MAX, inferDeliverableKind, isPackagePath } from "./deliverables.ts";
 
@@ -1317,8 +1318,9 @@ async function isKeynoteDeck(real: string): Promise<boolean> {
  *
  * A file sent to the phone has to be work, not whatever an agent can read. It must be a regular,
  * non-executable file under one of `roots` (the session's folder and the folders it works in) or
- * a temp folder, where screenshots and renders go. It must not be hidden or sit in a hidden folder
- * (~/.ssh, ~/.config, ~/.codex, ~/.claude, .env, .git), and it must not be a key or certificate.
+ * a temp folder, where screenshots and renders go, or conch's own capture folder, where `conch_capture` keeps the
+ * pages it drew (capture-folder.ts: only conch writes there, and it outlives temp's sweeps). It must not be hidden or
+ * sit in a hidden folder (~/.ssh, ~/.config, ~/.codex, ~/.claude, .env, .git), and it must not be a key or certificate.
  * `.worktrees` is the one hidden folder allowed: a repo's worktrees live there. All of it is
  * judged on the real path, so a symlink can't launder its target.
  */
@@ -1332,7 +1334,7 @@ export async function checkLocalFile(
     const why = !real ? "it does not exist" : !file?.isFile() ? "it is not a regular file" : "it is an executable file";
     return { ok: false, reason: SAFE_REVIEW_LINK, why };
   }
-  const allowed = await Promise.all([...roots, tmpdir(), "/tmp"].map((root) => realpath(root).catch(() => null)));
+  const allowed = await Promise.all([...roots, tmpdir(), "/tmp", captureFolderPath()].map((root) => realpath(root).catch(() => null)));
   if (!allowed.some((root) => root && real.startsWith(root.endsWith("/") ? root : `${root}/`))) {
     const where = sessionFolders(roots);
     return {

@@ -33,6 +33,7 @@ import { applyPlan, planToggle, rollbackFile, type ConfigWriteHomes, type Config
 import { decodeSetupRequest, type Setup, type SetupReply } from "./setup.ts";
 import { decodePracticeRequest, practiceRefusal, type Practice, type PracticeReply } from "./practice.ts";
 import { breadcrumb } from "./loop-watchdog.ts";
+import type { PageCaptureService } from "./page-capture.ts";
 import {
   isControlMessageCandidate,
   validateControlMessage,
@@ -1191,6 +1192,11 @@ export interface ControlServerOptions {
   narration?: Narration;
   /** The Mac app's answer to a window snapshot the daemon asked for (`review-preview`, review-preview.ts). */
   onReviewPreview?(message: { request?: unknown; path?: unknown; error?: unknown }): Promise<{ ok: true } | { ok: false; error: string }>;
+  /**
+   * `conch_capture` (page-capture.ts): an agent's `page-capture`, held open until the Mac app has drawn the page, and the
+   * app's `page-capture-answer`s. A capture the agent asked to publish is filed through this server's own turn path.
+   */
+  pageCapture?: PageCaptureService;
   /** First-run setup's requests (setup.ts): agents found and connected, a voice sample, the microphone check. */
   setup?: Setup;
   /** Setup's practice turn (practice.ts): a `practice-start` that is taken keeps its connection open, as the lease. */
@@ -1377,6 +1383,27 @@ export function createControlServer(options: ControlServerOptions): ControlServe
         if (socketRecord(body) && body.kind === "review-preview") {
           const answered = options.onReviewPreview ? await options.onReviewPreview(body) : { ok: false, error: "no snapshot is waiting" };
           sock.end(JSON.stringify(answered.ok ? { kind: "preview-ack" } : { kind: "preview-error", error: answered.error }) + "\n");
+          return;
+        }
+        // An agent's page capture (page-capture.ts): answered only once the Mac app has drawn it, or said why not. Its
+        // publication, when it asks for one, is filed as a socket `review-published` is below: the session resolved, the
+        // event validated, handed to the turn path. Not awaited there either; the filing says what it will be.
+        if (socketRecord(body) && body.kind === "page-capture") {
+          const reply = options.pageCapture
+            ? await options.pageCapture.request(body, async (event) => {
+              const turn = validateSocketTurnEvent(await sessions.resolve(event));
+              if (!turn.ok) return { ok: false, error: turn.err };
+              void Promise.resolve(application.turn(turn.value)).catch(() => log("a capture's publication failed to file"));
+              return { ok: true };
+            })
+            : { kind: "page-capture-error" as const, error: "this conch can't capture pages; update it" };
+          sock.end(encodeControlFrame(JSON.stringify(reply)));
+          return;
+        }
+        // The Mac app's answer to a capture the daemon asked it for: checked by the broker, as a snapshot's is.
+        if (socketRecord(body) && body.kind === "page-capture-answer") {
+          const answered = options.pageCapture ? await options.pageCapture.answer(body) : { ok: false, error: "no capture is waiting" };
+          sock.end(JSON.stringify(answered.ok ? { kind: "capture-ack" } : { kind: "capture-error", error: answered.error }) + "\n");
           return;
         }
         // First-run setup (setup.ts) names an agent or the microphone, never a session. Its long requests stream lines
