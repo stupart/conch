@@ -1,6 +1,7 @@
 import Foundation
 import Combine
-// test/daemon-host-launch.test.ts compiles this file with DaemonHealth.swift beside it, as one module.
+// test/daemon-host-launch.test.ts compiles this file with DaemonHealth.swift and DaemonEnvironment.swift beside it,
+// as one module.
 #if canImport(ConchDesign)
 import ConchDesign
 #endif
@@ -134,7 +135,9 @@ final class DaemonHost: ObservableObject {
         task.arguments = launch.arguments
         if let directory = launch.workingDirectory { task.currentDirectoryURL = directory }
 
-        var environment = ProcessInfo.processInfo.environment
+        // Never an agent session's own: an app opened from inside one inherits its account folder, its tmux and
+        // its ids, and a daemon started with them could list no sessions (`DaemonEnvironment`, 2026-10-02).
+        var environment = DaemonEnvironment.cleaned(ProcessInfo.processInfo.environment)
         // Deliberately NOT exporting CONCH_KEYSTROKE_FALLBACK: env beats the
         // settings file, so forcing it here made `keystroke-fallback` a dead
         // setting (audit 3b). The daemon's own default is on; the file decides.

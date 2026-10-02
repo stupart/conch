@@ -1,4 +1,4 @@
-import { defaultTmuxExecutable } from "./tmux-binary.ts";
+import { paneTarget, qualifyPane, tmuxServers } from "./tmux-binary.ts";
 import { appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Config } from "./config.ts";
@@ -249,9 +249,12 @@ function safeOsa(run: OsaRunner): OsaRunner {
     catch { return { text: "", timedOut: false, exitCode: -1 }; }
   };
 }
-const sendTmuxKeys = (pane: string, text: string, literal: boolean) => runUICommand([
-  defaultTmuxExecutable(), "send-keys", "-t", pane, ...(literal ? ["-l", "--"] : []), text,
-]);
+/** `pane` names its server (`conch:%3` or `%3`, `paneTarget`): pane ids are per server. */
+const sendTmuxKeys = (pane: string, text: string, literal: boolean) => {
+  const target = paneTarget(pane);
+  if (!target) return Promise.resolve({ exitCode: 1 });
+  return runUICommand([...target.tmux, "send-keys", "-t", target.pane, ...(literal ? ["-l", "--"] : []), text]);
+};
 
 /**
  * Longer than this, or across lines, words are pasted rather than typed.
@@ -476,9 +479,9 @@ async function injectTextInTransaction(
 export async function readSessionScreen(sessionPid: number | undefined): Promise<string | null> {
   if (!sessionPid) return null;
   try {
-    const pane = await findTmuxPane(sessionPid);
-    if (pane) {
-      const shown = await runUICommand([defaultTmuxExecutable(), "capture-pane", "-p", "-t", pane]);
+    const target = paneTarget(await findTmuxPane(sessionPid) ?? "");
+    if (target) {
+      const shown = await runUICommand([...target.tmux, "capture-pane", "-p", "-t", target.pane]);
       return shown.timedOut || shown.exitCode !== 0 ? null : shown.text;
     }
     return await readTerminalTab(await ttyOf(sessionPid));
@@ -672,29 +675,33 @@ async function writeClipboard(text: string): Promise<void> {
   if (result.timedOut || result.exitCode !== 0) throw new Error("Clipboard write failed");
 }
 
-/** Find the tmux pane whose shell is an ancestor of the session's pid. */
+/**
+ * The tmux pane whose shell is an ancestor of the session's pid, named with its server (`qualifyPane`): conch's
+ * own server first, where its background sessions run, then the user's default one.
+ */
 async function findTmuxPane(sessionPid: number): Promise<string | null> {
-  let panes: Array<{ pid: number; id: string }>;
-  try {
-    const result = await runUICommand([defaultTmuxExecutable(), "list-panes", "-a", "-F", "#{pane_pid} #{pane_id}"]);
-    if (result.timedOut || result.exitCode !== 0) return null;
-    const out = result.text;
-    panes = out
-      .trim()
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => {
-        const [pid, id] = line.split(" ");
-        return { pid: Number(pid), id: id ?? "" };
-      });
-  } catch {
-    return null; // no tmux server
-  }
-  if (!panes.length) return null;
-
-  const ancestors = await ancestorPids(sessionPid);
-  for (const pane of panes) {
-    if (ancestors.has(pane.pid)) return pane.id;
+  let ancestors: Set<number> | undefined;
+  for (const server of tmuxServers()) {
+    let panes: Array<{ pid: number; id: string }>;
+    try {
+      const result = await runUICommand([...server, "list-panes", "-a", "-F", "#{pane_pid} #{pane_id}"]);
+      if (result.timedOut || result.exitCode !== 0) continue; // no such server
+      panes = result.text
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => {
+          const [pid, id] = line.split(" ");
+          return { pid: Number(pid), id: id ?? "" };
+        });
+    } catch {
+      continue;
+    }
+    if (!panes.length) continue;
+    ancestors ??= await ancestorPids(sessionPid);
+    for (const pane of panes) {
+      if (ancestors.has(pane.pid)) return qualifyPane(server, pane.id);
+    }
   }
   return null;
 }

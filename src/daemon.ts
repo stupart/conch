@@ -1,4 +1,7 @@
 import { backgroundStartupPid, managedBackgroundSession } from "./background-sessions.ts";
+import { BackgroundGuard } from "./background-recovery.ts";
+import { dismissedWriter, loadDismissed } from "./dismissed-store.ts";
+import { defaultIsPidAlive } from "./codex-sessions.ts";
 import { handleAccountTools } from "./account-tools.ts";
 import { accountModelCatalog, modelCatalogForSession } from "./provider-models.ts";
 import { prepareClaudeHandoff, settleClaudeHandoff, claudeHandoffReceipt, requireClaudeHandoffSupport } from "./claude-account-handoff.ts";
@@ -811,6 +814,10 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   let holderExpiry: ReturnType<typeof setTimeout> | null = null;
   let shuttingDown = false;
   const ledger = new SessionLedger(REVIEWS_FILE, LEGACY_REVIEWS_FILE);
+  // Dismissals survive a restart (`dismissed-store.ts`).
+  const dismissedFile = join(dirname(daemonSettingsPath), "dismissed.json");
+  for (const id of loadDismissed(dismissedFile)) ledger.dismissedSessionIds.add(id);
+  const saveDismissed = dismissedWriter(dismissedFile, ledger.dismissedSessionIds);
   ledger.restoreReviews(); // each session's deliverable, as it was before the restart
   // The ledger owns the per-session/window runtime facts, but exposes the raw
   // collections so render and controller paths keep their existing shape.
@@ -851,6 +858,17 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   let panelOrder: string[] = [];
   let panelLabels = new Map<string, string>();
   let panelSessions = new Map<string, SessionInfo>();
+  /** Background sessions whose tmux server dies under them come back (`background-recovery.ts`). */
+  const backgroundGuard = new BackgroundGuard({
+    file: join(dirname(daemonSettingsPath), "background-sessions.json"),
+    relaunchFor: async (observed) => {
+      const session = panelSessions.get(observed.sessionId);
+      const args = session?.pid ? await readProcessArgs(session.pid) : null;
+      return session && args ? restartRequest(session, args).request : null;
+    },
+    launch: (request) => launchSession(request),
+    log,
+  });
   /**
    * What each session's own record says it runs (session-settings.ts), newest kept: a tail
    * with no turn in it must not blank a value an earlier read found.
@@ -1285,6 +1303,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   function restoreDismissedSession(sessionId: string): boolean {
     const label = labelForSessionId(sessionId);
     if (!restoreDismissedSessionState(sessionId, dismissedSessionIds)) return false;
+    saveDismissed(dismissedSessionIds);
     const held = dismissedHeldTurns.get(sessionId);
     dismissedHeldTurns.delete(sessionId);
     log(`▶ restored "${label}" after dismiss`);
@@ -1896,11 +1915,20 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       }
     }
     pruneSessionCommandSets(snap, prioritizedSessionIds, dismissedSessionIds);
+    saveDismissed(dismissedSessionIds);
     // Prune a latch only on a COMPLETE snapshot — a torn/unreadable file must not
     // delete a live session's latch (e.g. a pending "needs"), which never re-fires.
     if (snap?.complete) {
       const liveIds = new Set(registryLive.map((s) => s.sessionId));
       ledger.forgetGone(liveIds);
+      // Every conversation running anywhere, so nothing is brought back while it still runs somewhere else. By
+      // its process, not its registry file: an agent killed outright leaves its file behind, and that conversation
+      // is not running. A row with no pid to check (an app-hosted Codex thread) counts as running.
+      const alive = (pid?: number): boolean => Boolean(pid && defaultIsPidAlive(pid));
+      const running = new Set(registryLive
+        .filter((s) => (!s.pid && !s.agentPid) || alive(s.pid) || alive(s.agentPid))
+        .flatMap((s) => [s.sessionId, s.agentSessionId ?? s.sessionId]));
+      void backgroundGuard.observe(registryLive, running).catch((error) => log(`background recovery: ${error}`));
     }
   }
 
@@ -2496,6 +2524,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     },
     dismiss: (target) => {
       dismissedSessionIds.add(target.sessionId);
+      saveDismissed(dismissedSessionIds);
       if (ledger.lastTurn?.sessionId === target.sessionId) ledger.lastTurn = null;
       panelOrder = panelOrder.filter((sessionId) => sessionId !== target.sessionId);
       panelLabels.delete(target.sessionId);

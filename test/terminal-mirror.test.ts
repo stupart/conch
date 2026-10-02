@@ -525,7 +525,7 @@ describe.skipIf(!tmuxPath)("a real tmux pane", () => {
     socketPath = Bun.spawnSync([...tmux, "display-message", "-p", "#{socket_path}"]).stdout.toString().trim();
     const panePid = Number(Bun.spawnSync([...tmux, "display-message", "-p", "-t", "mirror", "#{pane_pid}"]).stdout.toString().trim());
     expect(panePid).toBeGreaterThan(1);
-    const mirror = createTerminalMirror({ ...defaultTerminalMirrorDeps(), tmux });
+    const mirror = createTerminalMirror({ ...defaultTerminalMirrorDeps(), tmux, tmuxServers: [tmux] });
     let reply = await mirror.screen("real", { pid: panePid });
     for (let tries = 0; tries < 20 && !(reply.host === "tmux" && reply.screen.includes("grey")); tries++) {
       await Bun.sleep(100);
@@ -550,7 +550,7 @@ describe.skipIf(!tmuxPath)("a real tmux pane", () => {
     expect(Bun.spawnSync([...tmux, "new-session", "-d", "-s", "history", "-x", "40", "-y", "8", "bash", "-c", draw]).exitCode).toBe(0);
     socketPath ||= Bun.spawnSync([...tmux, "display-message", "-p", "#{socket_path}"]).stdout.toString().trim();
     const panePid = Number(Bun.spawnSync([...tmux, "display-message", "-p", "-t", "history", "#{pane_pid}"]).stdout.toString().trim());
-    const mirror = createTerminalMirror({ ...defaultTerminalMirrorDeps(), tmux });
+    const mirror = createTerminalMirror({ ...defaultTerminalMirrorDeps(), tmux, tmuxServers: [tmux] });
     let reply = await mirror.screen("real", { pid: panePid }, { history: 200 });
     for (let tries = 0; tries < 20 && !(reply.host === "tmux" && reply.history?.includes("END")); tries++) {
       await Bun.sleep(100);
