@@ -2045,7 +2045,10 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     const row = deps.window(event.sessionId);
     const same = row?.pid === event.pid;
     try {
-      return await findDeadTarget(cfg.claudeDir, {
+      // The session's own account: each Claude account keeps its own job roster and registry. Reading the
+      // default one for a session on another account found none of its jobs, and refused every send to a
+      // live background job as stopped (2026-10-02, a Blueprint-account session resumed into a job).
+      return await findDeadTarget(row?.claudeConfigDir ?? cfg.claudeDir, {
         pid: event.pid,
         ...(same && row?.jobId ? { jobId: row.jobId } : {}),
         ...(same && row?.processIdentity ? { processIdentity: row.processIdentity } : {}),
