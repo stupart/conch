@@ -275,7 +275,7 @@ struct LedgerView: View {
             })
         }
         .sheet(isPresented: $showingStartSession) {
-            StartSessionSheet(bridge: bridge)
+            StartSessionSheet(bridge: bridge, onStarted: { path = [$0] })
         }
         .confirmationDialog(
             "Unpair from this Mac?",
@@ -788,6 +788,8 @@ private struct StartSessionSheet: View {
     }
 
     @ObservedObject var bridge: BridgeClient
+    /// The session this sheet started, once it has checked in.
+    let onStarted: (String) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var backend = BridgeClient.AgentBackend.claude
     @State private var mode = StartMode.new
@@ -798,6 +800,9 @@ private struct StartSessionSheet: View {
     @State private var workingFolder = RecentFolders.load().first ?? ""
     @State private var recents = RecentFolders.load()
     @State private var starting = false
+    /// Launched and waiting for it to check in: Start is spent, Cancel still closes.
+    @State private var launched = false
+    @State private var startTask: Task<Void, Never>?
     @State private var error: String?
     // Codex trust, the way the Mac does it: the daemon asks BEFORE launching,
     // the answer is kept for this sheet only and sent back as `trustFolder`.
@@ -857,7 +862,7 @@ private struct StartSessionSheet: View {
     }
 
     private var canStart: Bool {
-        guard backgroundId == nil, !starting, !openedTeleport else { return false }
+        guard backgroundId == nil, !starting, !launched, !openedTeleport else { return false }
         guard sessionHost != "background" || bridge.state?.features?.sessionHosts == 1 else { return false }
         guard !loadingAccounts,
               !activeAccounts.availability(for: selectedAccountId, now: Date(), sourceAccountId: handoffSourceAccountId).blocksStart(allowAtLimit: allowAtLimit)
@@ -1001,6 +1006,14 @@ private struct StartSessionSheet: View {
                     }
                 }
 
+                if launched, error == nil {
+                    Section {
+                        HStack(spacing: 10) {
+                            ProgressView()
+                            Text("Starting on your Mac…").foregroundStyle(Palette.textDim)
+                        }
+                    }
+                }
                 if let backgroundId {
                     Section {
                         Button("Open startup terminal on Mac", systemImage: "terminal") {
@@ -1032,6 +1045,8 @@ private struct StartSessionSheet: View {
             }
         }
         .task(id: effectiveBackend) { await loadAccounts() }
+        // Closed while waiting: stop watching, so a late check-in doesn't open a session you walked away from.
+        .onDisappear { startTask?.cancel() }
         .onChange(of: resumeSelection?.id) { _, _ in resumeAccountId = nil }
         .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { usageNow = $0 }
         .alert("Opened in Terminal on your Mac", isPresented: $openedTeleport) {
@@ -1166,7 +1181,7 @@ private struct StartSessionSheet: View {
         guard canStart else { return }
         starting = true
         error = nil
-        Task {
+        startTask = Task {
             let before = Set((bridge.state?.rows ?? []).map(\.id))
             let cwd = resuming ? resumeSelection?.cwd : freshWorkingFolder
             let outcome = await bridge.startSession(
@@ -1193,23 +1208,52 @@ private struct StartSessionSheet: View {
                 if !resuming, let folder = freshWorkingFolder {
                     recents = RecentFolders.remember(folder)
                 }
-                backgroundId = background
-                if let background {
-                    let expected = sessionId ?? (resuming ? resumeSelection?.sessionId : nil)
-                    for _ in 0..<40 {
-                        let rows = (bridge.state?.rows ?? []).filter { $0.backend == effectiveBackend.rawValue && ($0.claudeAccountId ?? $0.codexAccountId ?? "default") == selectedAccountId }
-                        if rows.contains(where: { $0.parentSessionId == nil && (expected != nil ? $0.id == expected : !before.contains($0.id)) }) { dismiss(); return }
-                        try? await Task.sleep(for: .milliseconds(250))
-                        if Task.isCancelled { return }
-                    }
-                    error = "Started in the background. If it hasn’t appeared, open its startup terminal on your Mac to answer any login or setup prompt."
-                    backgroundId = background
+                if mode == .teleport {
+                    openedTeleport = true
                     return
                 }
-                if mode == .teleport { openedTeleport = true }
-                else { dismiss() }
+                backgroundId = background
+                launched = true
+                // Started is not running: close onto the session once it checks in, as the Mac's sheet does.
+                let watch = StartedSessionWatch(
+                    backend: effectiveBackend.rawValue,
+                    accountId: selectedAccountId,
+                    expectedId: sessionId ?? (resuming ? resumeSelection?.sessionId : nil),
+                    before: before
+                )
+                if let appeared = await waitForSession(watch, rounds: 40) {
+                    open(appeared)
+                    return
+                }
+                guard !Task.isCancelled else { return }
+                let notice = background != nil
+                    ? "Started in the background. If it hasn’t appeared, open its startup terminal on your Mac to answer any login or setup prompt."
+                    : "Started, but it hasn’t checked in. Terminal on your Mac may be waiting for you to answer something."
+                error = notice
+                // And keep watching: answered on the Mac, it checks in later, and the sheet
+                // shouldn't sit on this notice over a session that is already running.
+                if let id = await waitForSession(watch, rounds: 360), error == notice { open(id) }
             }
         }
+    }
+
+    /// Polls the ledger every half second for the launched session; nil once `rounds` run out or the sheet closed.
+    private func waitForSession(_ watch: StartedSessionWatch, rounds: Int) async -> String? {
+        for _ in 0..<rounds {
+            let rows = (bridge.state?.rows ?? []).map {
+                StartedSessionWatch.Row(id: $0.id, backend: $0.backend, parentSessionId: $0.parentSessionId,
+                                        accountId: $0.claudeAccountId ?? $0.codexAccountId)
+            }
+            if let id = watch.match(in: rows) { return id }
+            try? await Task.sleep(for: .milliseconds(500))
+            if Task.isCancelled { return nil }
+        }
+        return nil
+    }
+
+    private func open(_ id: String) {
+        onStarted(id)
+        dismiss()
     }
 
     private func loadAccounts(refresh: Bool = false) async {

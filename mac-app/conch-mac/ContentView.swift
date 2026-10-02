@@ -1027,25 +1027,23 @@ private struct StartSessionSheet: View {
     /// `rounds` of 0.8 s: 25 is long enough for a cold agent on a busy machine and short
     /// enough that a stuck one is noticed while you still remember starting it.
     private func waitForSession(rounds: Int = 25) async -> SessionRow.ID? {
-        let expected = launchedSessionId ?? (mode == .resume ? resumeSelection?.sessionId : nil)
-        // Sessions only: a session's agents are rows too, and one appearing elsewhere is
-        // not the session you just started.
         let expectedAccount = effectiveBackend == .claude
             ? (mode == .resume ? (resumeAccountId ?? resumeSelection?.claudeAccountId) : claudeAccountId)
             : (mode == .resume ? resumeSelection?.codexAccountId : codexAccountId)
-        let sessions = { (rows: [SessionRow]) in rows.filter {
-            $0.parentSessionId == nil && $0.backend == effectiveBackend.rawValue
-                && (expectedAccount == nil || ($0.claudeAccountId ?? $0.codexAccountId) == expectedAccount)
-        } }
-        let before = sessionsBeforeLaunch
+        let watch = StartedSessionWatch(
+            backend: effectiveBackend.rawValue,
+            accountId: expectedAccount,
+            expectedId: launchedSessionId ?? (mode == .resume ? resumeSelection?.sessionId : nil),
+            before: sessionsBeforeLaunch
+        )
         for _ in 0..<rounds {
             try? await Task.sleep(nanoseconds: 800_000_000)
             guard let rows = store.state?.rows else { continue }
-            if let expected {
-                if sessions(rows).contains(where: { $0.id == expected }) { return expected }
-            } else if let fresh = sessions(rows).first(where: { !before.contains($0.id) }) {
-                return fresh.id
+            let launched = rows.map {
+                StartedSessionWatch.Row(id: $0.id, backend: $0.backend, parentSessionId: $0.parentSessionId,
+                                        accountId: $0.claudeAccountId ?? $0.codexAccountId)
             }
+            if let id = watch.match(in: launched) { return id }
         }
         return nil
     }

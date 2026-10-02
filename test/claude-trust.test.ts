@@ -127,9 +127,11 @@ describe("the start sheet, as source (conch-mac has no XCTest target)", () => {
 
   test("keeps watching after its notice, and closes itself when the session checks in", () => {
     expect(view).toContain("if let id = await waitForSession(rounds: 225), error == notice {\n                onStarted(id)\n                dismiss()");
-    // A session's agents are rows too; one appearing elsewhere is not this session.
-    expect(view).toContain("$0.parentSessionId == nil && $0.backend == effectiveBackend.rawValue");
-    expect(view).toContain("expectedAccount == nil || ($0.claudeAccountId ?? $0.codexAccountId) == expectedAccount");
+    // Which row is the launched session is one rule, shared with the phone and tested in
+    // ConchDesign (StartedSessionTests): sessions only, this agent, this account.
+    expect(view).toContain("let watch = StartedSessionWatch(");
+    expect(view).toContain("accountId: expectedAccount,");
+    expect(view).toContain("accountId: $0.claudeAccountId ?? $0.codexAccountId)");
   });
 
   test("asks in Claude's words for Claude, and Codex's for Codex", () => {
