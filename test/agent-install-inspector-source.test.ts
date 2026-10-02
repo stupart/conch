@@ -12,7 +12,8 @@ import { join } from "node:path";
 const root = join(import.meta.dir, "..");
 const read = (path: string): string => readFileSync(join(root, path), "utf8");
 
-const model = read("mac-app/conch-mac/AgentCapabilities.swift");
+// Shared with the phone's inspector since it moved to ConchDesign.
+const model = read("design/ConchDesign/Sources/ConchDesign/AgentCapabilities.swift");
 const inspector = read("mac-app/conch-mac/CapabilityInspectorView.swift");
 const store = read("mac-app/conch-mac/StateStore.swift");
 const socket = read("mac-app/conch-mac/ConchSocketClient.swift");

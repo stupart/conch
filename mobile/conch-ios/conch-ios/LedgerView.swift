@@ -13,8 +13,25 @@ struct LedgerView: View {
     /// the transcript. SessionView observes it and updates on its own.
     let talk: TalkController
     @State private var confirmingUnpair = false
+    // `startingHelp`: the start sheet opens as Help with conch, a Claude session that knows the app.
+    #if DEBUG
+    /// `-conchFixtureSheet settings|help|providers|voices|legend` opens one on arrival, for the snapshot script.
+    @State private var showingSettings = UserDefaults.standard.string(forKey: "conchFixtureSheet") == "settings"
+    @State private var showingStartSession = UserDefaults.standard.string(forKey: "conchFixtureSheet") == "help"
+    @State private var startingHelp = UserDefaults.standard.string(forKey: "conchFixtureSheet") == "help"
+    @State private var fixturePane: FixturePane? = UserDefaults.standard.string(forKey: "conchFixtureSheet").flatMap(FixturePane.init(rawValue:))
+    #else
     @State private var showingSettings = false
     @State private var showingStartSession = false
+    @State private var startingHelp = false
+    #endif
+    /// Folders folded shut, by name, one per line; remembered, as the Mac's sidebar does.
+    @AppStorage("conch.collapsedFolders") private var collapsedFolders = ""
+    /// The session being renamed from its row's menu, and the name being typed.
+    @State private var renamingRow: PublishedState.Row?
+    @State private var renameDraft = ""
+    /// The deliverable the Ready button opened, as the Mac's Ready pill does.
+    @State private var readyReview: ReadyReview?
     /// What the user just asked for, shown until the daemon's own state agrees.
     @State private var pendingPassive: Bool?
     @State private var sessionActionError: String?
@@ -93,7 +110,7 @@ struct LedgerView: View {
                         }
                         ForEach(folders(in: state)) { folder in
                             Section {
-                                ForEach(rows(of: folder, in: state)) { row in
+                                ForEach(isCollapsed(folder) ? [] : rows(of: folder, in: state)) { row in
                                     NavigationLink(value: row.id) {
                                         // An agent is a small line under its session, as on the Mac.
                                         if row.parentSessionId != nil {
@@ -112,6 +129,8 @@ struct LedgerView: View {
                                     .listRowBackground(Palette.bg)
                                     .listRowSeparatorTint(Palette.divider)
                                     .opacity(bridge.isConnected ? 1 : 0.55)
+                                    // The Mac's right-click: rename, quiet or speak, its window, dismiss.
+                                    .contextMenu { if row.parentSessionId == nil { rowMenu(row, everythingQuiet: state.mode.paused) } }
                                     // Quiet or speak, the phone's P: the same scoped command as the mark.
                                     .swipeActions(edge: .leading, allowsFullSwipe: false) {
                                         if row.parentSessionId == nil {
@@ -139,12 +158,26 @@ struct LedgerView: View {
                                 }
                             } header: {
                                 if !folder.name.isEmpty {
-                                    Text(folder.name)
+                                    // Tap to fold a folder away, as the Mac's sidebar header does.
+                                    Button { toggleCollapsed(folder) } label: {
+                                        HStack(spacing: 6) {
+                                            Text(folder.name)
+                                                .lineLimit(1)
+                                                .truncationMode(.middle)
+                                            Spacer(minLength: 8)
+                                            if isCollapsed(folder) {
+                                                Text("\(rows(of: folder, in: state).count)").monospacedDigit()
+                                            }
+                                            Image(systemName: isCollapsed(folder) ? "chevron.right" : "chevron.down")
+                                                .font(.system(size: 10, weight: .semibold))
+                                        }
                                         .font(Type.caption)
                                         .foregroundStyle(Palette.textFaint)
                                         .textCase(nil)
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
+                                        .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel(isCollapsed(folder) ? "Show \(folder.name)" : "Hide \(folder.name)")
                                 }
                             }
                         }
@@ -216,6 +249,21 @@ struct LedgerView: View {
                 // button when not connected". The card below is what should
                 // hold attention instead.
                 if bridge.isConnected {
+                    // Ready for you: the deliverables nobody has looked at, oldest first, as the
+                    // Mac's Ready pill and menu-bar rows step through them.
+                    if let first = readyRows.first {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button { readyReview = ReadyReview(id: first.id) } label: {
+                                // The count beside the mark: a toolbar Label draws its icon alone.
+                                HStack(spacing: 4) {
+                                    Image(systemName: "checkmark.circle.fill")
+                                    Text("\(readyRows.count)").monospacedDigit()
+                                }
+                                .foregroundStyle(Palette.review)
+                            }
+                            .accessibilityLabel(readyRows.count == 1 ? "1 ready for you" : "\(readyRows.count) ready for you")
+                        }
+                    }
                     ToolbarItem(placement: .topBarTrailing) {
                         modeToggle
                     }
@@ -248,6 +296,9 @@ struct LedgerView: View {
                             Divider()
                         }
                         Button("conch settings…") { showingSettings = true }
+                        if bridge.isConnected, helpRow != nil || bridge.state?.features?.helpSession == 1 {
+                            Button("Help with conch", systemImage: "questionmark.bubble") { openHelp() }
+                        }
                         Divider()
                         Button("Unpair from this Mac…", role: .destructive) {
                             confirmingUnpair = true
@@ -274,8 +325,31 @@ struct LedgerView: View {
                 onUnpair()
             })
         }
-        .sheet(isPresented: $showingStartSession) {
-            StartSessionSheet(bridge: bridge, onStarted: { path = [$0] })
+        .sheet(isPresented: $showingStartSession, onDismiss: { startingHelp = false }) {
+            StartSessionSheet(bridge: bridge, help: startingHelp, onStarted: { path = [$0] })
+        }
+        .sheet(item: $readyReview) { ready in
+            ReviewSheet(bridge: bridge, talk: talk, sessionId: ready.id)
+        }
+        #if DEBUG
+        .sheet(item: $fixturePane) { pane in
+            NavigationStack {
+                switch pane {
+                case .providers: ProvidersView(bridge: bridge)
+                case .voices: VoicesView(bridge: bridge)
+                case .legend: MarksLegendView()
+                }
+            }
+        }
+        #endif
+        .alert("Rename session", isPresented: Binding(
+            get: { renamingRow != nil }, set: { if !$0 { renamingRow = nil } }
+        )) {
+            TextField("Name", text: $renameDraft)
+            Button("Cancel", role: .cancel) { renamingRow = nil }
+            Button("Rename") { commitRename() }
+        } message: {
+            Text("The name you use for it. Claude Code's own label follows.")
         }
         .confirmationDialog(
             "Unpair from this Mac?",
@@ -300,6 +374,77 @@ struct LedgerView: View {
         return bridge.hasEverConnected
             ? "Reconnecting to your Mac — showing the last known state\(age)."
             : "Looking for your Mac — showing what it last sent\(age)."
+    }
+
+    private func isCollapsed(_ folder: SessionFolder) -> Bool {
+        !folder.name.isEmpty && collapsedFolders.split(separator: "\n").contains(Substring(folder.name))
+    }
+
+    private func toggleCollapsed(_ folder: SessionFolder) {
+        var names = collapsedFolders.split(separator: "\n").map(String.init)
+        if let index = names.firstIndex(of: folder.name) { names.remove(at: index) } else { names.append(folder.name) }
+        collapsedFolders = names.joined(separator: "\n")
+    }
+
+    /// Sessions with a deliverable waiting on you (the `.review` mark), oldest filing first.
+    private var readyRows: [PublishedState.Row] {
+        (bridge.state?.rows ?? [])
+            .filter { StatusMark(row: $0) == .review }
+            .sorted { ($0.review?.at ?? $0.at) < ($1.review?.at ?? $1.at) }
+    }
+
+    /// conch's own help session, when it is running: its label is pinned (`HELP_SESSION_LABEL`).
+    private var helpRow: PublishedState.Row? {
+        bridge.state?.rows.first { $0.label == "conch help" && $0.parentSessionId == nil }
+    }
+
+    /// Help with conch: open the help session, or start it, as the Mac's palette does.
+    private func openHelp() {
+        if let helpRow {
+            path = [helpRow.id]
+        } else {
+            startingHelp = true
+            showingStartSession = true
+        }
+    }
+
+    @ViewBuilder
+    private func rowMenu(_ row: PublishedState.Row, everythingQuiet: Bool) -> some View {
+        let quiet = row.voice(everythingQuiet: everythingQuiet).togglesToQuiet
+        Button("Rename…", systemImage: "pencil") {
+            renameDraft = row.label
+            renamingRow = row
+        }
+        Button(quiet ? "Quiet" : "Let it speak", systemImage: (quiet ? SessionVoice.Mark.quiet : .speaks).symbol) {
+            toggleQuiet(row)
+        }
+        if let location = row.location {
+            Button("\(location.label) on Mac", systemImage: location.symbol) {
+                Task {
+                    if let failure = await bridge.openSessionLocation(row) {
+                        sessionActionError = failure
+                        showingSessionActionError = true
+                    }
+                }
+            }
+        }
+        Divider()
+        Button("Dismiss", systemImage: "eye.slash", role: .destructive) {
+            runSessionCommand(.dismiss, id: row.id, label: row.label)
+        }
+    }
+
+    private func commitRename() {
+        guard let row = renamingRow else { return }
+        let label = renameDraft
+        renamingRow = nil
+        Task {
+            guard await bridge.renameSession(sessionId: row.id, label: label) else {
+                sessionActionError = bridge.lastError ?? "Couldn't rename \(row.label)."
+                showingSessionActionError = true
+                return
+            }
+        }
     }
 
     private func runSessionCommand(
@@ -608,6 +753,19 @@ struct AgentRowView: View {
     }
 }
 
+/// The session whose deliverable the ledger's Ready button opened.
+private struct ReadyReview: Identifiable {
+    let id: String
+}
+
+#if DEBUG
+/// A Settings pane opened straight from the ledger, for the snapshot script.
+private enum FixturePane: String, Identifiable {
+    case providers, voices, legend
+    var id: String { rawValue }
+}
+#endif
+
 struct SessionRowView: View {
     let row: PublishedState.Row
     /// Every session is quiet, so no row carries its own quiet mark (`SessionVoice.mark`).
@@ -649,6 +807,13 @@ struct SessionRowView: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     AgentBadge(backend: row.backend)
+                    // Jumps the queue: its turns are read before the others', as the Mac's diamond says.
+                    if row.prioritized {
+                        Image(systemName: "diamond.fill")
+                            .font(.system(size: 7))
+                            .foregroundStyle(Palette.textDim)
+                            .accessibilityLabel("Prioritised")
+                    }
                     // Quiet: conch won't read it aloud, and it is still working, which the status
                     // mark keeps saying. Tapping it is the way back. Borderless, so a tap on it is
                     // its own and does not open the session.
@@ -817,6 +982,9 @@ private struct StartSessionSheet: View {
     }
 
     @ObservedObject var bridge: BridgeClient
+    /// Help with conch: a fresh Claude session in conch's own folder, which the Mac names
+    /// (`help: true`), so there is no agent, folder or mode to ask about.
+    var help = false
     /// The session this sheet started, once it has checked in.
     let onStarted: (String) -> Void
     @Environment(\.dismiss) private var dismiss
@@ -829,6 +997,8 @@ private struct StartSessionSheet: View {
     @State private var workingFolder = RecentFolders.load().first ?? ""
     @State private var recents = RecentFolders.load()
     @State private var starting = false
+    /// Help's folder, once the Mac named it asking whether to trust it (`help: true` names none).
+    @State private var helpFolder: String?
     /// Launched and waiting for it to check in: Start is spent, Cancel still closes.
     @State private var launched = false
     @State private var startTask: Task<Void, Never>?
@@ -849,7 +1019,8 @@ private struct StartSessionSheet: View {
     @State private var loadingAccounts = false
     @State private var accountError: String?
     @AppStorage("conch.session.host") private var host = "terminal"
-    private var sessionHost: String { mode == .teleport ? "terminal" : host }
+    /// Help opens in Terminal, as the Mac's does: a session you came to ask something should have a window.
+    private var sessionHost: String { mode == .teleport || help ? "terminal" : host }
     @State private var advanced = false
     @State private var allowAtLimit = false
     @State private var usageNow = Date()
@@ -893,6 +1064,7 @@ private struct StartSessionSheet: View {
     private var canStart: Bool {
         guard backgroundId == nil, !starting, !launched, !openedTeleport else { return false }
         guard sessionHost != "background" || bridge.state?.features?.sessionHosts == 1 else { return false }
+        guard !help || bridge.state?.features?.helpSession == 1 else { return false }
         guard !loadingAccounts,
               !activeAccounts.availability(for: selectedAccountId, now: Date(), sourceAccountId: handoffSourceAccountId).blocksStart(allowAtLimit: allowAtLimit)
         else { return false }
@@ -906,6 +1078,7 @@ private struct StartSessionSheet: View {
     }
 
     private var effectiveBackend: BridgeClient.AgentBackend {
+        if help { return .claude }
         if mode == .teleport { return .claude }
         if resuming { return resumeSelection?.backend.lowercased() == "codex" ? .codex : .claude }
         return backend
@@ -914,6 +1087,13 @@ private struct StartSessionSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                if help {
+                    Section {
+                        Text("A Claude session that knows the app. Ask it how to do something in conch, or why it has gone quiet: it reads the daemon log, settings and errors on your Mac, runs `conch doctor`, and can see and steer your other sessions. It runs in conch\u{2019}s own folder and shows as \u{201C}conch help\u{201D}.")
+                            .font(Type.summary)
+                            .foregroundStyle(Palette.textDim)
+                    }
+                } else {
                 Section {
                     Picker("Session", selection: $mode) {
                         ForEach(StartMode.allCases) { mode in
@@ -923,9 +1103,10 @@ private struct StartSessionSheet: View {
                     .pickerStyle(.segmented)
                     .disabled(starting)
                 }
+                }
                 // A resumed session brings its own agent — asking again is a
                 // question with a known answer and a wrong setting available.
-                if mode == .new {
+                if mode == .new, !help {
                     Section("Agent") {
                         Picker("Agent", selection: $backend) {
                             ForEach(BridgeClient.AgentBackend.allCases) { backend in
@@ -936,7 +1117,7 @@ private struct StartSessionSheet: View {
                     }
                 }
 
-                if !resuming {
+                if !resuming, !help {
                     if mode == .teleport {
                         Section("Claude cloud session ID") {
                             TextField("Cloud session ID", text: $teleportSessionId)
@@ -1004,7 +1185,7 @@ private struct StartSessionSheet: View {
                     .disabled(starting)
                 }
 
-                if mode != .teleport {
+                if mode != .teleport, !help {
                     Section {
                         Picker("Run in", selection: $host) {
                             Label("Terminal", systemImage: "terminal").tag("terminal")
@@ -1020,7 +1201,7 @@ private struct StartSessionSheet: View {
                     }.disabled(starting)
                 }
 
-                startOptionsSection
+                if !help { startOptionsSection }
 
                 if mode == .teleport {
                     Section {
@@ -1059,7 +1240,7 @@ private struct StartSessionSheet: View {
             }
             .scrollContentBackground(.hidden)
             .background(Palette.bg)
-            .navigationTitle(mode == .teleport ? "Teleport by ID…" : (resuming ? "Resume session" : "New session"))
+            .navigationTitle(help ? "Help with conch" : (mode == .teleport ? "Teleport by ID…" : (resuming ? "Resume session" : "New session")))
             .disabled(starting)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1202,6 +1383,9 @@ private struct StartSessionSheet: View {
     /// a blank field is not "nowhere", it is the Mac's home folder, and that
     /// is worth reading before tapping Start.
     private var freshFootnote: String {
+        if help {
+            return "Opens Claude in conch\u{2019}s own folder, \(sessionHost == "background" ? "in the background" : "in a new Terminal window") on your Mac."
+        }
         let folder = freshWorkingFolder.map(shortHomePath) ?? "your Mac home folder"
         return "Opens \(backend.title) in \(folder), \(sessionHost == "background" ? "in the background" : "in a new Terminal window") on your Mac."
     }
@@ -1223,7 +1407,8 @@ private struct StartSessionSheet: View {
                 codexAccountId: effectiveBackend == .codex ? selectedAccountId : nil,
                 cwd: cwd,
                 trustFolder: cwd.map(trustedFolders.contains) ?? false,
-                options: sentOptions
+                options: sentOptions,
+                help: help
             )
             starting = false
             switch outcome {
@@ -1232,10 +1417,13 @@ private struct StartSessionSheet: View {
                 // does not exist: …"); the generic line only when it has none.
                 error = bridge.lastError ?? "Couldn't start that session."
             case let .needsTrust(cwd):
+                // Help names no folder; the Mac just said which one is conch's, so a yes can be sent for it.
+                if help { helpFolder = cwd }
                 pendingTrust = cwd
             case let .started(sessionId, background):
                 if !resuming, let folder = freshWorkingFolder {
-                    recents = RecentFolders.remember(folder)
+                    // Help's folder is conch's own, not one this phone chose.
+                    if !help { recents = RecentFolders.remember(folder) }
                 }
                 if mode == .teleport {
                     openedTeleport = true
@@ -1301,6 +1489,7 @@ private struct StartSessionSheet: View {
     }
 
     private var freshWorkingFolder: String? {
+        if help { return helpFolder }
         let trimmed = workingFolder.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
@@ -1312,8 +1501,9 @@ private struct StartSessionSheet: View {
             .filter { !(isAccountHandoff && $0.name == "fork-session") }
     }
 
-    /// Exactly the shown options the person set. The daemon validates them.
+    /// Exactly the shown options the person set. The daemon validates them. Help is a fixed recipe.
     private var sentOptions: [String: Any] {
+        guard !help else { return [:] }
         var sent: [String: Any] = [:]
         for option in shownOptions {
             if let value = optionValues[option.name] { sent[option.name] = value.wire }

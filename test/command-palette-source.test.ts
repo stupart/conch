@@ -13,6 +13,8 @@ const source = (path: string) => readFileSync(new URL(`../${path}`, import.meta.
 // Ignore line comments so a description of a site cannot satisfy a guard.
 const swift = (file: string) => source(`mac-app/conch-mac/${file}`).replace(/^\s*\/\/.*$/gm, "");
 const palette = swift("CommandPaletteView.swift");
+// The slash commands, skill spelling and ranking are shared with the phone's Commands sheet.
+const shared = source("design/ConchDesign/Sources/ConchDesign/AgentCommands.swift").replace(/^\s*\/\/.*$/gm, "");
 const content = swift("ContentView.swift");
 const dashboard = swift("DashboardView.swift");
 const app = swift("ConchMacApp.swift");
@@ -47,7 +49,7 @@ describe("B4: the palette lists the four sections for the selected session", () 
   });
 
   test("conch rows: pause/resume, wake, recite, stop, reveal, rename…, model…", () => {
-    const conch = section(catalog, "private static func conch(", "private static let claudeCommands");
+    const conch = section(catalog, "private static func conch(", "private static func provider(");
     for (const id of ['"pause"', '"wake"', '"recite"', '"stop"', '"rename"', '"reveal"', '"model"']) {
       expect(conch).toContain(`id: ${id}`);
     }
@@ -82,27 +84,30 @@ describe("B4: the palette lists the four sections for the selected session", () 
   });
 
   test("provider commands are per agent and every row carries what it does", () => {
-    const claude = section(catalog, "private static let claudeCommands", "private static let codexCommands");
-    const codex = section(catalog, "private static let codexCommands", "private static func provider(");
+    const claude = section(shared, "public static let claude:", "public static let codex:");
+    const codex = section(shared, "public static let codex:", "public static func isCodex(");
     for (const line of ['"/compact"', '"/model"', '"/status"', '"/mcp"', '"/help"']) expect(claude).toContain(line);
     for (const line of ['"/compact"', '"/model"', '"/new"', '"/status"', '"/fast"']) expect(codex).toContain(line);
     // A picker says so: nothing here pretends a terminal menu happens in the app.
     expect(claude).toContain('("/model", "Choose the model in a picker in the terminal');
     expect(codex).toContain('("/model", "Choose model and reasoning effort in a picker in the terminal');
-    expect(catalog).toContain('let codex = row.backend?.lowercased() == "codex"');
-    expect(catalog).toContain("(codex ? codexCommands : claudeCommands).map { line, what, hint in");
-    expect(catalog).toContain("detail: what, argumentHint: hint, action: .type(line)");
+    expect(shared).toContain('public static func isCodex(_ backend: String?) -> Bool { backend?.lowercased() == "codex" }');
+    expect(shared).toContain("(isCodex(backend) ? codex : claude).map { AgentCommand(line: $0.0, detail: $0.1, argumentHint: $0.2) }");
+    expect(catalog).toContain("AgentCommands.slash(for: row.backend).map { command in");
+    expect(catalog).toContain("detail: command.detail, argumentHint: command.argumentHint, action: .type(command.line)");
   });
 
   test("skills come from the existing agent-capabilities read, user-invocable only, spelled per agent", () => {
     const skills = section(palette, "private static func skills(", "extension Notification.Name {");
-    expect(skills).toContain('guard entity.kind == "skill", let skill = entity.skill,');
-    expect(skills).toContain("skill.userInvocable, !entity.isUnavailable else { return nil }");
-    // Claude: /plugin:skill; Codex: a $name mention, which is an ordinary message.
-    expect(skills).toContain('let owner = skill.ownerPluginId.map { $0.split(separator: "@", maxSplits: 1)[0] }');
-    expect(skills).toContain('? "$\\(entity.name)"');
-    expect(skills).toContain(': "/" + (owner.map { "\\($0):" } ?? "") + entity.name');
+    expect(skills).toContain("guard let skill = entity.skill, let line = AgentCommands.skillLine(entity, codex: codex) else { return nil }");
     expect(skills).toContain("argumentHint: skill.argumentHint, action: .type(line)");
+    const line = section(shared, "public static func skillLine(", "public static func skills(");
+    expect(line).toContain('guard entity.kind == "skill", let skill = entity.skill,');
+    expect(line).toContain("skill.userInvocable, !entity.isUnavailable else { return nil }");
+    // Claude: /plugin:skill; Codex: a $name mention, which is an ordinary message.
+    expect(line).toContain('let owner = skill.ownerPluginId.map { $0.split(separator: "@", maxSplits: 1)[0] }');
+    expect(line).toContain('? "$\\(entity.name)"');
+    expect(line).toContain(': "/" + (owner.map { "\\($0):" } ?? "") + entity.name');
     // The read is the inspector's, through the existing control message.
     const sheet = section(palette, "struct CommandPaletteSheet: View {", "private struct PaletteRow: View {");
     expect(sheet).toContain("capabilities = await store.capabilities(");
@@ -227,10 +232,10 @@ describe("B4: keyboard-first", () => {
   });
 
   test("fuzzy ranking: prefix beats word start beats subsequence, sections keep their order", () => {
-    const match = section(palette, "enum PaletteMatch {", "enum PaletteCatalog {");
+    const match = section(shared, "public enum CommandMatch {", "public static func rank(");
     ordered(
       match,
-      "static func score(_ query: String, in text: String) -> Int? {",
+      "public static func score(_ query: String, in text: String) -> Int? {",
       'let t = Array(text.lowercased().drop(while: { $0 == "/" || $0 == "$" }))',
       "if t.starts(with: q) { return 300 - t.count }",
       "if wordStart, t[i...].starts(with: q) { return 200 - t.count }",
@@ -238,7 +243,8 @@ describe("B4: keyboard-first", () => {
       "return 100 - (last - first + 1 - q.count)",
     );
     // The detail counts only by word start — a subsequence matches any sentence.
-    expect(match).toContain("guard let score = score(query, in: command.detail), score >= 200 else { return nil }");
+    expect(shared).toContain("guard let score = score(query, in: detail), score >= 200 else { return nil }");
+    expect(palette).toContain("CommandMatch.rank(query, title: command.title, detail: command.detail)");
     ordered(
       sheet,
       "private var visible: [PaletteCommand] {",

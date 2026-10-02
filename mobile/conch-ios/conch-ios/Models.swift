@@ -28,11 +28,15 @@ struct PublishedState: Decodable, Equatable {
     var sessionSettings: SessionSettingsCatalog?
     /// Where the Mac's natural voices stand (src/voice-env.ts): the list's calm line (`NaturalVoicesNotices`).
     var naturalVoices: NaturalVoicesReport?
+    /// Where the Mac's speech engine stands (src/speech-engine.ts), for Settings' Voices.
+    var speechEngine: SpeechEngineReport?
 
     struct Features: Decodable, Equatable {
         var deliverables: Int?
         var viewedState: Int?
         var sessionHosts: Int?
+        /// `session-start` takes `help: true`: Help with conch, which the phone can't name a folder for.
+        var helpSession: Int?
     }
 
     struct Delivery: Decodable, Equatable {
@@ -179,6 +183,12 @@ struct PublishedState: Decodable, Equatable {
         var revealable = false
         var claudeAccountId: String?
         var codexAccountId: String?
+        /// The account it runs under, by the name the Mac gave it. Older daemons never send it.
+        var accountLabel: String?
+        /// Jumps the queue: its turns are read before the others' (the Mac's diamond).
+        var prioritized = false
+        /// The voice conch reads it in, when it has one of its own.
+        var voice: String?
         var messageRoute: String?
         var messageUnavailableReason: String? { messageRoute == "codex-app" ? nil : noTerminal }
         var location: SessionLocation? {
@@ -307,7 +317,7 @@ struct PublishedState: Decodable, Equatable {
 
         private enum CodingKeys: String, CodingKey {
             case id, label, status, backend, context, detail, at, live, paused, pauseExempt, review, reviews, noTerminal, messageRoute, attachable
-            case revealable, claudeAccountId, codexAccountId
+            case revealable, claudeAccountId, codexAccountId, accountLabel, prioritized, voice
             case usageLimit
             case cwd, workDirs, parentSessionId, startedBySessionId, waitingOnAgents, approval, settings
             case activity
@@ -337,6 +347,9 @@ struct PublishedState: Decodable, Equatable {
             revealable = (try? c.decodeIfPresent(Bool.self, forKey: .revealable)) ?? false
             claudeAccountId = try? c.decodeIfPresent(String.self, forKey: .claudeAccountId)
             codexAccountId = try? c.decodeIfPresent(String.self, forKey: .codexAccountId)
+            accountLabel = try? c.decodeIfPresent(String.self, forKey: .accountLabel)
+            prioritized = (try? c.decodeIfPresent(Bool.self, forKey: .prioritized)) ?? false
+            voice = try? c.decodeIfPresent(String.self, forKey: .voice)
             messageRoute = try? c.decodeIfPresent(String.self, forKey: .messageRoute)
             attachable = (try? c.decodeIfPresent(Bool.self, forKey: .attachable)) ?? false
             cwd = try? c.decodeIfPresent(String.self, forKey: .cwd)
@@ -378,7 +391,7 @@ struct PublishedState: Decodable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case v, ts, mode, live, rows, dismissed, dismissedRows, reply, conversations
-        case ownerDeviceId, deliveries, sessionSettings, naturalVoices
+        case ownerDeviceId, deliveries, sessionSettings, naturalVoices, speechEngine, features
     }
 
     init() {}
@@ -429,6 +442,10 @@ struct PublishedState: Decodable, Equatable {
         conversations = (try? c.decodeIfPresent([String: Conversation].self, forKey: .conversations)) ?? [:]
         sessionSettings = try? c.decodeIfPresent(SessionSettingsCatalog.self, forKey: .sessionSettings)
         naturalVoices = try? c.decodeIfPresent(NaturalVoicesReport.self, forKey: .naturalVoices)
+        speechEngine = try? c.decodeIfPresent(SpeechEngineReport.self, forKey: .speechEngine)
+        // Declared since deliverables were versioned and never read, so everything the daemon gates on
+        // it (Background sessions, the viewed state) read as unsupported on every Mac.
+        features = try? c.decodeIfPresent(Features.self, forKey: .features)
         // Element by element: one malformed outcome must not cost the others, which are the
         // only thing that can resolve a message someone is still holding.
         if var deliveriesContainer = try? c.nestedUnkeyedContainer(forKey: .deliveries) {

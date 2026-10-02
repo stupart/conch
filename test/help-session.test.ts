@@ -11,7 +11,7 @@ import {
 } from "../src/help-session.ts";
 import { startHelpSession, startTerminalSession } from "../src/session-lifecycle.ts";
 import { sessionLabel } from "../src/sessions.ts";
-import { SETTINGS_FILE, SETTING_KEYS } from "../src/settings.ts";
+import { SETTINGS_FILE, SETTING_KEYS, validateRuntimeControlMessage } from "../src/settings.ts";
 import { SESSIONS_FILE } from "../src/status.ts";
 
 const repoRoot = join(import.meta.dir, "..");
@@ -205,5 +205,28 @@ describe("Mac New session sheet: Help with conch", () => {
     expect(source).toContain("it reads the daemon log, settings and errors on this Mac, runs `conch doctor`, and can see and steer your other sessions");
     expect(source).toContain("shows here as \\u{201C}conch help\\u{201D}");
     expectBefore('Text("Help with conch — a Claude session that knows the app.")', "} else if mode != .resume {");
+  });
+});
+
+describe("Help with conch, asked for by name (a phone can't name this Mac's folder)", () => {
+  test("help: true is a fresh Claude session in conch's own folder", () => {
+    expect(validateRuntimeControlMessage({ kind: "session-start", backend: "claude", help: true }))
+      .toEqual({ ok: true, value: { kind: "session-start", backend: "claude", cwd: helpSessionDir() } });
+    // With the account and host a person chose, as any start.
+    expect(validateRuntimeControlMessage({ kind: "session-start", backend: "claude", help: true, host: "background", claudeAccountId: "work" }))
+      .toMatchObject({ ok: true, value: { cwd: helpSessionDir(), host: "background", claudeAccountId: "work" } });
+  });
+
+  test("it is never a resume, a teleport, Codex, or somewhere else", () => {
+    for (const extra of [
+      { backend: "codex" }, { resumeSessionId: "abc" }, { teleportSessionId: "abc" }, { cwd: "/tmp" }, { help: "yes" },
+    ]) {
+      expect(validateRuntimeControlMessage({ kind: "session-start", backend: "claude", help: true, ...extra }).ok).toBe(false);
+    }
+  });
+
+  test("the daemon says it takes it, so a client only offers it to one that does", () => {
+    const panel = readFileSync(`${import.meta.dir}/../src/panel.ts`, "utf8");
+    expect(panel).toContain("features: { deliverables: 4, viewedState: 1, sessionHosts: 1, helpSession: 1, ");
   });
 });

@@ -398,6 +398,8 @@ struct DeliverableSheet: View {
     @State private var openFile: FileLink?
     /// A live page with a picture of it from the Mac (`snapshot`) opens on the picture; this is the live page instead.
     @State private var showLive = false
+    /// Its session was asked to start the stopped server, as the Mac's Ask button does.
+    @State private var askedToStart = false
 
     private enum LocalKind { case image, video, pdf, markdown, page, text, unsupported }
     private enum Kind {
@@ -794,9 +796,33 @@ struct DeliverableSheet: View {
                 .foregroundStyle(Palette.textDim)
                 .multilineTextAlignment(.center)
                 .textSelection(.enabled)
+            // A stopped dev server: what helps is its session, asked to start it again, as on the Mac.
+            if reason.hasPrefix(BridgeClient.devServerStopped), case let .macLocal(url) = kind,
+               let row = bridge.state?.rows.first(where: { $0.id == sessionId }) {
+                Text(askedToStart ? "Asked \(row.label). Reload once it says the server is up." : "")
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.textFaint)
+                Button("Ask \(row.label) to start it") { askToStart(url, row: row) }
+                    .disabled(askedToStart || !bridge.isConnected)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(24)
+    }
+
+    /// Through the inject door every reply takes, so it lands in the session's own terminal.
+    /// Pressed by a person; conch never sends it by itself.
+    private func askToStart(_ page: URL, row: PublishedState.Row) {
+        askedToStart = true
+        Task {
+            let outcome = await bridge.inject(sessionId: row.id, label: row.label, text: Self.startServerPrompt(page))
+            if case .failed = outcome { askedToStart = false }
+        }
+    }
+
+    /// The Mac's words (`startServerPrompt` in ReviewView.swift), so the session hears the same ask from either.
+    static func startServerPrompt(_ page: URL) -> String {
+        "The page you filed for review, \(page.absoluteString), isn't loading: nothing is listening on \(LocalServer.name(of: page)). Please start its server again and tell me when it's up."
     }
 }
 

@@ -651,7 +651,8 @@ final class BridgeClient: ObservableObject {
         codexAccountId: String? = nil,
         cwd: String? = nil,
         trustFolder: Bool = false,
-        options: [String: Any] = [:]
+        options: [String: Any] = [:],
+        help: Bool = false
     ) async -> SessionStart {
         let resumeID = resumeSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let teleportID = teleportSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -684,6 +685,11 @@ final class BridgeClient: ObservableObject {
         }
         if !workingDirectory.isEmpty {
             message["cwd"] = workingDirectory
+        }
+        // Help with conch names no folder: the Mac's daemon knows where its own is (`features.helpSession`).
+        if help {
+            message["help"] = true
+            message["cwd"] = nil
         }
         guard let reply = await postControlRaw(message) else {
             let failure = "The Mac didn't confirm that \(backend.title) started."
@@ -983,6 +989,157 @@ final class BridgeClient: ObservableObject {
         return reply["changed"] as? Bool != false
     }
 
+    /// Give a session the name you use for it, as the Mac's Rename does: the daemon keeps the
+    /// label, and Claude Code's own follows. False with why in `lastError`.
+    func renameSession(sessionId: String, label: String) async -> Bool {
+        let name = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sessionId.isEmpty, !name.isEmpty else {
+            lastError = "A session needs a name."
+            return false
+        }
+        guard let reply = await postControlRaw([
+            "kind": "session-command", "sessionId": sessionId, "command": "rename", "label": name,
+        ]) else {
+            lastError = "Couldn't reach your Mac."
+            return false
+        }
+        if let error = reply["error"] as? String {
+            lastError = error
+            _ = await reportAppError(operation: "session-rename", message: error, sessionId: sessionId)
+            return false
+        }
+        guard reply["kind"] as? String == "session-ack", reply["sessionId"] as? String == sessionId,
+              reply["command"] as? String == "rename" else {
+            lastError = "The Mac sent something unexpected."
+            return false
+        }
+        lastError = nil
+        return true
+    }
+
+    /// Close a session cleanly and resume the same conversation, with the flags it was started
+    /// with, in a new window (the Mac's Restart session…). `notCarriedOver` names any flag the
+    /// restart could not replay. Nil on failure, with why in `lastError`.
+    func restartSession(sessionId: String) async -> [String]? {
+        guard !sessionId.isEmpty,
+              let reply = await postControlRaw(["kind": "session-close", "sessionId": sessionId, "restart": true]) else {
+            lastError = "Couldn't reach your Mac."
+            _ = await reportAppError(operation: "session-restart", message: lastError ?? "", sessionId: sessionId)
+            return nil
+        }
+        if let failure = reply["error"] as? String {
+            lastError = failure
+            _ = await reportAppError(operation: "session-restart", message: failure, sessionId: sessionId)
+            return nil
+        }
+        guard reply["kind"] as? String == "session-closed", reply["sessionId"] as? String == sessionId else {
+            lastError = "The Mac didn't confirm the restart."
+            _ = await reportAppError(operation: "session-restart", message: lastError ?? "", sessionId: sessionId)
+            return nil
+        }
+        lastError = nil
+        return reply["notCarriedOver"] as? [String] ?? []
+    }
+
+    /// What a session carries (plugins, skills, MCP servers and their tools) and which binary it
+    /// runs, read fresh each time as the Mac's inspector does. Nil when the Mac couldn't say.
+    func capabilities(backend: String, cwd: String, sessionId: String?) async -> (inventory: AgentCapabilities, install: AgentInstall?)? {
+        var message: [String: Any] = ["kind": "agent-capabilities", "backend": backend, "cwd": cwd]
+        if let sessionId { message["sessionId"] = sessionId }
+        guard let reply = await postControlRaw(message),
+              let data = try? JSONSerialization.data(withJSONObject: reply),
+              let decoded = try? JSONDecoder().decode(CapabilitiesReply.self, from: data),
+              let inventory = decoded.inventory
+        else {
+            _ = await reportAppError(operation: "agent-capabilities", message: "Could not read session capabilities", sessionId: sessionId)
+            return nil
+        }
+        return (inventory, decoded.install)
+    }
+
+    private struct CapabilitiesReply: Decodable {
+        let inventory: AgentCapabilities?
+        let install: AgentInstall?
+    }
+
+    /// A plugin or MCP server switched for the NEXT session, in the agent's own file (the Mac's
+    /// inspector toggle). `preview` answers with the diff and writes nothing; an apply carries the
+    /// preview's hash, so a file that moved in between is refused rather than overwritten.
+    struct ConfigTogglePlan: Equatable {
+        let file: String
+        let diff: String
+        let beforeHash: String
+        let applied: Bool
+    }
+
+    enum ConfigToggleOutcome: Equatable {
+        case plan(ConfigTogglePlan)
+        case refused(String)
+    }
+
+    func toggleCapability(
+        agent: String, scope: String, projectDir: String?, capability: String, id: String,
+        enabled: Bool, preview: Bool, expectBeforeHash: String?
+    ) async -> ConfigToggleOutcome {
+        var message: [String: Any] = [
+            "kind": "config-toggle", "agent": agent, "scope": scope, "capability": capability,
+            "id": id, "enabled": enabled, "preview": preview,
+        ]
+        if let projectDir { message["projectDir"] = projectDir }
+        if let expectBeforeHash { message["expectBeforeHash"] = expectBeforeHash }
+        guard let reply = await postControlRaw(message) else { return .refused("Couldn't reach your Mac.") }
+        if let error = reply["error"] as? String { return .refused(error) }
+        guard reply["kind"] as? String == "config-toggle",
+              let file = reply["file"] as? String, let diff = reply["diff"] as? String,
+              let beforeHash = reply["beforeHash"] as? String
+        else { return .refused("The Mac sent something unexpected.") }
+        return .plan(ConfigTogglePlan(file: file, diff: diff, beforeHash: beforeHash, applied: reply["applied"] as? Bool == true))
+    }
+
+    /// The accounts on the Mac, as Settings ▸ Providers there: `list`, `usage` (read every
+    /// account's usage again), `refresh` (check one connection), `login` (open its sign-in in
+    /// Terminal on the Mac), `add` (a new profile, then sign in), `remove`, and Codex's `cloud`.
+    struct ProviderAccounts: Equatable {
+        var catalog: StartAccountCatalog
+        var createdAccountId: String?
+        var loginOpened = false
+
+        static func == (left: Self, right: Self) -> Bool {
+            left.catalog.accounts.map(\.id) == right.catalog.accounts.map(\.id)
+                && left.catalog.accounts.map(\.status) == right.catalog.accounts.map(\.status)
+                && left.createdAccountId == right.createdAccountId && left.loginOpened == right.loginOpened
+        }
+    }
+
+    func providerAccounts(_ provider: AgentBackend, action: String, id: String? = nil, label: String? = nil) async -> ProviderAccounts? {
+        let kind = provider == .codex ? "codex-accounts" : "claude-accounts"
+        var message: [String: Any] = ["kind": kind, "action": action]
+        if let id { message["id"] = id }
+        if let label { message["label"] = label }
+        guard let reply = await postControlRaw(message) else {
+            lastError = "Couldn't reach your Mac."
+            return nil
+        }
+        if let error = reply["error"] as? String {
+            lastError = error
+            _ = await reportAppError(operation: "\(kind)-\(action)", message: error)
+            return nil
+        }
+        guard reply["kind"] as? String == kind,
+              let data = try? JSONSerialization.data(withJSONObject: reply),
+              let catalog = try? JSONDecoder().decode(StartAccountCatalog.self, from: data)
+        else {
+            lastError = "The Mac sent something unexpected."
+            return nil
+        }
+        lastError = nil
+        return ProviderAccounts(
+            catalog: catalog,
+            createdAccountId: reply["createdAccountId"] as? String,
+            loginOpened: reply["loginOpened"] as? Bool == true || reply["cloudOpened"] as? Bool == true
+        )
+    }
+
     private func post(control message: [String: Any]) async -> Bool {
         guard let body = try? JSONSerialization.data(withJSONObject: message) else {
             lastError = "The phone couldn't encode that request."
@@ -1041,6 +1198,12 @@ final class BridgeClient: ObservableObject {
         }
         let reply = await postControlRaw(["kind": "set-config", "key": key, "value": wire])
         // The daemon acks with the resolved setting; an error carries `error`.
+        return reply != nil && reply?["error"] == nil
+    }
+
+    /// Back to the default: the saved value is removed, as the Mac's reset arrow does.
+    func resetSetting(key: String) async -> Bool {
+        let reply = await postControlRaw(["kind": "unset-config", "key": key])
         return reply != nil && reply?["error"] == nil
     }
 
@@ -1217,13 +1380,17 @@ final class BridgeClient: ObservableObject {
     private static let fileReads = FileReadGate(slots: 6)
 
     /// What to say when a page on the Mac's own dev server won't come (`/dev`'s refusals).
+    /// A dev page whose server has stopped: the one failure the sheet can do something about.
+    nonisolated static let devServerStopped =
+        "Nothing is running on that port on your Mac any more. Ask the session to start its dev server again."
+
     nonisolated static func devFailure(_ error: Error) -> String {
         switch error {
         case BridgeTransportError.httpStatus(403):
             "conch opens a Mac dev server here only while it belongs to the session that published it, "
                 + "and this one doesn't: another session or program is running it now."
         case BridgeTransportError.httpStatus(503):
-            "Nothing is running on that port on your Mac any more. Ask the session to start its dev server again."
+            devServerStopped
         case BridgeTransportError.httpStatus(502):
             "The dev server on your Mac didn't answer, or sent the page somewhere off your Mac."
         case BridgeTransportError.httpStatus(404):
@@ -1556,6 +1723,13 @@ final class FixtureTransport: BridgeTransport, @unchecked Sendable {
     // photographed: `-conchFixtureHistory loaded|partial|loading|off|error`
     // answers a recorded-history read the way a daemon in that state would.
     func request(_ request: BridgeRequest) async throws -> BridgeResponse {
+        // The reads the Mac's panes are drawn from, so the phone's copies of them can be photographed:
+        // what a session carries, the accounts, the settings. Reads only; anything else is still 404.
+        if request.path == "/control",
+           let body = (try? JSONSerialization.jsonObject(with: request.body)) as? [String: Any],
+           let read = Self.controlRead(body) {
+            return Self.answer(read)
+        }
         guard request.path.hasPrefix("/history/") else {
             return BridgeResponse(status: 404, headers: [], body: Data())
         }
@@ -1600,6 +1774,65 @@ final class FixtureTransport: BridgeTransport, @unchecked Sendable {
             return Self.answer(Self.recordedBody(payload))
         }
         return Self.answer(recordedPage(payload, partial: mode == "partial"))
+    }
+
+    private static func controlRead(_ body: [String: Any]) -> [String: Any]? {
+        func evidence(_ available: String) -> [String: Any] {
+            let fact = { (state: String, detail: String) -> [String: Any] in ["state": state, "basis": "fixture", "detail": detail] }
+            return ["configured": fact("yes", "in ~/.claude/settings.json"), "available": fact(available, available == "no" ? "switched off for this project" : ""),
+                    "loaded": fact("unknown", "conch can't see inside a session it didn't start"), "observed": fact("unknown", "")]
+        }
+        func entity(_ id: String, _ kind: String, _ name: String, parent: String? = nil, available: String = "yes", facts: [String: Any]) -> [String: Any] {
+            var out: [String: Any] = ["id": id, "kind": kind, "name": name, "displayName": name, "scope": "user", "sources": [],
+                                      "evidence": evidence(available), "diagnostics": []]
+            if let parent { out["parentId"] = parent }
+            out[kind == "mcp-server" ? "mcpServer" : (kind == "mcp-tool" ? "mcpTool" : kind)] = facts
+            return out
+        }
+        let skill: [String: Any] = ["path": "/s", "ownerPluginId": "review-kit@market", "visibility": "on", "userInvocable": true,
+                                    "modelInvocable": true, "allowedTools": ["Read", "Grep"], "argumentHint": "path", "bytes": 2048]
+        switch body["kind"] as? String {
+        case "agent-capabilities":
+            return ["kind": "agent-capabilities", "install": [
+                "backend": "claude", "executable": "/opt/homebrew/bin/claude", "version": "2.1.250", "location": "homebrew-cask",
+                "packageId": "claude-code", "behind": true, "newerVersion": "2.1.260", "restartToUpdate": true,
+            ], "inventory": [
+                "context": ["backend": "claude", "cwd": "/Users/you/Projects/conch",
+                            "projectTrust": ["projectPath": "/Users/you/Projects/conch", "trusted": true, "basis": "fixture", "detail": ""]],
+                "complete": true, "diagnostics": [],
+                "entities": [
+                    entity("mcp:figma", "mcp-server", "figma", available: "no", facts: [
+                        "transport": "http", "url": "https://mcp.figma.com", "credentialSources": ["oauth"], "enabledForNextSession": false]),
+                    entity("mcp:figma:get_design", "mcp-tool", "get_design_context", parent: "mcp:figma", facts: [
+                        "serverName": "figma", "approvalMode": "ask", "manifestHint": false]),
+                    entity("plugin:review-kit", "plugin", "review-kit", facts: [
+                        "pluginId": "review-kit@market", "marketplace": "market", "version": "1.4.0", "installed": true,
+                        "enabledForNextSession": true, "components": ["skills": 2, "mcpServers": 0, "hooks": true, "apps": false]]),
+                    entity("skill:audit", "skill", "audit", facts: skill),
+                ],
+            ]]
+        case "claude-accounts", "codex-accounts":
+            let codex = body["kind"] as? String == "codex-accounts"
+            let reset = ISO8601DateFormatter().string(from: Date().addingTimeInterval(3 * 3600))
+            let fetched = ISO8601DateFormatter().string(from: Date())
+            return ["kind": body["kind"] as? String ?? "", "accounts": [
+                ["id": "default", "label": "Default", "status": "signed-in", "email": codex ? "you@example.com" : "you@example.com", "subscription": codex ? "plus" : "max"],
+                ["id": "work", "label": "Work", "status": codex ? "signed-out" : "signed-in", "email": codex ? nil : "you@work.example"].compactMapValues { $0 },
+            ], "usage": ["accounts": [
+                ["id": "default", "status": "ok", "fetchedAt": fetched, "lastGood": false, "windows": [
+                    ["name": "5 hour", "pct": 42, "resetsAt": reset], ["name": "7 day", "pct": 18, "resetsAt": reset]]],
+                ["id": "work", "status": "ok", "fetchedAt": fetched, "lastGood": false, "windows": [
+                    ["name": "5 hour", "pct": 100, "resetsAt": reset]]],
+            ]]]
+        case "get-config":
+            return ["kind": "config", "snapshot": [
+                "read-full": ["kind": "boolean", "value": true, "source": "file", "help": "Read the whole reply aloud, not just its summary."],
+                "voice-speed": ["kind": "number", "value": 1.1, "source": "default", "help": "How fast the natural voices speak.",
+                                "bounds": ["min": 0.5, "max": 2]],
+            ]]
+        default:
+            return nil
+        }
     }
 
     private static func answer(_ payload: [String: Any]) -> BridgeResponse {

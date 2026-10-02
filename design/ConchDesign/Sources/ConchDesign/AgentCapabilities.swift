@@ -8,89 +8,89 @@ import Foundation
 /// whole point: conch attaches to sessions it did not start, so it can see what
 /// is CONFIGURED without knowing what is LOADED, and a UI that blurred those
 /// would be lying in the one place it must not.
-struct AgentCapabilities: Decodable, Equatable, Sendable {
-    let context: Context
-    let entities: [Entity]
-    let diagnostics: [Diagnostic]
+public struct AgentCapabilities: Decodable, Equatable, Sendable {
+    public let context: Context
+    public let entities: [Entity]
+    public let diagnostics: [Diagnostic]
     /// False when a source could not be read. The list is then a floor, not a
     /// census, and the UI has to say so.
-    let complete: Bool
+    public let complete: Bool
 
-    struct Context: Decodable, Equatable, Sendable {
-        let backend: String
-        let cwd: String
-        let projectTrust: ProjectTrust?
+    public struct Context: Decodable, Equatable, Sendable {
+        public let backend: String
+        public let cwd: String
+        public let projectTrust: ProjectTrust?
         /// What Codex recorded this thread as having STARTED with. Not a claim
         /// about what is live in its memory now.
-        let threadConfiguration: ThreadConfiguration?
+        public let threadConfiguration: ThreadConfiguration?
     }
 
-    struct ProjectTrust: Decodable, Equatable, Sendable {
-        let projectPath: String
+    public struct ProjectTrust: Decodable, Equatable, Sendable {
+        public let projectPath: String
         /// nil means no decision has been recorded — which is not the same as a
         /// refusal, and must not be shown as one.
-        let trusted: Bool?
-        let basis: String
-        let detail: String
+        public let trusted: Bool?
+        public let basis: String
+        public let detail: String
     }
 
-    struct ThreadConfiguration: Decodable, Equatable, Sendable {
-        let model: String?
-        let reasoningEffort: String?
-        let approvalMode: String?
-        let sandboxPolicy: String?
-        let cliVersion: String?
+    public struct ThreadConfiguration: Decodable, Equatable, Sendable {
+        public let model: String?
+        public let reasoningEffort: String?
+        public let approvalMode: String?
+        public let sandboxPolicy: String?
+        public let cliVersion: String?
     }
 
-    struct Evidence: Decodable, Equatable, Sendable {
+    public struct Evidence: Decodable, Equatable, Sendable {
         /// "yes" | "no" | "unknown"
-        let state: String
-        let basis: String
-        let detail: String
+        public let state: String
+        public let basis: String
+        public let detail: String
     }
 
-    struct EvidenceSet: Decodable, Equatable, Sendable {
-        let configured: Evidence
-        let available: Evidence
-        let loaded: Evidence
-        let observed: Evidence
+    public struct EvidenceSet: Decodable, Equatable, Sendable {
+        public let configured: Evidence
+        public let available: Evidence
+        public let loaded: Evidence
+        public let observed: Evidence
     }
 
-    struct Source: Decodable, Equatable, Sendable {
-        let kind: String
-        let path: String
-        let scope: String
+    public struct Source: Decodable, Equatable, Sendable {
+        public let kind: String
+        public let path: String
+        public let scope: String
     }
 
-    struct Diagnostic: Decodable, Equatable, Sendable {
-        let code: String?
-        let message: String?
-        let severity: String?
+    public struct Diagnostic: Decodable, Equatable, Sendable {
+        public let code: String?
+        public let message: String?
+        public let severity: String?
     }
 
-    struct Entity: Decodable, Equatable, Identifiable, Sendable {
-        let id: String
+    public struct Entity: Decodable, Equatable, Identifiable, Sendable {
+        public let id: String
         /// "plugin" | "skill" | "mcp-server" | "mcp-tool"
-        let kind: String
-        let name: String
-        let displayName: String
-        let description: String?
+        public let kind: String
+        public let name: String
+        public let displayName: String
+        public let description: String?
         /// Tools hang off their server; this is how the tree is built.
-        let parentId: String?
-        let scope: String
-        let sources: [Source]
-        let evidence: EvidenceSet
-        let diagnostics: [Diagnostic]
+        public let parentId: String?
+        public let scope: String
+        public let sources: [Source]
+        public let evidence: EvidenceSet
+        public let diagnostics: [Diagnostic]
         /// Per-kind facts. Exactly one is present, matching `kind`.
-        let plugin: Plugin?
-        let skill: Skill?
-        let mcpServer: McpServer?
-        let mcpTool: McpTool?
+        public let plugin: Plugin?
+        public let skill: Skill?
+        public let mcpServer: McpServer?
+        public let mcpTool: McpTool?
 
         /// A switch conch can honestly write (B3): a standalone plugin or MCP
         /// server at a scope conch edits. A plugin's own servers ride with the
         /// plugin, and a managed or unknown scope has no file conch writes.
-        var isToggleable: Bool {
+        public var isToggleable: Bool {
             (kind == "plugin" || kind == "mcp-server") && parentId == nil
                 && ["user", "project", "local"].contains(scope)
         }
@@ -99,72 +99,72 @@ struct AgentCapabilities: Decodable, Equatable, Sendable {
         /// never a claim about the running process. Unset reads as on: an
         /// installed plugin and a defined server run unless switched off, and
         /// a `.mcp.json` server Claude has not decided on is still pending.
-        var enabledForNextSession: Bool {
+        public var enabledForNextSession: Bool {
             if let plugin { return plugin.enabledForNextSession ?? true }
             if let mcpServer { return mcpServer.enabledForNextSession ?? (mcpServer.projectDecision != "rejected") }
             return false
         }
 
         /// The key the writer edits: `name@marketplace` for a plugin, the server name otherwise.
-        var configId: String { plugin?.pluginId ?? name }
+        public var configId: String { plugin?.pluginId ?? name }
     }
 
-    struct Plugin: Decodable, Equatable, Sendable {
-        let pluginId: String
-        let marketplace: String?
-        let version: String?
-        let installed: Bool
+    public struct Plugin: Decodable, Equatable, Sendable {
+        public let pluginId: String
+        public let marketplace: String?
+        public let version: String?
+        public let installed: Bool
         /// Persisted state for a NEW session. Never presented as live state.
-        let enabledForNextSession: Bool?
-        let installPath: String?
-        let components: Components
+        public let enabledForNextSession: Bool?
+        public let installPath: String?
+        public let components: Components
 
-        struct Components: Decodable, Equatable, Sendable {
-            let skills: Int
-            let mcpServers: Int
-            let hooks: Bool
-            let apps: Bool
+        public struct Components: Decodable, Equatable, Sendable {
+            public let skills: Int
+            public let mcpServers: Int
+            public let hooks: Bool
+            public let apps: Bool
         }
     }
 
-    struct Skill: Decodable, Equatable, Sendable {
-        let path: String
-        let ownerPluginId: String?
-        let enabledForNextSession: Bool?
+    public struct Skill: Decodable, Equatable, Sendable {
+        public let path: String
+        public let ownerPluginId: String?
+        public let enabledForNextSession: Bool?
         /// "on" | "name-only" | "user-invocable-only" | "off"
-        let visibility: String?
-        let userInvocable: Bool
-        let modelInvocable: Bool
-        let allowedTools: [String]
-        let argumentHint: String?
-        let model: String?
-        let bytes: Int
+        public let visibility: String?
+        public let userInvocable: Bool
+        public let modelInvocable: Bool
+        public let allowedTools: [String]
+        public let argumentHint: String?
+        public let model: String?
+        public let bytes: Int
     }
 
-    struct McpServer: Decodable, Equatable, Sendable {
-        let ownerPluginId: String?
+    public struct McpServer: Decodable, Equatable, Sendable {
+        public let ownerPluginId: String?
         /// "stdio" | "http" | "sse" | "websocket" | "unknown"
-        let transport: String
+        public let transport: String
         /// Executable only — arguments and environment values never cross the wire.
-        let command: String?
-        let argsCount: Int?
+        public let command: String?
+        public let argsCount: Int?
         /// Origin only — path, query, fragment and credentials are removed.
-        let url: String?
-        let credentialSources: [String]
-        let enabledForNextSession: Bool?
-        let projectDecision: String?
-        let required: Bool?
-        let startupTimeoutSeconds: Double?
-        let toolTimeoutSeconds: Double?
+        public let url: String?
+        public let credentialSources: [String]
+        public let enabledForNextSession: Bool?
+        public let projectDecision: String?
+        public let required: Bool?
+        public let startupTimeoutSeconds: Double?
+        public let toolTimeoutSeconds: Double?
     }
 
-    struct McpTool: Decodable, Equatable, Sendable {
-        let serverName: String
-        let ownerPluginId: String?
-        let policy: String?
-        let approvalMode: String?
+    public struct McpTool: Decodable, Equatable, Sendable {
+        public let serverName: String
+        public let ownerPluginId: String?
+        public let policy: String?
+        public let approvalMode: String?
         /// Named by a manifest for display, with no catalog behind it.
-        let manifestHint: Bool
+        public let manifestHint: Bool
     }
 }
 
@@ -180,7 +180,7 @@ extension AgentCapabilities.Entity {
     ///
     /// After that: configured beats observed-only, because a definition on disk
     /// is stronger evidence than having seen it used once.
-    var headline: AgentCapabilities.Evidence {
+    public var headline: AgentCapabilities.Evidence {
         if evidence.available.state == "no" { return evidence.available }
         if evidence.configured.state == "yes" { return evidence.configured }
         if evidence.observed.state == "yes" { return evidence.observed }
@@ -190,13 +190,13 @@ extension AgentCapabilities.Entity {
     /// Configured nowhere conch could find, but seen in use. Worth showing
     /// rather than hiding: it means the session has something conch cannot
     /// account for.
-    var isObservedOnly: Bool {
+    public var isObservedOnly: Bool {
         evidence.configured.state != "yes"
             && evidence.available.state != "no"
             && evidence.observed.state == "yes"
     }
 
-    var isUnavailable: Bool { evidence.available.state == "no" }
+    public var isUnavailable: Bool { evidence.available.state == "no" }
 }
 
 extension AgentCapabilities.Entity {
@@ -208,7 +208,7 @@ extension AgentCapabilities.Entity {
     /// row read as a name and a verdict: two MCP servers looked identical when
     /// one ran a local binary and the other reached a remote host, which is the
     /// single most useful thing to know about them.
-    var kindSummary: String? {
+    public var kindSummary: String? {
         var parts: [String] = []
         if let plugin {
             if let version = plugin.version, !version.isEmpty { parts.append("v\(version)") }
@@ -233,7 +233,7 @@ extension AgentCapabilities.Entity {
 
     /// The same facts in full, for the expanded row. Anything conch does not
     /// know is omitted rather than shown as a blank or a guess.
-    var kindLines: [(String, String)] {
+    public var kindLines: [(String, String)] {
         var lines: [(String, String)] = []
         func add(_ label: String, _ value: String?) {
             guard let value, !value.isEmpty else { return }
@@ -294,7 +294,7 @@ extension AgentCapabilities.Entity {
 }
 
 extension AgentCapabilities.Plugin {
-    var componentSummary: [String] {
+    public var componentSummary: [String] {
         var parts: [String] = []
         if components.skills > 0 {
             parts.append(components.skills == 1 ? "1 skill" : "\(components.skills) skills")
@@ -311,7 +311,7 @@ extension AgentCapabilities.Plugin {
 extension AgentCapabilities.Skill {
     /// Who can actually reach this — the distinction between a slash command
     /// and something the model picks up on its own.
-    var invocationSummary: String {
+    public var invocationSummary: String {
         switch (userInvocable, modelInvocable) {
         case (true, true): return "you or the model"
         case (true, false): return "you only"
@@ -323,7 +323,7 @@ extension AgentCapabilities.Skill {
 
 extension AgentCapabilities.McpServer {
     /// What it actually talks to: the binary for stdio, the host for a remote.
-    var endpoint: String? {
+    public var endpoint: String? {
         if let command, !command.isEmpty { return (command as NSString).lastPathComponent }
         guard let url, !url.isEmpty else { return nil }
         return URL(string: url)?.host ?? url
@@ -341,27 +341,27 @@ extension AgentCapabilities.McpServer {
 /// entirely when that identity was never captured, rather than shown as an
 /// "unknown" row: SURFACE and ADVISE only, never a guess and never a
 /// suggestion to run something conch did not verify.
-struct AgentInstall: Decodable, Equatable, Sendable {
-    let backend: String
-    let executable: String
+public struct AgentInstall: Decodable, Equatable, Sendable {
+    public let backend: String
+    public let executable: String
     /// From `<executable> --version`; nil when it could not be read.
-    let version: String?
+    public let version: String?
     /// "homebrew-cask" | "npm-global" | "claude-desktop-app" | "other"
-    let location: String
-    let packageId: String?
+    public let location: String
+    public let packageId: String?
     /// What would update THIS install; nil when conch has no safe command to give.
-    let updateCommand: String?
+    public let updateCommand: String?
     /// An older version than another copy of the SAME agent running on this Mac right now.
-    let behind: Bool
+    public let behind: Bool
     /// The newer version found among this Mac's other live copies, when behind.
-    let newerVersion: String?
+    public let newerVersion: String?
     /// The newer version is already installed where this one came from: restarting the session is the whole update.
-    let restartToUpdate: Bool?
+    public let restartToUpdate: Bool?
 }
 
 extension AgentInstall {
     /// Says where it lives however specifically conch can, but never fabricates a token it doesn't have.
-    var locationLabel: String {
+    public var locationLabel: String {
         switch location {
         case "homebrew-cask": return packageId.map { "Homebrew cask · \($0)" } ?? "Homebrew cask"
         case "npm-global": return packageId.map { "npm · \($0)" } ?? "npm global"

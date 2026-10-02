@@ -26,6 +26,10 @@
 		C100000000000000005E7F01 /* SetupFlow.swift in Sources */ = {isa = PBXBuildFile; fileRef = C200000000000000005E7F01 /* SetupFlow.swift */; };
 		C1000000000000000000000A /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000000A /* PairingView.swift */; };
 		C1000000000000000000A1 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000A1 /* SettingsView.swift */; };
+		C10000000000000000C0A001 /* CommandsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000C0A001 /* CommandsSheet.swift */; };
+		C10000000000000000C0A002 /* CapabilitiesSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000C0A002 /* CapabilitiesSheet.swift */; };
+		C10000000000000000C0A003 /* ProvidersView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000C0A003 /* ProvidersView.swift */; };
+		C10000000000000000C0A004 /* VoicesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000C0A004 /* VoicesView.swift */; };
 		C1000000000000000000A2 /* ConchSetting.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000A2 /* ConchSetting.swift */; };
 		C1000000000000000000D1 /* HistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000D1 /* HistoryStore.swift */; };
 		C1000000000000000000B1 /* SpeechController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000B1 /* SpeechController.swift */; };
@@ -57,6 +61,10 @@
 		C20000000000000000000100 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		C20000000000000000000101 /* conch-ios.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "conch-ios.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		C2000000000000000000A1 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		C20000000000000000C0A001 /* CommandsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandsSheet.swift; sourceTree = "<group>"; };
+		C20000000000000000C0A002 /* CapabilitiesSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CapabilitiesSheet.swift; sourceTree = "<group>"; };
+		C20000000000000000C0A003 /* ProvidersView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProvidersView.swift; sourceTree = "<group>"; };
+		C20000000000000000C0A004 /* VoicesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoicesView.swift; sourceTree = "<group>"; };
 		C2000000000000000000A2 /* ConchSetting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConchSetting.swift; sourceTree = "<group>"; };
 		C2000000000000000000D1 /* HistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryStore.swift; sourceTree = "<group>"; };
 		C2000000000000000000B1 /* SpeechController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechController.swift; sourceTree = "<group>"; };
@@ -104,6 +112,10 @@
 				C200000000000000005E7F01 /* SetupFlow.swift */,
 				C2000000000000000000000A /* PairingView.swift */,
 				C2000000000000000000A1 /* SettingsView.swift */,
+				C20000000000000000C0A001 /* CommandsSheet.swift */,
+				C20000000000000000C0A002 /* CapabilitiesSheet.swift */,
+				C20000000000000000C0A003 /* ProvidersView.swift */,
+				C20000000000000000C0A004 /* VoicesView.swift */,
 				C2000000000000000000A2 /* ConchSetting.swift */,
 				C2000000000000000000D1 /* HistoryStore.swift */,
 				C2000000000000000000B1 /* SpeechController.swift */,
@@ -219,6 +231,10 @@
 				C100000000000000005E7F01 /* SetupFlow.swift in Sources */,
 				C1000000000000000000000A /* PairingView.swift in Sources */,
 				C1000000000000000000A1 /* SettingsView.swift in Sources */,
+				C10000000000000000C0A001 /* CommandsSheet.swift in Sources */,
+				C10000000000000000C0A002 /* CapabilitiesSheet.swift in Sources */,
+				C10000000000000000C0A003 /* ProvidersView.swift in Sources */,
+				C10000000000000000C0A004 /* VoicesView.swift in Sources */,
 				C1000000000000000000A2 /* ConchSetting.swift in Sources */,
 				C1000000000000000000D1 /* HistoryStore.swift in Sources */,
 				C1000000000000000000B1 /* SpeechController.swift in Sources */,

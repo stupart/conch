@@ -18,6 +18,7 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { conchHome } from "./home.ts";
+import { helpSessionDir } from "./help-session.ts";
 import type { Config } from "./config.ts";
 import {
   isAgentCapabilitiesRead,
@@ -1371,6 +1372,15 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
       if (!validated.ok) return validated;
       if (!validated.value.startsWith("/")) return { ok: false, err: "cwd must be an absolute path" };
       cwd = validated.value;
+    }
+    // Help with conch, asked for by name: a phone cannot name this Mac's folder for it. It is a
+    // fresh Claude session in conch's own folder, the start the Mac's sheet makes with that path.
+    if (value.help !== undefined) {
+      if (value.help !== true) return { ok: false, err: "help must be true when present" };
+      if (value.backend !== "claude" || resumeSessionId || teleportSessionId || cwd !== undefined) {
+        return { ok: false, err: "Help with conch is a new Claude session in conch's own folder" };
+      }
+      cwd = helpSessionDir();
     }
     const handoffError = claudeHandoffError({ backend: value.backend, resumeSessionId, teleportSessionId, cwd,
       claudeAccountId: value.claudeAccountId as string | undefined, claudeSourceAccountId: value.claudeSourceAccountId as string | undefined });

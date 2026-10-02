@@ -668,7 +668,8 @@ describe("the surfaces", () => {
     expect(row).toContain("set: { onToggle?(entity, $0) }");
     expect(row).toContain('Text("next session")');
     expect(row).toContain("if entity.isToggleable, onToggle != nil {");
-    const model = read("mac-app/conch-mac/AgentCapabilities.swift");
+    // Shared with the phone's inspector since it moved to ConchDesign.
+    const model = read("design/ConchDesign/Sources/ConchDesign/AgentCapabilities.swift");
     // Only standalone plugins and servers at a scope conch writes; a plugin's own servers ride with the plugin.
     expect(model).toContain("var isToggleable: Bool {");
     expect(model).toContain('(kind == "plugin" || kind == "mcp-server") && parentId == nil');
