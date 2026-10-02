@@ -212,6 +212,68 @@ describe("filing, versions and the cap", () => {
     }
     expect(distinct!.map((one) => one.summary)).toEqual(["r1", "r2", "r3", "r4", "r5", "r6"]);
   });
+
+  /**
+   * The apps compare an artifact's newest version with the one before it (ConchDesign `VersionCompare`). An agent that
+   * published a photo's before and after and then five more results used to have the before dropped first, as the
+   * oldest superseded filing, leaving nothing to compare the after with (2026-10-03).
+   */
+  test("the cap keeps an artifact's previous version: a lone older artifact goes first", () => {
+    const filings: Array<[string, string]> = [
+      ["before", "photo"], ["after", "photo"], ["b", "b"], ["c", "c"], ["d", "d"], ["e", "e"], ["f", "f"],
+    ];
+    let held: SessionReview[] | undefined;
+    filings.forEach(([summary, key], index) => {
+      held = file(held, { summary, key }, (index + 1) * 1_000).held;
+    });
+    expect(held!.map((one) => one.summary)).toEqual(["before", "after", "c", "d", "e", "f"]);
+    // And the next one takes the next lone artifact, not the before.
+    held = file(held, { summary: "g", key: "g" }, 8_000).held;
+    expect(held!.map((one) => one.summary)).toEqual(["before", "after", "d", "e", "f", "g"]);
+  });
+
+  test("a stale version goes before a lone artifact, and the previous version stays", () => {
+    const filings: Array<[string, string]> = [
+      ["a1", "a"], ["a2", "a"], ["a3", "a"], ["b", "b"], ["c", "c"], ["d", "d"], ["e", "e"],
+    ];
+    let held: SessionReview[] | undefined;
+    filings.forEach(([summary, key], index) => {
+      held = file(held, { summary, key }, (index + 1) * 1_000).held;
+    });
+    expect(held!.map((one) => one.summary)).toEqual(["a2", "a3", "b", "c", "d", "e"]);
+  });
+
+  test("with every artifact a pair, the oldest previous version goes and its artifact stays", () => {
+    const filings: Array<[string, string]> = [
+      ["a1", "a"], ["a2", "a"], ["b1", "b"], ["b2", "b"], ["c1", "c"], ["c2", "c"], ["d1", "d"],
+    ];
+    let held: SessionReview[] | undefined;
+    filings.forEach(([summary, key], index) => {
+      held = file(held, { summary, key }, (index + 1) * 1_000).held;
+    });
+    // d1 is the only lone artifact, and it is what was just published: never the one to go.
+    expect(held!.map((one) => one.summary)).toEqual(["a2", "b1", "b2", "c1", "c2", "d1"]);
+  });
+
+  test("whatever is filed, the cap holds its bound, the newest filing, and each artifact's newest", () => {
+    // A fixed pseudo-random walk over five artifacts, so a failure reproduces.
+    let seed = 7;
+    const random = () => (seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648) / 2_147_483_648;
+    let held: SessionReview[] | undefined;
+    const newestFiled = new Map<string, string>();
+    for (let at = 1; at <= 400; at++) {
+      const key = `k${Math.floor(random() * 5)}`;
+      const { filed, held: next } = file(held, { summary: `${key}@${at}`, key }, at);
+      held = next;
+      newestFiled.set(filed.artifact!, filed.id);
+      expect(held.length).toBeLessThanOrEqual(MAX_SESSION_REVIEWS);
+      expect(held.at(-1)!.id).toBe(filed.id);
+      // Any artifact still held is held at its newest: never an old version standing for it.
+      for (const artifact of new Set(held.map((one) => one.artifact!))) {
+        expect(held.some((one) => one.id === newestFiled.get(artifact))).toBe(true);
+      }
+    }
+  });
 });
 
 describe("removing a deliverable", () => {

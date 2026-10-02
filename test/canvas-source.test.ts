@@ -429,8 +429,10 @@ describe("agent ink", () => {
     // One document: merged by id, the agent's replacing only its own.
     expect(member(canvas, "func showAgent(_ marks: [CanvasMark], on display: CGDirectDisplayID, frame: CGRect, by name: String) {")).toContain("document?.merge(agent: marks)");
     expect(ink).toContain("marks = marks.filter { $0.author == .you } + agent.filter { $0.author == .agent }");
-    // Where the review shows in conch, its page and its image say so.
-    expect(review).toContain(".environment(\\.agentInkItem, item)");
+    // Where the review shows in conch, its page and its image say so; never the two sides of a version compare, which
+    // would take the one canvas in turns (`InlineReviewView.showsInk`).
+    expect(review).toContain(".environment(\\.agentInkItem, showsInk ? item : nil)");
+    expect(review).toContain("var showsInk = true");
     expect(webView).toContain("if let item = context.environment.agentInkItem { AgentInkController.shared.appeared(webView, showing: item) }");
     expect(webView).toContain("AgentInkController.shared.gone(webView)");
     expect(review).toContain("AgentInkController.shared.gone(view.imageView)");

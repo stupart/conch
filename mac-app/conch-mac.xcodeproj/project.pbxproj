@@ -31,6 +31,7 @@
 		A10000000000000000000007C /* DaemonLogDrawer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007C /* DaemonLogDrawer.swift */; };
 		A10000000000000000000090 /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000090 /* PairingView.swift */; };
 		A10000000000000000000006 /* ReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* ReviewView.swift */; };
+		A1000000000000000000CA01 /* VersionCompareView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000CA01 /* VersionCompareView.swift */; };
 		A10000000000000000000007 /* WebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* WebView.swift */; };
 		A10000000000000000000964 /* Terminal.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000964 /* Terminal.swift */; };
 		D10000000000000000000B51 /* TerminalMirror.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000B51 /* TerminalMirror.swift */; };
@@ -78,6 +79,7 @@
 		A20000000000000000000007C /* DaemonLogDrawer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonLogDrawer.swift; sourceTree = "<group>"; };
 		A20000000000000000000090 /* PairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
 		A20000000000000000000006 /* ReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewView.swift; sourceTree = "<group>"; };
+		A2000000000000000000CA01 /* VersionCompareView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VersionCompareView.swift; sourceTree = "<group>"; };
 		A20000000000000000000007 /* WebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebView.swift; sourceTree = "<group>"; };
 		A20000000000000000000964 /* Terminal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Terminal.swift; sourceTree = "<group>"; };
 		D20000000000000000000B51 /* TerminalMirror.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalMirror.swift; sourceTree = "<group>"; };
@@ -169,6 +171,7 @@
 				D20000000000000000000C01 /* ComposerDock.swift */,
 				A20000000000000000000963 /* HistoryStore.swift */,
 				A20000000000000000000006 /* ReviewView.swift */,
+				A2000000000000000000CA01 /* VersionCompareView.swift */,
 				A20000000000000000000007 /* WebView.swift */,
 				A20000000000000000000964 /* Terminal.swift */,
 				D20000000000000000000B51 /* TerminalMirror.swift */,
@@ -412,6 +415,7 @@
 				D10000000000000000000C01 /* ComposerDock.swift in Sources */,
 				A10000000000000000000963 /* HistoryStore.swift in Sources */,
 				A10000000000000000000006 /* ReviewView.swift in Sources */,
+				A1000000000000000000CA01 /* VersionCompareView.swift in Sources */,
 				A10000000000000000000007 /* WebView.swift in Sources */,
 				A10000000000000000000964 /* Terminal.swift in Sources */,
 				D10000000000000000000B51 /* TerminalMirror.swift in Sources */,

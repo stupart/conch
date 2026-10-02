@@ -112,7 +112,11 @@ https://brew.sh rather than trying to install Homebrew yourself.
   file's real path, a URL without its fragment), else the summary; pass `key`
   to name it yourself when there is no link, or the link changes between
   versions (`hero-v3.png`, `hero-v4.png`). The result returns `id`,
-  `artifact`, `version` and `kind`.
+  `artifact`, `version` and `kind`. To show a change (a photo edit, a
+  restyled page), save the after as its own file and publish it under the
+  before's `key`: conch compares two versions with a slider or side by side,
+  so build no before/after composite. A file overwritten in place leaves
+  nothing earlier to compare.
 
   **Your own deliverables.** `conch_deliverables` lists the ones your session
   holds, newest first, each marked `superseded` when a newer version of it is

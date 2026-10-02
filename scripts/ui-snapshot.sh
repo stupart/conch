@@ -14,7 +14,9 @@
 #                                               live window as it loads, lands, covers only
 #                                               part of the session, is off, and fails, and
 #                                               delivery-*.png: a message you sent, as it is
-#                                               sent, confirmed, and not delivered.
+#                                               sent, confirmed, and not delivered, and
+#                                               compare-*.png when that row holds two versions
+#                                               of one artifact (fixtures/compare.json).
 #
 # ios builds a Debug simulator app into build/ios-sim.noindex, boots a SHUT-DOWN
 # iPhone 17-class simulator with `simctl boot` (never the Simulator app), renders
@@ -61,7 +63,8 @@ ios)
     .ts as $then
     | walk(if type == "object" and (.at | type) == "number" then .at += ($now - $then) else . end)
     | .ts = $now
-    | (.rows[].review.link | strings) |= (if test("^(/|https?:)") then . else "\($root)/\(.)" end)
+    | ((.rows[].review.link | strings), (.rows[].reviews[]?.link | strings))
+      |= (if test("^(/|https?:)") then . else "\($root)/\(.)" end)
   ' "$fixture" > "$prepared"
 
   # Armed before the boot, so a boot that fails halfway is still shut down.
@@ -104,6 +107,18 @@ ios)
     done
     if jq -e --arg id "$session" '.rows[] | select(.id == $id) | .review' "$prepared" >/dev/null; then
       shoot review.png -conchFixtureSession "$session" -conchFixtureReview YES
+    fi
+    # Two versions of its newest artifact held: the review sheet comparing them, in each mode
+    # that kind offers (a picture's slider and side by side, a text's changes and flip).
+    if jq -e --arg id "$session" '[.rows[] | select(.id == $id) | .reviews[]?] | length > 1' "$prepared" >/dev/null; then
+      modes="diff flip"
+      if jq -e --arg id "$session" '.rows[] | select(.id == $id) | .review.link
+          | test("\\.(png|jpe?g|gif|webp|heic|tiff|svg)$"; "i")' "$prepared" >/dev/null; then
+        modes="slider sideBySide"
+      fi
+      for mode in $modes; do
+        shoot "compare-$mode.png" -conchFixtureSession "$session" -conchFixtureReview YES -conchFixtureCompare "$mode"
+      done
     fi
   fi
   ;;

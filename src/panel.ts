@@ -1278,8 +1278,9 @@ export function reviewReady(row: {
  * link on every one — is 34.6 KB, 53% of the 64 KiB control frame, which leaves room for
  * everything else a row carries. Eight each would be 67%, twelve 97%.
  *
- * The oldest fall off. `review` is always the newest, so nothing that reads one deliverable
- * is affected by this at all.
+ * The oldest fall off, superseded and lone ones first (`capReviews`), so an artifact's newest
+ * two versions stay for the apps' before/after compare. `review` is always the newest, so
+ * nothing that reads one deliverable is affected by this at all.
  */
 export const MAX_SESSION_REVIEWS = 6;
 
@@ -1305,19 +1306,42 @@ export function carriedReviews(
 }
 
 /**
- * Down to `MAX_SESSION_REVIEWS`, oldest first. A superseded version of an artifact goes
- * before anything else does: measured on 2026-09-20, one session's six held deliverables were
- * six filings of ONE link, so dropping the oldest filing threw away other artifacts while
- * keeping five stale copies of one.
+ * Down to `MAX_SESSION_REVIEWS`, oldest first within each step, in this order:
+ *
+ * 1. A STALE version: one with two or more newer filings of its artifact held. Measured on
+ *    2026-09-20, one session's six held deliverables were six filings of ONE link, so dropping
+ *    the oldest filing threw away other artifacts while keeping five stale copies of one.
+ * 2. An artifact held at ONE version, never the newest filing of all (the one just published).
+ * 3. A PREVIOUS version: the one just behind its artifact's newest.
+ *
+ * Steps 2 and 3 are the 2026-10-03 change. The apps compare an artifact's newest version with
+ * the one before it (a before/after, ConchDesign `VersionCompare`), and step 1 alone used to
+ * drop that previous version as soon as the session filed six other things: an agent that
+ * edited a photo, published the after, then published five more results had left nothing to
+ * compare the after with. So the newest two of an artifact outlast a lone older artifact, and
+ * a previous version goes only when every artifact held is a newest-and-previous pair, where
+ * it keeps the artifact itself (its newest) rather than losing the whole thing. The total is
+ * bounded exactly as before; only which filing goes changed. The newest filing of an artifact
+ * never goes while an older one of it stays, so a tab never shows an old version as current.
  */
 export function capReviews(held: readonly SessionReview[]): SessionReview[] {
   const next = [...held];
-  while (next.length > MAX_SESSION_REVIEWS) {
-    const superseded = next.findIndex((one, index) =>
-      next.some((later, laterIndex) => laterIndex > index && artifactOf(later) === artifactOf(one)));
-    next.splice(Math.max(superseded, 0), 1);
-  }
+  while (next.length > MAX_SESSION_REVIEWS) next.splice(cappedIndex(next), 1);
   return next;
+}
+
+/** Which of `held` (oldest first, over the cap) goes next, by `capReviews`' three steps. */
+function cappedIndex(held: readonly SessionReview[]): number {
+  // How many newer filings of its artifact each one has: 0 is its newest, 1 the previous.
+  const newer = held.map((one, index) =>
+    held.filter((later, laterIndex) => laterIndex > index && artifactOf(later) === artifactOf(one)).length);
+  const alone = (index: number) => held.every((other, at) => at === index || artifactOf(other) !== artifactOf(held[index]!));
+  const stale = newer.findIndex((count) => count >= 2);
+  if (stale >= 0) return stale;
+  const single = held.findIndex((_, index) => index < held.length - 1 && alone(index));
+  if (single >= 0) return single;
+  // Every artifact is a pair (or the newest filing alone), so there is a previous version to drop.
+  return Math.max(newer.findIndex((count) => count === 1), 0);
 }
 
 /**
