@@ -174,10 +174,17 @@ export function withHeldQuestion(
   return conversation;
 }
 
+/**
+ * A block's words: `text` on a text block, `thinking` on a thinking block. Claude Code keeps a thinking block's
+ * words in `thinking`, and this read `text` for every kind, so no Claude thinking ever reached a conversation. In
+ * 2.1.280 that is where a turn's running commentary often lands ("I found the issue: …", between tool calls), and
+ * a long turn read as nothing but "Worked … steps" (2026-10-02). A redacted block's `thinking` is empty and
+ * still makes no row.
+ */
 function textFromClaudeParts(parts: any[], type: string): string {
   return parts
     .filter((part) => part?.type === type)
-    .map((part) => (typeof part.text === "string" ? part.text : ""))
+    .map((part) => (typeof part[type] === "string" && type !== "text" ? part[type] : typeof part.text === "string" ? part.text : ""))
     .join("\n")
     .trim();
 }

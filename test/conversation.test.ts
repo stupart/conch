@@ -74,10 +74,26 @@ describe("reading a Claude transcript as a conversation", () => {
     const conversation = buildConversation("s", lines({
       type: "assistant",
       uuid: "a1",
-      message: { content: [{ type: "thinking", text: "weighing options" }, { type: "text", text: "Done." }] },
+      message: { content: [{ type: "thinking", thinking: "weighing options", signature: "sig" }, { type: "text", text: "Done." }] },
     }), "claude");
     expect(conversationWindow(conversation, 10).map((i) => [i.kind, i.text]))
       .toEqual([["thinking", "weighing options"], ["assistant", "Done."]]);
+  });
+
+  test("a turn's commentary written as thinking is shown; a redacted block is not", () => {
+    // As Claude Code 2.1.280 writes one message, a block per line: an empty (redacted) thinking block, the words
+    // the person reads between steps as a thinking block, then the call. These were all that a long turn said,
+    // and none of it showed (2026-10-02).
+    const message = (block: unknown, index: number) => ({
+      type: "assistant", uuid: `a${index}`, apiBlockIndex: index, message: { id: "msg_1", role: "assistant", content: [block] },
+    });
+    const conversation = buildConversation("s", lines(
+      message({ type: "thinking", thinking: "", signature: "redacted" }, 0),
+      message({ type: "thinking", thinking: "Blue's status is `shell`, which conch reads as a dialog.", signature: "sig" }, 1),
+      message({ type: "tool_use", id: "call1", name: "Bash", input: { description: "Inspect rows", command: "true" } }, 2),
+    ), "claude");
+    expect(conversationWindow(conversation, 10).map((i) => [i.kind, i.text]))
+      .toEqual([["thinking", "Blue's status is `shell`, which conch reads as a dialog."], ["tool", "Inspect rows"]]);
   });
 
   test("transcript metadata is not conversation", () => {

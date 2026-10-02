@@ -123,7 +123,7 @@ describe("a message sent from the Mac appears the moment it is sent", () => {
       stack,
       "ForEach(conversation.items) { item in",
       "ForEach(store.outbox.entries(for: conversation.sessionId)) { pending in",
-      "PendingMessage(entry: pending)",
+      "PendingMessage(entry: pending, onDismiss: { store.discardOutgoing(pending.id) })",
     );
     const pending = section(stack, "private struct PendingMessage: View {", "private struct ArtifactPreview: View {");
     expect(pending).toContain(".background(ConchPalette.fill, in: RoundedRectangle(cornerRadius: ConchRadius.large))");
@@ -141,5 +141,10 @@ describe("a message sent from the Mac appears the moment it is sent", () => {
       "case let .unknown(reason):",
       "case let .failed(reason):",
     );
+    // One that did not land says when it was sent, and can be cleared: a failed send pinned under everything that
+    // came after it read as a fresh failure hours later (2026-10-02). Its words are already back in the composer.
+    expect(pending).toContain('Text("\\(entry.sentAt.formatted(date: .omitted, time: .shortened)) · \\(reason)")');
+    expect(pending).toContain('Button("Dismiss", action: onDismiss)');
+    expect(source("mac-app/conch-mac/StateStore.swift")).toContain("func discardOutgoing(_ id: String) {");
   });
 });
