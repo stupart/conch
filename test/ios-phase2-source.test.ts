@@ -22,7 +22,10 @@ describe("iPhone Phase 2 daily controls", () => {
       /reply\["kind"\] as\? String == "session-error"[\s\S]*let failure = reply\["error"\] as\? String[\s\S]*operation: "session-start", message: failure/,
     );
 
-    expect(ledger).toContain("StartSessionSheet(bridge: bridge)");
+    // It closes onto the session it started, once that checks in, as the Mac's sheet does.
+    expect(ledger).toContain("StartSessionSheet(bridge: bridge, onStarted: { path = [$0] })");
+    expect(ledger).toContain("let watch = StartedSessionWatch(");
+    expect(ledger).toContain("if let appeared = await waitForSession(watch, rounds: 40) {");
     expect(ledger).toContain('case resume = "Resume"');
     expect(ledger).toContain("ForEach(BridgeClient.AgentBackend.allCases)");
     expect(ledger).toContain('Text("Working folder")');

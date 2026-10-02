@@ -24,11 +24,25 @@ test("resume watches for its exact session, not just any new row", () => {
   // Resume knows which id to expect, so it should not be satisfied by some
   // unrelated session appearing at the same moment.
   const wait = content.slice(content.indexOf("private func waitForSession("));
-  expect(wait).toContain("mode == .resume ? resumeSelection?.sessionId : nil");
-  expect(wait).toContain("sessions(rows).contains(where: { $0.id == expected })");
+  expect(wait).toContain("expectedId: launchedSessionId ?? (mode == .resume ? resumeSelection?.sessionId : nil)");
   // And a fresh session, which has no id yet, is a SESSION id not there before: a count
   // grew whenever another session's agent appeared (agents are rows since #390).
-  expect(wait).toContain("sessions(rows).first(where: { !before.contains($0.id) })");
+  expect(wait).toContain("before: sessionsBeforeLaunch");
+  expect(wait).toContain("if let id = watch.match(in: launched) { return id }");
+  const watch = readFileSync(
+    join(import.meta.dir, "../design/ConchDesign/Sources/ConchDesign/StartedSession.swift"), "utf8");
+  expect(watch).toContain("return sessions.contains { $0.id == expectedId } ? expectedId : nil");
+  expect(watch).toContain("return sessions.first { !before.contains($0.id) }?.id");
+});
+
+test("a new Claude session is found though its row names no backend", () => {
+  // The daemon publishes `backend` only for Codex and for agents (src/panel.ts). Comparing the
+  // raw field missed every new Claude session, and the sheet never closed onto it.
+  const watch = readFileSync(
+    join(import.meta.dir, "../design/ConchDesign/Sources/ConchDesign/StartedSession.swift"), "utf8");
+  expect(watch).toContain('(row.backend ?? "claude") == backend');
+  const panel = readFileSync(join(import.meta.dir, "../src/panel.ts"), "utf8");
+  expect(panel).toContain("...(session.backend ? { backend: session.backend } : {}),");
 });
 
 test("a session that checks in is shown in conch, and conch comes back from the Terminal it raised", () => {
