@@ -119,6 +119,21 @@ public struct ConchOutbox: Equatable, Codable, Sendable {
         entries.removeAll { $0.state.clearsDraft && $0.sentAt < cutoff }
     }
 
+    /// Clear sends to `session` that did not land (failed, or never confirmed) once a later message of yours has: the
+    /// conversation has moved on, and a "Not delivered" from before it reads as a fresh failure (2026-10-02, one from
+    /// the evening before was still under a session that had been working all night). By time, not by which messages
+    /// were seen: a session whose conversation was not being published when the send failed saw none. `skew` covers
+    /// the two clocks' small difference. Never a send still in flight, nor one left staged in the box.
+    public mutating func retireSuperseded(in session: String, lastUserMessageAt: Date, skew: TimeInterval = 5) {
+        entries.removeAll { entry in
+            guard entry.session == session, entry.sentAt < lastUserMessageAt.addingTimeInterval(-skew) else { return false }
+            switch entry.state {
+            case .failed, .unknown: return true
+            case .sent, .confirmed, .staged: return false
+            }
+        }
+    }
+
     // MARK: - Persistence
 
     /// Never throws and never refuses to launch: an outbox that cannot be read is empty,

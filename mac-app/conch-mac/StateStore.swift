@@ -1415,6 +1415,10 @@ final class StateStore: ObservableObject {
                 }) else { continue }
                 reconciled.remove(message.id)
             }
+            // A message of yours that landed after one that didn't: the failed one is history (`retireSuperseded`).
+            if let newest = users.compactMap(\.at).max() {
+                reconciled.retireSuperseded(in: session, lastUserMessageAt: Date(timeIntervalSince1970: newest / 1000))
+            }
         }
         // ponytail: a confirmed bubble the transcript never shows — words the agent rewrote —
         // goes after ten minutes, the phone's cutoff. Match on something sturdier than the text
