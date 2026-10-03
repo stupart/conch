@@ -165,6 +165,27 @@ describe("Reduce Motion is a crossfade in place", () => {
   });
 });
 
+describe("the input always shows where it went", () => {
+  // 2026-10-04: "all the text goes invisible". The window's composer takes the keyboard while it waits, unseen, for the
+  // swoop to land on it, and a flight steps on one display's frames, which stop when that display sleeps or the panel
+  // isn't drawn. A flight that never arrived left the input unseen with the keyboard in it.
+  test("every flight and every bend of one has a deadline, after which the input shows and the glass goes", () => {
+    const dock = readFileSync(join(import.meta.dir, "..", "mac-app", "conch-mac", "ComposerDock.swift"), "utf8");
+    const swoop = dock.slice(dock.indexOf("final class ComposerSwoop {"), dock.indexOf("/// One display's share of the swoop"));
+    expect(swoop).toMatch(/static let arrivalDeadline: TimeInterval = 1\.5/);
+    const fly = swoop.slice(swoop.indexOf("func fly("), swoop.indexOf("private func armDeadline()"));
+    expect(fly).toContain("armDeadline()");
+    const bend = swoop.slice(swoop.indexOf("func retarget("), swoop.indexOf("func follow("));
+    expect(bend).toContain("armDeadline()");
+    const overdue = swoop.slice(swoop.indexOf("private func overdue()"), swoop.indexOf("func retarget("));
+    expect(overdue).toContain("onArrived(flight.to)");
+    expect(overdue).toContain("finish()");
+    // A flight that lands on time takes its deadline with it.
+    const finish = swoop.slice(swoop.indexOf("private func finish()"), swoop.indexOf("private func render()"));
+    expect(finish).toContain("deadline?.cancel()");
+  });
+});
+
 describe("the swoop is one glass, never stretched and never dimmed", () => {
   test("the pictures on the glass are cut where the composer's layout moves, and placed at their own size", () => {
     const picture = member(dock.slice(dock.indexOf("private final class SwoopPicture {")), "func show(_ face: SwoopFace?, on size: CGSize, opacity: CGFloat) {");
