@@ -23,7 +23,7 @@ describe("iPhone Phase 2 daily controls", () => {
     );
 
     // It closes onto the session it started, once that checks in, as the Mac's sheet does.
-    expect(ledger).toContain("StartSessionSheet(bridge: bridge, onStarted: { path = [$0] })");
+    expect(ledger).toContain("StartSessionSheet(bridge: bridge, help: startingHelp, onStarted: { path = [$0] })");
     expect(ledger).toContain("let watch = StartedSessionWatch(");
     expect(ledger).toContain("if let appeared = await waitForSession(watch, rounds: 40) {");
     expect(ledger).toContain('case resume = "Resume"');

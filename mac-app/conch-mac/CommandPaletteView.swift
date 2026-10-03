@@ -28,41 +28,10 @@ struct PaletteCommand: Identifiable, Equatable {
     let action: Action
 }
 
-/// Fuzzy ranking. Kept in Swift on purpose: a shared TypeScript ranker cannot
-/// run inside the app, so this is pinned by source guards instead.
+/// Fuzzy ranking: `CommandMatch` (ConchDesign), the phone's Commands sheet's too.
 enum PaletteMatch {
-    /// nil is no match. A prefix beats a word start beats a scattered
-    /// subsequence, and within a tier fewer gaps win; the caller keeps catalog
-    /// order for ties. Leading `/` and `$` are ignored so "comp" finds
-    /// `/compact` and "pony" finds `$ponytail`.
-    static func score(_ query: String, in text: String) -> Int? {
-        let q = Array(query.lowercased().filter { !$0.isWhitespace })
-        if q.isEmpty { return 0 }
-        let t = Array(text.lowercased().drop(while: { $0 == "/" || $0 == "$" }))
-        if t.starts(with: q) { return 300 - t.count }
-        var wordStart = false
-        for i in t.indices {
-            if wordStart, t[i...].starts(with: q) { return 200 - t.count }
-            wordStart = !(t[i].isLetter || t[i].isNumber)
-        }
-        var qi = 0
-        var first = -1
-        var last = -1
-        for (index, ch) in t.enumerated() where qi < q.count && ch == q[qi] {
-            if first < 0 { first = index }
-            last = index
-            qi += 1
-        }
-        guard qi == q.count else { return nil }
-        return 100 - (last - first + 1 - q.count)
-    }
-
-    /// The title first; the detail only by word start, because a scattered
-    /// subsequence matches almost any sentence.
     static func rank(_ query: String, _ command: PaletteCommand) -> Int? {
-        if let score = score(query, in: command.title) { return score }
-        guard let score = score(query, in: command.detail), score >= 200 else { return nil }
-        return score - 200
+        CommandMatch.rank(query, title: command.title, detail: command.detail)
     }
 }
 
@@ -153,69 +122,23 @@ enum PaletteCatalog {
         return out
     }
 
-    /// As documented for each agent. The session's own version has the final
-    /// say, which the palette's subtitle says out loud.
-    private static let claudeCommands: [(String, String, String?)] = [
-        ("/compact", "Summarise the conversation to free context; optional focus", "what to keep (optional)"),
-        ("/clear", "Clear the conversation and start fresh in the same session", nil),
-        ("/context", "Show what is using the context window", nil),
-        ("/cost", "Show token usage and cost for this session", nil),
-        ("/status", "Show version, model, account and connection", nil),
-        ("/usage", "Show plan usage and rate limits", nil),
-        ("/model", "Choose the model in a picker in the terminal; Model… above takes a name", nil),
-        ("/permissions", "View or change tool permissions, in the terminal", nil),
-        ("/mcp", "MCP server status and sign-in, in the terminal", nil),
-        ("/plugin", "Manage plugins, in the terminal", nil),
-        ("/agents", "Manage subagents, in the terminal", nil),
-        ("/hooks", "Manage hooks, in the terminal", nil),
-        ("/memory", "Edit CLAUDE.md memory files, in the terminal", nil),
-        ("/init", "Write a CLAUDE.md for this project", nil),
-        ("/review", "Ask for a code review of the working tree", nil),
-        ("/doctor", "Check the Claude Code install", nil),
-        ("/help", "List Claude Code's commands", nil),
-    ]
-
-    private static let codexCommands: [(String, String, String?)] = [
-        ("/compact", "Summarise the conversation to free context", nil),
-        ("/new", "Start a new conversation in this terminal", nil),
-        ("/status", "Show session configuration and token usage", nil),
-        ("/diff", "Show the git diff, including untracked files", nil),
-        ("/review", "Review the working tree; optional instructions", "what to review (optional)"),
-        ("/model", "Choose model and reasoning effort in a picker in the terminal", nil),
-        ("/permissions", "Choose approval and sandbox mode, in the terminal", nil),
-        ("/personality", "Choose a personality, in the terminal", nil),
-        ("/fast", "Toggle fast mode", nil),
-        ("/mcp", "List configured MCP servers", nil),
-        ("/skills", "List available skills", nil),
-        ("/plugins", "Manage plugins, in the terminal", nil),
-        ("/hooks", "Manage hooks, in the terminal", nil),
-        ("/init", "Write an AGENTS.md for this project", nil),
-        ("/fork", "Fork the conversation into a new thread", nil),
-    ]
-
+    /// The agent's own, as documented for each (`AgentCommands`, shared with the phone).
     private static func provider(for row: SessionRow) -> [PaletteCommand] {
-        let codex = row.backend?.lowercased() == "codex"
-        return (codex ? codexCommands : claudeCommands).map { line, what, hint in
+        AgentCommands.slash(for: row.backend).map { command in
             PaletteCommand(
-                id: "provider:\(line)", section: .provider, title: line,
-                detail: what, argumentHint: hint, action: .type(line)
+                id: "provider:\(command.line)", section: .provider, title: command.line,
+                detail: command.detail, argumentHint: command.argumentHint, action: .type(command.line)
             )
         }
     }
 
-    /// Skills a person may invoke, from the same read the inspector uses.
-    /// Claude runs a plugin's skill as `/plugin:skill`; Codex mentions a skill
-    /// as `$name` inside a message, so that one goes as an ordinary prompt.
+    /// Skills a person may invoke, from the same read the inspector uses, spelled per agent
+    /// (`AgentCommands.skillLine`).
     private static func skills(for row: SessionRow, capabilities: AgentCapabilities?) -> [PaletteCommand] {
         guard let capabilities else { return [] }
-        let codex = row.backend?.lowercased() == "codex"
+        let codex = AgentCommands.isCodex(row.backend)
         return capabilities.entities.compactMap { entity in
-            guard entity.kind == "skill", let skill = entity.skill,
-                  skill.userInvocable, !entity.isUnavailable else { return nil }
-            let owner = skill.ownerPluginId.map { $0.split(separator: "@", maxSplits: 1)[0] }
-            let line = codex
-                ? "$\(entity.name)"
-                : "/" + (owner.map { "\($0):" } ?? "") + entity.name
+            guard let skill = entity.skill, let line = AgentCommands.skillLine(entity, codex: codex) else { return nil }
             let what = entity.description ?? "Run the \(entity.name) skill"
             return PaletteCommand(
                 id: "skill:\(entity.id)", section: .skills, title: line,

@@ -127,6 +127,30 @@ struct SessionView: View {
     @State private var openingLocation = false
     @State private var locationError: String?
     @State private var showingLocationError = false
+    /// The Mac's ⌘K and its "…" menu, on the phone: commands, the inspector, rename and restart.
+    #if DEBUG
+    /// `-conchFixtureSheet commands|inspector` opens one on arrival, for the snapshot script.
+    @State private var showingCommands = UserDefaults.standard.string(forKey: "conchFixtureSheet") == "commands"
+    #else
+    @State private var showingCommands = false
+    #endif
+    /// What was chosen in Commands, carried out once its sheet has gone: an alert, a sheet or the
+    /// keyboard asked for while one sheet is still leaving is dropped.
+    @State private var chosenCommand: CommandsSheet.Action?
+    #if DEBUG
+    @State private var showingCapabilities = UserDefaults.standard.string(forKey: "conchFixtureSheet") == "inspector"
+    #else
+    @State private var showingCapabilities = false
+    #endif
+    /// The inspector's Restart, asked once the inspector has gone, for the same reason.
+    @State private var restartAfterInspector = false
+    @State private var renaming = false
+    @State private var renameDraft = ""
+    @State private var confirmingRestart = false
+    @State private var restarting = false
+    /// What the last action from the menu or the commands said back, when it wasn't simply done.
+    @State private var actionNotice: String?
+    @State private var showingActionNotice = false
     /// Four API-sized images put a 20 MB ceiling on retained upload payloads;
     /// without a count limit, the 5 MB per-image cap was not a memory bound.
     private static let attachmentLimit = 4
@@ -452,6 +476,22 @@ struct SessionView: View {
                         )
                         Divider()
                     }
+                    if let row, row.parentSessionId == nil {
+                        // The account it runs under, as the Mac's session bar says it.
+                        if let account = row.accountLabel {
+                            Label(account, systemImage: "person.crop.circle")
+                        }
+                        Button("Commands…", systemImage: "command") { showingCommands = true }
+                            .disabled(!bridge.isConnected)
+                        Button("What this session carries…", systemImage: "shippingbox") { showingCapabilities = true }
+                            .disabled(!bridge.isConnected)
+                        Button("Rename…", systemImage: "pencil") { beginRename() }
+                            .disabled(!bridge.isConnected)
+                        Divider()
+                        // Resumes the same conversation in a new window with the flags it started with.
+                        Button("Restart session…", systemImage: "arrow.clockwise") { confirmingRestart = true }
+                            .disabled(restarting || closingSession || !bridge.isConnected || row.noTerminal != nil)
+                    }
                     Button("End session…", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
                         confirmingClose = true
                     }
@@ -489,6 +529,44 @@ struct SessionView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(locationError ?? "The Mac couldn't open that session.")
+        }
+        .sheet(isPresented: $showingCommands, onDismiss: {
+            guard let action = chosenCommand else { return }
+            chosenCommand = nil
+            perform(action)
+        }) {
+            if let row {
+                CommandsSheet(bridge: bridge, row: row, everythingQuiet: bridge.state?.mode.paused ?? false) { chosenCommand = $0 }
+            }
+        }
+        .sheet(isPresented: $showingCapabilities, onDismiss: {
+            guard restartAfterInspector else { return }
+            restartAfterInspector = false
+            confirmingRestart = true
+        }) {
+            if let row {
+                CapabilitiesSheet(bridge: bridge, row: row, onRestart: row.noTerminal == nil ? { restartAfterInspector = true } : nil)
+            }
+        }
+        .alert("Rename session", isPresented: $renaming) {
+            TextField("Name", text: $renameDraft)
+            Button("Cancel", role: .cancel) {}
+            Button("Rename") { commitRename() }
+        } message: {
+            Text("The name you use for it. Claude Code's own label follows.")
+        }
+        .confirmationDialog(
+            "Restart this session?",
+            isPresented: $confirmingRestart,
+            titleVisibility: .visible
+        ) {
+            Button("Restart session", action: restart)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The agent exits cleanly and the same conversation resumes in a new window on your Mac, with the flags it started with.")
+        }
+        .alert(actionNotice ?? "", isPresented: $showingActionNotice) {
+            Button("OK", role: .cancel) {}
         }
         .onAppear {
             talk.reconcile(session: sessionId, items: conversationItems)
@@ -989,6 +1067,68 @@ struct SessionView: View {
     /// The question card that can still be answered in this session, if one can.
     private var liveQuestionID: String? {
         bridge.state?.conversations[sessionId].flatMap(ConversationStack.liveQuestionID(in:))
+    }
+
+    private func beginRename() {
+        renameDraft = row?.label ?? ""
+        renaming = true
+    }
+
+    private func commitRename() {
+        let label = renameDraft
+        Task {
+            if !(await bridge.renameSession(sessionId: sessionId, label: label)) {
+                notice(bridge.lastError ?? "The Mac didn't rename it.")
+            }
+        }
+    }
+
+    private func restart() {
+        guard !restarting else { return }
+        restarting = true
+        Task {
+            let dropped = await bridge.restartSession(sessionId: sessionId)
+            restarting = false
+            if let dropped {
+                // The same id comes back as the resumed session, so this screen stays on it.
+                if !dropped.isEmpty { notice("Restarted without \(dropped.joined(separator: ", ")).") }
+            } else {
+                notice(bridge.lastError ?? "The Mac didn't confirm the restart, so the session was left as it was.")
+            }
+        }
+    }
+
+    private func notice(_ text: String) {
+        actionNotice = text
+        showingActionNotice = true
+    }
+
+    /// What a row in Commands asked for. A typed line goes into the composer, ahead of anything
+    /// already there, so its argument is typed after it and it is sent like any message.
+    private func perform(_ action: CommandsSheet.Action) {
+        guard let row else { return }
+        switch action {
+        case let .type(line, takesArgument):
+            let draft = talk.draft(for: sessionId).trimmingCharacters(in: .whitespacesAndNewlines)
+            talk.setDraft(draft.isEmpty ? line + (takesArgument ? " " : "") : "\(line) \(draft)", for: sessionId)
+            typing = true
+        case .toggleQuiet:
+            let quiet = row.voice(everythingQuiet: bridge.state?.mode.paused ?? false).togglesToQuiet
+            Task { _ = await bridge.send(mode: quiet ? "pause" : "resume", sessionId: row.id, label: row.label) }
+        case .rename:
+            beginRename()
+        case .reveal:
+            Task {
+                if let failure = await bridge.openSessionLocation(row) { notice(failure) }
+            }
+        case .dismiss:
+            Task {
+                if await bridge.send(sessionCommand: .dismiss, sessionId: row.id) { dismiss() }
+                else { notice(bridge.lastError ?? "The Mac didn't dismiss it.") }
+            }
+        case .inspect:
+            showingCapabilities = true
+        }
     }
 
     private func closeCleanly() {

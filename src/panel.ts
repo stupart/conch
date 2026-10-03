@@ -429,6 +429,8 @@ export interface PublishedState {
     /** `set-settings`, and `rows[].settings` / `sessionSettings` (session-settings.ts). */
     sessionSettings?: 1;
     sessionHosts?: 1;
+    /** `session-start` takes `help: true` (Help with conch, from a client that can't name the folder). */
+    helpSession?: 1;
   };
   /** Stable identity of the daemon installation that owns every local session key. */
   ownerDeviceId: string;
@@ -674,7 +676,7 @@ export function buildPublishedState(
     // 2: deliverables carry `artifact`, `version` and `kind`, and a session command removes them.
     // 3: a deliverable's scene carries the agent's `marks` (agent ink).
     // 4: a deliverable the phone can't draw carries a snapshot of it from the Mac (`preview`).
-    features: { deliverables: 4, viewedState: 1, sessionHosts: 1, ...(options.settingsForSessionId ? { sessionSettings: 1 as const } : {}) },
+    features: { deliverables: 4, viewedState: 1, sessionHosts: 1, helpSession: 1, ...(options.settingsForSessionId ? { sessionSettings: 1 as const } : {}) },
     ownerDeviceId,
     execution: deviceExecutionCatalog(ownerDeviceId, options.runtimeLabel ?? ownerDeviceId,
       model.rows.flatMap((row) => row.claudeAccountId ? [{ id: row.claudeAccountId, label: row.accountLabel ?? row.claudeAccountId }] : []),

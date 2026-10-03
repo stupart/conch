@@ -37,13 +37,16 @@ public struct SpeechEngineReport: Decodable, Equatable, Sendable {
     public let problem: Problem?
     /// While a failed attempt waits to try again: when, in epoch milliseconds.
     public let retryAt: Double?
+    /// The daemon's own sentence: where each part comes from, or why it is off. What Settings shows.
+    public let detail: String?
 
-    public init(state: String, reason: String? = nil, progress: Progress? = nil, problem: Problem? = nil, retryAt: Double? = nil) {
+    public init(state: String, reason: String? = nil, progress: Progress? = nil, problem: Problem? = nil, retryAt: Double? = nil, detail: String? = nil) {
         self.state = state
         self.reason = reason
         self.progress = progress
         self.problem = problem
         self.retryAt = retryAt
+        self.detail = detail
     }
 }
 

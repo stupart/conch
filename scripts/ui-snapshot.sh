@@ -16,7 +16,11 @@
 #                                               delivery-*.png: a message you sent, as it is
 #                                               sent, confirmed, and not delivered, and
 #                                               compare-*.png when that row holds two versions
-#                                               of one artifact (fixtures/compare.json).
+#                                               of one artifact (fixtures/compare.json), and
+#                                               commands.png / inspector.png: the session's
+#                                               Commands and What it carries sheets; then
+#                                               sheet-*.png: Settings, Help with conch,
+#                                               Providers, Voices & agents and the legend.
 #
 # ios builds a Debug simulator app into build/ios-sim.noindex, boots a SHUT-DOWN
 # iPhone 17-class simulator with `simctl boot` (never the Simulator app), renders
@@ -130,7 +134,13 @@ ios)
         shoot "compare-$mode.png" -conchFixtureSession "$session" -conchFixtureReview YES -conchFixtureCompare "$mode"
       done
     fi
+    # The Mac's ⌘K and its inspector, on the phone; the fixture answers their reads.
+    shoot commands.png -conchFixtureSession "$session" -conchFixtureSheet commands
+    shoot inspector.png -conchFixtureSession "$session" -conchFixtureSheet inspector
   fi
+  for sheet in settings help providers voices legend; do
+    shoot "sheet-$sheet.png" -conchFixtureSheet "$sheet"
+  done
   ;;
 *)
   echo "usage: ui-snapshot.sh mac <out.png> | ios <out-dir> [session-id]" >&2

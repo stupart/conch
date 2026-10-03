@@ -42,16 +42,29 @@ struct SettingsView: View {
                     .padding(24)
                 } else {
                     List {
+                        // The Mac's Settings sections that have something to say away from it.
                         Section {
+                            NavigationLink {
+                                ProvidersView(bridge: bridge)
+                            } label: { Label("Providers", systemImage: "person.2.badge.key") }
+                            .listRowBackground(Palette.bg)
                             NavigationLink {
                                 AccountToolsView { request in try await bridge.accountTools(request) }
                                     .navigationTitle("Plugins & MCP")
                             } label: { Label("Plugins & MCP", systemImage: "puzzlepiece.extension") }
                             .listRowBackground(Palette.bg)
+                            NavigationLink {
+                                VoicesView(bridge: bridge)
+                            } label: { Label("Voices & agents", systemImage: "waveform") }
+                            .listRowBackground(Palette.bg)
+                            NavigationLink {
+                                MarksLegendView()
+                            } label: { Label("What the marks mean", systemImage: "info.circle") }
+                            .listRowBackground(Palette.bg)
                         }
 
                         ForEach($entries) { $entry in
-                            SettingRow(setting: $entry) { value in
+                            SettingRow(setting: $entry, onReset: { await reset(entry.key) }) { value in
                                 await apply(entry.key, value)
                             }
                             .listRowBackground(Palette.bg)
@@ -141,10 +154,20 @@ struct SettingsView: View {
         }
         await load()
     }
+
+    private func reset(_ key: String) async {
+        guard await bridge.resetSetting(key: key) else {
+            loadError = "That didn't reset — the Mac may have gone away."
+            return
+        }
+        await load()
+    }
 }
 
 private struct SettingRow: View {
     @Binding var setting: ConchSetting
+    /// Back to the default, as the Mac's reset arrow: only on a value someone set.
+    let onReset: () async -> Void
     let onChange: (ConchSettingValue) async -> Void
 
     var body: some View {
@@ -167,6 +190,14 @@ private struct SettingRow: View {
                 Text("Set by the environment — can't be changed from here.")
                     .font(Type.caption)
                     .foregroundStyle(Palette.textFaint)
+            } else if setting.source != "default" {
+                Button("Reset to default", systemImage: "arrow.uturn.backward") {
+                    Task { await onReset() }
+                }
+                .font(Type.caption)
+                .buttonStyle(.borderless)
+                .foregroundStyle(Palette.textDim)
+                .accessibilityLabel("Reset \(setting.displayName)")
             }
         }
         .padding(.vertical, 6)

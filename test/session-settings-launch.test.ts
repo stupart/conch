@@ -107,7 +107,7 @@ describe("what the published state carries", () => {
         return sessionId === "x1" ? { model: "gpt-6-astra", modelLabel: "GPT-6-Astra", effort: "xhigh" } : undefined;
       },
     });
-    expect(published.features).toEqual({ deliverables: 4, viewedState: 1, sessionHosts: 1, sessionSettings: 1 });
+    expect(published.features).toEqual({ deliverables: 4, viewedState: 1, sessionHosts: 1, helpSession: 1, sessionSettings: 1 });
     expect(published.sessionSettings).toEqual(catalog);
     expect(published.rows.find((row) => row.id === "x1")?.settings).toEqual({ model: "gpt-6-astra", modelLabel: "GPT-6-Astra", effort: "xhigh" });
     expect(published.rows.find((row) => row.id === "c1")?.settings).toBeUndefined();
@@ -118,7 +118,7 @@ describe("what the published state carries", () => {
 
   test("an older caller publishes none of it", () => {
     const published = buildPublishedState("device", model, new Map(), new Set(), 100);
-    expect(published.features).toEqual({ deliverables: 4, viewedState: 1, sessionHosts: 1 });
+    expect(published.features).toEqual({ deliverables: 4, viewedState: 1, sessionHosts: 1, helpSession: 1 });
     expect(published.sessionSettings).toBeUndefined();
     expect(published.rows.every((row) => row.settings === undefined)).toBe(true);
   });
