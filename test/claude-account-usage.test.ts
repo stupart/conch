@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { clearAccountUsage, decodeRateLimits, installAccountUsage, readAccountUsage, saveAccountUsage, uninstallAccountUsage } from "../src/claude-account-usage.ts";
+import { clearAccountUsage, decodeRateLimits, installAccountUsage, readAccountUsage, repairAccountUsage, saveAccountUsage, uninstallAccountUsage } from "../src/claude-account-usage.ts";
+import { conchInvocation } from "../src/install.ts";
 import type { ClaudeAccountStatus } from "../src/claude-accounts.ts";
 import { validateControlResponse } from "../src/settings.ts";
 import { removeHooksFile } from "../src/uninstall.ts";
@@ -105,4 +106,28 @@ test("the installed command works inside an extra profile and forwards the origi
   expect(await child.exited).toBe(0);
   expect(readAccountUsage([account], time).accounts[0]!.windows[0]!.pct).toBe(37);
   expect(readFileSync(join(account.configDir, "conch-usage.json"), "utf8")).not.toContain("must-not-persist");
+});
+
+describe("a status line whose bun moved", () => {
+  // 2026-10-03: the status line conch puts on an account named /opt/homebrew/Cellar/bun/1.4.2/bin/bun, which the next
+  // Homebrew upgrade deletes. The daemon repairs it at start, keeping what the user had before conch's.
+  test("conch's own is pointed at this bun, its saved original kept; the user's own is never touched", () => {
+    const dir = mkdtempSync(join(tmpdir(), "conch-usage-repair-"));
+    const account = { id: "work", label: "Work", configDir: dir };
+    try {
+      writeFileSync(join(dir, "settings.json"), JSON.stringify({ statusLine: { type: "command", command: "my-line" } }));
+      installAccountUsage(account, '"/opt/homebrew/Cellar/bun/1.4.0/bin/bun" "/x/src/cli.ts"');
+      expect(repairAccountUsage(account)).toBe(true);
+      const after = JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")).statusLine.command as string;
+      expect(after).toContain(conchInvocation());
+      expect(after).not.toContain("Cellar");
+      // Still conch's, and the user's line is still the one it puts back.
+      expect(JSON.parse(readFileSync(join(dir, "conch-statusline.json"), "utf8")).original).toEqual({ type: "command", command: "my-line" });
+      expect(repairAccountUsage(account)).toBe(false);
+
+      writeFileSync(join(dir, "settings.json"), JSON.stringify({ statusLine: { type: "command", command: '"/nowhere/their-line"' } }));
+      expect(repairAccountUsage(account)).toBe(false);
+      expect(JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")).statusLine.command).toBe('"/nowhere/their-line"');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
 });

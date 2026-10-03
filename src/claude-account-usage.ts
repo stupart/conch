@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { accountStorePath, readClaudeAccountStatus, validAccountId, type ClaudeAccount, type ClaudeAccountStatus } from "./claude-accounts.ts";
-import { conchInvocation } from "./install.ts";
+import { conchInvocation, staleProgram } from "./install.ts";
 import type { SwapDashboard, UsageWindow } from "./claude-swap.ts";
 
 const marker = "usage-statusline";
@@ -36,6 +36,18 @@ export function installAccountUsage(account: ClaudeAccount, invocation = conchIn
   const orphaned = object(current) && typeof current.command === "string" && current.command.includes(` ${marker} `);
   write(statePath(account), { accountId: account.id, command, original: managed ? state?.original ?? null : orphaned ? null : current ?? null });
   write(path, { ...settings, statusLine: { ...(object(current) ? current : {}), type: "command", command } });
+}
+
+/**
+ * The status line conch put on an account, put back on its feet when its program has moved (`staleProgram`): a bun
+ * upgrade deleted the one it named. Only conch's own; a status line the user set is never touched. Whether it did.
+ */
+export function repairAccountUsage(account: ClaudeAccount): boolean {
+  const current = read(join(account.configDir, "settings.json"))?.statusLine;
+  if (!object(current) || typeof current.command !== "string" || !current.command.includes(` ${marker} `)) return false;
+  if (!staleProgram(current.command)) return false;
+  installAccountUsage(account);
+  return true;
 }
 
 export function clearAccountUsage(account: ClaudeAccount): void {
