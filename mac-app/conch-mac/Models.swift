@@ -916,6 +916,9 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
     /// (`scene.inspect`). Absent from older daemons and from reviews that asked for nothing, which is `auto`.
     let sceneKind: String?
     let inspect: String?
+    /// It carried a scene at all, even one with none of the parts above: the lagoon is sent `scene: {}` for it, as the
+    /// brand repo's sanitize.mjs sends it (LagoonSource.swift, 2026-10-04).
+    let hasScene: Bool
     /// What the agent drew over it, in order (`scene.marks`, `features.deliverables` 3). Empty from an
     /// older daemon and from a review with none.
     let marks: [AgentMark]
@@ -967,6 +970,7 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
         let scene = try? container.decodeIfPresent(Scene.self, forKey: .scene)
         sceneKind = scene?.target?.kind
         inspect = scene?.inspect
+        hasScene = scene != nil
         marks = scene?.marks?.all ?? []
         artifact = try? container.decodeIfPresent(String.self, forKey: .artifact)
         version = try? container.decodeIfPresent(Int.self, forKey: .version)

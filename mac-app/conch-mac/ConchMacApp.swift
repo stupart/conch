@@ -102,11 +102,16 @@ struct ConchMacApp: App {
                     NotificationCenter.default.post(name: .openDeliverableInPlace, object: nil)
                 }
                 .keyboardShortcut("3", modifiers: .command)
+                // ⌘0: zoom out to everything, the lagoon (LagoonPane.swift). Only there while Debug › Show Lagoon is on
+                // and this build carries the page.
+                LagoonMenuItem()
             }
             // Debugging conch itself. The Terminal Mirror: the session's own terminal, view-only, beside conch's
             // view of it — off unless this is on. The strip's Terminal is a button that brings the real one forward.
             CommandMenu("Debug") {
                 TerminalMirrorMenuToggle()
+                // The lagoon, read-only while it is tried out (`conch.lagoon.enabled`, off by default).
+                LagoonMenuToggle()
             }
             CommandGroup(after: .help) {
                 Button("Set up conch…") { OnboardingController.shared.openFromHelp() }

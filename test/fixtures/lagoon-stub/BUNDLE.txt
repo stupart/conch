@@ -1,0 +1,2 @@
+conch lagoon test stub · not the real bundle
+Load index.html?app=1 (MAC-APP-SPEC.md).

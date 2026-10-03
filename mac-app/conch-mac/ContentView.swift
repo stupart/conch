@@ -16,6 +16,13 @@ struct ContentView: View {
         remembering: WorkspaceMemory.decode(UserDefaults.standard.data(forKey: conchMacWorkspaceKey)),
         remember: { UserDefaults.standard.set($0.encoded(), forKey: conchMacWorkspaceKey) }
     )
+    /// The lagoon (LagoonPane.swift): the window's for as long as it lives, so going to the conversation and back finds it
+    /// where it was.
+    @StateObject private var lagoon = LagoonModel()
+    /// Which page the window shows, remembered so the lagoon survives a relaunch; the lagoon only while it is switched on
+    /// and in this build (`LagoonFeature.page`).
+    @AppStorage(Lagoon.pageKey) private var storedPage: Lagoon.Page = .sessions
+    @AppStorage(Lagoon.enabledKey) private var lagoonEnabled = false
     @State private var remoteSelection: RemoteSessionID?
     @State private var renamingSessionID: SessionRow.ID?
     @State private var renameDraft = ""
@@ -71,6 +78,10 @@ struct ContentView: View {
         store.state?.row(workspace.viewing)
     }
 
+    private var page: Lagoon.Page {
+        LagoonFeature.page(storedPage, enabled: lagoonEnabled)
+    }
+
     /// What a command addresses when nothing was picked — Recite, ⌘K, the arrow keys' anchor.
     /// The same rule the pane types into, so the window and the pane can't name two different
     /// sessions; by identity, never by the live label, which is renameable and duplicable.
@@ -82,6 +93,8 @@ struct ContentView: View {
         ZStack {
             DashboardView(
                 onSelectRemote: { remoteSelection = $0 },
+                page: page,
+                lagoonAvailable: LagoonFeature.available(enabled: lagoonEnabled),
                 state: store.state,
                 selectedSessionID: workspace.viewing,
                 renamingSessionID: renamingSessionID,
@@ -89,6 +102,7 @@ struct ContentView: View {
                 actions: DashboardActions(
                     onStartSession: { isShowingSessionStart = true },
                     onSelectSession: selectSession,
+                    onDoubleClickSession: doubleClickSession,
                     onBeginRename: beginRename,
                     onCommitRename: commitRename,
                     onCancelRename: cancelRename,
@@ -122,6 +136,7 @@ struct ContentView: View {
         .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: quietToast)
         .background(ConchPalette.bg)
         .environmentObject(workspace)
+        .environmentObject(lagoon)
         .background(
             DashboardInputMonitor(
                 isEnabled: remoteSelection == nil && !isShowingKeyboardShortcuts && !isShowingCommandPalette,
@@ -166,6 +181,21 @@ struct ContentView: View {
                   let row = store.state?.rows.first(where: { $0.id == id }) else { return }
             selectSession(row)
         }
+        // ⌘0 and the header's shell: the lagoon, or back to the conversation. Nothing while it isn't available.
+        .onReceive(NotificationCenter.default.publisher(for: .showLagoon)) { _ in
+            guard LagoonFeature.available(enabled: lagoonEnabled) else { return }
+            storedPage = page == .lagoon ? .sessions : .lagoon
+        }
+        // A row picked while the lagoon shows (a click, the arrows, the menu bar): the camera glides to its crab, and the
+        // page stays.
+        .onChange(of: workspace.viewing) { _, id in
+            guard page == .lagoon, let id else { return }
+            lagoon.focus(id)
+        }
+        // Switched off: its web view goes now rather than in ten minutes.
+        .onChange(of: lagoonEnabled) { _, enabled in
+            if !enabled { lagoon.teardown() }
+        }
         // Which session the window shows, for a debug capture's sidecar (`DebugSnapshot.viewing`).
         .onChange(of: workspace.viewing, initial: true) { _, id in DebugSnapshot.viewing = id }
         // A session picked here takes the overlay's conversation off the Ready pill's scene, unless it is that one.
@@ -198,7 +228,25 @@ struct ContentView: View {
     }
 
     private func selectSession(_ row: SessionRow) {
+        // Already picked: `viewing` doesn't change, so the glide is asked for here (the camera may have wandered off it).
+        if page == .lagoon, workspace.viewing == row.id { lagoon.focus(row.id) }
         workspace.viewing = row.id
+    }
+
+    /// A row's double-click renames it, as every file list has taught. On the lagoon a single click only moves the camera,
+    /// so there a double-click is the way into that session's conversation (spec §1), and Rename stays in the row's menu.
+    private func doubleClickSession(_ row: SessionRow) {
+        if page == .lagoon {
+            openConversation(row)
+        } else {
+            beginRename(row)
+        }
+    }
+
+    /// From the lagoon to a session's conversation: double-click or Return on its row.
+    private func openConversation(_ row: SessionRow) {
+        workspace.viewing = row.id
+        storedPage = .sessions
     }
 
     /// A session started from here has checked in: show it. Tyler: "When a session starts successfully it should then
@@ -400,6 +448,10 @@ struct ContentView: View {
             moveSelection(by: 1)
         case .releaseSelection:
             releaseSelection()
+        case .openConversation:
+            // Return: on the lagoon, the selected session's conversation. Anywhere else the key isn't the dashboard's.
+            guard page == .lagoon, let row = selectedRow else { return false }
+            openConversation(row)
         }
         return true
     }

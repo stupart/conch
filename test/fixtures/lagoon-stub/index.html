@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en" style="background:#E9CFB0">
+<head>
+<meta charset="utf-8">
+<title>conch lagoon (test stub)</title>
+<!-- A stand-in for the lagoon's runtime bundle (the brand repo's experiments/bridge/build-bundle.mjs): the same
+     window.conchWorld API, version 1, and nothing drawn. test/lagoon-page.test.ts serves it to the app's own web view over
+     conch-lagoon:// (mac-app/conch-mac/LagoonWeb.swift) where conch.app would serve the real one. A module script and a
+     fetch, as the real page uses both: a .js served as anything but JavaScript, or a scheme fetch refuses, never boots. -->
+<script type="module" src="js/stub.js"></script>
+</head>
+<body><p id="status">Wading in…</p></body>
+</html>

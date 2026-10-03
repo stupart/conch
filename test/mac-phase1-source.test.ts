@@ -550,7 +550,8 @@ describe("§3's anatomy, where the app had drifted from it", () => {
     // The lab's `#stage{top:8;right:8;bottom:8;left:var(--sideW);background:var(--surface);
     // border-radius:12px;box-shadow:var(--shPanel);overflow:hidden}` — §3's prose in values.
     const pane = dashboard.slice(
-      dashboard.indexOf("ConversationPane(\n                        state: state,"),
+      // (Inside the page switch since the lagoon, 2026-10-04: the panel's chrome wraps whichever page is in front.)
+      dashboard.indexOf("ConversationPane(\n                                state: state,"),
       dashboard.indexOf("if store.isLogDrawerOpen {"),
     );
     expect(pane.length).toBeGreaterThan(200);
