@@ -1080,6 +1080,14 @@ final class ComposerSwoop {
     private var screens: [(frame: NSRect, panel: FloatingPanel, view: SwoopView)] = []
     private var lastFrame: CFTimeInterval = 0
 
+    /// The longest a flight takes before the live input shows anyway, where it was going. A flight steps on its display's
+    /// own frames, and those stop when that display sleeps or the swoop's panel isn't drawn; it also chases a card that
+    /// moves, and the window's composer grows as it is typed into while it waits unseen with the keyboard. Either way the
+    /// input never showed, and everything typed went into a field nobody could see (2026-10-04: "all the text goes
+    /// invisible"). A flight takes about half a second; this is three times that.
+    static let arrivalDeadline: TimeInterval = 1.5
+    private var deadline: DispatchWorkItem?
+
     func fly(_ next: ComposerFlight, faces: [ComposerPlace: CGImage], dark: Bool) {
         flight = next
         self.faces = faces.compactMapValues(SwoopFace.init)
@@ -1089,6 +1097,25 @@ final class ComposerSwoop {
         render()
         for screen in screens { screen.panel.orderFrontRegardless() }
         run(true)
+        armDeadline()
+    }
+
+    /// From now, `arrivalDeadline` until the input shows wherever the flight is going, landed or not.
+    private func armDeadline() {
+        deadline?.cancel()
+        let overdue = DispatchWorkItem { [weak self] in self?.overdue() }
+        deadline = overdue
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.arrivalDeadline, execute: overdue)
+    }
+
+    /// The flight ran out of time: the input shows where it was going, and the glass goes.
+    private func overdue() {
+        guard let flight else { return }
+        if !told {
+            told = true
+            onArrived(flight.to)
+        }
+        finish()
     }
 
     /// Somewhere new, from where the glass is and as fast as it is going; never a second flight.
@@ -1099,6 +1126,7 @@ final class ComposerSwoop {
         if let face = face.flatMap(SwoopFace.init) { faces[place] = face }
         told = false
         run(true)
+        armDeadline()
     }
 
     /// Where it is going moved.
@@ -1157,6 +1185,8 @@ final class ComposerSwoop {
     }
 
     private func finish() {
+        deadline?.cancel()
+        deadline = nil
         flight = nil
         run(false)
         for screen in screens {
