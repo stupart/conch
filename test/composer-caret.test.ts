@@ -2,10 +2,19 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const composer = readFileSync(
-  join(import.meta.dir, "..", "mac-app", "conch-mac", "ComposerView.swift"),
-  "utf8",
-);
+const read = (path: string) => readFileSync(join(import.meta.dir, "..", path), "utf8");
+const composer = read("mac-app/conch-mac/ComposerView.swift");
+const editor = read("mac-app/conch-mac/ComposerEditor.swift");
+const editing = read("design/ConchDesign/Sources/ConchDesign/ComposerEditing.swift");
+
+/** `makeNSView`, where the editor is built, from its signature to its return. */
+function makeNSView(): string {
+  const at = editor.indexOf("func makeNSView(context: Context) -> NSScrollView {");
+  expect(at).toBeGreaterThan(-1);
+  const end = editor.indexOf("\n    }\n", at);
+  expect(end).toBeGreaterThan(at);
+  return editor.slice(at, end);
+}
 
 /**
  * The caret sits on the same line as the words.
@@ -26,37 +35,35 @@ const composer = readFileSync(
  *
  * The placeholder, top-aligned in the same box, draws at 4 pt. The middle row is what shipped
  * first and what Tyler saw twice: "the cursor in the text input box still isn't lined up".
+ *
+ * Every character carries it now, typed, restored or put there from outside: measured offscreen on
+ * 2026-10-04, the SwiftUI editor laid typed lines out 18 pt apart, without it, while the field was
+ * sized as if they had it.
  */
 test("the editor lays its text out in the lab's 22 pt line box", () => {
-  const insets = composer.slice(composer.indexOf("func conchTextViewInsets("));
-  const body = insets.slice(0, insets.indexOf("\n    }\n"));
-  expect(body).toContain("paragraph.lineSpacing = lineSpacing");
+  const paragraph = editor.slice(editor.indexOf("static let paragraph: NSParagraphStyle = {"));
+  const body = paragraph.slice(0, paragraph.indexOf("}()"));
+  expect(body).toContain("paragraph.lineSpacing = ConchType.readingLineSpacing");
   // A line box is the wrong tool: AppKit hangs its extra leading above the baseline, so this
   // is what pushed the text down and grew the caret the first time.
-  expect(body).not.toContain("minimumLineHeight");
-  expect(body).not.toContain("maximumLineHeight");
+  expect(editor).not.toContain("minimumLineHeight");
+  expect(editor).not.toContain("maximumLineHeight");
+  expect(editor).toContain("[.font: font, .foregroundColor: ink, .paragraphStyle: paragraph]");
   // Both, or only one of them is right: `defaultParagraphStyle` styles what is laid out,
   // `typingAttributes` styles what is typed next.
-  expect(body).toContain("view.defaultParagraphStyle = paragraph");
-  expect(body).toContain("view.typingAttributes[.paragraphStyle] = paragraph");
-  // A draft restored into the field was laid out before this ran: switching to a session
-  // with a saved draft styles the text only if this branch can actually be entered. Asserting
-  // the call alone let `storage.length < 0` through mutation testing — the call was still
-  // there, it simply could never run.
-  expect(body).toContain("if let storage = view.textStorage, storage.length > 0 {");
-  expect(body).toContain("storage.addAttribute(");
-  expect(body).toContain("range: NSRange(location: 0, length: storage.length)");
-  // The line box comes from the one constant the lab's `22px` is already pinned to.
-  expect(composer).toContain(".conchTextViewInsets(lineSpacing: ConchType.readingLineSpacing)");
-  expect(composer).toContain("static let lineHeight: CGFloat = 22");
-  // Inside a `View` extension this name belongs to SwiftUI's own modifier, so reaching for
-  // the struct's constant there is a compile error, not a wrong value. Asserted against the
-  // CODE forms only — the comment above the function says `ComposerView.lineHeight` in order
-  // to explain the trap, and a file-wide sweep would match that prose and fail on it.
-  expect(composer).not.toContain("= ComposerView.lineHeight");
-  expect(composer).not.toContain("(ComposerView.lineHeight");
-  // The constant still bounds the field at one line and at eight — `#ta{max-height:22*8+12}`.
-  expect(composer).toContain("min(Self.lineHeight * 8, max(Self.lineHeight, measured))");
+  const made = makeNSView();
+  expect(made).toContain("view.defaultParagraphStyle = Self.paragraph");
+  expect(made).toContain("view.typingAttributes = Self.attributes");
+  // A draft already there when the field is built, and every change from outside, carry the same attributes.
+  expect(made).toContain("view.textStorage?.setAttributedString(NSAttributedString(string: text, attributes: Self.attributes))");
+  expect(editor).toContain("storage.replaceCharacters(in: edit.range, with: NSAttributedString(string: edit.replacement, attributes: ComposerEditor.attributes))");
+  // Emptied, a text view forgets its typing style; it is put back after every outside change.
+  expect(editor.match(/view\.typingAttributes = ComposerEditor\.attributes/g) ?? []).toHaveLength(2);
+  // The line box is the one constant the lab's `22px` is pinned to, one line to eight — `#ta{max-height:22*8+12}`.
+  expect(editing).toContain("public static let lineHeight: CGFloat = 22");
+  expect(editing).toContain("public static let maxLines = 8");
+  expect(editing).toContain("min(lineHeight * CGFloat(maxLines), max(lineHeight, ceil(used + lineSpacing)))");
+  expect(composer).toContain("private static let lineHeight = ComposerEditing.lineHeight");
 });
 
 /**
@@ -77,20 +84,16 @@ test("the editor lays its text out in the lab's 22 pt line box", () => {
  *     the layout manager delegate, TextKit 1   glyph ink 72..99 -> 68..95, caret 64..99 unmoved
  *
  * So the glyphs rise half the leading inside the fragment and the editor slides down by that same
- * half: the words do not move by a pixel, and only the caret does.
+ * half: the words do not move by a pixel, and only the caret does. test/composer-editor-render.test.ts
+ * measures it on the real editor: typed words on the placeholder's own rows, the caret over them.
  */
 test("the caret is moved by the baseline, and the words are put back", () => {
-  expect(composer).toContain(
-    "private final class ComposerCaretBaseline: NSObject, NSLayoutManagerDelegate {",
-  );
-  expect(composer).toContain("baselineOffset.pointee -= ConchType.readingLineSpacing / 2");
+  expect(editor).toContain("final class ComposerCaretBaseline: NSObject, NSLayoutManagerDelegate {");
+  expect(editor).toContain("baselineOffset.pointee -= ConchType.readingLineSpacing / 2");
   // Half the leading, taken from the one constant the lab's 22 px is already pinned to.
   expect(composer).toContain("static let caretRaise: CGFloat = ConchType.readingLineSpacing / 2");
-  // Installed on the editor — which is also what puts the view back on TextKit 1, the point of
-  // reading `layoutManager` at all.
-  const insets = composer.slice(composer.indexOf("func conchTextViewInsets("));
-  const body = insets.slice(0, insets.indexOf("\n    }\n"));
-  expect(body).toContain("view.layoutManager?.delegate = ComposerCaretBaseline.shared");
+  // On the editor's own TextKit 1 layout manager, from the moment it is made.
+  expect(makeNSView()).toContain("view.layoutManager?.delegate = ComposerCaretBaseline.shared");
   // The editor trades the same 2 pt between its top and bottom inset. Raising the glyphs without
   // sliding the editor back down would move every word instead of the caret, which is exactly
   // the mistake #303 shipped.
@@ -107,59 +110,35 @@ test("the caret is moved by the baseline, and the words are put back", () => {
 /**
  * A draft that is already in the field when it is built sits on the placeholder's line too.
  *
- * The delegate above only moves glyphs laid out AFTER it is installed. A draft restored at launch,
- * or found on coming back to its session, was laid out first, so its words kept the whole
- * half-leading the editor slides down by and sat 2 pt under the placeholder until a keystroke laid
- * them out again. Measured offscreen at 2x with the real ComposerView, the same words each way:
- *
- *     placeholder                          ink 75..103 px
- *     words typed after the field is up    ink 75..103 px, baseline 49 pt
- *     words there when it is built         ink 79..107 px, baseline 51 pt   <- before this
- *     laid out again under the delegate    ink 75..103 px, baseline 49 pt
- *
- * The same run with the relayout removed measured 79..107 again.
+ * The delegate only moves glyphs laid out after it is installed. When the introspector installed it, a
+ * draft restored at launch, or found on coming back to its session, had been laid out first, and sat
+ * 2 pt under the placeholder until a keystroke laid it out again (measured 2026-09-28: ink 79..107 px
+ * against 75..103), so it had to be invalidated. The editor now installs the delegate before the draft
+ * goes in, on a text view that is TextKit 1 from the start, and the render test measures a restored
+ * draft on the same rows as typed words.
  */
-test("a draft laid out before the caret delegate existed is laid out again under it", () => {
-  const insets = composer.slice(composer.indexOf("func conchTextViewInsets("));
-  const body = insets.slice(0, insets.indexOf("\n    }\n"));
-  // Invalidated, not laid out here: the layout it asks for happens at the next draw, by which time the
-  // delegate is installed. (Moved above the delegate line it measured the same, 75..103 px.)
-  expect(body).toContain("view.layoutManager?.delegate = ComposerCaretBaseline.shared");
-  expect(body).toContain("layout.invalidateLayout(");
-  // Reachable for exactly the drafts that need it.
-  expect(body).toContain(
-    "if let layout = view.layoutManager, let storage = view.textStorage, storage.length > 0 {",
-  );
-  expect(body).toContain("forCharacterRange: NSRange(location: 0, length: storage.length),");
+test("a draft already there is laid out under the caret delegate from the start", () => {
+  const made = makeNSView();
+  expect(made).toContain("let view = ComposerTextView(usingTextLayoutManager: false)");
+  const delegate = made.indexOf("view.layoutManager?.delegate = ComposerCaretBaseline.shared");
+  const draft = made.indexOf("view.textStorage?.setAttributedString(");
+  expect(delegate).toBeGreaterThan(-1);
+  expect(draft).toBeGreaterThan(delegate);
 });
 
 /**
- * The reach into the editor cannot depend on how deeply SwiftUI nests a background.
+ * TextKit 1 from creation, never switched under a live view.
  *
- * The leading, the caret, the spell checking and the drag types all arrive through one
- * `DispatchQueue.main.async` that used to hop exactly two superviews up from its probe and give
- * up silently. Measured in a harness around a real TextEditor, that hop came up empty in 6
- * launches out of 14. A miss is invisible and total: the editor keeps SwiftUI's own 5 pt
- * lineFragmentPadding, gets no leading, no caret fix, no spelling, and a dropped file lands as a
- * path.
+ * The introspector put SwiftUI's editor on TextKit 1 by reading its `layoutManager`, which AppKit
+ * answers by switching the view over: measured offscreen on 2026-10-04, 92 ms after it was built
+ * and laid out on TextKit 2, with SwiftUI's adaptor attached. The caret's seam is a layout
+ * manager's, so the editor asks for TextKit 1 when it makes the view, and nothing reaches in after.
  */
-test("the introspector finds the editor whatever the nesting, and tries again if it is early", () => {
-  // The reach itself, not how `configure` is handed to it: the closure now also records the
-  // editor it found, so the spelling settings can be put back after each SwiftUI update
-  // (mac-spelling.test.ts). The up-walk, the ten attempts and the bounded retry are the
-  // invariant here, and they are unchanged.
-  expect(composer).toMatch(/Self\.reach\(from: probe, attempts: 10\) \{ textView in/);
-  expect(composer).toContain("if let textView = firstTextView(in: next) {");
-  // Up from the probe, not a hard-coded hop.
-  expect(composer).toContain("ancestor = next.superview");
-  expect(composer).not.toContain("probe.superview?.superview");
-  // It stops at the window rather than walking out of it.
-  expect(composer).toContain("if next === next.window?.contentView { break }");
-  // And it looks again next turn when the tree is not up yet — bounded, so a composer that never
-  // appears cannot spin forever.
-  expect(composer).toContain(
-    "if attempts > 1 { reach(from: probe, attempts: attempts - 1, configure: configure) }",
-  );
+test("the editor is TextKit 1 from creation, and nothing switches it later", () => {
+  expect(makeNSView()).toContain("ComposerTextView(usingTextLayoutManager: false)");
+  expect(editor.match(/usingTextLayoutManager:/g) ?? []).toHaveLength(1);
+  expect(composer).not.toContain("layoutManager");
+  expect(composer).not.toContain("NSTextView(");
 });
 
 test("the placeholder sits where the first typed line will", () => {
@@ -167,10 +146,10 @@ test("the placeholder sits where the first typed line will", () => {
   const body = field.slice(0, field.indexOf(".allowsHitTesting(false)"));
   expect(body).toContain('Text(messageUnavailableReason ?? "Message \\(sessionLabel)")');
   expect(body).toContain(".font(ConchType.readingBody)");
-  // Top, not centre: the editor lays its first line at the top of the box, and centring in
-  // `fieldHeight` drifts further from it the taller a draft grows.
-  expect(body).toContain(".frame(height: fieldHeight, alignment: .topLeading)");
-  expect(body).not.toContain(".frame(height: fieldHeight, alignment: .leading)");
+  // Top, not centre: the editor lays its first line at the top of the box. It shows only while
+  // the draft is empty, when the field is one line.
+  expect(body).toContain(".frame(height: Self.lineHeight, alignment: .topLeading)");
+  expect(body).not.toContain("alignment: .leading)");
   // The same insets as the editor, so one line sits in one place either way.
   expect(body).toContain(".padding(.top, Self.fieldInsetTop)");
   expect(body).toContain(".padding(.horizontal, Self.fieldInsetX)");
@@ -194,24 +173,29 @@ test("the dictation line sits exactly where the editor's text does", () => {
   expect(body).toContain(".padding(.horizontal, Self.fieldInsetX)");
   expect(body).not.toContain(".padding(.vertical, 6)");
   expect(body).not.toContain(".padding(.horizontal, 8)");
+  // The editor's own font is the same reading size.
+  expect(editor).toContain("static let font = NSFont.systemFont(ofSize: ConchType.readingBodySize)");
 });
 
 /**
  * The field grows by what it draws.
  *
- * `fieldHeight` measured the draft at `systemFont(ofSize: 12.5)` — line height 15 — while the
- * editor renders `ConchType.readingBody` (system 15) in a 22 pt box. Every wrapped line was
- * measured 7 pt short, so the box grew less than the text it had to hold.
+ * It was measured beside the editor: `boundingRect` at a width read off a GeometryReader, in
+ * attributes typed out a second time. That measured at 12.5 pt once, every wrapped line 7 pt short,
+ * and on 2026-10-04 six wrapped lines at 128 pt held text laid out 108 tall. Now the editor answers
+ * SwiftUI's size question itself, laying its own text out (its own attributes, its own typesetter)
+ * at the width it is offered.
  */
-test("the field measures the font it renders, in the line box it renders it in", () => {
-  const height = composer.slice(composer.indexOf("private var fieldHeight: CGFloat {"));
-  const body = height.slice(0, height.indexOf("\n    }"));
-  expect(body).toContain("NSFont.systemFont(ofSize: 15)");
-  expect(body).not.toContain("NSFont.systemFont(ofSize: 12.5)");
-  // Measured with the same leading it is drawn with, or the box is sized against a different
-  // shape from the one on screen.
-  expect(body).toContain("paragraph.lineSpacing = ConchType.readingLineSpacing");
-  expect(body).toContain("attributes: [.font: font, .paragraphStyle: paragraph]");
-  // Still bounded at eight lines, and never shorter than one.
-  expect(body).toContain("min(Self.lineHeight * 8, max(Self.lineHeight, measured))");
+test("the field is as tall as its own text lays out at the width it is given", () => {
+  expect(editor).toContain("func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {");
+  expect(editor).toContain("return CGSize(width: width, height: context.coordinator.height(at: width))");
+  expect(editor).toContain("return measure.height(of: storage, at: width)");
+  const measure = editor.slice(editor.indexOf("private final class Measure {"));
+  const body = measure.slice(0, measure.indexOf("\n}\n"));
+  expect(body).toContain("storage.setAttributedString(text)");
+  expect(body).toContain("container.size = NSSize(width: width, height: CGFloat.greatestFiniteMagnitude)");
+  expect(body).toContain("ComposerEditing.height(used: layout.usedRect(for: container).height, lineSpacing: ConchType.readingLineSpacing)");
+  expect(body).toContain("container.lineFragmentPadding = 0");
+  // Nothing measures beside it any more.
+  for (const gone of ["fieldHeight", "fieldWidth", "boundingRect", "GeometryReader"]) expect(composer, gone).not.toContain(gone);
 });

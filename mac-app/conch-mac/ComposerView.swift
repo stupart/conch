@@ -230,9 +230,8 @@ struct ComposerView: View {
     /// Drawn for a picture (`ComposerSwoop`, through ImageRenderer): the text view, the scroll view and the bridges are
     /// AppKit's, which a picture cannot draw, so their words are drawn as they would sit.
     @Environment(\.conchRendersStatically) private var rendersStatically
-    /// The field's real width, so height can be measured rather than guessed.
-    @State private var fieldWidth: CGFloat = 0
-    @FocusState private var fieldFocused: Bool
+    /// The field has the keyboard; set true to give it the keyboard (`ComposerEditor.isFocused`).
+    @State private var fieldFocused = false
 
     var body: some View {
         // No gap: `#ta` carries its own 4 of bottom padding and `.cbar` its own 34 height,
@@ -456,16 +455,10 @@ struct ComposerView: View {
                     .padding(.bottom, Self.fieldInsetBottom)
                     .padding(.horizontal, Self.fieldInsetX)
             } else {
-                // TextEditor has no intrinsic content height on macOS — it
-                // fills whatever it is given, which turned the composer into a
-                // third of the window. Size it from the text instead, so it
-                // starts as one line and grows only as far as it earns.
-                //
-                // It also carries its own text-container inset, which is what
-                // made typed text sit high while the placeholder looked fine:
-                // the two were being positioned by different rules. Zeroing the
-                // inset puts both under the same padding below.
-                TextEditor(text: $draft)
+                // AppKit's text view, owned rather than reached into (`ComposerEditor` says what SwiftUI's TextEditor did
+                // to the words in it). It sizes itself from its own layout: one line until the text needs two, then up to
+                // eight, measured at the width it is actually laid out at.
+                ComposerEditor(text: $draft, isFocused: $fieldFocused, identity: sessionID, onSend: send)
                     // Typing here is a claim on this session. Without it the
                     // pane keeps following the live session, so starting a
                     // sentence to one agent and having another begin working
@@ -473,33 +466,6 @@ struct ComposerView: View {
                     // draft still attached to the session you have just left.
                     .onChange(of: draft) { previous, current in
                         if previous.isEmpty, !current.isEmpty { onDraftStarted() }
-                    }
-                    // The lab's `#ta` uses the READING font — the composer answers the
-                    // transcript, so it is set at the same size rather than a size smaller.
-                    .font(ConchType.readingBody)
-                    .foregroundStyle(ConchPalette.textPrimary)
-                    .scrollContentBackground(.hidden)
-                    .focused($fieldFocused)
-                    .conchTextViewInsets(lineSpacing: ConchType.readingLineSpacing)
-                    // Not a no-op. SwiftUI's TextEditor rewrites the editor's spelling flags on
-                    // EVERY update — each keystroke included — from this one environment value
-                    // (disassembled `AppKitTextEditorAdaptor.updateNSView`, macOS 26): left unset
-                    // it turns continuous checking OFF; set, it turns checking AND correction on
-                    // together. So `conchSpelling()` alone lasted until the first keystroke, which
-                    // is why the flag was there and the underlines were not. Correction is put
-                    // back to the person's own setting below, after each of those updates.
-                    .autocorrectionDisabled(false)
-                    .conchSpelling()
-                    .frame(height: fieldHeight)
-                    // Return SENDS. Tyler kept "trying to send and making a new
-                    // line accidentally instead", which is the wrong default for
-                    // a chat composer: the common act should be the unmodified
-                    // key. Shift-Return still breaks a line for the rare
-                    // multi-paragraph message.
-                    .onKeyPress(keys: [.return], phases: .down) { press in
-                        if press.modifiers.contains(.shift) { return .ignored }
-                        send()
-                        return .handled
                     }
                     // The editor slides DOWN by the same half-leading its glyphs are raised
                     // by inside their line fragment, so the words land exactly where the
@@ -519,8 +485,8 @@ struct ComposerView: View {
                         // grown box — so it drifted further from the first line the taller
                         // the draft got. The editor lays its first line out at the TOP; the
                         // placeholder has to do the same or they are two different rules
-                        // positioning one line of text.
-                        .frame(height: fieldHeight, alignment: .topLeading)
+                        // positioning one line of text. Empty, the field is one line.
+                        .frame(height: Self.lineHeight, alignment: .topLeading)
                         .padding(.top, Self.fieldInsetTop)
                         .padding(.bottom, Self.fieldInsetBottom)
                         .padding(.horizontal, Self.fieldInsetX)
@@ -531,14 +497,6 @@ struct ComposerView: View {
         // No inner box: §3 says the stage has one card and no others, and the lab draws the
         // placeholder straight onto the composer. A field-shaped rectangle inside a
         // composer-shaped rectangle reads as two controls and costs ~20 pt of height.
-        .background(
-            GeometryReader { proxy in
-                Color.clear.onAppear { fieldWidth = proxy.size.width - Self.fieldInsetX * 2 }
-                    .onChange(of: proxy.size.width) { _, width in
-                        fieldWidth = width - Self.fieldInsetX * 2
-                    }
-            }
-        )
     }
 
     /// The mic, said three ways. A person mid-sentence needs to know conch is
@@ -624,43 +582,8 @@ struct ComposerView: View {
     /// has the measurements.
     static let caretRaise: CGFloat = ConchType.readingLineSpacing / 2
 
-    /// One line until the text genuinely needs two, then up to six.
-    ///
-    /// This used to guess at 110 characters per line, which wrapped the field
-    /// early on a wide window and late on a narrow one — Tyler noticed it
-    /// breaking "earlier than it needs to". A guess cannot be right at two
-    /// window widths, so measure: AppKit already knows how tall this string is
-    /// at this width, and asking costs one text layout per keystroke against a
-    /// draft that is a line or two long.
-    private var fieldHeight: CGFloat {
-        guard fieldWidth > 1 else { return Self.lineHeight }
-        let text = draft.isEmpty ? " " : draft
-        // The editor renders `ConchType.readingBody` — system 15 — in a 22 pt line box. This
-        // measured at 12.5, whose line height is 15 pt: every wrapped line was measured 7 pt
-        // short, so the box grew less than the text it had to hold. Measure what is drawn.
-        let font = NSFont.systemFont(ofSize: 15)
-        // The same leading the editor lays out with, or the box is measured against a
-        // different shape from the one drawn. `Self.lineHeight` still bounds it below and at
-        // eight lines — `#ta{max-height:calc(22px * 8 + 12px)}`.
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = ConchType.readingLineSpacing
-        let attributed = NSAttributedString(
-            string: text,
-            attributes: [.font: font, .paragraphStyle: paragraph]
-        )
-        let bounds = attributed.boundingRect(
-            with: NSSize(width: fieldWidth, height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading]
-        )
-        // A trailing newline has no glyphs, so AppKit measures it as no line at
-        // all and the caret would sit below the box you can see.
-        let trailing = draft.hasSuffix("\n") ? Self.lineHeight : 0
-        let measured = ceil(bounds.height) + trailing
-        return min(Self.lineHeight * 8, max(Self.lineHeight, measured))
-    }
-
-    /// The lab's `#ta` sets `22px` line height on the reading font.
-    private static let lineHeight: CGFloat = 22
+    /// The lab's `#ta` sets `22px` line height on the reading font (`ComposerEditing.lineHeight`).
+    private static let lineHeight = ComposerEditing.lineHeight
 
     /// Paths first, then the words.
     ///
@@ -1038,142 +961,6 @@ private struct AttachmentPreview: View {
     }
 }
 
-/// The caret straddles the words instead of riding above them.
-///
-/// Tyler: the cursor "rides high". Measured off the running app at 2x, focused and empty: the
-/// caret's ink spans 108..143 while the placeholder's spans 115..142 — 7 px of caret above the
-/// words and 1 px below them. Nothing is wrong with the leading. AppKit draws the caret to the
-/// LINE FRAGMENT, whose top is the ASCENT, and the reading font clears the cap line by 3.9 pt
-/// up top while its descent only just clears the descender.
-///
-/// Everything closer to the caret was tried first, each with a compiled probe against a real
-/// NSTextView, because two earlier attempts at "the caret" reasoned from simplified probes and
-/// shipped the wrong fix:
-///
-///     drawInsertionPoint(in:color:turnedOn:)  never called — under TextKit 2 the caret is an
-///                                             NSTextInsertionIndicator SUBVIEW
-///     that subview's bounds / layer transform  AppKit rewrites both on the next keystroke
-///     .baselineOffset on the text              absorbed by the typesetter under BOTH TextKits:
-///                                              the line grows, the ink does not move
-///     this delegate, under TextKit 1           glyph ink 72..99 -> 68..95, caret 64..99 in both
-///                                              runs: 8 px above / 0 below becomes 4 and 4
-///
-/// So the glyphs rise half the leading INSIDE the fragment while the fragment — the caret — stays
-/// where it was, and `ComposerView.caretRaise` slides the whole editor back down by that same
-/// half. The words do not move by a pixel; only the caret does.
-private final class ComposerCaretBaseline: NSObject, NSLayoutManagerDelegate {
-    /// AppKit holds a layout manager's delegate weakly, and this one is stateless and the same
-    /// for every composer, so one instance is kept alive here rather than parked on each view.
-    static let shared = ComposerCaretBaseline()
-
-    func layoutManager(
-        _ layoutManager: NSLayoutManager,
-        shouldSetLineFragmentRect lineFragmentRect: UnsafeMutablePointer<NSRect>,
-        lineFragmentUsedRect: UnsafeMutablePointer<NSRect>,
-        baselineOffset: UnsafeMutablePointer<CGFloat>,
-        in textContainer: NSTextContainer,
-        forGlyphRange glyphRange: NSRange
-    ) -> Bool {
-        baselineOffset.pointee -= ConchType.readingLineSpacing / 2
-        return true
-    }
-}
-
-private extension View {
-    /// Drop NSTextView's built-in padding so SwiftUI's padding is the only one
-    /// in play. Without this the editor applies its inset on top of ours and
-    /// typed text lands above centre while the placeholder does not.
-    /// `lineSpacing` is passed rather than read off `ComposerView`: inside a `View`
-    /// extension, a bare name like `lineHeight` resolves to SwiftUI's own modifier instead
-    /// of the struct's constant, and the compiler says so in types.
-    func conchTextViewInsets(lineSpacing: CGFloat) -> some View {
-        introspectTextView { view in
-            view.textContainerInset = .zero
-            view.textContainer?.lineFragmentPadding = 0
-            // `#ta{font:var(--read)/22px}` — 22 pt between lines, which is 15 pt of type plus
-            // 4 pt of leading: `ConchType.readingLineSpacing`, the same number the transcript
-            // already uses so the composer and the messages it answers cannot drift apart.
-            //
-            // It must be lineSpacing, NOT min/maxLineHeight. CSS splits a line box's extra
-            // leading half above and half below; AppKit puts ALL of it above the baseline. So
-            // asking for a 22 pt line box pushed the first line down and grew the caret with
-            // it, which is how the previous attempt at this made the gap worse:
-            //
-            //     no style          caret 18 pt, text ink at 4 pt
-            //     min/max 22        caret 22 pt, text ink at 8 pt   <- shipped, and wrong
-            //     lineSpacing 4     caret 18 pt, text ink at 4 pt
-            //
-            // The placeholder, top-aligned in the same box, draws its ink at 4 pt. Measured
-            // with a compiled probe against a real NSTextView, twice, because reasoning about
-            // this got it wrong once already.
-            let paragraph = NSMutableParagraphStyle()
-            paragraph.lineSpacing = lineSpacing
-            view.defaultParagraphStyle = paragraph
-            view.typingAttributes[.paragraphStyle] = paragraph
-            // An existing draft was laid out before this ran, so restyle what is already there.
-            if let storage = view.textStorage, storage.length > 0 {
-                storage.addAttribute(
-                    .paragraphStyle,
-                    value: paragraph,
-                    range: NSRange(location: 0, length: storage.length)
-                )
-            }
-            // The caret straddles the words instead of riding above them —
-            // `ComposerCaretBaseline` says why this is the only seam that moves it. Reading
-            // `layoutManager` is what puts the view back on TextKit 1, which is the point: the
-            // TextKit 2 caret is a subview AppKit re-places on every keystroke, with no seam.
-            view.layoutManager?.delegate = ComposerCaretBaseline.shared
-            // A draft already in the field when it was built — restored at launch, or on coming back to its session —
-            // was laid out before that delegate existed, so its words sat the whole half-leading low, 2 pt under where
-            // the placeholder draws them, until a keystroke laid them out again (measured offscreen, 2026-09-28:
-            // ink 79..107 px against the placeholder's 75..103 at 2x). Lay it out again now, under the delegate.
-            if let layout = view.layoutManager, let storage = view.textStorage, storage.length > 0 {
-                layout.invalidateLayout(
-                    forCharacterRange: NSRange(location: 0, length: storage.length),
-                    actualCharacterRange: nil
-                )
-            }
-
-            // A dropped file must reach the composer's `.onDrop`, not this
-            // editor. NSTextView registers for file drops and inserts the PATH
-            // as text, and it is the deeper view under the pointer, so it won
-            // every drop on the text area — Tyler dragged two screenshots in
-            // and got two paths in the message. Keep every other type (text
-            // drags still work).
-            //
-            // Image types are refused here too now that the composer accepts image BYTES. A
-            // rich-text NSTextView registers for them and draws a dragged image inline, so
-            // fixing the drop without this would have handed it straight back to the editor —
-            // the same loss as the pasted paths, wearing a different shape.
-            let refused: Set<NSPasteboard.PasteboardType> = [
-                .fileURL, NSPasteboard.PasteboardType("NSFilenamesPboardType"), .png, .tiff,
-            ]
-            let kept = view.registeredDraggedTypes.filter { !refused.contains($0) }
-            view.unregisterDraggedTypes()
-            view.registerForDraggedTypes(kept)
-        }
-    }
-
-    /// Spelling the way the rest of the Mac does it. Nothing turned it on, so
-    /// typos went straight into the session. Underlines always; correction and
-    /// text replacement only if the person has them on in System Settings.
-    /// Smart quotes and dashes stay off: this text lands in terminals and
-    /// code, where a curly quote breaks the command.
-    ///
-    /// Applied after EVERY update, not once: `.autocorrectionDisabled(false)` on the editor
-    /// is what keeps the underlines (see there), and the price is that SwiftUI also forces
-    /// correction on with each update. Once was measured to last until the first keystroke.
-    func conchSpelling() -> some View {
-        introspectTextView(everyUpdate: true) { view in
-            view.isContinuousSpellCheckingEnabled = true
-            view.isAutomaticSpellingCorrectionEnabled = NSSpellChecker.isAutomaticSpellingCorrectionEnabled
-            view.isAutomaticTextReplacementEnabled = NSSpellChecker.isAutomaticTextReplacementEnabled
-            view.isAutomaticQuoteSubstitutionEnabled = false
-            view.isAutomaticDashSubstitutionEnabled = false
-        }
-    }
-}
-
 /// Cmd+V with an image on the clipboard becomes an attachment.
 ///
 /// The editor is an NSTextView, and its own paste knows only text: an image
@@ -1269,86 +1056,5 @@ private struct ComposerPasteBridge: NSViewRepresentable {
             .appendingPathComponent("\(prefix)-\(UUID().uuidString).png")
         do { try png.write(to: url) } catch { return nil }
         return url
-    }
-}
-
-/// A minimal reach into the NSTextView behind a SwiftUI TextEditor.
-///
-/// SwiftUI exposes no way to change the text container inset, and the whole
-/// bug is that inset. This walks the view tree once on appear rather than
-/// taking a dependency for one property.
-private struct TextViewIntrospector: NSViewRepresentable {
-    let configure: (NSTextView) -> Void
-    /// Run `configure` again after each SwiftUI update of this view, for settings SwiftUI's
-    /// own TextEditor update overwrites (spelling). Insets and the caret it leaves alone, so
-    /// those stay once-on-appear.
-    var everyUpdate = false
-
-    final class Coordinator { weak var textView: NSTextView? }
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
-    func makeNSView(context: Context) -> NSView {
-        let probe = NSView(frame: .zero)
-        let coordinator = context.coordinator
-        Self.reach(from: probe, attempts: 10) { textView in
-            coordinator.textView = textView
-            configure(textView)
-        }
-        return probe
-    }
-
-    /// One runloop turn later, not inside the update: SwiftUI's TextEditor updates the same
-    /// editor in this same pass, and which sibling goes first is not ours to choose.
-    func updateNSView(_ nsView: NSView, context: Context) {
-        guard everyUpdate, let textView = context.coordinator.textView else { return }
-        DispatchQueue.main.async { configure(textView) }
-    }
-
-    /// Walk UP from the probe until an ancestor holds the editor, and look again on the next
-    /// runloop turn if the tree is not assembled yet.
-    ///
-    /// The fixed two-superview hop this replaces did both things wrong: it
-    /// hard-coded how deeply SwiftUI nests `.background(...)`, and it assumed the tree was built
-    /// by the first async turn. Measured against a real TextEditor in a harness, it came up empty
-    /// in 6 launches out of 14 — and when it misses, NOTHING here is applied: the editor keeps
-    /// SwiftUI's own 5 pt lineFragmentPadding, with no leading, no caret, no spell checking, and
-    /// a dropped file inserting its path as text. It fails silently, which is how a miss this
-    /// often stayed invisible.
-    private static func reach(
-        from probe: NSView,
-        attempts: Int,
-        configure: @escaping (NSTextView) -> Void
-    ) {
-        DispatchQueue.main.async {
-            var ancestor = probe.superview
-            while let next = ancestor {
-                if let textView = firstTextView(in: next) {
-                    configure(textView)
-                    return
-                }
-                if next === next.window?.contentView { break }
-                ancestor = next.superview
-            }
-            if attempts > 1 { reach(from: probe, attempts: attempts - 1, configure: configure) }
-        }
-    }
-
-    /// The EDITABLE one. The walk ends at the window's content view and searches the whole
-    /// tree from there, so with a deliverable document or the transcript fallback open — both
-    /// read-only NSTextViews created before the composer — it found those first and configured
-    /// them instead: no insets, no caret, no spelling on the field you type in (probe,
-    /// 2026-09-21). The dashboard's key monitor tells the composer apart the same way.
-    private static func firstTextView(in view: NSView) -> NSTextView? {
-        if let textView = view as? NSTextView, textView.isEditable { return textView }
-        for child in view.subviews {
-            if let found = firstTextView(in: child) { return found }
-        }
-        return nil
-    }
-}
-
-private extension View {
-    func introspectTextView(everyUpdate: Bool = false, _ configure: @escaping (NSTextView) -> Void) -> some View {
-        background(TextViewIntrospector(configure: configure, everyUpdate: everyUpdate))
     }
 }

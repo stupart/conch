@@ -2,80 +2,76 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const composer = readFileSync(
-  join(import.meta.dir, "..", "mac-app", "conch-mac", "ComposerView.swift"),
-  "utf8",
-);
+const mac = (file: string) => readFileSync(join(import.meta.dir, "..", "mac-app", "conch-mac", file), "utf8");
+const composer = mac("ComposerView.swift");
+const editor = mac("ComposerEditor.swift");
 
-/**
- * The Mac composer is a TextEditor, an NSTextView underneath, and nothing
- * turned spelling on, so typos went straight into sessions. Spell checking is
- * on; correction and text replacement follow the person's System Settings;
- * smart quotes and dashes stay off, because this text lands in terminals and
- * code. Markers are asserted present before slicing: `indexOf` gives -1 for a
- * missing one.
- */
-test("the Mac composer checks spelling, follows the system's correction settings, and never curls quotes", () => {
-  const at = composer.indexOf("func conchSpelling() -> some View {");
+/** `makeNSView`, where the editor is built and its settings are set, from its signature to its return. */
+function makeNSView(): string {
+  const at = editor.indexOf("func makeNSView(context: Context) -> NSScrollView {");
   expect(at).toBeGreaterThan(-1);
-  const end = composer.indexOf("\n    }\n", at);
+  const end = editor.indexOf("\n    }\n", at);
   expect(end).toBeGreaterThan(at);
-  const body = composer.slice(at, end);
-  expect(body).toContain("view.isContinuousSpellCheckingEnabled = true");
-  expect(body).toContain(
-    "view.isAutomaticSpellingCorrectionEnabled = NSSpellChecker.isAutomaticSpellingCorrectionEnabled",
-  );
-  expect(body).toContain(
-    "view.isAutomaticTextReplacementEnabled = NSSpellChecker.isAutomaticTextReplacementEnabled",
-  );
-  expect(body).toContain("view.isAutomaticQuoteSubstitutionEnabled = false");
-  expect(body).toContain("view.isAutomaticDashSubstitutionEnabled = false");
+  return editor.slice(at, end);
+}
 
-  // Applied to the editor itself, not defined and left unused.
-  const editor = composer.indexOf("TextEditor(text: $draft)");
-  expect(editor).toBeGreaterThan(-1);
-  const chain = composer.slice(editor, composer.indexOf(".frame(height: fieldHeight)", editor));
-  expect(chain).toContain(".conchSpelling()");
+/**
+ * Underlines, never corrections. Tyler, 2026-10-04: "the spellcheck like deletes / changes what im typing sometimes".
+ * The composer followed System Settings for autocorrect, which is on by default (his was unset, so on), and SwiftUI's
+ * TextEditor turned it on in every update anyway: measured offscreen that day, with correction off in System Settings it
+ * was on again from the second keystroke, because the re-apply that was meant to fix it never ran while typing. This
+ * text lands in terminals and code, where a word replaced behind you is a command changed behind you: correction is off,
+ * whatever the setting, as smart quotes and dashes already were. Continuous checking stays on, so typos are underlined
+ * and right-click still offers the fixes. Text replacements are the person's own shortcuts, so they still follow theirs.
+ * test/composer-editor-render.test.ts holds the real editor to all of this through many SwiftUI updates.
+ */
+test("the composer underlines typos and never corrects them, and never curls quotes", () => {
+  const made = makeNSView();
+  expect(made).toContain("view.isContinuousSpellCheckingEnabled = true");
+  expect(made).toContain("view.isAutomaticSpellingCorrectionEnabled = false");
+  expect(made).toContain("view.isAutomaticTextReplacementEnabled = NSSpellChecker.isAutomaticTextReplacementEnabled");
+  expect(made).toContain("view.isAutomaticQuoteSubstitutionEnabled = false");
+  expect(made).toContain("view.isAutomaticDashSubstitutionEnabled = false");
+  // Not the person's correction setting: that is the default-on autocorrect that changed what Tyler typed.
+  expect(editor).not.toContain("NSSpellChecker.isAutomaticSpellingCorrectionEnabled");
 });
 
 /**
- * Measured 2026-09-21 with a compiled probe running the app's own bridge code (extracted by line
- * range, not retyped): the flag above WAS set on the editor — and SwiftUI's TextEditor unset it
- * again on its next update, which every keystroke is. Disassembled, its
- * `AppKitTextEditorAdaptor.updateNSView` derives BOTH spelling flags from the autocorrection
- * environment: left unset, continuous checking is turned off; set, checking and correction are
- * turned on together. So the editor declares it, which makes SwiftUI keep the underlines on
- * itself, and the bridge re-applies the person's own correction setting after each update,
- * since that branch forces correction on. Once was measured to last until the first keystroke.
+ * Set once, as the editor is made, and nothing writes them after: it is conch's own text view now, so no SwiftUI update
+ * can reach them, and none of conch's may either. The SwiftUI version needed `.autocorrectionDisabled(false)` to keep the
+ * underlines and a per-update re-apply to undo what that did to correction; the re-apply never ran while typing.
  */
-test("SwiftUI is told to keep spelling on, and the bridge re-applies after every update", () => {
-  const editor = composer.indexOf("TextEditor(text: $draft)");
-  const chain = composer.slice(editor, composer.indexOf(".frame(height: fieldHeight)", editor));
-  expect(chain).toContain(".autocorrectionDisabled(false)");
-
-  const at = composer.indexOf("func conchSpelling() -> some View {");
-  const body = composer.slice(at, composer.indexOf("\n    }\n", at));
-  expect(body).toContain("introspectTextView(everyUpdate: true) { view in");
-
-  // After the pass, not inside it: SwiftUI updates the same editor in the same pass, and which
-  // sibling goes first is not ours to choose.
-  const bridge = composer.indexOf("private struct TextViewIntrospector");
-  const introspector = composer.slice(bridge, composer.indexOf("private extension View {", bridge));
-  expect(introspector).toMatch(
-    /guard everyUpdate, let textView = context\.coordinator\.textView else \{ return \}\s*DispatchQueue\.main\.async \{ configure\(textView\) \}/,
-  );
-  // Insets stay once-on-appear: restyling the whole draft and re-registering drag types on
-  // every keystroke buys nothing, since SwiftUI leaves those alone.
-  expect(composer).toMatch(/func conchTextViewInsets\(lineSpacing: CGFloat\) -> some View \{\s*introspectTextView \{ view in/);
+test("the spelling settings are written once, where the editor is made", () => {
+  for (const flag of ["isContinuousSpellCheckingEnabled", "isAutomaticSpellingCorrectionEnabled", "isAutomaticTextReplacementEnabled",
+    "isAutomaticQuoteSubstitutionEnabled", "isAutomaticDashSubstitutionEnabled"]) {
+    expect(editor.match(new RegExp(`\\.${flag} =`, "g")) ?? [], flag).toHaveLength(1);
+    expect(makeNSView(), flag).toContain(`.${flag} =`);
+    expect(composer, flag).not.toContain(flag);
+  }
+  const update = editor.slice(editor.indexOf("func updateNSView("), editor.indexOf("func sizeThatFits("));
+  expect(update.length).toBeGreaterThan(100);
+  expect(update).not.toContain("Spell");
+  expect(update).not.toContain("Substitution");
+  // The SwiftUI editor and everything that fought it are gone.
+  for (const gone of ["TextEditor(", ".autocorrectionDisabled(", "conchSpelling", "TextViewIntrospector", "introspectTextView"]) {
+    expect(composer, gone).not.toContain(gone);
+    expect(editor, gone).not.toContain(gone);
+  }
 });
 
 /**
- * The walk ends at the window's content view and searches the whole tree from there. With a
- * read-only NSTextView created before the composer — a deliverable document beside the
- * conversation, or the transcript fallback under it — it found that one and configured it
- * instead, and the field you type in got nothing: no insets, no caret, no spelling (probe,
- * 2026-09-21: `reached NSTextView editable=false`).
+ * Built, never found. The introspector walked the window's view tree for "the editable NSTextView" a runloop turn after
+ * SwiftUI made one, and measured offscreen it missed outright in some launches (1 in 12, then 4 in 10), leaving smart
+ * quotes and dashes on. Before that it had configured a read-only document's text view instead (2026-09-21). The editor
+ * now makes its own text view, and the dashboard's key monitor still tells it apart as the editable one.
  */
-test("the bridge configures the editable text view, not the first one it meets", () => {
-  expect(composer).toContain("if let textView = view as? NSTextView, textView.isEditable { return textView }");
+test("the composer builds its own text view rather than searching the window for one", () => {
+  expect(makeNSView()).toContain("let view = ComposerTextView(usingTextLayoutManager: false)");
+  expect(editor).toContain("final class ComposerTextView: NSTextView {");
+  for (const gone of ["firstTextView(in:", "reach(from:", "probe.superview"]) {
+    expect(composer, gone).not.toContain(gone);
+    expect(editor, gone).not.toContain(gone);
+  }
+  const monitor = mac("DashboardInputMonitor.swift");
+  expect(monitor).toContain("if let textView = responder as? NSTextView, textView.isEditable {");
 });

@@ -6,27 +6,38 @@ const composer = readFileSync(
   join(import.meta.dir, "..", "mac-app", "conch-mac", "ComposerView.swift"),
   "utf8",
 );
+const editor = readFileSync(
+  join(import.meta.dir, "..", "mac-app", "conch-mac", "ComposerEditor.swift"),
+  "utf8",
+);
 
 /**
  * A dropped file must reach the composer, not the editor.
  *
  * NSTextView registers for file drops and inserts the PATH as text, and it is
  * the deeper view under the pointer, so it won every drop on the text area —
- * two dragged screenshots became two paths in the message. The fix strips only
- * the file types from its registration; text drags still work.
+ * two dragged screenshots became two paths in the message. The editor refuses
+ * only the file and image types; text drags still work. It refuses them as the
+ * types it will register, rather than unregistering once after the fact as the
+ * SwiftUI editor's introspector did: AppKit registers them again whenever the
+ * view's editable or rich-text state changes, and the introspector sometimes
+ * never ran at all.
  */
 test("the editor stops accepting file drops, and keeps everything else", () => {
-  const insets = composer.slice(composer.indexOf("func conchTextViewInsets("));
-  const body = insets.slice(0, insets.indexOf("\n    }\n"));
+  const view = editor.slice(editor.indexOf("final class ComposerTextView: NSTextView {"));
+  const body = view.slice(0, view.indexOf("\n}\n"));
   expect(body).toContain(".fileURL");
   expect(body).toContain('NSPasteboard.PasteboardType("NSFilenamesPboardType")');
   // Images too, now the composer accepts image BYTES: a rich-text NSTextView registers for
   // them and draws a dragged image inline, so accepting the drop without refusing it here
-  // hands it straight back to the editor — the pasted-paths loss in a different shape.
+  // hands it straight back to the editor — the pasted-paths loss in a different shape. The
+  // pasteboard's old names for the same types are refused with them.
   expect(body).toContain(".png, .tiff,");
-  expect(body).toContain("view.registeredDraggedTypes.filter");
-  expect(body).toContain("view.unregisterDraggedTypes()");
-  expect(body).toContain("view.registerForDraggedTypes(kept)");
+  expect(body).toContain('NSPasteboard.PasteboardType("Apple PNG pasteboard type")');
+  expect(body).toContain("override var acceptableDragTypes: [NSPasteboard.PasteboardType] {");
+  expect(body).toContain("super.acceptableDragTypes.filter { !Self.refusedDragTypes.contains($0) }");
+  // Registered from that list as the editor is made.
+  expect(editor).toContain("view.updateDragTypeRegistration()");
 });
 
 /**

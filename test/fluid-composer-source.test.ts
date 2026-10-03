@@ -214,11 +214,12 @@ describe("the swoop's picture holds nothing ImageRenderer can't draw", () => {
 
   test("the editor and its AppKit bridges are only in the live branch", () => {
     const staticField = composer.indexOf("} else if rendersStatically {");
-    const editor = composer.indexOf("TextEditor(text: $draft)");
-    expect(composer.match(/TextEditor\(/g)?.length).toBe(1);
+    const editor = composer.indexOf("ComposerEditor(text: $draft");
+    expect(composer.match(/ComposerEditor\(/g)?.length).toBe(1);
+    expect(composer).not.toContain("TextEditor(");
     expect(staticField).toBeGreaterThan(-1);
     expect(staticField).toBeLessThan(editor);
-    for (const bridge of [".conchTextViewInsets(", ".conchSpelling()", "ComposerPasteBridge { urls in attach(urls) }"]) {
+    for (const bridge of ["ComposerPasteBridge { urls in attach(urls) }"]) {
       expect(composer.indexOf(bridge), bridge).toBeGreaterThan(editor);
       expect(composer.indexOf(bridge), bridge).toBeLessThan(composer.indexOf("if draft.isEmpty {", editor));
     }
