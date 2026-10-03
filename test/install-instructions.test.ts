@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isConchHookCommand, renderSupervisorScript, runInstall } from "../src/install.ts";
+import { conchInvocation, isConchHookCommand, renderSupervisorScript, repairConchHooks, runInstall, stableExecPath, staleProgram } from "../src/install.ts";
 
 
 describe("the retired supervisor", () => {
@@ -106,5 +106,88 @@ describe("installing conch leaves the user's own instruction files alone", () =>
       console.log = log;
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("hooks that survive a bun upgrade", () => {
+  // 2026-10-03: hooks named `/opt/homebrew/Cellar/bun/1.4.0/bin/bun`, Homebrew upgraded bun to 1.4.2 and deleted
+  // 1.4.0, and every prompt in that account said "UserPromptSubmit hook error … No such file or directory" while
+  // conch heard nothing from it. "Already wired" kept the broken ones.
+  const quiet = async <T>(run: () => Promise<T>): Promise<T> => {
+    const log = console.log;
+    console.log = () => {};
+    try { return await run(); } finally { console.log = log; }
+  };
+
+  test("a Cellar path is written as the link Homebrew keeps current, when there is one", () => {
+    const linked = new Set(["/opt/homebrew/bin/bun", "/usr/local/bin/conch"]);
+    const exists = (path: string) => linked.has(path);
+    expect(stableExecPath("/opt/homebrew/Cellar/bun/1.4.2/bin/bun", exists)).toBe("/opt/homebrew/bin/bun");
+    expect(stableExecPath("/usr/local/Cellar/conch/0.3.0/bin/conch", exists)).toBe("/usr/local/bin/conch");
+    // No link: the path as it is, never one that doesn't exist.
+    expect(stableExecPath("/opt/homebrew/Cellar/node/22/bin/node", exists)).toBe("/opt/homebrew/Cellar/node/22/bin/node");
+    expect(stableExecPath("/Users/t/.bun/bin/bun", exists)).toBe("/Users/t/.bun/bin/bun");
+  });
+
+  test("a command is stale when its program is gone or pinned to one Cellar version", () => {
+    const live = mkdtempSync(join(tmpdir(), "conch-live-program-"));
+    const program = join(live, "bun");
+    writeFileSync(program, "");
+    try {
+      expect(staleProgram('"/opt/homebrew/Cellar/bun/1.4.2/bin/bun" "/x/src/cli.ts" hook', () => true)).toBe(true);
+      expect(staleProgram('"/nowhere/bun" "/x/src/cli.ts" hook')).toBe(true);
+      expect(staleProgram(`"${program}" "/x/src/cli.ts" hook`)).toBe(false);
+      // The status line's own prefix comes first.
+      expect(staleProgram(`CONCH_CONFIG_DIR='/c' "/nowhere/bun" "/x/src/cli.ts" usage-statusline 'a' '/d'`)).toBe(true);
+      expect(staleProgram(`CONCH_CONFIG_DIR='/c' "${program}" "/x/src/cli.ts" usage-statusline 'a' '/d'`)).toBe(false);
+      expect(staleProgram("conch hook")).toBe(false);
+      expect(staleProgram(undefined)).toBe(false);
+    } finally { rmSync(live, { recursive: true, force: true }); }
+  });
+
+  test("a re-run points a stale hook at this bun, in place, and leaves a live one alone", async () => {
+    const root = mkdtempSync(join(tmpdir(), "conch-install-repair-"));
+    const helper = join(root, "conch-daemon");
+    writeFileSync(helper, "");
+    const old = '"/opt/homebrew/Cellar/bun/1.4.0/bin/bun" "/Users/t/Projects/Conch/src/cli.ts" hook';
+    const live = `"${helper}" hook`;
+    writeFileSync(join(root, "settings.json"), JSON.stringify({ hooks: {
+      Stop: [{ hooks: [{ type: "command", command: old, timeout: 15 }] }],
+      Notification: [{ hooks: [{ type: "command", command: live, timeout: 15 }] }],
+    } }));
+    try {
+      await quiet(() => runInstall({ claudeDir: root } as any));
+      const after = JSON.parse(readFileSync(join(root, "settings.json"), "utf8"));
+      expect(after.hooks.Stop).toEqual([{ hooks: [{ type: "command", command: `${conchInvocation()} hook`, timeout: 15 }] }]);
+      expect(after.hooks.Notification).toEqual([{ hooks: [{ type: "command", command: live, timeout: 15 }] }]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("the daemon's repair mends only conch's stale hooks: it adds nothing, and keeps a backup", async () => {
+    const root = mkdtempSync(join(tmpdir(), "conch-hook-repair-"));
+    const old = '"/opt/homebrew/Cellar/bun/1.4.0/bin/bun" "/Users/t/Projects/Conch/src/cli.ts" hook';
+    const theirs = '"/nowhere/their-tool" run';
+    writeFileSync(join(root, "settings.json"), JSON.stringify({ hooks: {
+      Stop: [{ hooks: [{ type: "command", command: old }] }, { hooks: [{ type: "command", command: theirs }] }],
+      UserPromptSubmit: [{ hooks: [{ type: "command", command: old }] }],
+    } }));
+    try {
+      expect(await repairConchHooks(root)).toBe(2);
+      const after = JSON.parse(readFileSync(join(root, "settings.json"), "utf8"));
+      expect(after.hooks.Stop[0].hooks[0].command).toBe(`${conchInvocation()} hook`);
+      expect(after.hooks.Stop[1].hooks[0].command).toBe(theirs);
+      expect(after.hooks.UserPromptSubmit[0].hooks[0].command).toBe(`${conchInvocation()} hook`);
+      // A hook someone removed stays removed.
+      expect(Object.keys(after.hooks).sort()).toEqual(["Stop", "UserPromptSubmit"]);
+      expect(readdirSync(root).filter((name) => name.includes("conch-backup"))).toHaveLength(1);
+      // Nothing left to mend: nothing written.
+      expect(await repairConchHooks(root)).toBe(0);
+      expect(readdirSync(root).filter((name) => name.includes("conch-backup"))).toHaveLength(1);
+      // No settings, or settings it can't read: left alone.
+      expect(await repairConchHooks(join(root, "missing"))).toBe(0);
+      writeFileSync(join(root, "settings.json"), "{ not json");
+      expect(await repairConchHooks(root)).toBe(0);
+      expect(readFileSync(join(root, "settings.json"), "utf8")).toBe("{ not json");
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });

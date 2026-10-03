@@ -29,9 +29,35 @@ const MODELS = [
 const CLI_ENTRY = join(import.meta.dir, "cli.ts");
 const IS_COMPILED = !existsSync(CLI_ENTRY);
 
-/** Shell-quoted argv that re-invokes conch: `"conch"` (compiled) or `"bun" "…/cli.ts"`. */
-export function conchInvocation(): string {
-  return IS_COMPILED ? `"${process.execPath}"` : `"${process.execPath}" "${CLI_ENTRY}"`;
+/**
+ * The path that runs `execPath` and survives its package manager's upgrades. Homebrew keeps each version under
+ * `<prefix>/Cellar/<formula>/<version>/`, links `<prefix>/bin/<name>` to the current one, and deletes the old version
+ * on upgrade. `process.execPath` is the resolved Cellar path, so hooks written with it named
+ * `/opt/homebrew/Cellar/bun/1.4.0/bin/bun`, and once bun went to 1.4.2 every prompt in that account failed with
+ * "UserPromptSubmit hook error … No such file or directory" (2026-10-03). So the link, whenever there is one.
+ */
+export function stableExecPath(execPath: string = process.execPath, exists: (path: string) => boolean = existsSync): string {
+  const cellar = /^(.*)\/Cellar\/[^/]+\/[^/]+\/bin\/([^/]+)$/.exec(execPath);
+  if (cellar) {
+    const linked = `${cellar[1]}/bin/${cellar[2]}`;
+    if (exists(linked)) return linked;
+  }
+  return execPath;
+}
+
+/** Shell-quoted argv that re-invokes conch: `"conch"` (compiled) or `"bun" "…/cli.ts"`, by its upgrade-proof path. */
+export function conchInvocation(execPath: string = stableExecPath()): string {
+  return IS_COMPILED ? `"${execPath}"` : `"${execPath}" "${CLI_ENTRY}"`;
+}
+
+/**
+ * A command of conch's whose program has moved: gone from disk, or pinned inside one Homebrew Cellar version, which
+ * the next upgrade deletes (`stableExecPath`). The program is the command's first quoted path, after any `NAME=value`
+ * prefixes; a command that names none is never called stale.
+ */
+export function staleProgram(command: string | undefined, exists: (path: string) => boolean = existsSync): boolean {
+  const program = /^\s*(?:[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|"[^"]*"|\S+)\s+)*"([^"]+)"/.exec(command ?? "")?.[1];
+  return !!program && (/\/Cellar\//.test(program) || !exists(program));
 }
 
 /** Where `scripts/build-app.sh` and the brew formula put the Mac app. */
@@ -678,6 +704,13 @@ export function buildCodexHooksSettings(
   const addedEvents: string[] = [];
   for (const event of ["Stop", "UserPromptSubmit", "SessionStart"]) {
     const entries: HookEntry[] = (settings.hooks[event] ??= []);
+    // As Claude's: a conch hook whose program has moved is pointed at this one (`staleProgram`).
+    for (const hook of entries.flatMap((entry) => entry.hooks ?? [])) {
+      if (hook.command !== command && isConchCodexHook(hook.command) && staleProgram(hook.command)) {
+        hook.command = command;
+        changed = true;
+      }
+    }
     const already = entries.some((entry) =>
       entry.hooks?.some((hook) =>
         hook.command === command
@@ -773,6 +806,37 @@ export function isConchHookCommand(command: string | undefined): boolean {
 }
 
 /**
+ * Repair, never add: point conch's own hooks in `<claudeDir>/settings.json` whose program has moved (`staleProgram`)
+ * at this one. The daemon runs it for every account at start, so a Homebrew upgrade of bun can't leave an account's
+ * every prompt failing until someone re-runs setup (2026-10-03). A hook someone removed stays removed; a file that
+ * can't be read is left alone. How many were repaired.
+ */
+export async function repairConchHooks(claudeDir: string): Promise<number> {
+  const settingsPath = join(claudeDir, "settings.json");
+  let settings: Record<string, any>;
+  try {
+    settings = await Bun.file(settingsPath).json();
+  } catch {
+    return 0;
+  }
+  const command = `${conchInvocation()} hook`;
+  let repaired = 0;
+  for (const entries of Object.values(settings?.hooks ?? {})) {
+    if (!Array.isArray(entries)) continue;
+    for (const hook of (entries as HookEntry[]).flatMap((entry) => entry?.hooks ?? [])) {
+      if (hook && hook.command !== command && isConchHookCommand(hook.command) && staleProgram(hook.command)) {
+        hook.command = command;
+        repaired += 1;
+      }
+    }
+  }
+  if (!repaired) return 0;
+  await Bun.write(`${settingsPath}.conch-backup-${Date.now()}`, await Bun.file(settingsPath).text());
+  await Bun.write(settingsPath, JSON.stringify(settings, null, 2) + "\n");
+  return repaired;
+}
+
+/**
  * Merge conch's hooks into ~/.claude/settings.json and put the review handoff
  * contract in global CLAUDE.md. Existing content in both files is preserved;
  * backups are written only for files that actually change.
@@ -792,6 +856,15 @@ export async function runInstall(cfg: Pick<Config, "claudeDir">): Promise<HooksI
   let changed = false;
   for (const event of CLAUDE_HOOK_EVENTS) {
     const entries: HookEntry[] = (settings.hooks[event] ??= []);
+    // A hook of conch's whose bun has moved is pointed at this one, in place: "already wired" left it failing on every
+    // prompt after a Homebrew upgrade (`staleProgram`).
+    for (const hook of entries.flatMap((entry) => entry.hooks ?? [])) {
+      if (hook.command !== command && isConchHookCommand(hook.command) && staleProgram(hook.command)) {
+        console.log(`${event}: repaired ${hook.command} -> ${command}`);
+        hook.command = command;
+        changed = true;
+      }
+    }
     // Exact match first, as the Codex merge does. The loose match alone missed a
     // source checkout whose path has no lowercase "conch" in it (~/Projects/Conch),
     // so every re-run appended a fresh copy of each hook and "Done" fired every time.

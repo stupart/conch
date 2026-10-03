@@ -75,7 +75,7 @@ import {
 import { dirname, join } from "node:path";
 import { hostname, tmpdir } from "node:os";
 import { deviceExecutionCatalog } from "./execution-model.ts";
-import { installAccountUsage, uninstallAccountUsage, clearAccountUsage, readAccountUsage } from "./claude-account-usage.ts";
+import { installAccountUsage, uninstallAccountUsage, clearAccountUsage, readAccountUsage, repairAccountUsage } from "./claude-account-usage.ts";
 import { loadDeviceId } from "./device-identity.ts";
 import { clearIdentity, writeIdentity } from "./daemon-identity.ts";
 import {
@@ -253,7 +253,7 @@ import { assertCodexAccountIdle, assertClaudeAccountIdle, accountRegistrySnapsho
 import { transcriptFolder } from "./review-roots.ts";
 import { defaultCodexDir, readCodexAccounts, addCodexAccount, removeCodexAccount, requireCodexAccount, cachedCodexAccount, invalidateCodexAccount, codexAccountForLaunch } from "./codex-accounts.ts";
 import { claudeAccountForLaunch, readClaudeAccounts, addClaudeAccount, removeClaudeAccount, requireClaudeAccount, cachedClaudeAccountStatus, readClaudeAccountStatus, invalidateClaudeAccountStatus, type ClaudeAccountStatus } from "./claude-accounts.ts";
-import { runInstall as installAccountHooks } from "./install.ts";
+import { runInstall as installAccountHooks, repairConchHooks } from "./install.ts";
 import {
   addressParkedWindow,
   sessionGoneFromSnapshot,
@@ -618,6 +618,29 @@ export function shouldReportMissingCodexPid(
   }
   reported.delete(session.sessionId);
   return false;
+}
+
+/**
+ * Every account's conch hooks and status line, pointed at a bun that still exists (`repairConchHooks`,
+ * `repairAccountUsage`). A Homebrew upgrade deletes the bun they named, and every prompt in that account then failed
+ * with "UserPromptSubmit hook error" while conch heard nothing from it (2026-10-03). Repair only, never add.
+ */
+async function repairHookPrograms(): Promise<void> {
+  let accounts: ReturnType<typeof readClaudeAccounts>;
+  try {
+    accounts = readClaudeAccounts();
+  } catch {
+    return;
+  }
+  for (const account of accounts) {
+    try {
+      const hooks = await repairConchHooks(account.configDir);
+      const status = repairAccountUsage(account);
+      if (hooks || status) log(`repaired conch's ${hooks ? `${hooks} hook${hooks === 1 ? "" : "s"}` : ""}${hooks && status ? " and " : ""}${status ? "status line" : ""} in ${account.label}: their bun had moved`);
+    } catch (error) {
+      log(`could not repair conch's hooks in ${account.label}: ${(error as Error).message}`);
+    }
+  }
 }
 
 /**
@@ -3568,6 +3591,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   if (!shuttingDown) void records.setEnabled(cfg.recordsEnabled);
   syncPhoneBridge();
   void rehydrateFromTranscripts();
+  void repairHookPrograms();
   log(`listening on ${cfg.socketPath} — wire hooks with \`conch install\``);
   if (pause.paused) log("starting in manual mode (persisted) — p or `conch resume` turns auto on");
   checkForUpdate(); // fire and forget; never blocks the daemon coming up

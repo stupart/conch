@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { dispatchSocketTurnEvent, validateSocketTurnEvent, type SocketTurnEventCallbacks } from "../src/control-server.ts";
 import { sessionStartEvent, type TurnEvent } from "../src/hook.ts";
-import { CLAUDE_HOOK_EVENTS, runInstall } from "../src/install.ts";
+import { CLAUDE_HOOK_EVENTS, conchInvocation, runInstall } from "../src/install.ts";
 import { removeConchHooks } from "../src/uninstall.ts";
 
 /**
@@ -70,8 +70,9 @@ describe("conch install wires SessionStart", () => {
     const first = await quietly(() => runInstall({ claudeDir: root } as any));
     const upgraded = JSON.parse(readFileSync(settingsPath, "utf8"));
     expect(upgraded.model).toBe("keep-me");
+    // Still one each: the old bun is gone with its Cellar version, so each is pointed at this one in place (2026-10-03).
     for (const event of ["Stop", "Notification", "UserPromptSubmit", "PermissionRequest"]) {
-      expect(upgraded.hooks[event]).toEqual([{ hooks: [{ type: "command", command: old, timeout: 15 }] }]);
+      expect(upgraded.hooks[event]).toEqual([{ hooks: [{ type: "command", command: `${conchInvocation()} hook`, timeout: 15 }] }]);
     }
     expect(upgraded.hooks.SessionStart[0]).toEqual(theirs);
     expect(conchHooks(upgraded, "SessionStart")).toHaveLength(1);
