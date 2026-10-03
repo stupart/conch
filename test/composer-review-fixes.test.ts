@@ -99,8 +99,12 @@ describe("2: Return respects a send in flight, as the button does", () => {
     expect(send).toMatch(/^private func send\(\) \{\n(\s*\/\/[^\n]*\n)*\s*guard canSend else \{ return \}/);
     before(send, "guard canSend else { return }", "ComposerDraftStore.shared.setSending(session, true)");
     expect(member(composer, "private var canSend: Bool {")).toContain("!composed.isEmpty && !isSending && messageUnavailableReason == nil");
-    // Return goes through it.
-    expect(composer).toMatch(/\.onKeyPress\(keys: \[\.return\], phases: \.down\) \{ press in\n\s*if press\.modifiers\.contains\(\.shift\) \{ return \.ignored \}\n\s*send\(\)/);
+    // Return goes through it: the editor's Return is the composer's `send`, and nothing else.
+    expect(composer).toContain("ComposerEditor(text: $draft, isFocused: $fieldFocused, identity: sessionID, onSend: send)");
+    const editor = read("mac-app/conch-mac/ComposerEditor.swift");
+    const keys = member(editor, "func textView(_ view: NSTextView, doCommandBy selector: Selector) -> Bool {", 8);
+    expect(keys).toMatch(/case \.send:\n\s*parent\.onSend\(\)/);
+    expect(editor.match(/onSend\(\)/g) ?? []).toHaveLength(1);
   });
 });
 

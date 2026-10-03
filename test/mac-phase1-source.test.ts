@@ -192,10 +192,13 @@ describe("the Mac composer belongs to one session", () => {
     // …and NO inner box. §3: the stage has one card and no others.
     expect(composer).not.toContain("RoundedRectangle(cornerRadius: 8).fill(ConchPalette.bg)");
 
-    // #ta{font:var(--read)/22px; padding:8px 10px 4px; max-height:8 lines}
+    // #ta{font:var(--read)/22px; padding:8px 10px 4px; max-height:8 lines}. The line box and the eight lines are the
+    // editor's rules, in the design system beside their tests (ComposerEditingTests).
     expect(composer).toContain(".font(ConchType.readingBody)");
-    expect(composer).toContain("static let lineHeight: CGFloat = 22");
-    expect(composer).toContain("Self.lineHeight * 8");
+    const editing = readFileSync(join(import.meta.dir, "..", "design/ConchDesign/Sources/ConchDesign/ComposerEditing.swift"), "utf8");
+    expect(editing).toContain("public static let lineHeight: CGFloat = 22");
+    expect(editing).toContain("public static let maxLines = 8");
+    expect(composer).toContain("private static let lineHeight = ComposerEditing.lineHeight");
     expect(composer).toContain("static let fieldInsetTop: CGFloat = 8");
     expect(composer).toContain("static let fieldInsetBottom: CGFloat = 4");
     expect(composer).toContain("static let fieldInsetX: CGFloat = 10");
