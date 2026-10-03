@@ -62,6 +62,9 @@
 		D10000000000000000000C01 /* ComposerDock.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000C01 /* ComposerDock.swift */; };
 		A10000000000000000000963 /* HistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000963 /* HistoryStore.swift */; };
 		A10000000000000000000961 /* ConchDesign in Frameworks */ = {isa = PBXBuildFile; productRef = AB0000000000000000000002 /* ConchDesign */; };
+		F1000000000000000000AA01 /* LagoonSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2000000000000000000AA01 /* LagoonSource.swift */; };
+		F1000000000000000000AA02 /* LagoonWeb.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2000000000000000000AA02 /* LagoonWeb.swift */; };
+		F1000000000000000000AA03 /* LagoonPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2000000000000000000AA03 /* LagoonPane.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -121,6 +124,9 @@
 		C20000000000000000000B01 /* CanvasShow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasShow.swift; sourceTree = "<group>"; };
 		D20000000000000000000C01 /* ComposerDock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerDock.swift; sourceTree = "<group>"; };
 		A20000000000000000000963 /* HistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryStore.swift; sourceTree = "<group>"; };
+		F2000000000000000000AA01 /* LagoonSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LagoonSource.swift; sourceTree = "<group>"; };
+		F2000000000000000000AA02 /* LagoonWeb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LagoonWeb.swift; sourceTree = "<group>"; };
+		F2000000000000000000AA03 /* LagoonPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LagoonPane.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -177,6 +183,9 @@
 				A20000000000000000000006 /* ReviewView.swift */,
 				A2000000000000000000CA01 /* VersionCompareView.swift */,
 				A20000000000000000000007 /* WebView.swift */,
+				F2000000000000000000AA01 /* LagoonSource.swift */,
+				F2000000000000000000AA02 /* LagoonWeb.swift */,
+				F2000000000000000000AA03 /* LagoonPane.swift */,
 				A20000000000000000000964 /* Terminal.swift */,
 				D20000000000000000000B51 /* TerminalMirror.swift */,
 				A20000000000000000000965 /* FrontWindowObserver.swift */,
@@ -236,6 +245,7 @@
 				AC0000000000000000000002 /* Embed conch daemon */,
 				AC0000000000000000000003 /* Embed speech engine */,
 				AC0000000000000000000004 /* Embed tmux */,
+				AC0000000000000000000005 /* Embed lagoon */,
 			);
 			buildRules = (
 			);
@@ -378,6 +388,26 @@
 			shellScript = "exec \"$SRCROOT/../scripts/embed-tmux.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
+		AC0000000000000000000005 /* Embed lagoon */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Embed lagoon";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "exec \"$SRCROOT/../scripts/embed-lagoon.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -418,6 +448,9 @@
 				C10000000000000000000B01 /* CanvasShow.swift in Sources */,
 				D10000000000000000000C01 /* ComposerDock.swift in Sources */,
 				A10000000000000000000963 /* HistoryStore.swift in Sources */,
+				F1000000000000000000AA01 /* LagoonSource.swift in Sources */,
+				F1000000000000000000AA02 /* LagoonWeb.swift in Sources */,
+				F1000000000000000000AA03 /* LagoonPane.swift in Sources */,
 				A10000000000000000000006 /* ReviewView.swift in Sources */,
 				A1000000000000000000CA01 /* VersionCompareView.swift in Sources */,
 				A10000000000000000000007 /* WebView.swift in Sources */,

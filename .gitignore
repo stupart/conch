@@ -34,3 +34,7 @@ docs/codebase-analysis/
 # SwiftPM build output and Xcode's package state (design/ConchDesign)
 .build/
 .swiftpm/
+
+# The lagoon's runtime bundle (LagoonPane.swift) is built in the brand repo and copied into conch.app by
+# scripts/build-app.sh; 23-33 MB of sprites and textures never belong here, even if copied in as the spec's folder reference.
+mac-app/conch-mac/Lagoon/

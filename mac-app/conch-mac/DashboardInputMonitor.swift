@@ -10,6 +10,8 @@ enum DashboardKey: Equatable {
     case moveUp
     case moveDown
     case releaseSelection
+    /// Return, on the lagoon: the selected session's conversation. Unclaimed anywhere else, so it passes on.
+    case openConversation
 }
 
 struct DashboardInputMonitor: NSViewRepresentable {
@@ -53,6 +55,10 @@ struct DashboardInputMonitor: NSViewRepresentable {
                     return event
                 }
 
+                // Return is the lagoon's alone, held or not: anywhere else it passes on untouched.
+                if key == .openConversation {
+                    return onKey(.openConversation) ? nil : event
+                }
                 if event.isARepeat && key != .moveUp && key != .moveDown {
                     return nil
                 }
@@ -128,6 +134,8 @@ struct DashboardInputMonitor: NSViewRepresentable {
                 return .moveUp
             case 125:
                 return .moveDown
+            case 36, 76:
+                return .openConversation
             default:
                 break
             }
@@ -171,7 +179,7 @@ private extension DashboardKey {
         case .talkOrStop, .releaseSelection:
             return true
         case .pauseOrResume, .recite, .showKeyboardShortcuts,
-             .moveUp, .moveDown:
+             .moveUp, .moveDown, .openConversation:
             return false
         }
     }

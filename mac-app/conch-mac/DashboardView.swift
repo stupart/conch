@@ -18,6 +18,8 @@ extension Notification.Name {
 struct DashboardActions {
     let onStartSession: () -> Void
     let onSelectSession: (SessionRow) -> Void
+    /// A row's double-click: Rename, or on the lagoon the session's conversation (ContentView `doubleClickSession`).
+    let onDoubleClickSession: (SessionRow) -> Void
     let onBeginRename: (SessionRow) -> Void
     let onCommitRename: (SessionRow) -> Void
     let onCancelRename: () -> Void
@@ -43,6 +45,10 @@ struct DashboardActions {
 
 struct DashboardView: View {
     let onSelectRemote: (RemoteSessionID) -> Void
+    /// The conversation, or the lagoon in its place (LagoonPane.swift).
+    let page: Lagoon.Page
+    /// Switched on and in this build: the header's shell is there.
+    let lagoonAvailable: Bool
     /// Put away and brought back with ⌘B, and remembered: a window that reopens with the
     /// sidebar back after you deliberately closed it is a window arguing with you.
     @AppStorage("conch.sidebarCollapsed") private var sidebarCollapsed = false
@@ -69,6 +75,8 @@ struct DashboardView: View {
                 DashboardHeader(
                     state: state,
                     selectedSessionID: selectedSessionID,
+                    page: page,
+                    lagoonAvailable: lagoonAvailable,
                     titleBarInset: proxy.safeAreaInsets.top,
                     isLogDrawerOpen: store.isLogDrawerOpen,
                     daemonMessage: store.daemonMessage,
@@ -127,10 +135,19 @@ struct DashboardView: View {
                     // `.raised` (a selected segment's shadow) never could express. No
                     // ConchElevation case carries a ring, so it is drawn explicitly, the same
                     // way the composer does it.
-                    ConversationPane(
-                        state: state,
-                        onSelectSession: actions.onSelectSession
-                    )
+                    //
+                    // The lagoon (2026-10-04) takes the conversation's place in the same panel, and the sidebar stays
+                    // (the brand repo's MAC-APP-SPEC.md §1).
+                    Group {
+                        if page == .lagoon {
+                            LagoonPane()
+                        } else {
+                            ConversationPane(
+                                state: state,
+                                onSelectSession: actions.onSelectSession
+                            )
+                        }
+                    }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(ConchPalette.surface)
                     .clipShape(RoundedRectangle(cornerRadius: ConchRadius.medium, style: .continuous))
@@ -215,6 +232,8 @@ struct DashboardView: View {
 private struct DashboardHeader: View {
     let state: PublishedState?
     let selectedSessionID: SessionRow.ID?
+    let page: Lagoon.Page
+    let lagoonAvailable: Bool
     /// The title-bar strip this row now lives in: 32pt on macOS 26 with the
     /// window's own title bar hidden, 0 in full screen where the traffic
     /// lights are gone and the row keeps a plain 28pt of its own.
@@ -365,6 +384,17 @@ private struct DashboardHeader: View {
             // own chrome. Deleting the strip gave the ledger and composer the
             // full height of the window; E1 then folded this row into the
             // title-bar strip, so the wordmark costs no height at all.
+            //
+            // The lagoon's shell (2026-10-04), beside them: the beach, or back to the conversation. It posts what ⌘0
+            // posts, so the two are one path, and it is only there while the lagoon is switched on and in this build.
+            if lagoonAvailable {
+                HeaderButton(
+                    symbol: "fossil.shell",
+                    help: page == .lagoon ? "Back to the conversation (⌘0)" : "The lagoon (⌘0)",
+                    isSelected: page == .lagoon,
+                    action: { NotificationCenter.default.post(name: .showLagoon, object: nil) }
+                )
+            }
             HeaderControls(
                 isManual: isManual,
                 modeHelp: modeHelp,
@@ -634,6 +664,7 @@ private struct SessionLedger: View {
                                                 // Everything quiet subsumes one quiet row (`SessionVoice.mark`).
                                                 everythingQuiet: state.mode.paused,
                                                 onSelect: { actions.onSelectSession(row) },
+                                                onDoubleClick: { actions.onDoubleClickSession(row) },
                                                 onToggleQuiet: { actions.onToggleQuiet(row) },
                                                 onBeginRename: { actions.onBeginRename(row) },
                                                 onCommitRename: { actions.onCommitRename(row) },
@@ -873,6 +904,8 @@ private struct DashboardRow: View {
     /// conch is in manual: no session is read aloud, so no row carries its own quiet mark.
     let everythingQuiet: Bool
     let onSelect: () -> Void
+    /// A double-click: Rename, or on the lagoon its conversation.
+    let onDoubleClick: () -> Void
     /// Its quiet mark was clicked, or Make Quiet / Let It Speak was chosen from its menu.
     let onToggleQuiet: () -> Void
     let onBeginRename: () -> Void
@@ -1027,8 +1060,9 @@ private struct DashboardRow: View {
         // already suspected it existed — Tyler asked for a feature conch has
         // had all along.
         //
-        // Before the context menu, so the gesture wins over the row's own tap.
-        .onTapGesture(count: 2, perform: onBeginRename)
+        // Before the context menu, so the gesture wins over the row's own tap. On the lagoon, where a click only moves the
+        // camera, it opens the session's conversation instead (`onDoubleClick`); Rename is still in the menu.
+        .onTapGesture(count: 2, perform: onDoubleClick)
         .contextMenu {
             Button("Rename", action: onBeginRename)
             Button(voice.togglesToQuiet ? "Make Quiet" : "Let It Speak", action: onToggleQuiet)

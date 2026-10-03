@@ -34,6 +34,14 @@ fi
 
 cd "$REPO_ROOT"
 
+# The lagoon's page (LagoonPane.swift), from the brand repo when it's on this Mac: built into a scratch folder of ours, or
+# its dist/lagoon reused when that is up to date (scripts/prepare-lagoon.sh). The "Embed lagoon" build phase copies it into
+# Contents/Resources/Lagoon before Xcode seals the bundle; it is never committed here. Without the brand repo, a line says
+# so and the app is built without it.
+LAGOON_SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/conch-lagoon-build.XXXXXX")"
+trap 'rm -rf "$LAGOON_SCRATCH"' EXIT
+LAGOON_BUNDLE="$("$SCRIPT_DIR/prepare-lagoon.sh" "$LAGOON_SCRATCH")"
+
 echo "Building conch.app (Release) with derived data at $DERIVED_DATA_PATH"
 # The embed phases (uv, daemon, speech engine, tmux) write into the bundle
 # without declared outputs, so Xcode can't see that they changed it. A build
@@ -52,11 +60,18 @@ xcodebuild \
   -configuration Release \
   -destination 'platform=macOS' \
   -derivedDataPath "$DERIVED_DATA_PATH" \
+  CONCH_LAGOON_BUNDLE="$LAGOON_BUNDLE" \
   CONCH_DAEMON_SOURCE=checkout \
   build
 
 if [[ ! -d "$BUILT_APP_PATH" ]]; then
   echo "error: xcodebuild succeeded but the app was not found at $BUILT_APP_PATH" >&2
+  exit 1
+fi
+
+# The lagoon was asked for and isn't in the app: the build phase didn't run, and the seal is over something else.
+if [[ -n "$LAGOON_BUNDLE" && ! -f "$BUILT_APP_PATH/Contents/Resources/Lagoon/index.html" ]]; then
+  echo "error: the lagoon ($LAGOON_BUNDLE) didn't reach $BUILT_APP_PATH/Contents/Resources/Lagoon" >&2
   exit 1
 fi
 
@@ -120,6 +135,10 @@ if [[ -n "$WAS_RUNNING" ]]; then
   # environment too (DaemonEnvironment); this keeps the app itself out of it.
   env -i HOME="$HOME" USER="${USER:-$(id -un)}" LOGNAME="${LOGNAME:-${USER:-$(id -un)}}" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
     open -g -a "$INSTALLED_APP_PATH"
+fi
+
+if [[ -d "$INSTALLED_APP_PATH/Contents/Resources/Lagoon" ]]; then
+  echo "The lagoon is in the app: $(du -sh "$INSTALLED_APP_PATH/Contents/Resources/Lagoon" | cut -f1) (Debug › Show Lagoon)"
 fi
 
 echo "Installed $INSTALLED_APP_PATH"
