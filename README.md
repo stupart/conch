@@ -287,24 +287,12 @@ The full environment-variable surface remains available (put overrides in the ho
 | `CONCH_TTS_SPEED` | `1.35` | Kokoro/voice synthesis speed (`conch set voice-speed …`) |
 | `CONCH_TTS_BATCH_CHARS` | `240` | coalesce later short sentences up to this size; `0` disables (sentence one always stays separate) |
 
-## Codex support is unfinished
+## Codex
 
-conch is built for Claude Code. There is Codex code in here — hooks, a
-transcript reader, a plugin — and it does not currently work: **Codex 0.144.1
-does not execute `~/.codex/hooks.json` at all.** Verified by installing a hook
-that does nothing but `touch` a file, and watching it never fire, after ruling
-out hook trust and schema problems.
-
-So a Codex session never announces itself, never appears in the ledger, and
-cannot be talked to. It is **off by default** — setup no longer writes the
-review contract into `~/.codex/AGENTS.md`, because telling Codex to end
-deliverables with `conch:review …` when nothing can act on it just spends its
-turns. `conch uninstall --codex` removes any earlier wiring without touching
-Claude Code.
-
-Fixing it likely means following Codex's own plugin/marketplace structure
-rather than the hooks file. Contributions welcome; until then the honest
-status is *written, not working*.
+conch started with Claude Code, and Codex sessions now work beside it. They appear in the ledger, conch reads their
+rollouts to show what they're doing, and a message reaches them typed into their terminal, or, for a task open in the
+Codex app, through the app's own connection. Connecting Codex accounts is in [docs/codex-accounts.md](docs/codex-accounts.md).
+`conch uninstall --codex` removes conch's Codex wiring without touching Claude Code.
 
 ## Roadmap
 
@@ -318,3 +306,9 @@ status is *written, not working*.
 Built on [seashell](https://github.com/stupart/seashell)'s local-first STT engine.
 
 conch is a small open experiment from [Blueprint Studio](https://blueprintstudio.ai) — we build AI products that feel good to use. MIT.
+
+## License, name and artwork
+
+The code is MIT licensed ([LICENSE](LICENSE)). The conch name and logo, the app icons and agent marks (the artwork in
+the apps' `Assets.xcassets`), the crab characters and other artwork, and the films are not covered by that license:
+please don't use them for forks or for products built from this code.
