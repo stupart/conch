@@ -217,7 +217,8 @@ function fixtureState(work: string, home: string, rows = 0) {
       {
         id: "s-page", label: "Lagoon page", status: "waiting", at, needsResponse: false, detail: "Ready for review", paused: false,
         muted: false, live: null, active: true, cwd: join(work, "work"), transcriptPath: "/Users/x/.claude/projects/p/1.jsonl",
-        accountLabel: "Blueprint", claudeAccountId: "acct-1", voice: "Ava", settings: { model: "opus" }, revealable: true,
+        accountLabel: "Blueprint", claudeAccountId: "acct-1", voice: "Ava", revealable: true,
+        settings: { model: "opus", modelLabel: "Opus 5.5", effort: "xhigh", modelChoice: "opus", choices: ["secret"] },
         execution: { providerId: "claude", runtimeId: "device:x", connectionId: "c" },
         reviews: [
           { id: "r-page", summary: "The page", link: "site/page.html", at: at - 5000, kind: "page", version: 2, artifact: "art-page",
@@ -233,6 +234,7 @@ function fixtureState(work: string, home: string, rows = 0) {
         live: "listening", active: true, cwd: `${home}/Projects/Conch`, codexAccountId: "codex-1", accountLabel: "Work",
         workDirs: [`${home}/Projects/Conch`, "/tmp/a", home, "/fourth"], usageLimit: "You've hit your usage limit until 4pm",
         execution: { providerId: "codex", runtimeId: "device:x" }, context: { usedTokens: 120_000, limitTokens: 200_000 },
+        settings: { model: "gpt", modelLabel: long(60, "A model with a long name "), effort: long(30, "max ") },
         activity: { text: long(120, "Running the test suite "), kind: "step", at: at - 1000 }, waitingOnAgents: true, snippet: long(200),
       },
       {
@@ -268,7 +270,15 @@ function fixtureState(work: string, home: string, rows = 0) {
           { id: "a2", rev: 1, kind: "assistant", text: long(400, "the second answer is long "), at: at - 400 },
         ],
       },
-      "s-codex": { sessionId: "s-codex", items: [] },
+      // More messages than the glass gets, a step between some, and one answer with no time: the last 12, each answer
+      // with its turn's steps and time (sanitize.mjs v4.10).
+      "s-codex": {
+        sessionId: "s-codex",
+        items: Array.from({ length: 18 }, (_, i) => [
+          { id: `cu${i}`, rev: 1, kind: i % 2 ? "assistant" : "user", text: `${i % 2 ? "answer" : "ask"} ${i}`, at: i === 9 ? undefined : at - 20_000 + i * 1000 },
+          ...(i % 3 === 0 ? [{ id: `ct${i}`, rev: 1, kind: "tool", text: `step ${i}`, at: at - 20_000 + i * 1000 + 500 }] : []),
+        ]).flat(),
+      },
       "s-gone": { sessionId: "s-gone", items: [{ id: "x", kind: "assistant", text: "no row", at }] },
     },
     dismissed: ["d-1"],
@@ -358,7 +368,9 @@ describe.skipIf(!crossCheckable)("the app's snapshot is what sanitize.mjs makes 
     walk(ours);
     expect(never.filter((k) => keys.has(k))).toEqual([]);
     const text = JSON.stringify(ours);
-    for (const secret of ["device-secret", "acct-1", "Blueprint", "/Users/x/.claude", "private thoughts", "please build it", "You've hit", "site/page.html"]) {
+    // Your own recent messages go now (sanitize.mjs v4.10: the glass's conversation pane shows both sides); thinking,
+    // material, the settings beyond their two labels, and everything else on the NEVER list still never do.
+    for (const secret of ["device-secret", "acct-1", "Blueprint", "/Users/x/.claude", "private thoughts", "/secret.png", "secret\"", "You've hit", "site/page.html"]) {
       expect(text).not.toContain(secret);
     }
   }, 120_000);

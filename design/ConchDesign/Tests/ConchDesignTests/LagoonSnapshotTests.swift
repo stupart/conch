@@ -20,6 +20,8 @@ final class LagoonSnapshotTests: XCTestCase {
         "startedBySessionId", "context", "usedTokens", "limitTokens", "pauseExempt", "muted", "active", "waitingOnAgents",
         "usageLimit", "at", "activity", "text", "kind", "approval", "name", "summary", "answerable", "reviews", "viewedAt",
         "version", "scene", "target", "inspect", "open", "sessionId", "items",
+        // sanitize.mjs v4.10: a session's model and effort labels, and an answer's step count and time.
+        "model", "effort", "steps", "took",
     ]
 
     private let home = "/Users/someone"
@@ -151,14 +153,24 @@ final class LagoonSnapshotTests: XCTestCase {
         XCTAssertNil(reviews[2]["open"])
     }
 
-    func testOnlyTheLastMessageAndTwoStepsOfEachConversation() throws {
+    func testTheRecentMessagesAndTwoStepsOfEachConversation() throws {
         let object = try json(LagoonSnapshot(rich(), home: home))
         let conversations = try XCTUnwrap(object["conversations"] as? [String: [String: Any]])
         XCTAssertEqual(Set(conversations.keys), ["s1"], "only sessions that are rows")
         let items = try XCTUnwrap(conversations["s1"]?["items"] as? [[String: Any]])
-        // The last two tools and the last assistant message, in time order; never the user's words, thinking or material.
-        XCTAssertEqual(items.map { $0["id"] as? String }, ["t2", "a2", "t3"])
+        // Both sides' messages (sanitize.mjs v4.10) and the last two tools, in time order; never thinking or material.
+        XCTAssertEqual(items.map { $0["id"] as? String }, ["u1", "a1", "t2", "a2", "t3"])
         XCTAssertEqual(conversations["s1"]?["sessionId"] as? String, "s1")
+        // An answer carries its turn's step count and time, never the steps.
+        let answer = try XCTUnwrap(items.first { $0["id"] as? String == "a2" })
+        XCTAssertNotNil(answer["steps"])
+    }
+
+    func testOnlyTheLastTwelveMessages() {
+        let items: [LagoonSnapshot.Source.Item] = (0..<20).map { .init(id: "m\($0)", kind: $0 % 2 == 0 ? "user" : "assistant", text: "x", at: Double($0)) }
+        let snapshot = LagoonSnapshot(.init(ts: 1, paused: false, holding: 0, liveState: nil, rows: [.init(id: "s")],
+                                            conversations: ["s": items], dismissed: []), home: home)
+        XCTAssertEqual(snapshot.conversations["s"]?.items.map(\.id), (8..<20).map { "m\($0)" })
     }
 
     func testCutsAsSanitizeCuts() {
@@ -177,7 +189,7 @@ final class LagoonSnapshotTests: XCTestCase {
         XCTAssertEqual(snapshot.rows[0].label?.utf16.count, 120)
         XCTAssertEqual(snapshot.rows[0].detail?.utf16.count, 200)
         XCTAssertEqual(snapshot.rows[0].snippet?.utf16.count, 160)
-        XCTAssertEqual(snapshot.conversations["s"]?.items.map { $0.text?.utf16.count }, [120, 240])
+        XCTAssertEqual(snapshot.conversations["s"]?.items.map { $0.text?.utf16.count }, [120, 500], "a message is cut at 600")
         XCTAssertEqual(snapshot.live.state.utf16.count, 20)
     }
 

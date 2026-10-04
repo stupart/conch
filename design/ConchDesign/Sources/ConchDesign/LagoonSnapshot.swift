@@ -46,6 +46,10 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
         public var parentSessionId: String?
         public var startedBySessionId: String?
         public var context: Context?
+        /// Its model and effort as the app's session bar says them ("Opus 5.5 · xhigh"): only these two labels of its
+        /// settings, never the settings themselves, its account or its choices (sanitize.mjs v4.10).
+        public var model: String?
+        public var effort: String?
         public var paused: Bool
         /// True or absent.
         public var pauseExempt: Bool?
@@ -63,7 +67,7 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
 
         enum CodingKeys: String, CodingKey {
             case id, label, status, needsResponse, detail, snippet, cwd, workDirs, backend, parentSessionId, startedBySessionId
-            case context, paused, pauseExempt, muted, live, active, waitingOnAgents, usageLimit, at, activity, approval, reviews
+            case context, model, effort, paused, pauseExempt, muted, live, active, waitingOnAgents, usageLimit, at, activity, approval, reviews
         }
 
         public func encode(to encoder: Encoder) throws {
@@ -80,6 +84,8 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
             try c.encodeIfPresent(parentSessionId, forKey: .parentSessionId)
             try c.encodeIfPresent(startedBySessionId, forKey: .startedBySessionId)
             try c.encodeIfPresent(context, forKey: .context)
+            try c.encodeIfPresent(model, forKey: .model)
+            try c.encodeIfPresent(effort, forKey: .effort)
             try c.encode(paused, forKey: .paused)
             try c.encodeIfPresent(pauseExempt, forKey: .pauseExempt)
             try c.encode(muted, forKey: .muted)
@@ -144,6 +150,9 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
         public var kind: String
         public var text: String?
         public var at: Double?
+        /// On an answer: how many steps its turn took, and how long since what came before it (ms). Never the steps.
+        public var steps: Int?
+        public var took: Double?
     }
 
     // MARK: What the app hands over
@@ -186,6 +195,9 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
             public var startedBySessionId: String?
             public var usedTokens: Int?
             public var limitTokens: Int?
+            /// `settings.modelLabel` and `settings.effort`, and nothing else of its settings.
+            public var modelLabel: String?
+            public var effort: String?
             public var paused: Bool
             public var pauseExempt: Bool
             public var live: String?
@@ -202,7 +214,8 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
             public init(id: String, label: String? = nil, status: String? = nil, needsResponse: Bool = false, detail: String? = nil,
                         snippet: String? = nil, cwd: String? = nil, workDirs: [String]? = nil, backend: String? = nil,
                         providerId: String? = nil, parentSessionId: String? = nil, startedBySessionId: String? = nil,
-                        usedTokens: Int? = nil, limitTokens: Int? = nil, paused: Bool = false, pauseExempt: Bool = false,
+                        usedTokens: Int? = nil, limitTokens: Int? = nil, modelLabel: String? = nil, effort: String? = nil,
+                        paused: Bool = false, pauseExempt: Bool = false,
                         live: String? = nil, active: Bool = false, waitingOnAgents: Bool = false, usageLimit: String? = nil,
                         at: Double? = nil, activity: Activity? = nil, approval: Approval? = nil, reviews: [Review] = []) {
                 self.id = id
@@ -219,6 +232,8 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
                 self.startedBySessionId = startedBySessionId
                 self.usedTokens = usedTokens
                 self.limitTokens = limitTokens
+                self.modelLabel = modelLabel
+                self.effort = effort
                 self.paused = paused
                 self.pauseExempt = pauseExempt
                 self.live = live
@@ -358,6 +373,8 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
                 parentSessionId: Self.cut(r.parentSessionId, 120),
                 startedBySessionId: Self.cut(r.startedBySessionId, 120),
                 context: r.limitTokens.flatMap { $0 != 0 ? Context(usedTokens: r.usedTokens ?? 0, limitTokens: $0) : nil },
+                model: Self.cut(r.modelLabel, 40),
+                effort: Self.cut(r.effort, 16),
                 paused: r.paused,
                 pauseExempt: r.pauseExempt ? true : nil,
                 // Always false on the wire: the daemon has published `muted: false` on every row since manual replaced it.
@@ -392,15 +409,38 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
 
         self.rows = rows
 
-        // The last thing each session said and its last two steps, short: what a hover or the report on the glass shows.
+        // Each session's recent conversation, for the glass's conversation pane as the app shows it (sanitize.mjs v4.10):
+        // its last `messages` messages, yours and its answers, cut to 600, and its last two steps, cut to 120. An answer
+        // carries how many steps its turn took and how long (`steps`, `took`), never the steps themselves. Never its
+        // thinking, its material, or anything older.
         var conversations: [String: Conversation] = [:]
         for row in rows {
             guard let items = source.conversations[row.id] else { continue }
-            let said = items.last { $0.kind == "assistant" }
-            let tools = items.filter { $0.kind == "tool" }.suffix(2)
-            let kept = Self.stableSorted(Array(tools) + (said.map { [$0] } ?? [])) { ($0.at ?? 0) < ($1.at ?? 0) }
-            conversations[row.id] = Conversation(sessionId: row.id, items: kept.map {
-                Item(id: Self.cut($0.id, 120), kind: $0.kind, text: Self.cut($0.text, $0.kind == "tool" ? 120 : 240), at: finite($0.at))
+            // By place in `items`, which is what an answer's turn is keyed by: tools first, as sanitize.mjs lists them.
+            let said = items.indices.filter { items[$0].kind == "user" || items[$0].kind == "assistant" }.suffix(Self.messages)
+            let tools = items.indices.filter { items[$0].kind == "tool" }.suffix(2)
+            // Each answer: the steps since what came before it, and the time since then.
+            var turns: [Int: (steps: Int, took: Double?)] = [:]
+            var stepsSince = 0
+            var from: Double?
+            for (index, item) in items.enumerated() {
+                if item.kind == "tool" {
+                    stepsSince += 1
+                } else if item.kind == "user" || item.kind == "assistant" {
+                    if item.kind == "assistant", stepsSince > 0 {
+                        // JavaScript's `num(m.at) && num(from)`: a zero time counts as none.
+                        let took: Double? = if let at = finite(item.at), at != 0, let from = finite(from), from != 0 { at - from } else { nil }
+                        turns[index] = (stepsSince, took)
+                    }
+                    stepsSince = 0
+                    from = item.at
+                }
+            }
+            let kept = Self.stableSorted(Array(tools) + Array(said)) { (items[$0].at ?? 0) < (items[$1].at ?? 0) }
+            conversations[row.id] = Conversation(sessionId: row.id, items: kept.map { index in
+                let item = items[index]
+                return Item(id: Self.cut(item.id, 120), kind: item.kind, text: Self.cut(item.text, item.kind == "tool" ? 120 : 600),
+                            at: finite(item.at), steps: turns[index]?.steps, took: turns[index]?.took)
             })
         }
         self.conversations = conversations
@@ -410,6 +450,9 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
         var seen = Set<String>()
         dismissed = source.dismissed.filter { seen.insert($0).inserted }
     }
+
+    /// How many of a session's recent messages the glass's conversation pane gets (sanitize.mjs `MESSAGES`).
+    public static let messages = 12
 
     /// sanitize.mjs `str`: past `limit`, the first `limit − 1` and an ellipsis. Counted in UTF-16 units, as JavaScript
     /// counts, so both cut at the same place; a cut that would split a surrogate pair takes one unit fewer.
