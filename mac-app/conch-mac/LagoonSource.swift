@@ -47,6 +47,8 @@ extension LagoonSnapshot.Source.Row {
             startedBySessionId: row.startedBySessionId,
             usedTokens: row.context?.usedTokens,
             limitTokens: row.context?.limitTokens,
+            modelLabel: row.settings?.modelLabel,
+            effort: row.settings?.effort,
             paused: row.paused,
             pauseExempt: row.pauseExempt,
             live: row.live,
