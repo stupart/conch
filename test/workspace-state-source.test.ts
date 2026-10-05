@@ -67,7 +67,7 @@ describe("one owner", () => {
     // One rule, whichever way it is asked: the model's own answers go through the same functions.
     const model = read("mac-app/conch-mac/Workspace.swift");
     expect(model).toContain("func voiceState(of row: SessionRow, in state: PublishedState?) -> String {\n        Self.voiceState(of: row, in: state)");
-    expect(model).toContain("func dictation(of row: SessionRow?, in state: PublishedState?) -> String {\n        Self.dictation(of: row, in: state)");
+    expect(model).toContain("func dictation(of row: SessionRow?, in state: PublishedState?) -> ComposerDictation.Live? {\n        Self.dictation(of: row, in: state)");
     expect(model.match(/WorkspaceFocus\.isAddressed\(row\.id, in: Workspace\(state\)\)/g)?.length).toBe(4);
     expect(content).toContain("workspace.targetRow(in: store.state)");
     // Which session the voice is on comes from the state the daemon published ON THE ROW,

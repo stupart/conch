@@ -108,12 +108,51 @@ final class ComposerDraftStore: ObservableObject {
     /// The whole point of dictating into a composer is that the two can be
     /// combined — start typing, finish out loud, edit the join. Overwriting
     /// would reproduce the bug from the other direction.
+    ///
+    /// The join is the live preview's own (`ComposerDictation.appending`), so the words land exactly as the field showed
+    /// them while they were spoken (2026-10-05).
     func appendDictation(_ text: String, to sessionID: String) {
-        let spoken = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !spoken.isEmpty else { return }
         update(sessionID) { entry in
-            let existing = entry.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            entry.text = existing.isEmpty ? spoken : existing + " " + spoken
+            entry.text = ComposerDictation.appending(text, to: entry.text)
+        }
+    }
+
+    /// Each session's dictation as it is being spoken, followed frame to frame (`ComposerDictation.Follower`).
+    ///
+    /// Not published: it is advanced from the state the composer is drawn with, while it draws, and changes nothing
+    /// anyone else draws. A following that is published from inside a view's update is SwiftUI's "publishing changes from
+    /// within view updates". Here rather than in the view because the input moves between the window and the panel
+    /// (ComposerDock) mid-dictation, and a view's own state would start over each time it did.
+    private var followers: [String: ComposerDictation.Follower] = [:]
+    /// Sessions whose composer mic asked for a dictation, and when, until the capture it asked for is seen. Only those
+    /// words go into the draft; the voice loop's reply, the window's Space and the menu bar talk to the session itself.
+    private var dictationRequests: [String: Date] = [:]
+    /// The mic is slow to open at worst (twelve seconds once, a cold transcript scan), never this slow: a request the
+    /// daemon never answered must not make a later voice turn look like a dictation into the draft.
+    private static let dictationRequestLifetime: TimeInterval = 60
+
+    /// The composer's own mic asked to dictate into this session's draft (`SessionComposer`).
+    func requestDictation(for sessionID: String) {
+        dictationRequests[sessionID] = Date()
+    }
+
+    /// What the input bar shows for `sessionID` this frame: its draft, then everything said so far, or nil for the draft
+    /// alone. 2026-10-05, Tyler: "make the transcript accumulate in the input bar with whatever text is already there
+    /// instead of just showing like the last few words". It never writes the draft: only `apply` does, once, when the
+    /// finished dictation lands, so a cancelled or failed one leaves the draft exactly as it was. Words that are going to
+    /// the session rather than into the draft show alone, as they always did (`ComposerDictation.Follower.composing`).
+    func dictationPreview(for sessionID: String, live: ComposerDictation.Live?) -> ComposerDictation.Preview? {
+        var follower = followers[sessionID] ?? ComposerDictation.Follower()
+        let requested = dictationRequests[sessionID].map { -$0.timeIntervalSinceNow < Self.dictationRequestLifetime } ?? false
+        let transcript = live.flatMap {
+            follower.follow($0, session: sessionID, applied: appliedDictationID, requested: requested)
+        }
+        if live == nil { follower = ComposerDictation.Follower() }
+        // Answered, or stale: either way it is spent.
+        if follower.isFollowing || !requested { dictationRequests[sessionID] = nil }
+        followers[sessionID] = follower == ComposerDictation.Follower() ? nil : follower
+        return transcript.flatMap {
+            ComposerDictation.preview(draft: drafts[sessionID]?.text ?? "", transcript: $0, joining: follower.composing)
         }
     }
 
@@ -189,8 +228,9 @@ struct ComposerView: View {
     @Binding var draft: String
     @Binding var attachments: [URL]
     /// What conch is hearing right now, so dictation appears where you would
-    /// type it rather than somewhere else on screen.
-    let dictation: String
+    /// type it rather than somewhere else on screen: the draft, then every word said so far (`ComposerDictation`), or nil
+    /// when this session is not being dictated to.
+    let dictation: ComposerDictation.Preview?
     /// True while the agent is mid-turn, which is the only time stopping means
     /// anything.
     let isWorking: Bool
@@ -232,6 +272,9 @@ struct ComposerView: View {
     @Environment(\.conchRendersStatically) private var rendersStatically
     /// The field has the keyboard; set true to give it the keyboard (`ComposerEditor.isFocused`).
     @State private var fieldFocused = false
+    /// A key was typed into the field while it was read-only for a dictation: the caption says why nothing happened,
+    /// until the words land.
+    @State private var typedWhileDictating = false
 
     var body: some View {
         // No gap: `#ta` carries its own 4 of bottom padding and `.cbar` its own 34 height,
@@ -421,23 +464,15 @@ struct ComposerView: View {
 
     private var composerField: some View {
         ZStack(alignment: .topLeading) {
-            // Dictation takes over the field while you speak. It is deliberately
-            // not written INTO the draft: the transcript is still being revised
-            // right up until it lands, and typing over a moving target is worse
-            // than watching it settle.
-            if !dictation.isEmpty {
-                Text(dictation)
-                    // `#cLive{padding:8px 10px 4px;font:var(--read)/22px var(--sans)}` — the
-                    // live line shares the editor's font AND its insets in the lab, because
-                    // this text becomes that text. At 12.5 with 6/8 padding the words changed
-                    // size and moved the instant transcription landed, which is precisely the
-                    // moment you are watching them.
-                    //
-                    // The colour is left alone: the lab sets `--text` here (and `--text3`
-                    // while transcribing) where the app speaks in cyan, and that is a
-                    // state-colour decision rather than a measurement.
+            if rendersStatically, let dictation {
+                // The swoop's picture mid-dictation: the field as `ComposerDictationText` draws it, the draft and the
+                // settled words plain, the changing ones dimmer.
+                Text(Self.attributed(dictation))
                     .font(ConchType.readingBody)
-                    .foregroundStyle(ConchPalette.brandCyan)
+                    .lineSpacing(ConchType.readingLineSpacing)
+                    .lineLimit(8)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, minHeight: Self.lineHeight, alignment: .topLeading)
                     .padding(.top, Self.fieldInsetTop)
                     .padding(.bottom, Self.fieldInsetBottom)
                     .padding(.horizontal, Self.fieldInsetX)
@@ -459,6 +494,10 @@ struct ComposerView: View {
                 // to the words in it). It sizes itself from its own layout: one line until the text needs two, then up to
                 // eight, measured at the width it is actually laid out at.
                 ComposerEditor(text: $draft, isFocused: $fieldFocused, identity: sessionID, onSend: send)
+                    // Read-only while a dictation fills the field, and a key pressed there says why (`micCaption`).
+                    // Typing into a draft the dictation is about to be added to would put the words somewhere the
+                    // field is not showing them; they wait, and Return sends the lot once the words land.
+                    .readOnly(dictation != nil) { typedWhileDictating = true }
                     // Typing here is a claim on this session. Without it the
                     // pane keeps following the live session, so starting a
                     // sentence to one agent and having another begin working
@@ -476,8 +515,38 @@ struct ComposerView: View {
                     .padding(.bottom, Self.fieldInsetBottom - Self.caretRaise)
                     .padding(.horizontal, Self.fieldInsetX)
                     .background(ComposerPasteBridge { urls in attach(urls) })
+                    // Kept where it is while a dictation is drawn over it, not taken out: the draft, the caret, the
+                    // keyboard and Cmd-Z all stay with it, so the words land in the field you were in and you can
+                    // carry on typing after them. It used to be swapped out for the dictation line and rebuilt
+                    // after, which dropped the keyboard and the undo history every time.
+                    .opacity(dictation == nil ? 1 : 0)
+                    .allowsHitTesting(dictation == nil)
+                    .accessibilityHidden(dictation != nil)
+                    // Nor does it size the field meanwhile: the dictation does. A long draft under a voice turn's one
+                    // line (`ComposerDictation.Preview.joinsDraft`) held the field eight lines tall around it.
+                    .frame(height: dictation == nil ? nil : 0, alignment: .top)
 
-                if draft.isEmpty {
+                if let dictation {
+                    // The dictation takes the field while you speak: the draft as it is, then everything said so far,
+                    // growing as the words arrive (`ComposerDictation`). 2026-10-05, Tyler: "make the transcript
+                    // accumulate in the input bar with whatever text is already there instead of just showing like the
+                    // last few words". It showed `partial` alone, the segment being heard, in place of the draft.
+                    //
+                    // It is still not written INTO the draft: the transcript is revised right up until it lands, and the
+                    // draft must be exactly what it was if the dictation is cancelled. Drawn by the editor's own
+                    // typesetting, at the editor's own insets, so the draft does not move by a pixel when it takes over
+                    // and none of the words move when they land.
+                    ComposerDictationText(preview: dictation)
+                        .padding(.top, Self.fieldInsetTop + Self.caretRaise)
+                        .padding(.bottom, Self.fieldInsetBottom - Self.caretRaise)
+                        .padding(.horizontal, Self.fieldInsetX)
+                        .help(dictation.joinsDraft
+                              ? "Dictating — the words join your message when they land"
+                              : "Listening — these words go straight to \(sessionLabel)")
+                        .accessibilityElement()
+                        .accessibilityLabel(dictation.joinsDraft ? "Dictating" : "Listening")
+                        .accessibilityValue(dictation.text)
+                } else if draft.isEmpty {
                     Text(messageUnavailableReason ?? "Message \(sessionLabel)")
                         .font(ConchType.readingBody)
                         .foregroundStyle(ConchPalette.textDim)
@@ -494,9 +563,22 @@ struct ComposerView: View {
                 }
             }
         }
+        .onChange(of: dictation == nil) { _, ended in
+            if ended { typedWhileDictating = false }
+        }
         // No inner box: §3 says the stage has one card and no others, and the lab draws the
         // placeholder straight onto the composer. A field-shaped rectangle inside a
         // composer-shaped rectangle reads as two controls and costs ~20 pt of height.
+    }
+
+    /// The dictation for a picture of the field: the draft and the settled words in the text colour, the changing words
+    /// dimmer, as `ComposerDictationText` sets them.
+    private static func attributed(_ preview: ComposerDictation.Preview) -> AttributedString {
+        var plain = AttributedString(preview.plain)
+        plain.foregroundColor = ConchPalette.textPrimary
+        var pending = AttributedString(preview.pending)
+        pending.foregroundColor = ConchPalette.textDim
+        return plain + pending
     }
 
     /// The mic, said three ways. A person mid-sentence needs to know conch is
@@ -535,6 +617,11 @@ struct ComposerView: View {
     /// is the place in the app where knowing the state changes what you do next
     /// — keep talking, wait, or cut in.
     private var micCaption: String? {
+        // The field is read-only while a dictation fills it, and a key pressed there does nothing: this says why, once
+        // someone tries (2026-10-05).
+        if typedWhileDictating, let dictation {
+            return dictation.joinsDraft ? "type once the words land" : "type once the mic closes"
+        }
         switch voiceState {
         case "listening", "recording": return "listening"
         case "transcribing": return "transcribing"
@@ -561,8 +648,10 @@ struct ComposerView: View {
         }
     }
 
+    /// Not while a dictation fills the field: the draft would go without the words still being spoken, and they would
+    /// land after it in an empty field. Once they land, Return sends the lot.
     private var canSend: Bool {
-        !composed.isEmpty && !isSending && messageUnavailableReason == nil
+        !composed.isEmpty && !isSending && messageUnavailableReason == nil && dictation == nil
     }
 
     /// A send of this session's on its way, pressed here or wherever the input was when it was pressed.
@@ -814,7 +903,8 @@ struct SessionComposer: View {
             backend: row.backend,
             draft: composerDrafts.textBinding(for: row.id),
             attachments: composerDrafts.attachmentsBinding(for: row.id),
-            dictation: WorkspaceModel.dictation(of: row, in: state),
+            // Everything said so far, after the draft, for this row only (`ComposerDraftStore.dictationPreview`).
+            dictation: composerDrafts.dictationPreview(for: row.id, live: WorkspaceModel.dictation(of: row, in: state)),
             isWorking: row.status == .working,
             voiceState: voiceState(for: row),
             voiceLevel: WorkspaceModel.voiceLevel(of: row, in: state),
@@ -842,7 +932,9 @@ struct SessionComposer: View {
                     // The mic BESIDE a text field fills that field. It used to
                     // send the spoken half straight past the composer into the
                     // session, so what you typed and what you said could not be
-                    // one message.
+                    // one message. Noted first, so the field shows the words
+                    // joining the draft as they are spoken (2026-10-05).
+                    composerDrafts.requestDictation(for: row.id)
                     store.send(.dictate(sessionId: row.id, label: row.label))
                 }
             },

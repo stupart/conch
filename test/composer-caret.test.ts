@@ -136,7 +136,12 @@ test("a draft already there is laid out under the caret delegate from the start"
  */
 test("the editor is TextKit 1 from creation, and nothing switches it later", () => {
   expect(makeNSView()).toContain("ComposerTextView(usingTextLayoutManager: false)");
-  expect(editor.match(/usingTextLayoutManager:/g) ?? []).toHaveLength(1);
+  // Two text views, both made on TextKit 1 and never asked to switch: the editor, and the live dictation drawn over it
+  // (`ComposerDictationText`, 2026-10-05), which shares the editor's caret seam so its words sit on the editor's lines.
+  expect(editor.match(/usingTextLayoutManager:/g) ?? []).toHaveLength(2);
+  expect(editor.match(/usingTextLayoutManager: false/g) ?? []).toHaveLength(2);
+  const dictation = editor.slice(editor.indexOf("struct ComposerDictationText: NSViewRepresentable {"));
+  expect(dictation).toContain("let view = ComposerTextView(usingTextLayoutManager: false)");
   expect(composer).not.toContain("layoutManager");
   expect(composer).not.toContain("NSTextView(");
 });
@@ -162,17 +167,29 @@ test("the placeholder sits where the first typed line will", () => {
  * transcription line the editor's own font and the editor's own insets, because this text
  * becomes that text. The app drew it at 12.5 with 6/8 padding, so the words changed size and
  * jumped position at the moment transcription landed.
+ *
+ * 2026-10-05, Tyler: "make the transcript accumulate in the input bar with whatever text is already
+ * there instead of just showing like the last few words". The line is now the draft plus every word
+ * said so far, drawn by a text view set exactly as the editor is: its attributes, its caret seam, and
+ * the editor's own padding (the glyphs rise half the leading, so it is compensated as the editor is).
  */
-test("the dictation line sits exactly where the editor's text does", () => {
-  const live = composer.slice(composer.indexOf("if !dictation.isEmpty {"));
-  const body = live.slice(0, live.indexOf("} else {"));
-  expect(body).toContain(".font(ConchType.readingBody)");
+test("the dictation sits exactly where the editor's text does", () => {
+  const live = composer.slice(composer.indexOf("if let dictation {"));
+  const body = live.slice(0, live.indexOf("} else if draft.isEmpty {"));
+  expect(body).toContain("ComposerDictationText(preview: dictation)");
   expect(body).not.toContain("ConchTypography.font(size: 12.5)");
-  expect(body).toContain(".padding(.top, Self.fieldInsetTop)");
-  expect(body).toContain(".padding(.bottom, Self.fieldInsetBottom)");
+  expect(body).toContain(".padding(.top, Self.fieldInsetTop + Self.caretRaise)");
+  expect(body).toContain(".padding(.bottom, Self.fieldInsetBottom - Self.caretRaise)");
   expect(body).toContain(".padding(.horizontal, Self.fieldInsetX)");
   expect(body).not.toContain(".padding(.vertical, 6)");
   expect(body).not.toContain(".padding(.horizontal, 8)");
+  const view = editor.slice(editor.indexOf("struct ComposerDictationText: NSViewRepresentable {"));
+  const made = view.slice(view.indexOf("func makeNSView(context: Context) -> NSScrollView {"), view.indexOf("func updateNSView("));
+  // The editor's own type, leading and ink, and its caret seam, from the moment it is made.
+  expect(view).toContain("NSMutableAttributedString(string: preview.plain, attributes: ComposerEditor.attributes)");
+  expect(made).toContain("view.layoutManager?.delegate = ComposerCaretBaseline.shared");
+  expect(made).toContain("view.textContainerInset = .zero");
+  expect(made).toContain("view.textContainer?.lineFragmentPadding = 0");
   // The editor's own font is the same reading size.
   expect(editor).toContain("static let font = NSFont.systemFont(ofSize: ConchType.readingBodySize)");
 });

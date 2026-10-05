@@ -70,7 +70,7 @@ describe.skipIf(!drawable)("the composer's editor, typed into in a real window",
   test("the harness ran every case", () => {
     expect(harnessError).toBe("");
     expect([...lines.keys()]).toEqual([
-      "built", "spelling", "typed", "baseline", "marked", "return", "grow", "width", "outside", "session", "focus", "drag",
+      "built", "spelling", "typed", "baseline", "marked", "return", "grow", "width", "outside", "dictating", "session", "focus", "drag",
       "appearance", "done",
     ]);
   });
@@ -222,6 +222,29 @@ describe.skipIf(!drawable)("the composer's editor, typed into in a real window",
     // Emptied from outside, the next word is still the reading face in the palette's ink, not 12 pt black.
     expect(outside.typingInk).toBeGreaterThan(200);
     expect(outside.afterEmptyInk.brightest).toBeGreaterThan(200);
+  });
+
+  /**
+   * While a dictation fills the field it is read-only, and only so. 2026-10-05, Tyler: "make the transcript accumulate in
+   * the input bar with whatever text is already there instead of just showing like the last few words". ComposerView
+   * draws the dictation over the editor, which keeps the draft, the caret and the history underneath: what is typed
+   * meanwhile is turned away (and the composer says why) rather than landing somewhere the field is not showing.
+   */
+  test("a dictation makes the field read-only, then lands after what was typed", () => {
+    const dictating = line("dictating");
+    // Three keys, Delete, Return and an insert from outside the keyboard: six refusals, nothing changed, nothing sent.
+    expect(dictating.whileReadOnly).toMatchObject({ text: "typed first", draft: "typed first", refused: 6, sends: 0 });
+    // Cmd-Z finds nothing to take back while it is, so the field's own history is still there when the words land.
+    expect(dictating.canUndoBefore).toBe(true);
+    expect(dictating.whileReadOnly.canUndo).toBe(false);
+    expect(dictating.canUndoAfter).toBe(true);
+    // Still editable to AppKit: the window's single-key shortcuts stand aside for an editable field with the keyboard,
+    // and Space or a letter typed here would otherwise have worked the window.
+    expect(dictating.whileReadOnly.editable).toBe(true);
+    // Moving is not typing.
+    expect(dictating.whileReadOnly.arrowMoved).toBe(true);
+    // The words land after what was typed, the caret after them, and the field takes typing again.
+    expect(dictating.landed).toEqual({ text: "typed first and the spoken words", caret: 32, refusing: false });
   });
 
   test("another session's draft replaces the field outright", () => {
