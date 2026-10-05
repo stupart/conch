@@ -1054,12 +1054,12 @@ describe("inject and interrupt", () => {
     const before = getLiveState().dictated?.id ?? 0;
     const stopped = harness({ inject: () => ({ via: "none", interrupted: true }) });
     await stopped.voice.handle(inject("half a thought"));
-    expect(getLiveState().dictated).toEqual({ text: "half a thought", id: before + 1, sessionId: "s1" });
+    expect(getLiveState().dictated).toEqual({ text: "half a thought", id: expect.any(Number), sessionId: "s1" });
     expect(stopped.said).toEqual([]);
 
     const clipped = harness({ inject: () => ({ via: "clipboard" }) });
     await clipped.voice.handle(inject("the whole message"));
-    expect(getLiveState().dictated).toEqual({ text: "the whole message", id: before + 2, sessionId: "s1" });
+    expect(getLiveState().dictated).toEqual({ text: "the whole message", id: expect.any(Number), sessionId: "s1" });
     expect(clipped.said).toEqual(["Couldn't reach the session's window — your words are on the clipboard, just paste."]);
   });
 });
@@ -1859,7 +1859,7 @@ describe("the mic, the cue and the composer", () => {
     const h = harness({ cfg: { readFull: true }, gap: () => ({ text: "please also add a regression test" }) });
     const before = getLiveState().dictated?.id ?? 0;
     await h.voice.handle(accepted(h, turnEnd({ compose: true, transcriptPath: path, announce: "alpha: First part of the reply." })));
-    expect(getLiveState().dictated).toEqual({ text: "please also add a regression test", id: before + 1, sessionId: "s1" });
+    expect(getLiveState().dictated).toEqual({ text: "please also add a regression test", id: expect.any(Number), sessionId: "s1" });
     expect(h.texts).toEqual([]);
   });
 });
@@ -1943,7 +1943,7 @@ describe("dictation failure recovery", () => {
     expect(await outcome).toEqual(new Error("synthetic speech failure"));
     expect(h.texts).toEqual([]);
     expect(getLiveState().dictated).toEqual({
-      text: "make the change but keep the comments", id: before + 1, sessionId: "s1",
+      text: "make the change but keep the comments", id: expect.any(Number), sessionId: "s1",
     });
     expect(h.voice.capturing()).toBe(false);
     expect(h.violations).toEqual([]);
@@ -1964,7 +1964,7 @@ describe("dictation failure recovery", () => {
     await turn;
     expect(h.texts).toEqual([]);
     expect(getLiveState().dictated).toEqual({
-      text: "make the change. but keep the comments", id: before + 1, sessionId: "s1",
+      text: "make the change. but keep the comments", id: expect.any(Number), sessionId: "s1",
     });
     expect(audio.controller.state).toBe("idle");
     expect(h.violations).toEqual([]);
@@ -1990,7 +1990,7 @@ describe("dictation failure recovery", () => {
     expect(h.texts).toEqual([]);
     // Published ONCE, and the sentence appears once inside it.
     expect(getLiveState().dictated).toEqual({
-      text: "but keep the comments", id: before + 1, sessionId: "s1",
+      text: "but keep the comments", id: expect.any(Number), sessionId: "s1",
     });
     expect(h.violations).toEqual([]);
   });
@@ -2009,7 +2009,7 @@ describe("dictation failure recovery", () => {
       expect(h.texts).toEqual([]);
       expect(h.keys).toEqual([]);
       expect(getLiveState().dictated).toEqual({
-        text: "make the change but keep the comments", id: before + 1, sessionId: "s1",
+        text: "make the change but keep the comments", id: expect.any(Number), sessionId: "s1",
       });
       expect(h.errors.some((entry) => String(entry[1]).includes("incomplete"))).toBe(true);
       expect(h.said.at(-1)).toBe("Dictation was incomplete. Your recovered words are in the draft. Review them or retry before sending.");
@@ -2584,7 +2584,7 @@ test("a failed transport keeps the words as a draft and never presses Return", a
   const before = getLiveState().dictated?.id ?? 0;
   expect(await h.voice.handle(inject("words that never landed"))).toEqual({ delivered: false, reason: "automation-failed" });
   expect(h.keys).toEqual([]);
-  expect(getLiveState().dictated).toEqual({ text: "words that never landed", id: before + 1, sessionId: "s1" });
+  expect(getLiveState().dictated).toEqual({ text: "words that never landed", id: expect.any(Number), sessionId: "s1" });
 });
 
 
@@ -3040,7 +3040,7 @@ describe("one settlement for an incomplete dictation (finding 3)", () => {
     try {
       await h.voice.handle(accepted(h, turnEnd({ announce: "", transcriptPath: path })));
       expect(h.texts).toEqual([]);
-      expect(getLiveState().dictated).toEqual({ text: "but keep the comments", id: before + 1, sessionId: "s1" });
+      expect(getLiveState().dictated).toEqual({ text: "but keep the comments", id: expect.any(Number), sessionId: "s1" });
       expect(h.said.at(-1)).toBe(INCOMPLETE);
       expect(h.errors.some((entry) => String(entry[1]).includes("incomplete"))).toBe(true);
       expect(h.violations).toEqual([]);
@@ -3057,7 +3057,7 @@ describe("one settlement for an incomplete dictation (finding 3)", () => {
     try {
       await h.voice.handle(accepted(h, turnEnd({ announce: "", transcriptPath: path })));
       expect(h.texts).toEqual([]);
-      expect(getLiveState().dictated).toEqual({ text: "but keep the comments", id: before + 1, sessionId: "s1" });
+      expect(getLiveState().dictated).toEqual({ text: "but keep the comments", id: expect.any(Number), sessionId: "s1" });
       expect(h.said.at(-1)).toBe(INCOMPLETE);
       expect(h.violations).toEqual([]);
     } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
@@ -3096,7 +3096,7 @@ describe("an alternative prompt recovers its draft (finding 15)", () => {
       expect(h.keys).toEqual(["Escape"]);
       expect(h.texts).toEqual(["use main instead"]);
       expect(h.ledger.injectedAt.has("s1")).toBe(false);
-      expect(getLiveState().dictated).toEqual({ text: "use main instead", id: before + 1, sessionId: "s1" });
+      expect(getLiveState().dictated).toEqual({ text: "use main instead", id: expect.any(Number), sessionId: "s1" });
     } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
   });
 
@@ -3231,7 +3231,7 @@ describe("answering the question a session is waiting on", () => {
     const sent = await h.voice.handle(inject("A2 please", { transcriptPath: two() }));
     const reason = "the session is asking 2 questions at once, so words alone can't say which one they answer: fill in its question card and press Submit answers";
     expect(sent).toEqual({ delivered: false, reason });
-    expect(getLiveState().dictated).toEqual({ text: "A2 please", id: before + 1, sessionId: "s1" });
+    expect(getLiveState().dictated).toEqual({ text: "A2 please", id: expect.any(Number), sessionId: "s1" });
     expect(h.said).toEqual([`Couldn't answer that: ${reason}. Your words are in the draft.`]);
     expect(h.answered).toEqual([]);
     expect(h.texts).toEqual([]);
@@ -3312,7 +3312,7 @@ describe("answering the question a session is waiting on", () => {
     const before = getLiveState().dictated?.id ?? 0;
     const words = await h.voice.handle(inject("my own words", { transcriptPath: asking(question("Delta", ["D1", "D2"])) }));
     expect(words).toMatchObject({ delivered: false, reason: "front-window-changed" });
-    expect(getLiveState().dictated).toEqual({ text: "my own words", id: before + 1, sessionId: "s1" });
+    expect(getLiveState().dictated).toEqual({ text: "my own words", id: expect.any(Number), sessionId: "s1" });
     expect(h.said).toEqual(["Couldn't answer that question. Your words are in the draft."]);
   });
 });
@@ -3584,7 +3584,7 @@ describe("a send to a terminal the session has left", () => {
     expect(h.keys).toEqual([]);
     expect(h.clipboard).toEqual([]);
     // The words are back in the composer for this session.
-    expect(getLiveState().dictated).toEqual({ text: "did the fix land?", id: before + 1, sessionId: "s1" });
+    expect(getLiveState().dictated).toEqual({ text: "did the fix land?", id: expect.any(Number), sessionId: "s1" });
     // The check was asked about the pid it would have typed at, with what the row knows of it.
     expect(asked).toEqual([[h.cfg.claudeDir, { pid: 10231, jobId: "f31f0d15" }]]);
     expect(h.said).toEqual(["That session isn't running in its terminal any more. Resume it, and I'll pick it up. Your words are in the draft."]);

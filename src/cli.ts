@@ -624,6 +624,20 @@ switch (command) {
   case "service":
     await runService(cfg, rest[0] === "off" ? "off" : "install");
     break;
+  case "dictations": {
+    // The dictations handed back to the apps lately, newest first, in full: a recording whose words never reached a
+    // draft can be read back here (`recent-dictations.jsonl`, status.ts).
+    const { recentDictations, DICTATIONS_FILE } = await import("./status.ts");
+    const recent = recentDictations().reverse().slice(0, Math.max(1, Number(rest[0]) || 5));
+    if (!recent.length) {
+      console.log(`no recent dictations (${DICTATIONS_FILE})`);
+      break;
+    }
+    for (const entry of recent) {
+      console.log(`— ${new Date(entry.at).toLocaleString()} · session ${entry.sessionId} · ${entry.text.length} chars\n${entry.text}\n`);
+    }
+    break;
+  }
   case "shot": {
     // Photograph conch. Two modes, and which one you want depends on the question:
     //
