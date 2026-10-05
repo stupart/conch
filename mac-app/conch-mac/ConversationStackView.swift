@@ -353,8 +353,8 @@ struct ConversationStackView: View {
                     // checkmark". The daemon reads transcripts on a poll, so a sent message had
                     // seconds of saying nothing at all.
                     ForEach(store.outbox.entries(for: conversation.sessionId)) { pending in
-                        PendingMessage(entry: pending, onDismiss: { store.discardOutgoing(pending.id) })
-                            .conversationSelectionRow(pending.id, in: selection)
+                        // A message to the selection, but only its bubble: the line under it has Dismiss (`PendingMessage`).
+                        PendingMessage(entry: pending, selection: selection, onDismiss: { store.discardOutgoing(pending.id) })
                             .id(pending.id)
                     }
                     if let approval {
@@ -1987,6 +1987,7 @@ private struct DiffLine: View {
 /// sent and confirmed, staged, or why it did not land.
 private struct PendingMessage: View {
     let entry: ConchOutboxEntry
+    let selection: ConversationSelectionController
     /// Takes a send that did not land off the conversation. Its words are already back in the composer; without
     /// this a failed send sat under everything that came after it for good, reading as a fresh failure hours later
     /// (2026-10-02: "Not delivered" under a session that had been working fine since).
@@ -2006,6 +2007,13 @@ private struct PendingMessage: View {
                     .padding(.vertical, 8)
                     .background(ConchPalette.fill, in: RoundedRectangle(cornerRadius: ConchRadius.large))
             }
+            // The bubble is the selection's row, and only the bubble. 2026-10-05, Tyler: Dismiss "didn't work per
+            // usual" (2026-10-02: "Dismiss button doesn't work"). A message is selectable whole, so the surface over
+            // the conversation takes a press ANYWHERE in its row once the pointer has crossed it — and the row was this
+            // whole stack, the line beneath with Dismiss included. A click on Dismiss put the caret down instead, and
+            // the bubble went only when the transcript's own copy retired it ("Oh its gone now"). Proven with real
+            // views and clicks in ConversationSelectionHostTests.
+            .conversationSelectionRow(entry.id, in: selection)
             status
         }
         .frame(maxWidth: .infinity, alignment: .trailing)

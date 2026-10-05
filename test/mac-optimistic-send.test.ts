@@ -123,7 +123,7 @@ describe("a message sent from the Mac appears the moment it is sent", () => {
       stack,
       "ForEach(conversation.items) { item in",
       "ForEach(store.outbox.entries(for: conversation.sessionId)) { pending in",
-      "PendingMessage(entry: pending, onDismiss: { store.discardOutgoing(pending.id) })",
+      "PendingMessage(entry: pending, selection: selection, onDismiss: { store.discardOutgoing(pending.id) })",
     );
     const pending = section(stack, "private struct PendingMessage: View {", "private struct ArtifactPreview: View {");
     expect(pending).toContain(".background(ConchPalette.fill, in: RoundedRectangle(cornerRadius: ConchRadius.large))");
@@ -145,6 +145,27 @@ describe("a message sent from the Mac appears the moment it is sent", () => {
     // came after it read as a fresh failure hours later (2026-10-02). Its words are already back in the composer.
     expect(pending).toContain('Text("\\(entry.sentAt.formatted(date: .omitted, time: .shortened)) · \\(reason)")');
     expect(pending).toContain('Button("Dismiss", action: onDismiss)');
+    expect(pending).toContain('.contextMenu { Button("Dismiss", action: onDismiss) }');
     expect(source("mac-app/conch-mac/StateStore.swift")).toContain("func discardOutgoing(_ id: String) {");
+  });
+
+  // 2026-10-05, Tyler: Dismiss "didn't work per usual" (2026-10-02: "Dismiss button doesn't work", then "Oh its gone
+  // now"). The selection took the press on Dismiss as a press on the message (ConversationSelectionHostTests proves it
+  // with real views and clicks), and nothing remembered a dismissal. Both are pinned here; the outbox's half is
+  // OutboxDismissTests.
+  test("Dismiss takes the send off at once, and it stays off", () => {
+    const discard = section(store, "func discardOutgoing(_ id: String) {", "\n    }\n");
+    expect(discard).toContain("outbox.dismiss(id)");
+    expect(discard).not.toContain("outbox.remove(");
+    // A reconcile's copy is stored over the outbox as it is now, so a dismissal in between stands.
+    ordered(
+      section(store, "private func reconcileOutbox(with snapshot: PublishedState) {", "static func sameMessage("),
+      "var reconciled = outbox",
+      "reconciled.prune(confirmedBefore:",
+      "let stored = reconciled.honoringDismissals(of: outbox)",
+      "if stored != outbox { outbox = stored }",
+    );
+    expect(outbox).toContain("guard dismissed[entry.id] == nil else { return entry }");
+    expect(outbox).toContain("public static let dismissalMemory: TimeInterval = 24 * 60 * 60");
   });
 });

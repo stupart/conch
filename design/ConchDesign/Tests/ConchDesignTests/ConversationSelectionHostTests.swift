@@ -376,6 +376,116 @@ final class ConversationSelectionHostTests: XCTestCase {
         XCTAssertEqual(controller.copiedText(), selected)
     }
 
+    // MARK: - A send that did not land
+
+    /// Where the Dismiss button was drawn, in the stack's coordinates.
+    final class Spot { var frame: CGRect? }
+
+    /// The Mac's `PendingMessage` (ConversationStackView), drawn as it draws it: your bubble, and beneath it when it
+    /// sent and why it did not land, with Dismiss. `wholeRow`: the selection row put round the bubble AND that line,
+    /// as it was until 2026-10-05; otherwise round the bubble only, as it is now.
+    struct Pending: View {
+        let controller: ConversationSelectionController
+        let wholeRow: Bool
+        let dismiss: Spot
+        let onDismiss: () -> Void
+
+        var body: some View {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    if wholeRow {
+                        VStack(alignment: .trailing, spacing: 3) { bubble; status }
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                            .conversationSelectionRow("p1", in: controller)
+                    } else {
+                        VStack(alignment: .trailing, spacing: 3) {
+                            bubble.conversationSelectionRow("p1", in: controller)
+                            status
+                        }
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                }
+                .padding(.horizontal, 18)
+                .padding(.top, 14)
+                .frame(maxWidth: 700, alignment: .leading)
+                .conversationSelectionSurface(controller)
+                .frame(maxWidth: .infinity)
+            }
+            .background(ConchColor.surface)
+        }
+
+        private var bubble: some View {
+            HStack {
+                Spacer(minLength: 48)
+                Text(ConversationFog.inlineMarkdown(ConversationSelectionHostTests.second))
+                    .conversationSelectable(row: "p1", segment: 0)
+                    .font(ConchType.readingBody)
+                    .lineSpacing(ConchType.readingLineSpacing)
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(ConchColor.fill, in: RoundedRectangle(cornerRadius: ConchRadius.large))
+            }
+        }
+
+        private var status: some View {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("9:41 AM · Not delivered — conch couldn't confirm it reached the session.")
+                    .font(.system(size: 11))
+                    .multilineTextAlignment(.trailing)
+                Button("Dismiss", action: onDismiss)
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .medium))
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(ConversationSelectionSpace.name)) } action: { frame in
+                        dismiss.frame = frame
+                    }
+            }
+            .contextMenu { Button("Dismiss", action: onDismiss) }
+        }
+    }
+
+    /// Whether a press on Dismiss is taken by the surface as a press on the message's text, and whether a click on it
+    /// reached the button.
+    private func dismissIsPressable(wholeRow: Bool) -> (taken: Bool, dismissed: Bool) {
+        let controller = ConversationSelectionController()
+        controller.source = .init(rowIDs: { ["p1"] }, rowTexts: { _ in
+            ["p1": SelectableRowText(id: "p1", speaker: .you, segments: [SelectableSegment(ConversationFog.inlineMarkdown(Self.second))])]
+        })
+        let spot = Spot()
+        var dismissed = false
+        let (window, view) = host(Pending(controller: controller, wholeRow: wholeRow, dismiss: spot, onDismiss: { dismissed = true }))
+        settle(view) { controller.frame(of: "p1") != nil && spot.frame != nil }
+        guard let surface = surface(in: view), let frameView = window.contentView?.superview, let button = spot.frame else {
+            XCTFail("not laid out")
+            return (true, false)
+        }
+        // The pointer has crossed the bubble on its way down to Dismiss: the row is armed, as it always is by then.
+        hover(["p1"], controller, surface, view)
+        let point = CGPoint(x: button.midX, y: button.midY)
+        surface.mouseMoved(with: mouse(.mouseMoved, point, on: surface))
+        NSApp.postEvent(mouse(.leftMouseDown, point, on: surface), atStart: true)
+        _ = NSApp.nextEvent(matching: .any, until: Date(timeIntervalSinceNow: 1), inMode: .default, dequeue: true)
+        let taken = frameView.hitTest(surface.convert(point, to: nil)) === surface
+        // And clicked, through the window, the way a click is delivered.
+        window.sendEvent(mouse(.leftMouseDown, point, on: surface))
+        window.sendEvent(mouse(.leftMouseUp, point, on: surface))
+        settle(view) { dismissed }
+        return (taken, dismissed)
+    }
+
+    /// Tyler, 2026-10-02 and again 2026-10-05: "Dismiss button doesn't work". The selection took the row whole, and the
+    /// row was the bubble AND the line under it, so a press on Dismiss was a press on the message: it put the caret
+    /// down and the button never heard it. The bubble went only when the transcript's own copy retired it ("Oh its gone
+    /// now"). The selection now takes the bubble alone.
+    func testAPressOnDismissUnderAFailedSendIsTheButtonsNotTheSelections() {
+        let before = dismissIsPressable(wholeRow: true)
+        XCTAssertTrue(before.taken, "the shape before: the surface took the press")
+        XCTAssertFalse(before.dismissed, "and the button never heard the click")
+        let now = dismissIsPressable(wholeRow: false)
+        XCTAssertFalse(now.taken, "Dismiss is the button's")
+        XCTAssertTrue(now.dismissed, "and a click on it dismisses")
+    }
+
     // MARK: - Pictures
 
     func testRenderTheLitConversation() throws {

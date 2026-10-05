@@ -53,8 +53,16 @@ describe("the conversation holds one selection", () => {
     expect(kinds).toContain("case .user: return item.receipt == nil ? .whole : .none");
     expect(kinds).toContain("case .assistant, .thinking: return .whole");
     expect(kinds).toContain("isExpanded(item.id) ? .text : .none");
-    // What this Mac has sent is a message too.
-    expect(between(stack, "ForEach(store.outbox.entries", "if let approval")).toContain(".conversationSelectionRow(pending.id, in: selection)");
+    // What this Mac has sent is a message too — its bubble, and only its bubble. The line beneath has Dismiss, and a row
+    // that took it too took the press on Dismiss as a press on the message (2026-10-05: Dismiss "didn't work per usual").
+    const sent = between(stack, "ForEach(store.outbox.entries", "if let approval");
+    expect(sent).toContain("PendingMessage(entry: pending, selection: selection,");
+    expect(sent).not.toContain(".conversationSelectionRow(");
+    const pending = between(stack, "private struct PendingMessage: View {", "private var status: some View");
+    const bubble = between(pending, "HStack {\n                Spacer(minLength: 48)", "            status\n");
+    expect(bubble).toContain(".background(ConchPalette.fill, in: RoundedRectangle(cornerRadius: ConchRadius.large))\n            }");
+    expect(bubble.trimEnd().endsWith(".conversationSelectionRow(entry.id, in: selection)")).toBe(true);
+    expect(pending.split(".conversationSelectionRow(").length - 1).toBe(1);
   });
 
   test("each message's text is tagged with its row, as the selection reads it", () => {

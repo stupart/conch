@@ -236,6 +236,33 @@ describe("a message shows what became of it", () => {
     // Retry is the ordinary send: an unconfirmed message's words head the draft.
     expect(between(session, "private func sendWords() {", "\n    }\n")).toContain("talk.send(session: sessionId) { text, opId in");
   });
+
+  // 2026-10-05, Tyler: Dismiss on a failed send "didn't work per usual". On the phone there was none: no button, and the
+  // long-press menu asked for a state that was not terminal — a failure is — so a "Not delivered" bubble offered
+  // nothing at all. It now has the Mac's Dismiss, beside Retry, and in the menu.
+  test("a send that did not land has Dismiss beside Retry, and in its long-press menu", () => {
+    const bubble = between(session, "private struct YourTurnBubble: View {", "\nprivate struct ApprovalCard");
+    inOrder(bubble, [
+      "case let .unknown(reason):",
+      "unsettled(reason, color: Palette.caution)",
+      "case let .failed(reason):",
+      "unsettled(reason, color: Palette.needs)",
+    ]);
+    inOrder(between(bubble, "private func unsettled(_ reason: String, color: Color) -> some View {", "\n    }\n}"), [
+      "Text(reason)",
+      'Button("Retry", action: onRetry)',
+      'Button("Dismiss", action: onDiscard)',
+    ]);
+    const menu = between(bubble, ".contextMenu {", "\n        }\n");
+    // Every state not proven delivered, a failure included.
+    expect(menu).toContain("if !message.state.clearsDraft {");
+    expect(menu).not.toContain("isTerminal");
+    inOrder(menu, ['Button("Try again", systemImage: "arrow.clockwise", action: onRetry)', 'Button("Dismiss", systemImage: "xmark", role: .destructive, action: onDiscard)']);
+    // Dismissed is remembered, so nothing that arrives later brings it back.
+    const discard = between(talk, "func discardOutgoing(_ id: String) {", "\n    }\n");
+    expect(discard).toContain("outbox.dismiss(id)");
+    expect(discard).not.toContain("outbox.remove(");
+  });
 });
 
 describe("typing while dictation streams does not garble the draft", () => {
