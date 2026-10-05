@@ -42,7 +42,7 @@ final class Recorder {
     }
 }
 
-/// The sink phase A must never reach.
+/// The sink phase A reaches only to approve a result or take it back (`LagoonIntent.byDefault`, 2026-10-05).
 @MainActor
 final class Sink: LagoonActionSink {
     var calls: [String] = []
@@ -52,6 +52,8 @@ final class Sink: LagoonActionSink {
     func reply(sessionId: String, text: String) { calls.append("reply") }
     func answer(sessionId: String, allow: Bool, approvalId: String) { calls.append("answer") }
     func pause(sessionId: String) { calls.append("pause") }
+    func approveReview(sessionId: String, reviewId: String) { calls.append("approveReview \(sessionId) \(reviewId)") }
+    func unapproveReview(sessionId: String, reviewId: String) { calls.append("unapproveReview \(sessionId) \(reviewId)") }
 }
 
 final class ParkedWindow: NSWindow {
@@ -199,13 +201,17 @@ func page(bundle: URL, statePath: String, out: URL, kind: String) async {
             """)
         Line.print("post", ["status": post ?? NSNull()])
 
-        // What the page says: checked, logged, and in phase A acted on by nothing, not even a valid one.
+        // What the page says: checked, logged, and in phase A acted on by nothing, not even a valid one, but approving a
+        // result and taking it back (2026-10-05), which act with no flag; one for a review the session doesn't hold doesn't.
         let before = recorder.reports.count
         let noWindow = await js(web, """
             const h = window.webkit.messageHandlers.conchWorld;
             h.postMessage({ v: 1, name: 'focusSession', sessionId: id, readOnly: true });
             h.postMessage({ v: 1, name: 'reply', sessionId: id, text: 'hello', readOnly: true });
             h.postMessage({ v: 1, name: 'pause', sessionId: id, readOnly: true });
+            h.postMessage({ v: 1, name: 'approve', sessionId: id, reviewId: 'r-page', readOnly: true });
+            h.postMessage({ v: 1, name: 'unapprove', sessionId: id, reviewId: 'r-page', readOnly: true });
+            h.postMessage({ v: 1, name: 'approve', sessionId: id, reviewId: 'r-gone', readOnly: true });
             h.postMessage({ v: 1, name: 'focusSession', sessionId: 'not-a-session' });
             h.postMessage({ v: 1, name: 'rm -rf' });
             const f = document.createElement('iframe');
@@ -216,7 +222,7 @@ func page(bundle: URL, statePath: String, out: URL, kind: String) async {
             """, ["id": row])
         // The frame's script runs when the frame loads, after the rest: wait for it.
         _ = await waitFor(5) {
-            recorder.reports.count >= before + 6 && recorder.refused.contains("from a frame that isn't the lagoon's own")
+            recorder.reports.count >= before + 9 && recorder.refused.contains("from a frame that isn't the lagoon's own")
         }
         let after = Array(recorder.reports[before...])
         Line.print("intents", [
@@ -253,6 +259,8 @@ func page(bundle: URL, statePath: String, out: URL, kind: String) async {
         try? await Task.sleep(nanoseconds: 2_500_000_000)
         crabs = await js(web, "return window.conchWorld?.state?.() ?? []") as? [[String: Any]] ?? []
         let version = await js(web, "return [window.conchWorld?.version, window.conchWorld?.mode, window.conchWorld?.readOnly]") as? [Any] ?? []
+        // The intents the page sends for real though read-only: what `act=` names (`Lagoon.actsByDefault`, 2026-10-05).
+        let act = await js(web, "return window.conchWorld?.act ?? null") as? [String] ?? []
         let configuration = WKSnapshotConfiguration()
         configuration.afterScreenUpdates = true
         let png = out.appendingPathComponent("lagoon-real.png")
@@ -271,6 +279,7 @@ func page(bundle: URL, statePath: String, out: URL, kind: String) async {
             "expectedIds": ids.sorted(),
             "zones": crabs.compactMap { $0["zone"] as? String },
             "api": version,
+            "act": act,
             "png": wrote ? png.path : "",
             "sent": host.sentCount,
             "expectedRows": ((expected as? [String: Any])?["rows"] as? [Any])?.count ?? -1,

@@ -55,7 +55,20 @@ export interface SessionActionsController {
    * holds nothing that matches.
    */
   removeReview?(target: Readonly<SessionActionsTarget>, which: { review: string } | { artifact: string }): boolean | void;
+  /**
+   * Approve one of this session's deliverables: done, out of the review queue, one piece of sea glass, and nothing sent
+   * to the agent (2026-10-05, Tyler's decision). `changed: false` when it was approved already, which earns nothing.
+   */
+  approveReview?(target: Readonly<SessionActionsTarget>, review: string): ReviewApprovalOutcome;
+  /** Take an approval back within its 10 s, or say why not. */
+  unapproveReview?(target: Readonly<SessionActionsTarget>, review: string): ReviewApprovalOutcome;
 }
+
+/**
+ * What approving or taking an approval back did. `changed: false` is the harmless no-op (approved already, or nothing to
+ * take back); `reason` is a refusal said to whoever asked: no such deliverable, or past the undo window.
+ */
+export type ReviewApprovalOutcome = { ok: true; changed: boolean } | { ok: false; reason: string };
 
 /**
  * Hands back the typing a command set off (the `/rename` sync, `/model`), for
@@ -75,14 +88,16 @@ export type SessionActionMutation =
   | { command: "set-settings"; change: SessionSettingsChange }
   | { command: "attach" }
   | { command: "review-viewed"; review: string }
-  | ({ command: "review-remove" } & ({ review: string } | { artifact: string }));
+  | ({ command: "review-remove" } & ({ review: string } | { artifact: string }))
+  | { command: "review-approve"; review: string }
+  | { command: "review-unapprove"; review: string };
 
 /** One closed command-to-controller adapter shared by terminal UI and socket IPC. */
 export function invokeSessionAction(
   controller: SessionActionsController,
   target: Readonly<SessionActionsTarget>,
   mutation: SessionActionMutation,
-): string | boolean | void | Promise<boolean | void> {
+): string | boolean | void | Promise<boolean | void> | ReviewApprovalOutcome {
   switch (mutation.command) {
     case "rename":
       return controller.rename({ ...target }, mutation.label, mutation.delivered);
@@ -108,6 +123,10 @@ export function invokeSessionAction(
       return controller.removeReview?.({ ...target }, "review" in mutation ? { review: mutation.review } : { artifact: mutation.artifact }) ?? false;
     case "attach":
       return controller.attach?.({ ...target }) ?? false;
+    case "review-approve":
+      return controller.approveReview?.({ ...target }, mutation.review) ?? { ok: false, reason: "approving is unavailable" };
+    case "review-unapprove":
+      return controller.unapproveReview?.({ ...target }, mutation.review) ?? { ok: false, reason: "approving is unavailable" };
   }
 }
 

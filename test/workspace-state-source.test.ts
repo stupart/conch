@@ -262,8 +262,8 @@ describe("new work does not replace what you are reading", () => {
     const tab = pane.slice(pane.indexOf("private struct DeliverableTab: View {"));
     expect(tab).toContain("current.reviewedAt.flatMap { relativeAge(epochMilliseconds: $0, now: now) }");
     // Unread belongs to the artifact — its newest filing — not to each version; six unviewed
-    // versions of one page are one piece of news.
-    expect(tab).toContain("private var isUnviewed: Bool { versions[0].viewedAt == nil }");
+    // versions of one page are one piece of news. Approved is done too (2026-10-05).
+    expect(tab).toContain("private var isUnviewed: Bool { ReadyForYou.isWaiting(viewedAt: versions[0].viewedAt, approvedAt: versions[0].approvedAt) }");
     // Ink, not the ready green: the green says the WORK is ready and measures under the 3:1 a
     // mark needs on the light grounds (RowStateTokenTests pins both numbers).
     expect(tab).toContain(".fill(ConchPalette.ink)");

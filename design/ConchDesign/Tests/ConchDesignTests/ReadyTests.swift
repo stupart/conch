@@ -23,6 +23,24 @@ final class ReadyTests: XCTestCase {
         XCTAssertFalse(ReadyForYou.isReady(working: false, viewedAt: []))
     }
 
+    /// Approved is done (2026-10-05, Tyler's decision): out of Ready for you whether or not anyone looked, and the rest of
+    /// what is held still counts.
+    func testApprovedIsDoneNotReady() {
+        XCTAssertTrue(ReadyForYou.isReady(working: false, held: [(viewedAt: nil, approvedAt: nil)]))
+        XCTAssertFalse(ReadyForYou.isReady(working: false, held: [(viewedAt: nil, approvedAt: 2_000)]), "approved, never looked at")
+        XCTAssertFalse(ReadyForYou.isReady(working: false, held: [(viewedAt: 1_000, approvedAt: 2_000)]))
+        XCTAssertTrue(ReadyForYou.isReady(working: false, held: [(viewedAt: 1_000, approvedAt: 2_000), (viewedAt: nil, approvedAt: nil)]))
+        XCTAssertFalse(ReadyForYou.isReady(working: true, held: [(viewedAt: nil, approvedAt: nil)]))
+        XCTAssertTrue(ReadyForYou.isWaiting(viewedAt: nil, approvedAt: nil))
+        XCTAssertFalse(ReadyForYou.isWaiting(viewedAt: nil, approvedAt: 1))
+        XCTAssertFalse(ReadyForYou.isWaiting(viewedAt: 1, approvedAt: nil))
+        // The old reading is the new one with nothing approved.
+        for viewed: [Double?] in [[nil], [1], [1, nil], []] {
+            XCTAssertEqual(ReadyForYou.isReady(working: false, viewedAt: viewed),
+                           ReadyForYou.isReady(working: false, held: viewed.map { (viewedAt: $0, approvedAt: nil) }))
+        }
+    }
+
     // MARK: The green
 
     private func composited(_ token: ConchColorToken, over ground: ConchRGBA, _ scheme: ColorScheme) -> ConchRGBA {

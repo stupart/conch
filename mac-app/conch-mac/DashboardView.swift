@@ -1510,8 +1510,8 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
         }
         // The deliverable stays on a working row, but the mark means "waiting
         // for you to look", which a working session is not, and nor is one whose
-        // work you have looked at (`ReadyForYou`): that row reads as its status.
-        if ReadyForYou.isReady(working: row.status == .working, viewedAt: row.held.map(\.viewedAt)) || row.status == .review {
+        // work you have looked at, or approved (`ReadyForYou`): that row reads as its status.
+        if ReadyForYou.isReady(working: row.status == .working, held: row.held.map { ($0.viewedAt, $0.approvedAt) }) || row.status == .review {
             self = .review
             return
         }
@@ -1721,6 +1721,10 @@ private struct ConversationPane: View {
     @State private var comparison: DeliverableComparison?
     /// §3: the header grows a hairline only once the transcript has scrolled under it.
     @State private var transcriptScrolled = false
+    /// Approving the result the pane shows (`ReviewApprovals`): the session bar's ✓ Approve, ↵ and ⌘Z.
+    @EnvironmentObject private var approvals: ReviewApprovals
+    /// The session bar's width, for ✓ Approve to fold to ✓ when it is narrow (`ReviewApproval.isCompact`).
+    @State private var sessionBarWidth: CGFloat = 0
 
     /// Which page this session is on: false = the deliverable in front.
     ///
@@ -1981,6 +1985,8 @@ private struct ConversationPane: View {
             // where this view was gone and onChange never fires.
             .onChange(of: selectedReview.id) { _, _ in deliverableAddress = nil }
             .onAppear { deliverableAddress = nil }
+            // Where a click gives the review pane the keyboard, for ↵ to approve (DashboardInputMonitor).
+            .background(ReviewPaneProbe())
         }
     }
 
@@ -2066,6 +2072,19 @@ private struct ConversationPane: View {
         // Where the pane is, falling back to what was filed for a deliverable that cannot browse.
         let target = deliverableAddress ?? link
         store.openLink(target, cwd: focusedRow?.cwd, rowId: focusedRow?.id) { fallbackLinkFailure = $0 }
+    }
+
+    /// The result ✓ Approve and ↵ would approve: the deliverable on screen, from a daemon that can approve (it publishes
+    /// `seaGlass`), not yet approved. Never the practice session's welcome card, which the daemon doesn't hold.
+    private var shownResult: ReviewApprovals.Target? {
+        guard let row = focusedRow, let review = selectedReview, row.id != TourCoach.practiceSessionId,
+              stage(for: row) != .conversation, workPane(for: row) == .deliverable else { return nil }
+        return ReviewApprovals.Target(sessionId: row.id, reviewId: review.id)
+    }
+
+    private var approvalTarget: ReviewApprovals.Target? {
+        guard let shown = shownResult, state?.seaGlass != nil, selectedReview?.approvedAt == nil else { return nil }
+        return shown
     }
 
     private var note: String? {
@@ -2214,6 +2233,12 @@ private struct ConversationPane: View {
         .onReceive(NotificationCenter.default.publisher(for: .openDeliverableInPlace)) { _ in
             openDeliverableInPlace()
         }
+        // What ↵ approves, while the review pane has the keyboard (ContentView, `ReviewApproval.returnKey`).
+        .onChange(of: approvalTarget, initial: true) { _, target in
+            approvals.approvable = target
+        }
+        // The lagoon in its place: no review pane, nothing for ↵ to approve.
+        .onDisappear { approvals.approvable = nil }
         .task(id: TranscriptWatchID(row: watchesTranscriptForRow)) {
             await transcriptContent.monitor(row: watchesTranscriptForRow)
         }
@@ -2417,6 +2442,12 @@ private struct ConversationPane: View {
                 .padding(.trailing, 4)
             }
 
+            // ✓ Approve (2026-10-05, Tyler's decision): marks the result on screen done. It leaves Ready for you everywhere
+            // and earns a piece of sea glass; nothing is sent to the agent. After the track, styled as one, and only for a
+            // result nobody has approved; "✓" alone when the bar is narrow. ↵ does the same from the review pane, and ⌘Z
+            // takes it back for ten seconds.
+            approveControl
+
             // A subagent is not a session: nothing to inspect, no process to
             // close (C4).
             if row.parentSessionId == nil {
@@ -2464,7 +2495,38 @@ private struct ConversationPane: View {
         // strip of buttons, mean for the line that names what you are looking at and now also
         // carries the view switch.
         .frame(height: 52)
+        .background(
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear { sessionBarWidth = proxy.size.width }
+                    .onChange(of: proxy.size.width) { _, width in sessionBarWidth = width }
+            }
+        )
         .background(ConchPalette.surface)
+    }
+
+    @ViewBuilder
+    private var approveControl: some View {
+        let control = ReviewApproval.control(
+            showing: shownResult != nil,
+            daemonCanApprove: state?.seaGlass != nil,
+            approvedAt: selectedReview?.approvedAt,
+            confirming: shownResult != nil && approvals.confirming == shownResult
+        )
+        if control != .hidden, let shown = shownResult {
+            ApproveButton(
+                control: control,
+                compact: ReviewApproval.isCompact(headerWidth: sessionBarWidth),
+                action: { approvals.approve(shown, store: store) }
+            )
+            .padding(2)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(ConchPalette.fill)
+            )
+            .padding(.trailing, 4)
+            .transition(.opacity)
+        }
     }
 
     /// One tab per ARTIFACT the session holds, oldest first, so a new one arrives on the right
@@ -3014,7 +3076,7 @@ private struct DeliverableTab: View {
     /// Unread belongs to the ARTIFACT, and the artifact's news is its newest filing. Six
     /// unviewed versions of one page are one piece of news, not six dots; and once the newest
     /// has been looked at, an older one nobody opened is superseded, not unread.
-    private var isUnviewed: Bool { versions[0].viewedAt == nil }
+    private var isUnviewed: Bool { ReadyForYou.isWaiting(viewedAt: versions[0].viewedAt, approvedAt: versions[0].approvedAt) }
 
     /// The ledger's vocabulary — "<1m", "12m", "3h", "2d" — rather than a second one. The exact
     /// time is in the tooltip, where an unambiguous answer costs no width.
@@ -3202,6 +3264,117 @@ private struct PerspectiveOption: View {
         .help(help)
         .accessibilityLabel(label)
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+}
+
+/// The session bar's ✓ Approve (`ReviewApproval`): one segment of a track, as the Conversation / Side by side switch is
+/// drawn, with words. "✓ Approved" for a moment after an approval made here, in the selected segment's fill.
+private struct ApproveButton: View {
+    let control: ReviewApproval.Control
+    let compact: Bool
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    private var approved: Bool { control == .approved }
+
+    var body: some View {
+        Button(action: action) {
+            Text(ReviewApproval.label(control, compact: compact) ?? "")
+                .font(ConchTypography.font(size: 11.5, weight: .medium))
+                // Ink when approved, never the ready green: that green measures under 3:1 on the light grounds
+                // (RowStateTokenTests), and the selected segment's fill already says it is done.
+                .foregroundStyle(approved || isHovered ? ConchPalette.textPrimary : ConchPalette.textDim)
+                .lineLimit(1)
+                .fixedSize()
+                .padding(.horizontal, compact ? 0 : 9)
+                .frame(minWidth: 30)
+                .frame(height: 24)
+                .background {
+                    if approved {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(ConchPalette.fillSelected)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .strokeBorder(ConchPalette.divider, lineWidth: 0.5)
+                            )
+                            .conchElevation(.raised)
+                    } else if isHovered {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(ConchPalette.hover)
+                    }
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        // Approved already: the click has nothing left to do.
+        .disabled(approved)
+        .onHover { isHovered = $0 }
+        .help(ReviewApproval.help(control))
+        .accessibilityLabel(ReviewApproval.accessibilityLabel(control))
+        .accessibilityHint(approved ? "" : "Marks this result done. Return does the same from the review pane.")
+        .accessibilityAddTraits(approved ? [.isSelected] : [])
+    }
+}
+
+/// Approving the result the review pane shows, for the window (2026-10-05, Tyler's decision): the session bar's
+/// ✓ Approve, ↵ from the review pane, and ⌘Z for the ten seconds after (ContentView, DashboardInputMonitor). The rules are
+/// ConchDesign's `ReviewApproval`; this holds what is on screen and what ⌘Z would take back. The daemon does the rest:
+/// done everywhere, one piece of sea glass, nothing to the agent.
+@MainActor
+final class ReviewApprovals: ObservableObject {
+    struct Target: Equatable {
+        let sessionId: String
+        let reviewId: String
+    }
+
+    /// The result on screen that ↵ would approve, kept by the pane (nil when there is none, or it's approved already).
+    var approvable: Target?
+    /// The one just approved here, while the control says so (`ReviewApproval.confirmation`).
+    @Published private(set) var confirming: Target?
+    /// The approval ⌘Z can still take back (`ReviewApproval.Undo`), from here only: one approved elsewhere is undone there.
+    private(set) var undo: ReviewApproval.Undo?
+
+    /// Approve it: the control says "✓ Approved" at once, the daemon is asked, and ⌘Z can take it back for ten seconds.
+    /// A refusal puts the control back and the daemon's words on the row (`StateStore.approveReview`).
+    func approve(_ target: Target, store: StateStore) {
+        confirming = target
+        AccessibilityNotification.Announcement(ReviewApproval.announcement).post()
+        let made = ReviewApproval.Undo(sessionId: target.sessionId, reviewId: target.reviewId, at: Date())
+        undo = made
+        Task { @MainActor [weak self] in
+            let reply = await store.approveReview(sessionId: target.sessionId, review: target.reviewId)
+            guard let self else { return }
+            if case .refused = reply {
+                if self.confirming == target { self.confirming = nil }
+                if self.undo == made { self.undo = nil }
+            }
+        }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(ReviewApproval.confirmation * 1_000_000_000))
+            if self?.confirming == target { self?.confirming = nil }
+        }
+    }
+
+    /// ↵ from the review pane: the result on screen, if there is one to approve. False passes the key on.
+    func approveShown(store: StateStore) -> Bool {
+        guard let approvable else { return false }
+        approve(approvable, store: store)
+        return true
+    }
+
+    /// ⌘Z: the approval made here in the last ten seconds, taken back. False when there is none, so the key goes on to
+    /// whatever else undoes.
+    func undoLast(store: StateStore) -> Bool {
+        guard let made = undo, made.isOpen(now: Date()) else {
+            undo = nil
+            return false
+        }
+        undo = nil
+        if confirming?.reviewId == made.reviewId { confirming = nil }
+        AccessibilityNotification.Announcement("Approval undone").post()
+        Task { await store.unapproveReview(sessionId: made.sessionId, review: made.reviewId) }
+        return true
     }
 }
 

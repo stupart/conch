@@ -407,7 +407,7 @@ describe("control-message validation", () => {
     }
   });
 
-  test("recognizes and canonicalizes the twelve closed session-command shapes", () => {
+  test("recognizes and canonicalizes the fourteen closed session-command shapes", () => {
     expect(SESSION_COMMANDS).toEqual([
       "rename",
       "set-voice",
@@ -421,6 +421,8 @@ describe("control-message validation", () => {
       "attach",
       "review-viewed",
       "review-remove",
+      "review-approve",
+      "review-unapprove",
     ]);
 
     const cases: Array<{ input: unknown; output: SessionControlMessage }> = [
@@ -479,6 +481,15 @@ describe("control-message validation", () => {
       {
         input: { kind: "session-command", sessionId: "session-1", command: "review-remove", artifact: " 0123456789abcdef " },
         output: { kind: "session-command", sessionId: "session-1", command: "review-remove", artifact: "0123456789abcdef" },
+      },
+      // Approving, and taking it back (2026-10-05): one filing, by the identity it was filed with.
+      {
+        input: { kind: "session-command", sessionId: " session-1 ", command: "review-approve", review: ' ["s",1,"abc"] ' },
+        output: { kind: "session-command", sessionId: "session-1", command: "review-approve", review: '["s",1,"abc"]' },
+      },
+      {
+        input: { kind: "session-command", sessionId: "session-1", command: "review-unapprove", review: '["s",1,"abc"]' },
+        output: { kind: "session-command", sessionId: "session-1", command: "review-unapprove", review: '["s",1,"abc"]' },
       },
     ];
 
@@ -539,6 +550,18 @@ describe("control-message validation", () => {
       { kind: "session-command", sessionId: "session-1", command: "review-remove", artifact: "bad\u0000id" },
       { kind: "session-command", sessionId: "session-1", command: "review-remove", artifact: "x".repeat(513) },
       { kind: "session-command", sessionId: "session-1", command: "review-remove", review: 42 },
+      // Approving names one filing by its identity, like review-viewed: never nothing, junk, or a whole artifact.
+      ...(["review-approve", "review-unapprove"] as const).flatMap((command) => [
+        { kind: "session-command", sessionId: "session-1", command },
+        { kind: "session-command", sessionId: "session-1", command, review: "" },
+        { kind: "session-command", sessionId: "session-1", command, review: "   " },
+        { kind: "session-command", sessionId: "session-1", command, review: "bad\u0000id" },
+        { kind: "session-command", sessionId: "session-1", command, review: "x".repeat(513) },
+        { kind: "session-command", sessionId: "session-1", command, review: 42 },
+        { kind: "session-command", sessionId: "session-1", command, artifact: "0123456789abcdef" },
+        { kind: "session-command", sessionId: "session-1", command, review: "a", artifact: "b" },
+        { kind: "session-command", sessionId: "", command, review: "a" },
+      ]),
     ];
 
     for (const input of hostile) {

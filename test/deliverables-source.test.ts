@@ -75,7 +75,7 @@ describe("both apps read a deliverable's artifact, version and kind as optional"
 
   test("the phone does too", () => {
     const decoded = between(iosModels, "struct Review: Decodable, Equatable {", "private enum CodingKeys: String, CodingKey {\n            case id, label");
-    expect(decoded).toContain("case summary, link, at, scene, id, viewedAt, artifact, version, kind");
+    expect(decoded).toContain("case summary, link, at, scene, id, viewedAt, approvedAt, artifact, version, kind");
     expect(decoded).toContain("artifact = try? c.decodeIfPresent(String.self, forKey: .artifact)");
     expect(decoded).toContain("version = try? c.decodeIfPresent(Int.self, forKey: .version)");
     expect(decoded).toContain("kind = try? c.decodeIfPresent(String.self, forKey: .kind)");

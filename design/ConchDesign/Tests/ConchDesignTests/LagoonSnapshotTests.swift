@@ -22,6 +22,8 @@ final class LagoonSnapshotTests: XCTestCase {
         "version", "scene", "target", "inspect", "open", "sessionId", "items",
         // sanitize.mjs v4.10: a session's model and effort labels, and an answer's step count and time.
         "model", "effort", "steps", "took",
+        // 2026-10-05, agreed with the brand repo: a review's approval, and the sea glass approvals have earned.
+        "approvedAt", "seaGlass",
     ]
 
     private let home = "/Users/someone"
@@ -41,7 +43,7 @@ final class LagoonSnapshotTests: XCTestCase {
                     at: 1_791_039_800_000, activity: .init(text: "Running the test suite", kind: "step", at: 1_791_039_805_000),
                     approval: .init(id: "a1", name: "Bash", summary: "rm -rf build", answerable: false),
                     reviews: [
-                        .init(id: "r1", artifact: "art", summary: "The page", kind: "page", at: 1, viewedAt: 2, version: 3,
+                        .init(id: "r1", artifact: "art", summary: "The page", kind: "page", at: 1, viewedAt: 2, approvedAt: 2.5, version: 3,
                               hasScene: true, targetKind: "page", inspect: "the header", link: "output/page.html"),
                         .init(id: nil, artifact: nil, summary: "A site", kind: "url", at: 4, link: "https://example.com/x"),
                         .init(summary: "no link"),
@@ -62,7 +64,8 @@ final class LagoonSnapshotTests: XCTestCase {
                 ],
                 "gone": [.init(id: "x", kind: "assistant", text: "no row", at: 1)],
             ],
-            dismissed: ["d1", "d2", "d1"]
+            dismissed: ["d1", "d2", "d1"],
+            seaGlass: 4
         )
     }
 
@@ -210,6 +213,26 @@ final class LagoonSnapshotTests: XCTestCase {
         XCTAssertEqual(snapshot.rows[0].cwd, "/Users/someoneelse/x", "a prefix that isn't a folder isn't home")
         XCTAssertEqual(snapshot.live.state, "idle")
         XCTAssertNil(snapshot.ts)
+    }
+
+    /// The two fields agreed with the brand repo on 2026-10-05: `approvedAt` on a review only when it was approved, and
+    /// `seaGlass` at the top always, 0 from a daemon that sends none.
+    func testApprovedAtAndSeaGlassAsAgreed() throws {
+        let object = try json(LagoonSnapshot(rich(), home: home))
+        XCTAssertEqual(object["seaGlass"] as? Int, 4)
+        let reviews = try XCTUnwrap((object["rows"] as? [[String: Any]])?.first?["reviews"] as? [[String: Any]])
+        XCTAssertEqual(reviews[0]["approvedAt"] as? Double, 2.5)
+        XCTAssertNil(reviews[1]["approvedAt"], "absent, never null, when it wasn't approved")
+        var older = rich()
+        older.seaGlass = nil
+        older.rows[0].reviews[0].approvedAt = .infinity
+        let fromOlder = try json(LagoonSnapshot(older, home: home))
+        XCTAssertEqual(fromOlder["seaGlass"] as? Int, 0, "always sent")
+        var negative = rich()
+        negative.seaGlass = -2
+        XCTAssertEqual(LagoonSnapshot(negative, home: home).seaGlass, 0, "never below none, as sanitize.mjs reads it")
+        XCTAssertNil(((fromOlder["rows"] as? [[String: Any]])?.first?["reviews"] as? [[String: Any]])?.first?["approvedAt"],
+                     "a time that isn't finite is none, as sanitize.mjs's num() reads it")
     }
 
     func testDismissedOnceEach() {

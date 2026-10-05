@@ -210,6 +210,18 @@ function applySessionControlMessage(
       }
       return sessionCommandAck(message, true, target.label);
     }
+    case "review-approve":
+    case "review-unapprove": {
+      const outcome = invokeSessionAction(controller, target, { command: message.command, review: message.review });
+      // An outcome or nothing: a controller without approval support refuses in words, like one that can't remove.
+      const approval = typeof outcome === "object" && outcome !== null && "ok" in outcome
+        ? outcome
+        : { ok: false as const, reason: "approving is unavailable" };
+      if (!approval.ok) {
+        return { kind: "session-error", error: `${message.command === "review-approve" ? "not approved" : "not taken back"}: ${approval.reason}` };
+      }
+      return sessionCommandAck(message, approval.changed, target.label);
+    }
     case "dismiss": {
       if (options.isDismissed?.(message.sessionId)) {
         return sessionCommandAck(message, false, target.label);

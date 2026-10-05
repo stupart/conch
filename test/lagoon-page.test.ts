@@ -224,7 +224,8 @@ function fixtureState(work: string, home: string, rows = 0) {
           { id: "r-page", summary: "The page", link: "site/page.html", at: at - 5000, kind: "page", version: 2, artifact: "art-page",
             scene: { target: { kind: "page" }, inspect: "the header", marks: [{ id: "m", kind: "box", frame: { selector: ".x" } }] },
             focus: ["a"], access: { conch: "page", none: "page" } },
-          { id: "r-notes", summary: "Notes", link: join(work, "work/notes.txt"), at: at - 4000, kind: "text", viewedAt: at - 100 },
+          // Approved (2026-10-05): `approvedAt` reaches the lagoon as is, beside `viewedAt`.
+          { id: "r-notes", summary: "Notes", link: join(work, "work/notes.txt"), at: at - 4000, kind: "text", viewedAt: at - 100, approvedAt: at - 90 },
           { id: "r-web", summary: "A live site", link: "https://example.com/x", at: at - 3000, kind: "url", linkRefused: "no" },
         ],
         review: { id: "r-web", summary: "A live site", link: "https://example.com/x", at: at - 3000, kind: "url" },
@@ -283,6 +284,8 @@ function fixtureState(work: string, home: string, rows = 0) {
     },
     dismissed: ["d-1"],
     dismissedRows: [{ id: "d-2", label: "Dismissed" }, { id: "d-1", label: "Again" }],
+    // The sea glass approvals have earned, which the lagoon's jar shows (2026-10-05, agreed with the brand repo).
+    seaGlass: 3,
   };
   const list = state.rows as Record<string, unknown>[];
   for (let i = 0; i < rows; i++) {
@@ -358,6 +361,9 @@ describe.skipIf(!crossCheckable)("the app's snapshot is what sanitize.mjs makes 
     const run = Bun.spawnSync([node!, "--input-type=module", "-e", script, path], { env: { ...process.env, HOME: home }, stdout: "pipe", stderr: "pipe" });
     expect(run.exitCode, run.stderr.toString()).toBe(0);
     const { out: theirs, never } = JSON.parse(run.stdout.toString()) as { out: unknown; never: string[] };
+    // The fields agreed with the brand repo on 2026-10-05 are in what the app sends, so the comparison below covers them.
+    expect(ours.seaGlass).toBe(3);
+    expect(ours.rows[0].reviews.map((one: { approvedAt?: number }) => one.approvedAt)).toEqual([undefined, 1_791_039_800_000 - 90, undefined]);
     expect(ours).toEqual(theirs);
     // And none of NEVER at any depth (but as a session id under `conversations`).
     const keys = new Set<string>();
@@ -413,7 +419,8 @@ describe.skipIf(!drawable)("the app's web view, over conch-lagoon://, with the s
     expect(compileError).toBe("");
     const ready = checks.get("ready")!;
     expect(ready.ok).toBe(true);
-    expect(ready.url).toBe("conch-lagoon://lagoon/index.html?app=1&readonly=1");
+    // `act`: the intents the app acts on in every phase, so the page treats them as live (2026-10-05).
+    expect(ready.url).toBe("conch-lagoon://lagoon/index.html?app=1&readonly=1&act=approve,unapprove");
     expect(ready.readOnly).toBe(true);
     // A module script and a fetch, both over the scheme.
     expect(checks.get("update")!.hello).toBe("lagoon");
@@ -459,19 +466,25 @@ describe.skipIf(!drawable)("the app's web view, over conch-lagoon://, with the s
     expect(checks.get("post")!.status).toBe(405);
   });
 
-  test("phase A: every message checked and logged, none acted on; a frame can't speak for the page; no new windows", () => {
+  test("phase A: every message checked and logged, only approve and unapprove acted on; a frame can't speak for the page; no new windows", () => {
     const intents = checks.get("intents")!;
-    expect(intents.routed).toEqual(["focusSession:logged", "reply:logged", "pause:logged"]);
+    // Approving a result and taking it back act with no flag set (2026-10-05, Tyler's decision); everything else logs.
+    expect(intents.routed).toEqual(["focusSession:logged", "reply:logged", "pause:logged", "approve:acted", "unapprove:acted"]);
     const refused = intents.refused as string[];
-    for (const reason of ["focusSession for a session that isn't in the current state", "an unknown name: rm -rf", "from a frame that isn't the lagoon's own"]) {
+    for (const reason of [
+      "approve for a review its session doesn't hold",
+      "focusSession for a session that isn't in the current state",
+      "an unknown name: rm -rf",
+      "from a frame that isn't the lagoon's own",
+    ]) {
       expect(refused).toContain(reason);
     }
     // window.open is refused before WebKit asks, or when it asks; either way nothing else is.
-    expect(refused.filter((r) => !r.startsWith("navigation: the lagoon never opens a window"))).toHaveLength(3);
-    expect(intents.sink).toEqual([]);
+    expect(refused.filter((r) => !r.startsWith("navigation: the lagoon never opens a window"))).toHaveLength(4);
+    expect(intents.sink).toEqual(["approveReview s-page r-page", "unapproveReview s-page r-page"]);
     expect(intents.noWindow).toBe(true);
     const navigation = checks.get("navigation")!;
-    expect(navigation.url).toBe("conch-lagoon://lagoon/index.html?app=1&readonly=1");
+    expect(navigation.url).toBe("conch-lagoon://lagoon/index.html?app=1&readonly=1&act=approve,unapprove");
     expect(navigation.refused).toContain("navigation: the lagoon's page is only ever its own");
   });
 
@@ -491,6 +504,8 @@ describe.skipIf(!realBundle)("the real lagoon, from the brand repo's dist, in th
     expect(checks.get("ready")!.ok).toBe(true);
     const real = checks.get("real")!;
     expect(real.api).toEqual([1, "app", true]);
+    // Read-only, but Approve and its Undo are live: the page read `act=approve,unapprove` (brand repo v4.12).
+    expect(real.act).toEqual(["approve", "unapprove"]);
     expect(real.crabs).toBe((state.rows as unknown[]).length);
     expect(real.ids).toEqual(real.expectedIds);
     expect(real.refused).toEqual([]);

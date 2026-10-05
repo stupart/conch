@@ -184,8 +184,10 @@ final class LagoonFilesTests: XCTestCase {
     // MARK: The page
 
     func testThePagesAddressAndItsTypes() {
-        XCTAssertEqual(Lagoon.pageURL(readOnly: true).absoluteString, "conch-lagoon://lagoon/index.html?app=1&readonly=1")
-        XCTAssertEqual(Lagoon.pageURL(readOnly: false).absoluteString, "conch-lagoon://lagoon/index.html?app=1")
+        // `act` says which intents are live in every phase: Approve and its Undo (2026-10-05).
+        XCTAssertEqual(Lagoon.pageURL(readOnly: true).absoluteString, "conch-lagoon://lagoon/index.html?app=1&readonly=1&act=approve,unapprove")
+        XCTAssertEqual(Lagoon.actsByDefault, "approve,unapprove")
+        XCTAssertEqual(Lagoon.pageURL(readOnly: false).absoluteString, "conch-lagoon://lagoon/index.html?app=1&act=approve,unapprove")
         XCTAssertEqual(Lagoon.mimeType(forPathExtension: "js"), "text/javascript; charset=utf-8")
         XCTAssertEqual(Lagoon.mimeType(forPathExtension: "WEBP"), "image/webp")
         XCTAssertEqual(Lagoon.mimeType(forPathExtension: "hdr"), "application/octet-stream")

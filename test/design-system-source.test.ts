@@ -80,12 +80,12 @@ test("M2: each menu item calls the command the dashboard already sends", () => {
   expect(content.slice(receive, receive + 400)).toContain("selectSession(row)");
   expect(body(item, "@objc private func openConch() {")).toContain("bringConchForward()");
 
-  // Ready for you is the daemon's reviewReady rule, one rule in ConchDesign: held, not working, and not yet looked at
-  // (test/ready-for-you.test.ts runs both on one table).
+  // Ready for you is the daemon's reviewReady rule, one rule in ConchDesign: held, not working, and not yet looked at or
+  // approved (2026-10-05) (test/ready-for-you.test.ts runs both on one table).
   expect(body(item, "nonisolated static func readyRows(_ state: PublishedState?) -> [SessionRow] {")).toContain(
-    "ReadyForYou.isReady(working: $0.status == .working, viewedAt: $0.held.map(\\.viewedAt))",
+    "ReadyForYou.isReady(working: $0.status == .working, held: $0.held.map { ($0.viewedAt, $0.approvedAt) })",
   );
-  expect(read("src/panel.ts")).toContain("return held.some((one) => one.viewedAt === undefined);");
+  expect(read("src/panel.ts")).toContain("return held.some((one) => one.viewedAt === undefined && one.approvedAt === undefined);");
   expect(build).toContain("ready: Self.readyRows(state).map {");
   expect(build).toContain("working: Self.workingRows(state).map {");
   // Each group's mark in the sidebar's colour for the same state: ready's green, working's blue, both filled.

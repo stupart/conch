@@ -24,12 +24,13 @@ const root = join(import.meta.dir, "..");
 const read = (path: string): string => readFileSync(join(root, path), "utf8");
 const swift = Bun.which("swift");
 
-const held = (id: string, at: number, viewedAt?: number): SessionReview => ({
+const held = (id: string, at: number, viewedAt?: number, approvedAt?: number): SessionReview => ({
   summary: `deliverable ${id}`,
   link: `https://example.test/${id}`,
   at,
   id,
   ...(viewedAt !== undefined ? { viewedAt } : {}),
+  ...(approvedAt !== undefined ? { approvedAt } : {}),
 });
 
 function modelWith(reviews: SessionReview[], status: "waiting" | "working" | "needs" = "waiting") {
@@ -112,7 +113,8 @@ describe("ready means held, not working, and not yet looked at", () => {
 
 /** One rule, two languages: the apps ask ConchDesign's `ReadyForYou`, the daemon `reviewReady`. Same table, same answers. */
 describe("the apps' rule is the daemon's", () => {
-  const cases: Array<{ status: "waiting" | "working" | "needs"; viewed: Array<number | undefined> }> = [
+  // `approved`, beside each `viewed` (2026-10-05): approved is done, whether or not anyone looked.
+  const cases: Array<{ status: "waiting" | "working" | "needs"; viewed: Array<number | undefined>; approved?: Array<number | undefined> }> = [
     { status: "waiting", viewed: [undefined] },
     { status: "waiting", viewed: [9_000] },
     { status: "waiting", viewed: [9_000, undefined] },
@@ -120,6 +122,10 @@ describe("the apps' rule is the daemon's", () => {
     { status: "needs", viewed: [undefined, 9_000] },
     { status: "working", viewed: [undefined] },
     { status: "working", viewed: [9_000] },
+    { status: "waiting", viewed: [undefined], approved: [9_500] },
+    { status: "waiting", viewed: [9_000], approved: [9_000] },
+    { status: "waiting", viewed: [9_000, undefined], approved: [9_000, undefined] },
+    { status: "waiting", viewed: [undefined, undefined], approved: [9_500, 9_600] },
   ];
 
   test.skipIf(!swift)("ReadyForYou.isReady answers every case as reviewReady does", () => {
@@ -130,19 +136,21 @@ describe("the apps' rule is the daemon's", () => {
     expect(rule).toContain("static func isReady(working: Bool, viewedAt: [Double?]) -> Bool {");
     const dir = mkdtempSync(join(tmpdir(), "conch-ready-"));
     const file = join(dir, "main.swift");
-    const lines = cases.map(({ status, viewed }) =>
-      `print(ReadyForYou.isReady(working: ${status === "working"}, viewedAt: [${viewed.map((v) => v === undefined ? "nil" : `${v}`).join(", ")}]))`);
+    const swiftOptional = (v: number | undefined) => v === undefined ? "nil" : `${v}`;
+    const lines = cases.map(({ status, viewed, approved }) => approved
+      ? `print(ReadyForYou.isReady(working: ${status === "working"}, held: [${viewed.map((v, i) => `(viewedAt: ${swiftOptional(v)}, approvedAt: ${swiftOptional(approved[i])})`).join(", ")}]))`
+      : `print(ReadyForYou.isReady(working: ${status === "working"}, viewedAt: [${viewed.map(swiftOptional).join(", ")}]))`);
     writeFileSync(file, [rule, ...lines].join("\n"));
     try {
       const run = Bun.spawnSync([swift!, file], { stdout: "pipe", stderr: "pipe" });
       expect(run.exitCode, run.stderr.toString()).toBe(0);
       const swiftAnswers = run.stdout.toString().trim().split("\n");
-      const daemonAnswers = cases.map(({ status, viewed }) => {
-        const reviews = viewed.map((viewedAt, index) => held(`r${index}`, 1_000 + index, viewedAt));
+      const daemonAnswers = cases.map(({ status, viewed, approved }) => {
+        const reviews = viewed.map((viewedAt, index) => held(`r${index}`, 1_000 + index, viewedAt, approved?.[index]));
         return String(reviewReady({ status, review: reviews.at(-1), reviews }));
       });
       expect(swiftAnswers).toEqual(daemonAnswers);
-      expect(daemonAnswers).toEqual(["true", "false", "true", "false", "true", "false", "false"]);
+      expect(daemonAnswers).toEqual(["true", "false", "true", "false", "true", "false", "false", "false", "false", "true", "false"]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

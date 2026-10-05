@@ -1,6 +1,16 @@
 import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { TurnEvent } from "./hook.ts";
-import { capReviews, filedVersions, removeReviews, type PanelSessionState, type SessionReview } from "./panel.ts";
+import {
+  approveReview,
+  capReviews,
+  filedVersions,
+  removeReviews,
+  unapproveReview,
+  type PanelSessionState,
+  type SessionReview,
+} from "./panel.ts";
+import type { ReviewApprovalOutcome } from "./session-actions-overlay.ts";
 import { checkFocusShape, deliverableFacts, isDeliverableKind } from "./deliverables.ts";
 import { reviewIdentity } from "./records-receipts.ts";
 import { writeSettingsFileAtomic } from "./settings.ts";
@@ -118,6 +128,18 @@ export class SessionLedger {
     readonly capturesFolder: string = captureFolderPath(),
   ) {}
   #savedReviews = "";
+  /**
+   * How many pieces of sea glass approving results has earned, ever: one per approval, one back for an approval undone
+   * within `UNAPPROVE_WINDOW_MS` (2026-10-05, Tyler's decision). Published as `seaGlass`, which the lagoon's jar shows.
+   *
+   * Kept in its own small file beside reviews.json (`seaGlassPath`), not inside it. reviews.json is a map of session id
+   * to what that session holds: it drops a session when it ends, leaves out whatever is over `MAX_REVIEWS_BYTES`, and a
+   * daemon rolled back to before this rewrites it from its own model, without a key it doesn't know. A lifetime count
+   * must survive all three. An approval writes both files (the review's `approvedAt` there, the count here); a crash
+   * between the two writes can leave the count one off, which is the price of not coupling the count to the ledger.
+   */
+  seaGlass = 0;
+  #savedSeaGlass: number | undefined;
   /** The snapshots (`preview`) held deliverables named at the last save. */
   #savedPreviews = new Set<string>();
   /** The Mac's pictures of pages (`snapshot`) held deliverables named at the last save. */
@@ -208,6 +230,7 @@ export class SessionLedger {
    */
   restoreReviews(): void {
     if (!this.reviewsPath) return;
+    this.#restoreSeaGlass();
     // ponytail: the old file is left where it is; the next reboot removes it.
     const source = this.legacyReviewsPath && !existsSync(this.reviewsPath) ? this.legacyReviewsPath : this.reviewsPath;
     let saved: unknown;
@@ -274,6 +297,7 @@ export class SessionLedger {
       at?: unknown;
       id?: unknown;
       viewedAt?: unknown;
+      approvedAt?: unknown;
       kind?: unknown;
       kindSource?: unknown;
       artifact?: unknown;
@@ -303,6 +327,10 @@ export class SessionLedger {
     const viewedAt = typeof review.viewedAt === "number" && Number.isFinite(review.viewedAt)
       ? review.viewedAt
       : undefined;
+    // Approved stays approved across a restart (2026-10-05): it is what keeps the result out of the review queue.
+    const approvedAt = typeof review.approvedAt === "number" && Number.isFinite(review.approvedAt)
+      ? review.approvedAt
+      : undefined;
     // A filing from before kinds and artifacts gets them from the same recipe a new one does,
     // so its next republish is its next version rather than a second artifact.
     const derived = deliverableFacts(restored);
@@ -322,6 +350,7 @@ export class SessionLedger {
       ...restored,
       id,
       ...(viewedAt !== undefined ? { viewedAt } : {}),
+      ...(approvedAt !== undefined ? { approvedAt } : {}),
       kind: saved ? review.kind as SessionReview["kind"] : derived.kind,
       kindSource: saved ? review.kindSource as SessionReview["kindSource"] : derived.kindSource,
       artifact: typeof review.artifact === "string" && review.artifact ? review.artifact : derived.artifact,
@@ -365,6 +394,92 @@ export class SessionLedger {
   }
 
   /**
+   * Approve one held deliverable (`approveReview`) and earn its piece of sea glass, both written out at once, so neither
+   * comes undone with a restart. Approving one already approved changes nothing and earns nothing (`changed: false`):
+   * 2026-10-05, Tyler's decision, approving is idempotent. One this session doesn't hold is refused in words. The agent
+   * is told nothing.
+   */
+  approveDeliverable(sessionId: string, review: string, now: number): ReviewApprovalOutcome {
+    const state = this.sessionStates.get(sessionId);
+    const held = state?.reviews ?? (state?.review ? [state.review] : undefined);
+    if (!state || !held?.some((one) => one.id === review)) return { ok: false, reason: this.#notHeld(sessionId, review) };
+    const next = approveReview(held, review, now);
+    if (!next) return { ok: true, changed: false };
+    // A ledger that approves before `restoreReviews` (the daemon always restores first) counts on from what is saved,
+    // never from 0 over it.
+    if (this.#savedSeaGlass === undefined) this.#restoreSeaGlass();
+    this.#hold(sessionId, state, next, review);
+    this.seaGlass += 1;
+    this.saveReviews();
+    this.#saveSeaGlass();
+    return { ok: true, changed: true };
+  }
+
+  /**
+   * Take an approval back within `UNAPPROVE_WINDOW_MS` (`unapproveReview`), and its piece of sea glass with it. `viewedAt`
+   * stays. One that isn't approved has nothing to take back (`changed: false`, harmless: a second ⌘Z); past the window,
+   * or one this session doesn't hold, is refused in words and nothing changes.
+   */
+  unapproveDeliverable(sessionId: string, review: string, now: number): ReviewApprovalOutcome {
+    const state = this.sessionStates.get(sessionId);
+    const result = unapproveReview(state?.reviews ?? (state?.review ? [state.review] : undefined), review, now);
+    if (!result.ok) {
+      if (result.why === "not-approved") return { ok: true, changed: false };
+      return { ok: false, reason: result.why === "missing" ? this.#notHeld(sessionId, review) : result.reason };
+    }
+    if (!state) return { ok: false, reason: this.#notHeld(sessionId, review) };
+    if (this.#savedSeaGlass === undefined) this.#restoreSeaGlass();
+    this.#hold(sessionId, state, result.held, review);
+    this.seaGlass = Math.max(0, this.seaGlass - 1);
+    this.saveReviews();
+    this.#saveSeaGlass();
+    return { ok: true, changed: true };
+  }
+
+  #notHeld(sessionId: string, review: string): string {
+    const label = this.sessionStates.get(sessionId)?.label;
+    return `${label ? `"${label}"` : "that session"} holds no deliverable with id ${review}`;
+  }
+
+  /** `reviews` replaced, and `review` with it when it is the one that changed: it is always the newest of them. */
+  #hold(sessionId: string, state: PanelSessionState, held: SessionReview[], changed: string): void {
+    this.sessionStates.set(sessionId, {
+      ...state,
+      reviews: held,
+      ...(state.review?.id === changed ? { review: held.find((one) => one.id === changed)! } : {}),
+    });
+  }
+
+  /** `sea-glass.json` beside the saved deliverables; none when nothing is saved (`reviewsPath` absent). */
+  get seaGlassPath(): string | undefined {
+    return this.reviewsPath ? join(dirname(this.reviewsPath), "sea-glass.json") : undefined;
+  }
+
+  /** The count as saved, or 0: a missing or unreadable file is no sea glass yet, never an error. */
+  #restoreSeaGlass(): void {
+    const path = this.seaGlassPath;
+    if (!path) return;
+    try {
+      const saved = (JSON.parse(readFileSync(path, "utf8")) as { seaGlass?: unknown }).seaGlass;
+      if (Number.isSafeInteger(saved) && (saved as number) >= 0) this.seaGlass = saved as number;
+    } catch {
+      // None saved yet.
+    }
+    this.#savedSeaGlass = this.seaGlass;
+  }
+
+  #saveSeaGlass(): void {
+    const path = this.seaGlassPath;
+    if (!path || this.#savedSeaGlass === this.seaGlass) return;
+    try {
+      writeSettingsFileAtomic(path, { seaGlass: this.seaGlass });
+      this.#savedSeaGlass = this.seaGlass;
+    } catch {
+      // Advisory, like the deliverables file: an unwritable config folder must not break an approval.
+    }
+  }
+
+  /**
    * Rewrite the saved deliverables (atomic rename), newest first up to `MAX_REVIEWS_BYTES`. Every
    * change to what a session holds comes through here, so this is also where a snapshot goes with
    * the deliverable it was of (`#discardDroppedPreviews`).
@@ -389,6 +504,7 @@ export class SessionLedger {
         at: held.at,
         id: held.id,
         ...(held.viewedAt !== undefined ? { viewedAt: held.viewedAt } : {}),
+        ...(held.approvedAt !== undefined ? { approvedAt: held.approvedAt } : {}),
         ...(held.kind ? { kind: held.kind } : {}),
         ...(held.kindSource ? { kindSource: held.kindSource } : {}),
         ...(held.artifact ? { artifact: held.artifact } : {}),

@@ -799,7 +799,8 @@ test("a click takes the exact review version, runs in order, and counts it opene
   // and against a daemon too old to remember it is that local set alone.
   const seen = member(panels, "private func seen(in held: [ReviewItem], state: PublishedState?) -> Set<ReviewItem.ID> {");
   expect(seen).toContain("guard state?.features?.viewedState != nil else { return opened }");
-  expect(seen).toContain("opened.union(held.filter { $0.viewedAt != nil }");
+  // Looked at, or approved (done, 2026-10-05): either way not waiting.
+  expect(seen).toContain("opened.union(held.filter { !ReadyForYou.isWaiting(viewedAt: $0.viewedAt, approvedAt: $0.approvedAt) }");
   // ReviewItem.id is the version: what the daemon minted at filing, or the key that stood
   // in for it before there was one.
   expect(read("mac-app/conch-mac/ReviewView.swift"))

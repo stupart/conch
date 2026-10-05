@@ -21,6 +21,9 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
     public var rows: [Row]
     public var conversations: [String: Conversation]
     public var dismissed: [String]
+    /// The sea glass approving results has earned, ever (the daemon's `seaGlass`): always sent, 0 when none. The lagoon's
+    /// jar shows it. Agreed with the brand repo on 2026-10-05 under this name, with `Review.approvedAt`.
+    public var seaGlass: Int
 
     public struct Mode: Encodable, Equatable, Sendable {
         public var paused: Bool
@@ -126,6 +129,8 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
         public var kind: String?
         public var at: Double?
         public var viewedAt: Double?
+        /// When it was approved (2026-10-05): done, so the lagoon doesn't count it as waiting either. Absent when it wasn't.
+        public var approvedAt: Double?
         public var version: Int?
         public var scene: Scene?
         public var open: String?
@@ -168,8 +173,11 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
         public var conversations: [String: [Item]]
         /// `dismissed`, then `dismissedRows`' ids.
         public var dismissed: [String]
+        /// `seaGlass`, or nil from a daemon too old to approve (sent as 0).
+        public var seaGlass: Int?
 
-        public init(ts: Double?, paused: Bool, holding: Int, liveState: String?, rows: [Row], conversations: [String: [Item]], dismissed: [String]) {
+        public init(ts: Double?, paused: Bool, holding: Int, liveState: String?, rows: [Row], conversations: [String: [Item]], dismissed: [String],
+                    seaGlass: Int? = nil) {
             self.ts = ts
             self.paused = paused
             self.holding = holding
@@ -177,6 +185,7 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
             self.rows = rows
             self.conversations = conversations
             self.dismissed = dismissed
+            self.seaGlass = seaGlass
         }
 
         public struct Row: Equatable, Sendable {
@@ -281,6 +290,7 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
             public var kind: String?
             public var at: Double?
             public var viewedAt: Double?
+            public var approvedAt: Double?
             public var version: Int?
             /// Whether it carried a scene at all, and what of it the lagoon may see.
             public var hasScene: Bool
@@ -290,14 +300,15 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
             public var link: String?
 
             public init(id: String? = nil, artifact: String? = nil, summary: String? = nil, kind: String? = nil, at: Double? = nil,
-                        viewedAt: Double? = nil, version: Int? = nil, hasScene: Bool = false, targetKind: String? = nil,
-                        inspect: String? = nil, link: String? = nil) {
+                        viewedAt: Double? = nil, approvedAt: Double? = nil, version: Int? = nil, hasScene: Bool = false,
+                        targetKind: String? = nil, inspect: String? = nil, link: String? = nil) {
                 self.id = id
                 self.artifact = artifact
                 self.summary = summary
                 self.kind = kind
                 self.at = at
                 self.viewedAt = viewedAt
+                self.approvedAt = approvedAt
                 self.version = version
                 self.hasScene = hasScene
                 self.targetKind = targetKind
@@ -397,6 +408,7 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
                         kind: Self.cut(rv.kind, 20),
                         at: finite(rv.at),
                         viewedAt: finite(rv.viewedAt),
+                        approvedAt: finite(rv.approvedAt),
                         version: rv.version,
                         scene: rv.hasScene || rv.targetKind != nil || rv.inspect != nil
                             ? Scene(target: rv.targetKind.map { Scene.Target(kind: Self.cut($0, 20)) }, inspect: Self.cut(rv.inspect, 200))
@@ -449,6 +461,8 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
         live = Live(state: Self.cut(source.liveState, 20).flatMap { $0.isEmpty ? nil : $0 } ?? "idle")
         var seen = Set<String>()
         dismissed = source.dismissed.filter { seen.insert($0).inserted }
+        // sanitize.mjs: a non-negative whole number, otherwise 0 (a count that isn't one never reaches the jar).
+        seaGlass = max(0, source.seaGlass ?? 0)
     }
 
     /// How many of a session's recent messages the glass's conversation pane gets (sanitize.mjs `MESSAGES`).

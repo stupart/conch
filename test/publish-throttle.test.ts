@@ -64,6 +64,7 @@ function basePublishedState(): PublishedState {
     }],
     dismissed: [],
     dismissedRows: [],
+    seaGlass: 0,
   };
 }
 

@@ -375,6 +375,8 @@ describe("buildPublishedState — external session snapshot", () => {
       ],
       dismissed: ["dismissed-session"],
       dismissedRows: [{ id: "dismissed-session", label: "Dismissed" }],
+      // Always present, 0 when nothing has been approved (2026-10-05).
+      seaGlass: 0,
     });
     expect(published.rows.some((row) => row.id === "dismissed-session")).toBe(false);
     expect("snippet" in published.rows[1]!).toBe(false);

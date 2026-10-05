@@ -20,6 +20,9 @@ struct ReviewItem: Identifiable, Equatable {
     /// When it was looked at, as the daemon remembers it — on any device. Nil means nobody
     /// has, or that this daemon is too old to know (`features.viewedState`).
     let viewedAt: Double?
+    /// When it was approved, which marks it done (2026-10-05, Tyler's decision): out of Ready for you, and no Approve on
+    /// it. Nil means it wasn't, or a daemon too old to approve.
+    let approvedAt: Double?
     /// The artifact this filing is a version of, as the daemon filed it; nil from an older one.
     let artifact: String?
     /// Which filing of its artifact this is, from 1, as the daemon numbered it; nil from an older one (`VersionLabel`).
@@ -52,8 +55,9 @@ struct ReviewItem: Identifiable, Equatable {
         self.link = link.isEmpty ? nil : link
         reviewedAt = review.at
         inspect = review.inspect
-        isReady = ReadyForYou.isReady(working: row.status == .working, viewedAt: [review.viewedAt])
+        isReady = ReadyForYou.isReady(working: row.status == .working, held: [(review.viewedAt, review.approvedAt)])
         viewedAt = review.viewedAt
+        approvedAt = review.approvedAt
         artifact = review.artifact
         version = review.version
         marks = review.marks
@@ -174,7 +178,9 @@ private struct ReviewSurface: View {
                         rowID: item.rowID,
                         isWebLoading: $isWebLoading,
                         liveAddress: $liveAddress,
-                        signInBanner: PageAccess.macBanner(item.access)
+                        signInBanner: PageAccess.macBanner(item.access),
+                        // A page's way out is on its address line, at the right end, as the lagoon's glass has it.
+                        lineControls: paneControls
                     )
                     .id(item.id)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -219,21 +225,43 @@ private struct ReviewSurface: View {
     /// The compare button sits beside it, and only on an artifact with another version held: a before/after is the one
     /// other thing done with a deliverable from here (`DeliverableCompareView`), and with nothing to compare it is not
     /// drawn at all, so the pane of a lone deliverable is exactly what it was.
+    ///
+    /// A page has no corner circle (2026-10-05, Tyler's decision, matching the lagoon's glass): its ↗ sits at the right
+    /// end of its thin address line instead (`ReviewContent`'s `lineControls`), where it no longer covers the top of the
+    /// page or the line's own words. Pictures, films, PDFs and everything else keep the corner circle. Same key (⌘3),
+    /// tooltip and VoiceOver label either way, from the one list (`paneControls`).
     private var stageControl: some View {
         HStack(spacing: 6) {
-            if let onCompare {
-                circleButton(
-                    symbol: "rectangle.split.2x1",
-                    help: "Compare with the version before",
-                    label: "Compare with another version",
-                    action: onCompare
-                )
-            }
-            if let action {
-                circleButton(symbol: actionSymbol, help: actionHelp, label: actionAccessibilityLabel, action: action)
+            if !opensFromAddressLine {
+                ForEach(paneControls) { control in
+                    circleButton(symbol: control.symbol, help: control.help, label: control.label, action: control.action)
+                }
             }
         }
         .padding(10)
+    }
+
+    /// Compare (only with another version held) and the way out, in that order, so ↗ is always the last.
+    private var paneControls: [ReviewPaneControl] {
+        var controls: [ReviewPaneControl] = []
+        if let onCompare {
+            controls.append(ReviewPaneControl(
+                symbol: "rectangle.split.2x1",
+                help: "Compare with the version before",
+                label: "Compare with another version",
+                action: onCompare
+            ))
+        }
+        if let action {
+            controls.append(ReviewPaneControl(symbol: actionSymbol, help: actionHelp, label: actionAccessibilityLabel, action: action))
+        }
+        return controls
+    }
+
+    /// A page, drawn with its address line: its controls go there (`ReviewContent`).
+    private var opensFromAddressLine: Bool {
+        guard let link = item.link else { return false }
+        return DeliverableSource(link: link) == .web
     }
 
     private func circleButton(symbol: String, help: String, label: String, action: @escaping () -> Void) -> some View {
@@ -254,6 +282,16 @@ private struct ReviewSurface: View {
         .help(help)
         .accessibilityLabel(label)
     }
+}
+
+/// One of the review pane's own controls (Compare, Open where it lives): drawn as a circle over the work's corner, or on
+/// a page's address line.
+struct ReviewPaneControl: Identifiable {
+    let symbol: String
+    let help: String
+    let label: String
+    let action: () -> Void
+    var id: String { symbol }
 }
 
 /// The session's working folder: the tree on the left, the file you picked on the right.
@@ -497,6 +535,9 @@ private struct ReviewContent: View {
     /// (`PageAccess.macBanner`, 2026-10-03 feedback item 3). This pane's web view keeps the sign-ins conch draws pages
     /// with, so signing in here once is the fix. Nil draws nothing.
     var signInBanner: String?
+    /// A page's Compare and ↗, at the right end of its address line (`ReviewSurface.paneControls`). None for a file
+    /// picked in the Files tab, whose pane has no way out of its own.
+    var lineControls: [ReviewPaneControl] = []
     /// The banner was closed, for as long as this deliverable is shown.
     @State private var signInBannerClosed = false
     @State private var navigationFailure: DeliverableNavigationFailure?
@@ -660,6 +701,11 @@ private struct ReviewContent: View {
                             // `liveLink` until WebKit reports the new one.
                             liveAddress = target
                         }
+                    // The way out, at the line's right end (2026-10-05): it sat over the page's top-right corner, where
+                    // it covered the page and the end of a long address.
+                    ForEach(lineControls) { control in
+                        lineButton(control)
+                    }
                 }
                 .foregroundStyle(ConchPalette.textDim)
                 .padding(.horizontal, 14)
@@ -759,6 +805,24 @@ private struct ReviewContent: View {
         navigationFailure = nil
         isWebLoading = true
         reloadID = UUID()
+    }
+
+    /// The corner circle, made to sit in the thin line: smaller, and allowed into the line's own padding so the line
+    /// stays as thin as it was.
+    private func lineButton(_ control: ReviewPaneControl) -> some View {
+        Button(action: control.action) {
+            Image(systemName: control.symbol)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(ConchPalette.textDim)
+                .frame(width: 22, height: 22)
+                .background(Circle().fill(ConchPalette.surface))
+                .overlay(Circle().strokeBorder(ConchPalette.divider, lineWidth: 0.5))
+                .contentShape(Circle())
+        }
+        .buttonStyle(ReviewPressButtonStyle())
+        .padding(.vertical, -4)
+        .help(control.help)
+        .accessibilityLabel(control.label)
     }
 
     /// Knock on a local page's port: answered, it loads (again); refused, the pane says its server isn't running.

@@ -485,6 +485,10 @@ enum ConchSessionCommand: String, Encodable, Sendable {
     case attach
     case reviewViewed = "review-viewed"
     case reviewRemove = "review-remove"
+    /// Mark a result done: out of Ready for you, one piece of sea glass, nothing sent to the agent (2026-10-05).
+    case reviewApprove = "review-approve"
+    /// Take an approval back, within 10 s of it (⌘Z); the daemon refuses it in words after that.
+    case reviewUnapprove = "review-unapprove"
 }
 
 struct ConchSessionCommandRequest: Encodable, Sendable {

@@ -19,6 +19,8 @@ struct ContentView: View {
     /// The lagoon (LagoonPane.swift): the window's for as long as it lives, so going to the conversation and back finds it
     /// where it was.
     @StateObject private var lagoon = LagoonModel()
+    /// Approving the result the review pane shows: its ✓ Approve, ↵ and ⌘Z (`ReviewApprovals`, 2026-10-05).
+    @StateObject private var approvals = ReviewApprovals()
     /// Which page the window shows, remembered so the lagoon survives a relaunch; the lagoon only while it is switched on
     /// and in this build (`LagoonFeature.page`).
     @AppStorage(Lagoon.pageKey) private var storedPage: Lagoon.Page = .sessions
@@ -137,6 +139,7 @@ struct ContentView: View {
         .background(ConchPalette.bg)
         .environmentObject(workspace)
         .environmentObject(lagoon)
+        .environmentObject(approvals)
         .background(
             DashboardInputMonitor(
                 isEnabled: remoteSelection == nil && !isShowingKeyboardShortcuts && !isShowingCommandPalette,
@@ -448,10 +451,29 @@ struct ContentView: View {
             moveSelection(by: 1)
         case .releaseSelection:
             releaseSelection()
-        case .openConversation:
-            // Return: on the lagoon, the selected session's conversation. Anywhere else the key isn't the dashboard's.
-            guard page == .lagoon, let row = selectedRow else { return false }
-            openConversation(row)
+        case let .returnKey(reviewPaneFocused):
+            // Return: on the lagoon, the selected session's conversation; on the review pane, while it has the keyboard,
+            // Approve (2026-10-05). The monitor has already left it to a text field or a page. Anywhere else it isn't
+            // the dashboard's.
+            switch ReviewApproval.returnKey(
+                focus: .other,
+                onLagoon: page == .lagoon,
+                reviewPaneFocused: reviewPaneFocused,
+                canApprove: approvals.approvable != nil
+            ) {
+            case .openConversation:
+                guard let row = selectedRow else { return false }
+                openConversation(row)
+            case .approve:
+                return approvals.approveShown(store: store)
+            case .pass:
+                return false
+            }
+        case .undoApproval:
+            // ⌘Z, within ten seconds of an approval made here; otherwise it goes on to whatever else undoes. Never on
+            // the lagoon, whose page has its own Undo for its own approvals.
+            guard page != .lagoon else { return false }
+            return approvals.undoLast(store: store)
         }
         return true
     }

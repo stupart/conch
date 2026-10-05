@@ -2446,6 +2446,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         publishedSessionSettingsFor(),
       );
       lastPublishedPanelState.phone = phoneSetup.published(cfg.phoneEnabled);
+      // The sea glass approving has earned, ever (`SessionLedger.seaGlass`, 2026-10-05): the lagoon's jar.
+      lastPublishedPanelState.seaGlass = ledger.seaGlass;
       // Setup's practice session, first among the rows while it runs, and `features.practice` always (practice.ts).
       if (practice) lastPublishedPanelState = practice.publish(lastPublishedPanelState);
       // Each working row's line, through its throttle: a fresh build carries none until this puts them back.
@@ -2758,6 +2760,24 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       log(`removed ${"review" in which ? "a deliverable" : "an artifact"} from "${target.label}"`);
       void renderSessionPanel();
       return true;
+    },
+    // 2026-10-05, Tyler's decision: approving marks a result done and earns a piece of sea glass. Nothing is typed into
+    // the session and nothing is said: it is the reader's bookkeeping, not a message to the agent.
+    approveReview: (target, review) => {
+      const outcome = ledger.approveDeliverable(target.sessionId, review, Date.now());
+      if (outcome.ok && outcome.changed) {
+        log(`approved a deliverable of "${target.label}" (sea glass: ${ledger.seaGlass})`);
+        void renderSessionPanel();
+      }
+      return outcome;
+    },
+    unapproveReview: (target, review) => {
+      const outcome = ledger.unapproveDeliverable(target.sessionId, review, Date.now());
+      if (outcome.ok && outcome.changed) {
+        log(`took back the approval of a deliverable of "${target.label}" (sea glass: ${ledger.seaGlass})`);
+        void renderSessionPanel();
+      }
+      return outcome;
     },
     dismiss: (target) => {
       dismissedSessionIds.add(target.sessionId);

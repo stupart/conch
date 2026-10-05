@@ -244,6 +244,9 @@ struct PublishedState: Decodable, Equatable {
             var id: String?
             /// When it was looked at, on whichever device looked; absent means nobody has.
             var viewedAt: Double?
+            /// When it was approved, which marks it done (2026-10-05): not waiting on you, here or on the Mac. Absent
+            /// means it wasn't, and from a daemon too old to approve.
+            var approvedAt: Double?
             /// The one thing the agent asked you to check (`scene.inspect`). A build from before scenes never asks
             /// for the key, and a keyed container ignores keys it isn't asked for, so it decodes the review unchanged.
             var inspect: String?
@@ -277,7 +280,7 @@ struct PublishedState: Decodable, Equatable {
             }
 
             private enum CodingKeys: String, CodingKey {
-                case summary, link, at, scene, id, viewedAt, artifact, version, kind, preview, focus, linkRefused, snapshot, access
+                case summary, link, at, scene, id, viewedAt, approvedAt, artifact, version, kind, preview, focus, linkRefused, snapshot, access
             }
             private struct Scene: Decodable {
                 var inspect: String?
@@ -300,6 +303,7 @@ struct PublishedState: Decodable, Equatable {
                 at = try? c.decodeIfPresent(Double.self, forKey: .at)
                 id = try? c.decodeIfPresent(String.self, forKey: .id)
                 viewedAt = try? c.decodeIfPresent(Double.self, forKey: .viewedAt)
+                approvedAt = try? c.decodeIfPresent(Double.self, forKey: .approvedAt)
                 // A scene this build can't read is no scene, never a review that fails.
                 let scene = try? c.decodeIfPresent(Scene.self, forKey: .scene)
                 inspect = scene?.inspect
@@ -482,10 +486,11 @@ enum StatusMark {
 
     init(row: PublishedState.Row) {
         if row.usageLimit != nil, row.live != "listening", row.live != "recording" { self = .usageLimit; return }
-        // The deliverable stays on a working row; the mark means it is waiting for you, and one you have looked at,
-        // here or on the Mac, isn't (`ReadyForYou`, the Mac's rule): that row reads as its status.
+        // The deliverable stays on a working row; the mark means it is waiting for you, and one you have looked at or
+        // approved (2026-10-05), here, on the Mac or in the lagoon, isn't (`ReadyForYou`, the Mac's rule): that row reads
+        // as its status.
         let held = row.reviews.flatMap { $0.isEmpty ? nil : $0 } ?? row.review.map { [$0] } ?? []
-        if ReadyForYou.isReady(working: row.status == "working", viewedAt: held.map(\.viewedAt)) { self = .review; return }
+        if ReadyForYou.isReady(working: row.status == "working", held: held.map { ($0.viewedAt, $0.approvedAt) }) { self = .review; return }
         // A sub-agent is working or it is paused, as on the Mac. Nobody replies to one, so a
         // Codex helper between turns is not "waiting for you", and waiting's colour was wrong on
         // it. Only a question it is blocked on still asks something of you.
