@@ -147,7 +147,7 @@ describe("the store, the socket and the models", () => {
     const intents = read("design/ConchDesign/Sources/ConchDesign/LagoonIntents.swift");
     expect(intents).toContain("public static let byDefaultInOrder: [Name] = [.approve, .unapprove, .reply]");
     expect(intents).toContain("public static let phaseC: Set<Name> = [.answer, .pause]");
-    expect(read("design/ConchDesign/Sources/ConchDesign/Lagoon.swift")).toContain("LagoonIntent.byDefaultInOrder.map(\\.rawValue).joined(separator: \",\")");
+    expect(read("design/ConchDesign/Sources/ConchDesign/Lagoon.swift")).toContain("LagoonIntent.actTokens.joined(separator: \",\")");
   });
 
   /** The phone shows results but has no Approve yet: nothing there may treat every review as approvable. */

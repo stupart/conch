@@ -28,6 +28,16 @@ public enum LagoonIntent {
     /// back within 10 s, and replying to a session (2026-10-05).
     public static let byDefaultInOrder: [Name] = [.approve, .unapprove, .reply]
     public static let byDefault: Set<Name> = Set(byDefaultInOrder)
+    /// What the page's `act=` names, in its order: the names above, then `viewed`, which is `openReview` with `how:
+    /// viewed` (the lagoon showed a result on its glass) and acts by default too. Marking a result looked at is the same
+    /// as opening it in the app, and without it a result that asked nothing could never leave the lagoon's tideline
+    /// (2026-10-05, Tyler: "sure… sounds good directionally"). `openReview` with `how: open` stays phase B.
+    public static let actTokens: [String] = byDefaultInOrder.map(\.rawValue) + ["viewed"]
+
+    /// Whether this message acts with no flag set.
+    public static func actsByDefault(_ message: Message) -> Bool {
+        byDefault.contains(message.name) || (message.name == .openReview && message.how == .viewed)
+    }
 
     /// One message, checked: every field the app may act on, typed.
     public struct Message: Equatable, Sendable {
@@ -215,7 +225,7 @@ public enum LagoonIntentRouter {
     /// every flag off (phase A), only `approve`, `unapprove` and `reply` reach the sink (`LagoonIntent.byDefault`).
     public static func route(_ message: LagoonIntent.Message, flags: LagoonActionFlags, sink: LagoonActionSink?) -> LagoonRouting {
         if message.name == .ready { return .ready }
-        guard LagoonIntent.byDefault.contains(message.name) || flags.acts(message.name), let sink else { return .logged }
+        guard LagoonIntent.actsByDefault(message) || flags.acts(message.name), let sink else { return .logged }
         switch message.name {
         case .focusSession:
             guard let id = message.sessionId else { return .logged }

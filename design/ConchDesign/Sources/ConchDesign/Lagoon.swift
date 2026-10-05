@@ -47,9 +47,9 @@ public enum Lagoon {
         URL(string: "\(scheme)://\(host)/index.html?app=1\(readOnly ? "&readonly=1" : "")&act=\(actsByDefault)")!
     }
 
-    /// `approve,unapprove,reply`: `LagoonIntent.byDefault`, in the order the lagoon names them.
+    /// `approve,unapprove,reply,viewed`: `LagoonIntent.actTokens`, in the order the lagoon names them.
     public static var actsByDefault: String {
-        LagoonIntent.byDefaultInOrder.map(\.rawValue).joined(separator: ",")
+        LagoonIntent.actTokens.joined(separator: ",")
     }
 
     /// Where the page opens a deliverable a session holds: `conch-lagoon://lagoon/review/<session>/<review>`, both ids encoded
