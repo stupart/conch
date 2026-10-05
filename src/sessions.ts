@@ -345,6 +345,35 @@ export async function findSession(
 }
 
 /**
+ * The conversation a Claude Code process holds now, read from its own registry file (`sessions/<pid>.json`)
+ * in whichever account's folder has one. Claude Code names the file after the process and rewrites its
+ * `sessionId` when the process starts a new conversation, so this is where a send learns that the terminal
+ * it typed into is running a conversation other than the one it addressed. Read now, never from the last
+ * snapshot: the change happens as the words go in. `parkedJobId` says the id is the window's own from
+ * before it parked on a job, not the conversation it shows.
+ */
+export async function processConversation(
+  claudeDirs: readonly string[],
+  pid: number,
+): Promise<{ sessionId: string; parkedJobId?: string } | undefined> {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return undefined;
+  for (const dir of claudeDirs) {
+    let entry: any;
+    try {
+      entry = await Bun.file(join(dir, "sessions", `${pid}.json`)).json();
+    } catch {
+      continue; // no file in this account, or one mid-write: the next look reads it again
+    }
+    if (entry?.pid !== pid || typeof entry.sessionId !== "string" || !entry.sessionId) continue;
+    return {
+      sessionId: entry.sessionId,
+      ...(typeof entry.parkedJobId === "string" && entry.parkedJobId ? { parkedJobId: entry.parkedJobId } : {}),
+    };
+  }
+  return undefined;
+}
+
+/**
  * The background job's row, when an address names a window parked on it.
  *
  * A process that started before conch knew about background jobs — a hook, a

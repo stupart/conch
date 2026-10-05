@@ -250,7 +250,8 @@ describe("the UserPromptSubmit hook, run", () => {
     }, { daemon: true });
     expect(sounds).toBe("");
     expect(received).toHaveLength(1);
-    expect(received[0]).toMatchObject({ type: "working", sessionId: SESSION, promptDigest: promptDigest("my private words") });
+    // With the process it ran in: a send typed at that process counts the report under whatever id it names.
+    expect(received[0]).toMatchObject({ type: "working", sessionId: SESSION, pid: 4242, promptDigest: promptDigest("my private words") });
     expect(JSON.stringify(received[0])).not.toContain("private");
     expect(validateSocketTurnEvent(received[0]).ok).toBe(true);
   }, 30_000);

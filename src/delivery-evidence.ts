@@ -51,21 +51,49 @@ export function promptDigest(text: string): string {
 
 export const PROMPT_DIGEST = /^[0-9a-f]{16}$/;
 
-/** Prompts a session's hook reported, newest last, for the delivery that is watching for its own. */
-export class PromptSubmissions {
-  readonly #bySession = new Map<string, Array<{ at: number; digest: string }>>();
+interface Submission { at: number; digest: string }
 
-  note(sessionId: string, digest: string, at = Date.now()): void {
+/** A pid a hook can name: a terminal's process. A background job with no window reports 0. */
+const isProcess = (pid: number | undefined): pid is number => Number.isSafeInteger(pid) && pid! > 0;
+
+/** One key's reports, the ten minutes before `at` and sixteen at most, with this one added. */
+function keep<K>(held: Map<K, Submission[]>, key: K, submission: Submission): void {
+  const recent = (held.get(key) ?? []).filter((entry) => submission.at - entry.at < 10 * 60_000);
+  recent.push(submission);
+  held.set(key, recent.slice(-16));
+}
+
+/**
+ * Prompts a session's hook reported, newest last, for the delivery that is watching for its own: by the
+ * session the hook named, and by the process it ran in.
+ *
+ * By process too, because a session can take the words under an id the send never addressed. A process
+ * that starts a new conversation keeps its terminal and its pid while its id changes, so the hook reports
+ * the words under the new id, and a send watching only the id it typed at saw nothing and called a
+ * delivered message lost. On 2026-10-05 a send was reported unconfirmed and put on the clipboard while
+ * its words were already in a conversation conch was not watching. Tyler: "just had a message say it
+ * failed to send but it worked".
+ */
+export class PromptSubmissions {
+  readonly #bySession = new Map<string, Submission[]>();
+  readonly #byProcess = new Map<number, Submission[]>();
+
+  note(sessionId: string, digest: string, at = Date.now(), pid?: number): void {
     if (!sessionId || !PROMPT_DIGEST.test(digest)) return;
-    const held = (this.#bySession.get(sessionId) ?? []).filter((entry) => at - entry.at < 10 * 60_000);
-    held.push({ at, digest });
-    this.#bySession.set(sessionId, held.slice(-16));
+    keep(this.#bySession, sessionId, { at, digest });
+    if (isProcess(pid)) keep(this.#byProcess, pid, { at, digest });
   }
 
-  /** Whether this session's agent reported submitting these words at or after `since`. */
-  submitted(sessionId: string, since: number, words: string): boolean {
+  /**
+   * Whether this session's agent reported submitting these words at or after `since`; or, given the pid
+   * the words were typed at, whether any session's hook in that same process did. Only these words and
+   * only since the send began, so another session's prompt, or an earlier one, never confirms this one.
+   */
+  submitted(sessionId: string, since: number, words: string, pid?: number): boolean {
     const digest = promptDigest(words);
-    return (this.#bySession.get(sessionId) ?? []).some((entry) => entry.at >= since && entry.digest === digest);
+    const these = (entry: Submission): boolean => entry.at >= since && entry.digest === digest;
+    if ((this.#bySession.get(sessionId) ?? []).some(these)) return true;
+    return isProcess(pid) && (this.#byProcess.get(pid) ?? []).some(these);
   }
 }
 

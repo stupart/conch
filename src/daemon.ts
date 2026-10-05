@@ -256,6 +256,7 @@ import { claudeAccountForLaunch, readClaudeAccounts, addClaudeAccount, removeCla
 import { runInstall as installAccountHooks, repairConchHooks } from "./install.ts";
 import {
   addressParkedWindow,
+  processConversation,
   sessionGoneFromSnapshot,
   sessionLabel,
   renameSessionLabel,
@@ -1418,7 +1419,10 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     const event = incoming;
     // The agent's own word that it took a prompt, before anything can turn the event away: a delivery
     // watching for its words reads it (`delivery-evidence.ts`).
-    if (event.type === "working" && event.promptDigest) promptSubmissions.note(parseWindowKey(event.sessionId).sessionId, event.promptDigest);
+    // With the process it came from: a send typed at that process counts it whatever id it names (`PromptSubmissions`).
+    if (event.type === "working" && event.promptDigest) {
+      promptSubmissions.note(parseWindowKey(event.sessionId).sessionId, event.promptDigest, Date.now(), event.pid);
+    }
     // Setup's practice session is conch's own (practice.ts): anything naming it is the practice's to answer, and never
     // reaches the queue, the voice loop or a terminal, whichever door it came in by.
     if (event.sessionId === PRACTICE_SESSION_ID) return practice?.turn(event);
@@ -1792,10 +1796,13 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     cfg,
     log,
     // A window key names its session's hook reports: the hook knows the session, not the window.
-    promptSubmitted: (sessionId, since, words) => promptSubmissions.submitted(parseWindowKey(sessionId).sessionId, since, words),
+    promptSubmitted: (sessionId, since, words, pid) => promptSubmissions.submitted(parseWindowKey(sessionId).sessionId, since, words, pid),
     // Looked up again on each read: a new session's transcript appears only with its first prompt, under its own
     // account, and is looked for in that account's folder alone (`sessionTranscript`).
     transcriptFor: (sessionId) => sessionTranscript(cfg.claudeDir, sessionId, panelSessions.get(sessionId)),
+    // Every account's folder: a pid is one process, so at most one of them has its file, and the row that
+    // named the process may already be gone from the panel once it changed conversations.
+    processConversation: (pid) => processConversation(readClaudeAccounts(cfg.claudeDir).map((account) => account.configDir), pid),
     ledger,
     pause,
     queue: eventQueue,
