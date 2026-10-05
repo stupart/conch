@@ -993,12 +993,11 @@ private struct StartSessionSheet: View {
     @State private var teleportSessionId = ""
     @State private var openedTeleport = false
     @State private var backgroundId: String?
+    @State private var terminalFailure: String?
     // The last folder this phone used is the likeliest next one.
     @State private var workingFolder = RecentFolders.load().first ?? ""
     @State private var recents = RecentFolders.load()
     @State private var starting = false
-    /// Help's folder, once the Mac named it asking whether to trust it (`help: true` names none).
-    @State private var helpFolder: String?
     /// Launched and waiting for it to check in: Start is spent, Cancel still closes.
     @State private var launched = false
     @State private var startTask: Task<Void, Never>?
@@ -1006,7 +1005,8 @@ private struct StartSessionSheet: View {
     // Codex trust, the way the Mac does it: the daemon asks BEFORE launching,
     // the answer is kept for this sheet only and sent back as `trustFolder`.
     @State private var pendingTrust: String?
-    @State private var trustedFolders: Set<String> = []
+    /// Also for a start naming no folder (a blank field, Help): the Mac names the one it runs in (2026-10-05).
+    @State private var trust = StartTrustAnswers()
     /// What the person chose this time, by option name. Unset means the
     /// agent's own default, and is not sent; `bypass-permissions` is seeded
     /// from the persisted setting once the Mac says what it is.
@@ -1226,8 +1226,13 @@ private struct StartSessionSheet: View {
                 }
                 if let backgroundId {
                     Section {
+                        // Its failure under it, not in `error`, as the Mac keeps it on the row: written over the
+                        // notice, even a success's nil stopped the sheet closing onto the session once it checked in.
                         Button("Open startup terminal on Mac", systemImage: "terminal") {
-                            Task { error = await bridge.openAgentTerminal(sessionId: backgroundId) }
+                            Task { terminalFailure = await bridge.openAgentTerminal(sessionId: backgroundId) }
+                        }
+                        if let terminalFailure {
+                            Text(terminalFailure).font(.caption).foregroundStyle(Palette.needs)
                         }
                     }
                 }
@@ -1276,7 +1281,7 @@ private struct StartSessionSheet: View {
             Button(effectiveBackend == .codex ? "Yes, continue" : "Yes, I trust this folder") {
                 guard let cwd = pendingTrust else { return }
                 pendingTrust = nil
-                trustedFolders.insert(cwd)
+                trust.trust(cwd)
                 start()
             }
             Button(effectiveBackend == .codex ? "No, cancel" : "No, exit", role: .cancel) { pendingTrust = nil }
@@ -1406,7 +1411,8 @@ private struct StartSessionSheet: View {
                 claudeSourceAccountId: isAccountHandoff ? (resumeSelection?.claudeAccountId ?? "default") : nil,
                 codexAccountId: effectiveBackend == .codex ? selectedAccountId : nil,
                 cwd: cwd,
-                trustFolder: cwd.map(trustedFolders.contains) ?? false,
+                // For the folder sent, or, sending none, for the one the Mac said it runs in: the yes the daemon asked for.
+                trustFolder: trust.trustFolder(sent: cwd, help: help),
                 options: sentOptions,
                 help: help
             )
@@ -1416,10 +1422,10 @@ private struct StartSessionSheet: View {
                 // The daemon's words when it has them ("session directory
                 // does not exist: …"); the generic line only when it has none.
                 error = bridge.lastError ?? "Couldn't start that session."
-            case let .needsTrust(cwd):
-                // Help names no folder; the Mac just said which one is conch's, so a yes can be sent for it.
-                if help { helpFolder = cwd }
-                pendingTrust = cwd
+            case let .needsTrust(folder):
+                // A blank field and Help name no folder; the Mac just said which one it runs in, so a yes goes back for it.
+                trust.asked(about: folder, sent: cwd, help: help)
+                pendingTrust = folder
             case let .started(sessionId, background):
                 if !resuming, let folder = freshWorkingFolder {
                     // Help's folder is conch's own, not one this phone chose.
@@ -1443,9 +1449,7 @@ private struct StartSessionSheet: View {
                     return
                 }
                 guard !Task.isCancelled else { return }
-                let notice = background != nil
-                    ? "Started in the background. If it hasn’t appeared, open its startup terminal on your Mac to answer any login or setup prompt."
-                    : "Started, but it hasn’t checked in. Terminal on your Mac may be waiting for you to answer something."
+                let notice = StartedSessionWatch.notCheckedIn(backend: effectiveBackend.rawValue, background: background != nil, onPhone: true)
                 error = notice
                 // And keep watching: answered on the Mac, it checks in later, and the sheet
                 // shouldn't sit on this notice over a session that is already running.
@@ -1489,7 +1493,7 @@ private struct StartSessionSheet: View {
     }
 
     private var freshWorkingFolder: String? {
-        if help { return helpFolder }
+        if help { return nil }
         let trimmed = workingFolder.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }

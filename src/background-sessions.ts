@@ -1,6 +1,7 @@
 import { conchPane, conchTmux, paneTarget, qualifyPane, resolveTmux, tmuxServers } from "./tmux-binary.ts";
 import { randomUUID } from "node:crypto";
 import { probeCommand } from "./probe.ts";
+import { claudeInputBoxText } from "./agent-adapter.ts";
 
 /** A detached terminal owned by Conch. The tmux server outlives the app/daemon;
  * existing transcript, input, permission and stop paths still address the CLI. */
@@ -47,23 +48,69 @@ export async function managedBackgroundSession(pid: number, probe: Probe = probe
   }
 }
 
-/** Only the exact Claude trust prompt, and only after the user agreed in Conch. */
-export async function acceptBackgroundTrust(pane: string, probe: Probe = probeCommand): Promise<boolean> {
+/**
+ * How typing a yes into Claude's trust prompt went: typed; not needed, because the session reached its input box
+ * without asking (the folder was already trusted — a non-default account's trust can't be read beforehand, so the
+ * app asks anyway); never shown before the wait ran out, the session still there; or the session is gone.
+ */
+export type BackgroundTrustOutcome = "answered" | "not asked" | "never appeared" | "the session ended";
+
+/**
+ * Only the exact Claude trust prompt, and only after the user agreed in Conch.
+ *
+ * 2026-10-05, Tyler: "trying to start a new session (background session with claude account) and it didn't start …
+ * and the modal didn't close". This gave up on the first capture that failed — under load, a probe past its 2 s — and
+ * after 30 s, and said so to no one: the session sat on the prompt. A failed look is a reason to look again; only the
+ * pane being gone ends the wait early. 60 s: a resumed conversation can take far longer than a fresh one to reach
+ * the prompt (2026-10-02, a resume left waiting). `waitMs` and `intervalMs` are for tests.
+ */
+export async function acceptBackgroundTrust(
+  pane: string,
+  probe: Probe = probeCommand,
+  { waitMs = 60_000, intervalMs = 250 }: { waitMs?: number; intervalMs?: number } = {},
+): Promise<BackgroundTrustOutcome> {
   const target = paneTarget(pane);
   if (!target) throw new Error("Invalid background pane");
-  // 30 s: a resumed conversation can take far longer than a fresh one to reach the prompt, and a prompt
-  // nobody answers holds the session off the list until someone finds it (2026-10-02, a resume left waiting).
-  for (let attempt = 0; attempt < 120; attempt++) {
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    let pause = intervalMs;
     const screen = await probe([...target.tmux, "capture-pane", "-p", "-t", target.pane], [0]);
-    if (screen === null) return false;
-    if (screen.includes("Yes, I trust this folder") && screen.includes("No, exit")) {
-      // Claude's default is No. Down wraps to Yes without relying
-      // on a terminal window or changing any global keyboard focus.
-      return await probe([...target.tmux, "send-keys", "-t", target.pane, "Down", "Enter"], [0]) !== null;
+    if (screen === null) {
+      if (await paneGone(target, probe)) return "the session ended";
+    } else if (screen.includes("Yes, I trust this folder") && screen.includes("No, exit")) {
+      // Claude's default is No, and Down wraps to Yes, without a terminal window or any global keyboard focus. Yes
+      // already highlighted is a Down that landed from a send that reported failure: Enter alone, never Down again.
+      const yesHighlighted = screen.split("\n").some((line) => line.includes("Yes, I trust this folder") && line.includes("❯"));
+      const keys = yesHighlighted ? ["Enter"] : ["Down", "Enter"];
+      if (await probe([...target.tmux, "send-keys", "-t", target.pane, ...keys], [0]) !== null) return "answered";
+      // Keys that may have landed late are given time to show before the screen is believed again.
+      pause = Math.max(intervalMs, 2_000);
+    } else if (claudeInputBoxText(screen) !== null) {
+      return "not asked";
     }
-    await Bun.sleep(250);
+    if (Date.now() + pause > deadline) return await paneGone(target, probe) ? "the session ended" : "never appeared";
+    await Bun.sleep(pause);
   }
-  return false;
+}
+
+/** Only an answer from tmux that the pane is gone, or its process exited; a look that failed says nothing. */
+async function paneGone(target: { tmux: string[]; pane: string }, probe: Probe): Promise<boolean> {
+  // Exit 1 with nothing listed is tmux with no server to ask: every pane on it is gone.
+  const rows = await probe([...target.tmux, "list-panes", "-a", "-F", "#{pane_id} #{pane_dead}"], [0, 1]);
+  if (rows === null) return false;
+  const row = rows.split("\n").map((line) => line.trim().split(/\s+/)).find(([id]) => id === target.pane);
+  return !row || row[1] === "1";
+}
+
+/**
+ * What the daemon says of a typed yes once it is known: a line in its log always, and an error to file when the
+ * session is still there and still not past the prompt — the case that otherwise looks, from the app, exactly like a
+ * session that is merely slow.
+ */
+export function backgroundTrustReport(name: string, outcome: BackgroundTrustOutcome): { line: string; error?: string } {
+  const line = `trust prompt in ${name}: ${outcome}`;
+  if (outcome !== "never appeared") return { line };
+  return { line, error: `Claude's trust prompt never appeared in ${name}, so the yes from the app was not typed. It may be waiting at a login or other prompt: open its startup terminal.` };
 }
 
 /** Startup may be waiting on login before it has a conversation ID. */

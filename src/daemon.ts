@@ -1,4 +1,4 @@
-import { backgroundStartupPid, managedBackgroundSession } from "./background-sessions.ts";
+import { backgroundStartupPid, backgroundTrustReport, managedBackgroundSession } from "./background-sessions.ts";
 import { BackgroundGuard } from "./background-recovery.ts";
 import { dismissedWriter, loadDismissed } from "./dismissed-store.ts";
 import { defaultIsPidAlive } from "./codex-sessions.ts";
@@ -644,8 +644,19 @@ async function repairHookPrograms(): Promise<void> {
 }
 
 /**
+ * Where a launch files what went wrong after it had already replied: `recordDaemonError` as "session-start", once
+ * the daemon has one. A yes the app gave that was never typed into Claude's prompt is only known then.
+ */
+let reportLaunchError: (message: string, state: Record<string, unknown>) => void = () => {};
+
+/**
  * Open a session in Terminal and, for Claude in a folder you just trusted in the app, answer
  * its trust prompt there: Claude takes no such answer at launch (Codex does, as a flag).
+ *
+ * How that answer went is logged either way, and filed when the session is still there and still on the prompt.
+ * It was fired and forgotten, so a background session left on Claude's prompt said nothing anywhere while the app
+ * waited on it (2026-10-05, Tyler: "trying to start a new session (background session with claude account) and it
+ * didn't start … and the modal didn't close").
  */
 async function launchSession(request: StartSessionRequest): Promise<void | { backgroundId: string }> {
   const codexAccount = codexAccountForLaunch(request);
@@ -655,10 +666,23 @@ async function launchSession(request: StartSessionRequest): Promise<void | { bac
     await installAccountHooks({ claudeDir: account.configDir });
     installAccountUsage(account);
   }
-  if (request.host === "background") return startBackgroundSession(request);
+  if (request.host === "background") {
+    const { backgroundId, trust } = await startBackgroundSession(request);
+    void trust?.then((outcome) => {
+      const report = backgroundTrustReport(backgroundId, outcome);
+      log(report.line);
+      if (report.error) reportLaunchError(report.error, { backgroundId, backend: request.backend, outcome });
+    }, (error) => log(`trust prompt in ${backgroundId}: could not be watched (${(error as Error).message})`));
+    return { backgroundId };
+  }
   const { tty } = await startTerminalSession(request);
   if (request.trustFolder === true && adapterFor(request.backend).trustTypedAtLaunch && tty) {
-    void acceptClaudeTrust(tty).then((outcome) => log(`trust prompt in ${tty}: ${outcome}`), () => {});
+    void acceptClaudeTrust(tty).then((outcome) => {
+      log(`trust prompt in ${tty}: ${outcome}`);
+      if (outcome === "failed") {
+        reportLaunchError(`Claude's trust prompt in Terminal (${tty}) was not answered, so the session may be waiting on it there.`, { tty, backend: request.backend, outcome });
+      }
+    }, (error) => log(`trust prompt in ${tty}: could not be watched (${(error as Error).message})`));
   }
 }
 
@@ -1759,6 +1783,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       log(`could not record daemon error: ${error}`);
     }
   };
+  reportLaunchError = (message, state) => recordDaemonError("session-start", message, undefined, state);
   // Cut four: the voice loop owns wake → speak → listen → deliver. Built after
   // every daemon helper it is handed; the closures above reach it lazily.
   const voice = createVoiceLoop({
@@ -3129,6 +3154,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       return { sessionId: prepared.manifest.destination.nativeId, ...launch };
     },
     folderTrusted: (backend, cwd, accountId) => accountId && accountId !== "default" ? null : adapterFor(backend).folderTrusted(cwd),
+    log,
     close: closeLiveSession,
     report: (message) => {
       appendConchError(

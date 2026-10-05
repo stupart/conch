@@ -86,16 +86,23 @@ describe("phone working folder for fresh sessions", () => {
     expect(bridge).toContain('if trustFolder {\n            message["trustFolder"] = true');
 
     // Sheet: Codex's own question with its own two options, then start again
-    // with the trust for THAT folder — the same words the Mac shows.
-    expect(ledger).toContain("case let .needsTrust(cwd):");
-    expect(ledger).toContain("pendingTrust = cwd");
-    expect(ledger).toContain("trustFolder: cwd.map(trustedFolders.contains) ?? false");
+    // with the trust for THAT folder — the same words the Mac shows. A start
+    // naming no folder (blank, Help) carries the yes for the one the Mac named
+    // (2026-10-05; the rule is StartTrustAnswers, tested in ConchDesign).
+    expect(ledger).toContain("case let .needsTrust(folder):");
+    expect(ledger).toContain("trust.asked(about: folder, sent: cwd, help: help)");
+    expect(ledger).toContain("pendingTrust = folder");
+    expect(ledger).toContain("trustFolder: trust.trustFolder(sent: cwd, help: help)");
+    expect(macView).toContain("trust.asked(about: cwd, sent: effectiveCwd)");
+    expect(macView).toContain("trustFolder: trust.trustFolder(sent: effectiveCwd)");
     for (const shared of [
       '"Do you trust this folder?"',
       // Codex's two options, and Claude's, each in the agent's own words.
       'Button(effectiveBackend == .codex ? "Yes, continue" : "Yes, I trust this folder")',
       'Button(effectiveBackend == .codex ? "No, cancel" : "No, exit", role: .cancel)',
-      "trustedFolders.insert(cwd)",
+      "trust.trust(cwd)",
+      "@State private var trust = StartTrustAnswers()",
+      "let notice = StartedSessionWatch.notCheckedIn(backend: effectiveBackend.rawValue, background: ",
       '"higher risk of prompt injection. Trusting the directory allows "',
       '"conch will tell Codex this for this session only, and will not "',
     ]) {
@@ -106,8 +113,8 @@ describe("phone working folder for fresh sessions", () => {
     const yes = ledger.indexOf('Button(effectiveBackend == .codex ? "Yes, continue" : "Yes, I trust this folder")');
     expect(yes).toBeGreaterThan(-1);
     const afterYes = ledger.slice(yes);
-    expect(afterYes).toContain("trustedFolders.insert(cwd)");
-    expect(afterYes.indexOf("trustedFolders.insert(cwd)")).toBeLessThan(afterYes.indexOf("start()"));
+    expect(afterYes).toContain("trust.trust(cwd)");
+    expect(afterYes.indexOf("trust.trust(cwd)")).toBeLessThan(afterYes.indexOf("start()"));
   });
 
   test("the roadmap row says what this slice is and is not", () => {
