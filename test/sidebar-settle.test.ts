@@ -27,7 +27,9 @@ import { join } from "node:path";
 
 const repo = (path: string) => join(import.meta.dir, "..", path);
 const read = (path: string) => readFileSync(repo(path), "utf8");
-const drawable = Bun.which("swiftc") !== null
+// About a minute of compiling and driving SwiftUI, so it runs in ci-local's `mac` stage (CONCH_SIDEBAR_SETTLE=1), not in
+// every `bun test` a push runs. The source checks below always run.
+const drawable = process.env.CONCH_SIDEBAR_SETTLE === "1" && Bun.which("swiftc") !== null
   && Bun.spawnSync(["launchctl", "managername"], { stdout: "pipe", stderr: "ignore" }).stdout.toString().trim() === "Aqua";
 
 type Phase = Record<string, number | string>;
