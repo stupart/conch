@@ -50,6 +50,37 @@ describe("what a session's hook said it took", () => {
     expect(seen.submitted("s1", 0, "later")).toBe(true);
   });
 
+  // 2026-10-05, Tyler: "just had a message say it failed to send but it worked". A process that starts a new
+  // conversation reports the words under the new id, from the same pid the words were typed at.
+  test("by process: these words from another session in the process typed at confirm, from another process they don't", () => {
+    const seen = new PromptSubmissions();
+    seen.note("s2", promptDigest("ship it"), 1_000, 4242);
+    expect(seen.submitted("s1", 1_000, "ship it", 4242)).toBe(true);
+    expect(seen.submitted("s1", 1_000, "ship it", 5151)).toBe(false); // another process
+    expect(seen.submitted("s1", 1_000, "ship it")).toBe(false); // no process named
+    expect(seen.submitted("s1", 1_001, "ship it", 4242)).toBe(false); // before the send began
+    expect(seen.submitted("s1", 1_000, "hold it", 4242)).toBe(false); // other words
+    // The session's own report still counts with no pid, as before.
+    expect(seen.submitted("s2", 1_000, "ship it")).toBe(true);
+  });
+
+  test("a pid that names no terminal is no process: a background job with no window reports 0", () => {
+    const seen = new PromptSubmissions();
+    seen.note("job", promptDigest("ship it"), 1_000, 0);
+    seen.note("other", promptDigest("ship it"), 1_000, -1);
+    expect(seen.submitted("s1", 0, "ship it", 0)).toBe(false);
+    expect(seen.submitted("s1", 0, "ship it", -1)).toBe(false);
+    expect(seen.submitted("s1", 0, "ship it", Number.NaN)).toBe(false);
+  });
+
+  test("a process's reports age out with its sessions'", () => {
+    const seen = new PromptSubmissions();
+    seen.note("s2", promptDigest("first"), 0, 4242);
+    seen.note("s3", promptDigest("later"), 11 * 60_000, 4242);
+    expect(seen.submitted("s1", 0, "first", 4242)).toBe(false);
+    expect(seen.submitted("s1", 0, "later", 4242)).toBe(true);
+  });
+
   test("a socket event carries a fingerprint only on working, and only a well-formed one", () => {
     const base = { sessionId: "s1", label: "a", announce: "" };
     expect(validateSocketTurnEvent({ ...base, type: "working", promptDigest: promptDigest("x") }).ok).toBe(true);

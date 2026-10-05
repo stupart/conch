@@ -2,7 +2,7 @@ import { expect, test, describe } from "bun:test";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { AmbiguousSessionError, findSessionByName, findSessionBySpokenName, findSession, isEngageable, normalizeSessionLabel, registrySnapshot, setWorkingFolders, workingFolderOverrides, renameSessionLabel, sessionGoneFromSnapshot, sessionLabel, setLabelOverride } from "../src/sessions.ts";
+import { AmbiguousSessionError, findSessionByName, findSessionBySpokenName, findSession, isEngageable, processConversation, normalizeSessionLabel, registrySnapshot, setWorkingFolders, workingFolderOverrides, renameSessionLabel, sessionGoneFromSnapshot, sessionLabel, setLabelOverride } from "../src/sessions.ts";
 import { activeSessionIdForRows, buildPanelRows } from "../src/panel.ts";
 import { setVoiceOverride, voiceFor } from "../src/speak.ts";
 import { loadConfig } from "../src/config.ts";
@@ -534,5 +534,46 @@ describe("one session, two terminals", () => {
     const snap = await registrySnapshot(f.claudeDir, opts(f.claudeDir));
     expect(snap!.infos[0].name).toBe("arch site");
     rmSync(f.claudeDir, { recursive: true, force: true });
+  });
+});
+
+describe("processConversation — the conversation a process holds now, from its own registry file", () => {
+  function account(files: Record<string, unknown>): string {
+    const root = mkdtempSync(join(tmpdir(), "conch-proc-"));
+    mkdirSync(join(root, "sessions"), { recursive: true });
+    for (const [name, body] of Object.entries(files)) {
+      writeFileSync(join(root, "sessions", name), typeof body === "string" ? body : JSON.stringify(body));
+    }
+    return root;
+  }
+
+  test("names the id the process's file names now, in whichever account has it", async () => {
+    const first = account({ "111.json": { pid: 111, sessionId: "other" } });
+    const second = account({ "94777.json": { pid: 94777, sessionId: "s2", kind: "interactive" } });
+    try {
+      expect(await processConversation([first, second], 94777)).toEqual({ sessionId: "s2" });
+      expect(await processConversation([first, second], 111)).toEqual({ sessionId: "other" });
+    } finally {
+      rmSync(first, { recursive: true, force: true });
+      rmSync(second, { recursive: true, force: true });
+    }
+  });
+
+  test("says a window is parked on a job: its id is its own from before it parked", async () => {
+    const root = account({ "94777.json": { pid: 94777, sessionId: "2f266f8d", parkedJobId: "25d17f50" } });
+    try {
+      expect(await processConversation([root], 94777)).toEqual({ sessionId: "2f266f8d", parkedJobId: "25d17f50" });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("no file, a torn one, one for another pid, or no pid at all: nothing", async () => {
+    const root = account({ "5.json": '{"pid":5,"sessionId":"s', "6.json": { pid: 7, sessionId: "s7" } });
+    try {
+      expect(await processConversation([root], 4)).toBeUndefined();
+      expect(await processConversation([root], 5)).toBeUndefined();
+      expect(await processConversation([root], 6)).toBeUndefined();
+      expect(await processConversation([root], 0)).toBeUndefined();
+      expect(await processConversation([], 5)).toBeUndefined();
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });

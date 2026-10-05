@@ -169,6 +169,8 @@ interface Options {
   promptSubmitted?: VoiceLoopDeps["promptSubmitted"];
   /** Where a session's transcript is now, looked up again. */
   transcriptFor?: VoiceLoopDeps["transcriptFor"];
+  /** The conversation a process holds now, by its registry file; absent means a send watches only the id it addressed. */
+  processConversation?: VoiceLoopDeps["processConversation"];
   /** A real terminal in place of the recording one, and real waits: the end-to-end tests over tmux. */
   terminal?: VoiceLoopDeps["terminal"];
   realTime?: boolean;
@@ -298,6 +300,7 @@ function harness(options: Options = {}) {
     ...(options.accessibilityTrusted === undefined ? {} : { accessibilityTrusted: () => options.accessibilityTrusted! }),
     ...(options.promptSubmitted ? { promptSubmitted: options.promptSubmitted } : {}),
     ...(options.transcriptFor ? { transcriptFor: options.transcriptFor } : {}),
+    ...(options.processConversation ? { processConversation: options.processConversation } : {}),
     terminal: options.terminal ?? {
       injectText: async (_cfg, pid, text, beforeInject) => {
         texts.push(text);
@@ -819,6 +822,190 @@ describe("a first message to a new session is confirmed by the agent, never by i
       expect(codeOf(events)?.code).toBe("transcript-advanced");
       expect(h.keys).toEqual([]);
     } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
+  });
+});
+
+/**
+ * 2026-10-05, Tyler: "just had a message say it failed to send but it worked". The words went in, and the
+ * conversation that took them was not the one conch was watching: the session's count never moved, the hook's
+ * report came in under another id, so three Returns later conch called it lost and put the words on the
+ * clipboard. A process that starts a new conversation keeps its pid and its terminal, so the evidence for a
+ * send is looked for in that process, by the same words, since the send began.
+ */
+describe("words a process took into a new conversation are delivered, not lost", () => {
+  const P = 94777;
+  const words = "do we have a dev server running or its off now? also is the metadata right for the prime page?";
+  const row = () => ({ sessionId: "s1", backend: "claude", status: "idle", pid: P }) as SessionInfo;
+  const screenWith = (box: string) => [
+    "─────────────────────────────────────────── alpha ─", `❯ ${box}`,
+    "────────────────────────────────────────────────────", "  ⏵⏵ bypass permissions on",
+  ].join("\n");
+  const codeOf = (events: RecordObservation[]) => events.filter(({ kind }) => kind === "delivery").at(-1);
+  /** The session's transcript as conch counts it: one older prompt, and it never moves. */
+  const counted = () => transcript(user({ type: "text", text: "prior" }));
+  const send = (path: string) => inject(words, { transcriptPath: path, pid: P });
+  const promptRecord = (text: string) =>
+    JSON.stringify({ type: "user", timestamp: new Date().toISOString(), message: { role: "user", content: text } }) + "\n";
+
+  test("the hook's report under the new id, from the process typed at, confirms it: no Return again, nothing on the clipboard", async () => {
+    const path = counted();
+    const before = readFileSync(path, "utf8");
+    const seen = new PromptSubmissions();
+    const events: RecordObservation[] = [];
+    try {
+      const h = harness({
+        window: row,
+        observeRecords: (event) => events.push(event),
+        promptSubmitted: (id, since, said, pid) => seen.submitted(id, since, said, pid),
+        // Typed, and the process takes the words into a conversation it started as they arrived: s2, same pid.
+        inject: (text) => { seen.note("s2", promptDigest(text), Date.now(), P); return { via: "osascript-focused" }; },
+      });
+      expect(await h.voice.handle(send(path))).toBe(true);
+      expect(codeOf(events)).toMatchObject({ state: "delivered", code: "transcript-advanced" });
+      expect(h.textPids).toEqual([P]);
+      expect(h.keys).toEqual([]);
+      expect(h.clipboard).toEqual([]);
+      expect(h.errors).toEqual([]);
+      expect(h.said.some((line) => line.includes("didn't send"))).toBe(false);
+      expect(readFileSync(path, "utf8")).toBe(before);
+    } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
+  });
+
+  test("a report that arrives while the box is read stops the Return meant for words already taken", async () => {
+    const path = counted();
+    const seen = new PromptSubmissions();
+    try {
+      const h = harness({
+        window: row,
+        promptSubmitted: (id, since, said, pid) => seen.submitted(id, since, said, pid),
+        inject: () => ({ via: "osascript-focused" }),
+        // The box still shows the words when it is read, and the hook's report lands just then.
+        screen: () => { seen.note("s2", promptDigest(words), Date.now(), P); return screenWith(words); },
+      });
+      expect(await h.voice.handle(send(path))).toBe(true);
+      expect(h.keys).toEqual([]);
+      expect(h.clipboard).toEqual([]);
+    } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
+  });
+
+  test("the same words from another process are not this send's evidence", async () => {
+    const path = counted();
+    const seen = new PromptSubmissions();
+    const events: RecordObservation[] = [];
+    try {
+      const h = harness({
+        window: row,
+        observeRecords: (event) => events.push(event),
+        promptSubmitted: (id, since, said, pid) => seen.submitted(id, since, said, pid),
+        inject: (text) => { seen.note("s2", promptDigest(text), Date.now(), 5151); return { via: "osascript-focused" }; },
+      });
+      expect(await h.voice.handle(send(path))).toEqual({ delivered: false, reason: "delivery-unconfirmed", onClipboard: true });
+      expect(codeOf(events)).toMatchObject({ state: "unknown", code: "delivery-unconfirmed" });
+      expect(h.keys).toEqual(["Enter", "Enter"]);
+      expect(h.clipboard).toEqual([words]);
+    } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
+  });
+
+  test("with no hook, the new conversation's transcript in the same process confirms it", async () => {
+    const path = counted();
+    const before = readFileSync(path, "utf8");
+    const fresh = join(mkdtempSync(join(tmpdir(), "conch-new-conversation-")), "s2.jsonl");
+    const events: RecordObservation[] = [];
+    const asked: number[] = [];
+    try {
+      const h = harness({
+        window: row,
+        observeRecords: (event) => events.push(event),
+        promptSubmitted: () => false,
+        // The process's registry file names the conversation it started: s2.
+        processConversation: async (pid) => { asked.push(pid); return pid === P ? { sessionId: "s2" } : undefined; },
+        transcriptFor: (id) => (id === "s2" ? fresh : undefined),
+        // Claude Code writes the new conversation's file with its first prompt, which is these words.
+        inject: (text) => { writeFileSync(fresh, promptRecord(text)); return { via: "osascript-focused" }; },
+      });
+      expect(await h.voice.handle(send(path))).toBe(true);
+      expect(codeOf(events)).toMatchObject({ state: "delivered", code: "transcript-advanced" });
+      expect(new Set(asked)).toEqual(new Set([P]));
+      expect(h.keys).toEqual([]);
+      expect(h.clipboard).toEqual([]);
+      expect(readFileSync(path, "utf8")).toBe(before);
+    } finally {
+      rmSync(join(path, ".."), { recursive: true, force: true });
+      rmSync(join(fresh, ".."), { recursive: true, force: true });
+    }
+  });
+
+  test("another conversation's transcript is evidence only for its own process, and only with these words' opening", async () => {
+    for (const scenario of [
+      // The process typed at still holds s1; s2, whose transcript has the words, is another process's.
+      { holds: (pid: number) => (pid === 5151 ? { sessionId: "s2" } : { sessionId: "s1" }), recorded: words },
+      // The process did start s2, but s2's prompt is not these words.
+      { holds: () => ({ sessionId: "s2" }), recorded: "something else entirely, typed by hand" },
+      // A tail of the words is not the words (#506).
+      { holds: () => ({ sessionId: "s2" }), recorded: words.slice(-30) },
+    ]) {
+      const path = counted();
+      const fresh = join(mkdtempSync(join(tmpdir(), "conch-new-conversation-")), "s2.jsonl");
+      const events: RecordObservation[] = [];
+      try {
+        const h = harness({
+          window: row,
+          observeRecords: (event) => events.push(event),
+          promptSubmitted: () => false,
+          processConversation: async (pid) => scenario.holds(pid),
+          transcriptFor: (id) => (id === "s2" ? fresh : undefined),
+          inject: () => { writeFileSync(fresh, promptRecord(scenario.recorded)); return { via: "osascript-focused" }; },
+        });
+        expect(await h.voice.handle(send(path))).toEqual({ delivered: false, reason: "delivery-unconfirmed", onClipboard: true });
+        expect(codeOf(events)).toMatchObject({ state: "unknown", code: "delivery-unconfirmed" });
+      } finally {
+        rmSync(join(path, ".."), { recursive: true, force: true });
+        rmSync(join(fresh, ".."), { recursive: true, force: true });
+      }
+    }
+  });
+
+  test("a window parked on this row's job still names its old id: that is not a new conversation to read", async () => {
+    const path = counted();
+    const looked: string[] = [];
+    try {
+      const h = harness({
+        window: () => ({ ...row(), sessionId: "25d17f50", jobId: "25d17f50", kind: "bg" }) as SessionInfo,
+        promptSubmitted: () => false,
+        processConversation: async () => ({ sessionId: "2f266f8d", parkedJobId: "25d17f50" }),
+        transcriptFor: (id) => { looked.push(id); return undefined; },
+        inject: () => ({ via: "osascript-focused" }),
+      });
+      await h.voice.handle(inject(words, { sessionId: "25d17f50", transcriptPath: path, pid: P }));
+      expect(looked).not.toContain("2f266f8d");
+    } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
+  });
+
+  test("a first prompt is confirmed the same way: by the process's report under another id", async () => {
+    const seen = new PromptSubmissions();
+    const events: RecordObservation[] = [];
+    const h = harness({
+      window: row,
+      observeRecords: (event) => events.push(event),
+      promptSubmitted: (id, since, said, pid) => seen.submitted(id, since, said, pid),
+      inject: (text) => { seen.note("s2", promptDigest(text), Date.now(), P); return { via: "tmux" }; },
+    });
+    expect(await h.voice.handle(inject(words, { pid: P }))).toBe(true);
+    expect(codeOf(events)).toMatchObject({ state: "delivered", code: "prompt-hook-confirmed" });
+    expect(h.keys).toEqual([]);
+  });
+
+  test("a first prompt's Return is not pressed again once the words were taken while the box was read", async () => {
+    const seen = new PromptSubmissions();
+    const h = harness({
+      window: row,
+      promptSubmitted: (id, since, said, pid) => seen.submitted(id, since, said, pid),
+      inject: () => ({ via: "tmux" }),
+      screen: () => { seen.note("s2", promptDigest(words), Date.now(), P); return screenWith(words); },
+    });
+    expect(await h.voice.handle(inject(words, { pid: P }))).toBe(true);
+    expect(h.keys).toEqual([]);
+    expect(h.clipboard).toEqual([]);
   });
 });
 
