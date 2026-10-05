@@ -115,16 +115,21 @@ final class LagoonIntentTests: XCTestCase {
         XCTAssertEqual(LagoonActionFlags(defaultsValue: nil).on, [])
         XCTAssertEqual(LagoonActionFlags(defaultsValue: ["focusSession": true, "reply": false, "pause": NSNumber(value: true)]).on, [.focusSession, .pause])
         XCTAssertEqual(LagoonActionFlags(defaultsValue: ["openReview", "answer", "bogus"]).on, [.openReview, .answer])
-        XCTAssertEqual(LagoonActionFlags(defaultsValue: "focusSession, reply").on, [.focusSession, .reply])
-        // Names with no flag can't be switched on: newSession has no action, and approve and unapprove need none.
-        XCTAssertEqual(LagoonActionFlags(defaultsValue: ["approve", "unapprove", "newSession", "ready"]).on, [])
+        XCTAssertEqual(LagoonActionFlags(defaultsValue: "focusSession, pause").on, [.focusSession, .pause])
+        // Names with no flag can't be switched on: newSession has no action, and approve, unapprove and (since
+        // 2026-10-05) reply need none.
+        XCTAssertEqual(LagoonActionFlags(defaultsValue: ["approve", "unapprove", "reply", "newSession", "ready"]).on, [])
+        XCTAssertEqual(LagoonActionFlags(defaultsValue: "focusSession, reply").on, [.focusSession])
         XCTAssertEqual(LagoonActionFlags(defaultsValue: 1).on, [])
     }
 
     func testThePageIsReadOnlyUntilAPhaseCNameIsOn() {
         XCTAssertTrue(LagoonActionFlags().pageReadOnly)
         XCTAssertTrue(LagoonActionFlags([.focusSession, .openReview]).pageReadOnly)
-        XCTAssertFalse(LagoonActionFlags([.reply]).pageReadOnly)
+        XCTAssertFalse(LagoonActionFlags([.answer]).pageReadOnly)
+        XCTAssertFalse(LagoonActionFlags([.pause]).pageReadOnly)
+        // A reply is no flag's: it acts read-only or not, and asking for it changes nothing about the page.
+        XCTAssertTrue(LagoonActionFlags([.reply]).pageReadOnly)
     }
 
     // MARK: The gating
@@ -156,28 +161,59 @@ final class LagoonIntentTests: XCTestCase {
         ].compactMap { accepted($0) }
     }
 
-    /// Phase A: with no flag set, nothing acts except approving a result and taking it back (2026-10-05, Tyler's
-    /// decision: a harmless state change that reaches no agent, OK'd ahead of phases B and C).
-    func testPhaseAOnlyApproveAndUnapproveAct() {
+    /// Phase A: with no flag set, nothing acts except approving a result, taking it back (2026-10-05, Tyler's decision)
+    /// and replying to a session (2026-10-05, Tyler's go, replies only). Answering a permission prompt, pausing, focusing
+    /// and opening stay logged behind their flags.
+    func testPhaseAOnlyApproveUnapproveAndReplyAct() {
         let recorder = Recorder()
         let messages = everyMessage
         XCTAssertEqual(messages.count, 10)
         let routed = messages.map { LagoonIntentRouter.route($0, flags: LagoonActionFlags(), sink: recorder) }
-        XCTAssertEqual(routed, [.ready, .logged, .logged, .logged, .logged, .logged, .logged, .acted, .acted, .logged])
-        XCTAssertEqual(recorder.calls, ["approve s1 r1", "unapprove s1 r1"], "nothing else reaches an agent, or the app")
-        XCTAssertEqual(LagoonIntent.byDefault, [.approve, .unapprove])
+        XCTAssertEqual(routed, [.ready, .logged, .logged, .logged, .acted, .logged, .logged, .acted, .acted, .logged])
+        XCTAssertEqual(recorder.calls, ["reply s1 hi", "approve s1 r1", "unapprove s1 r1"], "nothing else reaches an agent, or the app")
+        XCTAssertEqual(LagoonIntent.byDefault, [.approve, .unapprove, .reply])
+        XCTAssertEqual(LagoonIntent.byDefaultInOrder, [.approve, .unapprove, .reply])
+        XCTAssertEqual(LagoonIntent.phaseC, [.answer, .pause])
         XCTAssertTrue(LagoonIntent.byDefault.isDisjoint(with: LagoonIntent.phaseB.union(LagoonIntent.phaseC)))
-        // Acting by default leaves the page read-only: no phase C name is on.
+        // Acting by default leaves the page read-only: no phase C name is on, and `act=` says which are live.
         XCTAssertTrue(LagoonActionFlags().pageReadOnly)
     }
 
-    /// One flag on: that name acts, approve and unapprove act as they always do, and nothing else does.
+    /// A reply acts from a page in its read-only phase, as approve and unapprove do: the page's `act=reply` told it to send
+    /// for real. The brand page sends it with no `readOnly` (conch-design 011fea3); one that says `readOnly: true` acts too.
+    func testAReplyActsFromAReadOnlyPage() {
+        let recorder = Recorder()
+        let live = accepted(["v": 1, "name": "reply", "sessionId": "s1", "text": "ship it"])!
+        XCTAssertFalse(live.readOnly)
+        XCTAssertEqual(LagoonIntentRouter.route(live, flags: LagoonActionFlags(), sink: recorder), .acted)
+        let flagged = accepted(["v": 1, "name": "reply", "sessionId": "s2", "text": "and this", "readOnly": true])!
+        XCTAssertTrue(flagged.readOnly)
+        XCTAssertEqual(LagoonIntentRouter.route(flagged, flags: LagoonActionFlags(), sink: recorder), .acted)
+        XCTAssertEqual(recorder.calls, ["reply s1 ship it", "reply s2 and this"])
+        // Answering a permission prompt and pausing still carry `readOnly: true` from that page, and only log.
+        let answer = accepted(["v": 1, "name": "answer", "sessionId": "s1", "choice": "Once", "approval": ["kind": "once", "id": "p1"], "readOnly": true])!
+        let pause = accepted(["v": 1, "name": "pause", "sessionId": "s1", "readOnly": true])!
+        XCTAssertEqual(LagoonIntentRouter.route(answer, flags: LagoonActionFlags(), sink: recorder), .logged)
+        XCTAssertEqual(LagoonIntentRouter.route(pause, flags: LagoonActionFlags(), sink: recorder), .logged)
+        XCTAssertEqual(recorder.calls.count, 2)
+        // Still checked first: no session, a session not in the state, too long, or blank, and nothing is sent.
+        for refusedBody in [
+            ["v": 1, "name": "reply", "text": "hi"],
+            ["v": 1, "name": "reply", "sessionId": "gone", "text": "hi"],
+            ["v": 1, "name": "reply", "sessionId": "s1", "text": String(repeating: "a", count: 4_001)],
+            ["v": 1, "name": "reply", "sessionId": "s1", "text": "  "],
+        ] as [[String: Any]] {
+            refused(refusedBody)
+        }
+    }
+
+    /// One flag on: that name acts, approve, unapprove and reply act as they always do, and nothing else does.
     func testWithOneFlagOnOnlyThatNameActs() {
-        let always = ["approve s1 r1", "unapprove s1 r1"]
+        let always = ["reply s1 hi", "approve s1 r1", "unapprove s1 r1"]
         let expected: [LagoonIntent.Name: [String]] = [
             .focusSession: ["focus s1"],
             .openReview: ["viewed s1 r1", "open s1 r2"],
-            .reply: ["reply s1 hi"],
+            .reply: [],
             .answer: ["answer s1 false p1"],
             .pause: ["pause s2"],
             .approve: [],

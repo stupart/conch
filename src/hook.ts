@@ -92,6 +92,8 @@ export interface TurnEvent {
    * `linkRefused` says, to the person, why a link the marker gave was not published
    * (`linkRefusalNote`); it travels only when the hook dropped one. `roots` is never sent (the
    * socket refuses it): the daemon sets it on what it files (voice-loop `filedRoots`).
+   * `approval` says the agent is waiting on the person's yes, and what a yes does (`label`): only
+   * on `review-published`, from `review_to_front` (review-approval.ts `checkApprovalRequest`).
    */
   review?: {
     summary: string;
@@ -102,6 +104,7 @@ export interface TurnEvent {
     focus?: string[];
     linkRefused?: string;
     roots?: string[];
+    approval?: { label?: string };
   };
   /**
    * The tool a permission dialog is waiting on (B5). Attached by the daemon

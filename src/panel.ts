@@ -358,6 +358,9 @@ export interface PublishedSessionRow {
     viewedAt?: number;
     /** When it was approved, which marks it done (`SessionReview.approvedAt`); absent means it wasn't. Older apps ignore it. */
     approvedAt?: number;
+    /** Its agent asked for your yes (`SessionReview.asksApproval`), and what a yes does (`approvalLabel`). Only these offer Approve. */
+    asksApproval?: true;
+    approvalLabel?: string;
     /** Which artifact, which version of it, and what kind of thing (`SessionReview`). Absent from an older daemon. */
     artifact?: string;
     version?: number;
@@ -381,7 +384,7 @@ export interface PublishedSessionRow {
    */
   reviews?: Array<{
     summary: string; link?: string; scene?: ReviewScene; at?: number; id?: string; viewedAt?: number; approvedAt?: number;
-    artifact?: string; version?: number; kind?: DeliverableKind; preview?: ReviewPreview; focus?: string[];
+    asksApproval?: true; approvalLabel?: string; artifact?: string; version?: number; kind?: DeliverableKind; preview?: ReviewPreview; focus?: string[];
     linkRefused?: string; roots?: string[]; snapshot?: ReviewSnapshot; access?: ReviewAccess;
   }>;
 }
@@ -634,7 +637,7 @@ export function panelReplyText(
  */
 function publishedDeliverableFacts(
   review: SessionReview,
-): Pick<SessionReview, "artifact" | "version" | "kind" | "preview" | "focus" | "linkRefused" | "roots" | "snapshot" | "access"> {
+): Pick<SessionReview, "artifact" | "version" | "kind" | "preview" | "focus" | "linkRefused" | "roots" | "snapshot" | "access" | "asksApproval" | "approvalLabel"> {
   return {
     ...(review.artifact ? { artifact: review.artifact } : {}),
     ...(review.version !== undefined ? { version: review.version } : {}),
@@ -648,6 +651,9 @@ function publishedDeliverableFacts(
     // The Mac's picture of a page, which the phone shows first, and whether either device was shown a sign-in page.
     ...(review.snapshot ? { snapshot: { ...review.snapshot } } : {}),
     ...(review.access ? { access: { ...review.access } } : {}),
+    // Its agent asked for your yes, and what a yes does (2026-10-05): the names agreed with the lagoon. Only these offer
+    // Approve.
+    ...(review.asksApproval ? { asksApproval: true as const, ...(review.approvalLabel ? { approvalLabel: review.approvalLabel } : {}) } : {}),
   };
 }
 
@@ -1158,11 +1164,23 @@ export interface SessionReview {
    * When you approved it, epoch-ms; absent means you haven't (`approveReview`).
    *
    * 2026-10-05, Tyler's decision: approving a result marks it done. It leaves the review queue (it is no longer ready
-   * for you, on any surface), earns one piece of sea glass (`SessionLedger.seaGlass`), and sends the agent nothing.
+   * for you, on any surface) and earns one piece of sea glass (`SessionLedger.seaGlass`).
    * On the record, like `viewedAt`, so it outlives a restart and is the same answer on the Mac, the phone and the
    * lagoon.
+   *
+   * Since 2026-10-05 (later the same day), only a result whose agent asked can be approved (`asksApproval`), and
+   * approving it tells the agent (review-approval.ts).
    */
   approvedAt?: number;
+  /**
+   * Its agent is waiting on your yes to go on (`review_to_front`'s `approval`): only such a result offers Approve, and
+   * approving it sends the session `Approved: <label>.` once the undo window closes (review-approval.ts). 2026-10-05,
+   * Tyler, after using #502: "I don't really get the point of the approve button... maybe we only show it if the AI sets
+   * some sort of flag in the review that it's asking for me to approve some work?" Absent on everything else.
+   */
+  asksApproval?: true;
+  /** What approving does, in the agent's words ("Open the PR"), at most 40 characters; only with `asksApproval`. */
+  approvalLabel?: string;
   /** What kind of thing it is (`deliverables.ts`), and whether the agent said so or conch read it off the link. */
   kind?: DeliverableKind;
   kindSource?: DeliverableKindSource;
@@ -1269,6 +1287,8 @@ export function fileReview(
     focus?: string[];
     linkRefused?: string;
     roots?: string[];
+    /** The agent is waiting on your yes (`review_to_front`'s `approval`), checked before it gets here. */
+    approval?: { label?: string };
   },
   at: number,
   held: readonly SessionReview[] | undefined,
@@ -1288,6 +1308,7 @@ export function fileReview(
     ...(review.focus?.length ? { focus: [...review.focus] } : {}),
     ...(review.linkRefused && !review.link ? { linkRefused: review.linkRefused } : {}),
     ...(review.roots?.length ? { roots: [...review.roots] } : {}),
+    ...(review.approval ? { asksApproval: true as const, ...(review.approval.label ? { approvalLabel: review.approval.label } : {}) } : {}),
   };
 }
 
@@ -1323,7 +1344,8 @@ export function reviewReady(row: {
 
 /**
  * How long an approval can be taken back (`unapproveReview`): the Mac's ⌘Z and the lagoon's Undo toast. Past it, an
- * approval stands and its sea glass is kept. 2026-10-05, Tyler's decision.
+ * approval stands and its sea glass is kept. 2026-10-05, Tyler's decision. It is also how long the daemon holds the
+ * `Approved: …` message before the agent is sent it (review-approval.ts), so an undo inside it reaches nobody.
  */
 export const UNAPPROVE_WINDOW_MS = 10_000;
 

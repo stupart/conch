@@ -75,6 +75,9 @@ extension LagoonSnapshot.Source.Review {
             at: review.at,
             viewedAt: review.viewedAt,
             approvedAt: review.approvedAt,
+            // Its agent asked for your yes, and what a yes does (2026-10-05): the lagoon offers Approve only then.
+            asksApproval: review.asksApproval,
+            approvalLabel: review.approvalLabel,
             version: review.version,
             hasScene: review.hasScene,
             targetKind: review.sceneKind,

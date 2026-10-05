@@ -42,14 +42,15 @@ final class Recorder {
     }
 }
 
-/// The sink phase A reaches only to approve a result or take it back (`LagoonIntent.byDefault`, 2026-10-05).
+/// The sink phase A reaches only to approve a result, take it back, or reply to a session (`LagoonIntent.byDefault`,
+/// 2026-10-05).
 @MainActor
 final class Sink: LagoonActionSink {
     var calls: [String] = []
     func focusSession(_ sessionId: String) { calls.append("focusSession") }
     func markReviewViewed(sessionId: String, reviewId: String) { calls.append("markReviewViewed") }
     func openReview(sessionId: String, reviewId: String) { calls.append("openReview") }
-    func reply(sessionId: String, text: String) { calls.append("reply") }
+    func reply(sessionId: String, text: String) { calls.append("reply \(sessionId) \(text)") }
     func answer(sessionId: String, allow: Bool, approvalId: String) { calls.append("answer") }
     func pause(sessionId: String) { calls.append("pause") }
     func approveReview(sessionId: String, reviewId: String) { calls.append("approveReview \(sessionId) \(reviewId)") }
@@ -202,12 +203,14 @@ func page(bundle: URL, statePath: String, out: URL, kind: String) async {
         Line.print("post", ["status": post ?? NSNull()])
 
         // What the page says: checked, logged, and in phase A acted on by nothing, not even a valid one, but approving a
-        // result and taking it back (2026-10-05), which act with no flag; one for a review the session doesn't hold doesn't.
+        // result, taking it back and replying (2026-10-05), which act with no flag; one for a review the session doesn't
+        // hold doesn't.
         let before = recorder.reports.count
         let noWindow = await js(web, """
             const h = window.webkit.messageHandlers.conchWorld;
             h.postMessage({ v: 1, name: 'focusSession', sessionId: id, readOnly: true });
-            h.postMessage({ v: 1, name: 'reply', sessionId: id, text: 'hello', readOnly: true });
+            // As the brand page sends a live reply (conch-design 011fea3): with no `readOnly`, `act=reply` having told it to.
+            h.postMessage({ v: 1, name: 'reply', sessionId: id, text: 'hello' });
             h.postMessage({ v: 1, name: 'pause', sessionId: id, readOnly: true });
             h.postMessage({ v: 1, name: 'approve', sessionId: id, reviewId: 'r-page', readOnly: true });
             h.postMessage({ v: 1, name: 'unapprove', sessionId: id, reviewId: 'r-page', readOnly: true });

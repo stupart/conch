@@ -22,8 +22,9 @@ import { theaterStatusHeader } from "../src/status.ts";
 
 /**
  * Approving a published result (2026-10-05, Tyler's decision): it is done, so it leaves the review queue on every
- * surface; it earns one piece of sea glass; and the agent is sent nothing. Idempotent; undoable within 10 s and not
- * after; on the record, so it outlives a restart.
+ * surface; it earns one piece of sea glass. Idempotent; undoable within 10 s and not after; on the record, so it
+ * outlives a restart. Since later that day only a result whose agent asked can be approved, and approving tells the
+ * agent (test/approve-when-asked.test.ts): these deliverables asked, unless a test says otherwise.
  */
 
 const held = (id: string, at: number, extra: Partial<SessionReview> = {}): SessionReview => ({
@@ -31,6 +32,7 @@ const held = (id: string, at: number, extra: Partial<SessionReview> = {}): Sessi
   link: `https://example.test/${id}`,
   at,
   id,
+  asksApproval: true,
   ...extra,
 });
 

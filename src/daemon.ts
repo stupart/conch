@@ -268,6 +268,7 @@ import {
 } from "./session-ledger.ts";
 export { TurnEventOrder } from "./session-ledger.ts";
 import { EventQueue } from "./event-queue.ts";
+import { approvedInjectEvent, HeldApprovalMessages, heldDeliverable, reviewApprovalActions } from "./review-approval.ts";
 export { insertQueuedEvent, takeNextQueuedEvent } from "./event-queue.ts";
 import {
   activeSessionIdForRows,
@@ -276,6 +277,7 @@ import {
   buildPublishedState,
   markReviewViewed,
   attachReviewAccess,
+  UNAPPROVE_WINDOW_MS,
   attachReviewPreview,
   panelReplyText,
   numberPanelSessionRows,
@@ -2667,6 +2669,51 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     log(`restarted "${labelForSessionId(sessionId)}"${relaunch.notCarriedOver.length ? ` without ${relaunch.notCarriedOver.join(", ")}` : ""}`);
     return { notCarriedOver: relaunch.notCarriedOver };
   };
+  // 2026-10-05, Tyler, after using #502: "I don't really get the point of the approve button... maybe we only show it if
+  // the AI sets some sort of flag in the review that it's asking for me to approve some work?" So Approve is offered
+  // only on a result whose agent asked (`asksApproval`), and approving it tells that agent: once the 10 s undo window
+  // has closed, `Approved: <label>.` goes to its session as the composer's own send does (`inject`, so voice-loop
+  // `deliverToSession`, confirmed by the agent's own evidence, and back to the draft if it can't land). The DAEMON holds
+  // it, so closing the app inside the window still sends it; a daemon restart inside the window drops it
+  // (review-approval.ts), and the approval itself stays.
+  const sendApprovalMessage = (sessionId: string, text: string): void => {
+    const session = panelSessions.get(sessionId);
+    const label = labelForSessionId(sessionId);
+    if (!session || dismissedSessionIds.has(sessionId)) {
+      log(`approved a deliverable of "${label}", but its session ${session ? "is dismissed" : "has ended"}, so its agent wasn't told`);
+      recordDaemonError("approval-message", "Approved, but conch couldn't tell the agent: its session is no longer here.", sessionId);
+      return;
+    }
+    const sent = enqueue(approvedInjectEvent({
+      sessionId: session.sessionId,
+      cwd: session.cwd,
+      pid: session.pid,
+      transcriptPath: session.transcriptPath ?? findTranscript(cfg.claudeDir, session.sessionId),
+    }, label, text));
+    void Promise.resolve(sent).then((outcome) => {
+      const how = outcome === true ? "delivered" : outcome === "staged" ? "left in its input box"
+        : typeof outcome === "object" && outcome && "reason" in outcome && outcome.reason ? `not delivered (${outcome.reason})` : "not delivered";
+      log(`told "${label}" its result was approved: ${how}`);
+    });
+  };
+  const heldApprovals = new HeldApprovalMessages({
+    holdMs: UNAPPROVE_WINDOW_MS,
+    deliver: sendApprovalMessage,
+    // An undo that somehow missed the cancel: still approved, at the time it was held for. One no longer held (removed,
+    // or its session gone) is sent on, and the send finds out whether there is anyone to tell.
+    stillApproved: (sessionId, review, approvedAt) => {
+      const filed = heldDeliverable(ledger.sessionStates.get(sessionId), review);
+      return filed === undefined || filed.approvedAt === approvedAt;
+    },
+    log,
+  });
+  const reviewApprovals = reviewApprovalActions({
+    ledger,
+    held: heldApprovals,
+    now: () => Date.now(),
+    log,
+    changed: () => void renderSessionPanel(),
+  });
   const sessionActions: SessionActionsController = {
     voiceCandidates: () => availableVoiceRing(cfg),
     effectiveVoice: (target) => voiceFor(cfg, target.label),
@@ -2761,24 +2808,10 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       void renderSessionPanel();
       return true;
     },
-    // 2026-10-05, Tyler's decision: approving marks a result done and earns a piece of sea glass. Nothing is typed into
-    // the session and nothing is said: it is the reader's bookkeeping, not a message to the agent.
-    approveReview: (target, review) => {
-      const outcome = ledger.approveDeliverable(target.sessionId, review, Date.now());
-      if (outcome.ok && outcome.changed) {
-        log(`approved a deliverable of "${target.label}" (sea glass: ${ledger.seaGlass})`);
-        void renderSessionPanel();
-      }
-      return outcome;
-    },
-    unapproveReview: (target, review) => {
-      const outcome = ledger.unapproveDeliverable(target.sessionId, review, Date.now());
-      if (outcome.ok && outcome.changed) {
-        log(`took back the approval of a deliverable of "${target.label}" (sea glass: ${ledger.seaGlass})`);
-        void renderSessionPanel();
-      }
-      return outcome;
-    },
+    // Approving marks a result done and earns a piece of sea glass (#502), only for one its agent asked about, and holds
+    // `Approved: …` for its agent for the undo window (`reviewApprovals`, above). Undo inside it cancels that message.
+    approveReview: (target, review) => reviewApprovals.approve(target, review),
+    unapproveReview: (target, review) => reviewApprovals.unapprove(target, review),
     dismiss: (target) => {
       dismissedSessionIds.add(target.sessionId);
       saveDismissed(dismissedSessionIds);
@@ -3446,6 +3479,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     shuttingDown = true;
     // The practice session and its card go with the daemon: nothing of it is left for the next one.
     practice?.stop("conch is closing");
+    // An approval inside its undo window reaches nobody now: said in the log (review-approval.ts).
+    heldApprovals.dropAll("conch is closing");
     // An agent's installer still running goes too, its whole process group: nothing is left installing unwatched.
     setup.close();
     panelRefresh.close();

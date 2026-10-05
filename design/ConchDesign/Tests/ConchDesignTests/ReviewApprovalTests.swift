@@ -2,19 +2,57 @@ import XCTest
 @testable import ConchDesign
 
 /// Approving a result (ReviewApproval.swift, 2026-10-05, Tyler's decision): the session bar's control, its words at
-/// every width, ⌘Z's ten seconds, and when Return approves.
+/// every width, ⌘Z's ten seconds, and when Return approves. Since later that day, only for a result whose agent asked
+/// (Tyler, after using #502: "maybe we only show it if the AI sets some sort of flag in the review that it's asking for
+/// me to approve some work?"), and in the agent's own words.
 final class ReviewApprovalTests: XCTestCase {
+    private func control(showing: Bool = true, daemon: Bool = true, asks: Bool = true, approvedAt: Double? = nil,
+                         confirming: Bool = false) -> ReviewApproval.Control {
+        ReviewApproval.control(showing: showing, daemonCanApprove: daemon, asksApproval: asks, approvedAt: approvedAt,
+                               confirming: confirming)
+    }
+
     func testTheControlShowsOnlyForAnUnapprovedResultFromADaemonThatCanApprove() {
-        XCTAssertEqual(ReviewApproval.control(showing: true, daemonCanApprove: true, approvedAt: nil, confirming: false), .approve)
+        XCTAssertEqual(control(), .approve)
         // Approved already (here, on the phone, in the lagoon): nothing to offer.
-        XCTAssertEqual(ReviewApproval.control(showing: true, daemonCanApprove: true, approvedAt: 5, confirming: false), .hidden)
+        XCTAssertEqual(control(approvedAt: 5), .hidden)
         // Just approved here: it says so for a moment, whatever the daemon has said back yet.
-        XCTAssertEqual(ReviewApproval.control(showing: true, daemonCanApprove: true, approvedAt: 5, confirming: true), .approved)
-        XCTAssertEqual(ReviewApproval.control(showing: true, daemonCanApprove: true, approvedAt: nil, confirming: true), .approved)
+        XCTAssertEqual(control(approvedAt: 5, confirming: true), .approved)
+        XCTAssertEqual(control(confirming: true), .approved)
         // No result in the pane, or a daemon too old to approve: never.
-        XCTAssertEqual(ReviewApproval.control(showing: false, daemonCanApprove: true, approvedAt: nil, confirming: false), .hidden)
-        XCTAssertEqual(ReviewApproval.control(showing: true, daemonCanApprove: false, approvedAt: nil, confirming: false), .hidden)
-        XCTAssertEqual(ReviewApproval.control(showing: true, daemonCanApprove: false, approvedAt: nil, confirming: true), .hidden)
+        XCTAssertEqual(control(showing: false), .hidden)
+        XCTAssertEqual(control(daemon: false), .hidden)
+        XCTAssertEqual(control(daemon: false, confirming: true), .hidden)
+    }
+
+    /// No request, no button: the result leaves Ready for you by being looked at, as before #502.
+    func testWithNoRequestThereIsNoControl() {
+        XCTAssertEqual(control(asks: false), .hidden)
+        XCTAssertEqual(control(asks: false, confirming: true), .hidden)
+        XCTAssertEqual(control(asks: false, approvedAt: 5), .hidden)
+        XCTAssertNil(ReviewApproval.label(control(asks: false), compact: false, approvalLabel: "Open the PR"))
+    }
+
+    /// "✓ <label>" in the agent's words, "✓ Approve" with none, the check alone when narrow, and "✓ Approved" after.
+    func testItReadsTheAgentsLabel() {
+        XCTAssertEqual(ReviewApproval.label(.approve, compact: false, approvalLabel: "Open the PR"), "✓ Open the PR")
+        XCTAssertEqual(ReviewApproval.label(.approve, compact: false, approvalLabel: "Deploy"), "✓ Deploy")
+        XCTAssertEqual(ReviewApproval.label(.approve, compact: true, approvalLabel: "Open the PR"), "✓")
+        XCTAssertEqual(ReviewApproval.label(.approved, compact: false, approvalLabel: "Open the PR"), "✓ Approved")
+        XCTAssertEqual(ReviewApproval.label(.approved, compact: true, approvalLabel: "Open the PR"), "✓")
+        // None, or nothing but space: "Approve".
+        XCTAssertEqual(ReviewApproval.label(.approve, compact: false, approvalLabel: nil), "✓ Approve")
+        XCTAssertEqual(ReviewApproval.label(.approve, compact: false, approvalLabel: "   "), "✓ Approve")
+        // Trimmed, and 1 to 40 characters or none, as the lagoon reads it: never cut, so never half of what it does.
+        XCTAssertEqual(ReviewApproval.displayLabel("  Merge \n"), "Merge")
+        XCTAssertEqual(ReviewApproval.labelLimit, 40)
+        XCTAssertEqual(ReviewApproval.displayLabel(String(repeating: "a", count: 40)), String(repeating: "a", count: 40))
+        XCTAssertEqual(ReviewApproval.displayLabel("  " + String(repeating: "a", count: 40) + " "), String(repeating: "a", count: 40))
+        XCTAssertNil(ReviewApproval.displayLabel(String(repeating: "a", count: 41)))
+        XCTAssertEqual(ReviewApproval.label(.approve, compact: false, approvalLabel: String(repeating: "b", count: 50)), "✓ Approve")
+        // Counted as JavaScript counts: an emoji is two.
+        XCTAssertNil(ReviewApproval.displayLabel(String(repeating: "🚀", count: 21)))
+        XCTAssertEqual(ReviewApproval.displayLabel(String(repeating: "🚀", count: 20)), String(repeating: "🚀", count: 20))
     }
 
     func testItCollapsesToTheCheckWhenThePaneIsNarrow() {
@@ -31,12 +69,17 @@ final class ReviewApprovalTests: XCTestCase {
         XCTAssertFalse(ReviewApproval.isCompact(headerWidth: 0))
     }
 
+    /// The tooltip names the key and says the agent hears of it; VoiceOver hears the label.
     func testItsTooltipAndVoiceOverNameTheKey() {
-        XCTAssertEqual(ReviewApproval.help(.approve), "Approve: mark this result done (↵)")
+        XCTAssertEqual(ReviewApproval.help(.approve), "Approve: tells the agent to go ahead (↵)")
+        XCTAssertEqual(ReviewApproval.help(.approve, approvalLabel: "Open the PR"), "Approve “Open the PR”: tells the agent to go ahead (↵)")
         XCTAssertTrue(ReviewApproval.help(.approved).contains("⌘Z"))
+        XCTAssertTrue(ReviewApproval.help(.approved).contains("10 seconds"))
         XCTAssertEqual(ReviewApproval.accessibilityLabel(.approve), "Approve this result")
-        XCTAssertEqual(ReviewApproval.accessibilityLabel(.approved), "Approved")
+        XCTAssertEqual(ReviewApproval.accessibilityLabel(.approve, approvalLabel: "Open the PR"), "Approve: Open the PR")
+        XCTAssertEqual(ReviewApproval.accessibilityLabel(.approved, approvalLabel: "Open the PR"), "Approved")
         XCTAssertTrue(ReviewApproval.announcement.contains("Command-Z"))
+        XCTAssertTrue(ReviewApproval.announcement.contains("The agent hears in 10 seconds"))
     }
 
     /// ⌘Z for ten seconds, the daemon's own window, and not after.

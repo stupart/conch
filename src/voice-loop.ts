@@ -43,6 +43,7 @@ import { isWindowKey } from "./window-key.ts";
 import { artifactKey, deliverableFacts, folderRefusal } from "./deliverables.ts";
 import { discardStoredCopy, storeTempDeliverable, type StoredDeliverable } from "./deliverable-store.ts";
 import { refusedVerdict, type ReviewVerdict } from "./review-verdict.ts";
+import { checkApprovalRequest } from "./review-approval.ts";
 import type { AudioSurface } from "./surfaces.ts";
 import { reviewLinkScope, rootsHolding, type LinkScope } from "./review-roots.ts";
 import { deadTarget, type DeadTarget } from "./dead-target.ts";
@@ -1165,6 +1166,13 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     if (images) return refusedVerdict(images);
     const focus = await vettedFocus(event, vetted?.folder ? vetted.link : undefined);
     if (!focus.ok) return refusedVerdict(focus.reason);
+    // Asked again here, as the link is: the socket is not only the MCP server's (review-approval.ts). Only a result its
+    // agent asked about offers Approve, and approving it tells the agent (2026-10-05).
+    const approval = event.review.approval === undefined ? undefined : checkApprovalRequest(event.review.approval, { exact: true });
+    if (approval && !approval.ok) {
+      log(`refused a deliverable's approval request from "${label}": ${approval.reason}`);
+      return refusedVerdict(approval.reason);
+    }
     const at = eventTimestamp(event.eventAt);
     // Refused before anything is copied, and asked again below: something may file meanwhile.
     const newer = () => {
@@ -1173,7 +1181,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     };
     const supersededReason = "a newer publication from this session was filed after this one was sent, so this older one was not";
     if (newer()) return refusedVerdict(supersededReason);
-    const { focus: _asSent, linkRefused: _unsent, roots: _claimed, ...sent } = event.review;
+    const { focus: _asSent, linkRefused: _unsent, roots: _claimed, approval: _asked, ...sent } = event.review;
     const { review: toFile, stored } = await storedReview(sessionId, sent, vetted, scope);
     // `roots` only as the daemon found them, of the paths as filed, whatever the event carried.
     const roots = await filedRoots(event, scope, toFile.link, toFile.scene);
@@ -1186,7 +1194,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     }
     const review = fileReview(
       sessionId,
-      { ...toFile, roots, ...(focus.focus ? { focus: focus.focus } : {}) },
+      { ...toFile, roots, ...(focus.focus ? { focus: focus.focus } : {}), ...(approval?.ok ? { approval: approval.approval } : {}) },
       at,
       prior?.reviews,
       prior?.versions,

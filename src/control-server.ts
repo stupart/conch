@@ -11,6 +11,7 @@ import { isSessionStartSource, type TurnEvent } from "./hook.ts";
 import type { SendFailure } from "./inject.ts";
 import { checkReviewScene, LINK_REFUSED_MAX, sanitizeReviewSummary } from "./snippet.ts";
 import { ARTIFACT_KEY_MAX, checkFocusShape, deliverableKindRefusal, isDeliverableKind } from "./deliverables.ts";
+import { checkApprovalRequest } from "./review-approval.ts";
 import { agentQuestions } from "./conversation.ts";
 import type { PublishedDelivery, PublishedState } from "./panel.ts";
 import type { SessionInfo } from "./sessions.ts";
@@ -693,6 +694,13 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
       }
       if (value.review.link !== undefined) return { ok: false, err: "review linkRefused is for a link that was not published, so it comes without one" };
       if (type !== "turn-end") return { ok: false, err: "review linkRefused is only for turn-end" };
+    }
+    // The agent is waiting on the person's yes (review-approval.ts): the rule `review_to_front` applied, held to the
+    // label as it cleaned it, and only on a publication. 2026-10-05: Approve is offered only when an agent asks.
+    if (value.review.approval !== undefined) {
+      const approval = checkApprovalRequest(value.review.approval, { exact: true });
+      if (!approval.ok) return { ok: false, err: `review ${approval.reason}` };
+      if (type !== "review-published") return { ok: false, err: "review approval is only for review-published" };
     }
     // The folders that hold a filing's files are the daemon's finding (voice-loop `filedRoots`), never an event's.
     if (value.review.roots !== undefined) return { ok: false, err: "review roots are set by the daemon, not sent" };
