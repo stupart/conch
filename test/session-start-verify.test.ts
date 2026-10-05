@@ -17,7 +17,11 @@ test("starting a session waits for it to check in", () => {
   expect(wait).toBeGreaterThan(-1);
   // The sheet must not close before the answer is known.
   expect(wait).toBeLessThan(dismiss);
-  expect(start).toContain("Terminal may be");
+  // What it says when it hasn't: the phone's words too, so they live in ConchDesign (StartTrustTests).
+  expect(start).toContain("StartedSessionWatch.notCheckedIn(");
+  const watch = readFileSync(
+    join(import.meta.dir, "../design/ConchDesign/Sources/ConchDesign/StartedSession.swift"), "utf8");
+  expect(watch).toContain("may be waiting for you to answer something");
 });
 
 test("resume watches for its exact session, not just any new row", () => {

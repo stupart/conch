@@ -583,8 +583,9 @@ private struct StartSessionSheet: View {
     @State private var pendingTrust: String?
     /// Directories answered "yes" in this sheet. Deliberately not persisted:
     /// the person answered about one launch, and conch does not quietly decide
-    /// on their behalf next time.
-    @State private var trustedFolders: Set<String> = []
+    /// on their behalf next time. A cleared folder field names none, and the
+    /// daemon asks about the one it runs in instead (2026-10-05).
+    @State private var trust = StartTrustAnswers()
     /// What the person chose this time, by option name. Unset means the
     /// agent's own default, and is not sent; `bypass-permissions` is seeded
     /// from the persisted setting once the daemon says what it is.
@@ -854,7 +855,7 @@ private struct StartSessionSheet: View {
             Button(effectiveBackend == .codex ? "Yes, continue" : "Yes, I trust this folder") {
                 guard let cwd = pendingTrust else { return }
                 pendingTrust = nil
-                trustedFolders.insert(cwd)
+                trust.trust(cwd)
                 start()
             }
             Button(effectiveBackend == .codex ? "No, cancel" : "No, exit", role: .cancel) { pendingTrust = nil }
@@ -1036,7 +1037,7 @@ private struct StartSessionSheet: View {
                 codexAccountId: effectiveBackend == .codex
                     ? (mode == .resume ? resumeSelection?.codexAccountId : (codexAccounts.accounts.isEmpty ? nil : codexAccountId)) : nil,
                 cwd: effectiveCwd,
-                trustFolder: trustedFolders.contains(effectiveCwd),
+                trustFolder: trust.trustFolder(sent: effectiveCwd),
                 options: sentOptions
             )
             switch outcome {
@@ -1049,6 +1050,7 @@ private struct StartSessionSheet: View {
                 // its own options — rather than a session left sitting on a
                 // full-screen prompt in a Terminal nobody is looking at.
                 isStarting = false
+                trust.asked(about: cwd, sent: effectiveCwd)
                 pendingTrust = cwd
                 return
             case let .started(sessionId, background):
@@ -1080,8 +1082,8 @@ private struct StartSessionSheet: View {
                 dismiss()
                 return
             }
-            let notice = backgroundId != nil ? "Started in the background, but it hasn’t checked in. Open its startup terminal to answer any login or setup prompt." : "Started, but it hasn\u{2019}t checked in. Terminal may be "
-                + "waiting for you to answer something \u{2014} take a look there."
+            // The same words as the phone's sheet: what may hold it, and the button beside this that answers it.
+            let notice = StartedSessionWatch.notCheckedIn(backend: effectiveBackend.rawValue, background: backgroundId != nil, onPhone: false)
             error = notice
             // And keep watching: answered in Terminal, it checks in a minute later, and the
             // sheet sat on this notice for a session that was already running. Tyler: "conch

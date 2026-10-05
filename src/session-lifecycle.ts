@@ -16,7 +16,7 @@ import {
 } from "./agent-adapter.ts";
 import { ensureHelpSession, helpSessionDir } from "./help-session.ts";
 import type { SessionInfo } from "./sessions.ts";
-import { acceptBackgroundTrust, managedBackgroundSession, startBackgroundProcess } from "./background-sessions.ts";
+import { acceptBackgroundTrust, managedBackgroundSession, startBackgroundProcess, type BackgroundTrustOutcome } from "./background-sessions.ts";
 import { probeCommand } from "./probe.ts";
 
 export type { SessionBackend };
@@ -245,12 +245,26 @@ export function startRequestFromArgv(args: string[]): StartSessionRequest {
   return request;
 }
 
+/**
+ * The folder a start runs in: the one it names, or the Mac's home when it names none. Help names conch's own by
+ * the time it gets here (`help: true` becomes that `cwd` in settings.ts). The daemon's trust question
+ * (control-server.ts) and every launch below read it here, so the folder asked about is the folder run in.
+ *
+ * 2026-10-05, Tyler: "trying to start a new session (background session with claude account) and it didn't start …
+ * and the modal didn't close". The phone sends no folder when its field is blank; the gate only asked when one was
+ * named, so it asked nothing, the launch defaulted to home with no answer to give, and Claude sat on its trust
+ * prompt there while the sheet waited for a session that could not check in.
+ */
+export function sessionFolder(request: Pick<StartSessionRequest, "cwd">): string {
+  return request.cwd?.trim() || conchHome();
+}
+
 /** A Terminal-started agent replaces its shell, so leaving the agent also completes the tab cleanly. */
 export function terminalSessionCommand(request: StartSessionRequest): string {
   if (request.claudeSourceAccountId !== undefined && !request.claudeHandoff) throw new Error("Account handoff must be prepared by the daemon");
   const error = teleportRequestError(request) ?? startOptionsError(request);
   if (error) throw new Error(error);
-  const cwd = request.cwd?.trim() || conchHome();
+  const cwd = sessionFolder(request);
   const adapter = adapterFor(request.backend);
   const account = claudeAccountForLaunch(request);
   const codexAccount = codexAccountForLaunch(request);
@@ -462,19 +476,24 @@ export async function startTerminalSession(
   return tty ? { tty } : {};
 }
 
-export async function startBackgroundSession(request: StartSessionRequest): Promise<{ backgroundId: string }> {
+/**
+ * `trust`, when the person said yes to the folder in the app: how typing that yes into Claude's prompt went, once it
+ * has. The start replies before then, so the caller watches it (daemon.ts `launchSession`) — dropped on the floor, a
+ * yes that never landed left the session on its prompt with nothing in the log (2026-10-05).
+ */
+export async function startBackgroundSession(request: StartSessionRequest): Promise<{ backgroundId: string; trust?: Promise<BackgroundTrustOutcome> }> {
   // A pre-existing tmux server may carry another account's environment.
   // Explicitly select the registered profile and clear provider overrides.
   const command = terminalSessionCommand({ ...request, host: "background",
     [`${request.backend}AccountId`]: request.claudeAccountId ?? request.codexAccountId ?? "default" });
   if (!Bun.which(adapterFor(request.backend).executable)) throw new Error(`${request.backend} is not installed or is not on PATH`);
-  const cwd = request.cwd?.trim() || conchHome();
+  const cwd = sessionFolder(request);
   if (cwd === helpSessionDir()) ensureHelpSession();
   try { if (!statSync(cwd).isDirectory()) throw new Error(); }
   catch { throw new Error(`session directory does not exist: ${cwd}`); }
   const { name, pane } = await startBackgroundProcess(command, cwd);
-  if (request.trustFolder && adapterFor(request.backend).trustTypedAtLaunch) void acceptBackgroundTrust(pane);
-  return { backgroundId: name };
+  if (!request.trustFolder || !adapterFor(request.backend).trustTypedAtLaunch) return { backgroundId: name };
+  return { backgroundId: name, trust: acceptBackgroundTrust(pane) };
 }
 
 export function claudeAccountCommandPrefix(configDir: string, isolate = true): string {
@@ -517,8 +536,10 @@ export async function acceptClaudeTrust(
   const read = dependencies.read ?? readTerminalTab;
   const press = dependencies.press ?? pressTrustKeys;
   const sleep = dependencies.sleep ?? Bun.sleep;
-  // A login shell and a cold agent take a few seconds before the screen appears.
-  for (let waited = 0; waited < (dependencies.waitMs ?? 25_000); waited += 400) {
+  // A login shell and a cold agent take a few seconds before the screen appears; a resume, or a Mac under load,
+  // far longer. 60 s, as for a background session (`acceptBackgroundTrust`): a tab that can't be read is looked at
+  // again, never taken as an answer, and what came of it is logged and, if it failed, filed (daemon.ts, 2026-10-05).
+  for (let waited = 0; waited < (dependencies.waitMs ?? 60_000); waited += 400) {
     await sleep(400);
     const screen = await read(tty);
     if (screen === null) continue;
@@ -581,7 +602,7 @@ async function runInTerminal(
 ): Promise<string | undefined> {
   const which = dependencies.which ?? ((name: string) => Bun.which(name));
   if (!which(executable)) throw new Error(`${executable} is not installed or is not on PATH`);
-  const cwd = requestedCwd?.trim() || conchHome();
+  const cwd = sessionFolder({ cwd: requestedCwd });
   // The help session's folder is conch's to create, and this is the one door
   // every launch goes through (CLI, the app's sheet via the daemon, the TUI).
   if (cwd === helpSessionDir()) ensureHelpSession();

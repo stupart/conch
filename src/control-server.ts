@@ -5,7 +5,7 @@ import { ControlFrameError, ControlFrameReader, encodeControlFrame } from "./con
 import type { HistoryPageRequest, HistoryItemRequest, HistoryResponse } from "./history.ts";
 import { createServer, connect } from "node:net";
 import { chmodSync, existsSync, lstatSync, renameSync, unlinkSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { lockSocketPath, type SocketOwnership } from "./socket-ownership.ts";
 import { isSessionStartSource, type TurnEvent } from "./hook.ts";
 import type { SendFailure } from "./inject.ts";
@@ -15,6 +15,7 @@ import { agentQuestions } from "./conversation.ts";
 import type { PublishedDelivery, PublishedState } from "./panel.ts";
 import type { SessionInfo } from "./sessions.ts";
 import type { SessionBackend } from "./agent-adapter.ts";
+import { sessionFolder } from "./session-lifecycle.ts";
 import type { InstantAudioCommand } from "./instant-controls.ts";
 import {
   invokeSessionAction,
@@ -359,6 +360,8 @@ export interface RuntimeControlDispatchOptions {
   start(message: Extract<RuntimeControlMessage, { kind: "session-start" }>): void | { sessionId?: string; backgroundId?: string } | Promise<void | { sessionId?: string; backgroundId?: string }>;
   /** Whether the agent already trusts a folder; absent or null means unknown. */
   folderTrusted?(backend: SessionBackend, cwd: string, accountId?: string): boolean | null;
+  /** The daemon's log: one line for each start asked for (`sessionStartLine`). */
+  log?(line: string): void;
   /** Resolves to the flags a restart did not carry over; nothing for a plain close. */
   close(sessionId: string, restart?: boolean): void | Promise<void | { notCarriedOver: string[] }>;
   report(message: Extract<RuntimeControlMessage, { kind: "app-error" }>): void | Promise<void>;
@@ -393,6 +396,22 @@ async function dispatchRuntimeRequest(
     return { handled: true, response: { kind: "session-error", error: validated.err } };
   }
   return { handled: true, response: await runtime(validated.value) };
+}
+
+/**
+ * A start request, in one line of the daemon's log: enough to tell which start sat waiting, and on what — the
+ * account by id (a label is the person's own words), and of the folder only its last part.
+ */
+export function sessionStartLine(
+  message: Extract<RuntimeControlMessage, { kind: "session-start" }>,
+  folder: string,
+  asking: boolean,
+): string {
+  const account = message.claudeAccountId ?? message.codexAccountId ?? "default";
+  const kind = message.teleportSessionId ? " teleport" : message.resumeSessionId ? " resume" : "";
+  return `session-start: ${message.backend} ${message.host ?? "terminal"}${kind} account=${account}`
+    + ` trustFolder=${message.trustFolder === true ? "yes" : "no"} folder=${basename(folder) || folder}`
+    + (asking ? " — asking whether to trust it first" : "");
 }
 
 /** Apply a decoded runtime command using the daemon's process/UI operations. */
@@ -448,10 +467,17 @@ export async function applyRuntimeControlMessage(
       // Claude asks the same, and takes no answer at launch — so a yes here is typed into its
       // prompt once it appears (acceptClaudeTrust). Before, conch launched it anyway and the
       // app waited on a session that couldn't register until someone found the Terminal.
-      const trusted = message.cwd ? options.folderTrusted?.(message.backend, message.cwd, message.claudeAccountId ?? message.codexAccountId) : undefined;
-      if (message.trustFolder !== true && message.cwd && (trusted === false || (message.host === "background" && trusted !== true))) {
-        return { kind: "session-needs-trust", backend: message.backend, cwd: message.cwd };
-      }
+      //
+      // About the folder it WILL run in, named or not (`sessionFolder`), and a yes is for that folder. This asked
+      // only when a start named one, and the phone names none when its field is blank: such a start ran in home
+      // with nothing to answer Claude's prompt (2026-10-05, Tyler: "trying to start a new session (background
+      // session with claude account) and it didn't start … and the modal didn't close").
+      const folder = sessionFolder(message);
+      const accountId = message.claudeAccountId ?? message.codexAccountId;
+      const trusted = options.folderTrusted?.(message.backend, folder, accountId);
+      const ask = message.trustFolder !== true && (trusted === false || (message.host === "background" && trusted !== true));
+      options.log?.(sessionStartLine(message, folder, ask));
+      if (ask) return { kind: "session-needs-trust", backend: message.backend, cwd: folder };
       const launched = await options.start(message);
       return {
         kind: "session-started",
