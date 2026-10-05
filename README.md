@@ -7,6 +7,8 @@ window. Each one shows you its work: what it made lands in a review pane, marked
 version before it. And each one talks it through: it reads its reply aloud in its own voice, and you answer by talking.
 So you can work from wherever you are: the Mac app, your iPhone, or just your voice.
 
+**Website and demo:** [conch.blueprintstudio.ai](https://conch.blueprintstudio.ai)
+
 ![The conch Mac app. On the left, sessions grouped by project, each row saying what it needs or what it is doing, with subagents under their session. In the middle, the "Landing page hero" conversation: the request, the agent's plan, and its reply. On the right, the page that session published, open in the review pane at its dev-server address, with the session's other results in tabs above it.](docs/images/conch-mac.png)
 
 ## Install
