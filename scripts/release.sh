@@ -34,8 +34,37 @@ git fetch -q origin
 git rev-parse "$TAG" >/dev/null 2>&1 && fail "$TAG already exists"
 
 step "running the suite"
-bun test >/tmp/conch-release-test.log 2>&1 || fail "tests failed — see /tmp/conch-release-test.log"
+# Without $TMUX, as scripts/ci-local.sh runs it: from a conch session's tmux pane
+# the suite would hand it to every tmux a test spawns, reaching the real server.
+env -u TMUX -u TMUX_PANE bun test >/tmp/conch-release-test.log 2>&1 \
+  || fail "tests failed — see /tmp/conch-release-test.log"
 bunx tsc --noEmit || fail "typecheck failed"
+
+# --- version -------------------------------------------------------------
+# Three files carry the version, not one. test/plugin-version.test.ts compares the
+# plugin manifests against package.json — a guard written because they had already
+# drifted once — and the pre-push hook runs it. Bumping package.json alone therefore
+# made the release fail its OWN gate: measured 2026-09-21, v0.3.0 was refused because
+# the manifests still said 0.2.1, after the build had already run.
+#
+# Written BEFORE the build: the binary embeds package.json's version when it is
+# compiled (src/version.ts). Bumped after, as it was, the v0.3.0 tarball's binary
+# reports "conch 0.2.1" (checked 2026-10-05), so its daemon tells every Homebrew user
+# an upgrade they already have is available. A no-op when main already carries it.
+step "setting the version to $VERSION"
+bun --print "
+  const fs = require('fs');
+  for (const file of [
+    'package.json',
+    'plugin/plugins/conch/.claude-plugin/plugin.json',
+    'plugin/plugins/conch/.codex-plugin/plugin.json',
+  ]) {
+    const p = JSON.parse(fs.readFileSync(file, 'utf8'));
+    p.version = '$VERSION';
+    fs.writeFileSync(file, JSON.stringify(p, null, 2) + '\n');
+  }
+  'ok'
+" >/dev/null
 
 # --- build ---------------------------------------------------------------
 step "building $TAG"
@@ -54,32 +83,20 @@ X64_SHA=$(shasum -a 256 dist/conch-macos-x64.tar.gz | cut -d' ' -f1)
 
 # --- publish -------------------------------------------------------------
 step "tagging and publishing $TAG"
-# Three files carry the version, not one. test/plugin-version.test.ts compares the
-# plugin manifests against package.json — a guard written because they had already
-# drifted once — and the pre-push hook runs it. Bumping package.json alone therefore
-# made the release fail its OWN gate: measured 2026-09-21, v0.3.0 was refused because
-# the manifests still said 0.2.1, after the build had already run.
-bun --print "
-  const fs = require('fs');
-  for (const file of [
-    'package.json',
-    'plugin/plugins/conch/.claude-plugin/plugin.json',
-    'plugin/plugins/conch/.codex-plugin/plugin.json',
-  ]) {
-    const p = JSON.parse(fs.readFileSync(file, 'utf8'));
-    p.version = '$VERSION';
-    fs.writeFileSync(file, JSON.stringify(p, null, 2) + '\n');
-  }
-  'ok'
-" >/dev/null
 git add package.json \
   plugin/plugins/conch/.claude-plugin/plugin.json \
   plugin/plugins/conch/.codex-plugin/plugin.json
-git commit -q -m "conch $VERSION"
+# Nothing to commit when main was bumped ahead of the release; the tag then goes on
+# that commit. A bare `git commit` would exit 1 here and stop the release.
+git diff --cached --quiet || git commit -q -m "conch $VERSION"
 git tag -a "$TAG" -m "conch $VERSION"
 git push -q origin main "$TAG"
+# Written notes when main carries them (docs/releases/v<version>.md), GitHub's list
+# of merged PRs otherwise.
+NOTES="docs/releases/$TAG.md"
+if [ -f "$NOTES" ]; then notes=(--notes-file "$NOTES"); else notes=(--generate-notes); fi
 gh release create "$TAG" dist/conch-macos-*.tar.gz \
-  --title "conch $VERSION" --generate-notes
+  --title "conch $VERSION" "${notes[@]}"
 
 # --- the tap -------------------------------------------------------------
 # Bumped in the same command as the release, because the failure mode this

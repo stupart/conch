@@ -96,6 +96,29 @@ test("the bump moves every file that carries the version", () => {
   for (const dir of [".claude-plugin", ".codex-plugin"]) expect(guard).toContain(dir);
 });
 
+/**
+ * The binary embeds package.json's version when it is compiled (src/version.ts),
+ * so the bump has to land before the build. Bumped after it, the published v0.3.0
+ * binary reports "conch 0.2.1" (checked 2026-10-05), and its daemon tells every
+ * Homebrew user an upgrade they already have is available.
+ */
+test("the version is written before the build, and a pre-bumped main still releases", () => {
+  const bump = release.indexOf("for (const file of [");
+  const build = release.indexOf('scripts/build-release.sh "$VERSION"');
+  expect(bump).toBeGreaterThan(-1);
+  expect(build).toBeGreaterThan(-1);
+  expect(bump).toBeLessThan(build);
+  // With the bump already merged there is nothing to commit, and a bare
+  // `git commit` exits 1 under `set -e`, after the build, before the tag.
+  expect(release).toContain('git diff --cached --quiet || git commit -q -m "conch $VERSION"');
+});
+
+test("the release carries written notes when main has them", () => {
+  expect(release).toContain('NOTES="docs/releases/$TAG.md"');
+  expect(release).toContain('notes=(--notes-file "$NOTES")');
+  expect(release).toContain('"${notes[@]}"');
+});
+
 test("the release script is executable", () => {
   const mode = statSync(join(import.meta.dir, "..", "scripts/release.sh")).mode;
   expect(mode & 0o111).toBeGreaterThan(0);
