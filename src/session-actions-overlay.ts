@@ -56,11 +56,13 @@ export interface SessionActionsController {
    */
   removeReview?(target: Readonly<SessionActionsTarget>, which: { review: string } | { artifact: string }): boolean | void;
   /**
-   * Approve one of this session's deliverables: done, out of the review queue, one piece of sea glass, and nothing sent
-   * to the agent (2026-10-05, Tyler's decision). `changed: false` when it was approved already, which earns nothing.
+   * Approve one of this session's deliverables: done, out of the review queue, one piece of sea glass (2026-10-05,
+   * Tyler's decision), and, since later that day, only one its agent asked about, whose agent is sent `Approved: …`
+   * once the 10 s undo window closes (review-approval.ts). `changed: false` when it was approved already, which earns
+   * and sends nothing.
    */
   approveReview?(target: Readonly<SessionActionsTarget>, review: string): ReviewApprovalOutcome;
-  /** Take an approval back within its 10 s, or say why not. */
+  /** Take an approval back within its 10 s, cancelling the message held for its agent, or say why not. */
   unapproveReview?(target: Readonly<SessionActionsTarget>, review: string): ReviewApprovalOutcome;
 }
 

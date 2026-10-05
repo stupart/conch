@@ -6,6 +6,7 @@ import { loadConfig, type Config } from "./config.ts";
 import { CONCH_VERSION } from "./version.ts";
 import { sendToDaemon, type TurnEvent } from "./hook.ts";
 import { artifactOf, nextVersion, reconcileStatus } from "./panel.ts";
+import { APPROVAL_LABEL_MAX, checkApprovalRequest } from "./review-approval.ts";
 import {
   renameProviderSession as deliverProviderRename,
   type ProviderRenameResult,
@@ -408,6 +409,14 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
             type: "string",
             minLength: 1,
             description: "Optional. Defaults to YOUR session. A session may only surface its own work; naming another session is refused.",
+          },
+          approval: {
+            type: "object",
+            description: `Optional, and only when you are waiting on the user's yes to proceed: never by default. The result then offers Approve (✓ and your label); when they press it, conch sends your session "Approved: <label>." as a message about 10 s later (they can undo it until then), or "Approved: <summary>." with no label. label: what approving does, e.g. "Open the PR", "Deploy", "Merge"; trimmed, at most ${APPROVAL_LABEL_MAX} characters.`,
+            properties: {
+              label: { type: "string", minLength: 1, maxLength: APPROVAL_LABEL_MAX },
+            },
+            additionalProperties: false,
           },
           scene: {
             type: "object",
@@ -1676,9 +1685,9 @@ export function createMcpToolHandlers(
     async review_to_front(argumentsValue, meta) {
       // Filed, refused or failed, and each says which. A refusal names its reason: this server's,
       // before anything reaches the daemon, or the daemon's own, which it used to only log.
-      const { summary, truncatedFrom, link, scene, kind, key, focus, session, transcriptPath } = await (async () => {
+      const { summary, truncatedFrom, link, scene, kind, key, focus, approval, session, transcriptPath } = await (async () => {
         const argumentsObject = toolArguments(argumentsValue);
-        allowOnly(argumentsObject, ["summary", "link", "kind", "key", "session", "scene", "focus"]);
+        allowOnly(argumentsObject, ["summary", "link", "kind", "key", "session", "scene", "focus", "approval"]);
         const cleaned = sanitizeReviewSummary(requiredString(argumentsObject, "summary"), Infinity);
         if (!cleaned) throw new ToolInputError("summary must be a non-empty string");
         // Marks measured in pixels become fractions first (mark-pixels.ts): everything after this, the
@@ -1700,6 +1709,10 @@ export function createMcpToolHandlers(
         if (key !== undefined && (!key || key.length > ARTIFACT_KEY_MAX)) {
           throw new ToolInputError(`key must be 1 to ${ARTIFACT_KEY_MAX} printable characters; it names the artifact, it does not describe it`);
         }
+        // The agent is waiting on the user's yes (2026-10-05): only then does the result offer Approve, and approving it
+        // sends this session `Approved: <label>.` (review-approval.ts). The label trimmed, and 40 characters at most.
+        const asked = Object.hasOwn(argumentsObject, "approval") ? checkApprovalRequest(argumentsObject.approval) : undefined;
+        if (asked && !asked.ok) throw new ToolInputError(asked.reason);
         const session = await requiredReviewSession(argumentsObject, config, dependencies, meta);
         const transcriptPath = dependencies.findTranscript(config.claudeDir, session.sessionId);
         // The folders the hook and the daemon check a link against (review-roots.ts): where the
@@ -1732,6 +1745,7 @@ export function createMcpToolHandlers(
           kind,
           key,
           focus: focus?.ok ? focus.focus : undefined,
+          approval: asked?.ok ? asked.approval : undefined,
           session,
           transcriptPath,
         };
@@ -1747,6 +1761,7 @@ export function createMcpToolHandlers(
         ...(kind ? { kind } : {}),
         ...(key ? { key } : {}),
         ...(focus ? { focus } : {}),
+        ...(approval ? { approval } : {}),
       };
       const facts = deliverableFacts(review);
       // What it already holds, oldest first: the version an older daemon will give it (`nextVersion`, its own
@@ -1788,6 +1803,8 @@ export function createMcpToolHandlers(
         summary,
         ...(focus ? { focus } : {}),
         ...(scene ? { scene } : {}),
+        // What it asked: the user's Approve sends this session `Approved: <label>.` about 10 s after the press.
+        ...(approval ? { approval } : {}),
         ...(truncatedFrom === undefined
           ? {}
           : { summaryTruncated: { from: truncatedFrom, to: REVIEW_SUMMARY_MAX } }),

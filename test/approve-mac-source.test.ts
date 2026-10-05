@@ -38,6 +38,9 @@ describe("✓ Approve in the session bar", () => {
     const control = between(dashboard, "private var approveControl: some View {", "/// One tab per ARTIFACT");
     expect(control).toContain("ReviewApproval.control(");
     expect(control).toContain("daemonCanApprove: state?.seaGlass != nil");
+    // Only when its agent asked, in its words (2026-10-05, after using #502).
+    expect(control).toContain("asksApproval: selectedReview?.asksApproval == true,");
+    expect(control).toContain("approvalLabel: selectedReview?.approvalLabel,");
     expect(control).toContain("compact: ReviewApproval.isCompact(headerWidth: sessionBarWidth)");
     // The same track as the toggles: radius 8, the `fill`, 2 points of padding.
     expect(control).toContain(".fill(ConchPalette.fill)");
@@ -46,18 +49,19 @@ describe("✓ Approve in the session bar", () => {
 
   test("its words, tooltip and VoiceOver label are ConchDesign's, with the key in the tooltip", () => {
     const button = between(dashboard, "private struct ApproveButton: View {", "final class ReviewApprovals: ObservableObject {");
-    expect(button).toContain("Text(ReviewApproval.label(control, compact: compact) ?? \"\")");
-    expect(button).toContain(".help(ReviewApproval.help(control))");
-    expect(button).toContain(".accessibilityLabel(ReviewApproval.accessibilityLabel(control))");
+    expect(button).toContain("Text(ReviewApproval.label(control, compact: compact, approvalLabel: approvalLabel) ?? \"\")");
+    expect(button).toContain(".help(ReviewApproval.help(control, approvalLabel: approvalLabel))");
+    expect(button).toContain(".accessibilityLabel(ReviewApproval.accessibilityLabel(control, approvalLabel: approvalLabel))");
     // Never the ready green on words: it measures under 3:1 on the light grounds.
     expect(button).not.toContain("statusReview");
   });
 
-  test("only for a result on screen, from a daemon that can approve, never the practice's card", () => {
+  test("only for a result on screen whose agent asked, from a daemon that can approve, never the practice's card", () => {
     const shown = between(dashboard, "private var shownResult: ReviewApprovals.Target? {", "private var note: String? {");
     expect(shown).toContain("row.id != TourCoach.practiceSessionId");
     expect(shown).toContain("stage(for: row) != .conversation, workPane(for: row) == .deliverable");
-    expect(shown).toContain("guard let shown = shownResult, state?.seaGlass != nil, selectedReview?.approvedAt == nil else { return nil }");
+    // ↵ approves only what the button would: no request, nothing for Return to approve either.
+    expect(shown).toContain("guard let shown = shownResult, state?.seaGlass != nil, selectedReview?.asksApproval == true,\n              selectedReview?.approvedAt == nil else { return nil }");
   });
 
   test("a quiet confirmation, no modal: the control says so, VoiceOver hears it, ⌘Z holds it for ten seconds", () => {
@@ -119,6 +123,10 @@ describe("the store, the socket and the models", () => {
 
   test("the models read approvedAt and seaGlass, and the presented state carries seaGlass", () => {
     expect(models).toContain("approvedAt = try? container.decodeIfPresent(Double.self, forKey: .approvedAt)");
+    // Only `true` asks; a label only beside it (2026-10-05).
+    expect(models).toContain("asksApproval = (try? container.decodeIfPresent(Bool.self, forKey: .asksApproval)) == true");
+    expect(models).toContain("approvalLabel = asksApproval ? (try? container.decodeIfPresent(String.self, forKey: .approvalLabel)) : nil");
+    expect(review).toContain("asksApproval = review.asksApproval\n        approvalLabel = review.approvalLabel");
     expect(models).toContain("seaGlass = try? container.decodeIfPresent(Int.self, forKey: .seaGlass)");
     expect(models).toContain("&& seaGlass == other.seaGlass");
     expect(store).toContain("seaGlass: sourceState.seaGlass");
@@ -128,6 +136,28 @@ describe("the store, the socket and the models", () => {
     const actions = between(lagoon, "final class LagoonStoreActions: LagoonActionSink {", "struct LagoonPane: View {");
     expect(actions).toContain("Task { await store.approveReview(sessionId: row.id, review: found.item) }");
     expect(actions).toContain("Task { await store.unapproveReview(sessionId: row.id, review: found.item) }");
+  });
+
+  /** 2026-10-05, Tyler's go, replies only: the lagoon's reply bar is the composer's send, and nothing else goes live. */
+  test("the lagoon's reply is exactly the composer's send, and acts with no flag", () => {
+    const composer = read("mac-app/conch-mac/ComposerView.swift");
+    expect(composer).toContain("let delivery = store.send(.inject(sessionId: row.id, label: row.label, text: text))");
+    const reply = between(lagoon, "func reply(sessionId: String, text: String) {", "func answer(");
+    expect(reply).toContain("store?.send(.inject(sessionId: row.id, label: row.label, text: text))");
+    const intents = read("design/ConchDesign/Sources/ConchDesign/LagoonIntents.swift");
+    expect(intents).toContain("public static let byDefaultInOrder: [Name] = [.approve, .unapprove, .reply]");
+    expect(intents).toContain("public static let phaseC: Set<Name> = [.answer, .pause]");
+    expect(read("design/ConchDesign/Sources/ConchDesign/Lagoon.swift")).toContain("LagoonIntent.byDefaultInOrder.map(\\.rawValue).joined(separator: \",\")");
+  });
+
+  /** The phone shows results but has no Approve yet: nothing there may treat every review as approvable. */
+  test("the phone offers no Approve on a result, and asks nothing of asksApproval yet", () => {
+    for (const file of ["Models.swift", "DeliverableSheet.swift", "SessionView.swift", "BridgeClient.swift"]) {
+      const source = read(`mobile/conch-ios/conch-ios/${file}`);
+      expect(source, file).not.toContain("review-approve");
+      expect(source, file).not.toContain("asksApproval");
+      expect(source, file).not.toContain("approveReview");
+    }
   });
 });
 

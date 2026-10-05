@@ -924,6 +924,12 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
     /// When it was approved, which marks it done: out of Ready for you on every surface (2026-10-05, Tyler's decision).
     /// Absent means it wasn't, and from a daemon too old to approve (`PublishedState.seaGlass` is nil there).
     let approvedAt: Double?
+    /// Its agent is waiting on your yes (`asksApproval`), and what a yes does in its words (`approvalLabel`, "Open the
+    /// PR"). Only such a result offers ✓ Approve; approving it sends the agent `Approved: <label>.` once the 10 s undo
+    /// window closes. 2026-10-05, Tyler, after using #502: "maybe we only show it if the AI sets some sort of flag in the
+    /// review that it's asking for me to approve some work?" False and nil from an older daemon, and on everything else.
+    let asksApproval: Bool
+    let approvalLabel: String?
     /// What a click on the Ready pill should bring forward (`scene.target.kind`) and the one thing to check there
     /// (`scene.inspect`). Absent from older daemons and from reviews that asked for nothing, which is `auto`.
     let sceneKind: String?
@@ -957,6 +963,8 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
         case id
         case viewedAt
         case approvedAt
+        case asksApproval
+        case approvalLabel
         case artifact
         case version
         case kind
@@ -980,6 +988,8 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
         id = try? container.decodeIfPresent(String.self, forKey: .id)
         viewedAt = try? container.decodeIfPresent(Double.self, forKey: .viewedAt)
         approvedAt = try? container.decodeIfPresent(Double.self, forKey: .approvedAt)
+        asksApproval = (try? container.decodeIfPresent(Bool.self, forKey: .asksApproval)) == true
+        approvalLabel = asksApproval ? (try? container.decodeIfPresent(String.self, forKey: .approvalLabel)) : nil
         // A scene this build can't read is no scene: the review itself still decodes.
         let scene = try? container.decodeIfPresent(Scene.self, forKey: .scene)
         sceneKind = scene?.target?.kind

@@ -23,7 +23,8 @@ import { shellQuote } from "../src/agent-adapter.ts";
 import type { ProviderCommandResult } from "../src/provider-rename.ts";
 import { collectContinuousResult, createDictationSession, type ListenHooks, type ListenResult, type RuntimeDictationSession } from "../src/listen.ts";
 import { addressParkedWindow, registrySnapshot, type SessionInfo } from "../src/sessions.ts";
-import { buildPanelModel, buildPublishedState, reviewReady } from "../src/panel.ts";
+import { buildPanelModel, buildPublishedState, reviewReady, UNAPPROVE_WINDOW_MS, type SessionReview } from "../src/panel.ts";
+import { approvedInjectEvent, HeldApprovalMessages, reviewApprovalActions } from "../src/review-approval.ts";
 import { reviewIdentity } from "../src/records-receipts.ts";
 import { deliverableFacts } from "../src/deliverables.ts";
 import { deliverableStoreDir } from "../src/deliverable-store.ts";
@@ -4040,5 +4041,124 @@ describe("a publication's verdict, and what it files", () => {
     } finally {
       s.done();
     }
+  });
+});
+
+/**
+ * Approve only when the agent asks, and approving tells the agent (2026-10-05). Tyler, after using #502: "I don't really
+ * get the point of the approve button... maybe we only show it if the AI sets some sort of flag in the review that it's
+ * asking for me to approve some work?" Here: the daemon files the request (checked again where it files it), and the
+ * held `Approved: …` goes to the session through the loop's own delivery path, as the composer's send does, confirmed by
+ * the agent's own evidence. The rules around it are test/approve-when-asked.test.ts's.
+ */
+describe("Approve when the agent asks: filed by the loop, and the held message delivered through it", () => {
+  const publication = (review: TurnEvent["review"], over: Partial<TurnEvent> = {}): TurnEvent => ({
+    type: "review-published", sessionId: "s1", label: "alpha", announce: "alpha has work ready", eventAt: 2_000, review, ...over,
+  });
+
+  test("the request is filed as asksApproval and approvalLabel, and the daemon refuses one that isn't clean", async () => {
+    const project = mkdtempSync(join(tmpdir(), "conch-approval-filed-"));
+    try {
+      writeFileSync(join(project, "pr.md"), "# the PR");
+      const link = join(project, "pr.md");
+      const h = harness({ window: () => ({ sessionId: "s1", cwd: project } as SessionInfo) });
+      expect((await h.voice.filePublication(publication({ summary: "the PR", link, approval: { label: "Open the PR" } }))).kind).toBe("review-filed");
+      expect(h.ledger.sessionStates.get("s1")!.review).toMatchObject({ asksApproval: true, approvalLabel: "Open the PR" });
+      expect((await h.voice.filePublication(publication({ summary: "notes", link }, { eventAt: 3_000 }))).kind).toBe("review-filed");
+      const plain = h.ledger.sessionStates.get("s1")!.review!;
+      expect(plain.asksApproval).toBeUndefined();
+      expect(plain.approvalLabel).toBeUndefined();
+      expect((await h.voice.filePublication(publication({ summary: "ship", link, approval: {} }, { eventAt: 4_000 }))).kind).toBe("review-filed");
+      expect(h.ledger.sessionStates.get("s1")!.review).toMatchObject({ asksApproval: true });
+      expect("approvalLabel" in h.ledger.sessionStates.get("s1")!.review!).toBe(false);
+
+      // The socket is not only the MCP server's: what it would refuse, the filing refuses too, and files nothing.
+      for (const approval of [{ label: "m".repeat(41) }, { label: " Open the PR" }, { label: "" }, { label: "ok", why: "x" }] as never[]) {
+        const verdict = await h.voice.filePublication(publication({ summary: "bad", link, approval }, { eventAt: 5_000 }));
+        expect(verdict.kind, JSON.stringify(approval)).toBe("review-refused");
+      }
+      expect(h.ledger.sessionStates.get("s1")!.reviews).toHaveLength(3);
+      expect(h.logs.filter((line) => line.startsWith('refused a deliverable\'s approval request from "alpha"'))).toHaveLength(4);
+    } finally {
+      rmSync(project, { recursive: true, force: true });
+    }
+  });
+
+  /** The daemon's wiring (daemon.ts), over this loop: held for the window on a hand-moved clock, then `handle`d. */
+  function approvals(h: ReturnType<typeof harness>) {
+    let now = 1_000_000;
+    const timers = new Map<number, { at: number; run: () => void }>();
+    let next = 1;
+    const deliveries: Promise<unknown>[] = [];
+    const held = new HeldApprovalMessages({
+      holdMs: UNAPPROVE_WINDOW_MS,
+      timers: {
+        set: (run, ms) => { const id = next++; timers.set(id, { at: now + ms, run }); return id; },
+        clear: (id) => void timers.delete(id as number),
+      },
+      deliver: (sessionId, text) => void deliveries.push(h.voice.handle(approvedInjectEvent({ sessionId }, "alpha", text))),
+    });
+    const actions = reviewApprovalActions({ ledger: h.ledger, held, now: () => now, log: () => {}, changed: () => {} });
+    return {
+      approve: () => actions.approve({ sessionId: "s1", label: "alpha" }, "pr"),
+      unapprove: () => actions.unapprove({ sessionId: "s1", label: "alpha" }, "pr"),
+      advance: async (ms: number) => {
+        now += ms;
+        for (const [id, timer] of [...timers]) if (timer.at <= now) { timers.delete(id); timer.run(); }
+        return Promise.all(deliveries.splice(0));
+      },
+    };
+  }
+  const asking = (): SessionReview => ({ summary: "The PR is ready", at: 1, id: "pr", asksApproval: true, approvalLabel: "Open the PR" });
+
+  test("after 10 s, `Approved: <label>.` is typed into the session by the composer's path, and the agent confirms it", async () => {
+    const seen = new PromptSubmissions();
+    const events: RecordObservation[] = [];
+    const h = harness({
+      window: () => ({ sessionId: "s1", backend: "claude", status: "idle" }) as SessionInfo,
+      observeRecords: (event) => events.push(event),
+      promptSubmitted: (id, since, words) => seen.submitted(id, since, words),
+      inject: (text) => { seen.note("s1", promptDigest(text)); return { via: "tmux" }; },
+    });
+    h.ledger.sessionStates.set("s1", { label: "alpha", status: "waiting", at: 1, review: asking(), reviews: [asking()] });
+    const a = approvals(h);
+    expect(a.approve()).toEqual({ ok: true, changed: true });
+    expect(await a.advance(UNAPPROVE_WINDOW_MS - 1)).toEqual([]);
+    expect(h.texts).toEqual([]);
+    expect(await a.advance(1)).toEqual([true]);
+    expect(h.texts).toEqual(["Approved: Open the PR."]);
+    // The delivery's own receipt: accepted, then confirmed by the agent's hook naming those words.
+    const delivery = events.filter(({ kind }) => kind === "delivery");
+    expect(delivery.map(({ state }) => state)).toEqual(["accepted", "delivered"]);
+    expect(delivery.at(-1)?.code).toBe("prompt-hook-confirmed");
+    // Once only.
+    expect(await a.advance(60_000)).toEqual([]);
+    expect(h.texts).toEqual(["Approved: Open the PR."]);
+  });
+
+  test("an undo inside the window means nothing is typed; a second approve types it once", async () => {
+    const h = harness({ window: () => ({ sessionId: "s1", backend: "claude", status: "idle" }) as SessionInfo });
+    h.ledger.sessionStates.set("s1", { label: "alpha", status: "waiting", at: 1, review: asking(), reviews: [asking()] });
+    const a = approvals(h);
+    a.approve();
+    await a.advance(9_000);
+    expect(a.unapprove()).toEqual({ ok: true, changed: true });
+    await a.advance(60_000);
+    expect(h.texts).toEqual([]);
+    a.approve();
+    await a.advance(2_000);
+    expect(a.approve()).toEqual({ ok: true, changed: false });
+    await a.advance(60_000);
+    expect(h.texts).toEqual(["Approved: Open the PR."]);
+  });
+
+  test("a session waiting on a dialog isn't typed into, and the send says why, as a composer send's does", async () => {
+    const h = harness({ window: () => ({ sessionId: "s1", backend: "claude", status: "waiting" }) as SessionInfo });
+    h.ledger.sessionStates.set("s1", { label: "alpha", status: "waiting", at: 1, review: asking(), reviews: [asking()] });
+    const a = approvals(h);
+    a.approve();
+    const [outcome] = await a.advance(UNAPPROVE_WINDOW_MS);
+    expect(outcome).toMatchObject({ delivered: false, reason: "session-awaiting-answer" });
+    expect(h.texts).toEqual([]);
   });
 });

@@ -525,7 +525,7 @@ describe("MCP tool discovery", () => {
       conch_rename: ["session", "label"],
       conch_config: ["key", "value", "unset"],
       conch_transcript_tail: ["session", "sentences"],
-      review_to_front: ["summary", "link", "kind", "focus", "key", "session", "scene"],
+      review_to_front: ["summary", "link", "kind", "focus", "key", "session", "approval", "scene"],
       conch_history: ["session", "branch", "before", "limit"],
       conch_item: ["session", "item", "bodyCursor"],
       conch_working_folders: ["folders"],
@@ -728,7 +728,7 @@ describe("schemas state what the handlers enforce", () => {
 
   test("review_to_front describes publishing, not opening or finishing, and what its answer means", () => {
     expect(MCP_TOOLS.find((tool) => tool.name === "review_to_front")!.description).toBe(
-      "Publish your session’s result for the user to inspect, with a concise summary, an optional artifact link and kind, and an optional scene: the conversation to bring forward, or marks drawn over the result at the one thing to check. To show a set of files or a structure you created or changed (a new module layout, generated assets), link the folder (kind folder, its file tree in conch) and name the paths in it to look at with focus. Publishing the same artifact again (the same link, or the same key) adds its next version rather than a second entry: the user sees the newest, with earlier versions listed under it by summary and time. A file or folder in a temp folder (/tmp, or macOS's per-user /var/folders/…/T) is filed as conch's own copy (copiedFrom names the original), so cleaning the temp folder can't take it away. It waits for conch to file it and returns the filing's id, its artifact, version and kind, or conch's reason for refusing it, and surfaces: where the user can see it (mac: showing, running or not-running; phone: connected, paired-not-connected, unpaired or off; audio: mac, phone, other-mac or manual). Tell the user where it landed from surfaces; don't assume they saw it. For a live page (a url link) it also checks for a login wall: access says what conch's Mac, with its review pane's sign-ins, and a device without them (the phone) were shown (mac and anonymous: page, sign-in or unchecked); snapshot is the Mac's picture of the page, which the phone shows first; and warning, when either was shown a sign-in page, says what to do: act on it. When the result carries relabel, your session's label no longer matches your recent work: if your focus has moved, call conch_rename with a short new label. The user's pill click stages it. Publishing does not open applications or finish the running turn.",
+      "Publish your session’s result for the user to inspect, with a concise summary, an optional artifact link and kind, and an optional scene: the conversation to bring forward, or marks drawn over the result at the one thing to check. To show a set of files or a structure you created or changed (a new module layout, generated assets), link the folder (kind folder, its file tree in conch) and name the paths in it to look at with focus. Publishing the same artifact again (the same link, or the same key) adds its next version rather than a second entry: the user sees the newest, with earlier versions listed under it by summary and time. A file or folder in a temp folder (/tmp, or macOS's per-user /var/folders/…/T) is filed as conch's own copy (copiedFrom names the original), so cleaning the temp folder can't take it away. It waits for conch to file it and returns the filing's id, its artifact, version and kind, or conch's reason for refusing it, and surfaces: where the user can see it (mac: showing, running or not-running; phone: connected, paired-not-connected, unpaired or off; audio: mac, phone, other-mac or manual). Tell the user where it landed from surfaces; don't assume they saw it. For a live page (a url link) it also checks for a login wall: access says what conch's Mac, with its review pane's sign-ins, and a device without them (the phone) were shown (mac and anonymous: page, sign-in or unchecked); snapshot is the Mac's picture of the page, which the phone shows first; and warning, when either was shown a sign-in page, says what to do: act on it. Set approval ({label}: what a yes does, e.g. \"Open the PR\") only when you are waiting on the user's yes to proceed, never by default: their Approve sends your session \"Approved: <label>.\" about 10 s later. When the result carries relabel, your session's label no longer matches your recent work: if your focus has moved, call conch_rename with a short new label. The user's pill click stages it. Publishing does not open applications or finish the running turn.",
     );
     // Claude Code cuts a tool description past 2048 characters (CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH, 2.1.280).
     for (const tool of MCP_TOOLS) expect(tool.description.length).toBeLessThan(2048);
@@ -1259,6 +1259,61 @@ describe("real MCP tool handlers with injected dependencies", () => {
         link,
       },
     });
+  });
+
+  /**
+   * 2026-10-05, Tyler, after using #502: "I don't really get the point of the approve button... maybe we only show it if
+   * the AI sets some sort of flag in the review that it's asking for me to approve some work?" `approval` is that flag:
+   * sent only when given, its label trimmed and at most 40 characters, anything else refused before the daemon hears.
+   */
+  test("review_to_front asks for approval only when told to, with a trimmed label of at most 40 characters", async () => {
+    const h = fakeHarness({ parentPid: 4321 });
+    const handlers = createMcpToolHandlers({ claudeDir: "/virtual/claude", socketPath: "/virtual/conch.sock" }, h.dependencies);
+    const publish = async (args: Record<string, unknown>) =>
+      callTool(handlers, "review_to_front", { summary: "The PR is ready", link: "https://example.com/pr", session: "Build", ...args });
+
+    // Without it: nothing about approval goes to the daemon or comes back.
+    const plain = JSON.parse(toolText(await publish({})));
+    expect(h.calls.daemon.at(-1)?.event.review).toEqual({ summary: "The PR is ready", link: "https://example.com/pr" });
+    expect(plain.approval).toBeUndefined();
+
+    // With a label: trimmed, control characters dropped, and said back.
+    const labelled = JSON.parse(toolText(await publish({ approval: { label: "  Open the PR\u0007 " } })));
+    expect(h.calls.daemon.at(-1)?.event.review).toEqual({
+      summary: "The PR is ready", link: "https://example.com/pr", approval: { label: "Open the PR" },
+    });
+    expect(labelled.approval).toEqual({ label: "Open the PR" });
+
+    // Asked with no label, and with one of exactly 40.
+    await publish({ approval: {} });
+    expect(h.calls.daemon.at(-1)?.event.review?.approval).toEqual({});
+    await publish({ approval: { label: "d".repeat(40) } });
+    expect(h.calls.daemon.at(-1)?.event.review?.approval).toEqual({ label: "d".repeat(40) });
+    const sent = h.calls.daemon.length;
+
+    // Refused, and the daemon hears nothing: over 40 once trimmed, empty, not a string, an unknown field, not an object.
+    for (const approval of [{ label: "x".repeat(41) }, { label: "   " }, { label: "" }, { label: 7 }, { label: "ok", colour: "red" }, true, "Open the PR", ["x"]]) {
+      const response = await publish({ approval });
+      expect(rpcResult(response), JSON.stringify(approval)).toMatchObject({ isError: true });
+      expect(toolText(response)).toMatch(/^refused: approval/);
+    }
+    expect(toolText(await publish({ approval: { label: "x".repeat(41) } })))
+      .toBe('refused: approval.label must be 1 to 40 printable characters naming what approving does (e.g. "Open the PR"), or leave it out');
+    expect(h.calls.daemon).toHaveLength(sent);
+  });
+
+  test("the schema says approval is for waiting on a yes, never by default, and what the agent is sent", () => {
+    const tool = MCP_TOOLS.find((candidate) => candidate.name === "review_to_front")!;
+    const approval = (tool.inputSchema.properties as Record<string, any>).approval;
+    expect(approval).toMatchObject({
+      type: "object",
+      properties: { label: { type: "string", minLength: 1, maxLength: 40 } },
+      additionalProperties: false,
+    });
+    expect(approval.description).toContain("only when you are waiting on the user's yes to proceed: never by default");
+    expect(approval.description).toContain('conch sends your session "Approved: <label>." as a message about 10 s later');
+    expect(tool.description).toContain("only when you are waiting on the user's yes to proceed, never by default");
+    expect(tool.description).toContain('their Approve sends your session "Approved: <label>." about 10 s later');
   });
 
   test("review_to_front publishes a relative file link as an absolute path", async () => {

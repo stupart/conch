@@ -41,14 +41,15 @@ public enum Lagoon {
     ///
     /// `act` names the intents the app acts on whatever the phase (`LagoonIntent.byDefault`), so the page treats them as
     /// live rather than "would do": Approve and its Undo (2026-10-05, Tyler's decision; the brand side asked for this
-    /// parameter). A page that doesn't read it still sends them, and the app still acts.
+    /// parameter), and, later that day, the reply bar (Tyler's go, replies only). A page that doesn't read it still sends
+    /// them, and the app still acts.
     public static func pageURL(readOnly: Bool) -> URL {
         URL(string: "\(scheme)://\(host)/index.html?app=1\(readOnly ? "&readonly=1" : "")&act=\(actsByDefault)")!
     }
 
-    /// `approve,unapprove`: `LagoonIntent.byDefault`, in the order the lagoon names them.
+    /// `approve,unapprove,reply`: `LagoonIntent.byDefault`, in the order the lagoon names them.
     public static var actsByDefault: String {
-        LagoonIntent.Name.allCases.filter(LagoonIntent.byDefault.contains).map(\.rawValue).joined(separator: ",")
+        LagoonIntent.byDefaultInOrder.map(\.rawValue).joined(separator: ",")
     }
 
     /// Where the page opens a deliverable a session holds: `conch-lagoon://lagoon/review/<session>/<review>`, both ids encoded

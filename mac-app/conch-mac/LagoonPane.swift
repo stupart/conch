@@ -125,8 +125,8 @@ final class LagoonModel: ObservableObject {
 }
 
 /// The lagoon's actions, on the app's own paths (spec §5). Phase B and C's are compiled and never reached in phase A:
-/// `LagoonIntentRouter` hands one here only when its name's flag is on in `conch.lagoon.actions`. Approve and its undo
-/// act with no flag (`LagoonIntent.byDefault`).
+/// `LagoonIntentRouter` hands one here only when its name's flag is on in `conch.lagoon.actions`. Approve, its undo and
+/// a reply act with no flag (`LagoonIntent.byDefault`).
 @MainActor
 final class LagoonStoreActions: LagoonActionSink {
     weak var store: StateStore?
@@ -177,7 +177,9 @@ final class LagoonStoreActions: LagoonActionSink {
         UserDefaults.standard.set(Lagoon.Page.sessions.rawValue, forKey: Lagoon.pageKey)
     }
 
-    /// C: what you typed to it, without its @name.
+    /// What you typed to it on the glass, without its @name: live with no flag since 2026-10-05 (Tyler's go, replies only),
+    /// read-only page or not. Exactly the composer's send (`SessionComposer`'s `onSend`): the same store action, so the
+    /// same delivery path; the gate has checked the session is in the state and the text is at most 4,000 characters.
     func reply(sessionId: String, text: String) {
         guard let row = row(sessionId), row.parentSessionId == nil else { return }
         store?.send(.inject(sessionId: row.id, label: row.label, text: text))

@@ -131,6 +131,12 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
         public var viewedAt: Double?
         /// When it was approved (2026-10-05): done, so the lagoon doesn't count it as waiting either. Absent when it wasn't.
         public var approvedAt: Double?
+        /// Its agent is waiting on your yes (true, or absent), and what a yes does (trimmed, 1 to 40 characters, only
+        /// with it): the lagoon offers Approve only then. Agreed with the brand repo on 2026-10-05 under these names, after Tyler, using #502:
+        /// "maybe we only show it if the AI sets some sort of flag in the review that it's asking for me to approve some
+        /// work?"
+        public var asksApproval: Bool?
+        public var approvalLabel: String?
         public var version: Int?
         public var scene: Scene?
         public var open: String?
@@ -291,6 +297,9 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
             public var at: Double?
             public var viewedAt: Double?
             public var approvedAt: Double?
+            /// `asksApproval: true` on the wire, and its `approvalLabel`.
+            public var asksApproval: Bool
+            public var approvalLabel: String?
             public var version: Int?
             /// Whether it carried a scene at all, and what of it the lagoon may see.
             public var hasScene: Bool
@@ -300,8 +309,9 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
             public var link: String?
 
             public init(id: String? = nil, artifact: String? = nil, summary: String? = nil, kind: String? = nil, at: Double? = nil,
-                        viewedAt: Double? = nil, approvedAt: Double? = nil, version: Int? = nil, hasScene: Bool = false,
-                        targetKind: String? = nil, inspect: String? = nil, link: String? = nil) {
+                        viewedAt: Double? = nil, approvedAt: Double? = nil, asksApproval: Bool = false, approvalLabel: String? = nil,
+                        version: Int? = nil, hasScene: Bool = false, targetKind: String? = nil, inspect: String? = nil,
+                        link: String? = nil) {
                 self.id = id
                 self.artifact = artifact
                 self.summary = summary
@@ -309,6 +319,8 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
                 self.at = at
                 self.viewedAt = viewedAt
                 self.approvedAt = approvedAt
+                self.asksApproval = asksApproval
+                self.approvalLabel = approvalLabel
                 self.version = version
                 self.hasScene = hasScene
                 self.targetKind = targetKind
@@ -409,6 +421,10 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
                         at: finite(rv.at),
                         viewedAt: finite(rv.viewedAt),
                         approvedAt: finite(rv.approvedAt),
+                        // sanitize.mjs v4.12c: `asksApproval` true or absent, and its label only beside it, trimmed and
+                        // 1 to 40 characters, else none (never cut: `approvalLabelOf`).
+                        asksApproval: rv.asksApproval ? true : nil,
+                        approvalLabel: rv.asksApproval ? ReviewApproval.displayLabel(rv.approvalLabel) : nil,
                         version: rv.version,
                         scene: rv.hasScene || rv.targetKind != nil || rv.inspect != nil
                             ? Scene(target: rv.targetKind.map { Scene.Target(kind: Self.cut($0, 20)) }, inspect: Self.cut(rv.inspect, 200))

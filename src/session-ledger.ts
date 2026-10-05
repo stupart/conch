@@ -11,6 +11,7 @@ import {
   type SessionReview,
 } from "./panel.ts";
 import type { ReviewApprovalOutcome } from "./session-actions-overlay.ts";
+import { checkApprovalRequest } from "./review-approval.ts";
 import { checkFocusShape, deliverableFacts, isDeliverableKind } from "./deliverables.ts";
 import { reviewIdentity } from "./records-receipts.ts";
 import { writeSettingsFileAtomic } from "./settings.ts";
@@ -298,6 +299,8 @@ export class SessionLedger {
       id?: unknown;
       viewedAt?: unknown;
       approvedAt?: unknown;
+      asksApproval?: unknown;
+      approvalLabel?: unknown;
       kind?: unknown;
       kindSource?: unknown;
       artifact?: unknown;
@@ -331,6 +334,11 @@ export class SessionLedger {
     const approvedAt = typeof review.approvedAt === "number" && Number.isFinite(review.approvedAt)
       ? review.approvedAt
       : undefined;
+    // Still asking after a restart (2026-10-05), so its Approve is still offered; a label the filing's own rule
+    // wouldn't take is dropped, the request kept.
+    const asked = review.asksApproval === true
+      ? checkApprovalRequest(typeof review.approvalLabel === "string" ? { label: review.approvalLabel } : {}, { exact: true })
+      : undefined;
     // A filing from before kinds and artifacts gets them from the same recipe a new one does,
     // so its next republish is its next version rather than a second artifact.
     const derived = deliverableFacts(restored);
@@ -351,6 +359,7 @@ export class SessionLedger {
       id,
       ...(viewedAt !== undefined ? { viewedAt } : {}),
       ...(approvedAt !== undefined ? { approvedAt } : {}),
+      ...(asked ? { asksApproval: true as const, ...(asked.ok && asked.approval.label ? { approvalLabel: asked.approval.label } : {}) } : {}),
       kind: saved ? review.kind as SessionReview["kind"] : derived.kind,
       kindSource: saved ? review.kindSource as SessionReview["kindSource"] : derived.kindSource,
       artifact: typeof review.artifact === "string" && review.artifact ? review.artifact : derived.artifact,
@@ -396,13 +405,18 @@ export class SessionLedger {
   /**
    * Approve one held deliverable (`approveReview`) and earn its piece of sea glass, both written out at once, so neither
    * comes undone with a restart. Approving one already approved changes nothing and earns nothing (`changed: false`):
-   * 2026-10-05, Tyler's decision, approving is idempotent. One this session doesn't hold is refused in words. The agent
-   * is told nothing.
+   * 2026-10-05, Tyler's decision, approving is idempotent. One this session doesn't hold, or one its agent didn't ask
+   * about (`asksApproval`), is refused in words. Telling the agent is `reviewApprovalActions`' (review-approval.ts),
+   * which holds the message for the undo window; the ledger keeps the record.
    */
   approveDeliverable(sessionId: string, review: string, now: number): ReviewApprovalOutcome {
     const state = this.sessionStates.get(sessionId);
     const held = state?.reviews ?? (state?.review ? [state.review] : undefined);
-    if (!state || !held?.some((one) => one.id === review)) return { ok: false, reason: this.#notHeld(sessionId, review) };
+    const one = held?.find((filed) => filed.id === review);
+    if (!state || !one) return { ok: false, reason: this.#notHeld(sessionId, review) };
+    // Only a result its agent asked about (2026-10-05, Tyler, after using #502: "maybe we only show it if the AI sets some
+    // sort of flag in the review that it's asking for me to approve some work?"). Refused in words, whatever asked.
+    if (!one.asksApproval) return { ok: false, reason: "that result didn't ask for your approval" };
     const next = approveReview(held, review, now);
     if (!next) return { ok: true, changed: false };
     // A ledger that approves before `restoreReviews` (the daemon always restores first) counts on from what is saved,
@@ -505,6 +519,7 @@ export class SessionLedger {
         id: held.id,
         ...(held.viewedAt !== undefined ? { viewedAt: held.viewedAt } : {}),
         ...(held.approvedAt !== undefined ? { approvedAt: held.approvedAt } : {}),
+        ...(held.asksApproval ? { asksApproval: true, ...(held.approvalLabel ? { approvalLabel: held.approvalLabel } : {}) } : {}),
         ...(held.kind ? { kind: held.kind } : {}),
         ...(held.kindSource ? { kindSource: held.kindSource } : {}),
         ...(held.artifact ? { artifact: held.artifact } : {}),

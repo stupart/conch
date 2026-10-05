@@ -24,6 +24,8 @@ final class LagoonSnapshotTests: XCTestCase {
         "model", "effort", "steps", "took",
         // 2026-10-05, agreed with the brand repo: a review's approval, and the sea glass approvals have earned.
         "approvedAt", "seaGlass",
+        // Later that day: whether its agent asked for your yes, and what a yes does.
+        "asksApproval", "approvalLabel",
     ]
 
     private let home = "/Users/someone"
@@ -43,7 +45,8 @@ final class LagoonSnapshotTests: XCTestCase {
                     at: 1_791_039_800_000, activity: .init(text: "Running the test suite", kind: "step", at: 1_791_039_805_000),
                     approval: .init(id: "a1", name: "Bash", summary: "rm -rf build", answerable: false),
                     reviews: [
-                        .init(id: "r1", artifact: "art", summary: "The page", kind: "page", at: 1, viewedAt: 2, approvedAt: 2.5, version: 3,
+                        .init(id: "r1", artifact: "art", summary: "The page", kind: "page", at: 1, viewedAt: 2, approvedAt: 2.5,
+                              asksApproval: true, approvalLabel: "Open the PR", version: 3,
                               hasScene: true, targetKind: "page", inspect: "the header", link: "output/page.html"),
                         .init(id: nil, artifact: nil, summary: "A site", kind: "url", at: 4, link: "https://example.com/x"),
                         .init(summary: "no link"),
@@ -233,6 +236,46 @@ final class LagoonSnapshotTests: XCTestCase {
         XCTAssertEqual(LagoonSnapshot(negative, home: home).seaGlass, 0, "never below none, as sanitize.mjs reads it")
         XCTAssertNil(((fromOlder["rows"] as? [[String: Any]])?.first?["reviews"] as? [[String: Any]])?.first?["approvedAt"],
                      "a time that isn't finite is none, as sanitize.mjs's num() reads it")
+    }
+
+    /// Agreed with the brand repo on 2026-10-05 (after Tyler, using #502: "maybe we only show it if the AI sets some sort
+    /// of flag in the review that it's asking for me to approve some work?"): `asksApproval: true` on a review whose agent
+    /// asked, absent otherwise, never false; `approvalLabel` only beside it, trimmed and 1 to 40 characters, else none
+    /// (sanitize.mjs v4.12c `approvalLabelOf`: never cut).
+    func testAsksApprovalAndItsLabelAsAgreed() throws {
+        let object = try json(LagoonSnapshot(rich(), home: home))
+        let reviews = try XCTUnwrap((object["rows"] as? [[String: Any]])?.first?["reviews"] as? [[String: Any]])
+        XCTAssertEqual(reviews[0]["asksApproval"] as? Bool, true)
+        XCTAssertEqual(reviews[0]["approvalLabel"] as? String, "Open the PR")
+        XCTAssertNil(reviews[1]["asksApproval"], "absent, never false, when it didn't ask")
+        XCTAssertNil(reviews[1]["approvalLabel"])
+
+        var long = rich()
+        long.rows[0].reviews[0].approvalLabel = String(repeating: "x", count: 41)
+        let dropped = try json(LagoonSnapshot(long, home: home))
+        let first = try XCTUnwrap(((dropped["rows"] as? [[String: Any]])?.first?["reviews"] as? [[String: Any]])?.first)
+        XCTAssertNil(first["approvalLabel"], "over 40: none, never cut")
+        XCTAssertEqual(first["asksApproval"] as? Bool, true, "the request stands without its label")
+        // Exactly 40 stands, and so does one that is 40 once trimmed; nothing but space is none.
+        long.rows[0].reviews[0].approvalLabel = String(repeating: "y", count: 40)
+        XCTAssertEqual(LagoonSnapshot(long, home: home).rows[0].reviews[0].approvalLabel, String(repeating: "y", count: 40))
+        long.rows[0].reviews[0].approvalLabel = "  " + String(repeating: "y", count: 40) + "\n"
+        XCTAssertEqual(LagoonSnapshot(long, home: home).rows[0].reviews[0].approvalLabel, String(repeating: "y", count: 40))
+        long.rows[0].reviews[0].approvalLabel = "   "
+        XCTAssertNil(LagoonSnapshot(long, home: home).rows[0].reviews[0].approvalLabel)
+
+        // A label with no request isn't sent: there is nothing to approve.
+        var unasked = rich()
+        unasked.rows[0].reviews[0].asksApproval = false
+        let none = LagoonSnapshot(unasked, home: home).rows[0].reviews[0]
+        XCTAssertNil(none.asksApproval)
+        XCTAssertNil(none.approvalLabel)
+        // Asked, with no label: the request alone.
+        var bare = rich()
+        bare.rows[0].reviews[0].approvalLabel = nil
+        let asked = LagoonSnapshot(bare, home: home).rows[0].reviews[0]
+        XCTAssertEqual(asked.asksApproval, true)
+        XCTAssertNil(asked.approvalLabel)
     }
 
     func testDismissedOnceEach() {

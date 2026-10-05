@@ -221,12 +221,19 @@ function fixtureState(work: string, home: string, rows = 0) {
         settings: { model: "opus", modelLabel: "Opus 5.5", effort: "xhigh", modelChoice: "opus", choices: ["secret"] },
         execution: { providerId: "claude", runtimeId: "device:x", connectionId: "c" },
         reviews: [
+          // Its agent asks for your yes, with what a yes does (2026-10-05): `asksApproval` and `approvalLabel` as is.
           { id: "r-page", summary: "The page", link: "site/page.html", at: at - 5000, kind: "page", version: 2, artifact: "art-page",
             scene: { target: { kind: "page" }, inspect: "the header", marks: [{ id: "m", kind: "box", frame: { selector: ".x" } }] },
-            focus: ["a"], access: { conch: "page", none: "page" } },
-          // Approved (2026-10-05): `approvedAt` reaches the lagoon as is, beside `viewedAt`.
-          { id: "r-notes", summary: "Notes", link: join(work, "work/notes.txt"), at: at - 4000, kind: "text", viewedAt: at - 100, approvedAt: at - 90 },
-          { id: "r-web", summary: "A live site", link: "https://example.com/x", at: at - 3000, kind: "url", linkRefused: "no" },
+            focus: ["a"], access: { conch: "page", none: "page" }, asksApproval: true, approvalLabel: "Open the PR" },
+          // Approved (2026-10-05): `approvedAt` reaches the lagoon as is, beside `viewedAt`. It asked with no label.
+          { id: "r-notes", summary: "Notes", link: join(work, "work/notes.txt"), at: at - 4000, kind: "text", viewedAt: at - 100, approvedAt: at - 90,
+            asksApproval: true },
+          // A label longer than the daemon files (it refuses past 40): none at all, never cut (sanitize.mjs v4.12c); the
+          // request stands.
+          { id: "r-web", summary: "A live site", link: "https://example.com/x", at: at - 3000, kind: "url", linkRefused: "no",
+            asksApproval: true, approvalLabel: "Deploy the live site to production right now, please" },
+          // At the limit: exactly 40 once trimmed, sent trimmed.
+          { id: "r-merge", summary: "The branch", at: at - 2000, kind: "other", asksApproval: true, approvalLabel: `  ${"Merge it ".repeat(4)}into  ` },
         ],
         review: { id: "r-web", summary: "A live site", link: "https://example.com/x", at: at - 3000, kind: "url" },
       },
@@ -254,7 +261,9 @@ function fixtureState(work: string, home: string, rows = 0) {
       },
       {
         id: "s-old", label: "older daemon", status: "waiting", at, needsResponse: false, paused: false, muted: false, live: "speaking",
-        active: false, review: { summary: "From before ids", link: "~/notes/old.md", at: at - 9000, artifact: "art-old", scene: { marks: [] } },
+        active: false, review: { summary: "From before ids", link: "~/notes/old.md", at: at - 9000, artifact: "art-old", scene: { marks: [] },
+          // A label with no request: there is nothing to approve, so neither is sent.
+          approvalLabel: "Merge" },
       },
     ],
     conversations: {
@@ -363,7 +372,16 @@ describe.skipIf(!crossCheckable)("the app's snapshot is what sanitize.mjs makes 
     const { out: theirs, never } = JSON.parse(run.stdout.toString()) as { out: unknown; never: string[] };
     // The fields agreed with the brand repo on 2026-10-05 are in what the app sends, so the comparison below covers them.
     expect(ours.seaGlass).toBe(3);
-    expect(ours.rows[0].reviews.map((one: { approvedAt?: number }) => one.approvedAt)).toEqual([undefined, 1_791_039_800_000 - 90, undefined]);
+    expect(ours.rows[0].reviews.map((one: { approvedAt?: number }) => one.approvedAt)).toEqual([undefined, 1_791_039_800_000 - 90, undefined, undefined]);
+    // Later on 2026-10-05: whether its agent asked for your yes, and what a yes does: trimmed, 1 to 40 characters, else
+    // none, never cut.
+    expect(ours.rows[0].reviews.map((one: { asksApproval?: boolean }) => one.asksApproval)).toEqual([true, true, true, true]);
+    expect(ours.rows[0].reviews.map((one: { approvalLabel?: string }) => one.approvalLabel))
+      .toEqual(["Open the PR", undefined, undefined, "Merge it Merge it Merge it Merge it into"]);
+    expect(ours.rows[0].reviews[3].approvalLabel).toHaveLength(40);
+    const old = ours.rows.find((row: { id: string }) => row.id === "s-old");
+    expect(old.reviews[0].asksApproval).toBeUndefined();
+    expect(old.reviews[0].approvalLabel).toBeUndefined();
     expect(ours).toEqual(theirs);
     // And none of NEVER at any depth (but as a session id under `conversations`).
     const keys = new Set<string>();
@@ -419,8 +437,9 @@ describe.skipIf(!drawable)("the app's web view, over conch-lagoon://, with the s
     expect(compileError).toBe("");
     const ready = checks.get("ready")!;
     expect(ready.ok).toBe(true);
-    // `act`: the intents the app acts on in every phase, so the page treats them as live (2026-10-05).
-    expect(ready.url).toBe("conch-lagoon://lagoon/index.html?app=1&readonly=1&act=approve,unapprove");
+    // `act`: the intents the app acts on in every phase, so the page treats them as live (2026-10-05): Approve, its Undo,
+    // and the reply bar.
+    expect(ready.url).toBe("conch-lagoon://lagoon/index.html?app=1&readonly=1&act=approve,unapprove,reply");
     expect(ready.readOnly).toBe(true);
     // A module script and a fetch, both over the scheme.
     expect(checks.get("update")!.hello).toBe("lagoon");
@@ -466,10 +485,11 @@ describe.skipIf(!drawable)("the app's web view, over conch-lagoon://, with the s
     expect(checks.get("post")!.status).toBe(405);
   });
 
-  test("phase A: every message checked and logged, only approve and unapprove acted on; a frame can't speak for the page; no new windows", () => {
+  test("phase A: every message checked and logged, only approve, unapprove and reply acted on; a frame can't speak for the page; no new windows", () => {
     const intents = checks.get("intents")!;
-    // Approving a result and taking it back act with no flag set (2026-10-05, Tyler's decision); everything else logs.
-    expect(intents.routed).toEqual(["focusSession:logged", "reply:logged", "pause:logged", "approve:acted", "unapprove:acted"]);
+    // Approving a result and taking it back act with no flag set (2026-10-05, Tyler's decision), and so does a reply
+    // (2026-10-05, Tyler's go, replies only), from a read-only page too; focusing, pausing and the rest still log.
+    expect(intents.routed).toEqual(["focusSession:logged", "reply:acted", "pause:logged", "approve:acted", "unapprove:acted"]);
     const refused = intents.refused as string[];
     for (const reason of [
       "approve for a review its session doesn't hold",
@@ -481,10 +501,10 @@ describe.skipIf(!drawable)("the app's web view, over conch-lagoon://, with the s
     }
     // window.open is refused before WebKit asks, or when it asks; either way nothing else is.
     expect(refused.filter((r) => !r.startsWith("navigation: the lagoon never opens a window"))).toHaveLength(4);
-    expect(intents.sink).toEqual(["approveReview s-page r-page", "unapproveReview s-page r-page"]);
+    expect(intents.sink).toEqual(["reply s-page hello", "approveReview s-page r-page", "unapproveReview s-page r-page"]);
     expect(intents.noWindow).toBe(true);
     const navigation = checks.get("navigation")!;
-    expect(navigation.url).toBe("conch-lagoon://lagoon/index.html?app=1&readonly=1&act=approve,unapprove");
+    expect(navigation.url).toBe("conch-lagoon://lagoon/index.html?app=1&readonly=1&act=approve,unapprove,reply");
     expect(navigation.refused).toContain("navigation: the lagoon's page is only ever its own");
   });
 
@@ -504,8 +524,9 @@ describe.skipIf(!realBundle)("the real lagoon, from the brand repo's dist, in th
     expect(checks.get("ready")!.ok).toBe(true);
     const real = checks.get("real")!;
     expect(real.api).toEqual([1, "app", true]);
-    // Read-only, but Approve and its Undo are live: the page read `act=approve,unapprove` (brand repo v4.12).
-    expect(real.act).toEqual(["approve", "unapprove"]);
+    // Read-only, but Approve, its Undo and the reply bar are live: the page read `act=approve,unapprove,reply` (brand repo
+    // v4.12b).
+    expect(real.act).toEqual(["approve", "unapprove", "reply"]);
     expect(real.crabs).toBe((state.rows as unknown[]).length);
     expect(real.ids).toEqual(real.expectedIds);
     expect(real.refused).toEqual([]);

@@ -23,6 +23,10 @@ struct ReviewItem: Identifiable, Equatable {
     /// When it was approved, which marks it done (2026-10-05, Tyler's decision): out of Ready for you, and no Approve on
     /// it. Nil means it wasn't, or a daemon too old to approve.
     let approvedAt: Double?
+    /// Its agent asked for your yes, and what a yes does ("Open the PR"): only then is there a ✓ to press (2026-10-05,
+    /// after using #502). False, and no label, on everything else.
+    let asksApproval: Bool
+    let approvalLabel: String?
     /// The artifact this filing is a version of, as the daemon filed it; nil from an older one.
     let artifact: String?
     /// Which filing of its artifact this is, from 1, as the daemon numbered it; nil from an older one (`VersionLabel`).
@@ -58,6 +62,8 @@ struct ReviewItem: Identifiable, Equatable {
         isReady = ReadyForYou.isReady(working: row.status == .working, held: [(review.viewedAt, review.approvedAt)])
         viewedAt = review.viewedAt
         approvedAt = review.approvedAt
+        asksApproval = review.asksApproval
+        approvalLabel = review.approvalLabel
         artifact = review.artifact
         version = review.version
         marks = review.marks

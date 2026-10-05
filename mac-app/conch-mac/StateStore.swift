@@ -551,7 +551,8 @@ final class StateStore: ObservableObject {
     }
 
     /// Approve a result (2026-10-05, Tyler's decision): the daemon marks it done, so it leaves Ready for you everywhere,
-    /// and counts one piece of sea glass. Nothing is sent to the agent. The review pane, ↵ and the lagoon all come here.
+    /// and counts one piece of sea glass. Only a result whose agent asked can be (later on 2026-10-05), and its agent is
+    /// sent `Approved: <label>.` once the 10 s undo window closes. The review pane, ↵ and the lagoon all come here.
     /// Answers whether the daemon approved it now (false: approved already, which changes nothing), or its refusal,
     /// which also goes on the row like a refused Remove.
     @discardableResult

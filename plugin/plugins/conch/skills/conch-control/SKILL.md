@@ -67,7 +67,7 @@ https://brew.sh rather than trying to install Homebrew yourself.
 - **Speak** — `conch_speak {text}` says something aloud in conch's voice, up to 600 characters and one at a time. Use it to confirm an action or read a short answer the user asked for; do not repeat your reply or narrate progress.
 - **Answer from a transcript** — `conch_transcript_tail {session}` gives you the tail of a session's last reply, with the id and label of the session it read, so you can answer "did the tests pass?" without switching to it.
 - **Publish a result for the user to inspect** —
-  `review_to_front {summary, link?, kind?, key?, focus?, scene?}`. *Publishing results*
+  `review_to_front {summary, link?, kind?, key?, focus?, scene?, approval?}`. *Publishing results*
   above says when; this is how.
 
   **What the user sees.** conch files the result on your session in the Mac app
@@ -178,6 +178,17 @@ https://brew.sh rather than trying to install Homebrew yourself.
   A newer version already supersedes an older one, so remove only what should
   not be looked at: a wrong result, or one filed by mistake. Both act on your
   own session only.
+
+  **Asking for the user's yes.** Set `approval` only when you are waiting on
+  the user's approval to go on, never by default: a result that only wants
+  looking at needs no answer, and carries no Approve. `approval: {label: "Open
+  the PR"}` names what approving does ("Deploy", "Merge"), trimmed and at most
+  40 characters; `approval: {}` asks with no label. The result then offers the
+  user ✓ and your label (✓ Approve without one). When they press it, conch
+  sends your session `Approved: Open the PR.` as a message, about 10 s after
+  the press (they can undo it until then), or `Approved: <your summary>.` when
+  there is no label. That message is their go-ahead: carry on with what the
+  label said. It comes only from the user approving that result.
 
   **A label that drifted.** When what you publish no longer matches your
   session's label (it was named after the first task and the work moved on),
@@ -352,6 +363,9 @@ Do not retry the same call; do the alternative, or tell the user in one line.
 - `review_to_front` with a `kind` that is not one of the kinds above, or a
   kind that needs a link (`image`, `page`, `url`…) without one, or a `key`
   over 200 characters.
+- `review_to_front` with an `approval` that is not `{}` or `{label}`, or a
+  `label` that is empty or over 40 characters — fix it, or leave `approval`
+  out unless you are waiting on the user's yes.
 - `review_remove` with an `id` or `artifact` **your session does not hold** —
   "nothing removed"; list yours with `conch_deliverables`. It takes exactly
   one of the two.

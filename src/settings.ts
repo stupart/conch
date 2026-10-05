@@ -856,12 +856,16 @@ export type SessionControlMessage =
   | { kind: "session-command"; sessionId: string; command: "review-remove"; review?: string; artifact?: string }
   /**
    * Approve one deliverable, by the identity it was filed with: it is done, leaves the review queue on every surface,
-   * and earns one piece of sea glass (`seaGlass`). Idempotent: approving one already approved changes nothing. The agent
-   * is sent nothing. 2026-10-05, Tyler's decision. A phone may send it too: it is a harmless state change, like
-   * `review-viewed`, and nothing on `MAC_APP_ONLY_KINDS`.
+   * and earns one piece of sea glass (`seaGlass`). Idempotent: approving one already approved changes nothing.
+   * 2026-10-05, Tyler's decision; later that day, only for a deliverable whose agent asked (`asksApproval`, refused
+   * otherwise), and its agent is sent `Approved: <label>.` once the 10 s undo window closes (review-approval.ts). A
+   * phone may send it too, as it sends `review-viewed`: nothing on `MAC_APP_ONLY_KINDS`.
    */
   | { kind: "session-command"; sessionId: string; command: "review-approve"; review: string }
-  /** Take an approval back, within 10 s of it (`UNAPPROVE_WINDOW_MS`); refused in words past that. `viewedAt` stays. */
+  /**
+   * Take an approval back, within 10 s of it (`UNAPPROVE_WINDOW_MS`), which also cancels the `Approved: …` message held
+   * for its agent; refused in words past that, or once the agent has been told. `viewedAt` stays.
+   */
   | { kind: "session-command"; sessionId: string; command: "review-unapprove"; review: string };
 
 export type RuntimeControlMessage =

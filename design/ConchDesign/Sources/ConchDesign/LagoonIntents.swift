@@ -4,14 +4,18 @@ import Foundation
 /// anything sees it, then logged, then acted on only when its own flag says so.
 ///
 /// The rollout (spec §8) is per name, in `conch.lagoon.actions`:
-/// - phase A (2026-10-04, this): no flags. Every message is checked and logged, and nothing acts but Approve (below).
+/// - phase A (2026-10-04, this): no flags. Every message is checked and logged, and nothing acts but the three below.
 /// - phase B: `focusSession` and `openReview` (look, and go to it): reversible, and nothing reaches an agent.
-/// - phase C: `reply`, `answer` and `pause`, which do reach one. Each is its own flag, so any one can go back to logging.
-/// `approve` and `unapprove` act by default, with no flag at all (`byDefault`): 2026-10-05, Tyler's decision, ahead of
-/// phases B and C. They are a harmless state change (a result marked done, a piece of sea glass), reach no agent, and
-/// are the same store action as the review pane's Approve. `newSession` has no conch action yet and only ever logs.
-/// `ready` isn't an intent: it is the page saying it booted, and the app answers it with the latest snapshot whatever
-/// the flags say.
+/// - phase C: `answer` and `pause`, which do reach one. Each is its own flag, so either can go back to logging.
+/// Three act by default, with no flag at all (`byDefault`), ahead of phases B and C, and whether the page is read-only
+/// or not:
+/// - `approve` and `unapprove` (2026-10-05, Tyler's decision): the same store action as the review pane's Approve, and
+///   only for a result whose agent asked for your yes, which is told `Approved: <label>.` once the 10 s undo window
+///   closes (the daemon holds it; an undo inside the window cancels it).
+/// - `reply` (2026-10-05, Tyler's go, replies only): what you type to a session on the glass, sent exactly as the
+///   composer sends it, through the same store action and delivery path. It was phase C's.
+/// `newSession` has no conch action yet and only ever logs. `ready` isn't an intent: it is the page saying it booted, and
+/// the app answers it with the latest snapshot whatever the flags say.
 public enum LagoonIntent {
     public enum Name: String, Equatable, Hashable, Sendable, CaseIterable {
         case ready, openReview, reply, answer, focusSession, pause, approve, unapprove, newSession
@@ -19,9 +23,11 @@ public enum LagoonIntent {
 
     /// The names that can act at all, by phase. Anything else is logged and never acted on.
     public static let phaseB: Set<Name> = [.focusSession, .openReview]
-    public static let phaseC: Set<Name> = [.reply, .answer, .pause]
-    /// The names that act with no flag set: approving a result, and taking it back within 10 s.
-    public static let byDefault: Set<Name> = [.approve, .unapprove]
+    public static let phaseC: Set<Name> = [.answer, .pause]
+    /// The names that act with no flag set, in the order the page's `act=` names them: approving a result, taking it
+    /// back within 10 s, and replying to a session (2026-10-05).
+    public static let byDefaultInOrder: [Name] = [.approve, .unapprove, .reply]
+    public static let byDefault: Set<Name> = Set(byDefaultInOrder)
 
     /// One message, checked: every field the app may act on, typed.
     public struct Message: Equatable, Sendable {
@@ -166,8 +172,8 @@ public struct LagoonActionFlags: Equatable, Sendable {
 
     public func acts(_ name: LagoonIntent.Name) -> Bool { on.contains(name) }
 
-    /// Phase C sends what you type to an agent with no "would do" toast in the way, so the page loads without `readonly=1`
-    /// once any of its names is on (spec §8).
+    /// Phase C reaches an agent with no "would do" toast in the way, so the page loads without `readonly=1` once any of its
+    /// names is on (spec §8). A reply needs neither: it acts by default and the page's `act=` names it.
     public var pageReadOnly: Bool { on.isDisjoint(with: LagoonIntent.phaseC) }
 }
 
@@ -181,7 +187,7 @@ public protocol LagoonActionSink: AnyObject {
     func markReviewViewed(sessionId: String, reviewId: String)
     /// Open ↗: select the session, stage its deliverable, leave the lagoon (or open a link outside the app where it lives).
     func openReview(sessionId: String, reviewId: String)
-    /// `store.send(.inject(sessionId:, label:, text:))`.
+    /// `store.send(.inject(sessionId:, label:, text:))`: the composer's own send. Acts by default (`byDefault`).
     func reply(sessionId: String, text: String)
     /// `DashboardView`'s `onApprove`: "Allow <name>" or "Deny <name>", with `ConchApproval(kind: once | deny, id:)`.
     func answer(sessionId: String, allow: Bool, approvalId: String)
@@ -206,7 +212,7 @@ public enum LagoonRouting: Equatable, Sendable {
 @MainActor
 public enum LagoonIntentRouter {
     /// Every code path for phases B and C is here and compiled; each is reached only when that name's flag is on. With
-    /// every flag off (phase A), only `approve` and `unapprove` reach the sink (`LagoonIntent.byDefault`).
+    /// every flag off (phase A), only `approve`, `unapprove` and `reply` reach the sink (`LagoonIntent.byDefault`).
     public static func route(_ message: LagoonIntent.Message, flags: LagoonActionFlags, sink: LagoonActionSink?) -> LagoonRouting {
         if message.name == .ready { return .ready }
         guard LagoonIntent.byDefault.contains(message.name) || flags.acts(message.name), let sink else { return .logged }

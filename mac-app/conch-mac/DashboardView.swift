@@ -2075,7 +2075,8 @@ private struct ConversationPane: View {
     }
 
     /// The result ✓ Approve and ↵ would approve: the deliverable on screen, from a daemon that can approve (it publishes
-    /// `seaGlass`), not yet approved. Never the practice session's welcome card, which the daemon doesn't hold.
+    /// `seaGlass`), whose agent asked for your yes (`asksApproval`), not yet approved. Never the practice session's welcome
+    /// card, which the daemon doesn't hold.
     private var shownResult: ReviewApprovals.Target? {
         guard let row = focusedRow, let review = selectedReview, row.id != TourCoach.practiceSessionId,
               stage(for: row) != .conversation, workPane(for: row) == .deliverable else { return nil }
@@ -2083,7 +2084,8 @@ private struct ConversationPane: View {
     }
 
     private var approvalTarget: ReviewApprovals.Target? {
-        guard let shown = shownResult, state?.seaGlass != nil, selectedReview?.approvedAt == nil else { return nil }
+        guard let shown = shownResult, state?.seaGlass != nil, selectedReview?.asksApproval == true,
+              selectedReview?.approvedAt == nil else { return nil }
         return shown
     }
 
@@ -2443,9 +2445,12 @@ private struct ConversationPane: View {
             }
 
             // ✓ Approve (2026-10-05, Tyler's decision): marks the result on screen done. It leaves Ready for you everywhere
-            // and earns a piece of sea glass; nothing is sent to the agent. After the track, styled as one, and only for a
-            // result nobody has approved; "✓" alone when the bar is narrow. ↵ does the same from the review pane, and ⌘Z
-            // takes it back for ten seconds.
+            // and earns a piece of sea glass. Later that day, after using it ("I don't really get the point of the approve
+            // button... maybe we only show it if the AI sets some sort of flag in the review that it's asking for me to
+            // approve some work?"): only a result whose agent asked has one, it reads "✓ <the agent's label>" (else
+            // "✓ Approve"), and the agent is sent `Approved: <label>.` once the 10 s undo window closes. With no request
+            // there is no button: the result leaves Ready for you by being looked at. After the track, styled as one;
+            // "✓" alone when the bar is narrow. ↵ does the same from the review pane, and ⌘Z takes it back for ten seconds.
             approveControl
 
             // A subagent is not a session: nothing to inspect, no process to
@@ -2510,12 +2515,14 @@ private struct ConversationPane: View {
         let control = ReviewApproval.control(
             showing: shownResult != nil,
             daemonCanApprove: state?.seaGlass != nil,
+            asksApproval: selectedReview?.asksApproval == true,
             approvedAt: selectedReview?.approvedAt,
             confirming: shownResult != nil && approvals.confirming == shownResult
         )
         if control != .hidden, let shown = shownResult {
             ApproveButton(
                 control: control,
+                approvalLabel: selectedReview?.approvalLabel,
                 compact: ReviewApproval.isCompact(headerWidth: sessionBarWidth),
                 action: { approvals.approve(shown, store: store) }
             )
@@ -3271,6 +3278,8 @@ private struct PerspectiveOption: View {
 /// drawn, with words. "✓ Approved" for a moment after an approval made here, in the selected segment's fill.
 private struct ApproveButton: View {
     let control: ReviewApproval.Control
+    /// What a yes does, in the agent's words ("Open the PR"); nil reads "Approve".
+    let approvalLabel: String?
     let compact: Bool
     let action: () -> Void
 
@@ -3280,7 +3289,7 @@ private struct ApproveButton: View {
 
     var body: some View {
         Button(action: action) {
-            Text(ReviewApproval.label(control, compact: compact) ?? "")
+            Text(ReviewApproval.label(control, compact: compact, approvalLabel: approvalLabel) ?? "")
                 .font(ConchTypography.font(size: 11.5, weight: .medium))
                 // Ink when approved, never the ready green: that green measures under 3:1 on the light grounds
                 // (RowStateTokenTests), and the selected segment's fill already says it is done.
@@ -3310,9 +3319,9 @@ private struct ApproveButton: View {
         // Approved already: the click has nothing left to do.
         .disabled(approved)
         .onHover { isHovered = $0 }
-        .help(ReviewApproval.help(control))
-        .accessibilityLabel(ReviewApproval.accessibilityLabel(control))
-        .accessibilityHint(approved ? "" : "Marks this result done. Return does the same from the review pane.")
+        .help(ReviewApproval.help(control, approvalLabel: approvalLabel))
+        .accessibilityLabel(ReviewApproval.accessibilityLabel(control, approvalLabel: approvalLabel))
+        .accessibilityHint(approved ? "" : "Tells the agent to go ahead, in 10 seconds. Return does the same from the review pane.")
         .accessibilityAddTraits(approved ? [.isSelected] : [])
     }
 }
@@ -3320,7 +3329,8 @@ private struct ApproveButton: View {
 /// Approving the result the review pane shows, for the window (2026-10-05, Tyler's decision): the session bar's
 /// ✓ Approve, ↵ from the review pane, and ⌘Z for the ten seconds after (ContentView, DashboardInputMonitor). The rules are
 /// ConchDesign's `ReviewApproval`; this holds what is on screen and what ⌘Z would take back. The daemon does the rest:
-/// done everywhere, one piece of sea glass, nothing to the agent.
+/// done everywhere, one piece of sea glass, and, once the 10 s are up, `Approved: <label>.` to the agent that asked
+/// (later on 2026-10-05: only a result whose agent asked has a ✓ at all).
 @MainActor
 final class ReviewApprovals: ObservableObject {
     struct Target: Equatable {
