@@ -8,6 +8,9 @@ import {
   appendFileSync,
   chmodSync,
   closeSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
   statSync,
   openSync,
   renameSync,
@@ -55,6 +58,46 @@ export const SESSIONS_FILE = process.env.CONCH_SESSIONS_FILE || "/tmp/conch-sess
 // STATE_FILE: `test/preload.ts` points it at a temp file.
 export const REVIEWS_FILE = process.env.CONCH_REVIEWS_FILE
   || join(process.env.CONCH_CONFIG_DIR ?? join(conchHome(), ".config", "conch"), "reviews.json");
+/**
+ * Every dictation handed back to the apps (`publishDictation`), newest last: a recording that never reached a draft
+ * can still be read back (`conch dictations`). 2026-10-05: a 2,555-character dictation reached no composer, and its words
+ * survived only by luck, in the live state's transcript prefix. Beside the ledger, 0600, the last 20 within 7 days.
+ */
+export const DICTATIONS_FILE = process.env.CONCH_DICTATIONS_FILE
+  || join(process.env.CONCH_CONFIG_DIR ?? join(conchHome(), ".config", "conch"), "recent-dictations.jsonl");
+const DICTATIONS_KEPT = 20;
+const DICTATIONS_KEPT_MS = 7 * 24 * 60 * 60 * 1000;
+
+export interface RecentDictation { at: number; sessionId: string; text: string }
+
+/** The recent dictations, newest last; none when the file is missing or unreadable. */
+export function recentDictations(file: string = DICTATIONS_FILE, now = Date.now()): RecentDictation[] {
+  if (!existsSync(file)) return [];
+  try {
+    return readFileSync(file, "utf8").split("\n").flatMap((line) => {
+      try {
+        const entry = JSON.parse(line) as RecentDictation;
+        return typeof entry?.text === "string" && typeof entry.at === "number" && now - entry.at < DICTATIONS_KEPT_MS ? [entry] : [];
+      } catch {
+        return [];
+      }
+    }).slice(-DICTATIONS_KEPT);
+  } catch {
+    return [];
+  }
+}
+
+/** Keep one more, and only the last `DICTATIONS_KEPT` within the week. Never throws: losing the copy never loses the dictation. */
+export function rememberDictation(entry: RecentDictation, file: string = DICTATIONS_FILE): void {
+  try {
+    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+    const kept = [...recentDictations(file, entry.at), entry].slice(-DICTATIONS_KEPT);
+    const temp = `${file}.${process.pid}.tmp`;
+    writeFileSync(temp, kept.map((one) => JSON.stringify(one)).join("\n") + "\n", { mode: 0o600 });
+    renameSync(temp, file);
+  } catch {}
+}
+
 /** Where the ledger lived before it moved home; read only while the new file is absent. */
 export const LEGACY_REVIEWS_FILE = "/tmp/conch-reviews.json";
 // Every log line is always appended here (for debugging) but only shown in the
@@ -1777,10 +1820,16 @@ export function setTranscriptPrefix(prefix: string): void {
 export function publishDictation(text: string, sessionId: string): void {
   const trimmed = text.trim();
   if (!trimmed) return;
+  const at = Date.now();
   live = {
     ...live,
-    dictated: { text: trimmed, id: (live.dictated?.id ?? 0) + 1, sessionId },
+    // Never an id a past daemon used. The count restarted at 1 with every daemon, and the Mac app keeps the last id it
+    // applied across its own relaunches, so the first dictation after a restart matched it and was skipped as already
+    // applied: 2026-10-05, a 2,555-character dictation reached no composer, after a day of daemon restarts. The
+    // clock's millisecond only ever grows, so an id is new to every app however often either side restarts.
+    dictated: { text: trimmed, id: Math.max((live.dictated?.id ?? 0) + 1, at), sessionId },
   };
+  rememberDictation({ at, sessionId, text: trimmed });
   activeRenderer.live(live);
   onLiveData?.();
 }

@@ -99,6 +99,10 @@ if (!process.env.CONCH_STATE_FILE) {
 }
 // A ledger given this path rewrites it whenever a deliverable is filed or its
 // session forgotten; the live daemon restores from it on start.
+// Every dictation the suite publishes would otherwise land in the user's own recent-dictations file.
+if (!process.env.CONCH_DICTATIONS_FILE) {
+  process.env.CONCH_DICTATIONS_FILE = join(process.env.CONCH_LOG_FILE, "..", "recent-dictations.jsonl");
+}
 if (!process.env.CONCH_REVIEWS_FILE) {
   process.env.CONCH_REVIEWS_FILE = join(process.env.CONCH_LOG_FILE, "..", "reviews.json");
 }
