@@ -55,6 +55,9 @@ final class Drafts: ObservableObject {
     @Published var focused = false
     @Published var session = "alpha"
     @Published var tick = 0
+    /// A dictation fills the field (`ComposerEditor.readOnly`), and what it turned away.
+    @Published var readOnly = false
+    var refused = 0
     var sends = 0
 
     func binding(_ id: String) -> Binding<String> {
@@ -90,6 +93,7 @@ struct Field: View {
         let draft = drafts.binding(drafts.session)
         return ZStack(alignment: .topLeading) {
             ComposerEditor(text: draft, isFocused: drafts.focusBinding, identity: drafts.session, onSend: { drafts.sends += 1 })
+                .readOnly(drafts.readOnly) { drafts.refused += 1 }
                 .padding(.top, insetTop + caretRaise)
                 .padding(.bottom, insetBottom - caretRaise)
                 .padding(.horizontal, insetX)
@@ -433,6 +437,40 @@ Task { @MainActor in
     await spin(0.2)
     say(["name": "outside", "dictated": dictated, "middle": middle, "sent": sent,
          "typingInk": luma((view.typingAttributes[.foregroundColor] as? NSColor) ?? .black), "afterEmptyInk": ink(view)])
+
+    // A dictation fills the field (ComposerView draws it over the editor): read-only, and only so. Keys, Delete, Return,
+    // an insert from outside the keyboard and Cmd-Z change nothing and are each reported; arrows still move; the field
+    // still answers as editable, which is how the window's single-key shortcuts know to stand aside. The dictation then
+    // lands in the update that ends it, after what was typed, with the field's history still there to undo.
+    drafts.draft = ""
+    await until { view.string.isEmpty }
+    window.makeFirstResponder(view)
+    await type(view, "typed first")
+    await until { drafts.draft == "typed first" }
+    let canUndoBefore = view.undoManager?.canUndo ?? false
+    drafts.readOnly = true
+    await until { (view as? ComposerTextView)?.refusesTyping == true }
+    let refusedBefore = drafts.refused, sendsBefore2 = drafts.sends
+    await type(view, "xyz")
+    key(view, "\u{7F}", code: 51)
+    key(view, "\r", code: 36)
+    view.insertText("inserted", replacementRange: NSRange(location: NSNotFound, length: 0))
+    let canUndoWhileReadOnly = view.undoManager?.canUndo ?? true
+    view.undoManager?.undo()
+    let caretBeforeArrow = view.selectedRange().location
+    key(view, "\u{F702}", code: 123)
+    let whileReadOnly: [String: Any] = [
+        "text": view.string, "draft": drafts.draft, "refused": drafts.refused - refusedBefore, "sends": drafts.sends - sendsBefore2,
+        "editable": view.isEditable, "canUndo": canUndoWhileReadOnly, "arrowMoved": view.selectedRange().location != caretBeforeArrow,
+    ]
+    view.setSelectedRange(NSRange(location: (view.string as NSString).length, length: 0))
+    drafts.draft = "typed first and the spoken words"
+    drafts.readOnly = false
+    await until { view.string == "typed first and the spoken words" }
+    await spin(0.2)
+    let landed: [String: Any] = ["text": view.string, "caret": view.selectedRange().location, "refusing": (view as? ComposerTextView)?.refusesTyping ?? true]
+    say(["name": "dictating", "canUndoBefore": canUndoBefore, "whileReadOnly": whileReadOnly, "landed": landed,
+         "canUndoAfter": view.undoManager?.canUndo ?? false])
 
     // Another session's draft replaces the field outright, mid-composition included, with no undo back into the last one.
     drafts.text["beta"] = "beta's own draft"

@@ -34,6 +34,25 @@ struct ComposerEditor: NSViewRepresentable {
     let identity: String
     /// Return, unmodified (`ComposerEditing.returnKey`).
     let onSend: () -> Void
+    /// A dictation fills the field (`readOnly(_:refused:)`).
+    var isReadOnly = false
+    /// A key typed, or text pasted or dropped, while the field is read-only.
+    var onRefusedTyping: () -> Void = {}
+
+    /// While a dictation fills the field (ComposerView draws it over this one): nothing typed, pasted or dropped lands,
+    /// and Cmd-Z has nothing to take back, so the draft and its history are exactly as they were when the words land, and
+    /// a cancelled dictation leaves them untouched. `refused` hears about each attempt, for the field to say why.
+    ///
+    /// Not `isEditable = false`: an editable text view with the keyboard is how the window's single-key shortcuts know to
+    /// stand aside (DashboardInputMonitor), and a read-only one would have let Space and the letters typed into the field
+    /// work the window instead. 2026-10-05, Tyler: "make the transcript accumulate in the input bar with whatever text is
+    /// already there instead of just showing like the last few words".
+    func readOnly(_ readOnly: Bool, refused: @escaping () -> Void) -> ComposerEditor {
+        var editor = self
+        editor.isReadOnly = readOnly
+        editor.onRefusedTyping = refused
+        return editor
+    }
 
     /// The reading font, its leading and its ink, on every character: the field is plain text in one style. The lab's
     /// `#ta` uses the READING font — the composer answers the transcript, so it is set at the same size rather than a
@@ -114,6 +133,8 @@ struct ComposerEditor: NSViewRepresentable {
 
         view.onFocusChange = { [weak coordinator] focused in coordinator?.focusChanged(focused) }
         view.onMarkedTextChange = { [weak coordinator] in coordinator?.markedTextChanged() }
+        view.onRefusedTyping = { [weak coordinator] in coordinator?.parent.onRefusedTyping() }
+        coordinator.readOnly = isReadOnly
         view.updateDragTypeRegistration()
 
         let scroll = ComposerScrollView()
@@ -131,10 +152,14 @@ struct ComposerEditor: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         let coordinator = context.coordinator
         coordinator.parent = self
+        // Before the draft: the update that ends a dictation is the one that brings its words.
+        coordinator.readOnly = isReadOnly
         if coordinator.identity != identity {
             coordinator.identity = identity
             coordinator.replace(with: text)
-        } else {
+        } else if !isReadOnly {
+            // Read-only, the field is drawn over and the draft can only change from outside (a send landing clears
+            // what it sent). It catches up as one edit when the dictation is over, the dictation's words with it.
             coordinator.receive(text)
         }
         coordinator.focus(isFocused)
@@ -164,6 +189,12 @@ struct ComposerEditor: NSViewRepresentable {
         private var sawFocused = false
         /// The field's own history: the window's is shared with every other field in it.
         let undo = UndoManager()
+        /// What Cmd-Z finds while the field is read-only: nothing, so the real history is still whole after.
+        private let nothingToUndo = UndoManager()
+        /// A dictation fills the field (`ComposerEditor.readOnly`).
+        var readOnly = false {
+            didSet { textView?.refusesTyping = readOnly }
+        }
         private let measure = Measure()
 
         init(_ parent: ComposerEditor) {
@@ -315,7 +346,15 @@ struct ComposerEditor: NSViewRepresentable {
             return selector == NSSelectorFromString("noop:") && event?.type == .keyDown && (event?.keyCode == 36 || event?.keyCode == 76)
         }
 
-        func undoManager(for view: NSTextView) -> UndoManager? { undo }
+        func undoManager(for view: NSTextView) -> UndoManager? { readOnly ? nothingToUndo : undo }
+
+        /// Read-only, nothing a person does changes the text: a paste, a drop, the Edit menu, the character viewer.
+        /// The field's own outside edits never arrive while it is (`updateNSView`).
+        func textView(_ view: NSTextView, shouldChangeTextIn range: NSRange, replacementString: String?) -> Bool {
+            guard readOnly, !applying else { return true }
+            parent.onRefusedTyping()
+            return false
+        }
 
         // MARK: Focus
 
@@ -356,12 +395,20 @@ struct ComposerEditor: NSViewRepresentable {
 final class ComposerTextView: NSTextView {
     var onFocusChange: ((Bool) -> Void)?
     var onMarkedTextChange: (() -> Void)?
+    /// A dictation fills the field: keys that would type are turned away here, before the input method sees them.
+    var refusesTyping = false
+    var onRefusedTyping: (() -> Void)?
     /// Asked for the keyboard before it had a window to take it in.
     var wantsFocus = false
     /// The key being interpreted, for its modifiers (`textView(_:doCommandBy:)`).
     private(set) var keyEvent: NSEvent?
 
     override func keyDown(with event: NSEvent) {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if refusesTyping, ComposerDictation.types(event.charactersIgnoringModifiers, command: flags.contains(.command), control: flags.contains(.control)) {
+            onRefusedTyping?()
+            return
+        }
         keyEvent = event
         defer { keyEvent = nil }
         super.keyDown(with: event)
@@ -436,6 +483,103 @@ final class ComposerScrollView: NSScrollView {
             clip.scroll(to: constrained)
             reflectScrolledClipView(clip)
         }
+    }
+}
+
+/// A dictation still being spoken, in the field: the draft, then every word said so far, the ones still changing a little
+/// dimmer (`ComposerDictation.Preview`). ComposerView draws it over the editor, which keeps the draft, the caret and the
+/// undo history underneath, untouched, until the words land.
+///
+/// 2026-10-05, Tyler: "make the transcript accumulate in the input bar with whatever text is already there instead of
+/// just showing like the last few words". The field was replaced by `live.partial` alone, one line of SwiftUI text in
+/// cyan: only the segment being heard, with the draft gone from view. This is a read-only text view set exactly as the
+/// editor is (its font, leading, caret seam and insets), so the draft does not move when the dictation takes the field
+/// and the words do not move when they land; the field grows as it would for typing, to eight lines, then scrolls inside
+/// itself to keep the newest words in view.
+struct ComposerDictationText: NSViewRepresentable {
+    let preview: ComposerDictation.Preview
+
+    /// The words still changing: the palette's secondary text, a step dimmer than the settled ones.
+    static let pendingInk = NSColor(ConchPalette.textDim)
+
+    /// The draft and the settled words in the editor's own attributes; the changing words in the same, dimmer.
+    static func attributed(_ preview: ComposerDictation.Preview) -> NSAttributedString {
+        let text = NSMutableAttributedString(string: preview.plain, attributes: ComposerEditor.attributes)
+        var pending = ComposerEditor.attributes
+        pending[.foregroundColor] = pendingInk
+        text.append(NSAttributedString(string: preview.pending, attributes: pending))
+        return text
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        // TextKit 1 from creation, like the editor: the caret seam it shares is a layout manager's.
+        let view = ComposerTextView(usingTextLayoutManager: false)
+        // Shown, never edited or selected: a click here is not a place to put a caret, and the editor under it keeps
+        // the keyboard.
+        view.isEditable = false
+        view.isSelectable = false
+        view.importsGraphics = false
+        view.drawsBackground = false
+        view.focusRingType = .none
+        view.textContainerInset = .zero
+        view.textContainer?.lineFragmentPadding = 0
+        view.textContainer?.widthTracksTextView = true
+        view.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+        view.isVerticallyResizable = true
+        view.isHorizontallyResizable = false
+        view.autoresizingMask = [.width]
+        view.minSize = .zero
+        view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        // The editor's glyphs sit half the leading high in their line (`ComposerCaretBaseline`), and so do these, at the
+        // editor's padding: line for line, the same place.
+        view.layoutManager?.delegate = ComposerCaretBaseline.shared
+        view.textStorage?.setAttributedString(Self.attributed(preview))
+        context.coordinator.shown = preview
+
+        let scroll = ComposerScrollView()
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+        scroll.focusRingType = .none
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = false
+        scroll.autohidesScrollers = true
+        scroll.documentView = view
+        Self.showNewest(view)
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        guard context.coordinator.shown != preview, let view = scroll.documentView as? NSTextView else { return }
+        context.coordinator.shown = preview
+        view.textStorage?.setAttributedString(Self.attributed(preview))
+        Self.showNewest(view)
+    }
+
+    /// As tall as the words lay out, one line to eight, by the editor's own measure (`ComposerEditing.height`).
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
+        let offered = proposal.width.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+        guard let width = offered ?? (nsView.bounds.width > 0 ? nsView.bounds.width : nil),
+              let storage = (nsView.documentView as? NSTextView)?.textStorage else { return nil }
+        return CGSize(width: width, height: context.coordinator.measure.height(of: storage, at: width))
+    }
+
+    /// The newest words in view: past eight lines the field scrolls inside itself, and it is the end you are watching.
+    /// Again a turn later, once SwiftUI has grown the field for what just arrived: scrolled at the height it had a moment
+    /// ago, the newest line could sit under the bottom edge.
+    static func showNewest(_ view: NSTextView) {
+        view.scrollRangeToVisible(NSRange(location: (view.string as NSString).length, length: 0))
+        DispatchQueue.main.async { [weak view] in
+            guard let view else { return }
+            view.scrollRangeToVisible(NSRange(location: (view.string as NSString).length, length: 0))
+        }
+    }
+
+    @MainActor
+    final class Coordinator {
+        var shown: ComposerDictation.Preview?
+        fileprivate let measure = Measure()
     }
 }
 

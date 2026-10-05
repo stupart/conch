@@ -68,7 +68,7 @@ extension WorkspaceModel {
     }
 
     /// The words being transcribed, shown only in the composer they were spoken into.
-    func dictation(of row: SessionRow?, in state: PublishedState?) -> String {
+    func dictation(of row: SessionRow?, in state: PublishedState?) -> ComposerDictation.Live? {
         Self.dictation(of: row, in: state)
     }
 
@@ -84,10 +84,21 @@ extension WorkspaceModel {
         return state.live.level
     }
 
-    static func dictation(of row: SessionRow?, in state: PublishedState?) -> String {
+    /// The whole of what the daemon says about the words, not only `partial`: `partial` is the segment being heard now,
+    /// and everything said before it is in `transcriptPrefix` (`ComposerDictation`). 2026-10-05, Tyler: "make the
+    /// transcript accumulate in the input bar with whatever text is already there instead of just showing like the last
+    /// few words".
+    static func dictation(of row: SessionRow?, in state: PublishedState?) -> ComposerDictation.Live? {
         guard let row, let state,
-              WorkspaceFocus.isAddressed(row.id, in: Workspace(state)) else { return "" }
-        return state.live.partial
+              WorkspaceFocus.isAddressed(row.id, in: Workspace(state)) else { return nil }
+        let live = state.live
+        return ComposerDictation.Live(
+            session: row.id,
+            state: live.state,
+            prefix: live.transcriptPrefix,
+            partial: live.partial,
+            landed: live.dictated.map { ComposerDictation.Live.Landed(id: $0.id, session: $0.sessionId) }
+        )
     }
 
     /// Is the session in front of the reader the one the voice is on?
