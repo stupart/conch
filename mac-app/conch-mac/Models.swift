@@ -66,6 +66,9 @@ struct PublishedState: Decodable, Equatable, Sendable {
     let sessionSettings: SessionSettingsCatalog?
     /// Where the natural voices stand (src/voice-env.ts): the calm line's source (`NaturalVoicesNoticeStore`).
     let naturalVoices: NaturalVoicesReport?
+    /// The sea glass approving results has earned, ever (src/panel.ts `seaGlass`, 2026-10-05). Nil from a daemon too old
+    /// to approve, which is how the review pane knows not to offer Approve.
+    let seaGlass: Int?
 
     struct PreviewRequest: Decodable, Equatable, Sendable {
         let id: String
@@ -150,6 +153,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         case practice
         case sessionSettings
         case naturalVoices
+        case seaGlass
     }
 
     init(
@@ -175,7 +179,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
         captureRequests: [CaptureRequest] = [],
         practice: PracticeReport? = nil,
         sessionSettings: SessionSettingsCatalog? = nil,
-        naturalVoices: NaturalVoicesReport? = nil
+        naturalVoices: NaturalVoicesReport? = nil,
+        seaGlass: Int? = nil
     ) {
         self.v = v
         self.ownerDeviceId = ownerDeviceId
@@ -201,6 +206,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         self.practice = practice
         self.sessionSettings = sessionSettings
         self.naturalVoices = naturalVoices
+        self.seaGlass = seaGlass
     }
 
     init(from decoder: Decoder) throws {
@@ -247,6 +253,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         practice = try? container.decodeIfPresent(PracticeReport.self, forKey: .practice)
         sessionSettings = try? container.decodeIfPresent(SessionSettingsCatalog.self, forKey: .sessionSettings)
         naturalVoices = try? container.decodeIfPresent(NaturalVoicesReport.self, forKey: .naturalVoices)
+        seaGlass = try? container.decodeIfPresent(Int.self, forKey: .seaGlass)
     }
 
     private static func decodeLossyArray<Element: Decodable>(
@@ -293,6 +300,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
             && sessionSettings == other.sessionSettings
             // The natural voices' calm line follows them.
             && naturalVoices == other.naturalVoices
+            // The lagoon's jar counts it.
+            && seaGlass == other.seaGlass
     }
 }
 
@@ -912,6 +921,9 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
     /// When this deliverable was looked at, on whichever device looked. Absent means nobody
     /// has — and absent from an older daemon too, which is what `features` disambiguates.
     let viewedAt: Double?
+    /// When it was approved, which marks it done: out of Ready for you on every surface (2026-10-05, Tyler's decision).
+    /// Absent means it wasn't, and from a daemon too old to approve (`PublishedState.seaGlass` is nil there).
+    let approvedAt: Double?
     /// What a click on the Ready pill should bring forward (`scene.target.kind`) and the one thing to check there
     /// (`scene.inspect`). Absent from older daemons and from reviews that asked for nothing, which is `auto`.
     let sceneKind: String?
@@ -944,6 +956,7 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
         case scene
         case id
         case viewedAt
+        case approvedAt
         case artifact
         case version
         case kind
@@ -966,6 +979,7 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
         at = Self.decodeTimestamp(from: container)
         id = try? container.decodeIfPresent(String.self, forKey: .id)
         viewedAt = try? container.decodeIfPresent(Double.self, forKey: .viewedAt)
+        approvedAt = try? container.decodeIfPresent(Double.self, forKey: .approvedAt)
         // A scene this build can't read is no scene: the review itself still decodes.
         let scene = try? container.decodeIfPresent(Scene.self, forKey: .scene)
         sceneKind = scene?.target?.kind

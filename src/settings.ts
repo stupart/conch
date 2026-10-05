@@ -815,6 +815,8 @@ export const SESSION_COMMANDS = [
   "attach",
   "review-viewed",
   "review-remove",
+  "review-approve",
+  "review-unapprove",
 ] as const;
 
 export type SessionCommand = typeof SESSION_COMMANDS[number];
@@ -851,7 +853,16 @@ export type SessionControlMessage =
    * Take deliverables off the session: one filing by the identity it was filed with, or every
    * filing of an `artifact`. Exactly one of the two.
    */
-  | { kind: "session-command"; sessionId: string; command: "review-remove"; review?: string; artifact?: string };
+  | { kind: "session-command"; sessionId: string; command: "review-remove"; review?: string; artifact?: string }
+  /**
+   * Approve one deliverable, by the identity it was filed with: it is done, leaves the review queue on every surface,
+   * and earns one piece of sea glass (`seaGlass`). Idempotent: approving one already approved changes nothing. The agent
+   * is sent nothing. 2026-10-05, Tyler's decision. A phone may send it too: it is a harmless state change, like
+   * `review-viewed`, and nothing on `MAC_APP_ONLY_KINDS`.
+   */
+  | { kind: "session-command"; sessionId: string; command: "review-approve"; review: string }
+  /** Take an approval back, within 10 s of it (`UNAPPROVE_WINDOW_MS`); refused in words past that. `viewedAt` stays. */
+  | { kind: "session-command"; sessionId: string; command: "review-unapprove"; review: string };
 
 export type RuntimeControlMessage =
   | ClaudeAccountRequest
@@ -1216,6 +1227,15 @@ export function validateSessionControlMessage(value: unknown): ParseResult<Sessi
       const review = boundedPrintable(value.review, "review-viewed: review", MAX_REVIEW_ID_LENGTH);
       if (!review.ok) return review;
       return { ok: true, value: { kind: "session-command", sessionId: sessionId.value, command: "review-viewed", review: review.value } };
+    }
+    // The same identity rule as review-viewed: the one filing, by the id it was filed with, and nothing else on it.
+    case "review-approve":
+    case "review-unapprove": {
+      const command = value.command;
+      if (value.artifact !== undefined) return { ok: false, err: `${command}: a single filing only, by review, never a whole artifact` };
+      const review = boundedPrintable(value.review, `${command}: review`, MAX_REVIEW_ID_LENGTH);
+      if (!review.ok) return review;
+      return { ok: true, value: { kind: "session-command", sessionId: sessionId.value, command, review: review.value } };
     }
     case "review-remove": {
       const field = value.review !== undefined ? "review" : "artifact";

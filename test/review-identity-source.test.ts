@@ -21,7 +21,8 @@ describe("Mac", () => {
     // One rule now, in ConchDesign, preferring what the daemon minted at filing.
     expect(review).toContain("id = ReviewIdentity.key(published: review.id, sessionId: row.id, filedAt: review.at)");
     // Ready is ConchDesign's one rule: not working, and not yet looked at (ReadyTests; test/ready-for-you.test.ts).
-    expect(review).toContain("isReady = ReadyForYou.isReady(working: row.status == .working, viewedAt: [review.viewedAt])");
+    // Approved is done as well (2026-10-05): one held review's two marks, as the daemon's reviewReady reads them.
+    expect(review).toContain("isReady = ReadyForYou.isReady(working: row.status == .working, held: [(review.viewedAt, review.approvedAt)])");
   });
 
   // A new deliverable no longer moves the pane at all — it would take someone off the one
@@ -35,7 +36,7 @@ describe("Mac", () => {
 
   test("the star and the review age apply only when the session is not working", () => {
     // And the check only while something held is still unlooked-at: a row whose work you have seen reads as its status.
-    expect(dashboard).toContain("if ReadyForYou.isReady(working: row.status == .working, viewedAt: row.held.map(\\.viewedAt)) || row.status == .review {");
+    expect(dashboard).toContain("if ReadyForYou.isReady(working: row.status == .working, held: row.held.map { ($0.viewedAt, $0.approvedAt) }) || row.status == .review {");
     expect(dashboard).toContain("let timestamp = (row.status != .working ? row.review?.at : nil) ?? row.at");
     expect(dashboard).not.toContain("if row.review != nil || row.status == .review {");
     expect(dashboard).not.toContain("let timestamp = row.review?.at ?? row.at");
@@ -68,7 +69,7 @@ describe("iPhone", () => {
   test("the star applies only when the session is not working", () => {
     // The Mac's rule (`ReadyForYou`), over every held deliverable, else the newest from an older daemon.
     expect(models).toContain('let held = row.reviews.flatMap { $0.isEmpty ? nil : $0 } ?? row.review.map { [$0] } ?? []');
-    expect(models).toContain('if ReadyForYou.isReady(working: row.status == "working", viewedAt: held.map(\\.viewedAt)) { self = .review; return }');
+    expect(models).toContain('if ReadyForYou.isReady(working: row.status == "working", held: held.map { ($0.viewedAt, $0.approvedAt) }) { self = .review; return }');
     expect(models).not.toContain("if row.review != nil { self = .review; return }");
     expect(ledger).toContain('(row.status != "working" ? row.review?.at : nil) ?? row.at');
     expect(ledger).not.toContain("row.review?.at ?? row.at");

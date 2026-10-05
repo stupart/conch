@@ -4,19 +4,24 @@ import Foundation
 /// anything sees it, then logged, then acted on only when its own flag says so.
 ///
 /// The rollout (spec §8) is per name, in `conch.lagoon.actions`:
-/// - phase A (2026-10-04, this): no flags. Every message is checked and logged and nothing acts.
+/// - phase A (2026-10-04, this): no flags. Every message is checked and logged, and nothing acts but Approve (below).
 /// - phase B: `focusSession` and `openReview` (look, and go to it): reversible, and nothing reaches an agent.
 /// - phase C: `reply`, `answer` and `pause`, which do reach one. Each is its own flag, so any one can go back to logging.
-/// `approve` and `newSession` have no conch action yet and only ever log, flag or not. `ready` isn't an intent: it is the
-/// page saying it booted, and the app answers it with the latest snapshot whatever the flags say.
+/// `approve` and `unapprove` act by default, with no flag at all (`byDefault`): 2026-10-05, Tyler's decision, ahead of
+/// phases B and C. They are a harmless state change (a result marked done, a piece of sea glass), reach no agent, and
+/// are the same store action as the review pane's Approve. `newSession` has no conch action yet and only ever logs.
+/// `ready` isn't an intent: it is the page saying it booted, and the app answers it with the latest snapshot whatever
+/// the flags say.
 public enum LagoonIntent {
     public enum Name: String, Equatable, Hashable, Sendable, CaseIterable {
-        case ready, openReview, reply, answer, focusSession, pause, approve, newSession
+        case ready, openReview, reply, answer, focusSession, pause, approve, unapprove, newSession
     }
 
     /// The names that can act at all, by phase. Anything else is logged and never acted on.
     public static let phaseB: Set<Name> = [.focusSession, .openReview]
     public static let phaseC: Set<Name> = [.reply, .answer, .pause]
+    /// The names that act with no flag set: approving a result, and taking it back within 10 s.
+    public static let byDefault: Set<Name> = [.approve, .unapprove]
 
     /// One message, checked: every field the app may act on, typed.
     public struct Message: Equatable, Sendable {
@@ -83,12 +88,12 @@ public enum LagoonIntent {
         }
         var message = Message(name: name, readOnly: fields["readOnly"] as? Bool ?? false)
 
-        let needsSession: Set<Name> = [.openReview, .reply, .answer, .focusSession, .pause, .approve]
+        let needsSession: Set<Name> = [.openReview, .reply, .answer, .focusSession, .pause, .approve, .unapprove]
         if needsSession.contains(name) {
             guard let id = fields["sessionId"] as? String, !id.isEmpty else { return .rejected("\(raw) without a session") }
             guard let reviews = sessions[id] else { return .rejected("\(raw) for a session that isn't in the current state") }
             message.sessionId = id
-            if name == .openReview || name == .approve {
+            if name == .openReview || name == .approve || name == .unapprove {
                 guard let review = fields["reviewId"] as? String, !review.isEmpty else { return .rejected("\(raw) without a review") }
                 guard reviews.contains(review) else { return .rejected("\(raw) for a review its session doesn't hold") }
                 message.reviewId = review
@@ -120,7 +125,7 @@ public enum LagoonIntent {
             default: return .rejected("answer that is neither Once nor No")
             }
             message.approvalId = id
-        case .ready, .focusSession, .pause, .approve:
+        case .ready, .focusSession, .pause, .approve, .unapprove:
             break
         }
         return .accepted(message)
@@ -182,13 +187,17 @@ public protocol LagoonActionSink: AnyObject {
     func answer(sessionId: String, allow: Bool, approvalId: String)
     /// conch's Quiet for that session: `store.send(.scoped(.pause, sessionId:, label:))`.
     func pause(sessionId: String)
+    /// Approve the result: `store.approveReview(sessionId:review:)`, the review pane's Approve (`ReviewApproval`).
+    func approveReview(sessionId: String, reviewId: String)
+    /// The lagoon's Undo, within 10 s: `store.unapproveReview(sessionId:review:)`.
+    func unapproveReview(sessionId: String, reviewId: String)
 }
 
 /// One checked message, routed: what happened to it, for the log line and the tests.
 public enum LagoonRouting: Equatable, Sendable {
     /// The page booted: send it the latest snapshot and liveness.
     case ready
-    /// Logged, and nothing done: its flag is off, or it has no action.
+    /// Logged, and nothing done: its flag is off (and it doesn't act by default), or it has no action.
     case logged
     /// Handed to the sink.
     case acted
@@ -197,10 +206,10 @@ public enum LagoonRouting: Equatable, Sendable {
 @MainActor
 public enum LagoonIntentRouter {
     /// Every code path for phases B and C is here and compiled; each is reached only when that name's flag is on. With
-    /// every flag off (phase A), nothing reaches the sink.
+    /// every flag off (phase A), only `approve` and `unapprove` reach the sink (`LagoonIntent.byDefault`).
     public static func route(_ message: LagoonIntent.Message, flags: LagoonActionFlags, sink: LagoonActionSink?) -> LagoonRouting {
         if message.name == .ready { return .ready }
-        guard flags.acts(message.name), let sink else { return .logged }
+        guard LagoonIntent.byDefault.contains(message.name) || flags.acts(message.name), let sink else { return .logged }
         switch message.name {
         case .focusSession:
             guard let id = message.sessionId else { return .logged }
@@ -220,7 +229,13 @@ public enum LagoonIntentRouter {
         case .pause:
             guard let id = message.sessionId else { return .logged }
             sink.pause(sessionId: id)
-        case .ready, .approve, .newSession:
+        case .approve:
+            guard let id = message.sessionId, let review = message.reviewId else { return .logged }
+            sink.approveReview(sessionId: id, reviewId: review)
+        case .unapprove:
+            guard let id = message.sessionId, let review = message.reviewId else { return .logged }
+            sink.unapproveReview(sessionId: id, reviewId: review)
+        case .ready, .newSession:
             return .logged
         }
         return .acted

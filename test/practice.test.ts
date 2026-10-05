@@ -60,6 +60,7 @@ const baseState = (): PublishedState => ({
   conversations: { s1: { sessionId: "s1", items: [], truncated: false } },
   dismissed: [],
   dismissedRows: [],
+  seaGlass: 0,
 });
 
 interface Turn {

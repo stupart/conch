@@ -83,10 +83,10 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
 
     // MARK: State
 
-    /// Ready for you: the session isn't working and holds a deliverable nobody has looked at yet (`ReadyForYou`, the
-    /// daemon's `reviewReady`). What the menu bar mark, the menu and the switcher count.
+    /// Ready for you: the session isn't working and holds a deliverable nobody has looked at or approved yet
+    /// (`ReadyForYou`, the daemon's `reviewReady`). What the menu bar mark, the menu and the switcher count.
     nonisolated static func readyRows(_ state: PublishedState?) -> [SessionRow] {
-        state?.rows.filter { ReadyForYou.isReady(working: $0.status == .working, viewedAt: $0.held.map(\.viewedAt)) } ?? []
+        state?.rows.filter { ReadyForYou.isReady(working: $0.status == .working, held: $0.held.map { ($0.viewedAt, $0.approvedAt) }) } ?? []
     }
 
     /// Every session that isn't working and still holds a deliverable, looked at or not: what the Ready pill and the

@@ -34,6 +34,7 @@ function publishedState(ts: number, label: string): PublishedState {
     }],
     dismissed: [],
     dismissedRows: [],
+    seaGlass: 0,
   };
 }
 

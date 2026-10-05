@@ -62,6 +62,17 @@ public enum ReadyForYou {
     /// `viewedAt` is each held deliverable's (nil for one nobody has looked at, and for every one from a daemon too old
     /// to remember, which is then the old rule).
     public static func isReady(working: Bool, viewedAt: [Double?]) -> Bool {
-        !working && viewedAt.contains { $0 == nil }
+        isReady(working: working, held: viewedAt.map { (viewedAt: $0, approvedAt: nil) })
+    }
+
+    /// Each held deliverable's `viewedAt` and `approvedAt`. One you approved is done, so it isn't waiting on you whether
+    /// or not anyone looked (2026-10-05, Tyler's decision; the daemon's `reviewReady` says the same).
+    public static func isReady(working: Bool, held: [(viewedAt: Double?, approvedAt: Double?)]) -> Bool {
+        !working && held.contains { isWaiting(viewedAt: $0.viewedAt, approvedAt: $0.approvedAt) }
+    }
+
+    /// One deliverable is still waiting on you: nobody has looked at it, and nobody approved it.
+    public static func isWaiting(viewedAt: Double?, approvedAt: Double?) -> Bool {
+        viewedAt == nil && approvedAt == nil
     }
 }

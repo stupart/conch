@@ -1160,13 +1160,13 @@ final class ReviewQueue: ObservableObject {
         return ControlBar.Ready(label: next.label, position: at + 1, count: ready.count, inspect: next.inspect)
     }
 
-    /// What has been looked at: whatever the daemon remembers, on any device, plus whatever
-    /// this window has just handed off. The local half is optimistic — the pill moves on at
+    /// What has been looked at, or approved (done: 2026-10-05): whatever the daemon remembers, on any device, plus
+    /// whatever this window has just handed off. The local half is optimistic — the pill moves on at
     /// the click and the daemon's answer catches up — and it is the whole story against a
     /// daemon too old to remember, which is what `features.viewedState` distinguishes.
     private func seen(in held: [ReviewItem], state: PublishedState?) -> Set<ReviewItem.ID> {
         guard state?.features?.viewedState != nil else { return opened }
-        return opened.union(held.filter { $0.viewedAt != nil }.map(\.id))
+        return opened.union(held.filter { !ReadyForYou.isWaiting(viewedAt: $0.viewedAt, approvedAt: $0.approvedAt) }.map(\.id))
     }
 
     /// The review the next click brings forward: the next nobody has looked at, else round again.

@@ -10,8 +10,13 @@ enum DashboardKey: Equatable {
     case moveUp
     case moveDown
     case releaseSelection
-    /// Return, on the lagoon: the selected session's conversation. Unclaimed anywhere else, so it passes on.
-    case openConversation
+    /// Return, with nothing typeable or web in front: on the lagoon the selected session's conversation, and on the
+    /// review pane, while it has the keyboard, Approve (`ReviewApproval.returnKey`). Unclaimed anywhere else, so it
+    /// passes on.
+    case returnKey(reviewPaneFocused: Bool)
+    /// ⌘Z, outside a text field: an approval made here in the last ten seconds, taken back (`ReviewApprovals.undoLast`).
+    /// Unclaimed when there is none, so it passes on to whatever else undoes.
+    case undoApproval
 }
 
 struct DashboardInputMonitor: NSViewRepresentable {
@@ -23,6 +28,10 @@ struct DashboardInputMonitor: NSViewRepresentable {
         var onKey: (DashboardKey) -> Bool
         weak var view: DashboardPassThroughView?
         var keyMonitor: Any?
+        var clickMonitor: Any?
+        /// The last click in this window landed in the review pane (`ReviewPaneProbe`): it has the keyboard's attention,
+        /// for Return to approve. A click anywhere else in the window takes it away.
+        var reviewPaneFocused = false
 
         init(isEnabled: Bool, onKey: @escaping (DashboardKey) -> Bool) {
             self.isEnabled = isEnabled
@@ -35,12 +44,24 @@ struct DashboardInputMonitor: NSViewRepresentable {
 
         func installMonitor(for view: DashboardPassThroughView) {
             self.view = view
+            // Only watched, never taken: the click goes where it was going.
+            clickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+                guard let self, belongsToMonitoredWindow(event) else { return event }
+                // AppKit hands local monitors their events on the main thread.
+                reviewPaneFocused = MainActor.assumeIsolated { ReviewPaneProbe.contains(event.locationInWindow, in: event.window) }
+                return event
+            }
             keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
                 [weak self] event in
+                // ⌘Z in the ten seconds after an approval made here takes it back (2026-10-05). Never a text field's own
+                // undo: the composer keeps its own undo stack, and that comes first.
+                if let self, isEnabled, belongsToMonitoredWindow(event), Self.isUndo(event), !firstResponderIsEditableText() {
+                    return onKey(.undoApproval) ? nil : event
+                }
                 guard let self,
                       isEnabled,
                       belongsToMonitoredWindow(event),
-                      let key = Self.dashboardKey(for: event) else {
+                      let key = Self.dashboardKey(for: event, reviewPaneFocused: reviewPaneFocused) else {
                     return event
                 }
 
@@ -55,9 +76,9 @@ struct DashboardInputMonitor: NSViewRepresentable {
                     return event
                 }
 
-                // Return is the lagoon's alone, held or not: anywhere else it passes on untouched.
-                if key == .openConversation {
-                    return onKey(.openConversation) ? nil : event
+                // Return is the lagoon's, or the review pane's to approve, held or not: anywhere else it passes on untouched.
+                if case let .returnKey(reviewPaneFocused) = key {
+                    return onKey(.returnKey(reviewPaneFocused: reviewPaneFocused)) ? nil : event
                 }
                 if event.isARepeat && key != .moveUp && key != .moveDown {
                     return nil
@@ -70,6 +91,10 @@ struct DashboardInputMonitor: NSViewRepresentable {
             if let keyMonitor {
                 NSEvent.removeMonitor(keyMonitor)
                 self.keyMonitor = nil
+            }
+            if let clickMonitor {
+                NSEvent.removeMonitor(clickMonitor)
+                self.clickMonitor = nil
             }
         }
 
@@ -113,7 +138,13 @@ struct DashboardInputMonitor: NSViewRepresentable {
             return false
         }
 
-        private static func dashboardKey(for event: NSEvent) -> DashboardKey? {
+        /// ⌘Z and nothing else: ⇧⌘Z is redo, and ⌥ or ⌃ are someone else's.
+        private static func isUndo(_ event: NSEvent) -> Bool {
+            event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command
+                && event.charactersIgnoringModifiers?.lowercased() == "z"
+        }
+
+        private static func dashboardKey(for event: NSEvent, reviewPaneFocused: Bool) -> DashboardKey? {
             let commandModifiers = event.modifierFlags.intersection([
                 .command,
                 .control,
@@ -135,7 +166,7 @@ struct DashboardInputMonitor: NSViewRepresentable {
             case 125:
                 return .moveDown
             case 36, 76:
-                return .openConversation
+                return .returnKey(reviewPaneFocused: reviewPaneFocused)
             default:
                 break
             }
@@ -179,7 +210,7 @@ private extension DashboardKey {
         case .talkOrStop, .releaseSelection:
             return true
         case .pauseOrResume, .recite, .showKeyboardShortcuts,
-             .moveUp, .moveDown, .openConversation:
+             .moveUp, .moveDown, .returnKey, .undoApproval:
             return false
         }
     }
@@ -188,5 +219,32 @@ private extension DashboardKey {
 final class DashboardPassThroughView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         nil
+    }
+}
+
+/// Where the review pane is in its window, for the input monitor to tell whether a click gave it the keyboard (Return
+/// approves only then: `ReviewApproval.returnKey`). Drawn behind the pane, taking no clicks of its own.
+struct ReviewPaneProbe: NSViewRepresentable {
+    /// Every probe on screen, weakly: one per window showing a review pane.
+    @MainActor private static let probes = NSHashTable<NSView>.weakObjects()
+
+    /// Whether a point in `window`'s coordinates is inside a review pane there.
+    @MainActor static func contains(_ point: NSPoint, in window: NSWindow?) -> Bool {
+        guard let window else { return false }
+        return probes.allObjects.contains { probe in
+            probe.window === window && probe.convert(probe.bounds, to: nil).contains(point)
+        }
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = DashboardPassThroughView()
+        Self.probes.add(view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: ()) {
+        probes.remove(nsView)
     }
 }

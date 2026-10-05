@@ -124,8 +124,9 @@ final class LagoonModel: ObservableObject {
     }
 }
 
-/// Phase B and C's actions, on the app's own paths (spec §5). Compiled and never reached in phase A: `LagoonIntentRouter`
-/// hands a message here only when its name's flag is on in `conch.lagoon.actions`.
+/// The lagoon's actions, on the app's own paths (spec §5). Phase B and C's are compiled and never reached in phase A:
+/// `LagoonIntentRouter` hands one here only when its name's flag is on in `conch.lagoon.actions`. Approve and its undo
+/// act with no flag (`LagoonIntent.byDefault`).
 @MainActor
 final class LagoonStoreActions: LagoonActionSink {
     weak var store: StateStore?
@@ -198,6 +199,19 @@ final class LagoonStoreActions: LagoonActionSink {
         guard let store, let row = row(sessionId),
               row.voice(everythingQuiet: store.state?.mode.paused ?? false).togglesToQuiet else { return }
         store.send(.scoped(.pause, sessionId: row.id, label: row.label))
+    }
+
+    /// Approve, from the lagoon's glass, with no flag (`LagoonIntent.byDefault`, 2026-10-05, Tyler's decision): the same
+    /// store action as the review pane's ✓ Approve. The daemon makes a second approval of one result change nothing.
+    func approveReview(sessionId: String, reviewId: String) {
+        guard let store, let row = row(sessionId), let found = review(reviewId, in: row) else { return }
+        Task { await store.approveReview(sessionId: row.id, review: found.item) }
+    }
+
+    /// The lagoon's Undo, within 10 s: the daemon refuses it after that, and its words go on the row.
+    func unapproveReview(sessionId: String, reviewId: String) {
+        guard let store, let row = row(sessionId), let found = review(reviewId, in: row) else { return }
+        Task { await store.unapproveReview(sessionId: row.id, review: found.item) }
     }
 }
 

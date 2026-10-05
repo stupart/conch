@@ -104,6 +104,7 @@ export interface PanelRowModel {
     at: number;
     id: string;
     viewedAt?: number;
+    approvedAt?: number;
     opened?: boolean;
   };
   /** Every deliverable the session holds, oldest first; `review` is the last of them. */
@@ -355,6 +356,8 @@ export interface PublishedSessionRow {
     id?: string;
     /** When it was looked at; absent means nobody has. */
     viewedAt?: number;
+    /** When it was approved, which marks it done (`SessionReview.approvedAt`); absent means it wasn't. Older apps ignore it. */
+    approvedAt?: number;
     /** Which artifact, which version of it, and what kind of thing (`SessionReview`). Absent from an older daemon. */
     artifact?: string;
     version?: number;
@@ -377,7 +380,7 @@ export interface PublishedSessionRow {
    * `review` alone, which is exactly what it does today.
    */
   reviews?: Array<{
-    summary: string; link?: string; scene?: ReviewScene; at?: number; id?: string; viewedAt?: number;
+    summary: string; link?: string; scene?: ReviewScene; at?: number; id?: string; viewedAt?: number; approvedAt?: number;
     artifact?: string; version?: number; kind?: DeliverableKind; preview?: ReviewPreview; focus?: string[];
     linkRefused?: string; roots?: string[]; snapshot?: ReviewSnapshot; access?: ReviewAccess;
   }>;
@@ -507,6 +510,13 @@ export interface PublishedState {
    * session is the first row. Absent with none running, and from older daemons.
    */
   practice?: PublishedPractice;
+  /**
+   * How many pieces of sea glass approving results has earned, ever (`SessionLedger.seaGlass`): always present, 0 when
+   * none. 2026-10-05, Tyler's decision: one per approval, one back for an approval undone within 10 s. The name is
+   * agreed with the lagoon (the brand repo's sanitize.mjs passes it on as is). Absent only from an older daemon, which
+   * can't approve: that is how an app knows whether to offer Approve.
+   */
+  seaGlass: number;
 }
 
 const MAX_PUBLISHED_CONVERSATION_CHARS = 4_000;
@@ -669,6 +679,8 @@ export function buildPublishedState(
     speechEngine?: SpeechEngineStatus;
     sessionSettings?: SessionSettingsCatalog;
     settingsForSessionId?(sessionId: string, backend: "claude" | "codex"): PublishedSessionSettings | undefined;
+    /** The sea glass approving has earned (`SessionLedger.seaGlass`); 0 when not given. */
+    seaGlass?: number;
   } = {},
 ): PublishedState {
   return {
@@ -767,6 +779,7 @@ export function buildPublishedState(
               // recomputing their own key; newer ones stop guessing.
               ...(row.review.id ? { id: row.review.id } : {}),
               ...(row.review.viewedAt !== undefined ? { viewedAt: row.review.viewedAt } : {}),
+              ...(row.review.approvedAt !== undefined ? { approvedAt: row.review.approvedAt } : {}),
               ...publishedDeliverableFacts(row.review),
             },
           }
@@ -782,6 +795,8 @@ export function buildPublishedState(
               ...(held.at !== undefined ? { at: held.at } : {}),
               ...(held.id ? { id: held.id } : {}),
               ...(held.viewedAt !== undefined ? { viewedAt: held.viewedAt } : {}),
+              // Approved (2026-10-05): done, so no surface counts it as waiting (`reviewReady`).
+              ...(held.approvedAt !== undefined ? { approvedAt: held.approvedAt } : {}),
               ...publishedDeliverableFacts(held),
             })),
           }
@@ -794,6 +809,8 @@ export function buildPublishedState(
       label: options.labelForSessionId?.(id)?.trim() || id.slice(0, 8),
     })),
     ...(options.showing ? { showing: options.showing } : {}),
+    // Always, 0 when none: the lagoon's jar reads it as is.
+    seaGlass: options.seaGlass ?? 0,
   };
 }
 
@@ -1137,6 +1154,15 @@ export interface SessionReview {
    * reviewed cannot be built on that.
    */
   viewedAt?: number;
+  /**
+   * When you approved it, epoch-ms; absent means you haven't (`approveReview`).
+   *
+   * 2026-10-05, Tyler's decision: approving a result marks it done. It leaves the review queue (it is no longer ready
+   * for you, on any surface), earns one piece of sea glass (`SessionLedger.seaGlass`), and sends the agent nothing.
+   * On the record, like `viewedAt`, so it outlives a restart and is the same answer on the Mac, the phone and the
+   * lagoon.
+   */
+  approvedAt?: number;
   /** What kind of thing it is (`deliverables.ts`), and whether the agent said so or conch read it off the link. */
   kind?: DeliverableKind;
   kindSource?: DeliverableKindSource;
@@ -1279,15 +1305,84 @@ export function fileReview(
  * so every app applies the same rule (`ReadyForYou` in ConchDesign) to old and
  * new daemons alike — an old daemon never publishes `viewedAt`, so there the
  * rule is the old one unchanged.
+ *
+ * One you approved (`approvedAt`) is done, so it is not waiting on you either:
+ * 2026-10-05, Tyler's decision. Approving stamps `viewedAt` too, so this is
+ * already true of everything this daemon approves; it is said here anyway so the
+ * rule never depends on the two being written together.
  */
 export function reviewReady(row: {
   status: SessionStatus | null;
-  review?: { viewedAt?: number };
-  reviews?: readonly { viewedAt?: number }[];
+  review?: { viewedAt?: number; approvedAt?: number };
+  reviews?: readonly { viewedAt?: number; approvedAt?: number }[];
 }): boolean {
   if (row.review === undefined || row.status === "working") return false;
   const held = row.reviews?.length ? row.reviews : [row.review];
-  return held.some((one) => one.viewedAt === undefined);
+  return held.some((one) => one.viewedAt === undefined && one.approvedAt === undefined);
+}
+
+/**
+ * How long an approval can be taken back (`unapproveReview`): the Mac's ⌘Z and the lagoon's Undo toast. Past it, an
+ * approval stands and its sea glass is kept. 2026-10-05, Tyler's decision.
+ */
+export const UNAPPROVE_WINDOW_MS = 10_000;
+
+/**
+ * Approve one held deliverable: `approvedAt` now, and `viewedAt` now too if nobody had looked at it (approving
+ * something is looking at it). `undefined` when nothing changed, like `markReviewViewed`: an identity this session
+ * doesn't hold changes nothing, and approving one already approved neither restamps it nor earns a second piece of
+ * sea glass. That idempotence is the rule (2026-10-05, Tyler's decision), so a double click, the Mac and the lagoon
+ * approving the same result, or a retried request, each count once.
+ */
+export function approveReview(
+  held: readonly SessionReview[] | undefined,
+  review: string,
+  now: number,
+): SessionReview[] | undefined {
+  if (!held?.length) return undefined;
+  const index = held.findIndex((one) => one.id === review);
+  if (index < 0 || held[index]!.approvedAt !== undefined) return undefined;
+  return held.map((one, at) => at === index ? { ...one, viewedAt: one.viewedAt ?? now, approvedAt: now } : one);
+}
+
+/** What taking an approval back did: the deliverables now, or why nothing changed. */
+export type UnapproveResult =
+  | { ok: true; held: SessionReview[] }
+  /** `reason` is said to whoever asked, as the socket's refusal. `missing`: no such deliverable; `late`: past the window. */
+  | { ok: false; why: "missing" | "not-approved" | "late"; reason: string };
+
+/**
+ * Take an approval back, within `UNAPPROVE_WINDOW_MS` of it: `approvedAt` goes, `viewedAt` stays (you did look). Past
+ * the window it is refused in words, and the approval and its sea glass stand. One that isn't approved has nothing to
+ * take back (`not-approved`), which the socket answers as an unchanged ack, not an error: a second ⌘Z is harmless.
+ */
+export function unapproveReview(
+  held: readonly SessionReview[] | undefined,
+  review: string,
+  now: number,
+): UnapproveResult {
+  const index = held?.findIndex((one) => one.id === review) ?? -1;
+  if (!held || index < 0) {
+    return { ok: false, why: "missing", reason: `nothing to take back: no deliverable with id ${review}` };
+  }
+  const approvedAt = held[index]!.approvedAt;
+  if (approvedAt === undefined) return { ok: false, why: "not-approved", reason: "nothing to take back: it isn't approved" };
+  if (now - approvedAt > UNAPPROVE_WINDOW_MS) {
+    const seconds = Math.round((now - approvedAt) / 1000);
+    return {
+      ok: false,
+      why: "late",
+      reason: `too late to take back: it was approved ${seconds} s ago, and an approval can only be undone within ${UNAPPROVE_WINDOW_MS / 1000} s`,
+    };
+  }
+  return {
+    ok: true,
+    held: held.map((one, at) => {
+      if (at !== index) return one;
+      const { approvedAt: _taken, ...rest } = one;
+      return rest;
+    }),
+  };
 }
 
 /**

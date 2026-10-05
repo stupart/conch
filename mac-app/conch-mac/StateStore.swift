@@ -550,6 +550,40 @@ final class StateStore: ObservableObject {
         }
     }
 
+    /// Approve a result (2026-10-05, Tyler's decision): the daemon marks it done, so it leaves Ready for you everywhere,
+    /// and counts one piece of sea glass. Nothing is sent to the agent. The review pane, ↵ and the lagoon all come here.
+    /// Answers whether the daemon approved it now (false: approved already, which changes nothing), or its refusal,
+    /// which also goes on the row like a refused Remove.
+    @discardableResult
+    func approveReview(sessionId: String, review: String) async -> ReviewApproval.Reply {
+        await approval(.reviewApprove, sessionId: sessionId, review: review)
+    }
+
+    /// ⌘Z within 10 s of approving, or the lagoon's Undo: the approval and its sea glass go back. Past 10 s the daemon
+    /// refuses it, and that refusal is what this answers.
+    @discardableResult
+    func unapproveReview(sessionId: String, review: String) async -> ReviewApproval.Reply {
+        await approval(.reviewUnapprove, sessionId: sessionId, review: review)
+    }
+
+    private func approval(_ command: ConchSessionCommand, sessionId: String, review: String) async -> ReviewApproval.Reply {
+        rowMessages[sessionId] = nil
+        let request = ConchSessionCommandRequest(sessionId: sessionId, command: command, review: review)
+        let reply: ReviewApproval.Reply
+        switch await socketClient.request(request) {
+        case let .reply(data):
+            switch try? JSONDecoder().decode(ConchSessionCommandReply.self, from: data) {
+            case let .acknowledgement(ack)?: reply = .done(changed: ack.changed)
+            case let .error(error)?: reply = .refused(error.error)
+            default: reply = .refused("unexpected reply from daemon")
+            }
+        case .connectFailed: reply = .refused("daemon not running")
+        case .timeout: reply = .refused("daemon did not reply")
+        }
+        if case let .refused(why) = reply { rowMessages[sessionId] = why }
+        return reply
+    }
+
     /// Both the title and its shortcut open the existing host; terminal focus keeps its established path.
     func openSessionLocation(_ row: SessionRow) {
         guard let location = row.location else { return }
@@ -1163,7 +1197,7 @@ final class StateStore: ObservableObject {
         transportErrorSessionIDs.remove(context.id)
 
         switch context.command {
-        case .reveal, .setModel, .setSettings, .attach, .reviewViewed, .reviewRemove:
+        case .reveal, .setModel, .setSettings, .attach, .reviewViewed, .reviewRemove, .reviewApprove, .reviewUnapprove:
             // A raise, a model change, or marking a deliverable read changes no row here: a
             // model change arrives on the row itself (`settings.change`).
             break
@@ -1230,7 +1264,7 @@ final class StateStore: ObservableObject {
         )
 
         switch context.command {
-        case .rename, .reveal, .setModel, .setSettings, .attach, .reviewViewed, .reviewRemove:
+        case .rename, .reveal, .setModel, .setSettings, .attach, .reviewViewed, .reviewRemove, .reviewApprove, .reviewUnapprove:
             break
         case .dismiss:
             if optimisticDismissals[context.id]?.generation == context.generation {
@@ -1546,7 +1580,9 @@ final class StateStore: ObservableObject {
             captureRequests: sourceState.captureRequests,
             practice: sourceState.practice,
             sessionSettings: sourceState.sessionSettings,
-            naturalVoices: sourceState.naturalVoices
+            naturalVoices: sourceState.naturalVoices,
+            // Whether the daemon can approve at all (✓ Approve shows only then), and the lagoon's jar.
+            seaGlass: sourceState.seaGlass
         )
         if state?.hasSamePresentation(as: next) != true {
             state = next

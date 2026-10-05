@@ -311,6 +311,7 @@ function stateWith(rows: Array<Partial<PublishedSessionRow> & { id: string }>): 
     })),
     dismissed: [],
     dismissedRows: [],
+    seaGlass: 0,
   };
 }
 

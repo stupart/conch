@@ -18,7 +18,9 @@ extension LagoonSnapshot.Source {
             rows: state.rows.map(Row.init),
             // `conversations` only, as sanitize.mjs reads it: the single `conversation` of an older daemon isn't sent.
             conversations: (state.conversations ?? [:]).mapValues { $0.items.map(Item.init) },
-            dismissed: state.dismissed + state.dismissedRows.map(\.id)
+            dismissed: state.dismissed + state.dismissedRows.map(\.id),
+            // The jar's count (2026-10-05): nil from a daemon too old to approve, sent as 0.
+            seaGlass: state.seaGlass
         )
     }
 }
@@ -72,6 +74,7 @@ extension LagoonSnapshot.Source.Review {
             kind: review.kind,
             at: review.at,
             viewedAt: review.viewedAt,
+            approvedAt: review.approvedAt,
             version: review.version,
             hasScene: review.hasScene,
             targetKind: review.sceneKind,

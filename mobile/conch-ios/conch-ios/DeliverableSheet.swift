@@ -123,14 +123,14 @@ struct ReviewSheet: View {
         })
     }
 
-    /// What the Mac's daemon remembers being looked at, on any device. Empty against a daemon
-    /// too old to know, where this screen's own `opened` is the whole story.
+    /// What the Mac's daemon remembers being looked at or approved (done, 2026-10-05), on any device. Empty against a
+    /// daemon too old to know, where this screen's own `opened` is the whole story.
     private var viewedKeys: Set<String> {
         guard bridge.state?.features?.viewedState != nil else { return [] }
         var keys: Set<String> = []
         for row in bridge.state?.rows ?? [] {
             let held = row.reviews ?? row.review.map { [$0] } ?? []
-            for one in held where one.viewedAt != nil {
+            for one in held where !ReadyForYou.isWaiting(viewedAt: one.viewedAt, approvedAt: one.approvedAt) {
                 keys.insert(ReviewQueue.key(sessionId: row.id, filedAt: one.at, published: one.id))
             }
         }
