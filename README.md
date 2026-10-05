@@ -1,320 +1,250 @@
 # conch
 
-A voice loop for Claude Code. Your sessions announce themselves out loud when they finish — then you just talk back. From your Mac, or from your phone anywhere in the world.
+**All your agents, in one place.**
 
-![The conch dashboard — a live session ledger down the left (sorted so whatever needs you floats to the top, each row a colored status dot), and a pane on the right that reads along with the session conch is talking to: here, your spoken reply building word by word as it records.](docs/dashboard.png)
+conch is an agent manager for Claude Code and Codex on the Mac. Every session you have running shows up in one
+window. Each one shows you its work: what it made lands in a review pane, marked where you should look, next to the
+version before it. And each one talks it through: it reads its reply aloud in its own voice, and you answer by talking.
+So you can work from wherever you are: the Mac app, your iPhone, or just your voice.
 
-```
-Claude finishes a turn
-  └─> 🔔 ding + "dayloop: Done — the Stats tab renders and all 14 tests pass."
-        └─> 🎙️ mic opens (only after speaking — the loop can't hear itself)
-              └─> you: "great, now do the same for the horizontal layout"
-                    └─> transcript lands in that session's prompt and submits
-```
-
-Speech-to-text runs entirely on your Mac via [whisper.cpp](https://github.com/ggerganov/whisper.cpp) with Metal. No cloud, no API keys — `conch setup` installs the engine and downloads the models for you.
-
-## How routing works
-
-You don't pick a session — **the mic follows the voice**. When a session finishes a turn, it announces itself by name ("dayloop: ..."), and whatever you say next goes back to *that* session. The announcement is the address. If several sessions finish while you're mid-conversation with one, the newest announcement wins the mic next; the rest you'll have heard by name and can reach by typing (or wait — addressing a session by name is on the roadmap).
-
-Because the loop is turn-based — speak, *then* listen, never both — the mic never picks up the Mac's own voice, so no feedback loop and no headphones required.
-
-Prompts are injected via `tmux send-keys` targeted at the exact pane running that session, so it works even when the pane isn't focused. Not a tmux user? With `CONCH_KEYSTROKE_FALLBACK=1`, conch finds the Terminal window hosting the session (matched by tty), focuses it, and types there. If the window can't be found, your words go to the **clipboard** instead of being typed into the void — you'll hear "just paste."
-
-## The macOS app
-
-The native macOS app is conch's primary UI. It shows the live session ledger and conversation while conch speaks and listens, and renders a finished deliverable inline when a session publishes one for review.
-
-The app is currently built from source. Open `mac-app/conch-mac.xcodeproj` in Xcode, select the `conch-mac` scheme, and press Run. Keep using the terminal dashboard (`conch`) as the SSH/remote fallback.
-
-**Stuck, or not sure how something works?** The New session sheet has a third mode, **Help with conch** (also `conch help-session`): a Claude Code session in conch's own folder, `~/.config/conch/help/`, whose `CLAUDE.md` conch writes for it — what conch is, where the settings, errors, daemon log and published state live on this Mac, the rules for touching them (read the log before guessing, never kill the daemon by pattern, ask before changing a setting), and the usual reasons the loop goes quiet. It shows in the ledger as **conch help** and has no more power than any other session: the same plugin tools and the same CLI. It is not started for you — a session costs money and attention — so it is one click away instead.
-
-## Your phone
-
-<img src="docs/iphone-ledger.png" alt="conch on iPhone: a ledger of live sessions, each row showing what it wants — arch-website needs an answer, dayloop is being read aloud, conch has work to look at. A session that is merely working says nothing." width="300" align="right">
-
-The iOS app is the same ledger in your pocket. Every session, sorted so whatever
-needs you floats to the top, each row saying what it actually wants: *Needs an
-answer*, *Reading aloud*, *Has work to look at*. A session that is merely
-working says nothing — printing "Working" on every quiet row is how you learn
-to stop reading the column.
-
-Tap in and you get that session's reply in full, a Talk button that transcribes
-**on the phone** (no audio crosses the network), and the deliverable when
-there's one to look at. Replies are read aloud through your AirPods, and the
-mic opens by itself when the reading stops — so a whole turn costs you one tap.
-
-**It works from anywhere.** Not just your Wi-Fi: over cellular, from another
-country, without a VPN, a tunnel, or an open port. Your Mac and phone each dial
-*out* to a small Cloudflare Worker that pairs them up, and every frame is
-encrypted end to end with a key from the pairing QR — the relay stores and
-forwards bytes it cannot read. Deploy your own in one command; the whole thing
-is in [`relay/`](relay/), and at conch's traffic it costs nothing.
-
-Pair it from the Mac app's **Phone** tab (or `conch pair`): scan the QR and
-you're connected. There's a LAN-only mode too if you'd rather nothing left the
-house.
-
-<br clear="right">
+![The conch Mac app. On the left, sessions grouped by project, each row saying what it needs or what it is doing, with subagents under their session. In the middle, the "Landing page hero" conversation: the request, the agent's plan, and its reply. On the right, the page that session published, open in the review pane at its dev-server address, with the session's other results in tabs above it.](docs/images/conch-mac.png)
 
 ## Install
 
-macOS. Two commands. (Where each path goes quiet, and what is left to fix: [docs/install-journeys.md](docs/install-journeys.md).)
+macOS 14 or later.
 
 ```bash
-brew install stupart/tap/conch     # the CLI + conch.app, which carries its daemon and speech engine
-conch setup                        # model, hooks, service, and app plugins
+brew install stupart/tap/conch   # the conch CLI, and conch.app linked into /Applications
+conch setup                      # speech model, Claude Code hooks, the conch plugin, background start
 ```
 
-`conch.app` carries everything it runs: its daemon (`Contents/Helpers/conch-daemon`, the same build as the `conch` CLI) and [seashell](https://github.com/stupart/seashell)'s speech engine — whisper.cpp's `whisper-cli` and `whisper-server` with Metal, SoX for the microphone, and the silero VAD model. Nothing else needs installing; tmux is optional (sessions in a tmux pane are typed into through it, every other session through its own window). The one thing too big to ship is the whisper model (large-v3-turbo q5_0, ~574 MB): the daemon downloads it into `~/.cache/conch/models` on its first run, checked against its pinned sha256, and Settings shows the progress; `conch setup` does the same in the foreground. setup also wires the Claude Code hooks, verifies the chain, starts the launchd service when there is no app, and installs the conch plugin. It's idempotent — re-run it any time; it skips or safely refreshes managed pieces. Already have seashell (its checkout or its Homebrew formula)? conch finds its model and does not download a second copy; `CONCH_WHISPER_CLI` / `CONCH_WHISPER_SERVER` / `CONCH_WHISPER_MODEL` / `CONCH_VAD_MODEL` / `CONCH_SOX` (or `CONCH_SEASHELL_ROOT`) point at anything else, and win over the app's own copies.
+`conch setup` downloads the whisper speech model (about 574 MB, unless it finds one already), wires Claude Code's
+hooks, installs the conch plugin for Claude Code and Codex, checks everything with `conch doctor`, and leaves conch
+running in the background: as the Mac app, which opens at login and hosts conch's daemon, or as a launchd service when
+there is no app. It is safe to run again. Then:
 
-Prefer to install the Claude Code plugin yourself, straight from this repo? `conch setup` does this for you locally; the public catalog is:
+- In any Claude Code session that was already open, type `/hooks` once. Sessions opened after setup pick conch up on
+  their own.
+- Allow the microphone when macOS asks.
+- Finish a turn. conch reads it aloud, plays a tink and opens the mic. If it stays quiet, run `conch doctor`.
+
+> **The release trails `main`.** Homebrew installs the latest release, v0.3.0 at the time of writing. Much of what is
+> described here landed after it, including agent marks, version compare, approvals, the Mac setup window, accounts,
+> and natural voices that set themselves up. To run `main` today, [build from source](#build-from-source).
+
+## What it does
+
+**Every session in one place.** The sidebar lists every Claude Code and Codex session on your Mac, grouped by folder,
+including the ones you started yourself in a terminal. Each row says what that session needs from you (an answer, a
+permission, work to look at) or what it is doing right now, with its subagents underneath. Start a new session or
+resume an old one from the app, choose its model, effort and account, and restart or close it from there. Several
+Claude and OpenAI accounts can sit side by side, with their usage.
+
+**Each agent shows you its work.** When a session has something for you to look at, it publishes it through the conch
+plugin, and it opens in the review pane beside the conversation: a live page or dev server, a local page, a picture, a
+video, a PDF, Markdown, a folder as its file tree, or a Figma design. Ready for you, in the app and in a small bar under
+the menu bar, steps through what is waiting.
+
+- **Marks.** The agent can mark the one thing to check (an arrow, a box, a highlight, a note) on the page, the picture
+  or your screen. You see the marks on the Mac and on your phone.
+- **Versions and compare.** Publishing the same thing again files a new version. Compare two with a before/after
+  slider, side by side, or a text diff.
+- **Approve.** When an agent is waiting on your yes ("Open the PR"), a ✓ in the session bar gives it.
+
+**Each agent talks it through.** When a session finishes a turn, conch reads the reply aloud in that session's own
+voice, then opens the mic. Answer out loud and your words go back to that session; say "hey acme-web, …" to reach a
+different one. The mic never opens while conch is speaking, so it never hears itself, and you don't need headphones.
+Permission prompts and an agent's questions can be answered the same way. Voice commands, manual mode, and how conch
+keeps quiet while you're typing, away or in a meeting: [docs/voice.md](docs/voice.md).
+
+**Draw on your screen.** Press ⌃⌥⌘P and draw over anything on your screen, then send the picture to the session whose
+work you're looking at. Or record a Show: up to two minutes of your screen with your drawing and your voice, sent to the
+session as a storyboard. (Show needs macOS 15.)
+
+**Help with conch.** Stuck, or not sure how something works? The New session sheet's **Help with conch** (or
+`conch help-session`) opens a Claude Code session that knows where conch keeps its settings, errors and logs on your
+Mac, and why the loop usually goes quiet.
+
+A more playful view of your sessions, the lagoon, is in the works.
+
+## Claude Code and Codex
+
+|  | Claude Code | Codex |
+|---|---|---|
+| In the session list, with live activity and subagents | Yes | Yes |
+| Finished turns read aloud; reply by voice | Yes | Yes |
+| Publishes work to the review pane, with marks | Yes, through the conch plugin | Yes, through the conch plugin |
+| Start, resume, restart; model and effort per session | Yes | Yes |
+| Accounts and usage | Claude accounts | OpenAI / ChatGPT accounts |
+| How your words reach it | Typed into its tmux pane or Terminal window | The same, or through the Codex app for a task open there |
+| Permission prompts | Answered by voice, in the app, or on the phone | Announced and shown as needing you; you answer in Codex |
+| Multiple-choice questions | Answered with its picker's own keys | Your answer goes in as a message |
+| Rename | conch's label, and `/rename` in the session | conch's label only |
+
+`conch setup` wires Claude Code's hooks and installs the plugin for both. Codex needs no hooks: conch reads Codex's
+own session files, read-only, every few seconds. `conch install --codex` adds conch's Codex hooks as well; Codex asks
+you to trust them the next time it starts. Accounts are added in Settings → Providers
+([Claude](docs/claude-accounts.md), [Codex](docs/codex-accounts.md)). `conch uninstall --codex` or `--claude` removes
+one agent's wiring and leaves the other.
+
+## iPhone
+
+The iPhone app is the same list in your pocket: each session saying what it wants, its conversation, what is ready for
+you to look at (with the agent's marks, and compare), and a Talk button. Replies are read aloud on the phone, through
+your AirPods, and the mic opens when the reading stops, so a whole turn costs one tap. From the phone you can also
+answer permission prompts and questions, start or resume a session, send a session a photo or a video, and reach most
+of the Mac app's session controls. Drawing on the screen, the shell and the floating panels stay on the Mac.
+
+**Getting it.** The iPhone app isn't on the App Store or a public TestFlight yet. To run it today, open
+`mobile/conch-ios/conch-ios.xcodeproj` in Xcode, choose your own team and bundle identifier, and run it on your phone.
+Development installs from a free Apple account stop launching after seven days. Build notes are in
+[mobile/README.md](mobile/README.md).
+
+**Connecting it.** The phone connects to your Mac, never to a conch service. Phone access is off until you pair: open
+Settings → Phone app in the Mac app, or run `conch pair`.
+
+- **On the same Wi-Fi**, type the Mac's address and a six-digit code, which works once, for two minutes. This bridge is
+  plain HTTP, so use it only on a network you trust.
+- **From anywhere** (cellular, another country, no VPN or open port), deploy the small relay in [relay/](relay/README.md)
+  to your own Cloudflare account, run `conch set phone-relay-url <its URL>`, and scan the QR. The Mac and the phone
+  both dial out to it, and everything between them is encrypted end to end. Once a relay is set, the Wi-Fi bridge
+  stays closed unless you turn it on (`conch set phone-lan on`).
+
+## Privacy
+
+conch is local-first. It has no server and no account of its own.
+
+- **Your sessions run on your Mac.** conch watches the Claude Code and Codex sessions on this Mac and types into them;
+  it runs no agents of its own. The agents talk to Anthropic and OpenAI as they always do, and anything you send a
+  session through conch (your words, a picture of your screen, a Show) reaches that agent the same way typing would.
+- **Speech stays on the Mac.** What you say is transcribed on the Mac by whisper.cpp, and replies are spoken by Kokoro
+  on the Mac's GPU, or by macOS `say`. No audio goes to a speech service.
+- **The phone talks only to your Mac.** It recognizes your speech with iOS's own recognizer, on the device wherever
+  the phone supports that (otherwise iOS may use Apple's servers), and reads replies aloud with iOS's own voice. Your
+  words reach the Mac as text.
+- **The relay can't read what it carries.** Session state, conversations, your messages, files, photos and videos are
+  encrypted end to end (AES-256-GCM, with keys derived from a secret in the pairing QR that never reaches
+  Cloudflare). The relay stores nothing. It can see the room ID, IP addresses, when the devices connect, and how much
+  passes between them. The Wi-Fi bridge is not encrypted: anyone on that network can read its traffic and reuse its
+  token.
+- **What else leaves the Mac.** The one-time downloads (the whisper and Kokoro models from Hugging Face, and the voice
+  environment's Python and packages), a once-a-day check of GitHub for a newer release (not when running from source),
+  and, only if you turn them on, `announce-summary` and `voice-qa`, which send a reply's text through your own `claude`
+  CLI. There is no analytics; conch's own measurements stay in a local file.
+- **What stays on disk.** Settings, published results and logs live in `~/.config/conch`, `~/.cache/conch` and
+  `/tmp`. The screen log, which records which session's work was on screen and for how long, never leaves the Mac;
+  turn it off with `conch set screen-log false`.
+- **Permissions.** Each is one grant to conch.app. Microphone: your spoken replies. Accessibility: which app and page
+  you're on, and typing your replies into Terminal. Automation: finding a session's Terminal window and pressing keys
+  there. Screen Recording: the picture you draw on, a Show, and window snapshots for your phone.
+
+## Reference
+
+### Commands
+
+| Command | What it does |
+|---|---|
+| `conch setup [--service \| --no-service] [--no-plugin]` | Set everything up; safe to re-run |
+| `conch doctor` | Check the speech engine, the microphone, voices and agents, and say what to fix |
+| `conch` | Open the terminal dashboard (see below) |
+| `conch sessions` / `conch resumable [query]` | List live sessions / past sessions you can resume |
+| `conch start [claude \| codex] [options]` | Open a new session in Terminal (`conch start --help`) |
+| `conch wake [name]` / `conch recite [name]` | Open the mic for a session / read its latest reply aloud |
+| `conch pause` / `conch resume` | Manual (hold finished turns quietly) / auto |
+| `conch rename <session> <name>` | Give a session a name in conch |
+| `conch model <session> <model>` | Switch a live session's model |
+| `conch voices [setup]` / `conch voice <session> [voice]` | Audition the voices, or set them up now / show or pin a session's voice |
+| `conch settings` / `get <key>` / `set <key> <value>` / `unset <key>` | List, read, change or reset a setting ([docs/configuration.md](docs/configuration.md)) |
+| `conch pair` | Connect the iPhone app |
+| `conch install --codex` | Wire conch's Codex hooks |
+| `conch install-plugin` / `uninstall-plugin` | Install or remove the conch plugin for Claude Code and Codex |
+| `conch service [install \| off]` | Install or remove the launchd service |
+| `conch help-session` | Open a Claude Code session that knows conch |
+| `conch listen` / `conch speak <text>` | Test the microphone / test speech |
+| `conch uninstall [--models] [--claude \| --codex]` | Remove conch's wiring; `--models` also removes the downloaded models and voices |
+| `conch version` | Print the version |
+
+### Terminal dashboard
+
+Without the Mac app, `conch` attaches to the terminal dashboard that the launchd service keeps running, and
+`conch daemon` runs the loop in the foreground with the same dashboard. It is also the way in over ssh. The session
+list is on the left and a pane that reads along with the active session is on the right; press `?` for its keys. With
+the Mac app installed, the app hosts the daemon and is the dashboard.
+
+### Settings
+
+`conch settings` lists every setting with its value and where that value came from; `conch set` changes one and
+applies it live where it can. Every setting, its default, and the environment variables that have no setting are in
+[docs/configuration.md](docs/configuration.md).
+
+### Build from source
+
+```bash
+git clone https://github.com/stupart/conch.git && cd conch
+bun install
+bun link                    # puts `conch` on your PATH, running from source
+scripts/build-app.sh        # builds and installs conch.app
+conch setup                 # sees the app and leaves the daemon to it
+```
+
+You need [Bun](https://bun.sh) and Xcode (not just the Command Line Tools). Running from source means edits take
+effect immediately; the Homebrew binary is a frozen `bun build --compile` build.
+
+**The app is not optional.** macOS attributes the daemon's microphone use to the app that started it, and conch.app is
+what carries the microphone entitlement. Without it, the recorder opens the device and receives silence.
+
+`scripts/build-app.sh` signs with a **Developer ID Application** certificate for the project's team, `5DRS8F56M2`, and
+refuses to build without one (`security find-identity -v -p codesigning` lists yours). To sign as yourself, change the
+team in the script and the Xcode project. On a second Mac of the same team, create a new certificate there rather than
+exporting the key from the first: the app's designated requirement pins the team, not the certificate, so macOS keeps
+the microphone grant.
+
+Keep one install per Mac. A Homebrew `conch` and a linked checkout both on `$PATH` is how the app and the daemon end up
+on different versions; `conch doctor` names both when that happens.
+
+**The gate.** There is no hosted CI, so every check runs on your Mac:
+
+```bash
+scripts/ci-local.sh          # bun install --frozen-lockfile, bun test, tsc --noEmit, swift test (design/ConchDesign)
+scripts/ci-local.sh all      # + the Mac and iOS app builds, and how far HEAD is past the last release
+scripts/install-hooks.sh     # once per clone: pre-push runs the fast set
+```
+
+It keeps each check's log in `build/ci-local/` and exits non-zero if anything failed. Any subset works:
+`scripts/ci-local.sh tsc swift`.
+
+### The plugin from this repo's catalog
+
+`conch setup` installs the conch plugin locally (`conch@conch`). To install it yourself from this repo instead:
 
 ```
 /plugin marketplace add stupart/conch
 /plugin install conch@conch-plugins
 ```
 
-The plugin still needs the CLI above. If `conch setup` already installed `conch@conch`, keep that local installation; do not also install the public-catalog copy. If you previously installed `conch@blueprint-studio-marketplace`, install the new one first, confirm it works, then `/plugin uninstall conch@blueprint-studio-marketplace` — the two would otherwise register the conch tools twice. `conch setup`'s own local plugin (`conch@conch`) is separate and unaffected.
+The plugin still needs the conch CLI. If `conch setup` already installed `conch@conch`, keep that and don't add the
+catalog copy too, or the conch tools are registered twice. The same goes for an older `conch@blueprint-studio-marketplace`:
+install the new one, check it works, then `/plugin uninstall conch@blueprint-studio-marketplace`.
 
-<details>
-<summary><b>From source</b> (for hacking on conch)</summary>
+### More
 
-```bash
-git clone https://github.com/stupart/conch.git && cd conch
-bun install
-bun link                    # puts `conch` on your PATH, running from source
-scripts/build-app.sh        # builds and installs conch.app — see below
-conch setup                 # sees the app and leaves the daemon to it (no launchd service)
-```
-
-Requires [Bun](https://bun.sh). Running from source means edits take effect immediately; the brew binary is a frozen `bun build --compile` build.
-
-**The app is not optional, and a source checkout does not come with one.** `brew install` ships `conch.app` inside the formula tarball; cloning gives you the CLI and the daemon only. The app matters beyond having a window: it declares `NSMicrophoneUsageDescription` and carries the `com.apple.security.device.audio-input` entitlement, and macOS attributes the daemon's microphone use to the app bundle that spawned it. Without the app, the recorder opens the device, receives silence, and nothing anywhere reports it.
-
-`scripts/build-app.sh` needs **Xcode** (not just the Command Line Tools) and a **Developer ID Application** certificate for team `5DRS8F56M2` — the project signs manually and will fail without one. Check with:
-
-```bash
-security find-identity -v -p codesigning   # must list Developer ID Application ... 5DRS8F56M2
-```
-
-On a second machine, **create a new certificate there** rather than exporting the private key from the first: Xcode → Settings → Accounts → Manage Certificates → **+** → Developer ID Application. The private key is generated locally and never crosses the network. That is safe here because the app's designated requirement pins the *team*, not a certificate serial — so a second cert from the same team produces an app macOS treats as the same app, and the microphone grant survives.
-
-Pick one install per machine. Two `conch` on `$PATH` — a brew one and a linked checkout — is how the app and the daemon end up on different versions; `conch doctor` names both when that happens.
-
-**The gate.** GitHub Actions is off (no credits), so every check runs on your Mac:
-
-```bash
-scripts/ci-local.sh          # bun install --frozen-lockfile, bun test, bunx tsc --noEmit, swift test (design/ConchDesign)
-scripts/ci-local.sh all      # + the Mac and iOS app builds (minutes) and how far HEAD is past the last release
-scripts/install-hooks.sh     # once per clone: pre-push runs the fast set (git push --no-verify skips it)
-```
-
-It prints a pass/fail summary, keeps each check's log in `build/ci-local/`, and exits non-zero if anything failed. Any subset works: `scripts/ci-local.sh tsc swift`.
-</details>
-
-Setup leaves conch running in the background: as the Mac app when it is installed (it launches at login and hosts the daemon), otherwise as a launchd service that launches at login and self-heals within ~15s of a crash. In any Claude Code session that was already open during setup, type `/hooks` once to reload its configuration; sessions opened afterward pick conch up automatically. Finish a turn and conch will speak it, play a tink, and open the mic. Allow macOS microphone access when prompted; if the prompt was missed or the loop stays quiet, run `conch doctor`.
-
-Want manual granularity? The two integrations can be skipped independently, and their standalone commands remain idempotent:
-
-```bash
-conch setup --no-service --no-plugin
-conch service install     # install/refresh the launchd service later
-conch install-plugin      # install for whichever supported apps are present
-```
-
-Prefer to run the loop in the foreground? Use `--no-service`, then start it in any pane — you get the full dashboard (session panel + status line):
-
-```bash
-conch daemon
-```
-
-No daemon running at all? The hooks still work standalone: bell + spoken announcements, no voice-back. That's a perfectly good way to use conch.
-
-### Natural voices
-
-Every session gets its own natural voice — [Kokoro-82M](https://huggingface.co/mlx-community/Kokoro-82M-bf16), running warm and local on the Apple GPU — and it sets itself up. There is nothing to install: the first time the daemon starts, it builds conch's own voice environment in the background (about 1.3 GB, once, into `~/.cache/conch/voice`) and fetches the model (~360 MB, into the standard Hugging Face cache), speaking with macOS `say` until it is ready. Settings → Session voices shows where it stands: *Natural voices: setting up… / ready / off (reason)*; so does `conch doctor`.
-
-How it works: the Mac app carries a pinned [uv](https://github.com/astral-sh/uv) (`conch.app/Contents/Helpers/uv`) and hands it to the daemon, which installs its own uv-managed Python 3.12 and exactly the packages in a hashed lock (`src/voice-requirements.txt`) — nothing touches your system Python or your own uv tools. Every start probes that environment against the lock and checks Kokoro's files against their own hashes; whatever is missing, wrong or damaged is rebuilt or fetched again in the background, and the voices heal themselves from then on: offline, it waits for the network; out of room, for space; a build killed part way is cleaned up and started again; a worker that fails on the GPU is retried, rebuilt for once, then retried on a slower clock. A failure that is none of those gets three quick attempts, then one after an hour, two, and every four — starting over when conch, its uv or macOS changes, the network comes back, the disk frees up, or you press Try again. Each failure is logged with its reason in `~/.cache/conch/voice/setup.log`. The app says nothing while they're healthy, a quiet line while they set up or come back, and one line with Try again only if healing really fails. `conch voices setup` does the same build in the foreground, with its progress printed. An existing `uv tool install` of mlx-audio keeps working: it speaks while conch builds its own, as long as it can import Kokoro. Kokoro needs Apple silicon; an Intel Mac stays on `say`.
-
-- **Opt out:** `CONCH_TTS=say` — nothing is downloaded or built.
-- **Use your own Python:** `CONCH_TTS_WORKER_PYTHON=/path/to/python` — used as-is; conch builds nothing. It needs `mlx-audio`, `misaki[en]`, `loguru` and the spaCy English model on Python 3.10 or newer.
-
-The daemon runs one owned worker with no HTTP listener: it loads Kokoro once, warms the MLX/G2P path, and accepts private JSON lines over stdin/stdout. A request timeout or crash hard-kills that exact child and starts a fresh one; while it is loading or restarting, speech immediately degrades to `say`. Manual mode unloads the worker after a minute (freeing its memory) and auto mode warms it again; explicit speech in between goes through `say`.
-
-**Every session gets its own voice**: labels are hashed onto a ring of 8 Kokoro voices, so dayloop always sounds like dayloop and you can tell sessions apart by ear. Audition the ring with `conch voices` (or press `v` in the dashboard to hear each LIVE session in its assigned voice), pin any session with `conch voice dayloop bm_george` (persisted), or customize the ring with `CONCH_TTS_VOICES` (any of Kokoro's 50+ voices). `CONCH_TTS=server` temporarily restores the legacy HTTP backend, which uses your own `mlx_audio.server`.
-
-## Commands
-
-| Command | What it does |
-|---|---|
-| `conch setup [--no-service] [--no-plugin]` | Run once: deps, models, hooks, doctor, service, and available-app plugins |
-| `conch uninstall [--models]` | Remove managed hooks, instructions, service, tmux session, and plugin; also remove downloaded models and the natural-voice environment only with `--models` |
-| `conch version` / `--version` | Print the installed package version |
-| `conch service [install\|off]` | Optionally install/refresh or remove launchd supervision |
-| `conch install-plugin` / `uninstall-plugin` | Optionally manage the Claude Code plugin separately |
-| `conch install` | Optionally wire Claude Code hooks separately |
-| `conch uninstall [--claude \| --codex]` | Remove one agent's wiring, or everything |
-| `conch daemon` | Run the voice loop: announce → listen → inject |
-| `conch wake [name]` | Reopen the mic — last announced session, or by name (bind it to a hotkey) |
-| `conch recite [name]` | Read the latest response aloud — last announced session, or by name |
-| `conch rename <session> <label>` | Save a conch display label and migrate its pinned voice |
-| `conch sessions` | List live Claude Code sessions |
-| `conch pause` / `resume` | Manual / auto: hold finished sessions quietly, then replay them |
-| `conch hook` | Hook entrypoint (Claude Code calls this, not you) |
-| `conch listen` | Mic check: capture one utterance, print the transcript |
-| `conch speak <text>` | TTS check |
-| `conch voices` | Audition the voice ring — each voice introduces itself |
-| `conch voice <s> [v]` | Show or pin a session's voice (persisted) |
-| `conch set <key> <value>` | Save a curated setting and apply it live when possible |
-| `conch get <key>` | Show one effective setting and its source |
-| `conch unset <key>` | Remove a saved value and revert to env/default |
-| `conch settings` | List all curated settings, effective values, and sources |
-| `conch doctor` | Verify dependencies, live microphone input, and the configured TTS path |
-| `conch help-session` | Open a Claude session that knows conch — how to use it, and why it has gone quiet |
-
-## Voice commands
-
-While the mic is open (you'll hear a *tink*), a bare command word talks to conch instead of the session:
-
-| You say | What happens |
-|---|---|
-| "stop" / "got it" / "enough" *(while it's reading)* | stops reading, opens the mic for your reply |
-| "no response" / "no response needed" / "cancel" | closes the mic, moves to the next queued session |
-| "continue" / "keep going" / "read the rest" | reads more, then listens again |
-| "repeat" / "say that again" | re-speaks the last thing conch said |
-| "conch, did the tests pass?" | with `voice-qa` enabled, answers from that session's last reply without sending a prompt |
-| anything else | goes to the session as your prompt |
-
-By default conch reads the **whole** final message aloud (`CONCH_READ_FULL=0` for headline-only), pausing briefly between chunks — those pauses are your window to interject: "stop" to cut it short, "no response" to close out, or just start dictating your reply and the rest is skipped.
-
-Commands only match as the *entire* utterance — "continue working on the login bug" is a prompt, not a command. Filler wrapping is fine ("Oh, continue." works). A soft *bottle* sound means the window closed on silence.
-
-**Came back after the window closed?** Press **space** in the daemon's terminal, or run `conch wake` (bind it to a global hotkey via Raycast/Shortcuts) — the mic reopens for the last announced session. `conch wake dayloop` targets any live session by name (`conch sessions` lists them), and the status line shows exactly who's listening.
-
-**Leaving or reading instead?** `conch pause` switches to manual: replies remain visible, announcements and automatic mic opening stop, and conch **holds** the latest finished turn per session. `conch resume` returns to auto and replays what was held. In the dashboard, **p** toggles the same mode. `CONCH_AWAY_AFTER_SECS` adds opt-in auto-silence after N seconds of keyboard/mouse idle, but it is off by default because idle time does not count voice activity. Joining meetings often? `conch set meeting-autopause true` enables a default-off CoreAudio watcher that silently enters manual mode when another app takes the default microphone, then restores your prior mode when it releases.
-
-The two default-off fast-model features (`announce-summary` and `voice-qa`) shell out to your installed, authenticated `claude` CLI; conch adds no model SDK or runtime package.
-
-**Want to focus on one thing?** Use **↑↓** to park the cursor on a session. Its latest output follows into the pane and stays there; **esc** releases the cursor back to automatic follow. Press **r** to read that output aloud, or **Enter** for its actions menu: preview/pin a voice, prioritize its next hand-off, rename it, or safely dismiss it from conch while leaving the agent process running. Press **u** to open the restore list and bring back any dismissed session. Recite is immediate and read-only: it cuts any active read or mic, reads the latest reply from the top, then returns to rest. While a session is parked, **p** toggles manual/auto just for it, holding only its latest turn and replaying that turn from the top on auto; with no parked cursor, **p** changes the whole app. These controls take effect instantly: an active read stops, the mic closes, and its in-flight capture is dropped.
-
-**Permission prompts** open the mic too, on sessions started with `bypass-permissions` off (`conch set bypass-permissions true` skips every prompt instead — `claude --dangerously-skip-permissions`, `codex --dangerously-bypass-approvals-and-sandbox`). conch says which tool and what it wants, read from the transcript ("dayloop needs permission for Bash: git push origin main. Yes, always, or no?"), then presses what you would press: "yes" is Enter on the highlighted option, "no" is Escape, "no, use main instead" is Escape and the rest typed as your next prompt, and "always" moves to the don't-ask-again row — after a second spoken yes, since that one outlives the prompt. Anything unclear is asked once more, then left for the keyboard with the row still saying what it needs. And idle "waiting for your input" nags are filtered: conch checks whether the session's last reply actually asked you something, and stays quiet when the session is just idle ("I'll ping you when it lands").
-
-## The dashboard
-
-Run the daemon in a visible terminal (`conch daemon`), or just type **`conch`** to attach to the one `conch service` keeps running in the background — either way you get the dashboard from the screenshot above: a **live session ledger** on the left, a **read-along pane** on the right, so you can see who needs you at a glance without conch ever nagging you aloud:
-
-```
-  conch
-  ─────────────────────────────────────────────────────────────────
-   boatker      ❗ │ yeah let's make theater the default and
-   honeyb       ❗ │ auto-open the dashboard at login so i never
-   dayloop      ○ │ have to think about it▌
-   tokenworks   ○ │
- ▎ arch site    ● │
-   conch        ● │
-   poaster      ⏸ │ pause to send · space to stop · say send to submit now
-   ↑↓ park · esc back · space talk · p auto/manual · ⏎ actions · u restore · r recite · , settings · ? help · q quit
-```
-
-Sessions that need input sort to the top. Each row carries a **colored status dot** — `❗ needs a response`, `○ waiting for you`, `● working…`, `● recording`, `⏸ manual` — and the **session conch is currently talking to** takes a cyan accent bar and lights up in place as it moves through the turn (`▶ speaking` → `● mic open` → `● recording` → `… transcribing`). The **pane on the right reads along**: your words build there as you speak them while it records, and when conch reads a reply back the pane scrolls through it, dimming what's already been spoken.
-
-You don't have to touch it — but you can. **↑↓** park a cursor on a session and make the pane follow its latest output until **esc** releases it; **Enter** opens that parked session's trapped actions menu; **u** opens every dismissed session for restore; **r** recites the parked output (or the active/last session when no cursor is parked); **o** opens the parked session's deliverable — the link its `review_to_front` call attached — with macOS `open`, and the row settles back to waiting until a newer one lands; **space** talks to the parked session (or the active one); **p** toggles auto/manual, targeting the parked session while the cursor is parked and the whole app otherwise. The mouse wheel scrolls long pane output, and dragging in the pane selects and copies text through both the macOS clipboard and OSC 52 (including tmux passthrough). **\\** hides the pane for a full-width ledger; **,** opens live settings; **l** toggles a log in the pane; **?** shows the full key + voice-command help; **q** quits. Set `CONCH_NO_MOUSE=1` to keep the dashboard but restore terminal-native mouse selection. The play-by-play is always written to `/tmp/conch-daemon.log` whether or not the log is on screen, so the dashboard stays clean by default.
-
-An ordinary exit restores mouse tracking automatically. If the daemon is killed with untrappable `SIGKILL` and the shell starts printing mouse reports, recover with `printf '\033[?1000l\033[?1002l\033[?1003l\033[?1006l'`.
-
-**Windows follow the voice too.** When conch starts talking to a session, that session's Terminal window rises to the front *without stealing your keyboard focus* — you keep typing wherever you are, and the session you're hearing is already there when you look up. (`CONCH_REVEAL_ON_TURN=0` to disable.)
-
-The daemon also spawns a **warm whisper-server** (model stays loaded), which makes every transcription seconds faster and is what powers the live partials — the growing recording is re-transcribed about once a second while you speak. No server binary? Everything still works via the slower cold path, minus partials. `CONCH_WHISPER_PORT=0` disables the server.
-
-State is also written to `/tmp/conch-state.json` (`{state, label, partial, ts}`) for menu-bar apps or status bars to consume.
-
-## Config
-
-Curated settings can be changed without editing shell profiles:
-
-```bash
-conch settings
-conch get end-silence
-conch set end-silence 2.75
-conch unset end-silence       # revert to env/default
-```
-
-Values are saved in `~/.config/conch/settings.json`; writes are atomic for readers and intended for one `conch` CLI writer at a time. Environment variables take precedence over saved values. `set` reports whether a value applied live, is masked by an environment variable, waits for the next hook, or was saved for the next daemon start. `get` and `settings` ask the daemon for live truth and fall back to local resolution when it is down.
-
-The full environment-variable surface remains available (put overrides in the hook's env or your shell profile):
-
-| Variable | Default | |
-|---|---|---|
-| `CONCH_VOICE` | system default | `say` voice — try `Ava (Premium)` |
-| `CONCH_SAY_RATE` | `210` | macOS `say` rate in words per minute; `0` preserves the system default (~175) |
-| `CONCH_SPEAK_SENTENCES` | `2` | how much of the reply to read aloud |
-| `CONCH_SPEAK_MAX_CHARS` | `350` | hard cap on spoken length |
-| `CONCH_ANNOUNCE_SUMMARY` | `0` | summarize long hook announcements with Haiku; falls back to the literal snippet |
-| `CONCH_VOICE_QA` | `0` | answer "conch, …" from the active session's last reply without injecting it |
-| `CONCH_BELL` / `CONCH_SPEAK` | `1` | disable the ding / the voice |
-| `CONCH_BELL_SOUND` | Glass.aiff | any afplay-able file |
-| `CONCH_LISTEN_WINDOW_SECS` | `30` | how long the mic waits for you to *start* talking |
-| `CONCH_MAX_UTTERANCE_SECS` | `120` | cap on a single utterance once you're talking |
-| `CONCH_END_SILENCE_SECS` | `3.5` | pause length that ends your utterance (drop it for snappier turns) |
-| `CONCH_MIC_GAIN_DB` | `0` (off) | software mic gain in dB (`-20` to `30`; `conch set mic-gain …`); boosts conch capture without changing macOS input volume |
-| `CONCH_CONTINUE_SENTENCES` | `6` | sentences per read-aloud / "continue" chunk |
-| `CONCH_GAP_SECS` | `0` (none) | interjection gap between read-aloud chunks |
-| `CONCH_BARGE_THRESHOLD_PCT` | `0` (off) | mic level that interrupts reading mid-chunk; after upgrading an existing supervised install, run `conch service install` once to shed the old forced env and restart |
-| `CONCH_MIC_CUES` | `1` | tink on mic-open, bottle on silent close |
-| `CONCH_AUTO_SUBMIT` | `1` | press Enter after injecting |
-| `CONCH_HOLD_SUBMIT` | `1` | hold Enter; pauses segment dictation, "send"/"go" or a long pause submits |
-| `CONCH_HOLD_SUBMIT_SECS` | `8` | silence before held dictation auto-submits |
-| `CONCH_KEYSTROKE_FALLBACK` | `0` | allow typing into the frontmost window when no tmux pane is found |
-| `CONCH_BYPASS_PERMISSIONS` | `0` | start sessions with every permission prompt skipped (`claude --dangerously-skip-permissions`, `codex --dangerously-bypass-approvals-and-sandbox`); off, permission prompts are answered by voice instead (`conch set bypass-permissions …`) |
-| `CONCH_TYPING_GRACE_SECS` | `2` | if you touched the keyboard/mouse this recently, a finished turn stays visual (bell + panel) and the mic won't open — so typing can't trigger phantom words; `0` disables |
-| `CONCH_REVEAL_ON_TURN` | `1` | raise a session's window (without stealing focus) when conch starts talking to it |
-| `CONCH_NO_MOUSE` | `0` | set to `1` to disable dashboard mouse capture and use native terminal selection |
-| `CONCH_SAY_VOLUME` | `0.4` | `say` fallback loudness — tuned to match Kokoro (raw `say` is ~3× louder) |
-| `CONCH_SEASHELL_ROOT` | `~/whisper-cli`, then seashell's formula | the seashell tree probed for the whisper.cpp build + models, after the copies conch.app carries; then a brew `whisper-cpp` install and `~/.cache/conch/models` (`src/speech-engine.ts`) |
-| `CONCH_WHISPER_PORT` | `8642` | warm whisper-server port; `0` = cold cli only |
-| `CONCH_WHISPER_IDLE_UNLOAD_MINS` | `20` | unload the warm whisper-server (~628MB) after this many minutes without a transcription; it reloads the moment a mic is about to open; `0` keeps it loaded (`conch set whisper-idle-unload …`) |
-| `CONCH_AWAY_AFTER_SECS` | `0` (off) | opt-in: silence everything after N seconds of keyboard idle |
-| `CONCH_MEETING_AUTOPAUSE` | `0` (off) | silently pause while another app is using the default microphone |
-| `CONCH_SCREEN_LOG` | `1` | keep a local log of which session's work was on screen, and for how long, in `~/.config/conch/screen`; never sent anywhere (`conch set screen-log …`, [docs/screen-context.md](docs/screen-context.md)) |
-| `CONCH_TTS` | `worker` | `worker` (owned, no HTTP; sets up its own environment) / `server` (legacy rollback) / `say` (opt out: nothing is downloaded); old `auto` aliases to `worker` |
-| `CONCH_TTS_PORT` | `8880` | legacy `server` mode only; `0` disables that backend |
-| `CONCH_TTS_SERVER` | `mlx_audio.server` | legacy server binary; its shebang also locates an existing mlx-audio tool that speaks while conch builds its own |
-| `CONCH_TTS_WORKER_PYTHON` | unset | your own worker interpreter, used as-is; unset, conch uses the environment it builds in `~/.cache/conch/voice` |
-| `CONCH_UV` | the app's | the uv conch builds its voice environment with; the app sets it to its own `Contents/Helpers/uv` |
-| `CONCH_TTS_VOICES` | 8-voice ring | comma-separated Kokoro voices; sessions hash onto the ring |
-| `CONCH_TTS_SPEED` | `1.35` | Kokoro/voice synthesis speed (`conch set voice-speed …`) |
-| `CONCH_TTS_BATCH_CHARS` | `240` | coalesce later short sentences up to this size; `0` disables (sentence one always stays separate) |
-
-## Codex support is unfinished
-
-conch is built for Claude Code. There is Codex code in here — hooks, a
-transcript reader, a plugin — and it does not currently work: **Codex 0.144.1
-does not execute `~/.codex/hooks.json` at all.** Verified by installing a hook
-that does nothing but `touch` a file, and watching it never fire, after ruling
-out hook trust and schema problems.
-
-So a Codex session never announces itself, never appears in the ledger, and
-cannot be talked to. It is **off by default** — setup no longer writes the
-review contract into `~/.codex/AGENTS.md`, because telling Codex to end
-deliverables with `conch:review …` when nothing can act on it just spends its
-turns. `conch uninstall --codex` removes any earlier wiring without touching
-Claude Code.
-
-Fixing it likely means following Codex's own plugin/marketplace structure
-rather than the hooks file. Contributions welcome; until then the honest
-status is *written, not working*.
-
-## Roadmap
-
-- **Name-addressing** — "hey dayloop, ..." routes to any session, not just the last announcer
-- **Images from the phone** — screenshot something and send it to a session, since the phone has a camera and the Mac does not
-- **Always-listening mode** — seashell's concurrent VAD architecture, once extracted from its TUI, replaces the per-window sox capture
-- **Linux** — swap `say`/`afplay` for espeak/paplay, keystroke fallback for xdotool
+- [docs/voice.md](docs/voice.md): the voice loop, voice commands, permission prompts by voice, natural voices
+- [docs/configuration.md](docs/configuration.md): every setting and environment variable
+- [docs/architecture.md](docs/architecture.md): how the daemon, the apps and the agents fit together
+- [docs/install-journeys.md](docs/install-journeys.md): each install path, step by step, and where it can go quiet
+- [docs/screen-context.md](docs/screen-context.md): how conch knows whose work is on your screen
+- [relay/README.md](relay/README.md): the relay's threat model, and deploying your own
 
 ## Credits
 
-Built on [seashell](https://github.com/stupart/seashell)'s local-first STT engine.
+Built on [seashell](https://github.com/stupart/seashell)'s local-first speech-to-text engine. conch.app carries
+whisper.cpp, sox, tmux, uv and the silero VAD model, with their licences.
 
-conch is a small open experiment from [Blueprint Studio](https://blueprintstudio.ai) — we build AI products that feel good to use. MIT.
+conch is a small open experiment from [Blueprint Studio](https://blueprintstudio.ai). We build AI products that feel
+good to use.
+
+## License, name and artwork
+
+The code is MIT licensed ([LICENSE](LICENSE)). The conch name and logo, the app icons and agent marks (the artwork in
+the apps' `Assets.xcassets`), the crab characters and other artwork, and the films are not covered by that license:
+please don't use them for forks or for products built from this code.
