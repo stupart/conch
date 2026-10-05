@@ -1388,6 +1388,8 @@ private struct ComposerUpdateScope<Content: View>: View {
 private struct YourTurnBubble: View {
     let message: TalkController.Outgoing
     let onRetry: () -> Void
+    /// Dismiss: takes it off the conversation, its words with it (`TalkController.discardOutgoing`). Retry, beside it,
+    /// is the way to keep them.
     let onDiscard: () -> Void
 
     var body: some View {
@@ -1407,10 +1409,13 @@ private struct YourTurnBubble: View {
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
         .transition(.opacity)
+        // Everything not yet proven delivered. 2026-10-05: since 2026-09-17 this asked for a state that was not terminal
+        // (or staged) — and a failure IS terminal, so a "Not delivered" bubble had no menu at all, and with no button
+        // either there was no way to dismiss it (Tyler: Dismiss "didn't work per usual").
         .contextMenu {
-            if message.state.isTerminal == false || message.state == .staged {
+            if !message.state.clearsDraft {
                 Button("Try again", systemImage: "arrow.clockwise", action: onRetry)
-                Button("Discard", systemImage: "trash", role: .destructive, action: onDiscard)
+                Button("Dismiss", systemImage: "xmark", role: .destructive, action: onDiscard)
             }
         }
     }
@@ -1439,29 +1444,29 @@ private struct YourTurnBubble: View {
         // Not a failure and not a confirmation: conch could not tell. It says so, keeps the
         // words, and stays open to the answer the Mac publishes afterwards.
         case let .unknown(reason):
-            HStack(spacing: 10) {
-                Text(reason)
-                    .font(Type.caption)
-                    .foregroundStyle(Palette.caution)
-                    .multilineTextAlignment(.trailing)
-                Button("Retry", action: onRetry)
-                    .font(Type.caption.weight(.semibold))
-                    .foregroundStyle(Palette.micOpen)
-                    .buttonStyle(.plain)
-            }
-            .accessibilityHint("Long press to discard it")
+            unsettled(reason, color: Palette.caution)
         case let .failed(reason):
-            HStack(spacing: 10) {
-                Text(reason)
-                    .font(Type.caption)
-                    .foregroundStyle(Palette.needs)
-                    .multilineTextAlignment(.trailing)
-                Button("Retry", action: onRetry)
-                    .font(Type.caption.weight(.semibold))
-                    .foregroundStyle(Palette.micOpen)
-                    .buttonStyle(.plain)
-            }
-            .accessibilityHint("Long press to discard it")
+            unsettled(reason, color: Palette.needs)
+        }
+    }
+
+    /// Why it did not land, with Retry and Dismiss beside it: the Mac's Dismiss, on the phone. 2026-10-05: there was
+    /// no Dismiss here, only a long-press menu that a failed send never showed.
+    private func unsettled(_ reason: String, color: Color) -> some View {
+        HStack(spacing: 10) {
+            Text(reason)
+                .font(Type.caption)
+                .foregroundStyle(color)
+                .multilineTextAlignment(.trailing)
+            Button("Retry", action: onRetry)
+                .font(Type.caption.weight(.semibold))
+                .foregroundStyle(Palette.micOpen)
+                .buttonStyle(.plain)
+            Button("Dismiss", action: onDiscard)
+                .font(Type.caption.weight(.medium))
+                .foregroundStyle(Palette.textDim)
+                .buttonStyle(.plain)
+                .accessibilityHint("Takes it off the conversation, with its words")
         }
     }
 }

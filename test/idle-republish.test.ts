@@ -56,7 +56,10 @@ describe("an unchanged poll leaves every @Published property alone", () => {
 
   test("the outbox is reconciled on a copy and stored only if it changed", () => {
     const reconcile = section(store, "private func reconcileOutbox(with snapshot:", "static func sameMessage(");
-    expect(at(reconcile, "var reconciled = outbox")).toBeLessThan(at(reconcile, "if reconciled != outbox { outbox = reconciled }"));
+    // Stored through honoringDismissals (2026-10-05), so a Dismiss between the copy and the store stands; still only
+    // when it changed.
+    expect(at(reconcile, "var reconciled = outbox")).toBeLessThan(at(reconcile, "let stored = reconciled.honoringDismissals(of: outbox)"));
+    expect(at(reconcile, "let stored = reconciled.honoringDismissals(of: outbox)")).toBeLessThan(at(reconcile, "if stored != outbox { outbox = stored }"));
     // A mutating call on the property itself fires its didSet (a UserDefaults write) and its
     // willSet (a republish) whether or not anything was removed.
     expect(reconcile).not.toContain("outbox.remove(");

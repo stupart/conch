@@ -388,11 +388,14 @@ final class TalkController: NSObject, ObservableObject {
         outbox.prune(confirmedBefore: Date().addingTimeInterval(-600))
     }
 
-    /// Throw away a message that did not arrive, on purpose.
+    /// Throw away a message that did not arrive, on purpose: the bubble's Dismiss.
+    ///
+    /// Remembered as dismissed (`ConchOutbox.dismiss`, 2026-10-05), so the receipt the Mac goes on publishing for it,
+    /// or anything else that comes later, cannot bring it back.
     func discardOutgoing(_ id: String) {
         guard let message = outgoing.first(where: { $0.id == id }) else { return }
         if !message.state.clearsDraft { dropFromDraft(message) }
-        outbox.remove(id)
+        outbox.dismiss(id)
     }
 
     private func dropFromDraft(_ message: Outgoing) {

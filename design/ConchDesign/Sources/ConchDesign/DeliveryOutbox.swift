@@ -76,15 +76,33 @@ public struct ConchOutboxEntry: Identifiable, Equatable, Codable, Sendable {
 /// decides what to do about it.
 public struct ConchOutbox: Equatable, Codable, Sendable {
     public private(set) var entries: [ConchOutboxEntry]
+    /// Sends the person dismissed, by id, with when: nothing may put one of them back.
+    ///
+    /// 2026-10-05: Dismiss "didn't work per usual" (and 2026-10-02: "Dismiss button doesn't work", then "Oh its gone
+    /// now"). The cause was the press never reaching the button (ConversationStackView's `PendingMessage`) and, on the
+    /// phone, there being no Dismiss for a failed send at all. These make the other half a rule rather than a
+    /// coincidence: whatever a reconcile or a late receipt does, a dismissed send stays gone.
+    public private(set) var dismissed: [String: Date]
 
-    public init(entries: [ConchOutboxEntry] = []) { self.entries = entries }
+    /// How long a dismissal is remembered. Ids are minted per send and a send's outcome is settled within minutes, so a
+    /// day is far past any receipt that could still name one, and the set stays a handful of ids.
+    public static let dismissalMemory: TimeInterval = 24 * 60 * 60
+
+    public init(entries: [ConchOutboxEntry] = [], dismissed: [String: Date] = [:]) {
+        self.entries = entries
+        self.dismissed = dismissed
+    }
 
     /// Start a send: it appears immediately, reading as sent.
     ///
     /// One unsettled message per session, as before — its words head that session's draft,
     /// so re-sending carries them again rather than leaving two copies in flight.
+    ///
+    /// Never one that was dismissed: an id is a send, and that send was taken off the conversation on purpose.
     @discardableResult
     public mutating func begin(_ entry: ConchOutboxEntry) -> ConchOutboxEntry {
+        forgetDismissals(before: entry.sentAt.addingTimeInterval(-Self.dismissalMemory))
+        guard dismissed[entry.id] == nil else { return entry }
         entries.removeAll { $0.session == entry.session && !$0.state.clearsDraft }
         entries.append(entry)
         return entry
@@ -99,6 +117,36 @@ public struct ConchOutbox: Equatable, Codable, Sendable {
 
     public mutating func remove(_ id: String) {
         entries.removeAll { $0.id == id }
+    }
+
+    /// The person took this send off the conversation: it goes now, and it is remembered as gone so nothing can put
+    /// it back. Other sends are untouched.
+    public mutating func dismiss(_ id: String, at now: Date = Date()) {
+        entries.removeAll { $0.id == id }
+        dismissed[id] = now
+        forgetDismissals(before: now.addingTimeInterval(-Self.dismissalMemory))
+    }
+
+    public func isDismissed(_ id: String) -> Bool { dismissed[id] != nil }
+
+    /// Let go of dismissals made before `cutoff`. Called by `begin` and `dismiss`, so the set never outgrows a day of them.
+    public mutating func forgetDismissals(before cutoff: Date) {
+        guard dismissed.values.contains(where: { $0 < cutoff }) else { return }
+        dismissed = dismissed.filter { $0.value >= cutoff }
+    }
+
+    /// This outbox, to be stored over `latest`: every dismissal in `latest` stands.
+    ///
+    /// A reconcile works on a copy and stores it (the Mac's `reconcileOutbox`, so an unchanged outbox is not written
+    /// on every poll). A dismissal that lands between the copy and the store would be written back over by the copy;
+    /// stored through this, it is not. Today both run on the main actor with nothing between them to wait on, so it
+    /// cannot happen yet — this keeps it so when something does.
+    public func honoringDismissals(of latest: ConchOutbox) -> ConchOutbox {
+        guard !latest.dismissed.isEmpty else { return self }
+        var merged = self
+        merged.dismissed.merge(latest.dismissed) { max($0, $1) }
+        merged.entries.removeAll { merged.dismissed[$0.id] != nil }
+        return merged
     }
 
     /// The session's send that is still waiting, or that did not arrive — the one whose
@@ -135,6 +183,16 @@ public struct ConchOutbox: Equatable, Codable, Sendable {
     }
 
     // MARK: - Persistence
+
+    private enum CodingKeys: String, CodingKey { case entries, dismissed }
+
+    /// An outbox stored before dismissals were remembered has none: read as an empty set, never as unreadable, which
+    /// would lose every bubble waiting in it.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        entries = try container.decode([ConchOutboxEntry].self, forKey: .entries)
+        dismissed = try container.decodeIfPresent([String: Date].self, forKey: .dismissed) ?? [:]
+    }
 
     /// Never throws and never refuses to launch: an outbox that cannot be read is empty,
     /// which loses the bubbles but never the words — those live in the draft.

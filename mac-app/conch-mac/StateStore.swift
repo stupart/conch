@@ -1419,10 +1419,11 @@ final class StateStore: ObservableObject {
     }
 
     /// A send the person cleared from the conversation: one that failed, or that conch could not confirm.
+    ///
+    /// Remembered as dismissed (`ConchOutbox.dismiss`), so neither the outcome the daemon keeps publishing for it nor
+    /// a reconcile can bring it back.
     func discardOutgoing(_ id: String) {
-        var cleared = outbox
-        cleared.remove(id)
-        if cleared != outbox { outbox = cleared }
+        outbox.dismiss(id)
     }
 
     /// Retire bubbles the transcript now shows for itself.
@@ -1463,7 +1464,9 @@ final class StateStore: ObservableObject {
         // goes after ten minutes, the phone's cutoff. Match on something sturdier than the text
         // if that proves common.
         reconciled.prune(confirmedBefore: Date().addingTimeInterval(-600))
-        if reconciled != outbox { outbox = reconciled }
+        // Stored over the outbox as it is NOW, not as it was copied: a Dismiss between the two stands (2026-10-05).
+        let stored = reconciled.honoringDismissals(of: outbox)
+        if stored != outbox { outbox = stored }
     }
 
     /// Whitespace-insensitive, and a suffix counts because the daemon may prepend to what it

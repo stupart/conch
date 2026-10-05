@@ -181,3 +181,114 @@ final class OutboxSupersededTests: XCTestCase {
         XCTAssertTrue(outbox.entries.isEmpty)
     }
 }
+
+/// Dismiss is immediate and permanent. 2026-10-05, Tyler: Dismiss on a failed send "didn't work per usual" (2026-10-02:
+/// "Dismiss button doesn't work", then "Oh its gone now"). The press itself is ConversationSelectionHostTests'; these are
+/// the promise behind it — once dismissed, nothing that comes later puts the send back.
+final class OutboxDismissTests: XCTestCase {
+    private let t0 = Date(timeIntervalSince1970: 1_000_000)
+
+    private func failed(_ id: String, session: String = "s", text: String = "prime the page") -> ConchOutboxEntry {
+        ConchOutboxEntry(id: id, session: session, text: text, state: .failed("Not delivered — conch couldn't confirm it."), sentAt: t0)
+    }
+
+    /// The daemon keeps publishing a delivery's outcome for a while after it settles, and every snapshot is read again:
+    /// on the Mac `applyDeliveryOutcomes` settles each one and `reconcileOutbox` retires and prunes; on the phone
+    /// `apply` and `reconcile` do the same. None of it may bring a dismissed send back.
+    func testADismissedSendStaysGoneThroughEveryReconcileWithItsFailureStillPublished() {
+        var outbox = ConchOutbox()
+        outbox.begin(ConchOutboxEntry(id: "op-1", session: "s", text: "prime the page", sentAt: t0))
+        outbox.settle("op-1", .failed("Not delivered — conch couldn't confirm it."))
+        outbox.dismiss("op-1", at: t0.addingTimeInterval(30))
+        XCTAssertTrue(outbox.entries.isEmpty, "gone the moment it is dismissed")
+        XCTAssertTrue(outbox.isDismissed("op-1"))
+
+        for poll in 0..<20 {
+            // The published outcome, read again on this poll — failed, or the late truth that it landed.
+            outbox.settle("op-1", poll.isMultiple(of: 2) ? .failed("Not delivered — conch couldn't confirm it.") : .confirmed)
+            // A reconcile on a copy, stored over the outbox as it now is.
+            var reconciled = outbox
+            reconciled.retireSuperseded(in: "s", lastUserMessageAt: t0)
+            reconciled.prune(confirmedBefore: t0.addingTimeInterval(-600))
+            outbox = reconciled.honoringDismissals(of: outbox)
+            // Even a send begun again under the same id, from wherever, is refused.
+            outbox.begin(failed("op-1"))
+        }
+        XCTAssertTrue(outbox.entries.isEmpty)
+        XCTAssertTrue(outbox.isDismissed("op-1"))
+    }
+
+    /// The race: a reconcile copies the outbox, Dismiss lands, and the copy is stored. Without the dismissal honoured
+    /// the store would write the dismissed send straight back.
+    func testADismissThatLandsMidReconcileStands() {
+        var outbox = ConchOutbox()
+        outbox.begin(failed("op-1", session: "s"))
+        outbox.begin(failed("op-2", session: "t"))
+
+        var copy = outbox                                   // the reconcile takes its copy …
+        outbox.dismiss("op-1", at: t0.addingTimeInterval(5)) // … Dismiss lands …
+        copy.prune(confirmedBefore: t0)                      // … the reconcile does its work on the stale copy …
+        XCTAssertEqual(copy.entries.map(\.id), ["op-1", "op-2"], "the copy still holds it")
+        outbox = copy.honoringDismissals(of: outbox)         // … and stores it.
+
+        XCTAssertEqual(outbox.entries.map(\.id), ["op-2"])
+        XCTAssertTrue(outbox.isDismissed("op-1"))
+        // With nothing dismissed, storing a copy is storing the copy.
+        let plain = ConchOutbox(entries: [failed("op-3")])
+        XCTAssertEqual(plain.honoringDismissals(of: ConchOutbox()), plain)
+    }
+
+    /// Dismissing one send touches no other: not the session's confirmed messages, not another session's failure.
+    func testDismissTakesOnlyThatSend() {
+        var outbox = ConchOutbox()
+        outbox.begin(ConchOutboxEntry(id: "ok", session: "s", text: "landed", sentAt: t0))
+        outbox.settle("ok", .confirmed)
+        outbox.begin(failed("bad", session: "s"))
+        outbox.begin(failed("elsewhere", session: "t"))
+        outbox.dismiss("bad", at: t0)
+        XCTAssertEqual(outbox.entries.map(\.id), ["ok", "elsewhere"])
+        XCTAssertEqual(outbox.entries.map(\.state), [.confirmed, .failed("Not delivered — conch couldn't confirm it.")])
+        XCTAssertFalse(outbox.isDismissed("ok"))
+        XCTAssertFalse(outbox.isDismissed("elsewhere"))
+        // And a new send to the same session after it is an ordinary send.
+        outbox.begin(ConchOutboxEntry(id: "next", session: "s", text: "again", sentAt: t0.addingTimeInterval(60)))
+        XCTAssertEqual(outbox.entries(for: "s").map(\.id), ["ok", "next"])
+    }
+
+    /// Dismissals are remembered for a day, then let go of, so the set stays a handful of ids.
+    func testDismissalsAreForgottenAfterADay() {
+        var outbox = ConchOutbox()
+        outbox.begin(failed("old"))
+        outbox.dismiss("old", at: t0)
+        outbox.dismiss("recent", at: t0.addingTimeInterval(ConchOutbox.dismissalMemory - 60))
+        XCTAssertEqual(Set(outbox.dismissed.keys), ["old", "recent"], "both within the day")
+
+        // The next dismissal a day on lets go of the first.
+        outbox.dismiss("today", at: t0.addingTimeInterval(ConchOutbox.dismissalMemory + 60))
+        XCTAssertEqual(Set(outbox.dismissed.keys), ["recent", "today"])
+
+        // So does the next send.
+        outbox.begin(ConchOutboxEntry(id: "new", session: "s", text: "hi", sentAt: t0.addingTimeInterval(2 * ConchOutbox.dismissalMemory)))
+        XCTAssertEqual(Set(outbox.dismissed.keys), ["today"])
+        outbox.forgetDismissals(before: t0.addingTimeInterval(3 * ConchOutbox.dismissalMemory))
+        XCTAssertTrue(outbox.dismissed.isEmpty)
+    }
+
+    /// A dismissal survives a relaunch, and an outbox stored before dismissals were remembered still reads whole.
+    func testDismissalsSurviveARelaunchAndAnOlderStoreStillReads() throws {
+        var outbox = ConchOutbox()
+        outbox.begin(failed("op-1", session: "s"))
+        outbox.begin(failed("op-2", session: "t"))
+        outbox.dismiss("op-1", at: t0)
+        var relaunched = ConchOutbox.decode(outbox.encoded())
+        XCTAssertEqual(relaunched, outbox)
+        relaunched.begin(failed("op-1", session: "s"))
+        XCTAssertEqual(relaunched.entries.map(\.id), ["op-2"], "still dismissed after the relaunch")
+
+        // Written by the build before this one: entries only.
+        let older = try JSONEncoder().encode(["entries": [failed("op-9")]])
+        let read = ConchOutbox.decode(older)
+        XCTAssertEqual(read.entries.map(\.id), ["op-9"], "its bubbles are kept")
+        XCTAssertTrue(read.dismissed.isEmpty)
+    }
+}
