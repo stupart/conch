@@ -534,6 +534,7 @@ private struct SessionLedger: View {
     }
     /// Dismissed sessions start folded away, as the lab starts them (`showDismissed: false`).
     @State private var showsDismissed = false
+    @State private var scroller = LedgerScroller()
 
     /// …except while an Undo is being offered: that button lives ON the dismissed row, so
     /// folding the group the instant you dismiss would take the undo with it.
@@ -596,7 +597,18 @@ private struct SessionLedger: View {
                 ScrollViewReader { proxy in
                     TimelineView(.periodic(from: .now, by: 10)) { timeline in
                         ScrollView {
-                            LazyVStack(spacing: 2) {
+                            // Eager, not lazy (2026-10-05). The app froze five times, the main thread pegged
+                            // in a LazyVStack that never stopped re-placing its rows (LazySubviewPlacements,
+                            // measureEstimates, updateItemPhases: every frame of the loop is the lazy stack's
+                            // own bookkeeping), right after a dismiss or a restore moved a row between the
+                            // sessions and the Dismissed group, and once after a deliverable was filed while
+                            // agents worked: any change to the rows could start it. Since the live activity lines
+                            // (2026-10-03) rows change height every second, and a lazy stack estimates the
+                            // rows it has not measured, so the list's height, the scroll offset and which
+                            // rows are placed kept chasing one another. A few dozen rows cost nothing to lay
+                            // out in full; the conversation stack dropped its lazy stack for the same reason
+                            // (mac-phase1-source.test.ts). sidebar-settle.test.ts holds the list to settling.
+                            VStack(spacing: 2) {
                                 // The way back to "everything".
                                 //
                                 // Escape released a selection, and Escape stops
@@ -732,31 +744,34 @@ private struct SessionLedger: View {
                             .padding(.vertical, 8)
                         }
                         .scrollIndicators(.visible)
+                        // Every scroll goes through `keepInView`: only to an id the list draws right now,
+                        // once per turn, never the same target twice while one may still be moving, and
+                        // animated only for a change of focus while no row is changing shape.
                         .onAppear {
-                            scrollToUndoOrFocus(proxy, animated: false)
+                            keepInView(keptInView, proxy, animated: false)
                         }
                         .onChange(of: focusID) { _, _ in
-                            scrollToUndoOrFocus(proxy, animated: true)
+                            keepInView(keptInView, proxy, animated: true)
                         }
                         .onChange(of: rowOrder) { _, _ in
-                            scrollToUndoOrFocus(proxy, animated: true)
+                            scroller.rowsChanged()
+                            keepInView(keptInView, proxy, animated: false)
+                        }
+                        .onChange(of: rowShape) { _, _ in
+                            scroller.rowsChanged()
                         }
                         .onChange(of: undoDismissal?.id) { _, _ in
-                            scrollToUndoOrFocus(proxy, animated: true)
+                            scroller.rowsChanged()
+                            keepInView(keptInView, proxy, animated: false)
                         }
                         .onChange(of: rowMessages) { previous, current in
-                            if undoDismissal != nil {
-                                scrollToUndoOrFocus(proxy, animated: true)
-                                return
-                            }
+                            // A new word on a row ("Closing cleanly…") brings that row into view, once: the
+                            // next word on the same row is the same target and is not scrolled to again.
                             let changedID = current.keys.sorted().first { id in
                                 current[id] != previous[id] && current[id] != nil
                             }
-                            guard let changedID,
-                                  let targetID = rowTargetID(for: changedID) else {
-                                return
-                            }
-                            scroll(proxy, to: targetID, animated: true)
+                            guard undoDismissal == nil, let changedID else { return }
+                            keepInView(scrollTarget(for: changedID), proxy, animated: false)
                         }
                     }
                 }
@@ -773,48 +788,131 @@ private struct SessionLedger: View {
         .background(ConchPalette.bg)
     }
 
-    private func scrollToFocus(_ proxy: ScrollViewProxy, animated: Bool) {
-        guard let focusID else { return }
-        scroll(proxy, to: focusID, animated: animated)
-    }
-
-    private func scrollToUndoOrFocus(
-        _ proxy: ScrollViewProxy,
-        animated: Bool
-    ) {
-        if let undoDismissal {
-            scroll(
-                proxy,
-                to: "dismissed:\(undoDismissal.id)",
-                animated: animated
-            )
-        } else {
-            scrollToFocus(proxy, animated: animated)
-        }
-    }
-
-    private func rowTargetID(for sessionID: SessionRow.ID) -> String? {
-        guard let state else { return nil }
-        if state.rows.contains(where: { $0.id == sessionID }) {
-            return sessionID
-        }
-        if state.dismissedRows.contains(where: { $0.id == sessionID }) {
-            return "dismissed:\(sessionID)"
-        }
-        return nil
-    }
-
-    private func scroll(
-        _ proxy: ScrollViewProxy,
-        to targetID: String,
-        animated: Bool
-    ) {
-        if animated && !reduceMotion {
-            withAnimation(.easeOut(duration: 0.18)) {
-                proxy.scrollTo(targetID, anchor: .center)
+    /// Every id the list draws right now, each a `.id` a scroll can land on: a session's own row (its
+    /// sub-agents are drawn inside it), a named folder's header, and the Dismissed group's header and,
+    /// while it is open, its rows. `ScrollViewProxy.scrollTo` is only ever asked for one of these.
+    private var scrollTargets: Set<String> {
+        guard let state else { return [] }
+        var targets: Set<String> = []
+        for folder in sessionFolders {
+            if !folder.name.isEmpty { targets.insert("folder:\(folder.id)") }
+            guard !collapsedFolders.contains(folder.id) else { continue }
+            for row in rows(in: folder) where row.parentSessionId == nil {
+                targets.insert(row.id)
             }
+        }
+        if !state.dismissedRows.isEmpty {
+            targets.insert("dismissed-header")
+            if showsDismissedRows {
+                for row in state.dismissedRows { targets.insert("dismissed:\(row.id)") }
+            }
+        }
+        return targets
+    }
+
+    /// Where the list shows a session, or nil when it is nowhere on it: its own row; for a sub-agent, its
+    /// session's row, which draws it; its folder's header while the folder is folded; and for a
+    /// dismissed session its row while the group is open, else the group's header.
+    private func scrollTarget(for sessionID: SessionRow.ID) -> String? {
+        guard let state else { return nil }
+        let target: String?
+        if let row = state.rows.first(where: { $0.id == sessionID }) {
+            let shownID = row.parentSessionId ?? row.id
+            if let folder = sessionFolders.first(where: { $0.sessionIDs.contains(shownID) }),
+               collapsedFolders.contains(folder.id) {
+                target = "folder:\(folder.id)"
+            } else {
+                target = shownID
+            }
+        } else if state.dismissedRows.contains(where: { $0.id == sessionID }) {
+            target = showsDismissedRows ? "dismissed:\(sessionID)" : "dismissed-header"
         } else {
-            proxy.scrollTo(targetID, anchor: .center)
+            target = nil
+        }
+        return target.flatMap { scrollTargets.contains($0) ? $0 : nil }
+    }
+
+    /// What the list keeps in view: the dismissed row an Undo is offered on, else the session being
+    /// looked at. An undo for a row the daemon has not yet moved into the group points at the group's
+    /// header rather than at a row that is not there.
+    private var keptInView: String? {
+        if let undoDismissal {
+            return scrollTarget(for: undoDismissal.id).flatMap { $0.hasPrefix("dismissed") ? $0 : nil }
+                ?? (scrollTargets.contains("dismissed-header") ? "dismissed-header" : nil)
+        }
+        return focusID.flatMap(scrollTarget(for:))
+    }
+
+    /// What decides a row's height: whether it has a second line and why. Rows change it as agents
+    /// start and stop work, about once a second, and a scroll is not animated across one (`LedgerScroller`).
+    private var rowShape: [String] {
+        guard let state else { return [] }
+        return state.rows.map { row in
+            "\(row.id) \(row.activity?.text.isEmpty == false) \(row.status == .needs) \(rowMessages[row.id] != nil)"
+        } + [showsDismissedRows ? "dismissed open" : "dismissed folded"]
+    }
+
+    private func keepInView(_ target: String?, _ proxy: ScrollViewProxy, animated: Bool) {
+        guard let target, scrollTargets.contains(target) else { return }
+        scroller.request(target, animated: animated && !reduceMotion, proxy: proxy)
+    }
+}
+
+/// The session list's scrolls, one at a time (2026-10-05).
+///
+/// The list froze the app — the main thread pegged laying the sidebar out again and again — right after
+/// a dismiss or a restore, and every one of those fired two or three animated `scrollTo`s in the same
+/// update (row order, undo, focus), at a row that had just moved, in a list whose rows change height
+/// every second. So a scroll here is requested, not made: the requests of one update collapse into one,
+/// made on the next turn of the run loop once the list has its new shape; the same target is not asked
+/// for again while the last scroll to it may still be moving; and only a change of focus, with no row
+/// changing shape around it, eases. A reference, kept in `@State`, so recording a request never redraws
+/// the list.
+@MainActor
+final class LedgerScroller {
+    /// How long a scroll to one target is left alone, and how long after a row changes shape a scroll
+    /// stays plain. Longer than the 0.18 s ease, shorter than a person re-reading the list.
+    static let settle: TimeInterval = 0.6
+
+    private var pending: (target: String, animated: Bool)?
+    private var lastTarget: String?
+    private var lastScroll = Date.distantPast
+    private var lastRowChange = Date.distantPast
+
+    func rowsChanged(at now: Date = Date()) {
+        lastRowChange = now
+    }
+
+    /// Asks for `target` to be centred. Several requests in one update collapse into one, made on the run loop's next
+    /// turn, when the list has laid out the change that asked for it.
+    func request(_ target: String, animated: Bool, proxy: ScrollViewProxy) {
+        let first = pending == nil
+        // The last request of the update wins; it eases only if every request asked to.
+        pending = (target, (pending?.animated ?? true) && animated)
+        guard first else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.flush(proxy)
+        }
+    }
+
+    private func flush(_ proxy: ScrollViewProxy, now: Date = Date()) {
+        guard let pending else { return }
+        self.pending = nil
+        // The same target again — a second word on the row being closed — is left alone while the last scroll
+        // to it may still be moving, unless the rows have moved under it since.
+        guard pending.target != lastTarget
+            || now.timeIntervalSince(lastScroll) >= Self.settle
+            || lastRowChange > lastScroll else { return }
+        lastTarget = pending.target
+        lastScroll = now
+        var transaction = Transaction()
+        if pending.animated, now.timeIntervalSince(lastRowChange) >= Self.settle {
+            transaction.animation = .easeOut(duration: 0.18)
+        } else {
+            transaction.disablesAnimations = true
+        }
+        withTransaction(transaction) {
+            proxy.scrollTo(pending.target, anchor: .center)
         }
     }
 }
@@ -1232,7 +1330,7 @@ private struct DashboardRow: View {
 
                 // Only what asks something of you or says what is happening: conch's word about
                 // this row in the needs colour, the question it is blocked on, what its agent is
-                // doing (faintest, and crossfaded as it changes), or who started it. Under the name's
+                // doing (faintest, rewritten in place as it changes), or who started it. Under the name's
                 // line, which it never moves: the name, marks and age stay where they were.
                 if let secondLine {
                     SidebarSecondLine(secondLine, font: ConchTypography.font(size: 11))
