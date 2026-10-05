@@ -39,6 +39,7 @@ export const SETTING_KEYS = [
   "voice-speed",
   "keystroke-fallback",
   "bypass-permissions",
+  "run-in-conch",
   "records",
   "phone",
   "phone-port",
@@ -64,6 +65,7 @@ export const SETTING_KEYS = [
 export type SettingKey = typeof SETTING_KEYS[number];
 export type SettingField =
   | "bypassPermissions"
+  | "runInConch"
   | "recordsEnabled"
   | "endSilenceSecs"
   | "micGainDb"
@@ -289,6 +291,19 @@ export const SETTING_DESCRIPTORS = [
     bounds: null,
     apply: "live",
     help: "start sessions with all permission prompts skipped (claude --dangerously-skip-permissions, codex --dangerously-bypass-approvals-and-sandbox)",
+  },
+  {
+    key: "run-in-conch",
+    field: "runInConch",
+    env: "CONCH_RUN_IN_CONCH",
+    kind: "boolean",
+    // Off: new sessions open in Terminal, as they always have, until Tyler has tried running them in conch and flips
+    // this. The New session sheet starts from it; a start that names where to run (the sheet always does) wins.
+    default: false,
+    parse: parseBoolean,
+    bounds: null,
+    apply: "live",
+    help: "run new sessions in conch, in its own terminal (a private tmux, typed into without taking the front), instead of a Terminal window",
   },
   {
     key: "keystroke-fallback",
@@ -866,6 +881,8 @@ export type RuntimeControlMessage =
     cwd?: string;
     /** Per-session choices from the agent's own `--help`, validated against its adapter row (C1). */
     options?: Record<string, string | boolean>;
+    /** Where it runs: a Terminal window, or conch's own tmux (the Mac app's Terminal tab). Absent: `run-in-conch`. */
+    host?: "terminal" | "conch";
   }
   /** `restart`: close it, then resume the same conversation with the same start flags. */
   | { kind: "session-close"; sessionId: string; restart?: true }
@@ -995,6 +1012,13 @@ export type RuntimeControlResponse =
     teleported?: true;
     /** The terminal will ask you to trust this folder before the agent starts. */
     awaitingTrust?: boolean;
+    /** Where it runs. Absent from a daemon before conch could host sessions: a Terminal window. */
+    host?: "terminal" | "conch";
+    /**
+     * In conch's tmux, where: so a start that doesn't check in (an agent holding on a prompt, before it registers) can
+     * be shown and answered from the sheet, with no row to open it from yet.
+     */
+    hosted?: { tmux: string; socket: string; session: string; pane: string };
   }
   | {
     /**
@@ -1340,6 +1364,12 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
     const options = value.options === undefined
       ? undefined
       : { ...(value.options as Record<string, string | boolean>) };
+    if (value.host !== undefined && value.host !== "terminal" && value.host !== "conch") {
+      return { ok: false, err: "host must be terminal or conch" };
+    }
+    if (value.host === "conch" && teleportSessionId) {
+      return { ok: false, err: "a teleport opens in Terminal; it can't run in conch" };
+    }
     return {
       ok: true,
       value: {
@@ -1352,6 +1382,7 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
         ...(teleportSessionId ? { teleportSessionId } : {}),
         ...(cwd ? { cwd } : {}),
         ...(options ? { options } : {}),
+        ...(value.host === "terminal" || value.host === "conch" ? { host: value.host } : {}),
       },
     };
   }
@@ -1497,6 +1528,16 @@ export function validateControlMessage(value: unknown): ParseResult<AnyControlMe
   const parsed = found.value.parse(value.value);
   if (!parsed.ok) return { ok: false, err: `${found.value.key}: ${parsed.err}` };
   return { ok: true, value: { kind: "set-config", key: found.value.key, value: parsed.value } };
+}
+
+/** A hosted session's location in a `session-started` reply, or null when it isn't one (src/conch-tmux.ts shapes). */
+function hostedReply(value: unknown): { tmux: string; socket: string; session: string; pane: string } | null {
+  if (!record(value)) return null;
+  const { tmux, socket, session, pane } = value;
+  if (typeof tmux !== "string" || !tmux.startsWith("/") || typeof socket !== "string" || !socket.startsWith("/")) return null;
+  if (typeof session !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(session)) return null;
+  if (typeof pane !== "string" || !/^%\d+$/.test(pane)) return null;
+  return { tmux, socket, session, pane };
 }
 
 function validateTerminalScreenReply(value: Record<string, unknown>): ParseResult<TerminalScreenReply> {
@@ -1656,6 +1697,8 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
         resumed: value.resumed,
         ...(value.teleported === true ? { teleported: true as const } : {}),
         ...(value.awaitingTrust === true ? { awaitingTrust: true } : {}),
+        ...(value.host === "conch" || value.host === "terminal" ? { host: value.host } : {}),
+        ...(hostedReply(value.hosted) ? { hosted: hostedReply(value.hosted)! } : {}),
       },
     };
   }

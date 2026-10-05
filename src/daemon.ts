@@ -154,16 +154,21 @@ import {
 } from "./session-settings.ts";
 import { appendConchError } from "./app-errors.ts";
 import {
+  attachHostedInTerminal,
   attachTerminalSession,
   closeSession,
+  hostedTrustDependencies,
   readProcessArgs,
   refreshSessionForClose,
   restartRequest,
   acceptClaudeTrust,
+  startHostedSession,
   startTerminalSession,
   terminalSessionCommand,
+  type SessionHost,
   type StartSessionRequest,
 } from "./session-lifecycle.ts";
+import { conchTmuxArgv, defaultHostedReadDeps, HostedTerminalCache, readHostedTerminals, HOSTED_FORMAT, type HostedTerminal } from "./conch-tmux.ts";
 import { SessionStartOverlay } from "./session-start-overlay.ts";
 import { TerminalComposer } from "./terminal-composer.ts";
 import {
@@ -596,15 +601,35 @@ export function shouldReportMissingCodexPid(
   return false;
 }
 
+/** Where a start runs: what it asked for, else the `run-in-conch` setting, which ships off (a Terminal window). */
+export function sessionHostFor(request: Pick<StartSessionRequest, "host" | "teleportSessionId">, runInConch: boolean): SessionHost {
+  // A teleport is Claude's own handoff into a Terminal window; it stays there.
+  if (request.teleportSessionId) return "terminal";
+  return request.host ?? (runInConch ? "conch" : "terminal");
+}
+
 /**
- * Open a session in Terminal and, for Claude in a folder you just trusted in the app, answer
- * its trust prompt there: Claude takes no such answer at launch (Codex does, as a flag).
+ * Open a session in Terminal, or in conch's own tmux (`host: "conch"`), and, for Claude in a folder you just trusted in
+ * the app, answer its trust prompt there: Claude takes no such answer at launch (Codex does, as a flag). In conch's tmux
+ * the prompt is read with capture-pane and answered with send-keys, so nothing comes to the front.
  */
-async function launchSession(request: StartSessionRequest): Promise<void> {
+async function launchSession(request: StartSessionRequest & { host: SessionHost }): Promise<{ host: SessionHost; hosted?: HostedTerminal }> {
+  const trustTyped = request.trustFolder === true && adapterFor(request.backend).trustTypedAtLaunch;
+  if (request.host === "conch") {
+    const hosted = await startHostedSession(request);
+    log(`started ${request.backend} in conch's tmux: session ${hosted.session}, pane ${hosted.pane}, ${hosted.socket}`);
+    const tmux = conchTmuxArgv();
+    if (trustTyped && tmux) {
+      void acceptClaudeTrust(hosted.pane, hostedTrustDependencies(hosted, tmux))
+        .then((outcome) => log(`trust prompt in ${hosted.session}: ${outcome}`), () => {});
+    }
+    return { host: "conch", hosted };
+  }
   const { tty } = await startTerminalSession(request);
-  if (request.trustFolder === true && adapterFor(request.backend).trustTypedAtLaunch && tty) {
+  if (trustTyped && tty) {
     void acceptClaudeTrust(tty).then((outcome) => log(`trust prompt in ${tty}: ${outcome}`), () => {});
   }
+  return { host: "terminal" };
 }
 
 /** Build the external document with daemon-owned voice and priority resolution. */
@@ -829,6 +854,12 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   let panelLabels = new Map<string, string>();
   let panelSessions = new Map<string, SessionInfo>();
   /**
+   * Sessions conch hosts in its own tmux, read from the server itself (conch-tmux.ts). Nothing is carried across a
+   * restart: the first panel build after one finds the server's panes and adopts every session in them again.
+   */
+  const hostedTerminals = new HostedTerminalCache(defaultHostedReadDeps());
+  const adoptedHosted = new Set<string>();
+  /**
    * What each session's own record says it runs (session-settings.ts), newest kept: a tail
    * with no turn in it must not blank a value an earlier read found.
    */
@@ -996,6 +1027,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       backend: session?.backend ?? "claude",
       ...(pid ? { pid } : {}),
       ...(session?.jobId ? { jobId: session.jobId } : {}),
+      ...(hostedTerminals.get(sessionId) ? { hosted: true as const } : {}),
     };
   }
   const sessionModalOpen = (): boolean =>
@@ -1990,6 +2022,22 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         }),
       )).filter((entry): entry is NonNullable<typeof entry> => entry !== null),
     );
+    breadcrumb("panel: sessions conch hosts");
+    const hostedBySessionId = await hostedTerminals.refresh(live);
+    {
+      const d = defaultHostedReadDeps();
+      const listed = d.tmux ? await d.run([...d.tmux, "list-panes", "-a", "-F", "#{pane_pid} #{pane_id}"]) : null;
+      const parents = await d.parents();
+      const direct = await readHostedTerminals(live, d);
+      const fmt = d.tmux ? await d.run([...d.tmux, "list-panes", "-a", "-F", HOSTED_FORMAT]) : null;
+      log(`DEBUG-HOSTED2 direct=${direct.size} fmt=${JSON.stringify(fmt)}`);
+      log(`DEBUG-HOSTED live=${JSON.stringify(live.map((x) => [x.sessionId, x.pid]))} found=${hostedBySessionId.size} tmux=${JSON.stringify(d.tmux)} listed=${JSON.stringify(listed)} parents=${parents?.size} p=${live[0]?.pid ? parents?.get(live[0].pid) : ""}`);
+    }
+    for (const [sessionId, hosted] of hostedBySessionId) {
+      if (adoptedHosted.has(sessionId)) continue;
+      adoptedHosted.add(sessionId);
+      log(`in conch's tmux: "${labelForSessionId(sessionId)}" (session ${hosted.session}, pane ${hosted.pane})`);
+    }
     breadcrumb("panel: context usage, model and effort");
     // One tail read per session for both: how full its context is, and what model and effort it runs.
     const sessionContexts = new Map<string, SessionContextUsage>();
@@ -2059,6 +2107,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
           : null,
         panelOpen,
         contextBySessionId: sessionContexts,
+        hostedBySessionId,
         now: Date.now(),
       });
       model.preview = previewForPanelSelection(
@@ -2339,12 +2388,15 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       }
       terminalSessionCommand(relaunch.request); // throws on anything invalid, before the close
     }
+    // Where it ran is where it comes back: a session conch hosted restarts in conch's tmux, one in Terminal in Terminal.
+    const host: SessionHost = hostedTerminals.get(sessionId) ? "conch" : "terminal";
     // A background job is stopped by id (claude stop), window or not.
     await closeSession(session);
+    hostedTerminals.invalidate();
     void renderSessionPanel();
     if (!relaunch) return;
     try {
-      await launchSession(relaunch.request);
+      await launchSession({ ...relaunch.request, host });
     } catch (error) {
       throw new Error(`closed, but could not open it again (${(error as Error).message}); resume it from Start`);
     }
@@ -2469,9 +2521,26 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     // Same raise `revealOnTurn` uses: Terminal.app by tty, no focus steal.
     reveal: (target) => target.pid ? raiseWindow(target.pid, "app") : Promise.resolve(false),
     // A background job no window is attached to: a new Terminal window running
-    // `claude attach <jobId>`. Once it attaches, the row routes to it.
+    // `claude attach <jobId>`. Once it attaches, the row routes to it. A session
+    // conch hosts: a Terminal window attached to the same tmux session, so it and
+    // the app's Terminal tab are both live.
     attach: (target) => {
       const session = panelSessions.get(target.sessionId);
+      const hosted = hostedTerminals.get(target.sessionId);
+      if (hosted) {
+        return attachHostedInTerminal(hosted, session?.cwd).then(() => {
+          log(`opened "${target.label}" in Terminal (attached to conch's tmux session ${hosted.session})`);
+          return true;
+        }, (error) => {
+          recordDaemonError(
+            "session-attach",
+            `Could not open the session in Terminal: ${error instanceof Error ? error.message : String(error)}`,
+            target.sessionId,
+            { session: hosted.session, cwd: session?.cwd ?? "" },
+          );
+          return false;
+        });
+      }
       if (!session?.jobId) return Promise.resolve(false);
       return attachTerminalSession(session.jobId, session.cwd).then(() => {
         log(`opened "${target.label}" in Terminal (claude attach ${session.jobId})`);
@@ -2548,8 +2617,9 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   sessionStartOverlay = new SessionStartOverlay({
     controller: {
       start: async (request) => {
-        await launchSession(request);
-        log(`started fresh ${request.backend} session in ${request.cwd ?? conchHome()}`);
+        const started = await launchSession({ ...request, host: sessionHostFor(request, cfg.runInConch) });
+        if (started.hosted) hostedTerminals.invalidate();
+        log(`started fresh ${request.backend} session in ${request.cwd ?? conchHome()}${started.host === "conch" ? " (in conch)" : ""}`);
         void renderSessionPanel();
       },
     },
@@ -2694,13 +2764,26 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         : `couldn't bring ${labelForSessionId(message.sessionId)}'s terminal forward: ${focused.reason ?? "no reason given"}`);
       return focused;
     },
-    start: (message) => launchSession({
-      ...message,
-      // Read at start time, so changing the setting affects the next session
-      // you launch rather than needing a daemon restart.
-      bypassPermissions: cfg.bypassPermissions,
-      ...(message.trustFolder === true ? { trustFolder: true as const } : {}),
-    }),
+    start: async (message) => {
+      const started = await launchSession({
+        ...message,
+        // Read at start time, so changing either setting affects the next session
+        // you launch rather than needing a daemon restart.
+        bypassPermissions: cfg.bypassPermissions,
+        ...(message.trustFolder === true ? { trustFolder: true as const } : {}),
+        host: sessionHostFor(message, cfg.runInConch),
+      });
+      if (started.hosted) {
+        hostedTerminals.invalidate();
+        void renderSessionPanel();
+      }
+      return started.hosted
+        ? {
+          host: started.host,
+          hosted: { tmux: started.hosted.tmux, socket: started.hosted.socket, session: started.hosted.session, pane: started.hosted.pane },
+        }
+        : { host: started.host };
+    },
     folderTrusted: (backend, cwd) => adapterFor(backend).folderTrusted(cwd),
     close: closeLiveSession,
     report: (message) => {

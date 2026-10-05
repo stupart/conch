@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import type { Config } from "./config.ts";
 import type { AnswerKey, NamedKey } from "./agent-adapter.ts";
 import { createPasteboard, hasUnreapedUIChild, pasteboardRefusal, runUICommand, type Pasteboard, type PasteboardLease } from "./pasteboard.ts";
+import { conchTmuxArgv } from "./conch-tmux.ts";
 
 export type InjectRoute = "tmux" | "osascript-focused" | "clipboard" | "none";
 export interface InjectTextResult {
@@ -60,11 +61,14 @@ export interface InjectTextOptions {
   osa?: OsaRunner;
   /** Test seam: the controlling tty of a pid, as `ps -o tty=` prints it. */
   ttyForPid?(pid: number): Promise<string>;
-  /** Test seam: resolve a tmux route without probing real processes or panes. */
-  findTmuxPane?(pid: number): Promise<string | null>;
+  /** Test seam: resolve a tmux route without probing real processes or panes. A bare id is a pane of the default server. */
+  findTmuxPane?(pid: number): Promise<string | TmuxPaneRef | null>;
   sleep?(ms: number): Promise<void>;
   pasteboard?: Pasteboard;
-  sendTmuxKeys?(pane: string, text: string, literal: boolean): Promise<{ exitCode: number }>;
+  /** `tmux` is the server's argv (`["tmux"]`, or conch's own `[<tmux>, "-L", "conch"]`); absent is the default server. */
+  sendTmuxKeys?(pane: string, text: string, literal: boolean, tmux?: readonly string[]): Promise<{ exitCode: number }>;
+  /** Test seam: words across lines into a pane of conch's own server, as one paste (`pasteTmuxText`). */
+  pasteTmuxText?(pane: string, text: string, tmux: readonly string[]): Promise<{ exitCode: number }>;
   /** Filled with this send's step lines, as the debug log gets them, for a caller that records a send gone wrong. */
   steps?: string[];
 }
@@ -162,13 +166,15 @@ async function injectKeysInTransaction(
   const mayInject = async (): Promise<boolean> => beforeInject ? await beforeInject() : true;
   const interrupted = (): InjectTextResult => ({ via: "none", interrupted: true });
   if (!sessionPid || !keys.length) return { via: "none" }; // never press keys in an unknown window
-  const pane = await (options.findTmuxPane ?? findTmuxPane)(sessionPid);
+  const { pane, tmux } = paneRef(await (options.findTmuxPane ?? findTmuxPane)(sessionPid));
   if (pane) {
     if (!(await mayInject())) return interrupted();
     for (const [index, key] of keys.entries()) {
       if (index) await sleep(ANSWER_KEY_GAP_MS);
       const [text, literal] = typeof key === "string" ? [TMUX_KEY_NAMES[key], false] : "press" in key ? [key.press, true] : [key.type, true];
-      const sent = await (options.sendTmuxKeys ?? sendTmuxKeys)(pane, text, literal);
+      const sent = literal && pastesIntoPane(tmux, text)
+        ? await (options.pasteTmuxText ?? pasteTmuxText)(pane, text, tmux)
+        : await (options.sendTmuxKeys ?? sendTmuxKeys)(pane, text, literal, tmux);
       if (sent.exitCode !== 0) return failed("automation-failed");
     }
     return { via: "tmux" };
@@ -248,9 +254,46 @@ function safeOsa(run: OsaRunner): OsaRunner {
     catch { return { text: "", timedOut: false, exitCode: -1 }; }
   };
 }
-const sendTmuxKeys = (pane: string, text: string, literal: boolean) => runUICommand([
-  "tmux", "send-keys", "-t", pane, ...(literal ? ["-l", "--"] : []), text,
+const sendTmuxKeys = (pane: string, text: string, literal: boolean, tmux: readonly string[] = DEFAULT_TMUX) => runUICommand([
+  ...tmux, "send-keys", "-t", pane, ...(literal ? ["-l", "--"] : []), text,
 ]);
+
+/**
+ * A pane conch can type into, and the tmux server it is in: conch's own (`tmux -L conch`, where a session started "In
+ * conch" runs), or the user's default server, spoken to with the `tmux` on PATH as it always was. Pane ids are only
+ * unique within one server, so the two travel together.
+ */
+export interface TmuxPaneRef {
+  pane: string;
+  tmux: readonly string[];
+}
+
+/** The user's own tmux: the default server (or $TMUX's), through the `tmux` on PATH. */
+const DEFAULT_TMUX: readonly string[] = ["tmux"];
+
+/**
+ * Words across lines, into a pane of conch's own server: one bracketed paste from a tmux buffer (`load-buffer` from
+ * stdin, then `paste-buffer -p -d`), as Terminal's Cmd-V would give them. `send-keys -l` can't carry them there:
+ * conch's server forces extended keys (Shift-Enter, conch-tmux.ts), and tmux 3.7c then drops every line feed a literal
+ * send-keys carries — "line one\nline two" arrived as "line oneline two" (measured). The buffer is named for this send
+ * and deleted by the paste.
+ */
+export function tmuxPasteArgv(tmux: readonly string[], pane: string, buffer: string): string[] {
+  return [...tmux, "load-buffer", "-b", buffer, "-", ";", "paste-buffer", "-p", "-d", "-b", buffer, "-t", pane];
+}
+let pasteCount = 0;
+const pasteTmuxText = (pane: string, text: string, tmux: readonly string[]) =>
+  runUICommand(tmuxPasteArgv(tmux, pane, `conch-${process.pid}-${++pasteCount}`), text);
+
+/** Does this text go into this pane as a paste? Only across lines, and only in conch's own server. */
+export function pastesIntoPane(tmux: readonly string[], text: string): boolean {
+  return tmux !== DEFAULT_TMUX && tmux.length > 1 && text.includes("\n");
+}
+
+function paneRef(found: string | TmuxPaneRef | null): { pane: string | null; tmux: readonly string[] } {
+  if (!found) return { pane: null, tmux: DEFAULT_TMUX };
+  return typeof found === "string" ? { pane: found, tmux: DEFAULT_TMUX } : found;
+}
 
 /**
  * Longer than this, or across lines, words are pasted rather than typed.
@@ -354,25 +397,29 @@ async function injectTextInTransaction(
   };
   if (!sessionPid) return clipboard("session-not-routable");
 
-  const pane = await (options.findTmuxPane ?? findTmuxPane)(sessionPid);
-  step(`findTmuxPane -> ${pane ?? "none"}`);
+  const { pane, tmux } = paneRef(await (options.findTmuxPane ?? findTmuxPane)(sessionPid));
+  step(`findTmuxPane -> ${pane ? `${pane}${tmux === DEFAULT_TMUX ? "" : ` (${tmux.slice(1).join(" ")})`}` : "none"}`);
   if (pane) {
     if (!(await mayInject())) return interrupted();
     // `-l --`: -l sends the text as literal keys, -- stops flag parsing so a
     // transcript starting with "-" isn't read as an option (which both fails
     // AND used to throw, killing the daemon). nothrow + exit check so any
     // send-keys refusal falls through to clipboard instead of crashing.
-    const r = await (options.sendTmuxKeys ?? sendTmuxKeys)(pane, text, true);
-    step(`tmux send-keys exit=${r.exitCode}`);
+    const pasted = pastesIntoPane(tmux, text);
+    const r = pasted
+      ? await (options.pasteTmuxText ?? pasteTmuxText)(pane, text, tmux)
+      : await (options.sendTmuxKeys ?? sendTmuxKeys)(pane, text, true, tmux);
+    step(`tmux ${pasted ? "paste-buffer" : "send-keys"} exit=${r.exitCode}`);
     if (r.exitCode === 0) {
       if (submit) {
         // Codex reads an Enter that lands right behind a burst of keys as more of
         // the burst: a newline, not a submit. Measured on codex-cli 0.156.0 in
         // tmux (2026-09-23): Enter straight after `send-keys -l` stayed in the
-        // composer as a second line; 60ms later it submitted.
-        await sleep(TMUX_SUBMIT_GAP_MS);
+        // composer as a second line; 60ms later it submitted. A paste gets longer
+        // to land, scaled to its length as the osascript route's is.
+        await sleep(TMUX_SUBMIT_GAP_MS + (pasted ? Math.min(text.length, 750) : 0));
         if (!(await mayInject())) return interrupted();
-        const submitted = await (options.sendTmuxKeys ?? sendTmuxKeys)(pane, "Enter", false);
+        const submitted = await (options.sendTmuxKeys ?? sendTmuxKeys)(pane, "Enter", false, tmux);
         step(`tmux Enter exit=${submitted.exitCode}`);
         if (submitted.exitCode !== 0) return failed("submit-failed");
       }
@@ -475,9 +522,9 @@ async function injectTextInTransaction(
 export async function readSessionScreen(sessionPid: number | undefined): Promise<string | null> {
   if (!sessionPid) return null;
   try {
-    const pane = await findTmuxPane(sessionPid);
-    if (pane) {
-      const shown = await runUICommand(["tmux", "capture-pane", "-p", "-t", pane]);
+    const found = await findTmuxPane(sessionPid);
+    if (found) {
+      const shown = await runUICommand([...found.tmux, "capture-pane", "-p", "-t", found.pane]);
       return shown.timedOut || shown.exitCode !== 0 ? null : shown.text;
     }
     return await readTerminalTab(await ttyOf(sessionPid));
@@ -537,10 +584,10 @@ async function injectKeyInTransaction(
   const mayInject = async (): Promise<boolean> => beforeInject ? await beforeInject() : true;
   const interrupted = (): InjectTextResult => ({ via: "none", interrupted: true });
   if (!sessionPid) return { via: "none" }; // never press keys in an unknown window
-  const pane = await (options.findTmuxPane ?? findTmuxPane)(sessionPid);
+  const { pane, tmux } = paneRef(await (options.findTmuxPane ?? findTmuxPane)(sessionPid));
   if (pane) {
     if (!(await mayInject())) return interrupted();
-    const r = await (options.sendTmuxKeys ?? sendTmuxKeys)(pane, key, false);
+    const r = await (options.sendTmuxKeys ?? sendTmuxKeys)(pane, key, false, tmux);
     if (r.exitCode === 0) return { via: "tmux" };
   }
   if (!cfg.keystrokeFallback) {
@@ -671,29 +718,46 @@ async function writeClipboard(text: string): Promise<void> {
   if (result.timedOut || result.exitCode !== 0) throw new Error("Clipboard write failed");
 }
 
-/** Find the tmux pane whose shell is an ancestor of the session's pid. */
-async function findTmuxPane(sessionPid: number): Promise<string | null> {
-  let panes: Array<{ pid: number; id: string }>;
-  try {
-    const result = await runUICommand(["tmux", "list-panes", "-a", "-F", "#{pane_pid} #{pane_id}"]);
-    if (result.timedOut || result.exitCode !== 0) return null;
-    const out = result.text;
-    panes = out
-      .trim()
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => {
-        const [pid, id] = line.split(" ");
-        return { pid: Number(pid), id: id ?? "" };
-      });
-  } catch {
-    return null; // no tmux server
-  }
-  if (!panes.length) return null;
+/**
+ * The tmux servers a session's pane can be in, conch's own first: a session started "In conch" is there, and is typed
+ * into there with send-keys, never through its window. Then the user's own server, as before.
+ */
+export function tmuxServers(hosted: readonly string[] | null = conchTmuxArgv()): Array<readonly string[]> {
+  return hosted ? [hosted, DEFAULT_TMUX] : [DEFAULT_TMUX];
+}
 
-  const ancestors = await ancestorPids(sessionPid);
-  for (const pane of panes) {
-    if (ancestors.has(pane.pid)) return pane.id;
+/** Find the tmux pane whose shell is an ancestor of the session's pid, in conch's server or the user's. */
+export async function findTmuxPane(
+  sessionPid: number,
+  deps: {
+    servers?: ReadonlyArray<readonly string[]>;
+    ancestorsOf?: (pid: number) => Promise<Set<number>>;
+    run?: (argv: string[]) => Promise<{ text: string; exitCode: number; timedOut: boolean }>;
+  } = {},
+): Promise<TmuxPaneRef | null> {
+  const run = deps.run ?? ((argv: string[]) => runUICommand(argv));
+  let ancestors: Set<number> | undefined;
+  for (const tmux of deps.servers ?? tmuxServers()) {
+    let panes: Array<{ pid: number; id: string }>;
+    try {
+      const result = await run([...tmux, "list-panes", "-a", "-F", "#{pane_pid} #{pane_id}"]);
+      if (result.timedOut || result.exitCode !== 0) continue; // no server on this socket
+      panes = result.text
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => {
+          const [pid, id] = line.split(" ");
+          return { pid: Number(pid), id: id ?? "" };
+        });
+    } catch {
+      continue;
+    }
+    if (!panes.length) continue;
+    ancestors ??= await (deps.ancestorsOf ?? ancestorPids)(sessionPid);
+    for (const pane of panes) {
+      if (ancestors.has(pane.pid)) return { pane: pane.id, tmux };
+    }
   }
   return null;
 }

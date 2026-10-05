@@ -109,8 +109,11 @@ describe("the shell is a content of the work half, beside the folder", () => {
   });
 
   test("it needs somewhere to run, and falls back when there is nowhere", () => {
+    const strip = source("design/ConchDesign/Sources/ConchDesign/TerminalMirror.swift");
+    const rules = section(strip, "public func workPane(chosen: WorkPane, hasFolder: Bool, hasDeliverable: Bool) -> WorkPane {", "\n    }");
+    expect(rules).toContain("if chosen == .shell, hasFolder { return .shell }");
     const choose = section(pane, "private func workPane(for row: SessionRow) -> WorkPane {", "\n    private func changedFiles");
-    expect(choose).toContain("if chosen == .shell, workingFolder != nil { return .shell }");
+    expect(choose).toContain("hasFolder: workingFolder != nil,");
   });
 
   /**

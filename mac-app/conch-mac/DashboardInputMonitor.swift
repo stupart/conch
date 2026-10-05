@@ -42,6 +42,12 @@ struct DashboardInputMonitor: NSViewRepresentable {
                     return event
                 }
 
+                // A hosted session's Terminal tab takes every key while you type in it:
+                // Space, Esc, P, R and the arrows are the TUI's there, never conch's.
+                if firstResponderOwnsKeyboard() {
+                    return event
+                }
+
                 // Inline editing owns the full text-input contract, including spaces
                 // and Escape. Web content owns ordinary navigation and typing keys,
                 // while the dashboard's safety controls remain global there: Escape
@@ -73,6 +79,10 @@ struct DashboardInputMonitor: NSViewRepresentable {
                 return eventWindow === window
             }
             return NSApp.keyWindow === window
+        }
+
+        private func firstResponderOwnsKeyboard() -> Bool {
+            view?.window?.firstResponder is ConchOwnsKeyboard
         }
 
         private func firstResponderIsEditableText() -> Bool {

@@ -46,7 +46,7 @@ test("the daemon hands its setting to the launcher", () => {
   const source = readFileSync(join(import.meta.dir, "../src/daemon.ts"), "utf8");
   // Bounded by the next handler rather than a character count, which cut a
   // word in half the first time and failed for the wrong reason.
-  const from = source.indexOf("start: (message) =>");
+  const from = source.indexOf("start: async (message) =>");
   const start = source.slice(from, source.indexOf("folderTrusted:", from));
   expect(from).toBeGreaterThan(-1);
   expect(start).toContain("bypassPermissions: cfg.bypassPermissions");

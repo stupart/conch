@@ -228,6 +228,9 @@ struct ConchSessionStartRequest: Encodable, Sendable {
     /// Per-session choices from the agent's own `--help`, keyed by the
     /// daemon's option names (`agent-adapter.ts`). The daemon validates.
     let options: [String: ConchStartOptionValue]?
+    /// Where it runs, `terminal` or `conch` (`SessionStartHost`). Nil leaves it to the
+    /// daemon's `run-in-conch` setting; the New session sheet always says.
+    let host: String?
 
     init(
         backend: ConchAgentBackend,
@@ -235,7 +238,8 @@ struct ConchSessionStartRequest: Encodable, Sendable {
         teleportSessionId: String? = nil,
         cwd: String?,
         trustFolder: Bool? = nil,
-        options: [String: ConchStartOptionValue]? = nil
+        options: [String: ConchStartOptionValue]? = nil,
+        host: SessionStartHost? = nil
     ) {
         self.backend = backend
         self.resumeSessionId = resumeSessionId
@@ -243,6 +247,7 @@ struct ConchSessionStartRequest: Encodable, Sendable {
         self.cwd = cwd
         self.trustFolder = trustFolder
         self.options = options
+        self.host = host?.rawValue
     }
 }
 
@@ -324,6 +329,10 @@ struct ConchSessionStartedReply: Decodable, Equatable, Sendable {
     /// writes no registry file until you answer — so conch cannot see the
     /// session and the app looks broken.
     let awaitingTrust: Bool?
+    /// Where it runs: `conch` for conch's own tmux. Absent from an older daemon, which only opens Terminal.
+    let host: String?
+    /// In conch's tmux, where: so a start that hasn't checked in can be shown from the sheet.
+    let hosted: ConchHostedTerminal?
 }
 
 struct ConchSessionClosedReply: Decodable, Equatable, Sendable {

@@ -142,7 +142,11 @@ describe("the daemon's restart path, as source", () => {
       expect(index).toBeGreaterThan(-1);
       expect(index).toBeLessThan(close);
     }
-    expect(body.indexOf("await launchSession(relaunch.request);")).toBeGreaterThan(close);
+    expect(body.indexOf("await launchSession({ ...relaunch.request, host });")).toBeGreaterThan(close);
+    // Where it ran is where it comes back, read while the session still runs: a hosted session restarts in conch's tmux.
+    const host = body.indexOf('const host: SessionHost = hostedTerminals.get(sessionId) ? "conch" : "terminal";');
+    expect(host).toBeGreaterThan(-1);
+    expect(host).toBeLessThan(close);
   });
 
   test("a relaunch that fails after the close says the session is closed", () => {

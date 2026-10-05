@@ -1744,17 +1744,20 @@ private struct ConversationPane: View {
     ///
     /// This used to be "is there a deliverable", which is why Cmd-2 and Cmd-3 did nothing in a
     /// session that had not filed one — even though its files were there the whole time. The
-    /// Terminal button is not something to show there; the mirror is, while the debug view is on.
+    /// Terminal button is not something to show there; a hosted session's Terminal tab is, and the
+    /// mirror is while the debug view is on (`ConchTerminalStrip.hasWorkPane`).
     private var hasWorkPane: Bool {
-        selectedReview != nil || workingFolder != nil || focusedRow.map { terminalStrip(for: $0).showsMirror } == true
+        guard let row = focusedRow else { return selectedReview != nil }
+        return terminalStrip(for: row).hasWorkPane(hasFolder: workingFolder != nil, hasDeliverable: selectedReview != nil)
     }
 
     /// Debug › Show Terminal Mirror, off by default (`ConchTerminalStrip`).
     @AppStorage(TerminalMirrorDebug.key) private var showTerminalMirror = false
 
-    /// The Terminal button wherever the session has a terminal; the mirror beside it only while the debug view is on.
+    /// The Terminal button wherever the session has a terminal of its own; for a session conch hosts, a Terminal TAB that
+    /// is the session itself; the mirror beside either only while the debug view is on.
     private func terminalStrip(for row: SessionRow) -> ConchTerminalStrip {
-        ConchTerminalStrip(hasTerminal: row.hasAgentTerminal, mirrorOn: showTerminalMirror)
+        ConchTerminalStrip(hasTerminal: row.hasAgentTerminal, mirrorOn: showTerminalMirror, hosted: row.hostedTerminal != nil)
     }
 
     /// The narrowest conversation column the composer card sits in rather than over the stage.
@@ -1834,19 +1837,17 @@ private struct ConversationPane: View {
     /// Which content the work half is on, never trusting the remembered choice blindly: a
     /// session that has been asked for its files and then loses its folder falls back to the
     /// deliverable rather than showing an empty tree.
+    ///
+    /// The rule is ConchDesign's (`ConchTerminalStrip.workPane`, XCTested): a shell needs somewhere to run as much as
+    /// a tree needs somewhere to read; the mirror only while the debug view is on and only where there is a terminal;
+    /// a hosted session's Terminal tab only while conch hosts it, and it is what such a session opens on when it has
+    /// nothing else. The Terminal button is never a pane.
     private func workPane(for row: SessionRow) -> WorkPane {
-        let chosen = workspace.presentation(for: row.id).work
-        if chosen == .files, workingFolder != nil { return .files }
-        // A shell needs somewhere to run as much as a tree needs somewhere to read.
-        if chosen == .shell, workingFolder != nil { return .shell }
-        // The mirror, only while the debug view is on and only where there is a terminal: never the
-        // practice session, a closed Codex thread, a background job with no window, or a subagent. Off,
-        // a session remembered on it opens on its other contents; the Terminal button is never a pane.
-        let strip = terminalStrip(for: row)
-        if chosen == .terminal, strip.showsMirror { return .terminal }
-        if selectedReview != nil { return .deliverable }
-        if workingFolder != nil { return .files }
-        return strip.showsMirror ? .terminal : .deliverable
+        terminalStrip(for: row).workPane(
+            chosen: workspace.presentation(for: row.id).work,
+            hasFolder: workingFolder != nil,
+            hasDeliverable: selectedReview != nil
+        )
     }
 
     /// What this session changed, resolved against its own folder.
@@ -1870,6 +1871,10 @@ private struct ConversationPane: View {
             // Keyed on the session: a shell started in one session's folder must never be
             // handed to another because SwiftUI reused the view.
             ShellPaneView(cwd: folder).id(row.id)
+        } else if workPane(for: row) == .embeddedTerminal, let hosted = row.hostedTerminal {
+            // The session itself, typeable. Keyed on the session: leaving it, for another session or another tab,
+            // takes this client down (a detach), and the session keeps running in conch's tmux.
+            HostedTerminalPane(row: row, hosted: hosted).id(row.id)
         } else if workPane(for: row) == .terminal {
             // The mirror, a debug view. Keyed on the session too: one session's reads and picture
             // must never go on showing under another's name.
@@ -1894,6 +1899,12 @@ private struct ConversationPane: View {
             .onChange(of: selectedReview.id) { _, _ in deliverableAddress = nil }
             .onAppear { deliverableAddress = nil }
         }
+    }
+
+    /// A hosted session's Terminal tab, beside the conversation (or filling the stage, if that is where it was).
+    private func showHostedTerminal(_ row: SessionRow) {
+        workspace.show(work: .embeddedTerminal, for: row.id)
+        if stage(for: row) == .conversation { workspace.show(stage: .sideBySide, for: row.id) }
     }
 
     /// Every deliverable the focused session is still holding, oldest first: one tab each.
@@ -2217,7 +2228,14 @@ private struct ConversationPane: View {
             // Click the title to raise the session's terminal (C10). It is a
             // button only when the daemon knows the process: a session conch
             // merely observes has nothing to raise and must not look clickable.
-            if row.revealable {
+            // A session conch hosts has no window to raise: the click opens its
+            // Terminal tab beside the conversation instead.
+            if row.hostedTerminal != nil {
+                Button { showHostedTerminal(row) } label: { sessionTitle(row) }
+                    .buttonStyle(.plain)
+                    .help("Show this session's terminal")
+                    .accessibilityLabel("Show \(row.label)'s terminal")
+            } else if row.revealable {
                 Button { store.reveal(row) } label: { sessionTitle(row) }
                     .buttonStyle(.plain)
                     .help("Bring this session's terminal to the front")
@@ -2376,7 +2394,14 @@ private struct ConversationPane: View {
 
                 // The agent's own terminal: a button that brings it forward, only where it has one. It
                 // changes no pane and reads nothing. Option on it opens the mirror, the debug view.
+                // A session conch hosts has a TAB instead: the session itself, typed into here.
                 let strip = terminalStrip(for: row)
+                if strip.showsEmbedded {
+                    HostedTerminalTab(
+                        isSelected: workPane(for: row) == .embeddedTerminal,
+                        action: { workspace.show(work: .embeddedTerminal, for: row.id) }
+                    )
+                }
                 if strip.showsButton {
                     TerminalButton {
                         switch strip.press(option: NSEvent.modifierFlags.contains(.option)) {
@@ -2401,7 +2426,7 @@ private struct ConversationPane: View {
                     )
                 }
 
-                if workingFolder != nil || strip.showsButton, !held.isEmpty {
+                if workingFolder != nil || strip.showsButton || strip.showsEmbedded, !held.isEmpty {
                     // The place, and the work that came out of it, are different kinds of
                     // thing. A hairline says so without a word.
                     Rectangle()
@@ -2778,6 +2803,38 @@ private struct ShellTab: View {
         .onHover { isHovered = $0 }
         .help("Run a command in this session's folder")
         .accessibilityLabel("Shell")
+    }
+}
+
+/// The Terminal tab of a session conch hosts: the session itself, live and typeable (`HostedTerminalPane`). A TAB, unlike
+/// the Terminal button every other session has: there is no window elsewhere to bring forward, the terminal is here.
+private struct HostedTerminalTab: View {
+    let isSelected: Bool
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: "terminal")
+                    .font(.system(size: 10))
+                Text("Terminal")
+                    .font(ConchTypography.font(size: 11))
+            }
+            .foregroundStyle(isSelected ? ConchPalette.textPrimary : ConchPalette.textDim)
+            .padding(.horizontal, 8)
+            .frame(height: 24)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isSelected ? ConchPalette.selection : (isHovered ? ConchPalette.hover : .clear))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help("This session's terminal, running in conch: type in it here")
+        .accessibilityLabel("Terminal")
     }
 }
 

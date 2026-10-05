@@ -50,7 +50,7 @@ echo "$VAD_SHA256  $vad" | shasum -a 256 -c - >/dev/null || fail "$vad is not th
 for notice in ThirdParty/whisper.cpp/LICENSE ThirdParty/sox/LICENSE.GPL ThirdParty/sox/sox-14.4.2.tar.gz \
   ThirdParty/silero-vad/LICENSE ThirdParty/bun/LICENSE.md ThirdParty/tmux/NOTICE ThirdParty/tmux/COPYING \
   ThirdParty/tmux/LICENSE.compat ThirdParty/tmux/LICENSE.libevent ThirdParty/tmux/COPYING.jemalloc \
-  ThirdParty/tmux/LICENSE.utf8proc.md; do
+  ThirdParty/tmux/LICENSE.utf8proc.md ThirdParty/SwiftTerm/LICENSE ThirdParty/SwiftTerm/NOTICE; do
   [[ -f "$RESOURCES/$notice" ]] || fail "$RESOURCES/$notice is missing"
 done
 

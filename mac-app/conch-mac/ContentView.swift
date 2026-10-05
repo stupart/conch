@@ -480,8 +480,18 @@ private struct StartSessionSheet: View {
 
     @EnvironmentObject private var store: StateStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
     /// The session this sheet started, once it has checked in.
     let onStarted: (SessionRow.ID) -> Void
+
+    /// Where it runs: In Terminal (a new Terminal window, as conch always did) or In conch (conch's own tmux; the
+    /// session is its Terminal tab). Starts In Terminal, and follows the `run-in-conch` setting once the daemon says it,
+    /// unless the person has already picked (`SessionStartHost.initial`).
+    @State private var host = SessionStartHost.terminal
+    @State private var hostPicked = false
+    /// A start In conch that hasn't checked in yet: where it runs, so it can be shown here and answered.
+    @State private var startedHosted: ConchHostedTerminal?
+    @State private var showingStarted = false
 
     @State private var backend = ConchAgentBackend.claude
     @State private var mode = StartMode.new
@@ -555,7 +565,7 @@ private struct StartSessionSheet: View {
             if mode == .help {
                 Text("Help with conch — a Claude session that knows the app.")
                     .font(ConchTypography.font(size: 11.5, weight: .semibold))
-                Text("Ask it how to do something in conch, or why it has gone quiet: it reads the daemon log, settings and errors on this Mac, runs `conch doctor`, and can see and steer your other sessions. It opens in Terminal, in conch\u{2019}s own folder, and shows here as \u{201C}conch help\u{201D}.")
+                Text("Ask it how to do something in conch, or why it has gone quiet: it reads the daemon log, settings and errors on this Mac, runs `conch doctor`, and can see and steer your other sessions. It opens \(host == .conch ? "in conch" : "in Terminal"), in conch\u{2019}s own folder, and shows here as \u{201C}conch help\u{201D}.")
                     .font(ConchTypography.font(size: 11.5))
                     .foregroundStyle(ConchPalette.textDim)
                     .fixedSize(horizontal: false, vertical: true)
@@ -601,6 +611,25 @@ private struct StartSessionSheet: View {
                 startOptionsView
             }
 
+            // Where it runs. A teleport is Claude's own handoff into Terminal, so it isn't asked.
+            if mode != .teleport {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Run")
+                        .font(ConchTypography.font(size: 10.5, weight: .medium))
+                        .foregroundStyle(ConchPalette.textDim)
+                        .textCase(.uppercase)
+                        .tracking(0.5)
+                    Picker("Run", selection: Binding(get: { host }, set: { host = $0; hostPicked = true })) {
+                        ForEach(SessionStartHost.allCases) { place in
+                            Text(place.label).tag(place)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .disabled(isStarting)
+                }
+            }
+
             if mode == .teleport {
                 Text("Teleport — create a local copy.")
                     .font(ConchTypography.font(size: 11.5, weight: .semibold))
@@ -620,6 +649,18 @@ private struct StartSessionSheet: View {
                     .font(ConchTypography.font(size: 11.5))
                     .foregroundStyle(ConchPalette.statusNeeds)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+
+            // Started In conch and waiting on something before it registers: no row to open it from yet, so it is
+            // shown here, live, to answer.
+            if let startedHosted, error != nil {
+                if showingStarted {
+                    HostedTerminalView(hosted: startedHosted, scheme: colorScheme) { _ in showingStarted = false }
+                        .frame(height: 220)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                } else {
+                    Button("Show it") { showingStarted = true }
+                }
             }
 
             HStack {
@@ -692,6 +733,9 @@ private struct StartSessionSheet: View {
                optionValues["bypass-permissions"] == nil {
                 optionValues["bypass-permissions"] = .bool(value)
             }
+            // Where it runs starts from `run-in-conch` (off: In Terminal), and only seeds a choice nobody has made.
+            let runInConch = await store.runInConchDefault()
+            if !hostPicked { host = SessionStartHost.initial(runInConch: runInConch) }
         }
     }
 
@@ -700,13 +744,13 @@ private struct StartSessionSheet: View {
     /// is a conversation about files that are not there.
     private var footnote: String {
         if mode == .new {
-            return "Opens \(backend.label) in Terminal, outside conch\u{2019}s own tmux session."
+            return host.footnote(agent: backend.label)
         }
         guard let picked = resumeSelection else {
             return "Pick a session to restart. It reopens with its own agent, in its own folder."
         }
         let agent = picked.backend.lowercased() == "codex" ? "Codex" : "Claude"
-        return "Restarts \(agent) in \(picked.shortCwd), in Terminal."
+        return "Restarts \(agent) in \(picked.shortCwd), \(host == .conch ? "in conch" : "in Terminal")."
     }
 
     /// The table for the agent this launch will run; a resume-only entry only
@@ -827,7 +871,8 @@ private struct StartSessionSheet: View {
                 teleportSessionId: mode == .teleport ? teleportSessionId : nil,
                 cwd: effectiveCwd,
                 trustFolder: trustedFolders.contains(effectiveCwd),
-                options: sentOptions
+                options: sentOptions,
+                host: mode == .teleport ? nil : host
             )
             switch outcome {
             case let .failed(message):
@@ -841,8 +886,8 @@ private struct StartSessionSheet: View {
                 isStarting = false
                 pendingTrust = cwd
                 return
-            case .started:
-                break
+            case let .started(hosted):
+                startedHosted = hosted
             }
             if mode == .teleport {
                 isStarting = false
@@ -869,8 +914,10 @@ private struct StartSessionSheet: View {
                 dismiss()
                 return
             }
-            let notice = "Started, but it hasn\u{2019}t checked in. Terminal may be "
-                + "waiting for you to answer something \u{2014} take a look there."
+            let notice = startedHosted != nil
+                ? "Started in conch, but it hasn\u{2019}t checked in. It may be waiting for you to answer something."
+                : "Started, but it hasn\u{2019}t checked in. Terminal may be "
+                    + "waiting for you to answer something \u{2014} take a look there."
             error = notice
             // And keep watching: answered in Terminal, it checks in a minute later, and the
             // sheet sat on this notice for a session that was already running. Tyler: "conch

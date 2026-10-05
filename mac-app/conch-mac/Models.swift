@@ -1070,6 +1070,10 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     /// A Claude Code background job no window is attached to: "Open in
     /// Terminal" can attach one. Older daemons never send it.
     let attachable: Bool
+    /// The session runs in conch's own tmux (src/conch-tmux.ts): its Terminal tab
+    /// IS the session, attached with SwiftTerm, and "Open in Terminal" attaches a
+    /// Terminal window to the same session. Older daemons never send it.
+    let hosted: ConchHostedTerminal?
     /// Working only because agents it started are still running; its own turn is over, so
     /// it can be talked to. Older daemons never send it.
     let waitingOnAgents: Bool
@@ -1119,6 +1123,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         case revealable
         case noTerminal
         case attachable
+        case hosted
         case waitingOnAgents
         case approval
         case parentSessionId
@@ -1151,6 +1156,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         revealable: Bool = false,
         noTerminal: String? = nil,
         attachable: Bool = false,
+        hosted: ConchHostedTerminal? = nil,
         waitingOnAgents: Bool = false,
         approval: PendingApproval? = nil,
         parentSessionId: String? = nil,
@@ -1181,6 +1187,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         self.revealable = revealable
         self.noTerminal = noTerminal
         self.attachable = attachable
+        self.hosted = hosted
         self.waitingOnAgents = waitingOnAgents
         self.approval = approval
         self.parentSessionId = parentSessionId
@@ -1220,6 +1227,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         noTerminal = try? container.decodeIfPresent(String.self, forKey: .noTerminal)
         attachable =
             (try? container.decodeIfPresent(Bool.self, forKey: .attachable)) ?? false
+        hosted = try? container.decodeIfPresent(ConchHostedTerminal.self, forKey: .hosted)
         waitingOnAgents =
             (try? container.decodeIfPresent(Bool.self, forKey: .waitingOnAgents)) ?? false
         approval = try? container.decodeIfPresent(PendingApproval.self, forKey: .approval)
@@ -1256,6 +1264,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             revealable: revealable,
             noTerminal: noTerminal,
             attachable: attachable,
+            hosted: hosted,
             waitingOnAgents: waitingOnAgents,
             approval: approval,
             parentSessionId: parentSessionId,

@@ -115,7 +115,10 @@ describe("asking before a Claude session starts in a folder it doesn't trust", (
     expect(adapterFor("claude").trustTypedAtLaunch).toBe(true);
     expect(adapterFor("codex").trustTypedAtLaunch).toBe(false);
     const daemon = readFileSync(`${import.meta.dir}/../src/daemon.ts`, "utf8");
-    expect(daemon).toContain("if (request.trustFolder === true && adapterFor(request.backend).trustTypedAtLaunch && tty) {");
+    expect(daemon).toContain("const trustTyped = request.trustFolder === true && adapterFor(request.backend).trustTypedAtLaunch;");
+    // Typed into its Terminal tab, or into conch's own tmux with send-keys (hostedTrustDependencies).
+    expect(daemon).toContain("if (trustTyped && tty) {");
+    expect(daemon).toContain("void acceptClaudeTrust(hosted.pane, hostedTrustDependencies(hosted, tmux))");
     expect(daemon.match(/await launchSession\(|=> launchSession\(/g)?.length).toBe(3);
     // Every launch goes through launchSession: its own call is the only direct one.
     expect(daemon.match(/await startTerminalSession\(/g)?.length).toBe(1);

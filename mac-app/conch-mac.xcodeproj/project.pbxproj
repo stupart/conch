@@ -57,6 +57,8 @@
 		D10000000000000000000C01 /* ComposerDock.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000C01 /* ComposerDock.swift */; };
 		A10000000000000000000963 /* HistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000963 /* HistoryStore.swift */; };
 		A10000000000000000000961 /* ConchDesign in Frameworks */ = {isa = PBXBuildFile; productRef = AB0000000000000000000002 /* ConchDesign */; };
+		F10000000000000000000E01 /* EmbeddedTerminal.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000E01 /* EmbeddedTerminal.swift */; };
+		F10000000000000000000E02 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = AB0000000000000000000004 /* SwiftTerm */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -75,6 +77,7 @@
 		A20000000000000000000007 /* WebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebView.swift; sourceTree = "<group>"; };
 		A20000000000000000000964 /* Terminal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Terminal.swift; sourceTree = "<group>"; };
 		D20000000000000000000B51 /* TerminalMirror.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalMirror.swift; sourceTree = "<group>"; };
+		F20000000000000000000E01 /* EmbeddedTerminal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmbeddedTerminal.swift; sourceTree = "<group>"; };
 		A20000000000000000000965 /* FrontWindowObserver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FrontWindowObserver.swift; sourceTree = "<group>"; };
 		A20000000000000000000980 /* Permissions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Permissions.swift; sourceTree = "<group>"; };
 		E2000000000000000000A001 /* OnboardingController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingController.swift; sourceTree = "<group>"; };
@@ -120,6 +123,7 @@
 			files = (
 				A10000000000000000000009 /* WebKit.framework in Frameworks */,
 				A10000000000000000000961 /* ConchDesign in Frameworks */,
+				F10000000000000000000E02 /* SwiftTerm in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -166,6 +170,7 @@
 				A20000000000000000000007 /* WebView.swift */,
 				A20000000000000000000964 /* Terminal.swift */,
 				D20000000000000000000B51 /* TerminalMirror.swift */,
+				F20000000000000000000E01 /* EmbeddedTerminal.swift */,
 				A20000000000000000000965 /* FrontWindowObserver.swift */,
 				A20000000000000000000980 /* Permissions.swift */,
 				E2000000000000000000A001 /* OnboardingController.swift */,
@@ -221,6 +226,7 @@
 				AC0000000000000000000002 /* Embed conch daemon */,
 				AC0000000000000000000003 /* Embed speech engine */,
 				AC0000000000000000000004 /* Embed tmux */,
+				AC0000000000000000000005 /* Embed package notices */,
 			);
 			buildRules = (
 			);
@@ -229,6 +235,7 @@
 			name = "conch-mac";
 			packageProductDependencies = (
 				AB0000000000000000000002 /* ConchDesign */,
+				AB0000000000000000000004 /* SwiftTerm */,
 			);
 			productName = "conch-mac";
 			productReference = A2000000000000000000000B /* conch-mac.app */;
@@ -260,6 +267,7 @@
 			mainGroup = A40000000000000000000001;
 			packageReferences = (
 				AB0000000000000000000001 /* XCLocalSwiftPackageReference "../design/ConchDesign" */,
+				AB0000000000000000000003 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
 			);
 			productRefGroup = A40000000000000000000004 /* Products */;
 			projectDirPath = "";
@@ -362,6 +370,26 @@
 			shellScript = "exec \"$SRCROOT/../scripts/embed-tmux.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
+		AC0000000000000000000005 /* Embed package notices */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Embed package notices";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "exec \"$SRCROOT/../scripts/embed-notices.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -405,6 +433,7 @@
 				A10000000000000000000007 /* WebView.swift in Sources */,
 				A10000000000000000000964 /* Terminal.swift in Sources */,
 				D10000000000000000000B51 /* TerminalMirror.swift in Sources */,
+				F10000000000000000000E01 /* EmbeddedTerminal.swift in Sources */,
 				A10000000000000000000965 /* FrontWindowObserver.swift in Sources */,
 				A10000000000000000000980 /* Permissions.swift in Sources */,
 				E1000000000000000000A001 /* OnboardingController.swift in Sources */,
@@ -428,11 +457,27 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		AB0000000000000000000003 /* XCRemoteSwiftPackageReference "SwiftTerm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/migueldeicaza/SwiftTerm";
+			requirement = {
+				kind = exactVersion;
+				version = 1.11.2;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		AB0000000000000000000002 /* ConchDesign */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = AB0000000000000000000001 /* XCLocalSwiftPackageReference "../design/ConchDesign" */;
 			productName = ConchDesign;
+		};
+		AB0000000000000000000004 /* SwiftTerm */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AB0000000000000000000003 /* XCRemoteSwiftPackageReference "SwiftTerm" */;
+			productName = SwiftTerm;
 		};
 /* End XCSwiftPackageProductDependency section */
 

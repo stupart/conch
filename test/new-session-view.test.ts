@@ -14,7 +14,9 @@ test("the home folder is not a working folder, so a session there gets the whole
   expect(folder).toContain("ConchWorkFolder.pick(cwd: row.cwd, workDirs: row.workDirs, home: NSHomeDirectory())");
   // With no folder, no deliverable and no Terminal Mirror (a debug view, terminal-mirror-source.test.ts), the split is
   // never drawn: the Terminal button is not something to show there.
-  expect(dashboard).toContain("selectedReview != nil || workingFolder != nil || focusedRow.map { terminalStrip(for: $0).showsMirror } == true");
+  // A hosted session's own Terminal tab is something to show there (embedded-terminal-source.test.ts). The rule is
+  // ConchDesign's `ConchTerminalStrip.hasWorkPane`, XCTested.
+  expect(dashboard).toContain("terminalStrip(for: row).hasWorkPane(hasFolder: workingFolder != nil, hasDeliverable: selectedReview != nil)");
   expect(dashboard).toContain("if let reviewRow = focusedRow, hasWorkPane, stage(for: reviewRow) != .conversation {");
 });
 

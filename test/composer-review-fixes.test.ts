@@ -122,8 +122,8 @@ describe("6: conch steering the screen for a send holds the input where it is", 
   });
 
   test("the session commands that type hold it the same way, and let go when nothing will be typed", () => {
-    const helper = member(store, "private static func refocusWhenDelivered() -> SteeredDelivery? {");
-    before(helper, "guard NSApp.isActive else { return nil }", "let steer = ComposerDock.shared.beginSteering()");
+    const helper = member(store, "private static func refocusWhenDelivered(hosted: Bool = false) -> SteeredDelivery? {");
+    before(helper, "guard NSApp.isActive, !hosted else { return nil }", "let steer = ComposerDock.shared.beginSteering()");
     const settled = member(store, "func settled(by outcome: ConchSocketRequestOutcome) {", 8);
     expect(settled).toContain("case .acknowledgement? = try? JSONDecoder().decode(ConchSessionCommandReply.self, from: data) { return }");
     expect(settled).toContain("ComposerDock.shared.endSteering(steer)");

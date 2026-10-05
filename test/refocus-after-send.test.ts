@@ -38,6 +38,10 @@ test("a Mac-app send takes the front back only after the daemon says delivery fi
 
   const send = member(store, "func send(_ event: ConchDaemonEvent, overApp: Bool = false) -> Task<Bool, Never> {");
   const captured = send.indexOf("let refocus = event.awaitDelivery == true && NSApp.isActive");
+  // A session conch hosts is typed into with send-keys, and nothing is raised: no steering, no front to take back.
+  expect(send).toContain("let refocus = event.awaitDelivery == true && NSApp.isActive && !deliversWithoutRaising(event.sessionId)");
+  expect(member(store, "private func deliversWithoutRaising(_ sessionId: String?) -> Bool {"))
+    .toContain("return state?.rows.first(where: { $0.id == sessionId })?.hosted != nil");
   expect(captured).toBeGreaterThan(-1);
   // Captured at the press, not inside the task that runs after the raise.
   expect(captured).toBeLessThan(send.indexOf("let task = Task {"));
@@ -86,8 +90,10 @@ test("only an inject, and the session commands conch types, ask to hear about de
   // `/model` and `/rename` take (refocus-after-session-command.test.ts).
   expect(store.split("private static func refocusAfterDelivery(releasing steer: ComposerSteering.ID) {").length - 1).toBe(1);
   expect(store.split("await StateStore.refocusAfterDelivery(releasing: steer)").length - 1).toBe(2);
-  // Three: `/rename`, `setModel`, and the header's model and effort (`setSessionSettings`).
-  expect(store.split("Self.refocusWhenDelivered()").length - 1).toBe(3);
+  // Three: `/rename`, `setModel`, and the header's model and effort (`setSessionSettings`), each with no hold for a
+  // session conch hosts, which is typed into without raising anything.
+  expect(store.split("Self.refocusWhenDelivered(hosted: deliversWithoutRaising(id))").length - 1).toBe(3);
+  expect(store.split("Self.refocusWhenDelivered(").length - 1).toBe(3);
 });
 
 /**

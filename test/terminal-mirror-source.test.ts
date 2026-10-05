@@ -34,6 +34,11 @@ function section(text: string, start: string, end: string): string {
   return text.slice(a, at(text, end, a + start.length));
 }
 
+// The work half's rules live in ConchDesign (`ConchTerminalStrip.workPane` / `hasWorkPane`, XCTested in
+// EmbeddedTerminalTests), and DashboardView asks them with what the focused session has.
+const strip = source("design/ConchDesign/Sources/ConchDesign/TerminalMirror.swift");
+const rules = () => section(strip, "public func workPane(chosen: WorkPane, hasFolder: Bool, hasDeliverable: Bool) -> WorkPane {", "\n    }");
+const delegated = () => section(pane, "private func workPane(for row: SessionRow) -> WorkPane {", "\n    private func changedFiles");
 const tabs = () => section(pane, "private func deliverableTabs(", ".padding(.vertical, 5)");
 const button = () => section(tabs(), "if strip.showsButton {", "if strip.showsMirror {");
 
@@ -41,8 +46,10 @@ describe("the Terminal button brings the real terminal forward, and does nothing
   test("it is there only for a session with a terminal of its own: a known process, no reason it has none, not a subagent", () => {
     const has = section(mirror, "var hasAgentTerminal: Bool {", "\n    }");
     expect(has).toContain("revealable && noTerminal == nil && parentSessionId == nil");
-    expect(pane).toContain("ConchTerminalStrip(hasTerminal: row.hasAgentTerminal, mirrorOn: showTerminalMirror)");
+    expect(pane).toContain("ConchTerminalStrip(hasTerminal: row.hasAgentTerminal, mirrorOn: showTerminalMirror, hosted: row.hostedTerminal != nil)");
     expect(button()).toContain("TerminalButton {");
+    // A session conch hosts has no window elsewhere to bring forward: its Terminal is a tab (embedded-terminal-source).
+    expect(strip).toContain("public var showsButton: Bool { hasTerminal && !hosted }");
     expect(tabs().split("TerminalButton {").length - 1).toBe(1);
   });
 
@@ -109,14 +116,17 @@ describe("the mirror is a debug view, off unless Debug › Show Terminal Mirror 
     const guarded = section(tabs(), "if strip.showsMirror {", "\n                }");
     expect(guarded).toContain("TerminalMirrorTab(");
     expect(tabs().split("TerminalMirrorTab(").length - 1).toBe(1);
-    const choose = section(pane, "private func workPane(for row: SessionRow) -> WorkPane {", "\n    private func changedFiles");
-    expect(choose).toContain("if chosen == .terminal, strip.showsMirror { return .terminal }");
-    expect(choose).toContain("return strip.showsMirror ? .terminal : .deliverable");
-    expect(choose).not.toContain("row.hasAgentTerminal");
-    // The work half opens for the mirror, never for the button.
+    expect(rules()).toContain("if chosen == .terminal, showsMirror { return .terminal }");
+    expect(rules()).toContain("return showsMirror ? .terminal : .deliverable");
+    expect(delegated()).toContain("terminalStrip(for: row).workPane(");
+    expect(delegated()).not.toContain("row.hasAgentTerminal");
+    // The work half opens for the mirror (and a hosted session's own terminal), never for the button.
     const work = section(pane, "private var hasWorkPane: Bool {", "\n    }");
-    expect(work).toContain("focusedRow.map { terminalStrip(for: $0).showsMirror } == true");
+    expect(work).toContain("terminalStrip(for: row).hasWorkPane(hasFolder: workingFolder != nil, hasDeliverable: selectedReview != nil)");
     expect(work).not.toContain("hasAgentTerminal");
+    const opens = section(strip, "public func hasWorkPane(hasFolder: Bool, hasDeliverable: Bool) -> Bool {", "\n    }");
+    expect(opens).toContain("hasDeliverable || hasFolder || showsEmbedded || showsMirror");
+    expect(opens).not.toContain("showsButton");
     expect(section(pane, "private func hasWorkTabs(for row: SessionRow) -> Bool {", "\n    }")).toContain("terminalStrip(for: row).places");
   });
 

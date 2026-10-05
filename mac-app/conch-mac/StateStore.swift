@@ -175,8 +175,10 @@ final class StateStore: ObservableObject {
         let socketClient = socketClient
         let previousDelivery = deliveryTask
         // Read at the press, before the daemon raises anything: a send that
-        // did not start with conch in front has no front to hand back.
-        let refocus = event.awaitDelivery == true && NSApp.isActive
+        // did not start with conch in front has no front to hand back. A session
+        // conch hosts is typed into with tmux's send-keys and nothing is raised, so
+        // there is no front to take back and nothing for the input to hold still for.
+        let refocus = event.awaitDelivery == true && NSApp.isActive && !deliversWithoutRaising(event.sessionId)
         // conch steers the screen for it: Terminal comes forward to type and conch takes the front back. The input holds
         // where it is meanwhile, rather than flying out to the panel and straight back (`ComposerSteering`).
         let steer = refocus ? ComposerDock.shared.beginSteering() : nil
@@ -306,6 +308,13 @@ final class StateStore: ObservableObject {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// A session conch hosts in its own tmux: the daemon types into it with send-keys, and never raises a window to do
+    /// it (src/inject.ts). So a send to it needs no steering hold (#446) and no hand-back.
+    private func deliversWithoutRaising(_ sessionId: String?) -> Bool {
+        guard let sessionId else { return false }
+        return state?.rows.first(where: { $0.id == sessionId })?.hosted != nil
+    }
+
     /// The fog's hand-back: conch was never in front, so give the front back
     /// to the app the fog was over, and again only from the Terminal conch
     /// raised to type.
@@ -321,8 +330,8 @@ final class StateStore: ObservableObject {
     /// the press, before the daemon raises anything; nil when conch was not in
     /// front, and then the command does not ask to hear about delivery at all.
     /// The input holds where it is meanwhile, as for a send (`ComposerSteering`).
-    private static func refocusWhenDelivered() -> SteeredDelivery? {
-        guard NSApp.isActive else { return nil }
+    private static func refocusWhenDelivered(hosted: Bool = false) -> SteeredDelivery? {
+        guard NSApp.isActive, !hosted else { return nil }
         let steer = ComposerDock.shared.beginSteering()
         return SteeredDelivery(steer: steer, whenDelivered: { await StateStore.refocusAfterDelivery(releasing: steer) })
     }
@@ -380,7 +389,7 @@ final class StateStore: ObservableObject {
             command: .rename,
             label: label,
             fallbackDismissedRow: nil,
-            steered: Self.refocusWhenDelivered()
+            steered: Self.refocusWhenDelivered(hosted: deliversWithoutRaising(id))
         )
     }
 
@@ -573,8 +582,10 @@ final class StateStore: ObservableObject {
         }
     }
 
+    /// "Open in Terminal": a background job no window is attached to (`claude attach`), or a session conch hosts, which
+    /// gets a Terminal window attached to the same tmux session, so both views are live.
     func openInTerminal(_ row: SessionRow) {
-        guard row.attachable else { return }
+        guard row.attachable || row.hosted != nil else { return }
         let request = ConchSessionCommandRequest(sessionId: row.id, command: .attach)
         Task { _ = await socketClient.request(request) }
     }
@@ -585,7 +596,7 @@ final class StateStore: ObservableObject {
     /// daemon, a session with no terminal — lands on the row's message here, in its words.
     func setSessionSettings(id: SessionRow.ID, pick: SessionSettingsPick) {
         rowMessages[id] = nil
-        let steered = Self.refocusWhenDelivered()
+        let steered = Self.refocusWhenDelivered(hosted: deliversWithoutRaising(id))
         let request = ConchSessionCommandRequest(
             sessionId: id,
             command: .setSettings,
@@ -617,7 +628,7 @@ final class StateStore: ObservableObject {
     /// own words, because the inspector shows it verbatim rather than pretending to know what the
     /// agent did with it; the outcome itself arrives on the row.
     func setModel(id: SessionRow.ID, model: String) async -> String {
-        let steered = Self.refocusWhenDelivered()
+        let steered = Self.refocusWhenDelivered(hosted: deliversWithoutRaising(id))
         let request = ConchSessionCommandRequest(
             sessionId: id,
             command: .setModel,
@@ -689,6 +700,19 @@ final class StateStore: ObservableObject {
         return reply.sessions
     }
 
+    /// The persisted `run-in-conch` setting: where the New session sheet starts,
+    /// In conch or In Terminal. Nil when the daemon cannot say: the sheet then
+    /// starts In Terminal, today's behaviour (`SessionStartHost.initial`).
+    func runInConchDefault() async -> Bool? {
+        struct Snapshot: Decodable { let snapshot: [String: ConchConfigEntry] }
+        let outcome = await socketClient.request(ConchGetConfigRequest())
+        guard case let .reply(data) = outcome,
+              let reply = try? JSONDecoder().decode(Snapshot.self, from: data),
+              case let .boolean(value)? = reply.snapshot["run-in-conch"]?.value
+        else { return nil }
+        return value
+    }
+
     /// The persisted `bypass-permissions` setting: what the sheet's toggle
     /// starts from. Nil when the daemon cannot say: the sheet then says the
     /// Mac's default applies and sends nothing until the person picks.
@@ -729,7 +753,8 @@ final class StateStore: ObservableObject {
 
     /// What came back from asking the daemon to start a session.
     enum StartOutcome: Equatable {
-        case started
+        /// `hosted`: it runs in conch's own tmux, there.
+        case started(hosted: ConchHostedTerminal?)
         /// Codex will not run here until it is trusted, and it can be told at
         /// launch — so the person gets the choice rather than a session that
         /// silently sits on a prompt.
@@ -743,7 +768,8 @@ final class StateStore: ObservableObject {
         teleportSessionId: String? = nil,
         cwd: String?,
         trustFolder: Bool = false,
-        options: [String: ConchStartOptionValue] = [:]
+        options: [String: ConchStartOptionValue] = [:],
+        host: SessionStartHost? = nil
     ) async -> StartOutcome {
         let resumed = Self.nonempty(resumeSessionId)
         let teleport = Self.nonempty(teleportSessionId)
@@ -754,7 +780,9 @@ final class StateStore: ObservableObject {
             teleportSessionId: teleport,
             cwd: workingDirectory,
             trustFolder: trustFolder ? true : nil,
-            options: options.isEmpty ? nil : options
+            options: options.isEmpty ? nil : options,
+            // A teleport is Claude's own handoff into Terminal; it isn't sent anywhere else.
+            host: teleport == nil ? host : nil
         )
         let outcome = await socketClient.request(
             request,
@@ -781,7 +809,7 @@ final class StateStore: ObservableObject {
                 // A teleport acknowledgement only confirms the Terminal launch. A folder
                 // that needed trusting was asked about here first (`needsTrust`), and
                 // the daemon answers the agent's own prompt, so a start is a start.
-                return .started
+                return .started(hosted: started.hosted.flatMap { $0.isUsable ? $0 : nil })
             case let .error(error):
                 let message = Self.nonempty(error.error) ?? "Could not start session"
                 reportAppError(operation: "session-start", message: message)

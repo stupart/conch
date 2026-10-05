@@ -7,6 +7,7 @@ import type { ReviewScene } from "./snippet.ts";
 import { deliverableFacts, type DeliverableKind, type DeliverableKindSource } from "./deliverables.ts";
 import { reviewIdentity } from "./records-receipts.ts";
 import type { PendingApproval } from "./approval.ts";
+import type { HostedTerminal } from "./conch-tmux.ts";
 import type { PublishedShowing } from "./screen-context.ts";
 import type { NaturalVoicesStatus } from "./voice-env.ts";
 import type { SpeechEngineStatus } from "./speech-engine.ts";
@@ -119,6 +120,8 @@ export interface PanelRowModel {
   noTerminal?: string;
   /** A background job with no window attached: "Open in Terminal" can attach one. */
   attachable?: boolean;
+  /** Runs in conch's own tmux (src/conch-tmux.ts): the Mac app's Terminal tab attaches to it. */
+  hosted?: HostedTerminal;
   /** The folder the session runs in; what a relative link in its prose is relative to. */
   cwd?: string;
   /** The folder(s) its agent said it actually works in, when not `cwd`: what the file tree and the sidebar follow. */
@@ -313,6 +316,12 @@ export interface PublishedSessionRow {
   noTerminal?: string;
   /** A Claude Code background job with no window attached; an app can offer "Open in Terminal". Older apps ignore it. */
   attachable?: boolean;
+  /**
+   * The session runs in conch's own tmux server, not a Terminal window: the Mac app's Terminal tab is this session,
+   * attached with `tmux -S <socket> attach-session -f ignore-size -t =<session>`, and "Open in Terminal" attaches a
+   * Terminal window to the same session. Older apps ignore it and show the Terminal button, which then says why.
+   */
+  hosted?: HostedTerminal;
   /** Same as `PanelRowModel.waitingOnAgents`. Absent means false; older apps show plain working. */
   waitingOnAgents?: true;
   /**
@@ -686,6 +695,7 @@ export function buildPublishedState(
         ...(row.revealable ? { revealable: true as const } : {}),
         ...(row.noTerminal ? { noTerminal: row.noTerminal } : {}),
         ...(row.attachable ? { attachable: true as const } : {}),
+        ...(row.hosted ? { hosted: { ...row.hosted } } : {}),
         ...(row.waitingOnAgents ? { waitingOnAgents: true as const } : {}),
         ...(approval
           ? {
@@ -779,6 +789,8 @@ export interface BuildPanelModelOptions {
   reply?: PanelReplyModel | null;
   panelOpen?: boolean;
   contextBySessionId?: ReadonlyMap<string, SessionContextUsage>;
+  /** Sessions conch hosts in its own tmux, and where (`readHostedTerminals`). */
+  hostedBySessionId?: ReadonlyMap<string, HostedTerminal>;
   /** Epoch-ms the rows are built for; decides whether a latch is past `LATCH_GRACE_MS`. */
   now?: number;
 }
@@ -849,6 +861,9 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
         ...(session.pid ? { revealable: true } : {}),
         ...(session.noTerminal ? { noTerminal: session.noTerminal } : {}),
         ...(session.jobId && !session.pid ? { attachable: true } : {}),
+        ...(options.hostedBySessionId?.get(session.sessionId)
+          ? { hosted: { ...options.hostedBySessionId.get(session.sessionId)! } }
+          : {}),
         ...(session.cwd ? { cwd: session.cwd } : {}),
         ...(session.workDirs ? { workDirs: session.workDirs } : {}),
       };

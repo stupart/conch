@@ -178,9 +178,10 @@ function applySessionControlMessage(
     }
     case "attach": {
       // Fire and forget, like reveal: opening Terminal is AppleScript. `changed`
-      // means "there is a background job to attach"; failures are logged.
+      // means "there is something to attach": a background job, or a session
+      // conch hosts in its own tmux; failures are logged.
       void invokeSessionAction(controller, target, { command: "attach" });
-      return sessionCommandAck(message, target.jobId !== undefined, target.label);
+      return sessionCommandAck(message, target.jobId !== undefined || target.hosted === true, target.label);
     }
     case "review-viewed": {
       const marked = invokeSessionAction(
@@ -333,7 +334,11 @@ export interface RuntimeControlDispatchOptions {
   readInstall?(
     message: Extract<RuntimeControlMessage, { kind: "agent-capabilities" }>,
   ): AgentInstall | undefined | Promise<AgentInstall | undefined>;
-  start(message: Extract<RuntimeControlMessage, { kind: "session-start" }>): void | Promise<void>;
+  /** Resolves with where it runs, when the starter says (`host`); nothing is a Terminal window, as before. */
+  start(message: Extract<RuntimeControlMessage, { kind: "session-start" }>): void | Promise<void | {
+    host: "terminal" | "conch";
+    hosted?: { tmux: string; socket: string; session: string; pane: string };
+  }>;
   /** Whether the agent already trusts a folder; absent or null means unknown. */
   folderTrusted?(backend: SessionBackend, cwd: string): boolean | null;
   /** Resolves to the flags a restart did not carry over; nothing for a plain close. */
@@ -419,12 +424,14 @@ export async function applyRuntimeControlMessage(
       if (message.trustFolder !== true && message.cwd && options.folderTrusted?.(message.backend, message.cwd) === false) {
         return { kind: "session-needs-trust", backend: message.backend, cwd: message.cwd };
       }
-      await options.start(message);
+      const started = await options.start(message);
       return {
         kind: "session-started",
         backend: message.backend,
         resumed: Boolean(message.resumeSessionId),
         ...(message.teleportSessionId ? { teleported: true as const } : {}),
+        ...(started?.host ? { host: started.host } : {}),
+        ...(started?.hosted ? { hosted: { ...started.hosted } } : {}),
       };
     }
     if (message.kind === "session-close") {

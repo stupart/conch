@@ -49,6 +49,10 @@ process.env.CLAUDE_CONFIG_DIR = testClaudeDir;
 process.env.CONCH_TEST_ROOT = testConfigRoot;
 
 process.env.CONCH_SOCKET ??= join(testConfigRoot, "conch.sock");
+// conch's own tmux server (`tmux -L conch`, src/conch-tmux.ts) is where sessions started "In conch" run. Every lookup of
+// a pane asks it first, so the suite names a server nobody runs: a test never reads, let alone types into, a session
+// conch really hosts.
+process.env.CONCH_TMUX_SOCKET = `conch-test-${process.pid}`;
 process.on("exit", () => rmSync(testConfigRoot, { recursive: true, force: true }));
 
 // Runs before any test module is imported. The daemon log path is read once

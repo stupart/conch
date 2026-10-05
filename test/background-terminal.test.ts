@@ -179,7 +179,8 @@ describe("the apps offer Open in Terminal only on an attachable row", () => {
       .toContain("case attach");
 
     const open = between(read("mac-app/conch-mac/StateStore.swift"), "func openInTerminal(_ row: SessionRow) {", "\n    }\n");
-    expect(open).toContain("guard row.attachable else { return }");
+    // A session conch hosts is attached too: a Terminal window on the same tmux session (embedded-terminal-source).
+    expect(open).toContain("guard row.attachable || row.hosted != nil else { return }");
     expect(open).toContain("ConchSessionCommandRequest(sessionId: row.id, command: .attach)");
 
     const dashboard = read("mac-app/conch-mac/DashboardView.swift");

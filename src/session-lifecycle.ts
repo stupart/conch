@@ -1,4 +1,15 @@
-import { FOCUS_GUARD_LINES, focusedAction, focusSessionWindow, readTerminalTab, withUITransaction, type OsaRunner } from "./inject.ts";
+import { findTmuxPane, FOCUS_GUARD_LINES, focusedAction, focusSessionWindow, readTerminalTab, withUITransaction, type OsaRunner, type TmuxPaneRef } from "./inject.ts";
+import {
+  conchTmuxArgv,
+  hostedEnvironment,
+  hostedSessionName,
+  hostedShell,
+  hostedStartArgv,
+  hostedTerminalCommand,
+  isDirectory as hostedIsDirectory,
+  parseHostedPanes,
+  type HostedTerminal,
+} from "./conch-tmux.ts";
 import { runUICommand } from "./pasteboard.ts";
 import { processMatchesProvider, readProcessIdentity, sameProcessIdentity, type ProcessIdentity, type ProcessIdentityProbe } from "./process-identity.ts";
 import { conchHome } from "./home.ts";
@@ -48,7 +59,15 @@ export interface StartSessionRequest {
    * the persisted default the sheets seed their toggle from.
    */
   options?: Record<string, string | boolean>;
+  /**
+   * Where the session runs: a new Terminal window (`terminal`, what conch always did), or conch's own tmux server
+   * (`conch`, src/conch-tmux.ts), which the Mac app shows as the session's Terminal tab and types into with send-keys.
+   * Absent: the `run-in-conch` setting decides, and it ships off.
+   */
+  host?: SessionHost;
 }
+
+export type SessionHost = "terminal" | "conch";
 
 export interface SessionLifecycleProcess {
   exited: Promise<number>;
@@ -426,6 +445,98 @@ export async function startTerminalSession(
   return tty ? { tty } : {};
 }
 
+/** What a hosted start made: the tmux session, the agent's pane, and where the server's socket is. */
+export interface HostedStart extends HostedTerminal {
+  /** The pane's own process: the login shell, which `exec`s the agent in its place. */
+  panePid: number;
+}
+
+export interface HostedStartDependencies {
+  /** conch's server argv (`conchTmuxArgv`); null when there is no tmux. */
+  tmux?: string[] | null;
+  env?: Readonly<Record<string, string | undefined>>;
+  /** Run one tmux invocation with this environment. */
+  run?(argv: string[], env: Record<string, string>): Promise<{ exitCode: number; stdout: string; stderr: string }>;
+  which?(executable: string): string | null;
+  isDirectory?(path: string): boolean;
+  random?(): number;
+}
+
+async function runHostedTmux(argv: string[], env: Record<string, string>): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  const child = Bun.spawn(argv, { env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const timer = setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 8_000);
+  try {
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+    ]);
+    return { exitCode, stdout, stderr };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Start the agent "In conch": a new session in conch's own tmux server, detached, in the folder, running the same
+ * command a Terminal window would (`terminalSessionCommand`, so #456's model and effort flags and the rest ride along)
+ * through the user's login shell. Nothing comes to the front. Claude Code and Codex register themselves as they do in
+ * Terminal, so the session reaches the sidebar the usual way, with its hooks, transcript and voice unchanged.
+ */
+export async function startHostedSession(
+  request: StartSessionRequest,
+  dependencies: HostedStartDependencies = {},
+): Promise<HostedStart> {
+  const env = dependencies.env ?? process.env;
+  const tmux = dependencies.tmux === undefined ? conchTmuxArgv(env) : dependencies.tmux;
+  if (!tmux) throw new Error("conch can't find tmux, so it can't run sessions itself; start this one In Terminal");
+  const command = terminalSessionCommand(request);
+  const adapter = adapterFor(request.backend);
+  const which = dependencies.which ?? ((name: string) => Bun.which(name));
+  if (!which(adapter.executable)) throw new Error(`${adapter.executable} is not installed or is not on PATH`);
+  const cwd = request.cwd?.trim() || conchHome();
+  if (cwd === helpSessionDir()) ensureHelpSession();
+  if (!(dependencies.isDirectory ?? hostedIsDirectory)(cwd)) throw new Error(`session directory does not exist: ${cwd}`);
+  const session = hostedSessionName(request.backend, cwd, dependencies.random);
+  const argv = hostedStartArgv(tmux, { session, cwd, shell: hostedShell(env), command });
+  const result = await (dependencies.run ?? runHostedTmux)(argv, hostedEnvironment(env));
+  const [started] = result.exitCode === 0 ? parseHostedPanes(result.stdout) : [];
+  if (!started || started.session !== session) {
+    throw new Error(`conch's tmux didn't start the session${result.stderr.trim() ? `: ${result.stderr.trim().slice(0, 200)}` : ""}`);
+  }
+  return { tmux: tmux[0]!, socket: started.socket, session: started.session, pane: started.pane, panePid: started.panePid };
+}
+
+/** Read a hosted pane's screen, for the trust prompt: `capture-pane`, no focus involved. */
+export function hostedTrustDependencies(hosted: Pick<HostedTerminal, "pane">, tmux: string[]) {
+  const run = (argv: string[]) => runUICommand([...tmux, ...argv]);
+  return {
+    read: async () => {
+      const shown = await run(["capture-pane", "-p", "-t", hosted.pane]);
+      return shown.timedOut || shown.exitCode !== 0 ? null : shown.text;
+    },
+    // Down, then Return, 250ms apart: the same keys Terminal's path presses, through send-keys.
+    press: async () => {
+      const down = await run(["send-keys", "-t", hosted.pane, "Down"]);
+      if (down.timedOut || down.exitCode !== 0) return false;
+      await Bun.sleep(250);
+      const enter = await run(["send-keys", "-t", hosted.pane, "Enter"]);
+      return !enter.timedOut && enter.exitCode === 0;
+    },
+  };
+}
+
+/**
+ * "Open in Terminal" for a hosted session: a Terminal window attached to the same tmux session. Both views stay live;
+ * closing the window only detaches it.
+ */
+export async function attachHostedInTerminal(
+  hosted: Pick<HostedTerminal, "tmux" | "socket" | "session">,
+  cwd: string | undefined,
+  dependencies: SessionLifecycleDependencies = {},
+): Promise<void> {
+  const command = hostedTerminalCommand(hosted);
+  await withUITransaction(() => runInTerminal(command, hosted.tmux, cwd, dependencies));
+}
+
 /** Claude Code's trust screen, as 2.1.280 shows it: "❯ No, exit" first and highlighted. */
 const CLAUDE_TRUST_YES = "Yes, I trust this folder";
 
@@ -740,11 +851,53 @@ export async function stopBackgroundSession(
  */
 export async function closeSession(
   session: Pick<SessionInfo, "pid" | "jobId" | "agentPid" | "noTerminal" | "processIdentity" | "backend">,
-  dependencies: SessionLifecycleDependencies = {},
+  dependencies: SessionLifecycleDependencies & HostedCloseDependencies = {},
 ): Promise<void> {
   if (session.jobId) return stopBackgroundSession(session.jobId, session.agentPid, dependencies);
   if (!session.pid) throw new Error(session.noTerminal ?? "session has no routable pid");
+  // A session conch hosts leaves the same way, Ctrl-D, typed with send-keys into its pane: nothing comes forward.
+  const hosted = await (dependencies.findHostedPane ?? findHostedPane)(session.pid);
+  if (hosted) {
+    return closeHostedSession(session.pid, hosted, { ...dependencies, expectedIdentity: session.processIdentity, backend: session.backend });
+  }
   return closeTerminalSession(session.pid, { ...dependencies, expectedIdentity: session.processIdentity, backend: session.backend });
+}
+
+export interface HostedCloseDependencies {
+  /** The pane in conch's own server the pid runs in, or null when it isn't one conch hosts. */
+  findHostedPane?(pid: number): Promise<TmuxPaneRef | null>;
+  /** One tmux call against the pane's server. */
+  runTmux?(argv: string[]): Promise<{ exitCode: number; timedOut: boolean }>;
+}
+
+/** The pane in conch's own server a pid runs in; never the user's own tmux. */
+export async function findHostedPane(pid: number): Promise<TmuxPaneRef | null> {
+  const tmux = conchTmuxArgv();
+  return tmux ? findTmuxPane(pid, { servers: [tmux] }) : null;
+}
+
+/**
+ * Close a hosted session: the agent's own clean exit, as many Ctrl-Ds as it takes (`exitKeystrokes`, inside Claude
+ * Code's 800ms "press again" window), typed into its pane with send-keys, then wait for the pid to go. The pane, and
+ * the tmux session with it, close when the agent exits: tmux's own `remain-on-exit` is off.
+ */
+export async function closeHostedSession(
+  pid: number,
+  hosted: TmuxPaneRef,
+  dependencies: SessionLifecycleDependencies & HostedCloseDependencies = {},
+): Promise<void> {
+  const probe = dependencies.processIdentity ?? readProcessIdentity;
+  const expected = dependencies.expectedIdentity;
+  if (!expected || expected.pid !== pid || !processMatchesProvider(expected, dependencies.backend)
+    || !sameProcessIdentity(expected, probe(pid))) throw new Error("session process identity changed or is unavailable; refresh before closing");
+  const run = dependencies.runTmux ?? ((argv: string[]) => runUICommand(argv));
+  const sleep = dependencies.sleep ?? Bun.sleep;
+  for (let press = 0; press < adapterFor(dependencies.backend).exitKeystrokes; press += 1) {
+    if (press) await sleep(150);
+    const sent = await run([...hosted.tmux, "send-keys", "-t", hosted.pane, "C-d"]);
+    if (sent.timedOut || sent.exitCode !== 0) throw new Error("conch's tmux didn't take the Ctrl-D; the session is still running");
+  }
+  await waitForExit(pid, dependencies, "session did not exit cleanly after Ctrl-D");
 }
 
 /** The selected cached row is a binding, never a substitute for fresh discovery. */

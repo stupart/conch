@@ -100,6 +100,8 @@ export interface Config {
   keystrokeFallback: boolean;
   /** Start sessions with every permission prompt skipped. Off unless asked for. */
   bypassPermissions: boolean;
+  /** Run new sessions in conch's own tmux (the Mac app's Terminal tab) rather than a Terminal window. Off until chosen. */
+  runInConch: boolean;
   /** Allow constructing local record-store clients; no ingestion runs yet. */
   recordsEnabled: boolean;
   phoneEnabled: boolean;
@@ -211,6 +213,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     recentInjectSuppressMs: num(env.CONCH_INJECT_SUPPRESS_MS, 30_000),
     keystrokeFallback: settings["keystroke-fallback"].value as boolean,
     bypassPermissions: settings["bypass-permissions"].value as boolean,
+    runInConch: settings["run-in-conch"].value as boolean,
     recordsEnabled: settings["records"].value as boolean,
     phoneEnabled: settings["phone"].value as boolean,
     phonePort: settings["phone-port"].value as number,

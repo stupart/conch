@@ -12,6 +12,8 @@ export interface SessionActionsTarget {
   pid?: number;
   /** A Claude Code background job's id, which `attach` opens in Terminal. */
   jobId?: string;
+  /** Runs in conch's own tmux: `attach` opens a Terminal window on the same session. */
+  hosted?: true;
 }
 
 /**

@@ -1,0 +1,18 @@
+conch.app carries SwiftTerm 1.11.2 (https://github.com/migueldeicaza/SwiftTerm,
+tag v1.11.2, commit b1262db5b6bea699a8260a8c66999436c508ca56), compiled into
+the app itself: it is the terminal emulator the Terminal tab of a session conch
+hosts draws with. It is conch's only Swift package from outside this
+repository, pinned to that exact version in the Xcode project, with its
+resolution in project.xcworkspace/xcshareddata/swiftpm/Package.resolved.
+
+Why 1.11.2: it is the newest SwiftTerm a stock Xcode builds offline. 1.12.0
+onwards ships a Metal shader, which needs Xcode's separately downloaded Metal
+Toolchain (`xcodebuild -downloadComponent MetalToolchain`), and 1.19.0 onwards
+adds a build-tool plugin that xcodebuild refuses to run until it is trusted
+(`-skipPackagePluginValidation`). conch doesn't use the Metal renderer.
+
+SwiftTerm is Copyright (c) 2019-2022 Miguel de Icaza and the authors named in
+its licence, and is distributed under the MIT licence: LICENSE, beside this
+notice, unmodified from that tag's source tree. Only its SwiftTerm library is
+linked; the package's own tools (termcast, its fuzzer, its benchmarks) and
+their dependencies are not built into conch.

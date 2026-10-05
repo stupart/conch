@@ -169,15 +169,16 @@ test("the Mac app reads the ack, then waits for session-delivered before taking 
   expect(client).toContain("reply = Data(reply[reply.index(after: newline)...])");
 
   const store = read("mac-app/conch-mac/StateStore.swift");
-  const helper = member(store, "private static func refocusWhenDelivered() -> SteeredDelivery? {");
-  const front = helper.indexOf("guard NSApp.isActive else { return nil }");
+  const helper = member(store, "private static func refocusWhenDelivered(hosted: Bool = false) -> SteeredDelivery? {");
+  // Only while conch is in front, and never for a session conch hosts: nothing is raised to type into it.
+  const front = helper.indexOf("guard NSApp.isActive, !hosted else { return nil }");
   const back = helper.indexOf("return SteeredDelivery(steer: steer, whenDelivered: { await StateStore.refocusAfterDelivery(releasing: steer) })");
   expect(front).toBeGreaterThan(-1);
   expect(back).toBeGreaterThan(front);
 
   // Read at the press: before the request exists, let alone the raise.
   const setModel = member(store, "func setModel(id: SessionRow.ID, model: String) async -> String {");
-  const pressed = setModel.indexOf("let steered = Self.refocusWhenDelivered()");
+  const pressed = setModel.indexOf("let steered = Self.refocusWhenDelivered(hosted: deliversWithoutRaising(id))");
   const sent = setModel.indexOf("let outcome = await socketClient.request(request, whenDelivered: steered?.whenDelivered)");
   expect(pressed).toBeGreaterThan(-1);
   expect(sent).toBeGreaterThan(pressed);
@@ -185,7 +186,7 @@ test("the Mac app reads the ack, then waits for session-delivered before taking 
 
   const rename = member(store, "func renameSession(id: SessionRow.ID, label: String) {");
   expect(rename).toContain("command: .rename,");
-  expect(rename).toContain("steered: Self.refocusWhenDelivered()");
+  expect(rename).toContain("steered: Self.refocusWhenDelivered(hosted: deliversWithoutRaising(id))");
   const enqueue = member(store, "private func enqueueSessionCommand(");
   expect(enqueue).toContain("awaitDelivery: steered == nil ? nil : true");
   expect(enqueue).toContain("let outcome = await socketClient.request(request, whenDelivered: steered?.whenDelivered)");

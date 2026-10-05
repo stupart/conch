@@ -38,12 +38,13 @@ describe("the files are a second axis, not a fourth page", () => {
     // so the wider slice counted BOTH enums' cases and read 5. The stage still has three.
     const stage = section(workspace, "public enum StageMode", "public enum WorkPane");
     expect(stage.match(/case \w+/g) ?? []).toHaveLength(3);
-    // The new axis lives in its own type, with its own default. FOUR contents now: the
-    // deliverable, the session's files, a shell running in the same folder, and the agent's own
-    // terminal. All are things the work half can hold — none of them is a way of splitting the
-    // stage, which is what keeps StageMode at three and this a separate question.
+    // The new axis lives in its own type, with its own default. FIVE contents now: the
+    // deliverable, the session's files, a shell running in the same folder, the agent's own
+    // terminal as the debug mirror, and a hosted session's own terminal, typeable. All are things
+    // the work half can hold — none of them is a way of splitting the stage, which is what keeps
+    // StageMode at three and this a separate question.
     const work = section(workspace, "public enum WorkPane", "public struct SessionPresentation");
-    expect(work.match(/case \w+/g) ?? []).toHaveLength(4);
+    expect(work.match(/case \w+/g) ?? []).toHaveLength(5);
     expect(workspace).toContain("public var work: WorkPane = .deliverable");
   });
 
@@ -68,9 +69,16 @@ describe("the work half can hold the files or a deliverable", () => {
    * losing its folder must fall back to the deliverable rather than drawing an empty tree.
    */
   test("a choice that no longer exists falls back rather than emptying the pane", () => {
+    // The rule is ConchDesign's (`ConchTerminalStrip.workPane`, XCTested); the pane asks it with what the session has.
+    const strip = source("design/ConchDesign/Sources/ConchDesign/TerminalMirror.swift");
+    const rules = section(strip, "public func workPane(chosen: WorkPane, hasFolder: Bool, hasDeliverable: Bool) -> WorkPane {", "\n    }");
+    expect(rules).toContain("if chosen == .files, hasFolder { return .files }");
+    expect(rules).toContain("if hasDeliverable { return .deliverable }");
+    expect(rules.indexOf("if hasDeliverable { return .deliverable }")).toBeLessThan(rules.indexOf("if hasFolder { return .files }"));
     const choose = section(pane, "private func workPane(for row: SessionRow) -> WorkPane {", "\n    private func changedFiles");
-    expect(choose).toContain("if chosen == .files, workingFolder != nil { return .files }");
-    expect(choose).toContain("if selectedReview != nil { return .deliverable }");
+    expect(choose).toContain("chosen: workspace.presentation(for: row.id).work,");
+    expect(choose).toContain("hasFolder: workingFolder != nil,");
+    expect(choose).toContain("hasDeliverable: selectedReview != nil");
   });
 
   /**

@@ -166,6 +166,10 @@ public enum WorkPane: String, Equatable, Sendable, Codable {
     /// Takes over the raw value "terminal" that the Shell tab used to be remembered under. It is picked from this
     /// session's own terminal or not at all, never started from what was remembered.
     case terminal
+    /// The session itself, live and typeable: the Terminal tab of a session conch hosts in its own tmux
+    /// (`ConchTerminalStrip.showsEmbedded`). Only such a session has it; anywhere else the strip's Terminal is a button,
+    /// and a session remembered on this opens on its other contents.
+    case embeddedTerminal
 }
 
 /// What the workspace remembers about ONE session, so leaving it and coming back returns

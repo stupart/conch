@@ -55,6 +55,8 @@ const expected = {
   // Ships OFF. conch starts sessions on other people's machines; removing every
   // confirmation from them is a thing you turn on, never something you inherit.
   "bypass-permissions": ["bypassPermissions", "CONCH_BYPASS_PERMISSIONS", "live", false],
+  // Ships OFF: new sessions open in Terminal, as they always have, until Tyler has tried running them in conch.
+  "run-in-conch": ["runInConch", "CONCH_RUN_IN_CONCH", "live", false],
   "phone": ["phoneEnabled", "CONCH_PHONE", "live", false],
   "phone-port": ["phonePort", "CONCH_PHONE_PORT", "live", 8674],
   "phone-relay-url": ["phoneRelayURL", "CONCH_PHONE_RELAY_URL", "live", ""],
@@ -83,10 +85,10 @@ const expected = {
 } as const;
 
 describe("settings registry", () => {
-  test("contains exactly the 30 curated, default-bearing knobs", () => {
+  test("contains exactly the 31 curated, default-bearing knobs", () => {
     const keys = [...SETTING_REGISTRY.keys()];
     expect(keys.sort()).toEqual(Object.keys(expected).sort());
-    expect(SETTING_DESCRIPTORS).toHaveLength(30);
+    expect(SETTING_DESCRIPTORS).toHaveLength(31);
     for (const [key, [field, env, apply, defaultValue]] of Object.entries(expected)) {
       const descriptor = SETTING_REGISTRY.get(key);
       expect(descriptor).toMatchObject({ field, env, apply, default: defaultValue });

@@ -34,18 +34,45 @@ public struct ConchTerminalStrip: Equatable, Sendable {
     public let hasTerminal: Bool
     /// Debug › Show Terminal Mirror.
     public let mirrorOn: Bool
+    /// conch hosts the session in its own tmux (the row's `hosted`): its Terminal is a tab holding the session itself.
+    public let hosted: Bool
 
-    public init(hasTerminal: Bool, mirrorOn: Bool) {
+    public init(hasTerminal: Bool, mirrorOn: Bool, hosted: Bool = false) {
         self.hasTerminal = hasTerminal
         self.mirrorOn = mirrorOn
+        self.hosted = hosted
     }
 
-    /// The button, wherever there is a terminal to bring forward.
-    public var showsButton: Bool { hasTerminal }
+    /// The button, wherever there is a terminal to bring forward that conch doesn't host itself: a Terminal window, a
+    /// pane of the user's own tmux.
+    public var showsButton: Bool { hasTerminal && !hosted }
+    /// The Terminal tab that IS the session, typeable, for a session conch hosts. Never beside the button.
+    public var showsEmbedded: Bool { hosted }
     /// The mirror's tab, and a remembered choice of it honoured, only while the debug view is on.
     public var showsMirror: Bool { hasTerminal && mirrorOn }
     /// What it adds to the strip's places.
-    public var places: Int { (showsButton ? 1 : 0) + (showsMirror ? 1 : 0) }
+    public var places: Int { (showsButton ? 1 : 0) + (showsEmbedded ? 1 : 0) + (showsMirror ? 1 : 0) }
+
+    /// Is there anything for the work half to show: a deliverable, the working folder, the session's own terminal (a
+    /// hosted session's), or the mirror. The Terminal button is not something to show there.
+    public func hasWorkPane(hasFolder: Bool, hasDeliverable: Bool) -> Bool {
+        hasDeliverable || hasFolder || showsEmbedded || showsMirror
+    }
+
+    /// Which content the work half is on, never trusting the remembered choice blindly: a choice this session can't
+    /// show (its folder gone, the mirror turned off, a session no longer hosted) falls back to what it can. A hosted
+    /// session with nothing else to show opens on its Terminal.
+    public func workPane(chosen: WorkPane, hasFolder: Bool, hasDeliverable: Bool) -> WorkPane {
+        if chosen == .files, hasFolder { return .files }
+        // A shell needs somewhere to run as much as a tree needs somewhere to read.
+        if chosen == .shell, hasFolder { return .shell }
+        if chosen == .embeddedTerminal, showsEmbedded { return .embeddedTerminal }
+        if chosen == .terminal, showsMirror { return .terminal }
+        if hasDeliverable { return .deliverable }
+        if hasFolder { return .files }
+        if showsEmbedded { return .embeddedTerminal }
+        return showsMirror ? .terminal : .deliverable
+    }
 
     /// A plain press reveals; Option opens the mirror, which is how the debug view is reached from the strip.
     public func press(option: Bool) -> Press {

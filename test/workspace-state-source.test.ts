@@ -137,12 +137,20 @@ describe("new work does not replace what you are reading", () => {
     expect(pane).not.toMatch(/showsConversation\s*=/);
     expect(stack).toContain("ArtifactPreview(artifact: artifact, onOpen: onOpenArtifact)");
 
-    // The only three ways the page moves, and every one of them is a press: the two pages in
-    // the perspective bar, and opening the artifact from its inline preview — which stages it
-    // BESIDE the conversation now rather than in front of it. One door (`show(stage:)`),
+    // The only four ways the page moves, and every one of them is a press: the two pages in
+    // the perspective bar, opening the artifact from its inline preview — which stages it
+    // BESIDE the conversation now rather than in front of it — and a hosted session's title,
+    // which opens its Terminal tab beside the conversation. One door (`show(stage:)`),
     // because a page that can be set two ways can be set two ways at once.
     const changes = pane.match(/workspace\.show\(stage: \.\w+, for: row\.id\)/g) ?? [];
-    expect(changes).toHaveLength(3);
+    expect(changes).toHaveLength(4);
+    const hostedTitle = pane.indexOf("private func showHostedTerminal(_ row: SessionRow) {");
+    expect(hostedTitle).toBeGreaterThan(-1);
+    expect(pane.slice(hostedTitle, pane.indexOf("\n    }\n", hostedTitle)))
+      .toContain("if stage(for: row) == .conversation { workspace.show(stage: .sideBySide, for: row.id) }");
+    // Called from the title's press alone.
+    expect(pane.split("showHostedTerminal(row)").length - 1).toBe(1);
+    expect(pane).toContain("Button { showHostedTerminal(row) } label: { sessionTitle(row) }");
     expect(pane).toContain('action: { workspace.show(stage: .conversation, for: row.id) }');
     expect(pane).toContain('action: { workspace.show(stage: .sideBySide, for: row.id) }');
     // The third page is GONE as a destination — filling the conch window was never leaving it.
@@ -200,9 +208,9 @@ describe("new work does not replace what you are reading", () => {
     // whole time. The work half now has two possible contents, so the question is whether
     // either exists.
     expect(header).toContain("if hasWorkPane {");
-    // The Terminal Mirror, while the debug view is on, is a third thing to switch to (terminal-mirror-source.test.ts);
-    // the Terminal button is not.
-    expect(pane).toContain("selectedReview != nil || workingFolder != nil || focusedRow.map { terminalStrip(for: $0).showsMirror } == true");
+    // The Terminal Mirror, while the debug view is on, is a third thing to switch to (terminal-mirror-source.test.ts),
+    // and a hosted session's own terminal a fourth; the Terminal button is not. The rule is ConchDesign's.
+    expect(pane).toContain("terminalStrip(for: row).hasWorkPane(hasFolder: workingFolder != nil, hasDeliverable: selectedReview != nil)");
     // Icons alone up here: three labelled segments take over 40% of the header at the
     // default window width, and the title is what the header is for.
     expect(pane).not.toContain("Text(label)");
