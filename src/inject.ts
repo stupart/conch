@@ -66,6 +66,8 @@ export interface InjectTextOptions {
   sleep?(ms: number): Promise<void>;
   pasteboard?: Pasteboard;
   sendTmuxKeys?(pane: string, text: string, literal: boolean): Promise<{ exitCode: number }>;
+  /** Test seam: put words into a tmux pane as one bracketed paste (`pasteIntoTmuxPane`). */
+  pasteTmuxText?(pane: string, text: string): Promise<{ exitCode: number }>;
   /** Filled with this send's step lines, as the debug log gets them, for a caller that records a send gone wrong. */
   steps?: string[];
 }
@@ -257,6 +259,61 @@ const sendTmuxKeys = (pane: string, text: string, literal: boolean) => {
 };
 
 /**
+ * Longer than this, or across lines, words reach a tmux pane as one bracketed paste rather than as typed keys.
+ *
+ * `send-keys -l` hands the pane one unmarked burst, and tmux writes it to the pty in 1,022-byte reads
+ * (measured, tmux 3.7c). Claude Code 2.1.280 takes any single unmarked read over 800 characters as a paste
+ * of its own, so a long message reaches it as several pastes and some typing. 2026-10-05, Tyler: "part of
+ * my message sent somehow and i had to go to the terminal and send the full one": a 3,580-character
+ * message went in as 1,022 + 1,022 + 1,022 + 514, and the prompt Claude Code recorded was exactly the last
+ * 514 characters. Codex has its own burst detection for unmarked keys too (`TMUX_SUBMIT_GAP_MS`).
+ *
+ * 200 keeps a typed burst well inside one read even at four bytes a character, so short words still go as
+ * keys: one read under 800 characters is typing to both agents, which is what conch always relied on.
+ */
+export const TMUX_PASTE_OVER_CHARS = 200;
+
+/** Whether these words go to a tmux pane as a paste (`TMUX_PASTE_OVER_CHARS`). */
+export function tmuxPastes(text: string): boolean {
+  return text.length > TMUX_PASTE_OVER_CHARS || /[\r\n]/.test(text);
+}
+
+/**
+ * Put words into a tmux pane as ONE paste: loaded into a buffer of their own from stdin, then pasted with
+ * the bracketed-paste markers (`ESC [200~` … `ESC [201~`) wherever the agent asked for them (`-p`; Claude
+ * Code and Codex both turn bracketed paste on). The markers are what make the whole message one paste
+ * however many reads it takes to arrive. Claude Code types a reply into its own background sessions the
+ * same way, a bracketed paste and then a Return. Checked 2026-10-05 against Claude Code 2.1.280 and
+ * Codex 0.159.2 in tmux 3.7c, each in a throwaway home: messages of about 3,600 characters went in whole
+ * and the Return after `TMUX_SUBMIT_GAP_MS` sent them, the box showing `[Pasted text #1]` and
+ * `[Pasted Content … chars]` in between.
+ *
+ * The buffer is tmux's own, never the Mac's clipboard: `load-buffer` without `-w` leaves the terminal's
+ * clipboard alone. Its name is this send's alone, so two sends never paste each other's words, and `-d`
+ * deletes it once pasted; a paste that fails deletes it here. `-r` keeps a newline a newline: tmux would
+ * otherwise turn each into a carriage return, which is a Return to an agent that did not ask for
+ * bracketed paste.
+ */
+export async function pasteIntoTmuxPane(
+  pane: string, text: string, run: (args: string[], input?: string) => Promise<{ exitCode: number; timedOut?: boolean }> = runUICommand,
+): Promise<{ exitCode: number }> {
+  const target = paneTarget(pane);
+  if (!target) return { exitCode: 1 };
+  const buffer = `conch-send-${crypto.randomUUID()}`;
+  const ok = (result: { exitCode: number; timedOut?: boolean }) => !result.timedOut && result.exitCode === 0;
+  const discard = async (): Promise<void> => {
+    try { await run([...target.tmux, "delete-buffer", "-b", buffer]); } catch {}
+  };
+  let loaded: { exitCode: number; timedOut?: boolean };
+  try { loaded = await run([...target.tmux, "load-buffer", "-b", buffer, "-"], text); } catch { loaded = { exitCode: -1 }; }
+  if (!ok(loaded)) { await discard(); return { exitCode: loaded.exitCode || -1 }; }
+  let pasted: { exitCode: number; timedOut?: boolean };
+  try { pasted = await run([...target.tmux, "paste-buffer", "-p", "-d", "-r", "-b", buffer, "-t", target.pane]); } catch { pasted = { exitCode: -1 }; }
+  if (!ok(pasted)) { await discard(); return { exitCode: pasted.exitCode || -1 }; }
+  return { exitCode: 0 };
+}
+
+/**
  * Longer than this, or across lines, words are pasted rather than typed.
  *
  * System Events types one keystroke at a time. A long message outlives the AppleScript bound, and a timed-out
@@ -362,12 +419,17 @@ async function injectTextInTransaction(
   step(`findTmuxPane -> ${pane ?? "none"}`);
   if (pane) {
     if (!(await mayInject())) return interrupted();
-    // `-l --`: -l sends the text as literal keys, -- stops flag parsing so a
+    // Long or multi-line words go as one bracketed paste (`TMUX_PASTE_OVER_CHARS`): typed, Claude Code
+    // kept only the last 514 of 3,580 characters (2026-10-05).
+    // Short words: `-l --`: -l sends the text as literal keys, -- stops flag parsing so a
     // transcript starting with "-" isn't read as an option (which both fails
     // AND used to throw, killing the daemon). nothrow + exit check so any
     // send-keys refusal falls through to clipboard instead of crashing.
-    const r = await (options.sendTmuxKeys ?? sendTmuxKeys)(pane, text, true);
-    step(`tmux send-keys exit=${r.exitCode}`);
+    const paste = tmuxPastes(text);
+    const r = paste
+      ? await (options.pasteTmuxText ?? pasteIntoTmuxPane)(pane, text)
+      : await (options.sendTmuxKeys ?? sendTmuxKeys)(pane, text, true);
+    step(paste ? `tmux paste-buffer exit=${r.exitCode} (${text.length} chars)` : `tmux send-keys exit=${r.exitCode}`);
     if (r.exitCode === 0) {
       if (submit) {
         // Codex reads an Enter that lands right behind a burst of keys as more of

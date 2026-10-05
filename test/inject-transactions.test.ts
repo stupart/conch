@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Config } from "../src/config.ts";
-import { FRONT_TTY_SCRIPT, injectKey, injectText, revealSessionWindow, TMUX_SUBMIT_GAP_MS, withUITransaction } from "../src/inject.ts";
+import { FRONT_TTY_SCRIPT, injectKey, injectText, pasteIntoTmuxPane, revealSessionWindow, TMUX_PASTE_OVER_CHARS, TMUX_SUBMIT_GAP_MS, tmuxPastes, withUITransaction } from "../src/inject.ts";
+import { conchTmux } from "../src/tmux-binary.ts";
 import { runUICommand } from "../src/pasteboard.ts";
 
 const cfg = { autoSubmit: true, keystrokeFallback: true } as Config;
@@ -254,6 +255,105 @@ describe("UI injection transactions", () => {
     expect(result).toEqual({ via: "tmux" });
     expect(calls).toEqual(["text:words", `sleep:${TMUX_SUBMIT_GAP_MS}`, "key:Enter"]);
     expect(steps.at(-1)).toEndWith("] tmux Enter exit=0");
+  });
+
+  // 2026-10-05: 3,580 characters typed with `send-keys -l` reached Claude Code as 1,022-byte reads, each over
+  // its 800-character paste line, and it recorded only the last 514. Long words now go as one bracketed paste.
+  describe("long words reach a tmux pane as one paste", () => {
+    const send = async (text: string, paste: (pane: string, text: string) => Promise<{ exitCode: number }> = async () => ({ exitCode: 0 })) => {
+      const ui = fakeUI();
+      const calls: string[] = [];
+      const steps: string[] = [];
+      // No keystroke route behind tmux, as in conch's own background sessions.
+      const result = await injectText({ ...cfg, keystrokeFallback: false }, 1, text, undefined, {
+        ...ui.options(1), findTmuxPane: async () => "conch:%7", steps,
+        sleep: async (ms) => { calls.push(`sleep:${ms}`); },
+        sendTmuxKeys: async (pane, sent, literal) => { calls.push(`${literal ? "text" : "key"}:${pane}:${sent}`); return { exitCode: 0 }; },
+        pasteTmuxText: async (pane, sent) => { calls.push(`paste:${pane}:${sent}`); return paste(pane, sent); },
+      });
+      return { result, calls, steps, ui };
+    };
+
+    test("over the threshold, or across lines, the words are pasted and then Return is pressed", async () => {
+      const long = "x".repeat(TMUX_PASTE_OVER_CHARS + 1);
+      for (const text of [long, "two\nlines", "a carriage\rreturn", "y".repeat(3_580)]) {
+        const { result, calls, steps, ui } = await send(text);
+        expect(result).toEqual({ via: "tmux" });
+        expect(calls).toEqual([`paste:conch:%7:${text}`, `sleep:${TMUX_SUBMIT_GAP_MS}`, "key:conch:%7:Enter"]);
+        expect(steps.some((line) => line.endsWith(`] tmux paste-buffer exit=0 (${text.length} chars)`))).toBe(true);
+        // Neither the Mac's clipboard nor any window was touched.
+        expect(ui.items()).toEqual(textItems("original"));
+        expect(ui.actions).toEqual([]);
+      }
+    });
+
+    test("at or under it, on one line, the words are typed as before", async () => {
+      for (const text of ["words", "z".repeat(TMUX_PASTE_OVER_CHARS)]) {
+        const { result, calls } = await send(text);
+        expect(result).toEqual({ via: "tmux" });
+        expect(calls).toEqual([`text:conch:%7:${text}`, `sleep:${TMUX_SUBMIT_GAP_MS}`, "key:conch:%7:Enter"]);
+      }
+      expect(tmuxPastes("z".repeat(TMUX_PASTE_OVER_CHARS))).toBe(false);
+      expect(tmuxPastes("z".repeat(TMUX_PASTE_OVER_CHARS + 1))).toBe(true);
+    });
+
+    test("a paste tmux refuses presses no Return, and is not reported delivered", async () => {
+      const { result, calls } = await send("two\nlines", async () => ({ exitCode: 1 }));
+      expect(calls).toEqual(["paste:conch:%7:two\nlines"]);
+      expect(result).toEqual({ via: "none", failed: true, reason: "keystroke-fallback-off" });
+    });
+  });
+
+  describe("the paste itself (`pasteIntoTmuxPane`)", () => {
+    const runner = (fail?: (args: string[]) => boolean) => {
+      const runs: Array<{ args: string[]; input?: string }> = [];
+      const run = async (args: string[], input?: string) => {
+        runs.push({ args, ...(input === undefined ? {} : { input }) });
+        return { exitCode: fail?.(args) ? 1 : 0, timedOut: false };
+      };
+      return { runs, run };
+    };
+    const bufferOf = (args: string[]) => args[args.indexOf("-b") + 1]!;
+
+    test("the words go in on stdin to a buffer of this send's own, pasted bracketed and deleted", async () => {
+      const text = "a long message\nacross lines";
+      const { runs, run } = runner();
+      expect(await pasteIntoTmuxPane("conch:%7", text, run)).toEqual({ exitCode: 0 });
+      const tmux = conchTmux();
+      expect(runs.map(({ args }) => args.slice(tmux.length, tmux.length + 1)[0])).toEqual(["load-buffer", "paste-buffer"]);
+      const [load, paste] = runs;
+      const name = bufferOf(load!.args);
+      expect(name).toMatch(/^conch-send-[0-9a-f-]{36}$/);
+      expect(load).toEqual({ args: [...tmux, "load-buffer", "-b", name, "-"], input: text });
+      // -p: the markers, when the agent asked for them; -d: the buffer goes once pasted; -r: newlines stay newlines.
+      expect(paste).toEqual({ args: [...tmux, "paste-buffer", "-p", "-d", "-r", "-b", name, "-t", "%7"] });
+      // Only conch's tmux runs, and never with -w, which would copy the buffer to the clipboard; no pbcopy, no osascript.
+      for (const { args } of runs) {
+        expect(args.slice(0, tmux.length)).toEqual(tmux);
+        expect(args).not.toContain("-w");
+      }
+
+      const again = runner();
+      await pasteIntoTmuxPane("conch:%7", text, again.run);
+      expect(bufferOf(again.runs[0]!.args)).not.toBe(name);
+    });
+
+    test("a paste that fails deletes its buffer, and says so", async () => {
+      const pasteFails = runner((args) => args.includes("paste-buffer"));
+      expect((await pasteIntoTmuxPane("conch:%7", "words", pasteFails.run)).exitCode).not.toBe(0);
+      const name = bufferOf(pasteFails.runs[0]!.args);
+      expect(pasteFails.runs.at(-1)!.args).toEqual([...conchTmux(), "delete-buffer", "-b", name]);
+
+      const loadFails = runner((args) => args.includes("load-buffer"));
+      expect((await pasteIntoTmuxPane("conch:%7", "words", loadFails.run)).exitCode).not.toBe(0);
+      expect(loadFails.runs.map(({ args }) => args[conchTmux().length])).toEqual(["load-buffer", "delete-buffer"]);
+    });
+
+    test("something that is not a pane gets nothing run", async () => {
+      const { runs, run } = runner();
+      expect(await pasteIntoTmuxPane("not-a-pane", "words", run)).toEqual({ exitCode: 1 });
+      expect(runs).toEqual([]);
+    });
   });
 
   // The Return was the one step the step log never showed, and it is the one that goes missing.

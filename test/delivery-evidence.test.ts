@@ -21,6 +21,12 @@ describe("a prompt's fingerprint", () => {
   test("it never carries the words", () => {
     expect(promptDigest("my secret plan")).not.toContain("secret");
   });
+
+  // Claude Code 2.1.280 writes a long paste down in tags, and conch pastes every long send.
+  test("a paste's tags are not part of its words", () => {
+    const words = "Need you to do some flight and hotel searches for the trip. ".repeat(20).trim();
+    expect(promptDigest(`\n\n<pasted_content id="04a6">\n${words}\n</pasted_content id="04a6">\n`)).toBe(promptDigest(words));
+  });
 });
 
 describe("what a session's hook said it took", () => {
@@ -66,6 +72,33 @@ describe("a transcript read by time", () => {
     expect(await claudeTranscriptSince(file(prompt(since + 400, "hi")), since, "hi")).toEqual({ submitted: true, queued: false });
     // One from before is an older turn, slack aside.
     expect(await claudeTranscriptSince(file(prompt(since - 60_000, "hi")), since, "hi")).toEqual({ submitted: false, queued: false });
+  });
+
+  // 2026-10-05: 3,580 characters typed into a new session were recorded as their last 514. That prompt is
+  // the agent's, but it is not these words, and taking it as them would call a lost message delivered.
+  test("only a prompt that opens with the words is the send's: a tail of them is not", async () => {
+    const since = Date.parse("2026-10-05T18:22:18Z");
+    const words = Array.from({ length: 600 }, (_, index) => `word${index}`).join(" ").slice(0, 3_580);
+    expect(words).toHaveLength(3_580);
+    const tail = words.slice(-514);
+    expect(await claudeTranscriptSince(file(prompt(since + 300, tail)), since, words)).toEqual({ submitted: false, queued: false });
+    // Someone else's prompt is not the send's either.
+    expect((await claudeTranscriptSince(file(prompt(since + 300, "something else entirely")), since, words)).submitted).toBe(false);
+    // The tail was a prompt, all the same: the check is about whose words, not whether one landed.
+    expect((await claudeTranscriptSince(file(prompt(since + 300, tail)), since, tail)).submitted).toBe(true);
+    // The whole words, however Claude Code wrote them down: spaced, in a paste's tags, or as text blocks.
+    for (const content of [
+      words.replace(/ /g, "  "),
+      `\n\n<pasted_content id="6a36">\n${words}\n</pasted_content id="6a36">\n`,
+      [{ type: "text", text: words }],
+    ]) {
+      const record = { type: "user", timestamp: at(since + 300), message: { role: "user", content } };
+      expect(await claudeTranscriptSince(file(record), since, words)).toEqual({ submitted: true, queued: false });
+    }
+    // A long paste queued behind a running turn is matched the same way.
+    const enqueue = { type: "queue-operation", operation: "enqueue", timestamp: at(since + 300),
+      content: `\n\n<pasted_content id="6a36">\n${words}\n</pasted_content id="6a36">\n` };
+    expect(await claudeTranscriptSince(file(enqueue), since, words)).toEqual({ submitted: false, queued: true });
   });
 
   test("a hook's own words and a task notification are not the user's prompt", async () => {

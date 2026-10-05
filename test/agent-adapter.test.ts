@@ -228,6 +228,9 @@ describe("Claude Code's input box, read off its terminal", () => {
   test("the words are still there by their start, or by the placeholder a long paste shows", () => {
     expect(inputBoxHoldsWords("Add the real company logos to the ring", "Add the real   company logos to the ring and more")).toBe(true);
     expect(inputBoxHoldsWords("[Pasted text #1 +12 lines]", "anything long")).toBe(true);
+    // A long send is pasted, so its box shows the paste: Claude Code's one-line form, and Codex's (0.159.2).
+    expect(inputBoxHoldsWords("[Pasted text #1]", "anything long")).toBe(true);
+    expect(inputBoxHoldsWords("[Pasted Content 3580 chars]", "anything long")).toBe(true);
     expect(inputBoxHoldsWords("", "Add the real company logos")).toBe(false);
     expect(inputBoxHoldsWords("something Tyler is typing", "Add the real company logos")).toBe(false);
   });

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, sym
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { addClaudeAccount, accountStorePath, claudeAccountEnvironment, decodeClaudeAuth, readClaudeAccounts, removeClaudeAccount } from "../src/claude-accounts.ts";
-import { accountRegistrySnapshot, accountResumableSessions, assertClaudeAccountIdle, findAccountTranscript } from "../src/claude-account-sessions.ts";
+import { accountRegistrySnapshot, accountResumableSessions, assertClaudeAccountIdle, findAccountTranscript, sessionTranscript } from "../src/claude-account-sessions.ts";
 import { attachTerminalCommand, closeSession, restartRequest, startClaudeAccountLogin, startRequestFromArgv, terminalSessionCommand } from "../src/session-lifecycle.ts";
 import { validateControlResponse, validateRuntimeControlMessage } from "../src/settings.ts";
 
@@ -130,6 +130,29 @@ test("live and resumable sessions keep account identity and ambiguous transcript
   mkdirSync(join(work.configDir, "sessions"));
   writeFileSync(join(work.configDir, "sessions", "broken.json"), "{");
   await expect(assertClaudeAccountIdle(work)).rejects.toThrow("Could not check");
+});
+
+// 2026-10-05: the first message to a new session on a second account. Its row named the account's own folder, and
+// the daemon handed that folder to the account-aware lookup as the DEFAULT one, which read the account list, found
+// the folder twice, and threw after the words were typed. Tyler: "part of my message sent somehow and i had to go
+// to the terminal and send the full one".
+test("a session's transcript is looked for in its own account's folder, and the look never throws", () => {
+  const work = addClaudeAccount("Work");
+  const home = readClaudeAccounts()[0]!.configDir;
+  const id = "22222222-2222-4222-8222-222222222222";
+  // The cause, kept on record: an account's folder is not a default one.
+  expect(() => findAccountTranscript(work.configDir, id)).toThrow("Account profiles must have separate directories");
+  // A new session has written nothing yet: not found, and no throw.
+  expect(sessionTranscript(home, id, { claudeConfigDir: work.configDir })).toBeUndefined();
+  const workPath = history(work.configDir, id, "Work task");
+  expect(sessionTranscript(home, id, { claudeConfigDir: work.configDir })).toBe(workPath);
+  // Only that account's folder: the same id under another account is not this session's.
+  const homePath = history(home, id, "Personal task");
+  expect(sessionTranscript(home, id, { claudeConfigDir: home })).toBe(homePath);
+  expect(sessionTranscript(home, id, { claudeConfigDir: work.configDir })).toBe(workPath);
+  // A path the row already knows wins; a row with no account searches every one, ambiguity refused as before.
+  expect(sessionTranscript(home, id, { transcriptPath: "/known/path.jsonl", claudeConfigDir: work.configDir })).toBe("/known/path.jsonl");
+  expect(sessionTranscript(home, id)).toBeUndefined();
 });
 
 test("wire validation rejects unsafe paths, invalid ids, and accounts on Codex", () => {

@@ -2306,11 +2306,21 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         via: inject.InjectTextResult["via"],
         since: number,
       ): Promise<boolean | { box: boolean | null; resends: number }> => {
+        // Each read of the evidence answers for itself: one that throws is "no evidence", never the end of the
+        // send. On 2026-10-05 the transcript lookup threw for a session on a second Claude account, after the
+        // words were typed, and the whole delivery errored out with nothing said. Tyler: "part of my message
+        // sent somehow and i had to go to the terminal and send the full one".
         const said = async (): Promise<string | null> => {
-          if (deps.promptSubmitted?.(event.sessionId, since, text)) return "prompt-hook-confirmed";
-          const written = await claudeTranscriptSince(
-            deps.transcriptFor?.(event.sessionId) ?? deps.window(event.sessionId)?.transcriptPath, since, text);
-          return written.submitted ? "transcript-advanced" : written.queued ? "provider-input-queued" : null;
+          try {
+            if (deps.promptSubmitted?.(event.sessionId, since, text)) return "prompt-hook-confirmed";
+          } catch {}
+          try {
+            const written = await claudeTranscriptSince(
+              deps.transcriptFor?.(event.sessionId) ?? deps.window(event.sessionId)?.transcriptPath, since, text);
+            return written.submitted ? "transcript-advanced" : written.queued ? "provider-input-queued" : null;
+          } catch {
+            return null;
+          }
         };
         let resends = 0;
         let box: boolean | null = null;
@@ -2333,7 +2343,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
           }
           // A dialog opened since the words went in; a Return now would answer it.
           if (deps.window(event.sessionId)?.status === "waiting") break;
-          box = await inputBoxHolds(event, text, "claude");
+          box = await inputBoxHolds(event, text, "claude").catch(() => null);
           // An empty box is no proof: a session still starting drops keys before it draws one.
           if (box !== true || attempt === 2) continue;
           const stopped = await deadTargetOf(event);
