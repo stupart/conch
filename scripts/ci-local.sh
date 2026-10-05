@@ -74,6 +74,7 @@ run() { # <check>
     mac)     xcodebuild -project mac-app/conch-mac.xcodeproj -scheme conch-mac -configuration Debug \
                -destination 'platform=macOS' -derivedDataPath "$LOGS/mac.noindex" \
                CODE_SIGNING_ALLOWED=NO -quiet build \
+               && CONCH_SIDEBAR_SETTLE=1 bun test test/sidebar-settle.test.ts \
                && ls -d "$LOGS/mac.noindex/Build/Products/Debug/conch-mac.app" ;;
     ios)     xcodebuild -project mobile/conch-ios/conch-ios.xcodeproj -scheme conch-ios -configuration Debug \
                -destination 'generic/platform=iOS Simulator' -derivedDataPath "$LOGS/ios.noindex" \
