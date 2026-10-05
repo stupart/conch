@@ -1797,6 +1797,11 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     log,
     // A window key names its session's hook reports: the hook knows the session, not the window.
     promptSubmitted: (sessionId, since, words, pid) => promptSubmissions.submitted(parseWindowKey(sessionId).sessionId, since, words, pid),
+    promptSubmittedBy: (since, words) => promptSubmissions.reportedBy(since, words),
+    // Every row the panel shows, by the agent's own id too: a send to a viewer counts a report only from a
+    // session that was none of these when it began (`newSessionTook`).
+    liveSessionIds: () => [...panelSessions.values()]
+      .flatMap((session) => [session.sessionId, ...(session.agentSessionId ? [session.agentSessionId] : [])]),
     // Looked up again on each read: a new session's transcript appears only with its first prompt, under its own
     // account, and is looked for in that account's folder alone (`sessionTranscript`).
     transcriptFor: (sessionId) => sessionTranscript(cfg.claudeDir, sessionId, panelSessions.get(sessionId)),

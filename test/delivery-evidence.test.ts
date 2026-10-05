@@ -81,6 +81,17 @@ describe("what a session's hook said it took", () => {
     expect(seen.submitted("s1", 0, "later", 4242)).toBe(true);
   });
 
+  test("who reported these words since the send began, the latest first, with any pid", () => {
+    const seen = new PromptSubmissions();
+    seen.note("before", promptDigest("ship it"), 900, 4242);
+    seen.note("job", promptDigest("ship it"), 1_000, 0);
+    seen.note("other-words", promptDigest("hold it"), 1_100, 0);
+    seen.note("later", promptDigest("ship it"), 1_200);
+    expect(seen.reportedBy(1_000, "ship it")).toEqual(["later", "job"]);
+    expect(seen.reportedBy(1_201, "ship it")).toEqual([]);
+    expect(seen.reportedBy(0, "nothing said")).toEqual([]);
+  });
+
   test("a socket event carries a fingerprint only on working, and only a well-formed one", () => {
     const base = { sessionId: "s1", label: "a", announce: "" };
     expect(validateSocketTurnEvent({ ...base, type: "working", promptDigest: promptDigest("x") }).ok).toBe(true);
