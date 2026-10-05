@@ -95,6 +95,20 @@ export class PromptSubmissions {
     if ((this.#bySession.get(sessionId) ?? []).some(these)) return true;
     return isProcess(pid) && (this.#byProcess.get(pid) ?? []).some(these);
   }
+
+  /**
+   * Every session whose hook reported these words at or after `since`, the latest report first. For a send
+   * whose words can land in a session it never addressed: the caller decides which of them may count.
+   */
+  reportedBy(since: number, words: string): string[] {
+    const digest = promptDigest(words);
+    const latest: Array<{ sessionId: string; at: number }> = [];
+    for (const [sessionId, held] of this.#bySession) {
+      const at = Math.max(...held.filter((entry) => entry.at >= since && entry.digest === digest).map((entry) => entry.at));
+      if (Number.isFinite(at)) latest.push({ sessionId, at });
+    }
+    return latest.sort((a, b) => b.at - a.at).map((entry) => entry.sessionId);
+  }
 }
 
 export interface TranscriptSince {

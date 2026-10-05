@@ -171,6 +171,10 @@ interface Options {
   transcriptFor?: VoiceLoopDeps["transcriptFor"];
   /** The conversation a process holds now, by its registry file; absent means a send watches only the id it addressed. */
   processConversation?: VoiceLoopDeps["processConversation"];
+  /** Every session that reported these words since; with `liveSessionIds`, a viewer's new job can confirm a send. */
+  promptSubmittedBy?: VoiceLoopDeps["promptSubmittedBy"];
+  /** The panel's rows now. */
+  liveSessionIds?: VoiceLoopDeps["liveSessionIds"];
   /** A real terminal in place of the recording one, and real waits: the end-to-end tests over tmux. */
   terminal?: VoiceLoopDeps["terminal"];
   realTime?: boolean;
@@ -301,6 +305,8 @@ function harness(options: Options = {}) {
     ...(options.promptSubmitted ? { promptSubmitted: options.promptSubmitted } : {}),
     ...(options.transcriptFor ? { transcriptFor: options.transcriptFor } : {}),
     ...(options.processConversation ? { processConversation: options.processConversation } : {}),
+    ...(options.promptSubmittedBy ? { promptSubmittedBy: options.promptSubmittedBy } : {}),
+    ...(options.liveSessionIds ? { liveSessionIds: options.liveSessionIds } : {}),
     terminal: options.terminal ?? {
       injectText: async (_cfg, pid, text, beforeInject) => {
         texts.push(text);
@@ -1006,6 +1012,124 @@ describe("words a process took into a new conversation are delivered, not lost",
     expect(await h.voice.handle(inject(words, { pid: P }))).toBe(true);
     expect(h.keys).toEqual([]);
     expect(h.clipboard).toEqual([]);
+  });
+});
+
+/**
+ * 2026-10-05 20:54, as it was on disk. The row "Prime page wireframe in blueprint studio" was job 25d17f50,
+ * finished, shown in window 94777. The words typed there became a NEW background job, 4d3ed8b9, which Claude
+ * Code started on a spare process from that window: its hook reported them with pid 0, the window's registry
+ * file never changed, and the job's transcript was not the one conch counted. conch called the send lost and
+ * put the words on the clipboard. Tyler: "just had a message say it failed to send but it worked".
+ *
+ * Each test turns one condition and shows both outcomes: what the rule counts, and the line it never crosses.
+ */
+describe("a send typed into a viewer on a finished job, taken by the job Claude Code starts for it", () => {
+  const VIEWER = 94777;
+  const FINISHED = "25d17f50-8442-4bee-9c24-e35921c88188";
+  const NEW_JOB = "4d3ed8b9-447c-41fc-b72b-226933443b1a";
+  const OTHER = "f31f0d15-df08-4ddf-80f6-c8c6ee8a59c6";
+  const words = "do we have a dev server running or its off now? also do we have all the metadata correct for the prime page?";
+  /** The finished job's row, shown in the viewer window: the route is the window's pid. */
+  const jobRow = () => ({
+    sessionId: FINISHED, backend: "claude", kind: "bg", jobId: "25d17f50", status: "idle", pid: VIEWER,
+  }) as SessionInfo;
+  /** A window running its own conversation, not a viewer. */
+  const windowRow = () => ({ sessionId: "2f266f8d", backend: "claude", kind: "interactive", status: "idle", pid: VIEWER }) as SessionInfo;
+  const codeOf = (events: RecordObservation[]) => events.filter(({ kind }) => kind === "delivery").at(-1);
+
+  /**
+   * One send to `row`. The panel shows `rows` when it begins; `report` is the hook's report, made as the words
+   * go in, by `reporter` with pid 0, at `at` (now, unless given). The finished job's transcript never moves.
+   */
+  async function send(options: {
+    row?: () => SessionInfo;
+    rows?: string[];
+    reporter?: string;
+    at?: (since: number) => number;
+    parkedJobId?: string;
+    counted?: boolean;
+  } = {}) {
+    const row = options.row ?? jobRow;
+    const path = options.counted === false ? undefined : transcript(user({ type: "text", text: "So nothing new from nick?" }));
+    const rows = [...(options.rows ?? [FINISHED, OTHER])];
+    const seen = new PromptSubmissions();
+    const events: RecordObservation[] = [];
+    let since = 0;
+    try {
+      const h = harness({
+        window: row,
+        observeRecords: (event) => events.push(event),
+        promptSubmitted: (id, from, said, pid) => seen.submitted(id, from, said, pid),
+        promptSubmittedBy: (from, said) => seen.reportedBy(from, said),
+        liveSessionIds: () => rows,
+        processConversation: async (pid) => (pid === VIEWER
+          ? { sessionId: "2f266f8d", ...(options.parkedJobId ? { parkedJobId: options.parkedJobId } : {}) }
+          : undefined),
+        inject: (text) => {
+          since = Date.now();
+          seen.note(options.reporter ?? NEW_JOB, promptDigest(text), options.at?.(since) ?? since, 0);
+          // Its SessionStart came first: by the time it reports, the panel shows the new job as a row too.
+          rows.push(NEW_JOB);
+          return { via: "osascript-focused" };
+        },
+      });
+      const outcome = await h.voice.handle(inject(words, {
+        sessionId: row().sessionId, pid: VIEWER, ...(path ? { transcriptPath: path } : {}),
+      }));
+      return { outcome, receipt: codeOf(events), h };
+    } finally {
+      if (path) rmSync(join(path, ".."), { recursive: true, force: true });
+    }
+  }
+  const unconfirmed = { delivered: false, reason: "delivery-unconfirmed", onClipboard: true } as const;
+
+  test("the new job's report of these words, with pid 0, confirms it, and says where the words went", async () => {
+    const { outcome, receipt, h } = await send();
+    expect(outcome).toBe(true);
+    expect(receipt).toMatchObject({ state: "delivered", code: "prompt-new-session" });
+    expect(h.keys).toEqual([]);
+    expect(h.clipboard).toEqual([]);
+    expect(h.said.some((line) => line.includes("didn't send"))).toBe(false);
+    // Named where the person can see where the message went: the log, and the send's record.
+    expect(h.logs.some((line) => line.includes("confirmed sent") && line.includes(NEW_JOB))).toBe(true);
+    expect(h.errors).toHaveLength(1);
+    const [operation, message, sessionId, state] = h.errors[0] as [string, string, string, Record<string, unknown>];
+    expect([operation, sessionId]).toEqual(["inject", FINISHED]);
+    expect(message).toContain(NEW_JOB);
+    expect(state).toMatchObject({ takenBy: NEW_JOB, code: "prompt-new-session", route: "osascript-focused" });
+  });
+
+  test("a session the panel already showed reporting the same words never counts", async () => {
+    expect((await send({ reporter: NEW_JOB })).outcome).toBe(true);
+    const known = await send({ reporter: OTHER });
+    expect(known.outcome).toEqual(unconfirmed);
+    expect(known.receipt).toMatchObject({ state: "unknown", code: "delivery-unconfirmed" });
+    expect(known.h.clipboard).toEqual([words]);
+  });
+
+  test("a report from before the send began never counts", async () => {
+    expect((await send({ at: (since) => since })).outcome).toBe(true);
+    // The same words, reported two seconds before these were typed: someone else's send, or an earlier one.
+    const earlier = await send({ at: (since) => since - 2_000 });
+    expect(earlier.outcome).toEqual(unconfirmed);
+    expect(earlier.receipt).toMatchObject({ state: "unknown", code: "delivery-unconfirmed" });
+  });
+
+  test("only a viewer: a window running its own conversation gets no such rule", async () => {
+    // The window's own registry file says it is parked on a job: a viewer, though the row is the window.
+    expect((await send({ row: windowRow, rows: ["2f266f8d", OTHER], parkedJobId: "25d17f50" })).outcome).toBe(true);
+    const own = await send({ row: windowRow, rows: ["2f266f8d", OTHER] });
+    expect(own.outcome).toEqual(unconfirmed);
+    expect(own.receipt).toMatchObject({ state: "unknown", code: "delivery-unconfirmed" });
+    expect(own.h.clipboard).toEqual([words]);
+  });
+
+  test("a viewer's job with no transcript to count is confirmed the same way", async () => {
+    const { outcome, receipt, h } = await send({ counted: false });
+    expect(outcome).toBe(true);
+    expect(receipt).toMatchObject({ state: "delivered", code: "prompt-new-session" });
+    expect(h.logs.some((line) => line.includes(NEW_JOB))).toBe(true);
   });
 });
 
