@@ -163,15 +163,18 @@ public enum SidebarActivity {
 /// A sidebar row's second line, drawn for what earned it: conch's word in the needs colour, a question or a starter in
 /// the secondary ink, a working agent's activity in the faintest. One line, faded at its end like the name.
 ///
-/// The activity changes as the agent works, at most once a second, so a new line crossfades over the old in place:
-/// nothing slides, nothing takes focus, and under Reduce Motion it is simply replaced. It is plain text, never a
-/// control: VoiceOver hears it as part of its row (the Mac's row names it in its own label,
-/// `SidebarRowText.accessibilityLabel(activity:)`), and a change is never announced over what is being read.
+/// The activity changes as the agent works, at most once a second, and the line is simply rewritten in place: one
+/// view, its words replaced, nothing slides and nothing takes focus. It is plain text, never a control: VoiceOver
+/// hears it as part of its row (the Mac's row names it in its own label, `SidebarRowText.accessibilityLabel(activity:)`),
+/// and a change is never announced over what is being read.
+///
+/// It crossfaded (2026-10-03): a new view per text (`.id(line.text)`), an opacity transition and an animation keyed on
+/// the text. Every working row then swapped a view's identity and ran a transition every second inside the Mac's
+/// session list, and the list froze the app (2026-10-05, DashboardView `SessionLedger`). A line that is only
+/// rewritten costs the list nothing but the new words.
 public struct SidebarSecondLine: View {
     let line: SidebarRowText.SecondLine
     let font: Font
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// `font`: the Mac's fixed sidebar size, or a text style on the phone, which scales with the reader's text size.
     public init(_ line: SidebarRowText.SecondLine, font: Font = .system(size: 11)) {
@@ -180,16 +183,11 @@ public struct SidebarSecondLine: View {
     }
 
     public var body: some View {
-        ZStack(alignment: .leading) {
-            TailFadeText(line.text, fade: 24)
-                .id(line.text)
-                .transition(.opacity)
-        }
-        .font(font)
-        .foregroundStyle(style)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .clipped()
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: line.text)
+        TailFadeText(line.text, fade: 24)
+            .font(font)
+            .foregroundStyle(style)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .clipped()
     }
 
     private var style: AnyShapeStyle {

@@ -830,7 +830,7 @@ struct SessionRowView: View {
                 }
 
                 // While it works on its own turn, what its agent is doing now (2026-10-03), in the summary's
-                // place: one faint line that crossfades as it changes. A held deliverable's summary is the
+                // place: one faint line, rewritten in place as it changes. A held deliverable's summary is the
                 // last turn's news and comes back when this one ends; a usage limit always shows instead.
                 if let activity {
                     SidebarSecondLine(SidebarRowText.SecondLine(text: activity, kind: .activity), font: Type.summary)
