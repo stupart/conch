@@ -31,7 +31,8 @@ describe("the menu bar menu opens the work", () => {
     expect(entry).toContain("case let .openItem(session), let .openSession(session): entry.representedObject = session");
     expect(entry).toContain("case .mixed: .mixed");
     const open = member(item, "@objc private func openItem(_ sender: NSMenuItem) {");
-    expect(open).toContain("panels.queue.open(session: id, store: store, panels: panels)");
+    // The pill's walk, with the panels while the overlays are on; with them off, opened in conch's window (`open`).
+    expect(open).toContain("ReviewQueue.shared.open(session: id, store: store, panels: Self.panels)");
     expect(open).not.toContain("openSession(");
     // The alternate is conch's window, the one place the status item takes focus.
     expect(member(item, "@objc private func openSession(_ sender: NSMenuItem) {")).toContain("Self.openSession(id)");

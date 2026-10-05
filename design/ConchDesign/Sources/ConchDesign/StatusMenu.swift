@@ -87,10 +87,14 @@ public enum StatusMenu {
         /// Setup put away with steps still left, by name (`OnboardingProgress.remaining`); empty when there is nothing to
         /// finish.
         public var setupLeft: [String]
+        /// The overlays are on (`ConchOverlays`): the items for the control bar, the panel, the reply line and the pen
+        /// are there only then.
+        public var overlays: Bool
 
         public init(
             voice: VoiceState, quiet: Bool, exchangeActive: Bool, controlBar: Bool, conversation: Bool, collapsed: Bool,
-            replyLine: Bool, replyLineAlone: Bool = true, drawing: Bool, ready: [Session], working: [Session], setupLeft: [String] = []
+            replyLine: Bool, replyLineAlone: Bool = true, drawing: Bool, ready: [Session], working: [Session], setupLeft: [String] = [],
+            overlays: Bool
         ) {
             self.voice = voice
             self.quiet = quiet
@@ -104,6 +108,7 @@ public enum StatusMenu {
             self.ready = ready
             self.working = working
             self.setupLeft = setupLeft
+            self.overlays = overlays
         }
     }
 
@@ -117,15 +122,18 @@ public enum StatusMenu {
         rows.append(.separator)
         // Space is the conch window's stop key.
         rows.append(.item(Item(title: input.voice == .listening ? "Stop Listening" : "Stop Speaking", command: .stop, key: " ", enabled: input.exchangeActive)))
-        rows.append(.separator)
-        rows.append(.item(Item(title: "Control Bar", command: .controlBar, mark: input.controlBar ? .on : .off)))
-        rows.append(.item(Item(title: "Conversation Panel", command: .conversation, mark: conversationMark(on: input.conversation, collapsed: input.collapsed))))
-        rows.append(.item(Item(title: "Reply Line", command: .replyLine, mark: input.replyLine ? .on : .off)))
-        // Leaving conch takes the input with you, into the panel's reply line; this is whether it comes when the panel is
-        // off too, as the reply line alone. Only means anything while the reply line does.
-        rows.append(.item(Item(title: "With Panel Off", command: .replyLineAlone, mark: input.replyLineAlone ? .on : .off, enabled: input.replyLine, indent: 1)))
-        // The pen, with its hotkey (`CanvasHotKey`).
-        rows.append(.item(Item(title: "Draw on Screen", command: .draw, mark: input.drawing ? .on : .off, key: "p", modifiers: [.control, .option, .command])))
+        // The overlays' own switches, only while the overlays are on: off, there is nothing for them to show or hide.
+        if input.overlays {
+            rows.append(.separator)
+            rows.append(.item(Item(title: "Control Bar", command: .controlBar, mark: input.controlBar ? .on : .off)))
+            rows.append(.item(Item(title: "Conversation Panel", command: .conversation, mark: conversationMark(on: input.conversation, collapsed: input.collapsed))))
+            rows.append(.item(Item(title: "Reply Line", command: .replyLine, mark: input.replyLine ? .on : .off)))
+            // Leaving conch takes the input with you, into the panel's reply line; this is whether it comes when the panel is
+            // off too, as the reply line alone. Only means anything while the reply line does.
+            rows.append(.item(Item(title: "With Panel Off", command: .replyLineAlone, mark: input.replyLineAlone ? .on : .off, enabled: input.replyLine, indent: 1)))
+            // The pen, with its hotkey (`CanvasHotKey`).
+            rows.append(.item(Item(title: "Draw on Screen", command: .draw, mark: input.drawing ? .on : .off, key: "p", modifiers: [.control, .option, .command])))
+        }
         if !input.ready.isEmpty || !input.working.isEmpty { rows.append(.separator) }
         if !input.ready.isEmpty {
             rows.append(.section("Ready for you"))

@@ -39,14 +39,18 @@ public struct ComposerSituation: Equatable, Sendable {
     public var withPanelOff: Bool
     /// Something the input opened is up, its file picker, which brings conch forward while it is: the input stays put.
     public var held: Bool
+    /// The overlays are on (`ConchOverlays`). Off, the input never leaves conch's window.
+    public var overlays: Bool
 
-    public init(appActive: Bool, windowShown: Bool, panel: Panel, replyLine: Bool = true, withPanelOff: Bool = true, held: Bool = false) {
+    public init(appActive: Bool, windowShown: Bool, panel: Panel, replyLine: Bool = true, withPanelOff: Bool = true, held: Bool = false,
+                overlays: Bool = true) {
         self.appActive = appActive
         self.windowShown = windowShown
         self.panel = panel
         self.replyLine = replyLine
         self.withPanelOff = withPanelOff
         self.held = held
+        self.overlays = overlays
     }
 }
 
@@ -54,8 +58,10 @@ public enum ComposerPlacement {
     /// The one rule. In conch's window while conch is in front and its window is there to type into; otherwise with Tyler:
     /// the panel's reply line when the panel is open, else the reply line alone. With the reply line off, or With Panel Off
     /// off and nothing open, it stays in the window, and with no window it is nowhere. The window closing never strands
-    /// what was typed: the draft is the session's (`ComposerDraftStore`), wherever the input is.
+    /// what was typed: the draft is the session's (`ComposerDraftStore`), wherever the input is. With the overlays off
+    /// (`ConchOverlays`) there is no panel and no reply line: it is always in the window, held or not.
     public static func place(_ situation: ComposerSituation, current: ComposerPlace) -> ComposerPlace {
+        if !situation.overlays { return .window }
         if situation.held { return current }
         if situation.appActive, situation.windowShown { return .window }
         if situation.replyLine {

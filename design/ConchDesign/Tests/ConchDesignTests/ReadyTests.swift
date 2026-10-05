@@ -154,7 +154,7 @@ final class ReadyTests: XCTestCase {
     private func input(conversation: Bool = true, collapsed: Bool = false, ready: [StatusMenu.Session] = [], working: [StatusMenu.Session] = []) -> StatusMenu.Input {
         StatusMenu.Input(
             voice: .ready, quiet: false, exchangeActive: false, controlBar: true, conversation: conversation,
-            collapsed: collapsed, replyLine: true, drawing: false, ready: ready, working: working
+            collapsed: collapsed, replyLine: true, drawing: false, ready: ready, working: working, overlays: true
         )
     }
 

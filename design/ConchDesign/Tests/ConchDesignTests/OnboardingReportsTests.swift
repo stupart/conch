@@ -199,10 +199,10 @@ final class OnboardingReportsTests: XCTestCase {
     /// Whether the daemon runs the practice turn is unknown until it has published its state (after a reboot `/tmp` is
     /// empty until it has): unknown is nil, never "no", so Try it waits rather than skipping itself.
     func testTryItIsUnknownUntilTheDaemonHasPublished() {
-        XCTAssertNil(OnboardingReports.practiceAvailability(feature: nil, published: false))
-        XCTAssertNil(OnboardingReports.practiceAvailability(feature: 1, published: false))
-        XCTAssertEqual(OnboardingReports.practiceAvailability(feature: nil, published: true), false, "an older daemon")
-        XCTAssertEqual(OnboardingReports.practiceAvailability(feature: 1, published: true), true)
+        XCTAssertNil(OnboardingReports.practiceAvailability(feature: nil, published: false, overlays: true))
+        XCTAssertNil(OnboardingReports.practiceAvailability(feature: 1, published: false, overlays: true))
+        XCTAssertEqual(OnboardingReports.practiceAvailability(feature: nil, published: true, overlays: true), false, "an older daemon")
+        XCTAssertEqual(OnboardingReports.practiceAvailability(feature: 1, published: true, overlays: true), true)
     }
 
     // MARK: Streamed requests

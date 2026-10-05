@@ -6,6 +6,19 @@ import SwiftUI
 extension Notification.Name {
     /// A session chosen in the menu bar menu. ContentView selects it, as a click on its row does.
     static let selectSessionFromStatusItem = Notification.Name("com.conch.mac.select-session-from-status-item")
+    /// What the panel would have shown, with the overlays off: ContentView selects the session and puts that version in
+    /// its deliverable pane, beside the conversation (`ConchStatusItem.openInWindow`). Its object is a `WindowOpen`.
+    static let openInWindowFromStatusItem = Notification.Name("com.conch.mac.open-in-window-from-status-item")
+}
+
+/// Debug ▸ Overlays (experimental): every surface conch puts on screens outside its own window, behind one switch that is
+/// off by default (`ConchOverlays`). They come and go as it is switched (`ConchStatusItem.overlaysChanged`).
+struct OverlaysMenuToggle: View {
+    @AppStorage(ConchOverlays.key) private var isOn = ConchOverlays.byDefault
+
+    var body: some View {
+        Toggle("Overlays (experimental)", isOn: $isOn)
+    }
 }
 
 /// The conch mark in the menu bar (M2): an NSStatusItem whose mark takes the voice's colour, and a
@@ -38,6 +51,21 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         installed = ConchStatusItem(store: store)
         // The natural voices' calm line, for the window's notices and the control bar.
         NaturalVoicesNoticeStore.shared.install(store: store)
+        // The overlays only while their switch is on (`ConchOverlays`, off by default): while it is off none of them
+        // installs, registers a key or puts a window on screen. Switched while conch runs, they come or go then.
+        if overlaysOn { installOverlays(store: store) }
+        installed?.watchOverlays()
+    }
+
+    /// The overlays' switch as it stands (Debug ▸ Overlays (experimental)).
+    nonisolated static var overlaysOn: Bool { ConchOverlays.enabled(stored: UserDefaults.standard.object(forKey: ConchOverlays.key)) }
+
+    /// The panels while the overlays are on; nil while they are off, whether or not they were installed earlier this launch.
+    static var panels: FloatingPanels? { overlaysOn ? FloatingPanels.installed : nil }
+
+    /// Everything conch puts on screens outside its own window, in the order each needs the one before. Each installs once;
+    /// installed already, each is left as it is.
+    private static func installOverlays(store: StateStore) {
         // After the status item, which registers the defaults that show and hide the panels.
         FloatingPanels.install(store: store)
         // After the panels, whose staged item it follows.
@@ -46,6 +74,29 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         ComposerDock.shared.install(store: store)
         // After the panels: a tip the tour left by the pill shows again until it's used.
         TourCoach.shared.install(store: store)
+    }
+
+    /// The overlays as they were last put: what a change of the switch is measured against.
+    private var overlaysShown = false
+    private var overlaysObserver: NSObjectProtocol?
+
+    private func watchOverlays() {
+        overlaysShown = Self.overlaysOn
+        overlaysObserver = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.overlaysChanged() }
+        }
+    }
+
+    /// The switch flipped while conch runs. On: installed now if they never were this launch, and each comes back. Off:
+    /// each goes now. The panels hide and the input comes home by themselves, since they watch the same defaults
+    /// (`FloatingPanels.showWhatIsOn`, `ComposerDock.update`); the canvas and the tour are told.
+    private func overlaysChanged() {
+        let on = Self.overlaysOn
+        guard on != overlaysShown else { return }
+        overlaysShown = on
+        if on { Self.installOverlays(store: store) }
+        CanvasController.shared.overlaysSwitched(on: on)
+        TourCoach.shared.overlaysSwitched(on: on)
     }
 
     private let store: StateStore
@@ -141,7 +192,10 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
             ready: Self.readyRows(state).map { StatusMenu.Session(id: $0.id, label: $0.label) },
             working: Self.workingRows(state).map { StatusMenu.Session(id: $0.id, label: $0.label) },
             // Setup put away with steps left: a reminder at the top until it's done.
-            setupLeft: OnboardingController.shared.menuReminder()
+            setupLeft: OnboardingController.shared.menuReminder(),
+            // Off, the overlays' own items (Control Bar, Conversation Panel, Reply Line, With Panel Off, Draw on Screen)
+            // aren't there.
+            overlays: Self.overlaysOn
         )
         for row in StatusMenu.rows(input) {
             switch row {
@@ -286,10 +340,11 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         Self.openSession(id)
     }
 
-    /// A Ready for you row: its session's next ready item, opened the way the Ready pill opens one (`open`).
+    /// A Ready for you row: its session's next ready item, opened the way the Ready pill opens one (`open`). With the
+    /// overlays off there is no pill or panel, and it opens in conch's window.
     @objc private func openItem(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String, let panels = FloatingPanels.installed else { return }
-        panels.queue.open(session: id, store: store, panels: panels)
+        guard let id = sender.representedObject as? String else { return }
+        ReviewQueue.shared.open(session: id, store: store, panels: Self.panels)
     }
 
     /// conch's window on a session: chosen in the menu, or the Ready pill's scene.
@@ -324,9 +379,13 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
     /// its own app (`stage`), the panel docking first so it isn't left over what comes forward. And the first open from
     /// the pill or the menu turns the panel on, docked and open, and it stays on: it was off by default, so nothing
     /// Tyler's setup did could put work on the screen conch draws in.
-    static func open(_ row: SessionRow, from origin: OpenFrom, store: StateStore, panels: FloatingPanels) async -> Bool {
+    ///
+    /// With the overlays off (`panels` nil) there is no panel: what it would have shown, marks and a folder included,
+    /// opens in conch's window instead (`openInWindow`), and the rest is staged as before (`ConchOverlays.destination`).
+    static func open(_ row: SessionRow, from origin: OpenFrom, store: StateStore, panels: FloatingPanels?) async -> Bool {
         let defaults = UserDefaults.standard
-        if origin != .panel, !defaults.bool(forKey: panelTurnedOnByOpenKey) {
+        let panels = overlaysOn ? panels : nil
+        if let panels, origin != .panel, !defaults.bool(forKey: panelTurnedOnByOpenKey) {
             defaults.set(true, forKey: panelTurnedOnByOpenKey)
             panels.bringOut()
         }
@@ -339,16 +398,42 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         let link = ReviewItem(row: row)?.link.map { LinkTarget.url(for: $0, cwd: row.cwd) }
         let words = origin == .panel
             && ReviewScene.panelShowsWords(hasReview: row.review != nil, kind: kind, link: link, fileExists: { FileManager.default.fileExists(atPath: $0) })
-        if (content != nil && (defaults.bool(forKey: showConversationKey) || conchOnly)) || words {
+        let destination = ConchOverlays.destination(overlays: panels != nil, panelDraws: content != nil,
+                                                    panelOn: defaults.bool(forKey: showConversationKey), conchOnly: conchOnly, words: words)
+        switch destination {
+        case .panel:
+            guard let panels else { break }
             panels.bringOut()
             panels.showInPanel()
             // The screen context hears what the panel put on screen, as `stage` tells it what a scene did: the session,
             // and the deliverable when that is what shows.
             store.reportShowing(.conch(sessionId: row.id, view: "panel"), staged: ConchScreenStaged(sessionId: row.id, reviewId: content?.id, link: content?.link))
             return true
+        case .window:
+            openInWindow(row, store: store)
+            return true
+        case .stage:
+            break
         }
-        panels.dockForScene()
+        panels?.dockForScene()
         return await stage(row, store: store)
+    }
+
+    /// What `openInWindowFromStatusItem` carries: the session, and the version of its deliverable to show.
+    struct WindowOpen {
+        let sessionId: SessionRow.ID
+        let reviewId: ReviewItem.ID?
+    }
+
+    /// The one door for "open it in the panel" with the overlays off: conch's window, forward, on the session, its
+    /// deliverable pane beside the conversation on this version (`row.review`), as a click on the deliverable's card in the
+    /// conversation opens it. The screen context hears it as the main window's.
+    static func openInWindow(_ row: SessionRow, store: StateStore) {
+        let review = ReviewItem(row: row)
+        bringConchForward()
+        // ponytail: if the window has to be rebuilt first, this is lost, as `openSession`'s selection is; conch still opens.
+        NotificationCenter.default.post(name: .openInWindowFromStatusItem, object: WindowOpen(sessionId: row.id, reviewId: review?.id))
+        store.reportShowing(.conch(sessionId: row.id, view: "main"), staged: ConchScreenStaged(sessionId: row.id, reviewId: review?.id, link: review?.link))
     }
 
     /// What this session's review is about, brought forward in its own app, in `ReviewScene`'s order for the scene the

@@ -184,6 +184,13 @@ struct ContentView: View {
                   let row = store.state?.rows.first(where: { $0.id == id }) else { return }
             selectSession(row)
         }
+        // What the panel would have shown, with the overlays off (`ConchStatusItem.openInWindow`): the menu's Ready for you
+        // rows, a review with marks, a folder.
+        .onReceive(NotificationCenter.default.publisher(for: .openInWindowFromStatusItem)) { note in
+            guard let open = note.object as? ConchStatusItem.WindowOpen,
+                  let row = store.state?.rows.first(where: { $0.id == open.sessionId }) else { return }
+            openInWindow(row, review: open.reviewId)
+        }
         // ⌘0 and the header's shell: the lagoon, or back to the conversation. Nothing while it isn't available.
         .onReceive(NotificationCenter.default.publisher(for: .showLagoon)) { _ in
             guard LagoonFeature.available(enabled: lagoonEnabled) else { return }
@@ -244,6 +251,17 @@ struct ContentView: View {
         } else {
             beginRename(row)
         }
+    }
+
+    /// A deliverable in this window rather than the panel (the overlays off): the session's conversation with that version
+    /// in the deliverable pane beside it, as a click on the deliverable's card in the conversation opens it, and off the
+    /// lagoon if it showed.
+    private func openInWindow(_ row: SessionRow, review: ReviewItem.ID?) {
+        workspace.viewing = row.id
+        workspace.show(stage: .sideBySide, for: row.id)
+        workspace.show(work: .deliverable, for: row.id)
+        if let review { workspace.select(deliverable: review, for: row.id) }
+        storedPage = .sessions
     }
 
     /// From the lagoon to a session's conversation: double-click or Return on its row.
@@ -1164,6 +1182,8 @@ extension Notification.Name {
 
 private struct KeyboardShortcutsSheet: View {
     @Environment(\.dismiss) private var dismiss
+    /// The pen's keys and the panel's are listed only while the overlays are on (`ConchOverlays`).
+    @AppStorage(ConchOverlays.key) private var overlays = ConchOverlays.byDefault
 
     private let keyRows = [
         // Space stops and never starts (`talkOrStop`). P quiets one session or lets it speak, and
@@ -1244,9 +1264,11 @@ private struct KeyboardShortcutsSheet: View {
 
             ShortcutHelpSection(title: "Keys", rows: keyRows)
 
-            ShortcutHelpSection(title: "Drawing on screen", rows: drawRows)
+            if overlays {
+                ShortcutHelpSection(title: "Drawing on screen", rows: drawRows)
 
-            ShortcutHelpSection(title: "Conversation panel", rows: panelRows)
+                ShortcutHelpSection(title: "Conversation panel", rows: panelRows)
+            }
 
             ShortcutHelpSection(title: "Spoken commands", rows: spokenRows)
 

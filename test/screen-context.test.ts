@@ -813,7 +813,8 @@ describe("the Mac app's front-window observer (source guards)", () => {
     const collapse = panels.slice(panels.indexOf("private func setCollapsed(_ collapsed: Bool) {"), panels.indexOf("func toggleFullScreen() {"));
     expect(collapse).toContain("isFullScreen = false\n                coverChanged()");
     const shown = panels.slice(panels.indexOf("private func showWhatIsOn() {"), panels.indexOf("private func coverChanged() {"));
-    expect(shown).toContain("show(fog, defaults.bool(forKey: ConchStatusItem.showConversationKey))\n        coverChanged()");
+    // Hidden by the menu, or with the overlays switched off.
+    expect(shown).toContain("show(fog, overlays && defaults.bool(forKey: ConchStatusItem.showConversationKey))\n        coverChanged()");
     expect(panels).toContain("self.store = store");
   });
 

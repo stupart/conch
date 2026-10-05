@@ -59,11 +59,27 @@ final class TourCoach: ObservableObject {
         showTipIfPending()
     }
 
+    /// The overlays switched while conch runs (`ConchStatusItem.overlaysChanged`). Off: a tour under way is skipped, since
+    /// what it points at has gone, and the tip by the pill goes with the pill. On: a tip still waiting shows again, once the
+    /// control bar is back.
+    func overlaysSwitched(on: Bool) {
+        guard store != nil else { return }
+        if on {
+            DispatchQueue.main.async { [weak self] in self?.showTipIfPending() }
+            return
+        }
+        if running { close(.skipped) }
+        hideTip()
+    }
+
     // MARK: The tour
 
     /// The practice turn has started (setup's Try it): the tour runs until it's finished, skipped, or its practice goes.
+    /// Never with the overlays off: Try it isn't on setup's rail then (`OnboardingReports.practiceAvailability`), and one
+    /// started as they were switched off closes at once as skipped, so setup comes back on You're set.
     func start(store: StateStore, onClose: @escaping (TourProgress.Outcome) -> Void) {
         guard !running else { return }
+        guard ConchStatusItem.overlaysOn else { return onClose(.skipped) }
         self.store = store
         self.onClose = onClose
         running = true
@@ -310,9 +326,9 @@ final class TourCoach: ObservableObject {
         set { UserDefaults.standard.set(newValue.rawValue, forKey: Self.tipKey) }
     }
 
-    /// The tip, under the pill, while it's pending and no tour is running.
+    /// The tip, under the pill, while it's pending and no tour is running; never with the overlays off.
     func showTipIfPending() {
-        guard tipState == .pending, !running, let bar = Self.controlBarGlass() else { return }
+        guard ConchStatusItem.overlaysOn, tipState == .pending, !running, let bar = Self.controlBarGlass() else { return }
         let panel = tip ?? makePanel(accessibilityLabel: "Tip")
         tip = panel
         let host = FirstClickHostingView(rootView: PillTipView { [weak self] in self?.tipUsed(dismissed: true) }

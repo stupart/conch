@@ -218,6 +218,7 @@ describe("the one tip", () => {
     // The pill's walk says it was used; a tip from an earlier launch shows again once the panels are up.
     expect(panels).toContain("if origin == .pill { NotificationCenter.default.post(name: .readyPillClicked, object: nil) }");
     expect(statusItem).toContain("TourCoach.shared.install(store: store)");
-    expect(member(coach, "func showTipIfPending() {")).toContain("guard tipState == .pending, !running");
+    // Never with the overlays off, whose pill it points at.
+    expect(member(coach, "func showTipIfPending() {")).toContain("guard ConchStatusItem.overlaysOn, tipState == .pending, !running");
   });
 });

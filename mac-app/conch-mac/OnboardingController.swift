@@ -334,9 +334,11 @@ final class OnboardingStore: ObservableObject {
                                     practiceAvailable: practiceAvailability ?? (progress?.step == .practice))
     }
 
-    /// Whether the daemon can run the practice turn: nil until it has published its state this launch.
+    /// Whether the daemon can run the practice turn: nil until it has published its state this launch. Never with the
+    /// overlays off (`ConchOverlays`): the tour Try it runs is on the pill, the panel and the canvas.
     var practiceAvailability: Bool? {
-        OnboardingReports.practiceAvailability(feature: published.practiceFeature, published: publishedSeen)
+        OnboardingReports.practiceAvailability(feature: published.practiceFeature, published: publishedSeen,
+                                               overlays: ConchStatusItem.overlaysOn)
     }
 
     /// A phone is set up here: paired by the daemon's record, or set up before it kept one (`OnboardingReports.phoneSetUp`).

@@ -92,9 +92,11 @@ final class AgentInkController {
         show(ReviewItem(row: row, review: review))
     }
 
-    /// `item`'s marks, in place of the last review's. One with none clears them.
+    /// `item`'s marks, in place of the last review's. One with none clears them. Only while the canvas is installed and the
+    /// overlays are on (`ConchOverlays`): the marks are drawn on its glass, a window over every screen, so with the overlays
+    /// off a review in conch's window shows without them.
     func show(_ item: ReviewItem) {
-        guard item != shown else { return }
+        guard store != nil, ConchStatusItem.overlaysOn, item != shown else { return }
         shown = item
         drawn = nil
         seen = nil

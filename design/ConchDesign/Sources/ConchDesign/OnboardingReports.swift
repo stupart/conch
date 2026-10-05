@@ -400,9 +400,12 @@ public enum OnboardingReports {
     }
 
     /// The same, with unknown kept apart from no: nil until the daemon has published its state at all this launch (after
-    /// a reboot `/tmp` is empty until it has), when Try it waits rather than skipping itself on a guess.
-    public static func practiceAvailability(feature: Int?, published: Bool) -> Bool? {
-        published ? practiceAvailable(feature: feature) : nil
+    /// a reboot `/tmp` is empty until it has), when Try it waits rather than skipping itself on a guess. With the overlays
+    /// off (`ConchOverlays`) it is no, whatever the daemon can do: the tour Try it runs is on the pill, the panel and the
+    /// canvas, so Try it is off the rail and You're set follows iPhone.
+    public static func practiceAvailability(feature: Int?, published: Bool, overlays: Bool) -> Bool? {
+        guard overlays else { return false }
+        return published ? practiceAvailable(feature: feature) : nil
     }
 
     /// Where Try it stands before Start does anything: the microphone, speech recognition, then what the daemon last said

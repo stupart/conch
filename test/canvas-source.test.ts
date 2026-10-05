@@ -192,7 +192,9 @@ describe("turning it on", () => {
     expect(item).toContain("case .draw: #selector(toggleCanvas)");
     expect(item).toContain("entry.keyEquivalentModifierMask = NSEvent.ModifierFlags(item.modifiers.map {");
     expect(item).toContain("@objc private func toggleCanvas() { CanvasController.shared.toggle() }");
-    const install = member(item, "static func install(store: StateStore) {");
+    // Installed with the overlays (`installOverlays`, only while they are on), after the panels.
+    const install = member(item, "private static func installOverlays(store: StateStore) {");
+    expect(install.indexOf("FloatingPanels.install(store: store)")).toBeGreaterThan(-1);
     expect(install.indexOf("FloatingPanels.install(store: store)")).toBeLessThan(install.indexOf("CanvasController.shared.install(store: store)"));
   });
 

@@ -243,6 +243,9 @@ enum DebugSnapshot {
         if target == .geometry { return }
 
         guard let window else {
+            if target == .overlay, !ConchStatusItem.overlaysOn {
+                return fail("the overlays are off (Debug ▸ Overlays (experimental), conch.overlays is false), so there is no conversation overlay to photograph")
+            }
             if target == .overlay, !UserDefaults.standard.bool(forKey: ConchStatusItem.showConversationKey) {
                 return fail("the conversation overlay is switched off (conch.showConversation is false), so there is no window to photograph")
             }
