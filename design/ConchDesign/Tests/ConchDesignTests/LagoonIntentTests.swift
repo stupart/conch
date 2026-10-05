@@ -164,13 +164,15 @@ final class LagoonIntentTests: XCTestCase {
     /// Phase A: with no flag set, nothing acts except approving a result, taking it back (2026-10-05, Tyler's decision)
     /// and replying to a session (2026-10-05, Tyler's go, replies only). Answering a permission prompt, pausing, focusing
     /// and opening stay logged behind their flags.
-    func testPhaseAOnlyApproveUnapproveAndReplyAct() {
+    func testPhaseAOnlyApproveUnapproveReplyAndViewedAct() {
         let recorder = Recorder()
         let messages = everyMessage
         XCTAssertEqual(messages.count, 10)
         let routed = messages.map { LagoonIntentRouter.route($0, flags: LagoonActionFlags(), sink: recorder) }
-        XCTAssertEqual(routed, [.ready, .logged, .logged, .logged, .acted, .logged, .logged, .acted, .acted, .logged])
-        XCTAssertEqual(recorder.calls, ["reply s1 hi", "approve s1 r1", "unapprove s1 r1"], "nothing else reaches an agent, or the app")
+        // `openReview` viewed acts (marking a result looked at, as the app does on opening it); `open` stays phase B.
+        XCTAssertEqual(routed, [.ready, .logged, .acted, .logged, .acted, .logged, .logged, .acted, .acted, .logged])
+        XCTAssertEqual(recorder.calls, ["viewed s1 r1", "reply s1 hi", "approve s1 r1", "unapprove s1 r1"], "nothing else reaches an agent, or the app")
+        XCTAssertEqual(LagoonIntent.actTokens, ["approve", "unapprove", "reply", "viewed"])
         XCTAssertEqual(LagoonIntent.byDefault, [.approve, .unapprove, .reply])
         XCTAssertEqual(LagoonIntent.byDefaultInOrder, [.approve, .unapprove, .reply])
         XCTAssertEqual(LagoonIntent.phaseC, [.answer, .pause])
@@ -207,12 +209,12 @@ final class LagoonIntentTests: XCTestCase {
         }
     }
 
-    /// One flag on: that name acts, approve, unapprove and reply act as they always do, and nothing else does.
+    /// One flag on: that name acts, approve, unapprove, reply and viewed act as they always do, and nothing else does.
     func testWithOneFlagOnOnlyThatNameActs() {
-        let always = ["reply s1 hi", "approve s1 r1", "unapprove s1 r1"]
+        let always = ["viewed s1 r1", "reply s1 hi", "approve s1 r1", "unapprove s1 r1"]
         let expected: [LagoonIntent.Name: [String]] = [
             .focusSession: ["focus s1"],
-            .openReview: ["viewed s1 r1", "open s1 r2"],
+            .openReview: ["open s1 r2"],
             .reply: [],
             .answer: ["answer s1 false p1"],
             .pause: ["pause s2"],

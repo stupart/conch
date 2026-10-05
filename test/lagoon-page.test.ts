@@ -439,7 +439,7 @@ describe.skipIf(!drawable)("the app's web view, over conch-lagoon://, with the s
     expect(ready.ok).toBe(true);
     // `act`: the intents the app acts on in every phase, so the page treats them as live (2026-10-05): Approve, its Undo,
     // and the reply bar.
-    expect(ready.url).toBe("conch-lagoon://lagoon/index.html?app=1&readonly=1&act=approve,unapprove,reply");
+    expect(ready.url).toBe("conch-lagoon://lagoon/index.html?app=1&readonly=1&act=approve,unapprove,reply,viewed");
     expect(ready.readOnly).toBe(true);
     // A module script and a fetch, both over the scheme.
     expect(checks.get("update")!.hello).toBe("lagoon");
@@ -504,7 +504,7 @@ describe.skipIf(!drawable)("the app's web view, over conch-lagoon://, with the s
     expect(intents.sink).toEqual(["reply s-page hello", "approveReview s-page r-page", "unapproveReview s-page r-page"]);
     expect(intents.noWindow).toBe(true);
     const navigation = checks.get("navigation")!;
-    expect(navigation.url).toBe("conch-lagoon://lagoon/index.html?app=1&readonly=1&act=approve,unapprove,reply");
+    expect(navigation.url).toBe("conch-lagoon://lagoon/index.html?app=1&readonly=1&act=approve,unapprove,reply,viewed");
     expect(navigation.refused).toContain("navigation: the lagoon's page is only ever its own");
   });
 
@@ -524,9 +524,9 @@ describe.skipIf(!realBundle)("the real lagoon, from the brand repo's dist, in th
     expect(checks.get("ready")!.ok).toBe(true);
     const real = checks.get("real")!;
     expect(real.api).toEqual([1, "app", true]);
-    // Read-only, but Approve, its Undo and the reply bar are live: the page read `act=approve,unapprove,reply` (brand repo
-    // v4.12b).
-    expect(real.act).toEqual(["approve", "unapprove", "reply"]);
+    // Read-only, but Approve, its Undo, the reply bar and marking a result looked at are live: the page read
+    // `act=approve,unapprove,reply,viewed` (brand repo d91d0c2).
+    expect(real.act).toEqual(["approve", "unapprove", "reply", "viewed"]);
     expect(real.crabs).toBe((state.rows as unknown[]).length);
     expect(real.ids).toEqual(real.expectedIds);
     expect(real.refused).toEqual([]);
