@@ -840,13 +840,18 @@ async function sendExitKeys(
  * successful close into a reported failure. It runs in a UI transaction of
  * its own, queued once the pid is gone, so it waits its turn behind any
  * send that went ahead during the exit wait.
+ *
+ * Only a tab with nothing running in it (`busy`): a start can also go ahead
+ * during the exit wait, and if Terminal had already closed the old tab, a new
+ * one can be given the freed tty. That tab is running its agent, so it is
+ * busy and left alone, never closed with its process still in it.
  */
 async function closeSessionTabAndReturn(tty: string, osa: OsaRunner): Promise<void> {
   const script = `
 tell application "Terminal"
   repeat with w in windows
     repeat with t in tabs of w
-      if tty of t is "/dev/${tty}" then
+      if tty of t is "/dev/${tty}" and not (busy of t) then
         close t saving no
       end if
     end repeat

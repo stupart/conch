@@ -133,7 +133,8 @@ describe("native Terminal session lifecycle", () => {
       const tidyIndex = calls.findIndex((args) => args.join(" ").includes('tell application "conch"'));
       expect(tidyIndex).toBeGreaterThan(calls.indexOf(pressCall));
       const tidyScript = calls[tidyIndex]!.join(" ");
-      expect(tidyScript).toContain('if tty of t is "/dev/ttys007" then');
+      // Never a tab running something: a new session can be given the freed tty during the exit wait.
+      expect(tidyScript).toContain('if tty of t is "/dev/ttys007" and not (busy of t) then');
       expect(tidyScript).toContain("close t saving no");
       expect(tidyScript).toContain('tell application "conch" to activate');
       expect(tidyScript).not.toMatch(/kill|SIG|tmux/);
@@ -245,7 +246,7 @@ describe("native Terminal session lifecycle", () => {
     expect(terminalStart).toBeGreaterThanOrEqual(0);
     expect(terminalEnd - terminalStart).toBeGreaterThan(60); // a real repeat/if body, not an empty tell
     const block = script.slice(terminalStart, terminalEnd);
-    const ifIndex = block.indexOf('if tty of t is "/dev/ttys042" then');
+    const ifIndex = block.indexOf('if tty of t is "/dev/ttys042" and not (busy of t) then');
     const closeIndex = block.indexOf("close t saving no");
     const endIfIndex = block.indexOf("end if", closeIndex);
     expect(ifIndex).toBeGreaterThanOrEqual(0);
