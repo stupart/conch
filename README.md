@@ -52,7 +52,7 @@ the menu bar, steps through what is waiting.
 - **Approve.** When an agent is waiting on your yes ("Open the PR"), a ✓ in the session bar gives it.
 
 **Each agent talks it through.** When a session finishes a turn, conch reads the reply aloud in that session's own
-voice, then opens the mic. Answer out loud and your words go back to that session; say "hey dayloop, …" to reach a
+voice, then opens the mic. Answer out loud and your words go back to that session; say "hey acme-web, …" to reach a
 different one. The mic never opens while conch is speaking, so it never hears itself, and you don't need headphones.
 Permission prompts and an agent's questions can be answered the same way. Voice commands, manual mode, and how conch
 keeps quiet while you're typing, away or in a meeting: [docs/voice.md](docs/voice.md).
