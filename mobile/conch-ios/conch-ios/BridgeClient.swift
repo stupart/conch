@@ -737,12 +737,16 @@ final class BridgeClient: ObservableObject {
 
     /// There is deliberately no kill fallback: a missing acknowledgement is
     /// cheaper than corrupting the resumable transcript this control protects.
+    ///
+    /// Waits past the Mac's own 45 s bound on a close (`injectTimeoutFor`), with
+    /// room for the relay's round trip: a slow Terminal and a heavy session can
+    /// take most of that, and giving up first reports a close that worked as failed.
     func closeSession(sessionId: String) async -> Bool {
         guard !sessionId.isEmpty,
               let reply = await postControlRaw([
                   "kind": "session-close",
                   "sessionId": sessionId,
-              ]) else {
+              ], within: .seconds(60)) else {
             let failure = "The Mac didn't confirm a clean session exit."
             lastError = failure
             _ = await reportAppError(
@@ -1022,7 +1026,8 @@ final class BridgeClient: ObservableObject {
     /// restart could not replay. Nil on failure, with why in `lastError`.
     func restartSession(sessionId: String) async -> [String]? {
         guard !sessionId.isEmpty,
-              let reply = await postControlRaw(["kind": "session-close", "sessionId": sessionId, "restart": true]) else {
+              // Past the Mac's 55 s bound on a restart: a close, then a new window.
+              let reply = await postControlRaw(["kind": "session-close", "sessionId": sessionId, "restart": true], within: .seconds(70)) else {
             lastError = "Couldn't reach your Mac."
             _ = await reportAppError(operation: "session-restart", message: lastError ?? "", sessionId: sessionId)
             return nil
@@ -1216,13 +1221,13 @@ final class BridgeClient: ObservableObject {
         return try JSONSerialization.data(withJSONObject: reply)
     }
 
-    private func postControlRaw(_ message: [String: Any]) async -> [String: Any]? {
+    private func postControlRaw(_ message: [String: Any], within limit: Duration = .seconds(30)) async -> [String: Any]? {
         guard let body = try? JSONSerialization.data(withJSONObject: message),
               let response = try? await perform(authorizedRequest(
                 method: "POST",
                 path: "/control",
                 body: body
-              )),
+              ), within: limit),
               response.status == 200 else { return nil }
         return (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any]
     }

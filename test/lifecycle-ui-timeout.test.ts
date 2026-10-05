@@ -21,7 +21,10 @@ function within<T>(work: Promise<T>, ms = 750): Promise<T> {
     .finally(() => clearTimeout(timer));
 }
 
-for (const [name, run] of [["Close", close], ["Start", start]] as const) {
+// A close names what its raise timing out means: nothing was typed (session-lifecycle.ts `sendExitKeys`).
+const CLOSE_RAISE_TIMED_OUT = "so conch didn't send Ctrl-D. The session is still open.";
+
+for (const [name, run, timedOut] of [["Close", close, CLOSE_RAISE_TIMED_OUT], ["Start", start, "automation timed out"]] as const) {
   test(`${name} timeout seals subsequent UI work until its helper exit is observed`, async () => {
     let observedExit!: (code: number) => void;
     const exited = new Promise<number>((resolve) => { observedExit = resolve; });
@@ -30,7 +33,7 @@ for (const [name, run] of [["Close", close], ["Start", start]] as const) {
     const later = dependencies(() => { laterSpawned++; return completed(); });
     const work = run(deps);
     try {
-      await expect(within(work)).rejects.toThrow("automation timed out");
+      await expect(within(work)).rejects.toThrow(timedOut);
       expect(cancelled).toBe(1);
       await expect(start(later)).rejects.toThrow("Previous UI child has not exited");
       expect(laterSpawned).toBe(0);
@@ -44,14 +47,16 @@ for (const [name, run] of [["Close", close], ["Start", start]] as const) {
   });
 }
 
-for (const [name, run, stream, code] of [["Close", close, "stdout", 0], ["Start", start, "stderr", 1]] as const) {
+for (const [name, run, stream, code, timedOut] of [
+  ["Close", close, "stdout", 0, CLOSE_RAISE_TIMED_OUT], ["Start", start, "stderr", 1, "automation timed out"],
+] as const) {
   test(`${name} bounds a hanging ${stream} even after its helper exits`, async () => {
     let output!: ReadableStreamDefaultController<Uint8Array>;
     const hanging = new ReadableStream<Uint8Array>({ start(controller) { output = controller; } });
     const deps = dependencies(() => ({ ...completed(), exited: Promise.resolve(code), [stream]: hanging }));
     const work = run(deps);
     try {
-      await expect(within(work, 150)).rejects.toThrow("automation timed out");
+      await expect(within(work, 150)).rejects.toThrow(timedOut);
     } finally {
       output.close();
       await work.catch(() => {});

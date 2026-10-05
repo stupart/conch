@@ -721,8 +721,10 @@ export function injectTimeoutFor(line: string): number {
     if (kind === "inject") return 25_000;
     // A truthful close waits for the agent pid to disappear after Ctrl-D; the
     // bridge must not invent a failure while that clean shutdown is in flight.
+    // Its timed steps take up to 35.3 s on a slow Terminal (`CLOSE_TIMED_STEPS_MS`),
+    // plus the lookups before them; the Mac app waits as long (`sessionCloseTimeout`).
     // A restart then opens a Terminal window, which a start alone gets 8s for.
-    if (kind === "session-close") return JSON.parse(line)?.restart === true ? 20_000 : 12_000;
+    if (kind === "session-close") return JSON.parse(line)?.restart === true ? 55_000 : 45_000;
     if (kind === "session-start") return JSON.parse(line)?.claudeSourceAccountId !== undefined ? 20_000 : 8_000;
   } catch {}
   return 4_000;
