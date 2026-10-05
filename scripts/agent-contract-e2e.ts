@@ -305,8 +305,13 @@ try {
     `initialize carries instructions (${instructions.length} chars): "${instructions.slice(0, 60)}…"`);
   mcp.server.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
   const listed = await mcp.request("tools/list", {});
-  const description: string = listed.result?.tools?.find((tool: { name: string }) => tool.name === "review_to_front")?.description ?? "";
-  check(description.includes("surfaces") && description.includes("copiedFrom"), "review_to_front's description says what surfaces and copiedFrom are");
+  const publishTool = listed.result?.tools?.find((tool: { name: string }) => tool.name === "review_to_front");
+  const description: string = publishTool?.description ?? "";
+  // 2026-10-05: the description says when to publish and where the result says it landed; what a temp link's copy is
+  // (copiedFrom) is the link parameter's to say, with the other mechanics the description used to carry.
+  check(description.startsWith("Publish whenever you produce something the user would look at") && description.length <= 1000
+    && description.includes("surfaces"), `review_to_front's description says when to publish, and where it landed (surfaces), in ${description.length} chars`);
+  check(String(publishTool?.inputSchema?.properties?.link?.description ?? "").includes("copiedFrom"), "…and its link parameter says what copiedFrom is");
 
   // ── 2 & 3. A screenshot in the per-user temp folder, with a mark in pixels.
   const shot = join(scratch, "hero.png");

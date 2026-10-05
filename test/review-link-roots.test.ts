@@ -303,8 +303,9 @@ describe("what agents are told", () => {
     expect(told).toContain("which conch copies when it files the link, so a cleaned temp folder can’t take it away");
     expect(told).toContain("only the last counts, so link a folder for several things");
     expect(told).toContain("A refused link is dropped and the summary kept; conch tells the user and you why.");
-    // Every session carries it: short, and no longer "use your cwd".
-    expect(told.split(/\s+/).length).toBeLessThan(380);
+    // Every session carries it: short, and no longer "use your cwd". 2026-10-05: 380 to 410 words, for what counts as
+    // something to publish (a plan, a diff or PR) and "as you go, not only at the end", which "a meaningful result" hid.
+    expect(told.split(/\s+/).length).toBeLessThan(410);
     expect(renderAgentsMd()).toContain(told);
   });
 
