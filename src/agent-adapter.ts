@@ -290,12 +290,14 @@ export function claudeInputBoxText(screen: string): string | null {
 
 /**
  * Whether an input box still holds these words: their first few, whitespace aside, or the
- * placeholder Claude Code shows in place of a long paste.
+ * placeholder an agent shows in place of a long paste. conch pastes every long send into a tmux pane
+ * (`TMUX_PASTE_OVER_CHARS`), so those show as Claude Code's `[Pasted text #1]` (2.1.280: over 800
+ * characters, or a few lines) or Codex's `[Pasted Content 3580 chars]` (0.159.2, for a large one).
  */
 export function inputBoxHoldsWords(box: string, words: string): boolean {
   const said = words.replace(/\s+/g, " ").trim();
   if (!box || !said) return false;
-  return /^\[Pasted text #\d+/.test(box) || box.startsWith(said.slice(0, 24));
+  return /^\[Pasted (?:text #\d+|Content \d+ chars)/.test(box) || box.startsWith(said.slice(0, 24));
 }
 
 export function shellQuote(value: string): string {

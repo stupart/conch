@@ -249,7 +249,7 @@ import {
   theaterPointerEvent,
   type ConchState,
 } from "./status.ts";
-import { assertCodexAccountIdle, assertClaudeAccountIdle, accountRegistrySnapshot, accountResumableSessions, findAccountTranscript as findTranscript } from "./claude-account-sessions.ts";
+import { assertCodexAccountIdle, assertClaudeAccountIdle, accountRegistrySnapshot, accountResumableSessions, findAccountTranscript as findTranscript, sessionTranscript } from "./claude-account-sessions.ts";
 import { transcriptFolder } from "./review-roots.ts";
 import { defaultCodexDir, readCodexAccounts, addCodexAccount, removeCodexAccount, requireCodexAccount, cachedCodexAccount, invalidateCodexAccount, codexAccountForLaunch } from "./codex-accounts.ts";
 import { claudeAccountForLaunch, readClaudeAccounts, addClaudeAccount, removeClaudeAccount, requireClaudeAccount, cachedClaudeAccountStatus, readClaudeAccountStatus, invalidateClaudeAccountStatus, type ClaudeAccountStatus } from "./claude-accounts.ts";
@@ -1793,11 +1793,9 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     log,
     // A window key names its session's hook reports: the hook knows the session, not the window.
     promptSubmitted: (sessionId, since, words) => promptSubmissions.submitted(parseWindowKey(sessionId).sessionId, since, words),
-    // Looked up again on each read: a new session's transcript appears only with its first prompt, under its own account.
-    transcriptFor: (sessionId) => {
-      const row = panelSessions.get(sessionId);
-      return row?.transcriptPath ?? findTranscript(row?.claudeConfigDir ?? cfg.claudeDir, sessionId);
-    },
+    // Looked up again on each read: a new session's transcript appears only with its first prompt, under its own
+    // account, and is looked for in that account's folder alone (`sessionTranscript`).
+    transcriptFor: (sessionId) => sessionTranscript(cfg.claudeDir, sessionId, panelSessions.get(sessionId)),
     ledger,
     pause,
     queue: eventQueue,
@@ -1811,7 +1809,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       .find((session) => session.sessionId === sessionId)?.status,
     sessionGone: async (sessionId) => sessionGoneFromSnapshot(await registrySnapshot(cfg.claudeDir), sessionId),
     // Where a session is now, for its deliverable's link: from its own transcript, found here, never an event's word.
-    sessionFolder: (sessionId) => transcriptFolder(panelSessions.get(sessionId)?.transcriptPath ?? findTranscript(cfg.claudeDir, sessionId)),
+    sessionFolder: (sessionId) => transcriptFolder(sessionTranscript(cfg.claudeDir, sessionId, panelSessions.get(sessionId))),
     render: () => void renderSessionPanel(),
     presentElsewhere,
     phoneLatch: { arm: armPhoneSpeechLatch, clear: clearPhoneSpeechLatch },

@@ -1,6 +1,7 @@
 import type { AnswerKey } from "../src/agent-adapter.ts";
 import { afterAll, describe, expect, test, setSystemTime } from "bun:test";
 import { PromptSubmissions, promptDigest } from "../src/delivery-evidence.ts";
+import { unwrapPastedContent } from "../src/conversation.ts";
 import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,7 +16,7 @@ import type { WatchdogProcess } from "../src/audio-watchdog.ts";
 import { DictationController, type CapturedAudio, type DictationEvent, type RecorderHandle } from "../src/dictation-controller.ts";
 import type { InjectTextResult } from "../src/inject.ts";
 import * as realInject from "../src/inject.ts";
-import { hasUnreapedUIChild } from "../src/pasteboard.ts";
+import { hasUnreapedUIChild, runUICommand } from "../src/pasteboard.ts";
 import { startBackgroundProcess } from "../src/background-sessions.ts";
 import { paneTarget, resolveTmux } from "../src/tmux-binary.ts";
 import { probeCommand } from "../src/probe.ts";
@@ -749,6 +750,36 @@ describe("a first message to a new session is confirmed by the agent, never by i
     expect(h.said.at(-1)).toBe("I typed that but it didn't send. It's still in the session's input box — press return there.");
   });
 
+  // 2026-10-05: the transcript lookup threw for a session on a second Claude account ("Account profiles must have
+  // separate directories"), after the words were typed, and the delivery errored out with nothing said.
+  test("a transcript lookup that throws is no evidence, and costs nothing: the hook still confirms", async () => {
+    let checks = 0;
+    const events: RecordObservation[] = [];
+    const h = harness({
+      window: fresh,
+      observeRecords: (event) => events.push(event),
+      promptSubmitted: () => ++checks > 1,
+      transcriptFor: () => { throw new Error("Account profiles must have separate directories"); },
+    });
+    expect(await h.voice.handle(inject("hello"))).toBe(true);
+    expect(codeOf(events)).toMatchObject({ state: "delivered", code: "prompt-hook-confirmed" });
+  });
+
+  test("every check throwing leaves an honest 'not confirmed', never an aborted send", async () => {
+    const events: RecordObservation[] = [];
+    const h = harness({
+      window: fresh,
+      observeRecords: (event) => events.push(event),
+      promptSubmitted: () => { throw new Error("hook ledger broke"); },
+      transcriptFor: () => { throw new Error("Account profiles must have separate directories"); },
+      screen: () => { throw new Error("capture-pane broke"); },
+    });
+    expect(await h.voice.handle(inject("hello"))).toEqual({ delivered: false, reason: "delivery-unconfirmed", onClipboard: true });
+    expect(codeOf(events)).toMatchObject({ state: "unknown", code: "delivery-unconfirmed" });
+    expect(h.keys).toEqual([]);
+    expect(h.clipboard).toEqual(["hello"]);
+  });
+
   test("a dialog that opens meanwhile never gets a Return meant for the words", async () => {
     let reads = 0;
     const h = harness({
@@ -801,15 +832,17 @@ const suiteTmux = process.env.CONCH_TMUX_SOCKET?.startsWith("conch-test-") ?? fa
 describe.skipIf(!resolveTmux().found || !suiteTmux)("a first message, typed into a real terminal", () => {
   const fixture = join(import.meta.dir, "fixtures", "fake-claude-tui.ts");
 
-  async function agent(options: { startingMs?: number; lostReturns?: number } = {}) {
+  async function agent(options: { startingMs?: number; lostReturns?: number; transcript?: boolean } = {}) {
     // Real sends share one process-wide UI scope: a test before this one that left a fake helper running in it
     // holds every send here at "input is suspended", which reads as a delivery bug when it is a leak.
     expect(hasUnreapedUIChild(), "an earlier test left a UI child running in the process-wide scope").toBe(false);
     const dir = mkdtempSync(join(tmpdir(), "conch-first-prompt-e2e-"));
     const evidence = join(dir, "submitted.txt");
     writeFileSync(evidence, "");
+    // Written, like Claude Code's own, only with the first prompt.
+    const transcript = options.transcript ? join(dir, "session.jsonl") : undefined;
     const { name, pane } = await startBackgroundProcess(
-      `exec ${shellQuote(process.execPath)} ${shellQuote(fixture)} ${shellQuote(evidence)} ${options.startingMs ?? 0} ${options.lostReturns ?? 0}`, dir);
+      `exec ${shellQuote(process.execPath)} ${shellQuote(fixture)} ${shellQuote(evidence)} ${options.startingMs ?? 0} ${options.lostReturns ?? 0}${transcript ? ` ${shellQuote(transcript)}` : ""}`, dir);
     const target = paneTarget(pane)!;
     const pid = Number((await probeCommand([...target.tmux, "display-message", "-p", "-t", target.pane, "#{pane_pid}"], [0]))?.trim());
     // Typed only once it has drawn: keys a shell takes before the agent runs are not the case under test.
@@ -823,34 +856,59 @@ describe.skipIf(!resolveTmux().found || !suiteTmux)("a first message, typed into
         const [at, digest] = line.split(" ");
         return Number(at) >= since && digest === promptDigest(words);
       });
+    /** Each prompt the agent took, as it wrote it down. */
+    const prompts = () => readFileSync(evidence, "utf8").split("\n").filter(Boolean)
+      .map((line) => JSON.parse(line.split(" ").slice(2).join(" ")) as string);
     const clipboard: string[] = [];
-    const terminal: NonNullable<VoiceLoopDeps["terminal"]> = {
+    const terminal = (injectOptions: realInject.InjectTextOptions = {}): NonNullable<VoiceLoopDeps["terminal"]> => ({
       injectText: (cfg, sessionPid, text, beforeInject, opts) =>
-        realInject.injectText({ ...cfg, keystrokeFallback: false }, sessionPid, text, beforeInject, { ...opts, clipboardFallback: false }),
+        realInject.injectText({ ...cfg, keystrokeFallback: false }, sessionPid, text, beforeInject, { ...opts, ...injectOptions, clipboardFallback: false }),
       injectKey: (cfg, sessionPid, key, beforeInject) => realInject.injectKey({ ...cfg, keystrokeFallback: false }, sessionPid, key, beforeInject),
       injectProviderCommand: async () => { throw new Error("no provider commands here"); },
       toClipboard: async (text) => void clipboard.push(text),
       readSessionScreen: realInject.readSessionScreen,
-    };
+    });
+    /** The send buffers left on the suite's tmux server. */
+    const buffers = async () => ((await probeCommand([...target.tmux, "list-buffers", "-F", "#{buffer_name}"], [0, 1])) ?? "")
+      .split("\n").filter((buffer) => buffer.startsWith("conch-send-"));
     const cleanup = async () => {
       await probeCommand([...target.tmux, "kill-session", "-t", name], [0, 1]);
       rmSync(dir, { recursive: true, force: true });
     };
-    return { pid, evidence, submitted, terminal, clipboard, cleanup };
+    return { pid, evidence, transcript, prompts, submitted, terminal, clipboard, buffers, cleanup };
   }
 
-  const run = async (a: Awaited<ReturnType<typeof agent>>) => {
+  const run = async (a: Awaited<ReturnType<typeof agent>>, options: {
+    text?: string;
+    promptSubmitted?: VoiceLoopDeps["promptSubmitted"];
+    transcriptFor?: VoiceLoopDeps["transcriptFor"];
+    injectOptions?: realInject.InjectTextOptions;
+  } = {}) => {
     const events: RecordObservation[] = [];
     const h = harness({
       realTime: true,
-      terminal: a.terminal,
+      terminal: a.terminal(options.injectOptions),
       window: () => ({ sessionId: "s1", backend: "claude", status: "idle", pid: a.pid }) as SessionInfo,
-      promptSubmitted: a.submitted,
+      promptSubmitted: options.promptSubmitted ?? a.submitted,
+      ...(options.transcriptFor ? { transcriptFor: options.transcriptFor } : {}),
       observeRecords: (event) => events.push(event),
     });
-    const outcome = await h.voice.handle(inject("hello from conch", { pid: a.pid }));
+    const outcome = await h.voice.handle(inject(options.text ?? "hello from conch", { pid: a.pid }));
     return { outcome, h, receipt: events.filter(({ kind }) => kind === "delivery").at(-1) };
   };
+
+  /** A message as long as the one of 2026-10-05: 3,580 characters on one line. */
+  const longMessage = (() => {
+    const sentences = [
+      "Okay so here is everything I want from the next pass on the onboarding flow.",
+      "Start with the first screen and make the copy shorter, it reads like a manual right now.",
+      "Then the permissions step should explain why the microphone matters before it asks.",
+      "Keep the shell animation but slow it down a little so it feels calm rather than busy.",
+    ];
+    let text = "";
+    for (let index = 0; text.length < 3_580; index++) text += `${index ? " " : ""}${sentences[index % sentences.length]} (${index + 1})`;
+    return `${text.slice(0, 3_579)}.`;
+  })();
 
   test("an agent that takes the prompt confirms it", async () => {
     const a = await agent();
@@ -884,6 +942,72 @@ describe.skipIf(!resolveTmux().found || !suiteTmux)("a first message, typed into
       // No box was drawn, so no Return was sent after words that were never there.
       expect(h.logs.some((line) => line.includes("pressing Return again"))).toBe(false);
       expect(a.clipboard).toEqual(["hello from conch"]);
+    } finally { await a.cleanup(); }
+  }, 20_000);
+
+  // 2026-10-05, Tyler: "part of my message sent somehow and i had to go to the terminal and send the full one".
+  test("a long message goes in as one paste and arrives whole", async () => {
+    expect(longMessage).toHaveLength(3_580);
+    expect(longMessage).not.toContain("\n");
+    const a = await agent();
+    try {
+      const { outcome, receipt } = await run(a, { text: longMessage });
+      expect(outcome).toBe(true);
+      expect(receipt).toMatchObject({ state: "delivered", code: "prompt-hook-confirmed" });
+      // One prompt, all of it: the paste's tags off, every character there.
+      const prompts = a.prompts();
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]).toStartWith("\n\n<pasted_content id=");
+      expect(unwrapPastedContent(prompts[0]!)).toBe(longMessage);
+      expect(readFileSync(a.evidence, "utf8").split(" ")[1]).toBe(promptDigest(longMessage));
+      // The send's own tmux buffer went with the paste.
+      expect(await a.buffers()).toEqual([]);
+    } finally { await a.cleanup(); }
+  }, 20_000);
+
+  test("a message across lines is one paste: its newlines stay in it, and only the Return sends it", async () => {
+    const text = "first line\nsecond line\nthird line";
+    const a = await agent();
+    try {
+      const { outcome, receipt } = await run(a, { text });
+      expect(outcome).toBe(true);
+      expect(receipt).toMatchObject({ state: "delivered", code: "prompt-hook-confirmed" });
+      expect(a.prompts()).toEqual([text]);
+    } finally { await a.cleanup(); }
+  }, 20_000);
+
+  test("with no hook, the transcript confirms a long paste by its opening, tags and all", async () => {
+    const a = await agent({ transcript: true });
+    try {
+      const { outcome, receipt } = await run(a, { text: longMessage, promptSubmitted: () => false, transcriptFor: () => a.transcript });
+      expect(outcome).toBe(true);
+      expect(receipt).toMatchObject({ state: "delivered", code: "transcript-advanced" });
+    } finally { await a.cleanup(); }
+  }, 20_000);
+
+  // The route it went by: `send-keys -l`. tmux wrote it in 1,022-byte reads, the agent took each long one as a
+  // paste of its own and kept none of them, and what it recorded was the tail. The real Claude Code 2.1.280, sent
+  // a message like this one that way in a throwaway home, recorded exactly its last 514 characters. A prompt was
+  // written all the same, and counting any prompt as the send's would have called that delivered.
+  test("typed as keys, the same message loses all but its tail, and the tail is never taken for it", async () => {
+    const a = await agent({ transcript: true });
+    const typed = (pane: string, text: string) => {
+      const target = paneTarget(pane)!;
+      return runUICommand([...target.tmux, "send-keys", "-t", target.pane, "-l", "--", text]);
+    };
+    try {
+      const { outcome, receipt, h } = await run(a, {
+        text: longMessage, transcriptFor: () => a.transcript, injectOptions: { pasteTmuxText: typed },
+      });
+      for (const prompt of a.prompts()) {
+        expect(prompt.length).toBeLessThan(longMessage.length);
+        expect(longMessage.endsWith(prompt)).toBe(true);
+      }
+      expect(outcome).toEqual({ delivered: false, reason: "delivery-unconfirmed", onClipboard: true });
+      expect(receipt).toMatchObject({ state: "unknown", code: "delivery-unconfirmed" });
+      expect(a.clipboard).toEqual([longMessage]);
+      // The box is empty once it took the tail, so no Return went after words that were not there.
+      expect(h.logs.some((line) => line.includes("pressing Return again"))).toBe(false);
     } finally { await a.cleanup(); }
   }, 20_000);
 });

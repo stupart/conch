@@ -54,6 +54,23 @@ export function findAccountTranscript(defaultDir: string, id: string): string | 
   return paths.size === 1 ? [...paths][0] : undefined;
 }
 
+/**
+ * A live session's transcript: the path its row already knows, else a look in the folder of the account the
+ * row says it runs under, else every account's (`findAccountTranscript`).
+ *
+ * An account's folder is looked in directly, never handed to `findAccountTranscript` as the default one: that
+ * reads the account list again with this folder as the default, finds it listed twice, and throws "Account
+ * profiles must have separate directories". It did on 2026-10-05, for the first message to a new session on
+ * a second Claude account, after the words were already typed; the send errored halfway. Tyler: "part of my
+ * message sent somehow and i had to go to the terminal and send the full one".
+ */
+export function sessionTranscript(
+  defaultDir: string, sessionId: string, row?: { transcriptPath?: string; claudeConfigDir?: string },
+): string | undefined {
+  if (row?.transcriptPath) return row.transcriptPath;
+  return row?.claudeConfigDir ? findTranscript(row.claudeConfigDir, sessionId) : findAccountTranscript(defaultDir, sessionId);
+}
+
 export function accountResumableSessions(options: ReadResumableSessionsOptions, accounts: ClaudeAccount[], codexAccounts?: ClaudeAccount[]): ResumableSessionsRead {
   const result: ResumableSessionsRead = { sessions: [], complete: true };
   for (const account of accounts) {

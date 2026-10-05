@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
+import { unwrapPastedContent } from "./conversation.ts";
 import { isCodexTranscriptPath, isRealUserPrompt } from "./snippet.ts";
 
 /**
@@ -28,12 +29,24 @@ export function normalizePrompt(text: string): string {
 }
 
 /**
+ * A prompt as the agent wrote it down, reduced to the words that were sent: Claude Code (2.1.280) records
+ * a paste wrapped in `<pasted_content id="…">` tags (`unwrapPastedContent`), and conch pastes every long
+ * send (`TMUX_PASTE_OVER_CHARS`), so the tags come off before anything is compared.
+ */
+function sentWords(text: string): string {
+  return normalizePrompt(unwrapPastedContent(text));
+}
+
+/** How much of a prompt's opening has to match for a recorded prompt to be these words. */
+const OPENING_CHARS = 48;
+
+/**
  * A short fingerprint of a prompt's opening, carried by the `UserPromptSubmit` hook so the daemon can
  * tell its own send from another prompt without the words crossing the socket or reaching a log.
  * The opening, not the whole: Claude Code expands a pasted block and may append attachments.
  */
 export function promptDigest(text: string): string {
-  return createHash("sha256").update(normalizePrompt(text).slice(0, 64)).digest("hex").slice(0, 16);
+  return createHash("sha256").update(sentWords(text).slice(0, 64)).digest("hex").slice(0, 16);
 }
 
 export const PROMPT_DIGEST = /^[0-9a-f]{16}$/;
@@ -57,7 +70,7 @@ export class PromptSubmissions {
 }
 
 export interface TranscriptSince {
-  /** A real user prompt was written at or after the send began. */
+  /** A real user prompt that opens with these words was written at or after the send began. */
   submitted: boolean;
   /** These words were queued behind a running turn (Claude Code's `queue-operation` enqueue). */
   queued: boolean;
@@ -85,7 +98,13 @@ export async function claudeTranscriptSince(path: string | undefined, since: num
   } catch {
     return none;
   }
-  const opening = normalizePrompt(words).slice(0, 48);
+  const opening = sentWords(words).slice(0, OPENING_CHARS);
+  if (!opening) return none;
+  // Only a prompt that opens with these words is this send's. Any prompt at all used to count: on
+  // 2026-10-05 a 3,580-character send was recorded as its last 514 characters, and a check that took any
+  // prompt would have called that delivered. Tyler: "part of my message sent somehow and i had to go to
+  // the terminal and send the full one".
+  const opensWithWords = (recorded: string): boolean => sentWords(recorded).startsWith(opening);
   const result = { ...none };
   for (const line of text.split("\n")) {
     if (!line.includes("\"timestamp\"")) continue;
@@ -93,11 +112,20 @@ export async function claudeTranscriptSince(path: string | undefined, since: num
     try { entry = JSON.parse(line); } catch { continue; }
     const at = Date.parse(entry?.timestamp ?? "");
     if (!Number.isFinite(at) || at < since - CLOCK_SLACK_MS) continue;
-    if (entry.type === "user" && isRealUserPrompt(entry)) result.submitted = true;
+    if (entry.type === "user" && isRealUserPrompt(entry) && opensWithWords(promptText(entry))) result.submitted = true;
     if (entry.type === "queue-operation" && entry.operation === "enqueue" && typeof entry.content === "string"
-      && opening && normalizePrompt(entry.content).startsWith(opening)) result.queued = true;
+      && opensWithWords(entry.content)) result.queued = true;
   }
   return result;
+}
+
+/** A user record's typed words: its string content, or its text blocks in order. */
+function promptText(entry: any): string {
+  const content = entry?.message?.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.filter((block: any) => block?.type === "text" && typeof block.text === "string")
+    .map((block: any) => block.text).join("\n");
 }
 
 /** The parts of a delivery's evidence the outcome is decided from, in order of strength. */
