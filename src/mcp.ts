@@ -386,7 +386,13 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
         type: "object",
         properties: {
           summary: { type: "string", minLength: 1 },
-          link: { type: "string", minLength: 1 },
+          // 2026-10-05: what a link may be and what the result says about it moved here from the tool's description,
+          // which now says when to publish (`REVIEW_TO_FRONT_DESCRIPTION_MAX` in agent-instructions.ts says why).
+          link: {
+            type: "string",
+            minLength: 1,
+            description: "Optional. The best single artifact to look at: an http(s) URL, or a path (absolute, or relative to your cwd) to a file or folder under this session's folders or a temp folder (/tmp, or macOS's per-user /var/folders/…/T); never a hidden file, key or executable. For a set of files or a structure you created or changed (a new module layout, generated assets), link the folder and name the paths to look at with focus. A file or folder in a temp folder is filed as conch's own copy, so cleaning the temp folder can't take it away: the result's copiedFrom names the original. For a live page (a url link) conch also checks for a login wall before the call returns: the result's access says what conch's Mac, with its review pane's sign-ins, and a device without them (the phone) were shown (mac and anonymous: page, sign-in or unchecked); snapshot is the Mac's picture of the page, which the phone shows first; and warning, when either was shown a sign-in page, says what to do: act on it.",
+          },
           kind: {
             type: "string",
             enum: DELIVERABLE_KINDS,

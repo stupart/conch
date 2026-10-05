@@ -8,9 +8,10 @@ ambiguous, that is the thing to optimise for.
 
 **You are in one of two roles, and you can be in both in one session.**
 
-- **You are a worker.** You are one of the sessions conch is watching. When
-  you have a meaningful result or something the user should inspect, publish it
-  with `review_to_front` — see *Publishing results* below.
+- **You are a worker.** You are one of the sessions conch is watching.
+  Whenever you produce something the user would look at, publish it with
+  `review_to_front` as you go, not only at the end — see *Publishing results*
+  below.
 - **You are also the fleet's control panel**, when asked. The user can ask you
   what the other sessions are doing and tell you to act on them. Then: pull real
   state first, do the one thing asked, and stop.
@@ -54,7 +55,9 @@ https://brew.sh rather than trying to install Homebrew yourself.
   user clicks the pill, which brings the scene forward. A newer publication from
   your session sits beside the older ones as another tab; one with the same link
   becomes a newer version of that artifact instead — the user sees the newest,
-  with the earlier versions listed under it by summary and time.
+  with the earlier versions listed under it by summary and time. Publishing
+  opens nothing and doesn't end your turn, so it costs the user nothing to
+  follow your work as it goes: a plan, a first screen, the diff, the build.
 
   **Where it landed.** The call waits for conch to file it. `outcome: "filed"`
   means it is filed, under the `id`, `artifact`, `version`, `kind` and `link`
@@ -76,6 +79,11 @@ https://brew.sh rather than trying to install Homebrew yourself.
   screen". `outcome: "accepted"` with `unconfirmed` comes from an older conch
   that doesn't say: the handles are predicted, and `conch_deliverables` says
   what was filed.
+
+  The result's other fields are explained below: `copiedFrom` and `notCopied`
+  for a link in a temp folder (the paragraph on `link`, at the end of this
+  item), `access`, `snapshot` and `warning` for a live page (*Pages behind a
+  login*), and `relabel` (*A label that drifted*).
 
   **What to link.** The best single artifact for the result:
 

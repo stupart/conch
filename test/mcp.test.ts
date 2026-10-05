@@ -727,8 +727,10 @@ describe("schemas state what the handlers enforce", () => {
   });
 
   test("review_to_front describes publishing, not opening or finishing, and what its answer means", () => {
+    // 2026-10-05: when and why to publish first, then what to pass and what the result means; the mechanics it used to
+    // carry are in the parameters and the skill (agent-instructions.test.ts pins where).
     expect(MCP_TOOLS.find((tool) => tool.name === "review_to_front")!.description).toBe(
-      "Publish your session’s result for the user to inspect, with a concise summary, an optional artifact link and kind, and an optional scene: the conversation to bring forward, or marks drawn over the result at the one thing to check. To show a set of files or a structure you created or changed (a new module layout, generated assets), link the folder (kind folder, its file tree in conch) and name the paths in it to look at with focus. Publishing the same artifact again (the same link, or the same key) adds its next version rather than a second entry: the user sees the newest, with earlier versions listed under it by summary and time. A file or folder in a temp folder (/tmp, or macOS's per-user /var/folders/…/T) is filed as conch's own copy (copiedFrom names the original), so cleaning the temp folder can't take it away. It waits for conch to file it and returns the filing's id, its artifact, version and kind, or conch's reason for refusing it, and surfaces: where the user can see it (mac: showing, running or not-running; phone: connected, paired-not-connected, unpaired or off; audio: mac, phone, other-mac or manual). Tell the user where it landed from surfaces; don't assume they saw it. For a live page (a url link) it also checks for a login wall: access says what conch's Mac, with its review pane's sign-ins, and a device without them (the phone) were shown (mac and anonymous: page, sign-in or unchecked); snapshot is the Mac's picture of the page, which the phone shows first; and warning, when either was shown a sign-in page, says what to do: act on it. Set approval ({label}: what a yes does, e.g. \"Open the PR\") only when you are waiting on the user's yes to proceed, never by default: their Approve sends your session \"Approved: <label>.\" about 10 s later. When the result carries relabel, your session's label no longer matches your recent work: if your focus has moved, call conch_rename with a short new label. The user's pill click stages it. Publishing does not open applications or finish the running turn.",
+      "Publish whenever you produce something the user would look at (a page, screenshot, file, document, plan, diff or PR, build, app state), as you go, not only at the end. It’s one call, it doesn’t interrupt them, and it’s how they follow your work from conch’s Mac app and their phone. Pass a one-line summary of what it is and what to check, and the best single artifact as link (a URL, or a path to a file or folder) with its kind; with nothing to link (an app window, the Simulator), say where to look in the summary. Publishing the same link or key again adds its next version, not a second entry. It opens nothing and doesn’t end your turn: the user’s click on the pill brings it forward. The result says where it landed (surfaces) and any warning or relabel to act on; tell the user from that, not from what you assume.",
     );
     // Claude Code cuts a tool description past 2048 characters (CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH, 2.1.280).
     for (const tool of MCP_TOOLS) expect(tool.description.length).toBeLessThan(2048);
@@ -1312,8 +1314,9 @@ describe("real MCP tool handlers with injected dependencies", () => {
     });
     expect(approval.description).toContain("only when you are waiting on the user's yes to proceed: never by default");
     expect(approval.description).toContain('conch sends your session "Approved: <label>." as a message about 10 s later');
-    expect(tool.description).toContain("only when you are waiting on the user's yes to proceed, never by default");
-    expect(tool.description).toContain('their Approve sends your session "Approved: <label>." about 10 s later');
+    // 2026-10-05: the rule lives here, on the parameter, and no longer in the tool's description, which says when to
+    // publish; an approval is the exception, never the default.
+    expect(tool.description).not.toContain("approval");
   });
 
   test("review_to_front publishes a relative file link as an absolute path", async () => {

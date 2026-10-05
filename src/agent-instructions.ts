@@ -31,16 +31,31 @@ export const MAX_SPEAK_CHARS = 600;
  */
 export const SERVER_INSTRUCTIONS_MAX = 500;
 
+/**
+ * The longest `review_to_front`'s own description may be. 2026-10-05: Tyler asked whether anything in the MCP made
+ * agents less likely to show what they do in conch. It had: the description grew from 403 characters (v0.3.0) to
+ * 2,036, just under Claude Code's 2048 cut, and read as a list of mechanics and obligations (copies, verdicts,
+ * surfaces states, login walls, approval rules) with when to publish buried in it, so publishing looked like a heavy,
+ * careful act rather than a habit. The description says when and why to publish, what to pass and what the result
+ * means, in a few lines; the mechanics live in the parameters' own descriptions and the conch-control skill.
+ */
+export const REVIEW_TO_FRONT_DESCRIPTION_MAX = 1000;
+
 export const AGENT_INSTRUCTIONS = {
+  /**
+   * What every session is told about publishing. 2026-10-05: it says what counts (a plan, a diff or PR, not only a
+   * finished page) and to publish as you go, not only at the end; it used to say "a meaningful result", which read as
+   * the final one. "Not after every edit" stays, so versions don't pile up.
+   */
   alwaysOn: `conch connects this session to the user’s Mac workspace, floating overlay, and iPhone.
 
-When you have a meaningful result or something the user should inspect, call \`review_to_front\` with a short summary and the best artifact link, then tell the user where it landed from the result’s \`surfaces\`, not what you assume. When the thing to look at has no link (an app window, the Simulator, a terminal, a design), pass its \`kind\` and say where to look in the summary. For a written explanation, request a conversation scene (\`scene: {v: 1, target: {kind: "conversation"}}\`) and keep the complete explanation in your normal reply.
+Whenever you produce something the user would look at (a page, screenshot, file, document, plan, diff or PR, build, app state), publish it with \`review_to_front\` as you go, not only at the end: a short summary and the best artifact link. Then tell the user where it landed from the result’s \`surfaces\`, not what you assume. When the thing to look at has no link (an app window, the Simulator, a terminal, a design), pass its \`kind\` and say where to look in the summary. For a written explanation, request a conversation scene (\`scene: {v: 1, target: {kind: "conversation"}}\`) and keep the complete explanation in your normal reply.
 
 A link is an http(s) URL, or an absolute path to a file or a folder (shown as its file tree) under this session’s folders: where it started, where it is now, its git repository, \`conch_working_folders\`, or a temp folder (/tmp, or macOS’s per-user /var/folders/…/T), which conch copies when it files the link, so a cleaned temp folder can’t take it away. Never a hidden file, key or executable.
 
 To show part of a web page, use \`conch_capture\` rather than screenshotting a browser.
 
-Publishing makes the result available. The user chooses when to open it. Do not open applications, rearrange windows, or start the microphone as a publication side effect. Publish again when the result materially changes, not after every edit: the same link or \`key\` files the artifact's next version. \`conch_deliverables\` lists what you have published; \`review_remove\` takes back one that is wrong or obsolete.
+Publishing makes the result available without interrupting the user, who chooses when to open it. Do not open applications, rearrange windows, or start the microphone as a publication side effect. Publish again whenever it changes in a way worth seeing, not after every edit: the same link or \`key\` files the artifact's next version. \`conch_deliverables\` lists what you have published; \`review_remove\` takes back one that is wrong or obsolete.
 
 Omit \`session\` when publishing. Never attribute work to another session or invent surface references.
 
@@ -55,14 +70,15 @@ If publication is unavailable, leave the result in your reply and end it with on
    * every session that loads the plugin, where the skill is only a name until it is loaded and
    * AGENTS.md reaches Codex alone. A Claude Code session used to learn conch was watching only if
    * it went looking. Short on purpose: Claude Code cuts server instructions past 2048 characters,
-   * and this is a pointer, the skill is the manual (`SERVER_INSTRUCTIONS_MAX`).
+   * and this is a pointer, the skill is the manual (`SERVER_INSTRUCTIONS_MAX`). 2026-10-05: it says to publish as you
+   * go, not only at the end, as the always-on text and `review_to_front` now do.
    */
   serverInstructions:
-    "This session is watched by conch: the user follows it from conch’s Mac app and their iPhone, often away from the desk. When they should look at something (a page, image, file, folder, build or app state), publish it with review_to_front instead of only mentioning a path, then tell them where it landed from the result’s surfaces. A file in /tmp or macOS’s /var/folders/…/T is copied into conch when filed. Load the conch-control skill (conch:conch-control) for the details.",
+    "This session is watched by conch: the user follows it from conch’s Mac app and their iPhone, often away from the desk. Whenever there is something to look at (a page, image, file, folder, build or app state), as you go and not only at the end, publish it with review_to_front instead of only mentioning a path, then tell them where it landed from the result’s surfaces. A file in /tmp or macOS’s /var/folders/…/T is copied into conch. Load the conch-control skill (conch:conch-control) for details.",
 
   /** The skill's frontmatter description, which Claude Code carries always-on. */
   skillDescription:
-    "Publish what the user should look at (a page, image, file, folder, build or app state) with review_to_front, and see or steer their other Claude Code and Codex sessions when asked. Use when you have a result worth inspecting, or when asked what the other sessions are doing.",
+    "Publish what the user should look at (a page, image, file, folder, build or app state) with review_to_front, and see or steer their other Claude Code and Codex sessions when asked. Use when there is something for the user to look at, or when asked what the other sessions are doing.",
 
   /** What a session with no conch tools should conclude, and not do. */
   missingTools:
@@ -85,8 +101,10 @@ If publication is unavailable, leave the result in your reply and end it with on
       "Read settings or change a user-requested supported voice or timing setting. Changes affect the running daemon.",
     conch_transcript_tail:
       "Read the last sentences of a live session’s latest assistant reply. Does not retrieve full history or verify tool results.",
+    // 2026-10-05: when and why first, then what to pass, then what the result means; the mechanics are in the
+    // parameters (mcp.ts) and the skill (`REVIEW_TO_FRONT_DESCRIPTION_MAX` says why).
     review_to_front:
-      "Publish your session’s result for the user to inspect, with a concise summary, an optional artifact link and kind, and an optional scene: the conversation to bring forward, or marks drawn over the result at the one thing to check. To show a set of files or a structure you created or changed (a new module layout, generated assets), link the folder (kind folder, its file tree in conch) and name the paths in it to look at with focus. Publishing the same artifact again (the same link, or the same key) adds its next version rather than a second entry: the user sees the newest, with earlier versions listed under it by summary and time. A file or folder in a temp folder (/tmp, or macOS's per-user /var/folders/…/T) is filed as conch's own copy (copiedFrom names the original), so cleaning the temp folder can't take it away. It waits for conch to file it and returns the filing's id, its artifact, version and kind, or conch's reason for refusing it, and surfaces: where the user can see it (mac: showing, running or not-running; phone: connected, paired-not-connected, unpaired or off; audio: mac, phone, other-mac or manual). Tell the user where it landed from surfaces; don't assume they saw it. For a live page (a url link) it also checks for a login wall: access says what conch's Mac, with its review pane's sign-ins, and a device without them (the phone) were shown (mac and anonymous: page, sign-in or unchecked); snapshot is the Mac's picture of the page, which the phone shows first; and warning, when either was shown a sign-in page, says what to do: act on it. Set approval ({label}: what a yes does, e.g. \"Open the PR\") only when you are waiting on the user's yes to proceed, never by default: their Approve sends your session \"Approved: <label>.\" about 10 s later. When the result carries relabel, your session's label no longer matches your recent work: if your focus has moved, call conch_rename with a short new label. The user's pill click stages it. Publishing does not open applications or finish the running turn.",
+      "Publish whenever you produce something the user would look at (a page, screenshot, file, document, plan, diff or PR, build, app state), as you go, not only at the end. It’s one call, it doesn’t interrupt them, and it’s how they follow your work from conch’s Mac app and their phone. Pass a one-line summary of what it is and what to check, and the best single artifact as link (a URL, or a path to a file or folder) with its kind; with nothing to link (an app window, the Simulator), say where to look in the summary. Publishing the same link or key again adds its next version, not a second entry. It opens nothing and doesn’t end your turn: the user’s click on the pill brings it forward. The result says where it landed (surfaces) and any warning or relabel to act on; tell the user from that, not from what you assume.",
     conch_history:
       "Read a page of recorded session history, including coverage and continuation cursors.",
     conch_item:

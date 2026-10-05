@@ -5,6 +5,7 @@ import {
   AGENT_INSTRUCTIONS,
   renderAgentsMd,
   renderSkillMd,
+  REVIEW_TO_FRONT_DESCRIPTION_MAX,
   SERVER_INSTRUCTIONS_MAX,
   type AgentInstructions,
 } from "../src/agent-instructions.ts";
@@ -80,6 +81,73 @@ describe("one source for the agent-facing instructions", () => {
     // Both agents' names for the skill: Claude Code namespaces a plugin's skills, Codex reads the folder's.
     expect(told).toContain("conch-control skill (conch:conch-control)");
     expect(told).not.toContain("\n");
+    // 2026-10-05: as the work goes, not only for the final result.
+    expect(told).toContain("Whenever there is something to look at");
+    expect(told).toContain("as you go and not only at the end");
+  });
+
+  /**
+   * 2026-10-05: Tyler asked whether anything in the MCP made agents less likely to show what they do in conch. The
+   * description had grown from 403 characters (v0.3.0) to 2,036, just under Claude Code's 2048 cut, and led with
+   * mechanics and obligations: when to publish was buried under copies, verdicts, surfaces states and login walls.
+   * It leads with when and why now, and stays short, so it can't creep back up to the cap.
+   */
+  test("review_to_front's description leads with when to publish, and stays short", () => {
+    const description = AGENT_INSTRUCTIONS.tools.review_to_front;
+    expect(REVIEW_TO_FRONT_DESCRIPTION_MAX).toBeLessThanOrEqual(1000);
+    expect(description.length).toBeLessThanOrEqual(REVIEW_TO_FRONT_DESCRIPTION_MAX);
+    expect(description).toStartWith(
+      "Publish whenever you produce something the user would look at (a page, screenshot, file, document, plan, diff or PR, build, app state), as you go, not only at the end.",
+    );
+    // Why it is cheap, before any of how.
+    expect(description.indexOf("it doesn’t interrupt them")).toBeLessThan(description.indexOf("Pass a one-line summary"));
+    expect(description).toContain("Publishing the same link or key again adds its next version");
+    expect(description).toEndWith("The result says where it landed (surfaces) and any warning or relabel to act on; tell the user from that, not from what you assume.");
+    // The mechanics are the parameters' and the skill's; the next test says where.
+    for (const mechanic of ["copiedFrom", "approval", "snapshot", "paired-not-connected", "login wall", "never by default"]) {
+      expect(description).not.toContain(mechanic);
+    }
+  });
+
+  test("what the description no longer says is where the agent reads it: the parameters and the skill", () => {
+    const tool = MCP_TOOLS.find((candidate) => candidate.name === "review_to_front")!;
+    const properties = tool.inputSchema.properties as Record<string, { description?: string }>;
+    const link = properties.link.description!;
+    expect(link).toContain("A file or folder in a temp folder is filed as conch's own copy");
+    expect(link).toContain("the result's copiedFrom names the original");
+    expect(link).toContain("link the folder and name the paths to look at with focus");
+    expect(link).toContain("access says what conch's Mac, with its review pane's sign-ins, and a device without them (the phone) were shown (mac and anonymous: page, sign-in or unchecked)");
+    expect(link).toContain("snapshot is the Mac's picture of the page, which the phone shows first");
+    expect(link).toContain("warning, when either was shown a sign-in page, says what to do: act on it");
+    expect(properties.approval.description).toContain("only when you are waiting on the user's yes to proceed: never by default");
+    expect(properties.key.description).toContain("publishing it again is its next version");
+    expect(properties.scene.description).toContain("What the pill click brings forward");
+
+    const skill = renderSkillMd();
+    for (const said of [
+      "`mac`: `showing`",
+      "`running`",
+      "`not-running`",
+      "`phone`: `connected`",
+      "`paired-not-connected`",
+      "`audio`: `mac`",
+      "`other-mac`",
+      "`access` says what each\n  was shown",
+      "`snapshot`",
+      "`warning` is there when either look was a sign-in page",
+      "the result carries `relabel: {label, hint}`",
+      "the result's `copiedFrom` names the original",
+      "Set `approval` only when you are waiting on\n  the user's approval to go on, never by default",
+      "Publishing\n  opens nothing and doesn't end your turn",
+    ]) expect(skill).toContain(said);
+  });
+
+  // 2026-10-05: every session is told to publish as it goes, and still not after every edit, so versions don't pile up.
+  test("the always-on text says to publish as you go, and not after every edit", () => {
+    const told = AGENT_INSTRUCTIONS.alwaysOn;
+    expect(told).toContain("Whenever you produce something the user would look at (a page, screenshot, file, document, plan, diff or PR, build, app state), publish it with `review_to_front` as you go, not only at the end");
+    expect(told).toContain("Publishing makes the result available without interrupting the user");
+    expect(told).toContain("Publish again whenever it changes in a way worth seeing, not after every edit");
   });
 
   test("the skill's description says when to load it: something to look at, or the other sessions", () => {
