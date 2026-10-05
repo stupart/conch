@@ -116,7 +116,8 @@ test("M2: the status item takes focus only for Open conch and opening a session"
   expect(item).not.toContain("orderFrontRegardless");
 
   const callers = [...item.matchAll(/bringConchForward\(\)/g)].map((match) => enclosingFunction(item, match.index!));
-  expect(callers.sort()).toEqual(["bringConchForward", "openConch", "openSession"]);
+  // openInWindow is opening a session too: with the overlays off, what the panel would have shown, in conch's window.
+  expect(callers.sort()).toEqual(["bringConchForward", "openConch", "openInWindow", "openSession"]);
 });
 
 test("M2: the whole mark recolours by state, and Talk is the template image", () => {

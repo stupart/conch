@@ -63,7 +63,9 @@ describe("the Mac draws a folder deliverable as the Files tab's tree", () => {
   test("a folder opens in the panel from anywhere, as marks do", () => {
     const open = between(statusItem, "static func open(_ row: SessionRow, from origin: OpenFrom", "static func stage(");
     expect(open).toContain("let conchOnly = ReviewScene.opensOnlyInConch(deliverable: row.review?.kind, marked: marked)");
-    expect(open).toContain("(defaults.bool(forKey: showConversationKey) || conchOnly)");
+    expect(open).toContain("panelOn: defaults.bool(forKey: showConversationKey), conchOnly: conchOnly, words: words)");
+    // With the overlays off, conch's window instead of the panel (`ConchOverlays.destination`).
+    expect(open).toContain("case .window:\n            openInWindow(row, store: store)");
   });
 
   test("the Mac reads focus off every held deliverable", () => {

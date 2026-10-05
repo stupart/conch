@@ -65,7 +65,8 @@ describe("the window", () => {
     // Never switched on by the app itself: the daemon's `features.practice`, and an older daemon keeps it hidden.
     expect(controller).not.toMatch(/practiceAvailable:\s*true/);
     expect(controller).toContain("practiceAvailable: practiceAvailability ?? (progress?.step == .practice))");
-    expect(controller).toContain("OnboardingReports.practiceAvailability(feature: published.practiceFeature, published: publishedSeen)");
+    // And never with the overlays off: the tour Try it runs is on them (`ConchOverlays`).
+    expect(controller).toContain("OnboardingReports.practiceAvailability(feature: published.practiceFeature, published: publishedSeen,\n                                               overlays: ConchStatusItem.overlaysOn)");
     expect(support).toContain('practiceFeature: (object["features"] as? [String: Any])?["practice"] as? Int');
     expect(read("design/ConchDesign/Sources/ConchDesign/OnboardingReports.swift")).toContain("practiceAvailable: Bool = false");
   });

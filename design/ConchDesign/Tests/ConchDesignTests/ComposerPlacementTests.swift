@@ -654,7 +654,7 @@ final class ComposerPlacementTests: XCTestCase {
         func items(replyLine: Bool, alone: Bool) -> [StatusMenu.Item] {
             StatusMenu.rows(StatusMenu.Input(
                 voice: .talk, quiet: false, exchangeActive: false, controlBar: true, conversation: true, collapsed: false,
-                replyLine: replyLine, replyLineAlone: alone, drawing: false, ready: [], working: []
+                replyLine: replyLine, replyLineAlone: alone, drawing: false, ready: [], working: [], overlays: true
             )).compactMap { row -> StatusMenu.Item? in
                 if case let .item(item) = row { return item }
                 return nil

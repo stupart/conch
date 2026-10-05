@@ -246,8 +246,9 @@ describe("Esc and Send", () => {
     inOrder(escape, "if let recorder, recorder.isRecording { return stopRecording(recorder) }", "lift()");
     expect(escape).not.toContain("cancelShow");
     expect(member(show, "func stopRecording(_ recorder: CanvasRecorder) {")).toContain("Task { await stopShow(recorder) }");
-    // The × is the one caller.
-    expect(Object.values(macSources).join("\n").match(/cancelShow\(\)/g)?.length).toBe(2);
+    // The × is the one caller, and the overlays switched off (a Show can't outlive the canvas it was recorded on).
+    expect(Object.values(macSources).join("\n").match(/cancelShow\(\)/g)?.length).toBe(3);
+    expect(member(canvas, "func overlaysSwitched(on: Bool) {")).toContain("cancelShow()");
     expect(member(canvas, "func discard() {")).toContain("recorder != nil ? cancelShow() : clear()");
     const cancel = member(show, "    func cancelShow() {");
     expect(cancel).toContain("self.recorder = nil");

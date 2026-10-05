@@ -112,10 +112,14 @@ struct ConchMacApp: App {
                 TerminalMirrorMenuToggle()
                 // The lagoon, read-only while it is tried out (`conch.lagoon.enabled`, off by default).
                 LagoonMenuToggle()
+                // Everything conch puts on screens outside this window, until its UX is there (`conch.overlays`, off by
+                // default): the control bar, the conversation panel, the canvas, the reply line, the tour.
+                OverlaysMenuToggle()
             }
             CommandGroup(after: .help) {
                 Button("Set up conch…") { OnboardingController.shared.openFromHelp() }
-                Button("Take the tour") { OnboardingController.shared.takeTheTour() }
+                // The tour is on the overlays, so it is there only while they are.
+                TakeTheTourMenuItem()
                 Button("Keyboard Shortcuts") {
                     NotificationCenter.default.post(
                         name: .showKeyboardShortcuts,
@@ -513,4 +517,16 @@ private struct WindowBackgroundConfigurator: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+/// Help › Take the tour: setup's Try it, whose tour is on the pill, the panel and the canvas, so only while the overlays
+/// are on (`ConchOverlays`).
+private struct TakeTheTourMenuItem: View {
+    @AppStorage(ConchOverlays.key) private var overlays = ConchOverlays.byDefault
+
+    var body: some View {
+        if overlays {
+            Button("Take the tour") { OnboardingController.shared.takeTheTour() }
+        }
+    }
 }

@@ -138,8 +138,9 @@ final class CanvasController: ObservableObject {
     }
 
     /// The pen down: the glass takes the pointer, and the one under the pointer the keys, without bringing conch forward.
+    /// Never while the overlays are off (`ConchOverlays`).
     func arm() {
-        guard !armed, !sending, store != nil else { return }
+        guard !armed, !sending, store != nil, ConchStatusItem.overlaysOn else { return }
         notice = nil
         armed = true
         apply()
@@ -329,6 +330,30 @@ final class CanvasController: ObservableObject {
         glass.first { $0.ink.display == display && $0.panel.isVisible }?.panel.windowNumber
     }
 
+    // MARK: The overlays switch
+
+    /// The overlays switched while conch runs (`ConchStatusItem.overlaysChanged`). Off: a Show is thrown away, the pen
+    /// lifts, the ink and the agent's marks go, the glass and the pill leave every screen, and ⌃⌥⌘P is let go for other
+    /// apps. On: the hotkey is taken again, and the canvas waits for the pen as at launch.
+    func overlaysSwitched(on: Bool) {
+        guard store != nil else { return }
+        guard !on else { return CanvasHotKey.register() }
+        cancelShow()
+        lift()
+        clear()
+        putAway()
+        CanvasHotKey.unregister()
+    }
+
+    /// Off every screen at once: the glass, the pill, and the docked panel back down from over the glass.
+    private func putAway() {
+        hiding?.cancel()
+        hiding = nil
+        for (panel, _) in glass { panel.orderOut(nil) }
+        pill.orderOut(nil)
+        FloatingPanels.installed?.overGlass(false)
+    }
+
     // MARK: On screen
 
     /// One glass per display, rebuilt when the displays change: with "Displays have separate Spaces" no window can span two.
@@ -364,8 +389,9 @@ final class CanvasController: ObservableObject {
 
     /// Everything on screen, from the state: the glass while the canvas is in use, taking the pointer only while the pen is
     /// down and nothing is sending; each display's ink; the docked panel over the glass while the pen is down; and the
-    /// pill, for as long as it has anything to show.
+    /// pill, for as long as it has anything to show. Nothing at all while the overlays are off (`ConchOverlays`).
     func apply() {
+        guard ConchStatusItem.overlaysOn else { return putAway() }
         let inUse = inUse
         for (panel, ink) in glass {
             // Keys only while the pen is down: up, they are the app underneath's again (`giveKeysBack`), so nothing typed
@@ -1139,16 +1165,28 @@ enum CanvasHotKey {
     static let modifiers = UInt32(controlKey | optionKey | cmdKey)
 
     private static var registered: EventHotKeyRef?
+    /// The press handler, installed once: the hot key comes and goes with the overlays (`unregister`), the handler stays,
+    /// so a press is never handled twice.
+    private static var handler: EventHandlerRef?
 
     static func register() {
         guard registered == nil else { return }
-        var pressed = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
-            MainActor.assumeIsolated { CanvasController.shared.hotKeyPressed() }
-            return noErr
-        }, 1, &pressed, nil, nil)
+        if handler == nil {
+            var pressed = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+            InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
+                MainActor.assumeIsolated { CanvasController.shared.hotKeyPressed() }
+                return noErr
+            }, 1, &pressed, nil, &handler)
+        }
         // "cnch", 1: conch's only hot key.
         let status = RegisterEventHotKey(key, modifiers, EventHotKeyID(signature: OSType(0x636E_6368), id: 1), GetApplicationEventTarget(), 0, &registered)
         if status != noErr { NSLog("conch: the canvas hotkey (⌃⌥⌘P) is taken (%d); the pen button and the menu still work", status) }
+    }
+
+    /// The overlays switched off: ⌃⌥⌘P is conch's no longer, and goes to whatever else wants it.
+    static func unregister() {
+        guard let hotKey = registered else { return }
+        UnregisterEventHotKey(hotKey)
+        registered = nil
     }
 }

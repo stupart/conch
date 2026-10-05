@@ -291,7 +291,8 @@ final class OnboardingTests: XCTestCase {
     func testTheMenuRemindsWhileSetupIsPutAwayWithStepsLeft() {
         let menu = { (left: [String]) in
             StatusMenu.rows(StatusMenu.Input(voice: .talk, quiet: false, exchangeActive: false, controlBar: true, conversation: false,
-                                             collapsed: false, replyLine: true, drawing: false, ready: [], working: [], setupLeft: left))
+                                             collapsed: false, replyLine: true, drawing: false, ready: [], working: [], setupLeft: left,
+                                             overlays: true))
         }
         let putAway = run([.begin, .next, .skip, .close])
         let left = putAway.remaining(fresh).map(\.title)

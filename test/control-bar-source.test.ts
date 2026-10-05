@@ -58,12 +58,14 @@ test("M3: both panels are non-activating NSPanels on every space, out of the win
 });
 
 test("M3: the menu's Control Bar and Conversation Panel drive the panels, live", () => {
-  expect(member(item, "static func install(store: StateStore) {")).toContain("FloatingPanels.install(store: store)");
+  // Installed with the overlays, and only while they are on (`ConchOverlays`; overlays-source.test.ts guards the switch).
+  expect(member(item, "static func install(store: StateStore) {")).toContain("if overlaysOn { installOverlays(store: store) }");
+  expect(member(item, "private static func installOverlays(store: StateStore) {")).toContain("FloatingPanels.install(store: store)");
   expect(item).not.toContain("not built yet");
   expect(panels).toContain("forName: UserDefaults.didChangeNotification");
   const shows = member(panels, "private func showWhatIsOn() {");
-  expect(shows).toContain("show(controlBar, defaults.bool(forKey: ConchStatusItem.showControlBarKey))");
-  expect(shows).toContain("show(fog, defaults.bool(forKey: ConchStatusItem.showConversationKey))");
+  expect(shows).toContain("show(controlBar, overlays && defaults.bool(forKey: ConchStatusItem.showControlBarKey))");
+  expect(shows).toContain("show(fog, overlays && defaults.bool(forKey: ConchStatusItem.showConversationKey))");
   // The conversation is the menu's to show: the control bar has no conversation button (Tyler, 2026-09-14).
   const bar = member(components, "public var body: some View {\n        GlassPill(\"Voice controls\") {");
   expect(bar).toContain("TalkQuietSwitch(mode: $mode)");
@@ -811,7 +813,7 @@ test("a click takes the exact review version, runs in order, and counts it opene
     "staging = Task { @MainActor in",
     "await previous?.value",
     "guard let found = find(store.state) else { return }",
-    "panels.staged = found.row.id",
+    "panels?.staged = found.row.id",
     "guard await ConchStatusItem.open(found.row, from: origin, store: store, panels: panels), let key = found.key else { return }",
     "opened.insert(key)",
     // Only once handed off, and only then told to the daemon, so every other surface agrees.
@@ -821,7 +823,7 @@ test("a click takes the exact review version, runs in order, and counts it opene
   expect([...steps].sort((a, b) => a - b)).toEqual(steps);
   expect(panels.match(/opened\.insert/g)?.length).toBe(1);
   // What the panel doesn't show is stage's scene, as it always was.
-  expect(member(item, "static func open(_ row: SessionRow, from origin: OpenFrom, store: StateStore, panels: FloatingPanels) async -> Bool {")).toContain(
+  expect(member(item, "static func open(_ row: SessionRow, from origin: OpenFrom, store: StateStore, panels: FloatingPanels?) async -> Bool {")).toContain(
     "return await stage(row, store: store)",
   );
   // Nothing sent to the daemon for it, and no command invented.
@@ -840,7 +842,10 @@ test("the pill, the menu and the panel walk one queue: every deliverable a sessi
   expect(panels).not.toContain("@State private var staging");
   expect(panels).toContain("@Published private(set) var lastStaged: ReviewItem.ID?");
   expect(panels).toContain("@Published private(set) var opened: Set<ReviewItem.ID> = []");
-  expect(panels).toContain("    let queue = ReviewQueue()\n");
+  expect(panels).toContain("    let queue = ReviewQueue.shared\n");
+  // One walk, the menu's too when the overlays are off and no panels are installed.
+  expect(panels).toContain("    static let shared = ReviewQueue()\n");
+  expect(panels.match(/ReviewQueue\(\)/g)?.length).toBe(1);
   expect(panels.match(/@ObservedObject var queue: ReviewQueue/g)?.length).toBe(2);
   expect(panels).toContain("ControlBarHost(store: store, queue: queue, panels: self,");
   expect(panels).toContain("ConversationFogHost(store: store, panels: self, queue: queue,");
@@ -857,11 +862,11 @@ test("the pill, the menu and the panel walk one queue: every deliverable a sessi
     "state?.rows.filter { $0.review != nil && $0.status != .working } ?? []",
   );
   // The menu's Ready for you rows walk it too: that session's next unlooked-at item, as the pill opens one.
-  const menuOpen = member(panels, "func open(session id: SessionRow.ID, store: StateStore, panels: FloatingPanels) {");
+  const menuOpen = member(panels, "func open(session id: SessionRow.ID, store: StateStore, panels: FloatingPanels?) {");
   expect(menuOpen).toContain("guard let item = ready(in: held, state: store.state).first ?? held.last else { return }");
   expect(menuOpen).toContain("stage(from: .menu, store: store, panels: panels) { state in Self.find(item.id, in: state) }");
   expect(member(item, "@objc private func openItem(_ sender: NSMenuItem) {")).toContain(
-    "panels.queue.open(session: id, store: store, panels: panels)",
+    "ReviewQueue.shared.open(session: id, store: store, panels: Self.panels)",
   );
   expect(panels).not.toContain("compactMap(ReviewItem.init(row:))");
   const held = member(panels, "var held: [ReviewInfo] {");
@@ -910,7 +915,7 @@ test("the panel names its session, switches from it, and shows the words full sc
   expect(panels).toContain("onPick: { queue.pick($0, store: store, panels: panels) },");
   // From the panel: nothing to open is the words full screen (or a deliverable the panel draws, below); anything else
   // docks the panel, then stage's scene. One rule for every open (`ConchStatusItem.open`). (`item` is shadowed here.)
-  const show = member(read("mac-app/conch-mac/StatusItem.swift"), "static func open(_ row: SessionRow, from origin: OpenFrom, store: StateStore, panels: FloatingPanels) async -> Bool {");
+  const show = member(read("mac-app/conch-mac/StatusItem.swift"), "static func open(_ row: SessionRow, from origin: OpenFrom, store: StateStore, panels: FloatingPanels?) async -> Bool {");
   const order = [
     'let kind = ReviewScene.Kind(rawValue: row.review?.sceneKind ?? "") ?? .auto',
     "let link = ReviewItem(row: row)?.link.map { LinkTarget.url(for: $0, cwd: row.cwd) }",
@@ -918,7 +923,7 @@ test("the panel names its session, switches from it, and shows the words full sc
     "&& ReviewScene.panelShowsWords(hasReview: row.review != nil, kind: kind, link: link, fileExists: { FileManager.default.fileExists(atPath: $0) })",
     "panels.showInPanel()",
     "return true",
-    "panels.dockForScene()",
+    "panels?.dockForScene()",
     "return await stage(row, store: store)",
   ].map((line) => show.indexOf(line));
   expect(order.every((at) => at > -1)).toBe(true);
@@ -1028,10 +1033,10 @@ test("the conversation stays on the pill's scene, whatever the voice does, until
   // Staging never starts the mic or stops speech: not the pill's, the panel's, or the scene's.
   for (const body of [
     member(panels, "func walk(backward: Bool = false, from origin: ConchStatusItem.OpenFrom, store: StateStore, panels: FloatingPanels) {"),
-    member(panels, "func open(session id: SessionRow.ID, store: StateStore, panels: FloatingPanels) {"),
+    member(panels, "func open(session id: SessionRow.ID, store: StateStore, panels: FloatingPanels?) {"),
     member(panels, "func pick(_ id: SessionRow.ID, store: StateStore, panels: FloatingPanels) {"),
     member(panels, "private func stage(\n        from origin: ConchStatusItem.OpenFrom,"),
-    member(item, "static func open(_ row: SessionRow, from origin: OpenFrom, store: StateStore, panels: FloatingPanels) async -> Bool {"),
+    member(item, "static func open(_ row: SessionRow, from origin: OpenFrom, store: StateStore, panels: FloatingPanels?) async -> Bool {"),
     member(item, "static func stage(_ row: SessionRow, store: StateStore) async -> Bool {"),
   ]) {
     for (const voiceAction of [".dictate", ".stop(", ".wake", ".speak", "store.send("]) expect(body).not.toContain(voiceAction);
@@ -1063,22 +1068,32 @@ test("one opening rule: a deliverable the panel draws opens in it while it is on
   expect(content).toContain("let link = item.link.map { LinkTarget.url(for: $0, cwd: cwd) }");
   expect(content).toContain("ReviewScene.panelShowsContent(kind: kind, deliverable: review.kind, link: link, fileExists: { FileManager.default.fileExists(atPath: $0) }) ? item : nil");
   // In the panel's branch, beside the words: out and open, full screen, then handed off. Anything else docks and stages.
-  const show = member(item, "static func open(_ row: SessionRow, from origin: OpenFrom, store: StateStore, panels: FloatingPanels) async -> Bool {");
+  const show = member(item, "static func open(_ row: SessionRow, from origin: OpenFrom, store: StateStore, panels: FloatingPanels?) async -> Bool {");
   const order = [
     "let content = row.panelContent",
     "let marked = !(row.review?.marks.isEmpty ?? true)",
     // A folder's tree is conch's alone too (`ReviewScene.opensOnlyInConch`, XCTests pin its cases).
     "let conchOnly = ReviewScene.opensOnlyInConch(deliverable: row.review?.kind, marked: marked)",
-    "if (content != nil && (defaults.bool(forKey: showConversationKey) || conchOnly)) || words {",
+    // The rule itself is ConchDesign's (`ConchOverlays.destination`, XCTests pin every case); on, it is the one it was.
+    "let destination = ConchOverlays.destination(overlays: panels != nil, panelDraws: content != nil,",
+    "panelOn: defaults.bool(forKey: showConversationKey), conchOnly: conchOnly, words: words)",
+    "case .panel:",
     "panels.bringOut()\n            panels.showInPanel()",
     "return true",
-    "panels.dockForScene()",
+    // With the overlays off, what the panel would have shown opens in conch's window.
+    "case .window:\n            openInWindow(row, store: store)\n            return true",
+    "panels?.dockForScene()",
     "return await stage(row, store: store)",
   ].map((line) => show.indexOf(line));
   expect(order.every((at) => at > -1)).toBe(true);
   expect([...order].sort((a, b) => a - b)).toEqual(order);
-  // The first open from the pill or the menu turns the panel on, docked and open, once; from inside it, never.
-  const first = show.indexOf("if origin != .panel, !defaults.bool(forKey: panelTurnedOnByOpenKey) {");
+  expect(read("design/ConchDesign/Sources/ConchDesign/ConchOverlays.swift")).toContain(
+    "if overlays { return (panelDraws && (panelOn || conchOnly)) || words ? .panel : .stage }",
+  );
+  // The first open from the pill or the menu turns the panel on, docked and open, once; from inside it, never; with the
+  // overlays off, never (there is no panel, and the first open once they are on still turns it on).
+  expect(show).toContain("let panels = overlaysOn ? panels : nil");
+  const first = show.indexOf("if let panels, origin != .panel, !defaults.bool(forKey: panelTurnedOnByOpenKey) {");
   expect(first).toBeGreaterThan(-1);
   expect(first).toBeLessThan(show.indexOf("let content = row.panelContent"));
   expect(show.slice(first, show.indexOf("let content"))).toContain("defaults.set(true, forKey: panelTurnedOnByOpenKey)\n            panels.bringOut()");
@@ -1117,10 +1132,10 @@ test("one opening rule: a deliverable the panel draws opens in it while it is on
 /** Opening a deliverable in the panel counts it looked at, exactly as staging it elsewhere does: the one existing call. */
 test("a deliverable shown in the panel is marked viewed through stage, as a staged one is", () => {
   // The panel's branch reports a handoff (true), so stage goes on to count it opened and tell the daemon.
-  const show = member(item, "static func open(_ row: SessionRow, from origin: OpenFrom, store: StateStore, panels: FloatingPanels) async -> Bool {");
-  const from = show.indexOf("|| words {");
+  const show = member(item, "static func open(_ row: SessionRow, from origin: OpenFrom, store: StateStore, panels: FloatingPanels?) async -> Bool {");
+  const from = show.indexOf("case .panel:");
   expect(from).toBeGreaterThan(-1);
-  const branch = show.slice(from, show.indexOf("panels.dockForScene()"));
+  const branch = show.slice(from, show.indexOf("panels?.dockForScene()"));
   expect(branch.length).toBeGreaterThan(100);
   expect(branch).toContain("panels.showInPanel()");
   expect(branch).toContain("return true");

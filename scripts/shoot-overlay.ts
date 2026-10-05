@@ -46,6 +46,8 @@ const APP = "/Applications/conch.app";
 const FRAME_KEY = "NSWindow Frame conch.conversation";
 const COLLAPSED_KEY = "conch.conversationCollapsed";
 const SHOW_KEY = "conch.showConversation";
+/** The overlays' own switch (`ConchOverlays`, Debug ▸ Overlays (experimental)), off by default: on for the shots. */
+const OVERLAYS_KEY = "conch.overlays";
 const APPEARANCE_KEY = "conch.overlay.appearance";
 
 type Corner = "bl" | "br" | "tl" | "tr";
@@ -188,6 +190,7 @@ async function drive(name: string, state: State): Promise<{ overlay: WindowInfo;
   await sh("defaults", "write", DOMAIN, FRAME_KEY, `${target.x} ${target.y} ${target.width} ${target.height} ${screenHalf} `);
   await sh("defaults", "write", DOMAIN, COLLAPSED_KEY, "-bool", state.collapsed ? "YES" : "NO");
   await sh("defaults", "write", DOMAIN, SHOW_KEY, "-bool", "YES");
+  await sh("defaults", "write", DOMAIN, OVERLAYS_KEY, "-bool", "YES");
   // Live-tunable, but written here too: read at launch it is right from the first
   // frame, with none of the light-to-dark crossfade to wait out.
   await sh("defaults", "write", DOMAIN, APPEARANCE_KEY, "-string", state.appearance);
@@ -265,7 +268,7 @@ async function main() {
   // Put the user's own overlay back exactly as it was. This drives his live UI, and
   // leaving it parked in a lab state is not the rig's to do.
   const restore: Record<string, string | null> = {};
-  for (const key of [FRAME_KEY, COLLAPSED_KEY, SHOW_KEY, APPEARANCE_KEY]) restore[key] = await readDefault(key);
+  for (const key of [FRAME_KEY, COLLAPSED_KEY, SHOW_KEY, APPEARANCE_KEY, OVERLAYS_KEY]) restore[key] = await readDefault(key);
 
   const backdrop = args.includes("--no-backdrop") ? null : await startBackdrop(hex);
   const rows: string[] = [];
@@ -310,6 +313,8 @@ async function main() {
       await quitConch();
       for (const [key, value] of Object.entries(restore)) {
         if (value === null) await sh("defaults", "delete", DOMAIN, key);
+        // A bool the app reads as one (`as? Bool`): written back as a bool, never as the string `defaults read` gave.
+        else if (key === OVERLAYS_KEY) await sh("defaults", "write", DOMAIN, key, "-bool", value.trim() === "1" ? "YES" : "NO");
         else await sh("defaults", "write", DOMAIN, key, value);
       }
       await sh("open", "-a", APP);

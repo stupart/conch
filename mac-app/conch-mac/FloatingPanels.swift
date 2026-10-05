@@ -236,8 +236,9 @@ final class FloatingPanels: ObservableObject {
     /// The session the panel holds to: what Tyler staged, else the reply line's pin. Everything that asks "the panel's
     /// session" asks this, the canvas's Send and Show included, so they never disagree with what the panel shows.
     var heldSession: SessionRow.ID? { staged ?? replyPin }
-    /// Where the Ready pill and the panel's Previous and Next are in what is ready: one walk, so they agree.
-    let queue = ReviewQueue()
+    /// Where the Ready pill and the panel's Previous and Next are in what is ready: one walk, so they agree; the menu's Ready
+    /// for you rows walk it too, with the overlays off as well (`ReviewQueue.shared`).
+    let queue = ReviewQueue.shared
     /// How many times the person has moved the panel: dragged or thrown it, resized it, filled the screen with it, folded
     /// or opened it. The tour's panel beat moves on from this (`TourCoach`); conch putting the panel out never counts.
     @Published private(set) var moves = 0
@@ -442,6 +443,10 @@ final class FloatingPanels: ObservableObject {
 
     private func showWhatIsOn() {
         let defaults = UserDefaults.standard
+        // The overlays switched off (`ConchOverlays`): neither panel shows, whatever the menu's switches say, and the
+        // switcher, which holds the keys and a watch on clicks in other apps, closes. Switched on, both are as they were.
+        let overlays = ConchStatusItem.overlaysOn
+        if !overlays { switching = false }
         setCollapsed(defaults.bool(forKey: Self.conversationCollapsedKey))
         let reply = defaults.bool(forKey: ConchStatusItem.showReplyLineKey)
         if reply != showsReply {
@@ -449,8 +454,8 @@ final class FloatingPanels: ObservableObject {
             // The look thickens where the reply line was, or where it is now.
             container.run(true)
         }
-        show(controlBar, defaults.bool(forKey: ConchStatusItem.showControlBarKey))
-        show(fog, defaults.bool(forKey: ConchStatusItem.showConversationKey))
+        show(controlBar, overlays && defaults.bool(forKey: ConchStatusItem.showControlBarKey))
+        show(fog, overlays && defaults.bool(forKey: ConchStatusItem.showConversationKey))
         coverChanged()
     }
 
@@ -1132,6 +1137,9 @@ private struct ControlBarHost: View {
 /// its own object, so the control bar can watch it without watching the fog, whose motion publishes every frame.
 @MainActor
 final class ReviewQueue: ObservableObject {
+    /// The one walk: the panels' (`FloatingPanels.queue`), and the menu's with the overlays off and no panels installed.
+    static let shared = ReviewQueue()
+
     /// The review version the last click brought forward, and the versions handed off: for the next click to move on from.
     @Published private(set) var lastStaged: ReviewItem.ID?
     @Published private(set) var opened: Set<ReviewItem.ID> = []
@@ -1190,8 +1198,8 @@ final class ReviewQueue: ObservableObject {
     }
 
     /// A Ready for you row in the menu bar menu: that session's next item nobody has looked at, oldest filed first, else
-    /// its newest; opened as the pill opens one.
-    func open(session id: SessionRow.ID, store: StateStore, panels: FloatingPanels) {
+    /// its newest; opened as the pill opens one. No panels (the overlays off): opened in conch's window.
+    func open(session id: SessionRow.ID, store: StateStore, panels: FloatingPanels?) {
         let held = Self.held(store.state).filter { $0.rowID == id }
         guard let item = ready(in: held, state: store.state).first ?? held.last else { return }
         lastStaged = item.id
@@ -1232,14 +1240,14 @@ final class ReviewQueue: ObservableObject {
     private func stage(
         from origin: ConchStatusItem.OpenFrom,
         store: StateStore,
-        panels: FloatingPanels,
+        panels: FloatingPanels?,
         find: @escaping @MainActor (PublishedState?) -> (row: SessionRow, key: ReviewItem.ID?)?
     ) {
         let previous = staging
         staging = Task { @MainActor in
             await previous?.value
             guard let found = find(store.state) else { return }
-            panels.staged = found.row.id
+            panels?.staged = found.row.id
             guard await ConchStatusItem.open(found.row, from: origin, store: store, panels: panels), let key = found.key else { return }
             opened.insert(key)
             // So the phone, the terminal and the next launch agree with this window.

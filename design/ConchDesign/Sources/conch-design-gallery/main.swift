@@ -671,7 +671,8 @@ let menuInput = StatusMenu.Input(
     voice: .ready, quiet: false, exchangeActive: false, controlBar: true, conversation: true, collapsed: true,
     replyLine: true, drawing: false,
     ready: [.init(id: "r1", label: "Prime page wireframe"), .init(id: "r2", label: "Arch brand page")],
-    working: [.init(id: "w1", label: "Parser refactor"), .init(id: "w2", label: "Invite tests")]
+    working: [.init(id: "w1", label: "Parser refactor"), .init(id: "w2", label: "Invite tests")],
+    overlays: true
 )
 
 try render("m2-status-menu", width: 1180) {
@@ -689,7 +690,7 @@ try render("m2-status-menu", width: 1180) {
             Caption("Listening, the panel open, drawing")
             MenuPicture(rows: StatusMenu.rows(StatusMenu.Input(
                 voice: .listening, quiet: true, exchangeActive: true, controlBar: false, conversation: true, collapsed: false,
-                replyLine: false, drawing: true, ready: [], working: [.init(id: "w1", label: "Parser refactor")]
+                replyLine: false, drawing: true, ready: [], working: [.init(id: "w1", label: "Parser refactor")], overlays: true
             )), voice: .listening, detail: "You turned on the mic")
         }
     }

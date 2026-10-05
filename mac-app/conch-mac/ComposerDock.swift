@@ -209,7 +209,7 @@ final class ComposerDock: ObservableObject {
         observers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.update() }
         })
-        // The menu's Conversation Panel, Reply Line and With Panel Off.
+        // The menu's Conversation Panel, Reply Line and With Panel Off, and the overlays' own switch.
         observers.append(center.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.update() }
         })
@@ -269,7 +269,9 @@ final class ComposerDock: ObservableObject {
             replyLine: defaults.bool(forKey: ConchStatusItem.showReplyLineKey),
             withPanelOff: defaults.bool(forKey: ConchStatusItem.replyLineAloneKey),
             held: holds > 0 || NSApp.modalWindow != nil || ProcessInfo.processInfo.systemUptime < holdUntil
-                || steering.held(at: ProcessInfo.processInfo.systemUptime)
+                || steering.held(at: ProcessInfo.processInfo.systemUptime),
+            // Switched off while conch runs (`ConchOverlays`): the input comes home and stays there.
+            overlays: ConchStatusItem.overlaysOn
         )
     }
 
