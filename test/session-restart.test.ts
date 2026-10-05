@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { dispatchRuntimeControlMessage, injectTimeoutFor } from "../src/daemon.ts";
-import { readProcessArgs, restartRequest, terminalSessionCommand } from "../src/session-lifecycle.ts";
+import { CLOSE_TIMED_STEPS_MS, readProcessArgs, restartRequest, terminalSessionCommand } from "../src/session-lifecycle.ts";
 import { validateControlMessage, validateControlResponse } from "../src/settings.ts";
 
 /**
@@ -117,8 +117,15 @@ describe("the restart request on the wire", () => {
   });
 
   test("a restart gets longer than a close: it opens a Terminal window afterwards", () => {
-    expect(injectTimeoutFor(JSON.stringify({ kind: "session-close", restart: true }))).toBe(20_000);
-    expect(injectTimeoutFor(JSON.stringify({ kind: "session-close" }))).toBe(12_000);
+    expect(injectTimeoutFor(JSON.stringify({ kind: "session-close", restart: true }))).toBe(55_000);
+    expect(injectTimeoutFor(JSON.stringify({ kind: "session-close" }))).toBe(45_000);
+  });
+
+  // The phone's answer comes through this budget: shorter than the close itself, and a close that worked
+  // reads on the phone as "The Mac didn't confirm a clean session exit." The Mac app's own is the same 45 s.
+  test("a close's budget outlasts the close's own timed steps, with room for the lookups before them", () => {
+    expect(CLOSE_TIMED_STEPS_MS).toBe(35_300);
+    expect(injectTimeoutFor(JSON.stringify({ kind: "session-close" }))).toBeGreaterThanOrEqual(CLOSE_TIMED_STEPS_MS + 5_000);
   });
 });
 

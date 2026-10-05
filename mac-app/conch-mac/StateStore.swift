@@ -61,8 +61,14 @@ final class StateStore: ObservableObject {
     // several seconds; timing out first invites a duplicate start or a second
     // close against a session already leaving normally.
     private static let sessionLifecycleTimeout: TimeInterval = 12
-    /// A restart closes (up to the close's own 12s) and then opens a Terminal window.
-    private static let sessionRestartTimeout: TimeInterval = 22
+    /// A close outlasts the daemon's own worst case, or a close that worked reads as
+    /// "Daemon did not reply": up to 10 s for Terminal to raise the tab, 10 s for it to
+    /// take Ctrl-D, 15 s for the agent to leave (`CLOSE_TIMED_STEPS_MS`), plus the
+    /// lookups before them. 2026-10-05: a 41 MB session's Terminal missed the old 4 s
+    /// budget, and another session left slower than the old 4 s wait.
+    private static let sessionCloseTimeout: TimeInterval = 45
+    /// A restart closes (up to the close's own 45 s) and then opens a Terminal window.
+    private static let sessionRestartTimeout: TimeInterval = 55
 
     private let reader: StateSnapshotReader
     private let socketClient: ConchSocketClient
@@ -894,7 +900,7 @@ final class StateStore: ObservableObject {
             guard !Task.isCancelled else { return }
             let outcome = await socketClient.request(
                 ConchSessionCloseRequest(sessionId: row.id, restart: restart ? true : nil),
-                timeout: restart ? Self.sessionRestartTimeout : Self.sessionLifecycleTimeout
+                timeout: restart ? Self.sessionRestartTimeout : Self.sessionCloseTimeout
             )
             guard let self else { return }
             finishClose(row, outcome: outcome, restart: restart)

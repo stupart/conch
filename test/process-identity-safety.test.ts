@@ -242,7 +242,9 @@ test("Close and Start wait for an existing input transaction", async () => {
   // Close is three scripts now — the raise, the Ctrl-D inside a front-window guard, and (once
   // the pid is confirmed gone, as pidIsAlive here says immediately) closing its tab and
   // returning to conch — and Start is the fourth. What this test pins is that none of them
-  // ran while the queue was held.
+  // ran while the queue was held. The tab close is a transaction of its own that the close's
+  // reply doesn't wait for, so the queue is drained before counting.
+  await withUITransaction(async () => {});
   expect(spawned).toHaveLength(4);
   expect(spawned.filter((args) => args.join(" ").includes("conch-focus-guard"))).toHaveLength(1);
 });

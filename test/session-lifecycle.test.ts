@@ -1,8 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { withUITransaction } from "../src/inject.ts";
 import {
   closeTerminalSession,
   startTerminalSession,
+  stopBackgroundSession,
   terminalSessionCommand,
+  type SessionLifecycleDependencies,
   type SessionLifecycleProcess,
 } from "../src/session-lifecycle.ts";
 
@@ -16,6 +19,32 @@ function settledProcess(stdout = "", code = 0): SessionLifecycleProcess {
 }
 
 const identityFor = (pid: number) => ({ pid, birth: "1000.000001", birthTimeMs: 1_000_000.001, executable: "/opt/bin/claude", ttyDevice: 7 });
+
+/**
+ * The tab close is its own UI transaction, queued once the pid is gone, and the close's reply doesn't wait for it.
+ * The queue is first in, first out, so an empty transaction settles only after it has run.
+ */
+const uiQueueDrained = (): Promise<void> => withUITransaction(async () => {});
+
+function within<T>(work: Promise<T>, ms = 1_000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  return Promise.race([work, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("test deadline")), ms); })])
+    .finally(() => clearTimeout(timer));
+}
+
+/** An osascript that answers only once it is stopped, as one does on a Terminal too busy to reply. */
+function unansweredProcess(): SessionLifecycleProcess {
+  let observedExit!: (code: number) => void;
+  return {
+    exited: new Promise<number>((resolve) => { observedExit = resolve; }),
+    stdout: null,
+    stderr: null,
+    cancel: () => observedExit(137),
+  };
+}
+
+const isTabClose = (args: string[]) => args.join(" ").includes('tell application "conch"');
+const isCtrlD = (args: string[]) => args.join(" ").includes('keystroke "d"');
 
 describe("native Terminal session lifecycle", () => {
   test("builds new and resumed agent commands without tmux", () => {
@@ -80,6 +109,7 @@ describe("native Terminal session lifecycle", () => {
           return settledProcess("ok\n");
         },
       });
+      await uiQueueDrained();
       const pressCall = calls.find((args) => args.join(" ").includes('keystroke "d"'));
       if (!pressCall) throw new Error("Ctrl-D script never ran");
       const script = pressCall.join(" ");
@@ -99,7 +129,7 @@ describe("native Terminal session lifecycle", () => {
       }
       expect(script).not.toMatch(/kill|SIG|tmux/);
       // The tidy-up script runs strictly after the Ctrl-D script, only once the pid is
-      // confirmed gone (waitForExit above has already returned by this point).
+      // confirmed gone, in a UI transaction of its own.
       const tidyIndex = calls.findIndex((args) => args.join(" ").includes('tell application "conch"'));
       expect(tidyIndex).toBeGreaterThan(calls.indexOf(pressCall));
       const tidyScript = calls[tidyIndex]!.join(" ");
@@ -110,6 +140,7 @@ describe("native Terminal session lifecycle", () => {
     });
   }
 
+  // A raise that times out stops there: nothing was typed, so the close says the session is still open.
   test("a helper timeout cancels osascript but never signals the agent pid", async () => {
     let cancelled = false;
     let observedExit!: (code: number) => void;
@@ -126,7 +157,7 @@ describe("native Terminal session lifecycle", () => {
           cancel: () => { cancelled = true; observedExit(0); },
         };
       },
-    })).rejects.toThrow("automation timed out");
+    })).rejects.toThrow("so conch didn't send Ctrl-D. The session is still open.");
     expect(cancelled).toBe(true);
   });
 
@@ -145,7 +176,8 @@ describe("native Terminal session lifecycle", () => {
         calls.push(args);
         return settledProcess("ok\n");
       },
-    })).rejects.toThrow("did not exit cleanly");
+    })).rejects.toThrow("Ctrl-D was sent, but the session is still running after 200 ms. It may be finishing up; check its Terminal tab.");
+    await uiQueueDrained();
     expect(calls.some((args) => args.join(" ").includes('tell application "conch"'))).toBe(false);
   });
 
@@ -200,6 +232,7 @@ describe("native Terminal session lifecycle", () => {
         return settledProcess("ok\n");
       },
     });
+    await uiQueueDrained();
     const tidyUp = calls.find((args) => args.join(" ").includes('tell application "conch"'));
     if (!tidyUp) throw new Error("tidy-up script did not run");
     const script = tidyUp.join(" ");
@@ -256,6 +289,186 @@ describe("native Terminal session lifecycle", () => {
         return settledProcess("ok\n");
       },
     }); // resolving at all is the assertion — a throw here would fail the test
+    await uiQueueDrained();
     expect(calls.some((args) => args.join(" ").includes('tell application "conch"'))).toBe(true);
+  });
+});
+
+/**
+ * 2026-10-05, with 30+ sessions open, two closes failed while the sessions were leaving normally. One "did not exit
+ * cleanly after Ctrl-D" at the 4 s wait, and an injection 30 s later found its pid gone. The other, a session with a
+ * 41 MB transcript, hit "Terminal automation timed out" at 4 s; it was still running 70 s later, and left once Tyler
+ * went to its tab by hand. A close now gives Terminal longer, waits longer for the pid, and does that waiting
+ * outside the UI queue so every send to every other session doesn't wait on it.
+ */
+describe("closing a slow session", () => {
+  const slowClose = (pid: number, tty: string, extra: SessionLifecycleDependencies): Promise<void> => closeTerminalSession(pid, {
+    expectedIdentity: identityFor(pid), processIdentity: identityFor, backend: "claude",
+    ttyForPid: async () => tty,
+    sleep: async () => {},
+    ...extra,
+  });
+
+  test("a session that takes longer than 4 s to leave closes, and its tab is closed", async () => {
+    // 60 looks at 100 ms apart: 6 s, past the old 40-look (4 s) wait, inside the new 15 s one.
+    let looks = 0;
+    const calls: string[][] = [];
+    await slowClose(9101, "ttys091", {
+      pidIsAlive: async () => ++looks <= 60,
+      spawn(args) {
+        calls.push(args);
+        return settledProcess("ok\n");
+      },
+    });
+    expect(looks).toBe(61);
+    await uiQueueDrained();
+    expect(calls.filter(isTabClose)).toHaveLength(1);
+  });
+
+  test("a Ctrl-D script that times out is not a failure when the session then leaves", async () => {
+    const calls: string[][] = [];
+    let looks = 0;
+    await slowClose(9102, "ttys092", {
+      automationTimeoutMs: 20,
+      pidIsAlive: async () => ++looks <= 2,
+      // The raise answers; the presses' script doesn't, as on a Terminal busy with a 41 MB session.
+      spawn(args) {
+        calls.push(args);
+        return isCtrlD(args) ? unansweredProcess() : settledProcess("ok\n");
+      },
+    });
+    // It waited for the pid rather than failing on the script: the keys may have landed before osascript stopped.
+    expect(looks).toBe(3);
+    await uiQueueDrained();
+    const tabClose = calls.findIndex(isTabClose);
+    expect(tabClose).toBeGreaterThan(calls.findIndex(isCtrlD));
+  });
+
+  test("a Ctrl-D script that times out, with the session still running after the wait, says so and leaves the tab", async () => {
+    const calls: string[][] = [];
+    await expect(slowClose(9103, "ttys093", {
+      automationTimeoutMs: 20,
+      exitPollAttempts: 3,
+      pidIsAlive: async () => true,
+      spawn(args) {
+        calls.push(args);
+        return isCtrlD(args) ? unansweredProcess() : settledProcess("ok\n");
+      },
+    })).rejects.toThrow("Terminal was slow to take Ctrl-D, and the session is still running. Check its Terminal tab.");
+    await uiQueueDrained();
+    expect(calls.some(isTabClose)).toBe(false);
+  });
+
+  test("a raise that times out fails at once, without pressing Ctrl-D or waiting for an exit", async () => {
+    const calls: string[][] = [];
+    let looks = 0;
+    await expect(slowClose(9104, "ttys094", {
+      automationTimeoutMs: 20,
+      pidIsAlive: async () => { looks += 1; return true; },
+      spawn(args) {
+        calls.push(args);
+        return unansweredProcess();
+      },
+    })).rejects.toThrow("Terminal didn't respond within 20 ms, so conch didn't send Ctrl-D. The session is still open.");
+    expect(calls).toHaveLength(1);
+    expect(calls.some(isCtrlD)).toBe(false);
+    expect(looks).toBe(0);
+  });
+
+  test("while a close waits for its pid, other UI work goes ahead", async () => {
+    let alive = true;
+    let firstLook!: () => void;
+    const waiting = new Promise<void>((resolve) => { firstLook = resolve; });
+    const closing = slowClose(9105, "ttys095", {
+      pidIsAlive: async () => { firstLook(); return alive; },
+      sleep: () => Bun.sleep(1),
+      exitPollAttempts: 100_000,
+      spawn: () => settledProcess("ok\n"),
+    });
+    try {
+      await within(waiting);
+      // A start in the middle of the wait: under the old single transaction it queued until the close had finished.
+      let started: string[] = [];
+      await within(startTerminalSession({ backend: "claude", cwd: "/tmp/repo" }, {
+        which: () => "/opt/bin/claude",
+        isDirectory: () => true,
+        spawn(args) {
+          started = args;
+          return settledProcess("/dev/ttys096\n");
+        },
+      }), 500);
+      expect(started.at(-1)).toBe("cd -- '/tmp/repo' && exec claude");
+    } finally {
+      alive = false;
+      await closing.catch(() => {});
+    }
+    await closing;
+  });
+
+  test("the tab is closed only after the pid is gone, in its own turn behind UI work that went ahead meanwhile", async () => {
+    const events: string[] = [];
+    let alive = true;
+    let firstLook!: () => void;
+    const waiting = new Promise<void>((resolve) => { firstLook = resolve; });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let otherRunning!: () => void;
+    const running = new Promise<void>((resolve) => { otherRunning = resolve; });
+    const closing = slowClose(9106, "ttys097", {
+      pidIsAlive: async () => {
+        firstLook();
+        if (!alive) events.push("exited");
+        else if (!events.includes("alive")) events.push("alive");
+        return alive;
+      },
+      sleep: () => Bun.sleep(1),
+      exitPollAttempts: 100_000,
+      spawn(args) {
+        if (isCtrlD(args)) events.push("ctrl-d");
+        if (isTabClose(args)) events.push("tab closed");
+        return settledProcess("ok\n");
+      },
+    });
+    let other: Promise<void> | undefined;
+    try {
+      await within(waiting);
+      // A send to another session, still holding the UI queue when this one's pid leaves.
+      other = withUITransaction(async () => {
+        events.push("other send");
+        otherRunning();
+        await held;
+        events.push("other send done");
+      });
+      await within(running);
+      alive = false;
+      // The reply doesn't wait on the queue: the session has closed, whatever else is typing.
+      await within(closing);
+      expect(events).not.toContain("tab closed");
+    } finally {
+      alive = false;
+      release();
+      await closing.catch(() => {});
+      await other?.catch(() => {});
+    }
+    await uiQueueDrained();
+    expect(events).toEqual(["ctrl-d", "alive", "other send", "exited", "other send done", "tab closed"]);
+  });
+
+  test("a background job's stop waits as long as a close for its process to leave", async () => {
+    let looks = 0;
+    await stopBackgroundSession("f31f0d15", 9107, {
+      which: () => "/opt/bin/claude",
+      spawn: () => settledProcess(),
+      pidIsAlive: async () => ++looks <= 60,
+      sleep: async () => {},
+    });
+    expect(looks).toBe(61);
+    await expect(stopBackgroundSession("f31f0d15", 9108, {
+      which: () => "/opt/bin/claude",
+      spawn: () => settledProcess(),
+      pidIsAlive: async () => true,
+      sleep: async () => {},
+      exitPollAttempts: 2,
+    })).rejects.toThrow("claude stop was sent, but the background session is still running after 200 ms. It may be finishing up.");
   });
 });

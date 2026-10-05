@@ -43,7 +43,10 @@ describe("Mac Phase 2 session lifecycle", () => {
     expect(socket).toContain('case "session-closed"');
     expect(store).toContain("ConchSessionCloseRequest(sessionId: row.id, restart: restart ? true : nil)");
     expect(store).toContain("private static let sessionLifecycleTimeout: TimeInterval = 12");
-    expect(store).toContain("timeout: restart ? Self.sessionRestartTimeout : Self.sessionLifecycleTimeout");
+    // A close outlasts the daemon's own worst case (session-lifecycle.ts `CLOSE_TIMED_STEPS_MS`, 35.3 s).
+    expect(store).toContain("private static let sessionCloseTimeout: TimeInterval = 45");
+    expect(store).toContain("private static let sessionRestartTimeout: TimeInterval = 55");
+    expect(store).toContain("timeout: restart ? Self.sessionRestartTimeout : Self.sessionCloseTimeout");
     expect(dashboard).toMatch(/Menu \{[\s\S]*Button\("Close session…", role: \.destructive\)/);
     expect(dashboard).toMatch(/\.alert\([\s\S]*Button\("Cancel", role: \.cancel\)[\s\S]*Button\("Close Session", role: \.destructive\)/);
     expect(dashboard).toContain("store.closeSession(row)");

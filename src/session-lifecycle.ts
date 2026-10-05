@@ -663,21 +663,84 @@ async function defaultPidIsAlive(pid: number): Promise<boolean> {
 }
 
 /**
+ * What a close gives each of its two Terminal scripts, the raise and the Ctrl-D presses, unless a test sets
+ * `automationTimeoutMs`. Injection keeps `runUICommand`'s 4 s.
+ *
+ * 2026-10-05, 32 sessions open: closing one whose transcript was 41 MB failed "Terminal automation timed out" at
+ * 4 s. The session was still running 70 s later and left once Tyler went to its tab by hand. A raise normally takes
+ * 350–400 ms, so 4 s only ran out on a busy Terminal or a heavy session, which is when people close one.
+ */
+const CLOSE_AUTOMATION_TIMEOUT_MS = 10_000;
+
+/**
+ * How long a close waits for the agent's pid to leave after Ctrl-D (or after `claude stop`). 2026-10-05: a close
+ * reported "did not exit cleanly" after 4 s, and an injection 30 s later found that pid gone: it had left, slowly.
+ * The Mac and phone wait longer than a close can take (`sessionCloseTimeout`, `injectTimeoutFor`).
+ */
+const CLOSE_EXIT_WAIT_MS = 15_000;
+const EXIT_POLL_INTERVAL_MS = 100;
+/** Between raising the tab and pressing Ctrl-D, as injection waits for a raise to settle. */
+const RAISE_SETTLE_MS = 300;
+
+/**
+ * The longest a Terminal close's own timed steps can run: the raise, the settle, the presses, the exit wait.
+ * Whatever waits on a close's reply (the Mac app, the phone bridge) has to wait longer than this, with room for the
+ * lookups before it (two tmux servers' panes at up to 2 s each, a `ps`), or it reports a close that worked as failed.
+ */
+export const CLOSE_TIMED_STEPS_MS = CLOSE_AUTOMATION_TIMEOUT_MS + RAISE_SETTLE_MS + CLOSE_AUTOMATION_TIMEOUT_MS + CLOSE_EXIT_WAIT_MS;
+
+/** "10 s", or "5 ms" for a test's short budget. */
+function duration(ms: number): string {
+  return ms >= 1_000 ? `${Math.round(ms / 1_000)} s` : `${ms} ms`;
+}
+
+/** What the presses step leaves the exit wait to judge: the tab they went to, and whether osascript was stopped. */
+type ExitKeysSent = { tty: string; pressTimedOut: boolean } | { tty?: undefined; pressTimedOut?: undefined };
+
+/**
  * Ctrl-D asks the CLI to leave through its normal EOF path; no signal is sent
  * to the agent. Once that pid is confirmed gone, its Terminal tab is closed
  * and conch is brought forward — see `closeSessionTabAndReturn`.
+ *
+ * Three steps, and only the first and last hold the UI transaction: the raise and the presses; then the wait for
+ * the pid, which can take seconds on a heavy session and touches no window, so injections and sends to other
+ * sessions go ahead meanwhile; then the tab close, queued as its own transaction once the pid is gone. The reply
+ * does not wait for that last one: the session has closed by then, and a queue of other UI work must not turn into
+ * a client giving up on a close that worked.
  */
-export function closeTerminalSession(
+export async function closeTerminalSession(
   pid: number,
   dependencies: SessionLifecycleDependencies = {},
 ): Promise<void> {
-  return withUITransaction(() => closeTerminalSessionInTransaction(pid, dependencies));
+  const sent = await withUITransaction(() => sendExitKeys(pid, dependencies));
+  if (!(await waitForExit(pid, dependencies))) {
+    const waited = duration(exitWait(dependencies).totalMs);
+    throw new Error(!sent.tty
+      ? `Ctrl-D was sent, but the background session is still running after ${waited}. It may be finishing up.`
+      : sent.pressTimedOut
+      ? "Terminal was slow to take Ctrl-D, and the session is still running. Check its Terminal tab."
+      // The tab stays open on purpose: whatever the process is still doing is on it, for you to look at.
+      : `Ctrl-D was sent, but the session is still running after ${waited}. It may be finishing up; check its Terminal tab.`);
+  }
+  if (sent.tty) {
+    const { tty } = sent;
+    void withUITransaction(() => closeSessionTabAndReturn(tty, terminalOsa(dependencies))).catch(() => {});
+  }
 }
 
-async function closeTerminalSessionInTransaction(
+/** AppleScript lines (`-e`) and argv, run as a bounded UI helper with these dependencies' timeout and scope. */
+function terminalOsa(dependencies: SessionLifecycleDependencies): OsaRunner {
+  return (lines, argv = []) => runTerminalUI(
+    ["osascript", ...lines.flatMap((line) => ["-e", line]), ...(argv.length ? ["--", ...argv] : [])],
+    dependencies,
+  );
+}
+
+/** The close's first UI transaction: raise the tab and press Ctrl-D, or send it into a background session's pane. */
+async function sendExitKeys(
   pid: number,
   dependencies: SessionLifecycleDependencies = {},
-): Promise<void> {
+): Promise<ExitKeysSent> {
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("session has no routable pid");
   const probe = dependencies.processIdentity ?? readProcessIdentity;
   const expected = dependencies.expectedIdentity;
@@ -699,8 +762,7 @@ async function closeTerminalSessionInTransaction(
       }
       if (press + 1 < adapterFor(dependencies.backend).exitKeystrokes) await (dependencies.sleep ?? Bun.sleep)(150);
     }
-    await waitForExit(pid, dependencies, "background session did not exit cleanly after Ctrl-D");
-    return;
+    return {};
   }
   const tty = await (dependencies.ttyForPid ?? defaultTtyForPid)(pid);
   if (!tty || tty === "??") throw new Error("session is not attached to a Terminal tty");
@@ -710,13 +772,16 @@ async function closeTerminalSessionInTransaction(
   // typing into it are two moments, and the UI queue only holds conch's own actions apart. A
   // Cmd-Tab in between used to send a global Ctrl-D into whatever had come forward. The guard
   // re-reads the frontmost app and the front tab's tty inside the script that presses the key.
-  const osa: OsaRunner = (lines, argv = []) => runTerminalUI(
-    ["osascript", ...lines.flatMap((line) => ["-e", line]), ...(argv.length ? ["--", ...argv] : [])],
-    dependencies,
-  );
-  const focused = checkedTerminalResult(await focusSessionWindow(tty, osa));
+  const timeoutMs = dependencies.automationTimeoutMs ?? CLOSE_AUTOMATION_TIMEOUT_MS;
+  const osa = terminalOsa({ ...dependencies, automationTimeoutMs: timeoutMs });
+  const raised = await focusSessionWindow(tty, osa);
+  // A timeout says so with an empty stderr; a sealed UI scope names itself there and is reported as it was.
+  if (raised.timedOut && !raised.stderr) {
+    throw new Error(`Terminal didn't respond within ${duration(timeoutMs)}, so conch didn't send Ctrl-D. The session is still open.`);
+  }
+  const focused = checkedTerminalResult(raised);
   if (focused.text.trim() !== "ok") throw new Error("session Terminal tab was not found");
-  await (dependencies.sleep ?? Bun.sleep)(300); // let the raise settle, as injection does
+  await (dependencies.sleep ?? Bun.sleep)(RAISE_SETTLE_MS);
   verify();
   // As many presses as this agent's exit takes (`exitKeystrokes`), in ONE script so
   // the second lands inside Claude Code's 800ms "press again" window, and each one
@@ -727,18 +792,17 @@ async function closeTerminalSessionInTransaction(
   for (let i = 1; i < adapterFor(dependencies.backend).exitKeystrokes; i += 1) {
     presses.push("delay 0.15", ...FOCUS_GUARD_LINES, press);
   }
-  const closed = checkedTerminalResult(await focusedAction(tty, osa, presses));
+  const pressed = await focusedAction(tty, osa, presses);
+  // Stopped part-way, osascript may already have pressed: a slow Terminal takes the keys and answers late.
+  // Nothing proves either way here, so the exit wait decides, and only a pid still running is a failure.
+  if (pressed.timedOut && !pressed.stderr) return { tty, pressTimedOut: true };
+  const closed = checkedTerminalResult(pressed);
   if (closed.text.trim() !== "ok") {
     throw new Error(closed.text.trim() === "front-window-changed"
       ? "another window came to the front on the Mac; Ctrl-D was not sent"
       : "session Terminal tab was not found");
   }
-  // Only after the pid is actually gone: a poll timeout throws above and skips
-  // everything below, on purpose — if the process is still stuck, the tab (and
-  // whatever it's showing) has to stay on screen for the user to look at, not
-  // get closed out from under them.
-  await waitForExit(pid, dependencies, "session did not exit cleanly after Ctrl-D");
-  await closeSessionTabAndReturn(tty, osa);
+  return { tty, pressTimedOut: false };
 }
 
 /**
@@ -762,9 +826,9 @@ async function closeTerminalSessionInTransaction(
  * running in the tab, and the only process that was ever running there just
  * exited. It can still appear if someone has Terminal's own "Ask before
  * closing" preference set to Always; conch does not override a person's
- * Terminal preferences, and the automation timeout below (same one every
- * other osascript call here already carries) keeps a stuck prompt from
- * hanging conch rather than just sitting on screen.
+ * Terminal preferences, and the automation timeout below (runUICommand's
+ * 4 s, not the close's longer one: it holds the UI queue) keeps a stuck
+ * prompt from hanging conch rather than just sitting on screen.
  *
  * Activating conch is the second statement in the SAME script, after the
  * close, not a separate call before it: if closing the tab errors, the
@@ -773,7 +837,9 @@ async function closeTerminalSessionInTransaction(
  * Best-effort and swallowed: the session itself already closed by this
  * point (the pid is gone), so nothing here — a tab that outlives its
  * process, a slow Finder, conch not coming forward — is allowed to turn a
- * successful close into a reported failure.
+ * successful close into a reported failure. It runs in a UI transaction of
+ * its own, queued once the pid is gone, so it waits its turn behind any
+ * send that went ahead during the exit wait.
  */
 async function closeSessionTabAndReturn(tty: string, osa: OsaRunner): Promise<void> {
   const script = `
@@ -792,22 +858,30 @@ tell application "conch" to activate`;
   } catch {}
 }
 
-async function waitForExit(
-  pid: number,
-  dependencies: SessionLifecycleDependencies,
-  failure: string,
-): Promise<void> {
+/** How many looks, how far apart, and so how long a wait for an exit lasts. */
+function exitWait(dependencies: SessionLifecycleDependencies): { attempts: number; intervalMs: number; totalMs: number } {
+  const intervalMs = dependencies.exitPollIntervalMs ?? EXIT_POLL_INTERVAL_MS;
+  const attempts = dependencies.exitPollAttempts ?? Math.ceil(CLOSE_EXIT_WAIT_MS / intervalMs);
+  return { attempts, intervalMs, totalMs: attempts * intervalMs };
+}
+
+/**
+ * True once the pid is gone, or is no longer the process that was asked to leave; false when the wait ran out. Never
+ * inside a UI transaction. Bounded by the clock as well as by the count, so slow `ps` calls on a loaded Mac can't
+ * stretch it past what the Mac and phone wait for the reply.
+ */
+async function waitForExit(pid: number, dependencies: SessionLifecycleDependencies): Promise<boolean> {
   const pidIsAlive = dependencies.pidIsAlive ?? defaultPidIsAlive;
   const sleep = dependencies.sleep ?? Bun.sleep;
-  const attempts = dependencies.exitPollAttempts ?? 40;
-  const intervalMs = dependencies.exitPollIntervalMs ?? 100;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    if (!(await pidIsAlive(pid))) return;
+  const { attempts, intervalMs, totalMs } = exitWait(dependencies);
+  const deadline = Date.now() + totalMs;
+  for (let attempt = 1; ; attempt += 1) {
+    if (!(await pidIsAlive(pid))) return true;
     if (dependencies.expectedIdentity && !sameProcessIdentity(dependencies.expectedIdentity,
-      (dependencies.processIdentity ?? readProcessIdentity)(pid))) return;
+      (dependencies.processIdentity ?? readProcessIdentity)(pid))) return true;
+    if (attempt >= attempts || Date.now() >= deadline) return false;
     await sleep(intervalMs);
   }
-  throw new Error(failure);
 }
 
 /**
@@ -838,8 +912,8 @@ export async function stopBackgroundSession(
     processText(child.stderr),
   ]);
   if (code !== 0) throw new Error(stderr.trim() || `${executable} stop returned ${code}`);
-  if (agentPid && agentPid > 0) {
-    await waitForExit(agentPid, dependencies, "background session did not stop");
+  if (agentPid && agentPid > 0 && !(await waitForExit(agentPid, dependencies))) {
+    throw new Error(`${executable} stop was sent, but the background session is still running after ${duration(exitWait(dependencies).totalMs)}. It may be finishing up.`);
   }
 }
 

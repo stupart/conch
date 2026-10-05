@@ -173,7 +173,7 @@ describe("Phase 2 runtime controls", () => {
 
   test("the phone waits long enough for native Terminal lifecycle work", () => {
     expect(injectTimeoutFor(JSON.stringify({ kind: "session-start" }))).toBe(8_000);
-    expect(injectTimeoutFor(JSON.stringify({ kind: "session-close" }))).toBe(12_000);
+    expect(injectTimeoutFor(JSON.stringify({ kind: "session-close" }))).toBe(45_000);
   });
 });
 
