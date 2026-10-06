@@ -80,7 +80,7 @@ export interface CodexThreadsOptions {
  * Eight hours, not thirty minutes. The lock tells us which single thread Codex
  * has OPEN, but a person works across several in a day and Codex locks only the
  * one it is writing — measured exactly that: "asset generator" held the lock
- * after fourteen idle hours while "humain", used seventy-one minutes earlier,
+ * after fourteen idle hours while "release notes", used seventy-one minutes earlier,
  * had none and vanished. Tyler noticed immediately, and he was right to: a
  * session he had been in an hour ago is obviously still his.
  *
@@ -125,7 +125,7 @@ export function machineBootedAtMs(): number | null {
  *
  * A session held there never starts, never registers, and from outside looks
  * identical to one that failed — which is exactly what happened to Tyler
- * resuming into `~/arch-swap`.
+ * resuming into `~/morrow-swap`.
  *
  * `config.toml` records the answer per project as `projects.<path>.trust_level`,
  * so the question is answerable BEFORE launching rather than discovered after.
@@ -740,7 +740,7 @@ export function readCodexRolloutTail(
       status: "idle",
       // Machine-to-machine traffic is not a reply. A session that spawns
       // subagents carries their protocol envelopes in the same stream; Tyler's
-      // "humain" thread ended on "Message Type: FINAL_ANSWER / Task name:
+      // "release notes" thread ended on "Message Type: FINAL_ANSWER / Task name:
       // /root / Sender: ...", addressed to a parent agent rather than to him.
       text: isInterAgentEnvelope(text) ? "" : text,
       ...(error ? { error } : {}),

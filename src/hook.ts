@@ -345,7 +345,7 @@ export async function runHook(cfg: Config): Promise<void> {
   const label = sessionLabel(session, payload.cwd);
 
   // Belt-and-braces: also drop by the registry entry when we can read it.
-  // Headless/sdk-cli routines (e.g. boatker's cron runs) otherwise get announced
+  // Headless/sdk-cli routines (e.g. a nightly cron job) otherwise get announced
   // and steal the mic. An absent/unknown session falls through (don't over-drop).
   if (session && !isEngageable(session)) return;
 

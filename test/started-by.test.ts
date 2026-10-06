@@ -159,7 +159,7 @@ describe("registrySnapshot — a fake registry in both directions", () => {
 
 describe("the panel row model nests a started session under its starter", () => {
   const starter: SessionInfo = { sessionId: "s1", name: "conch", status: "idle", statusUpdatedAt: 50, pid: 100 };
-  const other: SessionInfo = { sessionId: "s2", name: "arch", status: "busy", statusUpdatedAt: 50, pid: 400 };
+  const other: SessionInfo = { sessionId: "s2", name: "morrow", status: "busy", statusUpdatedAt: 50, pid: 400 };
   const started: SessionInfo = {
     sessionId: "c1", backend: "codex", name: "codex review", status: "busy", statusUpdatedAt: 60, pid: 102,
     startedBySessionId: "s1",

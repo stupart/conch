@@ -25,7 +25,7 @@ final class PanelHistoryTests: XCTestCase {
     // MARK: - The turns
 
     func testASessionWithNoLiveWindowIsItsRecordedConversation() {
-        let record = reader("atlas", [
+        let record = reader("morrow", [
             message("r1", "user", "Lay out the amount field"),
             HistoryItem(id: "r2", kind: "tool_call", toolName: "Edit", preview: "{\"file\":\"Amount.tsx\"}"),
             HistoryItem(id: "r3", kind: "tool_result", preview: "ok"),
@@ -33,7 +33,7 @@ final class PanelHistoryTests: XCTestCase {
             HistoryItem(id: "r5", kind: "material", preview: "screenshot"),
             message("r6", "assistant", "   "),
         ])
-        let turns = PanelHistory.turns(session: "atlas", reader: record, live: [], liveItems: [], liveStartsAt: nil, whole: { _ in nil })
+        let turns = PanelHistory.turns(session: "morrow", reader: record, live: [], liveItems: [], liveStartsAt: nil, whole: { _ in nil })
         XCTAssertEqual(turns, [
             ConversationTurn(id: "r1", fromYou: true, text: "Lay out the amount field"),
             ConversationTurn(id: "r4", fromYou: false, text: "Laid out."),
@@ -46,23 +46,23 @@ final class PanelHistoryTests: XCTestCase {
             ConversationTurn(id: "a-3", fromYou: false, text: "Done."),
         ]
         // By id: the record's copy of the live window's first message is the live one's.
-        let byID = reader("atlas", [
+        let byID = reader("morrow", [
             message("r1", "user", "One", native: "u-1"),
             message("r2", "assistant", "Two", native: "a-1"),
             message("r3", "user", "And the heading?", native: "u-3"),
             message("r4", "assistant", "Done.", native: "a-3"),
         ])
         // The live window's tool row names the seam too: every item it holds counts, not only its turns.
-        let turns = PanelHistory.turns(session: "atlas", reader: byID, live: live, liveItems: ["tool:call_9", "u-3", "a-3"], liveStartsAt: nil, whole: { _ in nil })
+        let turns = PanelHistory.turns(session: "morrow", reader: byID, live: live, liveItems: ["tool:call_9", "u-3", "a-3"], liveStartsAt: nil, whole: { _ in nil })
         XCTAssertEqual(turns.map(\.id), ["r1", "r2", "u-3", "a-3"], "the end of the conversation is drawn once")
 
-        let seamAtTool = reader("atlas", [
+        let seamAtTool = reader("morrow", [
             message("r1", "user", "One", native: "u-1"),
             HistoryItem(id: "r2", kind: "tool_call", nativeId: "call_9"),
             message("r3", "assistant", "Two", native: "a-1"),
         ])
         XCTAssertEqual(
-            PanelHistory.turns(session: "atlas", reader: seamAtTool, live: live, liveItems: ["tool:call_9", "u-3", "a-3"], liveStartsAt: nil, whole: { _ in nil }).map(\.id),
+            PanelHistory.turns(session: "morrow", reader: seamAtTool, live: live, liveItems: ["tool:call_9", "u-3", "a-3"], liveStartsAt: nil, whole: { _ in nil }).map(\.id),
             ["r1", "u-3", "a-3"]
         )
 
@@ -79,11 +79,11 @@ final class PanelHistoryTests: XCTestCase {
     }
 
     func testAReaderStillOnAnotherSessionAddsNothing() {
-        let other = reader("dayloop", [message("r1", "user", "Dayloop's words")])
-        let live = [ConversationTurn(id: "a", fromYou: false, text: "Atlas's own")]
-        XCTAssertEqual(PanelHistory.turns(session: "atlas", reader: other, live: live, liveItems: ["a"], liveStartsAt: nil, whole: { _ in nil }), live,
+        let other = reader("lowtide", [message("r1", "user", "Lowtide's words")])
+        let live = [ConversationTurn(id: "a", fromYou: false, text: "Morrow's own")]
+        XCTAssertEqual(PanelHistory.turns(session: "morrow", reader: other, live: live, liveItems: ["a"], liveStartsAt: nil, whole: { _ in nil }), live,
                        "another session's messages must never show under this one's name")
-        XCTAssertEqual(PanelHistory.turns(session: "atlas", reader: other, live: [], liveItems: [], liveStartsAt: nil, whole: { _ in nil }), [])
+        XCTAssertEqual(PanelHistory.turns(session: "morrow", reader: other, live: [], liveItems: [], liveStartsAt: nil, whole: { _ in nil }), [])
     }
 
     func testARecordedMessageSaysItsWholeBodyOnceReadAndIsMarkedCutUntilThen() {
@@ -97,16 +97,16 @@ final class PanelHistoryTests: XCTestCase {
         XCTAssertEqual(PanelHistory.turn(recorded: message("r4", "user", "Mine"), whole: nil)?.fromYou, true)
         XCTAssertNil(PanelHistory.turn(recorded: HistoryItem(id: "r5", kind: "inter_agent", preview: "hand-off"), whole: nil))
         // The body closure is what the turns read it from.
-        let record = reader("atlas", [long])
-        XCTAssertEqual(PanelHistory.turns(session: "atlas", reader: record, live: [], liveItems: [], liveStartsAt: nil, whole: { $0.id == "r1" ? "whole" : nil }).map(\.text), ["whole"])
+        let record = reader("morrow", [long])
+        XCTAssertEqual(PanelHistory.turns(session: "morrow", reader: record, live: [], liveItems: [], liveStartsAt: nil, whole: { $0.id == "r1" ? "whole" : nil }).map(\.text), ["whole"])
     }
 
     // MARK: - What the panel draws
 
     func testThePanelGoesByTheMainWindowsRule() {
         var reading = HistoryPaging()
-        reading.select(session: "atlas")
-        func of(_ published: Int, turns: Int, _ reader: HistoryPaging, session: String = "atlas") -> PanelConversation {
+        reading.select(session: "morrow")
+        func of(_ published: Int, turns: Int, _ reader: HistoryPaging, session: String = "morrow") -> PanelConversation {
             PanelConversation.of(
                 source: ConversationSource.of(publishedItems: published, session: session, reader: reader),
                 turns: turns, session: session, reader: reader
@@ -117,37 +117,37 @@ final class PanelHistoryTests: XCTestCase {
         reading.beginLoad()
         XCTAssertEqual(of(0, turns: 0, reading), .placeholder(.unread))
         // A reader still on another session is about to be pointed here.
-        XCTAssertEqual(of(0, turns: 0, reading, session: "dayloop"), .placeholder(.unread))
+        XCTAssertEqual(of(0, turns: 0, reading, session: "lowtide"), .placeholder(.unread))
 
         // The record answered with the conversation.
-        let answered = reader("atlas", [message("r1", "user", "Hi")], previousCursor: "older")
+        let answered = reader("morrow", [message("r1", "user", "Hi")], previousCursor: "older")
         XCTAssertEqual(of(0, turns: 1, answered), .turns)
         XCTAssertEqual(of(12, turns: 5, answered), .turns)
 
         // The newest pages hold only tool steps and there is more: still reading.
-        let tools = reader("atlas", [HistoryItem(id: "r1", kind: "tool_call")], previousCursor: "older")
+        let tools = reader("morrow", [HistoryItem(id: "r1", kind: "tool_call")], previousCursor: "older")
         XCTAssertEqual(of(0, turns: 0, tools), .placeholder(.unread))
         // Read to the start with tool steps and nothing said: at work, no reply yet — never "nothing".
-        let toolsOnly = reader("atlas", [HistoryItem(id: "r1", kind: "tool_call")])
+        let toolsOnly = reader("morrow", [HistoryItem(id: "r1", kind: "tool_call")])
         XCTAssertEqual(of(0, turns: 0, toolsOnly), .placeholder(.awaitingReply))
 
         // A read that failed says so, and keeps trying; it does not claim there is nothing.
         var failed = HistoryPaging()
-        failed.select(session: "atlas")
+        failed.select(session: "morrow")
         failed.apply(failure: .message("conch's daemon didn't answer."), generation: failed.beginLoad())
         XCTAssertEqual(of(0, turns: 0, failed), .placeholder(.unreadable))
 
         // Records off, or nothing recorded, and no live window: the single-reply document's content.
         var off = HistoryPaging()
-        off.select(session: "atlas")
+        off.select(session: "morrow")
         off.apply(failure: .off, generation: off.beginLoad())
         XCTAssertEqual(of(0, turns: 0, off), .lastReply)
-        let empty = reader("atlas", [])
+        let empty = reader("morrow", [])
         XCTAssertEqual(of(0, turns: 0, empty), .lastReply)
         // The source decides, as the main window's gate does: a live window of tool rows alone, records off, is the
         // conversation, with no words in it yet — not the single-reply document.
         XCTAssertEqual(of(6, turns: 0, off), .placeholder(.awaitingReply))
-        XCTAssertEqual(PanelConversation.of(source: .neither, turns: 0, session: "atlas", reader: answered), .lastReply)
+        XCTAssertEqual(PanelConversation.of(source: .neither, turns: 0, session: "morrow", reader: answered), .lastReply)
         // A live window with words in it, records off: its words.
         XCTAssertEqual(of(6, turns: 3, off), .turns)
     }

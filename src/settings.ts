@@ -558,7 +558,7 @@ export const SETTING_DESCRIPTORS = [
     field: "screenLog",
     env: "CONCH_SCREEN_LOG",
     kind: "boolean",
-    // On: "would like that raw data live pumped into atlas in the future but can just use for
+    // On: "would like that raw data live pumped into [a knowledge base] in the future but can just use for
     // conch for now" (Tyler, 09-25). It stays on this Mac; nothing reads it but conch.
     default: true,
     parse: parseBoolean,

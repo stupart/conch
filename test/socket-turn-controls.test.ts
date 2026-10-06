@@ -519,7 +519,7 @@ test("inject events carry a session, a label, and the text to deliver", () => {
   const good = validateSocketTurnEvent({
     type: "inject",
     sessionId: "abc",
-    label: "dayloop",
+    label: "lowtide",
     announce: "run the tests and report",
   });
   expect(good.ok).toBe(true);
@@ -528,7 +528,7 @@ test("inject events carry a session, a label, and the text to deliver", () => {
     const event: Record<string, unknown> = {
       type: "inject",
       sessionId: "abc",
-      label: "dayloop",
+      label: "lowtide",
       announce: "text",
     };
     delete event[missing];
@@ -540,7 +540,7 @@ test("inject events carry a session, a label, and the text to deliver", () => {
     const event: Record<string, unknown> = {
       type: "inject",
       sessionId: "abc",
-      label: "dayloop",
+      label: "lowtide",
       announce: "text",
       [empty]: "   ",
     };

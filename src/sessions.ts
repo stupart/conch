@@ -100,7 +100,7 @@ export interface SessionInfo {
   /**
    * Who chose `name`. Claude Code 2.1.25x+ writes a registry name at start
    * whether or not anyone typed one: `"derived"` is its own cwd-slug-plus-hex
-   * (`arch-e9`), `"user"` is a /rename. Absent on older versions, where a
+   * (`morrow-e9`), `"user"` is a /rename. Absent on older versions, where a
    * registry name only ever came from a person — so absent reads as "user".
    */
   nameSource?: "user" | "derived";
@@ -150,7 +150,7 @@ export interface SessionInfo {
 
 /**
  * A session a voice loop can actually engage — a top-level CLI conversation.
- * Excludes headless/sdk-cli routines (e.g. boatker's cron runs) that would otherwise
+ * Excludes headless/sdk-cli routines (e.g. a nightly cron job) that would otherwise
  * get announced + open the mic. Conservative: a session is only dropped when we can
  * positively identify it as non-interactive, so older registries (missing the fields)
  * still pass.
@@ -487,7 +487,7 @@ export async function findHookWindow(
  * reasoning that one transcript meant one session. Tyler: "ive been using both
  * in the claude code tui - theyre both open and seem to have diverged with no
  * problems". He was right, and the transcript proves it — the same file carries
- * records from ~/arch-website and ~/arch-swap, on separate branches, minutes
+ * records from ~/morrow-site and ~/morrow-swap, on separate branches, minutes
  * apart. Claude Code chains messages by parentUuid, so two windows write one
  * file and neither sees the other's work.
  *
@@ -513,7 +513,7 @@ function startedAt(entry: any): number {
  * Only for a session with ONE window, though. Two windows sharing an id each
  * hold their own name, and the transcript keeps just the last one written — so
  * refreshing from it there would rename both to whatever one window is called,
- * which is exactly how `arch site` briefly became a second `arch-prime`.
+ * which is exactly how `morrow site` briefly became a second `morrow-prime`.
  *
  * A generated title never displaces a registry name: the name a person typed
  * outranks the one a model wrote, whichever is more recent.
@@ -525,14 +525,14 @@ function currentName(info: SessionInfo, claudeDir: string): SessionInfo {
   const titles = readClaudeTitles(path);
   // A registry name Claude Code DERIVED is a fallback, not a choice. It used to
   // outrank the generated title — correct when a registry name could only come
-  // from a person, wrong once Claude Code started writing `arch-e9` at startup
+  // from a person, wrong once Claude Code started writing `morrow-e9` at startup
   // for every session: the slug masked real titles, and where none existed it
   // beat the plain directory name. Tyler: "the mac app names of sessions are a
   // bit off". A typed name still wins over a generated title, as before.
   const typed = info.nameSource === "derived" ? undefined : info.name;
   const name = titles.custom ?? typed ?? titles.generated;
   // `undefined` here is deliberate: sessionLabel then falls to the directory,
-  // which says where the work is; `arch-e9` says the same with noise attached.
+  // which says where the work is; `morrow-e9` says the same with noise attached.
   return name === info.name ? info : { ...info, name };
 }
 
@@ -1175,7 +1175,7 @@ async function parkedJobRow(
     : undefined;
 }
 
-/** Find by the spoken form, retrying without spaces ("day loop" -> "dayloop"). */
+/** Find by the spoken form, retrying without spaces ("low tide" -> "lowtide"). */
 export async function findSessionBySpokenName(
   claudeDir: string,
   query: string,

@@ -6,22 +6,22 @@ import { labelDrifted, RelabelHints, relabelHint, topicWords } from "../src/labe
 import { sessionLabelSource } from "../src/sessions.ts";
 
 /**
- * A session stayed "Remove Jaidon from blueprintstudio.ai" in the sidebar after its work had moved on to a headline and
+ * A session stayed "Remove Rowan from the Morrow site" in the sidebar after its work had moved on to a headline and
  * a photo edit (2026-10-03). conch never renames it: `review_to_front` tells the agent, once per label, and only for a
  * label the agent's side chose.
  */
 
-const LABEL = "Remove Jaidon from blueprintstudio.ai";
+const LABEL = "Remove Rowan from the Morrow site";
 
 describe("whether the work drifted from the label", () => {
   test("the words that count: lower case, three letters or more, no grammar and no words every deliverable uses", () => {
-    expect([...topicWords(LABEL)]).toEqual(["jaidon", "blueprintstudio"]);
+    expect([...topicWords(LABEL)]).toEqual(["rowan", "morrow", "site"]);
     expect([...topicWords("Updated the new pricing page, fixed the hero")]).toEqual(["pricing", "hero"]);
   });
 
   test("no hint on a match: one recent summary sharing a topic with the label is enough", () => {
-    expect(labelDrifted(LABEL, ["Jaidon removed from the team grid", "Headline rewrite"])).toBe(false);
-    expect(labelDrifted(LABEL, ["Headline rewrite", "Team photo swapped", "blueprintstudio.ai deploy preview"])).toBe(false);
+    expect(labelDrifted(LABEL, ["Rowan removed from the team grid", "Headline rewrite"])).toBe(false);
+    expect(labelDrifted(LABEL, ["Headline rewrite", "Team photo swapped", "Morrow site deploy preview"])).toBe(false);
     // One word for one topic, whatever its ending.
     expect(labelDrifted("Photo edits", ["Swapped the photos", "Cropped the hero"])).toBe(false);
   });
@@ -29,7 +29,7 @@ describe("whether the work drifted from the label", () => {
   test("a hint on drift: none of the last two or three summaries shares a meaningful word with it", () => {
     expect(labelDrifted(LABEL, ["Team photo swapped on the about section", "Hero with the new headline"])).toBe(true);
     // Only the newest three are read: an old match doesn't hold the label up.
-    expect(labelDrifted(LABEL, ["Headline", "Team photo", "About section copy", "Jaidon removed"])).toBe(true);
+    expect(labelDrifted(LABEL, ["Headline", "Team photo", "About section copy", "Rowan removed"])).toBe(true);
   });
 
   test("one publication is not a trend, and a label with nothing in it to drift from is not judged", () => {

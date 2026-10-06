@@ -32,13 +32,13 @@ function harness(target: SessionActionsTarget | null) {
  * before the AppleScript does, because a click must not block on Terminal.
  */
 test("reveal asks the controller and acks by whether there was a process to try", () => {
-  const withPid = harness({ sessionId: "s1", label: "arch", pid: 4242 });
+  const withPid = harness({ sessionId: "s1", label: "morrow", pid: 4242 });
   expect(withPid.reply()).toEqual({
-    kind: "session-ack", sessionId: "s1", command: "reveal", changed: true, label: "arch",
+    kind: "session-ack", sessionId: "s1", command: "reveal", changed: true, label: "morrow",
   });
-  expect(withPid.revealed).toEqual([{ sessionId: "s1", label: "arch", pid: 4242 }]);
+  expect(withPid.revealed).toEqual([{ sessionId: "s1", label: "morrow", pid: 4242 }]);
 
-  const observed = harness({ sessionId: "s1", label: "arch" });
+  const observed = harness({ sessionId: "s1", label: "morrow" });
   expect(observed.reply().kind).toBe("session-ack");
   expect((observed.reply() as { changed: boolean }).changed).toBe(false);
 

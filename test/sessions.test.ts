@@ -12,7 +12,7 @@ describe("isEngageable — only top-level interactive CLI sessions get engaged",
     expect(isEngageable({ kind: "interactive", entrypoint: "cli" })).toBe(true);
   });
 
-  test("a headless sdk-cli routine (e.g. boatker cron) is dropped", () => {
+  test("a headless sdk-cli routine (e.g. a nightly cron job) is dropped", () => {
     expect(isEngageable({ kind: "interactive", entrypoint: "sdk-cli" })).toBe(false);
   });
 
@@ -291,7 +291,7 @@ describe("conch session-label overrides", () => {
       }));
       writeFileSync(join(f.claudeDir, "sessions", "3.json"), JSON.stringify({
         sessionId: "collapsed",
-        name: "dayloop",
+        name: "lowtide",
         cwd: "/work/collapsed",
         kind: "interactive",
         entrypoint: "cli",
@@ -303,7 +303,7 @@ describe("conch session-label overrides", () => {
         labelsPath: f.labelsPath,
         configDir: join(f.root, "config"),
       })).rejects.toBeInstanceOf(AmbiguousSessionError);
-      expect((await findSessionBySpokenName(f.claudeDir, "day loop", {
+      expect((await findSessionBySpokenName(f.claudeDir, "low tide", {
         labelsPath: f.labelsPath,
         configDir: join(f.root, "config"),
       }))?.sessionId).toBe("collapsed");
@@ -422,7 +422,7 @@ describe("one session, two terminals", () => {
       claudeDir,
       write: (pid, entry) =>
         writeFileSync(join(claudeDir, "sessions", `${pid}.json`), JSON.stringify({
-          pid, cwd: "/Users/t/arch", kind: "interactive", entrypoint: "cli", ...entry,
+          pid, cwd: "/Users/t/morrow", kind: "interactive", entrypoint: "cli", ...entry,
         })),
       transcript: (cwd, id, lines) => {
         const dir = join(claudeDir, "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"));
@@ -435,13 +435,13 @@ describe("one session, two terminals", () => {
 
   test("two windows sharing one id both stay listed, each under its own name", async () => {
     const f = fixture();
-    // Tyler had ~/arch-website and ~/arch-swap open in two terminals on one
+    // Tyler had ~/morrow-site and ~/morrow-swap open in two terminals on one
     // resumed id, working in both. Collapsing them hid a session he was using.
-    f.write(39889, { sessionId: "dup", name: "arch site", startedAt: 1_000 });
-    f.write(21210, { sessionId: "dup", name: "arch-prime", startedAt: 9_000 });
+    f.write(39889, { sessionId: "dup", name: "morrow site", startedAt: 1_000 });
+    f.write(21210, { sessionId: "dup", name: "morrow-prime", startedAt: 9_000 });
     const snap = await registrySnapshot(f.claudeDir, opts(f.claudeDir));
     expect(snap!.infos.map((s) => s.pid).sort()).toEqual([21210, 39889]);
-    expect(snap!.infos.map((s) => s.name).sort()).toEqual(["arch site", "arch-prime"]);
+    expect(snap!.infos.map((s) => s.name).sort()).toEqual(["morrow site", "morrow-prime"]);
     rmSync(f.claudeDir, { recursive: true, force: true });
   });
 
@@ -460,60 +460,60 @@ describe("one session, two terminals", () => {
 
   test("a rename shows up only where one window owns the id", async () => {
     const f = fixture();
-    f.write(39889, { sessionId: "shared", name: "arch site", startedAt: 1_000 });
-    f.write(21210, { sessionId: "shared", name: "arch-prime", startedAt: 9_000 });
-    f.transcript("/Users/t/arch", "shared", [{ type: "custom-title", customTitle: "arch-prime" }]);
+    f.write(39889, { sessionId: "shared", name: "morrow site", startedAt: 1_000 });
+    f.write(21210, { sessionId: "shared", name: "morrow-prime", startedAt: 9_000 });
+    f.transcript("/Users/t/morrow", "shared", [{ type: "custom-title", customTitle: "morrow-prime" }]);
     const two = await registrySnapshot(f.claudeDir, opts(f.claudeDir));
     // the transcript keeps only the last title written, so it must not rename both
-    expect(two!.infos.map((s) => s.name).sort()).toEqual(["arch site", "arch-prime"]);
+    expect(two!.infos.map((s) => s.name).sort()).toEqual(["morrow site", "morrow-prime"]);
     rmSync(join(f.claudeDir, "sessions", "21210.json"));
     const one = await registrySnapshot(f.claudeDir, opts(f.claudeDir));
-    expect(one!.infos[0].name).toBe("arch-prime"); // sole window: refresh is safe
+    expect(one!.infos[0].name).toBe("morrow-prime"); // sole window: refresh is safe
     rmSync(f.claudeDir, { recursive: true, force: true });
   });
 
   test("the transcript's rename beats the name the registry cached at startup", async () => {
     const f = fixture();
-    f.write(39889, { sessionId: "stale", name: "arch site", startedAt: 1_000 });
-    f.transcript("/Users/t/arch", "stale", [
-      { type: "custom-title", customTitle: "arch site" },
-      { type: "custom-title", customTitle: "arch-prime" }, // last write wins
+    f.write(39889, { sessionId: "stale", name: "morrow site", startedAt: 1_000 });
+    f.transcript("/Users/t/morrow", "stale", [
+      { type: "custom-title", customTitle: "morrow site" },
+      { type: "custom-title", customTitle: "morrow-prime" }, // last write wins
     ]);
     const snap = await registrySnapshot(f.claudeDir, opts(f.claudeDir));
-    expect(snap!.infos[0].name).toBe("arch-prime");
+    expect(snap!.infos[0].name).toBe("morrow-prime");
     rmSync(f.claudeDir, { recursive: true, force: true });
   });
 
   test("a generated title never displaces the name a person typed", async () => {
     const f = fixture();
-    f.write(39889, { sessionId: "gen", name: "arch site", startedAt: 1_000 });
-    f.transcript("/Users/t/arch", "gen", [{ type: "ai-title", aiTitle: "Pull latest code changes" }]);
+    f.write(39889, { sessionId: "gen", name: "morrow site", startedAt: 1_000 });
+    f.transcript("/Users/t/morrow", "gen", [{ type: "ai-title", aiTitle: "Pull latest code changes" }]);
     const snap = await registrySnapshot(f.claudeDir, opts(f.claudeDir));
-    expect(snap!.infos[0].name).toBe("arch site");
+    expect(snap!.infos[0].name).toBe("morrow site");
     rmSync(f.claudeDir, { recursive: true, force: true });
   });
 
   test("a derived registry name yields to the generated title", async () => {
-    // Claude Code 2.1.25x+ writes `arch-e9` into the registry at startup with
+    // Claude Code 2.1.25x+ writes `morrow-e9` into the registry at startup with
     // nameSource "derived". Treating it as a person's name masked every
     // generated title behind a cwd slug and two hex digits.
     const f = fixture();
-    f.write(39889, { sessionId: "d1", name: "arch-e9", nameSource: "derived", startedAt: 1_000 });
-    f.transcript("/Users/t/arch", "d1", [{ type: "ai-title", aiTitle: "Pull latest code changes" }]);
+    f.write(39889, { sessionId: "d1", name: "morrow-e9", nameSource: "derived", startedAt: 1_000 });
+    f.transcript("/Users/t/morrow", "d1", [{ type: "ai-title", aiTitle: "Pull latest code changes" }]);
     const snap = await registrySnapshot(f.claudeDir, opts(f.claudeDir));
     expect(snap!.infos[0].name).toBe("Pull latest code changes");
     rmSync(f.claudeDir, { recursive: true, force: true });
   });
 
   test("a derived registry name with no title falls to the directory", async () => {
-    // `Arch` says where the work is; `arch-e9` says the same with noise on.
+    // `Morrow` says where the work is; `morrow-e9` says the same with noise on.
     const f = fixture();
-    f.write(39889, { sessionId: "d2", name: "arch-e9", nameSource: "derived", startedAt: 1_000 });
-    f.transcript("/Users/t/arch", "d2", []);
+    f.write(39889, { sessionId: "d2", name: "morrow-e9", nameSource: "derived", startedAt: 1_000 });
+    f.transcript("/Users/t/morrow", "d2", []);
     const snap = await registrySnapshot(f.claudeDir, opts(f.claudeDir));
     const info = snap!.infos[0];
     expect(info.name).toBeUndefined();
-    expect(sessionLabel(info, info.cwd, { labelsPath: join(f.claudeDir, "conch-config", "labels.json") })).toBe("arch");
+    expect(sessionLabel(info, info.cwd, { labelsPath: join(f.claudeDir, "conch-config", "labels.json") })).toBe("morrow");
     rmSync(f.claudeDir, { recursive: true, force: true });
   });
 
@@ -521,18 +521,18 @@ describe("one session, two terminals", () => {
     // The old behaviour, now stated: "user" is what /rename writes, and an
     // absent nameSource (older Claude Code) reads the same way.
     const f = fixture();
-    f.write(39889, { sessionId: "u1", name: "arch site", nameSource: "user", startedAt: 1_000 });
-    f.transcript("/Users/t/arch", "u1", [{ type: "ai-title", aiTitle: "Pull latest code changes" }]);
+    f.write(39889, { sessionId: "u1", name: "morrow site", nameSource: "user", startedAt: 1_000 });
+    f.transcript("/Users/t/morrow", "u1", [{ type: "ai-title", aiTitle: "Pull latest code changes" }]);
     const snap = await registrySnapshot(f.claudeDir, opts(f.claudeDir));
-    expect(snap!.infos[0].name).toBe("arch site");
+    expect(snap!.infos[0].name).toBe("morrow site");
     rmSync(f.claudeDir, { recursive: true, force: true });
   });
 
   test("no readable transcript leaves the registry name alone", async () => {
     const f = fixture();
-    f.write(39889, { sessionId: "orphan", name: "arch site", startedAt: 1_000 });
+    f.write(39889, { sessionId: "orphan", name: "morrow site", startedAt: 1_000 });
     const snap = await registrySnapshot(f.claudeDir, opts(f.claudeDir));
-    expect(snap!.infos[0].name).toBe("arch site");
+    expect(snap!.infos[0].name).toBe("morrow site");
     rmSync(f.claudeDir, { recursive: true, force: true });
   });
 });

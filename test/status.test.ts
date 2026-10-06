@@ -317,12 +317,12 @@ describe("theater status formatting", () => {
     });
     const header = theaterStatusHeader(sampleModel({
       rows,
-      live: { state: "speaking", label: "dayloop", partial: "" },
+      live: { state: "speaking", label: "lowtide", partial: "" },
     }));
     const plain = header.replace(/\x1b\[[0-9;]*m/g, "");
 
     expect(plain).toBe(
-      "  conch · ❗ 2 need you · ○ 4 waiting · ✓1 to look at · ● 1 working · speaking ‹dayloop›",
+      "  conch · ❗ 2 need you · ○ 4 waiting · ✓1 to look at · ● 1 working · speaking ‹lowtide›",
     );
     expect(header).toContain("\x1b[91m❗\x1b[39m"); // needs is now red — it outranks waiting
     expect(header).toContain("\x1b[32m✓\x1b[39m");

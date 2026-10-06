@@ -126,7 +126,7 @@ function ensureTurn(out: NormalizedRecords, context: RecordNormalizerContext, st
  * agent's own prior words, not anything Tyler typed — recording it whole put
  * an agent's paragraph in Tyler's mouth (the "Asset Generator" session,
  * 2026-09-21: a Blueprint OAuth explanation recorded as his for one word of
- * actual reply, "Signed in to Arch").
+ * actual reply, "Signed in to Morrow").
  *
  * The record carries no field naming this as an echo — Codex files it as
  * ordinary `role: "user"` text, same as anything typed by hand, and Tyler

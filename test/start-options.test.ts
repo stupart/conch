@@ -172,7 +172,7 @@ describe("the rendered command", () => {
    * The launch Tyler pasted from his terminal, which never opened a session:
    *
    *   exec codex --dangerously-bypass-approvals-and-sandbox \
-   *     -c 'projects."/Users/tylerstupart/Projects".trust_level="trusted"' \
+   *     -c 'projects."/Users/you/Projects".trust_level="trusted"' \
    *     --sandbox 'danger-full-access' --ask-for-approval 'never'
    *   error: the argument '--dangerously-bypass-approvals-and-sandbox' cannot
    *   be used with '--ask-for-approval <APPROVAL_POLICY>'
@@ -182,7 +182,7 @@ describe("the rendered command", () => {
    * cannot catch this — only these pins can.
    */
   describe("the mutually exclusive pair Codex refuses", () => {
-    const projects = "/Users/tylerstupart/Projects";
+    const projects = "/Users/you/Projects";
     const trusted = `-c 'projects."${projects}".trust_level="trusted"'`;
 
     test("Tyler's intent — full access, trusted folder, no approvals — is one coherent form", () => {

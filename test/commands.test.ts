@@ -13,11 +13,11 @@ import {
 import { looksLikeAwaitingReply } from "../src/snippet.ts";
 
 test("spoken name addresses preserve raw casing and split explicit punctuation", () => {
-  expect(parseNameAddress("hey dayloop, ship it")).toEqual([
-    { name: "dayloop", rest: "ship it" },
+  expect(parseNameAddress("hey lowtide, ship it")).toEqual([
+    { name: "lowtide", rest: "ship it" },
   ]);
-  expect(parseNameAddress("  HEY Day Loop: Fix API, please.  ")).toEqual([
-    { name: "Day Loop", rest: "Fix API, please." },
+  expect(parseNameAddress("  HEY Low Tide: Fix API, please.  ")).toEqual([
+    { name: "Low Tide", rest: "Fix API, please." },
   ]);
   expect(parseNameAddress("hey one two three: go")).toEqual([
     { name: "one two three", rest: "go" },
@@ -25,9 +25,9 @@ test("spoken name addresses preserve raw casing and split explicit punctuation",
 });
 
 test("unpunctuated name addresses produce longest-first candidates with content", () => {
-  expect(parseNameAddress("Hey Dayloop ship it")).toEqual([
-    { name: "Dayloop ship", rest: "it" },
-    { name: "Dayloop", rest: "ship it" },
+  expect(parseNameAddress("Hey Lowtide ship it")).toEqual([
+    { name: "Lowtide ship", rest: "it" },
+    { name: "Lowtide", rest: "ship it" },
   ]);
   expect(parseNameAddress("Hey Big Blue Heron ship it")).toEqual([
     { name: "Big Blue Heron", rest: "ship it" },
@@ -42,16 +42,16 @@ test("unpunctuated name addresses produce longest-first candidates with content"
 });
 
 test("bare spoken name addresses are wakes and unrelated prefixes do not parse", () => {
-  expect(parseNameAddress("hey dayloop.")).toEqual([
-    { name: "dayloop", rest: "" },
+  expect(parseNameAddress("hey lowtide.")).toEqual([
+    { name: "lowtide", rest: "" },
   ]);
-  expect(parseNameAddress("hey Dayloop")).toEqual([
-    { name: "Dayloop", rest: "" },
+  expect(parseNameAddress("hey Lowtide")).toEqual([
+    { name: "Lowtide", rest: "" },
   ]);
-  expect(parseNameAddress("they dayloop, ship it")).toEqual([]);
+  expect(parseNameAddress("they lowtide, ship it")).toEqual([]);
   expect(parseNameAddress("okay continue")).toEqual([]);
   expect(parseNameAddress("hey")).toEqual([]);
-  expect(parseNameAddress("hey, dayloop")).toEqual([]);
+  expect(parseNameAddress("hey, lowtide")).toEqual([]);
 });
 
 test("bare commands match despite whisper's punctuation and casing", () => {

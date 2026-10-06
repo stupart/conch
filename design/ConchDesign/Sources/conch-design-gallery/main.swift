@@ -335,7 +335,7 @@ try render("components-voice") {
         VoiceStateLabel(state: .listening, detail: "You turned on the mic")
         VoiceStateLabel(state: .quiet, detail: "2 ready for you")
     }
-    VoiceStateLabel(state: .ready, detail: "Arch brand page", orbSize: 30)
+    VoiceStateLabel(state: .ready, detail: "Morrow brand page", orbSize: 30)
         .padding(.horizontal, 14)
         .padding(.vertical, 6)
         .frame(width: 290, alignment: .leading)
@@ -360,7 +360,7 @@ try render("components-controls") {
     Caption("GlassPill: the control bar (M3), over a busy backdrop")
     ZStack {
         LinearGradient(colors: [Color(red: 0.96, green: 0.79, blue: 0.66), Color(red: 0.73, green: 0.80, blue: 0.95), Color(red: 0.85, green: 0.77, blue: 0.93)], startPoint: .topLeading, endPoint: .bottomTrailing)
-            .overlay(Text("Join the Arch team").font(.system(size: 44, weight: .bold)).foregroundStyle(.black.opacity(0.75)).offset(y: -46))
+            .overlay(Text("Join the Morrow team").font(.system(size: 44, weight: .bold)).foregroundStyle(.black.opacity(0.75)).offset(y: -46))
         // The first pill sits over the words, to show the glass.
         VStack(spacing: 56) {
             GlassPill("Voice controls") {
@@ -381,7 +381,7 @@ try render("components-controls") {
     VStack(alignment: .leading, spacing: 18) {
         InlineReplyLine(text: .constant(""), isListening: false, onMic: {}, onSend: {})
         InlineReplyLine(text: .constant("Looks good. Ship it."), isListening: false, onMic: {}, onSend: {})
-        InlineReplyLine(text: .constant("Then do the same for the Dayloop invite"), isListening: true, onMic: {}, onSend: {})
+        InlineReplyLine(text: .constant("Then do the same for the Lowtide invite"), isListening: true, onMic: {}, onSend: {})
     }
     .padding(24)
     .frame(width: 880, alignment: .leading)
@@ -405,13 +405,13 @@ struct OtherApp: View {
                 endPoint: .bottomTrailing
             )
             if compact {
-                Text("Join the Arch team").font(.system(size: 44, weight: .bold)).foregroundStyle(ink)
+                Text("Join the Morrow team").font(.system(size: 44, weight: .bold)).foregroundStyle(ink)
             } else {
                 VStack(alignment: .leading, spacing: 16) {
                     Text("Blueprint Studio").font(.system(size: 16, weight: .semibold))
                     Spacer().frame(height: 60)
-                    Text("Join the Arch team").font(.system(size: 44, weight: .bold))
-                    Text("You'll see Arch's boards and drafts as soon as you're in.").font(.system(size: 18))
+                    Text("Join the Morrow team").font(.system(size: 44, weight: .bold))
+                    Text("You'll see Morrow's boards and drafts as soon as you're in.").font(.system(size: 18))
                     RoundedRectangle(cornerRadius: 12).frame(width: 360, height: 52).opacity(0.85)
                     RoundedRectangle(cornerRadius: 12).frame(width: 360, height: 52).opacity(0.3)
                 }
@@ -558,9 +558,9 @@ func m3Fog(_ corner: FogCorner, fullScreen: Bool = false, draft: String = "", vo
 /// so the agent's name stands in for them here.
 let panelSessions = FogSession.ordered([
     FogSession(id: "docs", label: "conch docs", agent: "Claude", standing: .other),
-    FogSession(id: "arch", label: "Arch brand page", agent: "Claude", item: "The invite card: the button reads Join, and it still waits for the email check", standing: .ready),
+    FogSession(id: "morrow", label: "Morrow brand page", agent: "Claude", item: "The invite card: the button reads Join, and it still waits for the email check", standing: .ready),
     FogSession(id: "tests", label: "invite tests", agent: "Codex", standing: .working),
-    FogSession(id: "dayloop", label: "Dayloop invite", agent: "Codex", item: "Screenshots at desktop and 390 px", standing: .ready),
+    FogSession(id: "lowtide", label: "Lowtide invite", agent: "Codex", item: "Screenshots at desktop and 390 px", standing: .ready),
 ])
 let panelSession = panelSessions[0]
 
@@ -588,7 +588,7 @@ try render("m3-control-bar") {
     barRow("Talk, with news", ControlBar(state: .talk, detail: barDetails[.talk]!, mode: .constant(.talk), news: "2 working"))
     barRow("Talk, nothing to report", ControlBar(state: .talk, detail: barDetails[.talk]!, mode: .constant(.talk)))
     barRow("Ready: the next session, and where it is — tooltip \"\(barReady.help.replacingOccurrences(of: "\n", with: " / "))\"", ControlBar(state: .ready, detail: barDetails[.ready]!, mode: .constant(.talk), ready: barReady, onTap: {}))
-    barRow("Ready, one alone", ControlBar(state: .ready, detail: barDetails[.ready]!, mode: .constant(.talk), ready: .init(label: "Arch brand page", position: 1, count: 1), onTap: {}))
+    barRow("Ready, one alone", ControlBar(state: .ready, detail: barDetails[.ready]!, mode: .constant(.talk), ready: .init(label: "Morrow brand page", position: 1, count: 1), onTap: {}))
     barRow("Speaking, with something still ready: the pill stays a button", ControlBar(state: .speaking, detail: barDetails[.speaking]!, mode: .constant(.talk), ready: barReady, onTap: {}))
     barRow("Listening: the ring clears the capsule, the mic dark on the orange", ControlBar(state: .listening, detail: barDetails[.listening]!, mode: .constant(.talk)))
     barRow("Quiet", ControlBar(state: .quiet, detail: barDetails[.quiet]!, mode: .constant(.quiet), news: "1 working"))
@@ -670,7 +670,7 @@ struct MenuPicture: View {
 let menuInput = StatusMenu.Input(
     voice: .ready, quiet: false, exchangeActive: false, controlBar: true, conversation: true, collapsed: true,
     replyLine: true, drawing: false,
-    ready: [.init(id: "r1", label: "Prime page wireframe"), .init(id: "r2", label: "Arch brand page")],
+    ready: [.init(id: "r1", label: "Prime page wireframe"), .init(id: "r2", label: "Morrow brand page")],
     working: [.init(id: "w1", label: "Parser refactor"), .init(id: "w2", label: "Invite tests")],
     overlays: true
 )
@@ -703,7 +703,7 @@ try render("m3-fog-corner", width: 1280) {
 
 try render("m3-fog-fullscreen", width: 1280) {
     Heading(title: "Conversation fog, full screen", note: "Command-Return or the button; leaving restores the corner's frame. Listening, with a reply typed.")
-    m3Fog(.bottomLeading, fullScreen: true, draft: "Looks good. Ship it, then the Dayloop invite", voice: .listening)
+    m3Fog(.bottomLeading, fullScreen: true, draft: "Looks good. Ship it, then the Lowtide invite", voice: .listening)
 }
 
 try render("m3-fog-collapsed", width: 1280) {
@@ -770,7 +770,7 @@ struct StagedPage: View {
     }
 }
 
-let stagedPage = FogContent(id: "arch-invite-v3") { StagedPage() }
+let stagedPage = FogContent(id: "morrow-invite-v3") { StagedPage() }
 
 try render("m3-panel-content", width: 1280) {
     Heading(title: "Conversation panel, full screen on a deliverable", note: "A page, document, picture, video, sound or live url shows inside the panel under its header; the reply line floats at its foot, and the words step aside. Next crossfades it in place.")
@@ -783,7 +783,7 @@ try render("m3-panel-content", width: 1280) {
 /// (`ConchFileTreeRail`) over a listing made up here, with what the session changed and what the agent pointed at, and
 /// the first focused file in the viewer beside it (drawn here as text, standing in for the app's text renderer).
 struct FolderDeliverablePicture: View {
-    static let root = "/Users/tyler/Projects/arch/web/invite"
+    static let root = "/Users/tyler/Projects/morrow/web/invite"
     static let focus = ["src/InviteCard.tsx", "src/join.ts", "test"]
     static let changed = ["src/InviteCard.tsx", "src/join.ts", "test/join.test.ts", "README.md"]
 
@@ -847,8 +847,8 @@ struct FolderDeliverablePicture: View {
     ]
 }
 
-let folderPage = FogContent(id: "arch-invite-folder-v1") { FolderDeliverablePicture() }
-let folderSession = FogSession(id: "arch", label: "Arch brand page", agent: "Claude", item: "The invite module's new layout: the card, the join step and their tests", standing: .ready)
+let folderPage = FogContent(id: "morrow-invite-folder-v1") { FolderDeliverablePicture() }
+let folderSession = FogSession(id: "morrow", label: "Morrow brand page", agent: "Claude", item: "The invite module's new layout: the card, the join step and their tests", standing: .ready)
 
 try render("m3-panel-folder", width: 1280) {
     Heading(title: "Conversation panel, full screen on a folder", note: "A folder a session published is its tree: what the session changed has its dot, what the agent pointed at (focus) is open and washed in its violet with the ✦, and the first focused file is in the viewer. Picking a file opens it there.")
@@ -909,9 +909,9 @@ func writePNG(_ image: CGImage, _ name: String) throws {
 
 /// The lab's text states (`applyState` in overlay-lab.html): a reply typed to three and to five-plus lines, a long reply part
 /// way in, and scrolled up while it comes in.
-let threeLines = "Looks good. Ship it, then do the same for the Dayloop invite, and keep its heading on one line on phones."
+let threeLines = "Looks good. Ship it, then do the same for the Lowtide invite, and keep its heading on one line on phones."
 let manyLines = threeLines + " Use their teal and sand for the gradient, keep one soft shadow, and send me screenshots at desktop and 390 px before you open the pull request. If the email check needs changes, ask me first."
-let longReply = "Here's the plan for the Dayloop invite. I'll start from the Arch card, swap the hero gradient for Dayloop's teal and sand, and keep the single soft shadow so it stays light. The avatar row keeps its 10 px gap, the heading drops to 26 px on phones, and the button just says Join. Then I'll wire up the same email check, run the invite tests, and send you screenshots at desktop and 390 px before I open the pull request."
+let longReply = "Here's the plan for the Lowtide invite. I'll start from the Morrow card, swap the hero gradient for Lowtide's teal and sand, and keep the single soft shadow so it stays light. The avatar row keeps its 10 px gap, the heading drops to 26 px on phones, and the button just says Join. Then I'll wire up the same email check, run the invite tests, and send you screenshots at desktop and 390 px before I open the pull request."
 let replyTurns = labTurns + [ConversationTurn(id: "reply", fromYou: false, text: longReply)]
 
 /// The long reply with its first `shown` words in, the last few still fading up.
@@ -1037,20 +1037,20 @@ struct CanvasInkPreview: View {
 
 /// The sessions Send's menu lists in these renders, most likely first.
 let canvasDestinations = [
-    CanvasToolPill.Destination(id: "dev", label: "Dayloop invite", why: "on screen"),
-    CanvasToolPill.Destination(id: "arch", label: "Arch brand page", why: "in the panel"),
+    CanvasToolPill.Destination(id: "dev", label: "Lowtide invite", why: "on screen"),
+    CanvasToolPill.Destination(id: "morrow", label: "Morrow brand page", why: "in the panel"),
     CanvasToolPill.Destination(id: "api", label: "API refactor"),
     CanvasToolPill.Destination(id: "docs", label: "Docs site"),
 ]
 
 func canvasPill(
     mode: CanvasToolPill.Mode = .tools, hangs: Bool = false, tool: CanvasMark.Kind = .box, armed: Bool = true, drawn: Bool = true,
-    sending: Bool = false, route: String? = "Arch brand page", sure: Bool = true, routeMenu: CanvasToolPill.RouteMenu? = nil,
+    sending: Bool = false, route: String? = "Morrow brand page", sure: Bool = true, routeMenu: CanvasToolPill.RouteMenu? = nil,
     notice: CanvasToolPill.Notice? = nil, recording: CanvasToolPill.Recording? = nil, narrate: Bool = false, missed: AgentInk.Missed? = nil
 ) -> some View {
     CanvasToolPill(
         mode: mode, hangs: hangs, tool: tool, armed: armed, canUndo: drawn, canSend: (drawn || recording != nil) && route != nil, sending: sending,
-        route: route.map { CanvasToolPill.Route(id: $0 == "Dayloop invite" ? "dev" : "arch", label: $0, sure: sure) },
+        route: route.map { CanvasToolPill.Route(id: $0 == "Lowtide invite" ? "dev" : "morrow", label: $0, sure: sure) },
         destinations: canvasDestinations, routeMenu: routeMenu, notice: notice,
         onTool: { _ in }, onUndo: {}, onSend: {}, recording: recording, onShow: {}, narrate: narrate, onNarrate: {},
         onDiscard: drawn || recording != nil ? {} : nil, onDone: armed ? {} : nil, missed: missed
@@ -1073,7 +1073,7 @@ try render("w2-canvas-tools") {
     Heading(title: "Canvas tools", note: "The pen down, nothing drawn; a box in hand; the pen up with ink left; sending; a Send with nowhere to go; and Show recording, near its cap, and stopped.")
     canvasPill(tool: .pen, drawn: false)
     canvasPill()
-    canvasPill(armed: false, route: "Dayloop invite")
+    canvasPill(armed: false, route: "Lowtide invite")
     canvasPill(tool: .note, sending: true)
     canvasPill(armed: false, route: nil, notice: .nowhere)
     // Show: recording, 23 seconds in; in its last fifteen; stopped at the cap, waiting for Send or the ×.
@@ -1093,14 +1093,14 @@ try render("qp-canvas-pill-states", width: 1000) {
     Caption("Show without Screen Recording, no ink: the notice alone, hanging under the control bar")
     canvasPill(mode: .notice, hangs: true, armed: false, drawn: false, notice: .noScreen(marks: false))
     Caption("Sent: the ink cleared, this for 1.5 s, then it sinks")
-    canvasPill(mode: .notice, armed: false, drawn: false, notice: .sent(to: "Arch brand page"))
+    canvasPill(mode: .notice, armed: false, drawn: false, notice: .sent(to: "Morrow brand page"))
     Caption("Not sent: the daemon's reason (#426's resume it), the marks back")
-    canvasPill(armed: false, notice: .notSent(to: "Arch brand page", sentence: ConchSendFailure.sentence(reason: "session-stopped")))
+    canvasPill(armed: false, notice: .notSent(to: "Morrow brand page", sentence: ConchSendFailure.sentence(reason: "session-stopped")))
     Caption("A guess (a localhost page at 0.7): Send reads Send to… and asks")
-    canvasPill(armed: false, route: "Arch brand page", sure: false)
-    canvasPill(armed: false, route: "Arch brand page", sure: false, routeMenu: .sendTo)
+    canvasPill(armed: false, route: "Morrow brand page", sure: false)
+    canvasPill(armed: false, route: "Morrow brand page", sure: false, routeMenu: .sendTo)
     Caption("Sure: the route's name is a menu that only changes where; hanging, the menu opens under it")
-    canvasPill(hangs: true, tool: .pen, route: "Dayloop invite", routeMenu: .change)
+    canvasPill(hangs: true, tool: .pen, route: "Lowtide invite", routeMenu: .change)
     Caption("Show recording, the pen up (clicks reach the app), voice off; then stopped by macOS")
     canvasPill(armed: false, drawn: false, recording: .since(Date().addingTimeInterval(-31)))
     canvasPill(armed: false, drawn: false, notice: .stoppedByMacOS(at: 31), recording: .stopped(31))
@@ -2062,7 +2062,7 @@ let fluidReplyLineCard = fluidReplyLine()
 struct ComposerFaceStandIn: View {
     var draft = fluidDraft
     var listening = false
-    var label = "Arch invite page"
+    var label = "Morrow invite page"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -2183,12 +2183,12 @@ struct ConchWindowStandIn: View {
                     }
                 }
                 .padding(.bottom, 14)
-                ForEach(["Arch invite page", "Dayloop invite", "Parser refactor", "Invite tests"], id: \.self) { name in
+                ForEach(["Morrow invite page", "Lowtide invite", "Parser refactor", "Invite tests"], id: \.self) { name in
                     Text(name).font(ConchType.uiBody)
-                        .foregroundStyle(name == "Arch invite page" ? ConchColor.textPrimary : ConchColor.textSecondary)
+                        .foregroundStyle(name == "Morrow invite page" ? ConchColor.textPrimary : ConchColor.textSecondary)
                         .padding(.horizontal, 10).padding(.vertical, 6)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(RoundedRectangle(cornerRadius: 6).fill(name == "Arch invite page" ? ConchColor.rowSelected.color(scheme) : .clear))
+                        .background(RoundedRectangle(cornerRadius: 6).fill(name == "Morrow invite page" ? ConchColor.rowSelected.color(scheme) : .clear))
                 }
                 Spacer()
             }
@@ -2196,7 +2196,7 @@ struct ConchWindowStandIn: View {
             .frame(width: fluidSidebar)
             .background(ConchColor.ground)
             VStack(alignment: .leading, spacing: 14) {
-                Text("Arch invite page").font(ConchType.heading).foregroundStyle(ConchColor.textPrimary)
+                Text("Morrow invite page").font(ConchType.heading).foregroundStyle(ConchColor.textPrimary)
                 ForEach(sampleTurns) { turn in
                     VStack(alignment: .leading, spacing: 4) {
                         if turn.fromYou { Text("You").font(ConchType.meta).foregroundStyle(ConchColor.textTertiary) }

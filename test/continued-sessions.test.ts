@@ -391,7 +391,7 @@ describe("a window's parkedJobId the daemon set without its conversation ever mo
   function decoyParked() {
     const f = fixture();
     f.registry(WINDOW, {
-      sessionId: "resumed", kind: "interactive", name: "arch-25", nameSource: "derived",
+      sessionId: "resumed", kind: "interactive", name: "morrow-25", nameSource: "derived",
       parkedJobId: "spare-slot", startedAt: 1, status: "idle", statusUpdatedAt: 100,
     });
     f.registry(8936, {

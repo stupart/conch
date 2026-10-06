@@ -11,16 +11,16 @@ import { validateControlMessage, validateControlResponse } from "../src/settings
  * retyping the command. Command lines below are the live ones measured
  * 2026-09-23 (`ps -o args=`, after the executable).
  */
-const claudeRow = { sessionId: "2f266f8d-2cab-4137-b09e-77fc1066fbc1", backend: "claude" as const, cwd: "/Users/t/arch" };
+const claudeRow = { sessionId: "2f266f8d-2cab-4137-b09e-77fc1066fbc1", backend: "claude" as const, cwd: "/Users/t/morrow" };
 const codexRow = { sessionId: "01a08ea0-9e2a-7563-863d-c9158fb22d16", backend: "codex" as const, cwd: "/Users/t/assets" };
 const command = (built: ReturnType<typeof restartRequest>) => terminalSessionCommand(built.request);
 
 describe("what a restart relaunches", () => {
   test("Claude: the same folder and conversation, bypass kept, the old --resume value ignored", () => {
-    const built = restartRequest(claudeRow, ["--dangerously-skip-permissions", "--resume", "Arch", "Prime"]);
+    const built = restartRequest(claudeRow, ["--dangerously-skip-permissions", "--resume", "Morrow", "Prime"]);
     expect(built.notCarriedOver).toEqual([]);
     expect(command(built)).toBe(
-      "cd -- '/Users/t/arch' && exec claude --dangerously-skip-permissions --resume '2f266f8d-2cab-4137-b09e-77fc1066fbc1'",
+      "cd -- '/Users/t/morrow' && exec claude --dangerously-skip-permissions --resume '2f266f8d-2cab-4137-b09e-77fc1066fbc1'",
     );
   });
 

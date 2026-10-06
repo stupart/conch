@@ -388,8 +388,8 @@ public struct PhonePermissionAsk: View {
 struct NotificationPreview: View {
     var body: some View {
         VStack(spacing: 10) {
-            notification(title: "dayloop has something for you", body: "The invite page reads Join, and the tests pass.", time: "now")
-            notification(title: "Arch brand page needs you", body: "Allow npm install in arch-website?", time: "2m ago")
+            notification(title: "lowtide has something for you", body: "The invite page reads Join, and the tests pass.", time: "now")
+            notification(title: "Morrow brand page needs you", body: "Allow npm install in morrow-site?", time: "2m ago")
                 .scaleEffect(0.94)
                 .opacity(0.55)
         }
@@ -488,10 +488,10 @@ struct TourLedger: View {
     var body: some View {
         VStack(spacing: 0) {
             row(mark: AnyView(Image(systemName: "exclamationmark.circle.fill").font(.system(size: 17)).foregroundStyle(ConchColor.attention)),
-                name: "Arch brand page", what: "Needs an answer")
+                name: "Morrow brand page", what: "Needs an answer")
             OnboardingDivider(leading: 48)
             row(mark: AnyView(Image(systemName: "checkmark.circle.fill").font(.system(size: 17)).foregroundStyle(VoiceOrb.readyFill.color)),
-                name: "dayloop", what: "Has work to look at")
+                name: "lowtide", what: "Has work to look at")
             OnboardingDivider(leading: 48)
             row(mark: AnyView(VoiceGlyph(.speaking, size: 16).foregroundStyle(ConchColor.textSecondary)), name: "Docs pass", what: "Reading aloud")
             OnboardingDivider(leading: 48)
@@ -522,7 +522,7 @@ struct TourLedger: View {
 struct TourSession: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("dayloop").font(.system(size: 13, weight: .semibold)).foregroundStyle(ConchColor.textSecondary)
+            Text("lowtide").font(.system(size: 13, weight: .semibold)).foregroundStyle(ConchColor.textSecondary)
             Text("Changed. The button reads Join, and it still waits for the email check. Tests pass.")
                 .font(.system(size: 20, weight: .medium))
                 .tracking(-0.2)
@@ -558,7 +558,7 @@ struct TourReview: View {
                 LinearGradient(colors: [Color(red: 0.96, green: 0.82, blue: 0.72), Color(red: 0.76, green: 0.82, blue: 0.96)],
                                startPoint: .topLeading, endPoint: .bottomTrailing)
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Join the Arch team").font(.system(size: 19, weight: .bold)).foregroundStyle(Color.black.opacity(0.8))
+                    Text("Join the Morrow team").font(.system(size: 19, weight: .bold)).foregroundStyle(Color.black.opacity(0.8))
                     RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.78)).frame(width: 110, height: 32)
                         .overlay(Text("Join").font(.system(size: 14, weight: .semibold)).foregroundStyle(.white))
                 }
@@ -569,7 +569,7 @@ struct TourReview: View {
             HStack(spacing: 10) {
                 Image(systemName: "checkmark.circle.fill").font(.system(size: 17)).foregroundStyle(VoiceOrb.readyFill.color)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("dayloop · invite page").font(.system(size: 15, weight: .semibold)).foregroundStyle(ConchColor.textPrimary)
+                    Text("lowtide · invite page").font(.system(size: 15, weight: .semibold)).foregroundStyle(ConchColor.textPrimary)
                     Text("Check the button at phone width").font(.system(size: 13)).foregroundStyle(ConchColor.textSecondary)
                 }
             }

@@ -186,7 +186,7 @@ struct ConversationDocument {
     /// `NSTextTable` columns.
     ///
     /// This used to rebuild the block layout by hand from Foundation's `.full` parse — separators, bullets, indents —
-    /// and set a table's cells on 118 pt tab stops, which no cell of the atlas documents fits, so a row became one
+    /// and set a table's cells on 118 pt tab stops, which no cell of a long design document fits, so a row became one
     /// long line wrapped at random. `NSTextTable` is TextKit's own table layout; nothing else here had to change.
     ///
     /// The caller styles spoken vs unspoken by dimming a character range of the result, which is why this is one
@@ -243,7 +243,7 @@ struct ConversationTextView: NSViewRepresentable {
 
         let textView = NSTextView()
         // TextKit 1, up front. `NSTextView()` starts on TextKit 2, which has no `NSTextTable`, and a reply's tables
-        // are `NSTextTable`s now: laid out on TextKit 2 the atlas document set every cell as its own full-width
+        // are `NSTextTable`s now: laid out on TextKit 2 a long design document set every cell as its own full-width
         // paragraph (7,317 pt of stacked cells against 8,604 pt of columns, 2026-09-20). Touching `layoutManager` is
         // the documented switch, so the columns do not depend on AppKit noticing the attribute on its own.
         _ = textView.layoutManager

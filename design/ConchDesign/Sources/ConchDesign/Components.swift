@@ -1871,7 +1871,7 @@ public struct ConversationFog: View {
         }
     }
 
-    /// The session the voice is reading aloud, when it isn't this one: "Speaking: Dayloop ›", quiet, a click from it.
+    /// The session the voice is reading aloud, when it isn't this one: "Speaking: Lowtide ›", quiet, a click from it.
     @ViewBuilder private var speakingChip: some View {
         if let speaking, speaking.id != session?.id {
             SpeakingChip(session: speaking) { onPick(speaking.id) }
@@ -2077,7 +2077,7 @@ public struct ConversationFog: View {
     /// The fog's renderer: one text flow, because the newest reply comes in word by word through `revealed`, which
     /// walks ONE AttributedString, and a past turn must keep the shape it had while it was newest. Documents go through
     /// `MarkdownView` (Markdown.swift) everywhere else; here a table would not fit anyway — 24 pt words in a 620 pt
-    /// column hold about 45 characters a line, and one cell of the atlas documents runs to 300 — so a table is read
+    /// column hold about 45 characters a line, and one cell of a long design document runs to 300 — so a table is read
     /// the way you would read it aloud, and a heading is bold. The frontmatter rule is the shared one.
     public static func inlineMarkdown(_ text: String) -> AttributedString {
         MarkdownDocument.inline(promoteHeadings(flattenTables(MarkdownDocument.stripFrontmatter(text))))
@@ -2406,7 +2406,7 @@ private struct AtMost: ViewModifier, Layout {
     }
 }
 
-/// The session the voice is reading aloud while the panel shows another: "Speaking: Dayloop ›", quiet beside the header.
+/// The session the voice is reading aloud while the panel shows another: "Speaking: Lowtide ›", quiet beside the header.
 /// A click brings that one into the panel.
 private struct SpeakingChip: View {
     let session: FogSession

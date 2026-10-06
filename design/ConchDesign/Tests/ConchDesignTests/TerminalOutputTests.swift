@@ -93,7 +93,7 @@ final class TerminalOutputTests: XCTestCase {
     /// `ls -la` produced 366 bytes and ZERO escape sequences. Plain output must come through
     /// untouched and as ONE run per line, not one per character.
     func testPlainOutputIsUntouchedAndNotShreddedIntoRuns() {
-        let capture = "total 16\r\ndrwxr-xr-x   6 tylerstupart  staff  192 Sep 20 01:39 .\r\n-rw-r--r--   1 tylerstupart  staff   63 Sep 20 01:39 a.txt\r\n"
+        let capture = "total 16\r\ndrwxr-xr-x   6 you  staff  192 Sep 20 01:39 .\r\n-rw-r--r--   1 you  staff   63 Sep 20 01:39 a.txt\r\n"
         let output = parsed(capture)
 
         XCTAssertEqual(output.lines[0], [ConchTerminalRun(text: "total 16")])

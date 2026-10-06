@@ -224,7 +224,7 @@ func renderOnboardingHosted() throws {
         VStack(alignment: .leading, spacing: 8) {
             Caption("After the tour: the one tip, under the pill")
             VStack(spacing: 6) {
-                ControlBar(state: .talk, detail: "", mode: .constant(.talk), ready: ControlBar.Ready(label: "dayloop", position: 1, count: 1), onTap: {})
+                ControlBar(state: .talk, detail: "", mode: .constant(.talk), ready: ControlBar.Ready(label: "lowtide", position: 1, count: 1), onTap: {})
                 PillTipView()
             }
             .padding(28)

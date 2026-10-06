@@ -1051,7 +1051,7 @@ describe("a send typed into a viewer on a finished job, taken by the job Claude 
     counted?: boolean;
   } = {}) {
     const row = options.row ?? jobRow;
-    const path = options.counted === false ? undefined : transcript(user({ type: "text", text: "So nothing new from nick?" }));
+    const path = options.counted === false ? undefined : transcript(user({ type: "text", text: "So nothing new from mara?" }));
     const rows = [...(options.rows ?? [FINISHED, OTHER])];
     const seen = new PromptSubmissions();
     const events: RecordObservation[] = [];
@@ -2938,7 +2938,7 @@ describe("the daemon files what the hook published, by the same folders", () => 
   };
   const tree = (base: string) => {
     const start = join(base, "Internal");
-    const now = join(base, "Clients", "arch");
+    const now = join(base, "Clients", "morrow");
     for (const dir of [join(start, "review-2026-09-30"), now]) mkdirSync(dir, { recursive: true });
     writeFileSync(join(now, "page.html"), "<h1>ok</h1>");
     writeFileSync(join(start, "review-2026-09-30", "emails.md"), "# emails");
@@ -3730,7 +3730,7 @@ describe("answering the question a session is waiting on", () => {
   });
 
   test("a question with previews is answered with that picker's keys", async () => {
-    const withPreview = { ...question("Ring", ["Arch assets", "Unnamed shapes"]), options: [{ label: "Arch assets", preview: "[a]" }, { label: "Unnamed shapes", preview: "[b]" }] };
+    const withPreview = { ...question("Ring", ["Morrow assets", "Unnamed shapes"]), options: [{ label: "Morrow assets", preview: "[a]" }, { label: "Unnamed shapes", preview: "[b]" }] };
     const h = harness();
     expect(await h.voice.handle(inject("Ring: Unnamed shapes", { transcriptPath: asking(withPreview), answers: [{ choices: [1] }] }))).toBe(true);
     expect(await h.voice.handle(inject("my own idea", { transcriptPath: asking(withPreview) }))).toBe(true);
@@ -4145,7 +4145,7 @@ describe("setup's practice turn (practice.ts), through the loop's own gates", ()
     expect(h.said).toEqual([line]);
     expect(h.sessions[0]!.started).toBe(1);
     // A line nobody asked for is still held in Manual: only the practice's own is volunteered.
-    await h.voice.speak(h.cfg, "an announcement", "dayloop");
+    await h.voice.speak(h.cfg, "an announcement", "lowtide");
     expect(h.said).toEqual([line]);
   });
 

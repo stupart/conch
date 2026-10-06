@@ -173,7 +173,7 @@ What is genuinely writeable, per provider:
 - **Codex MCP servers.** `enabled = true|false` per server in `config.toml`.
 - **Codex per-tool permissions.** `[mcp_servers.<id>.tools.<tool>]
   approval_mode = "approve"`. This is the "different permissions" half, and it
-  already exists in Tyler's config for Linear and atlas-nura.
+  already exists in Tyler's config for Linear and one other server.
 - **Claude tool permissions.** `allowedTools` per project in `~/.claude.json`.
 
 What it needs before shipping, per `docs/palette-plan.md`: diff preview naming

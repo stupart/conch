@@ -56,7 +56,7 @@ const baseState = (): PublishedState => ({
   ts: 1,
   mode: { muted: false, paused: false, holding: 0 },
   live: { state: "idle", label: "" },
-  rows: [{ id: "s1", label: "dayloop", status: "waiting", needsResponse: false, paused: false, muted: false, live: null, active: true }],
+  rows: [{ id: "s1", label: "lowtide", status: "waiting", needsResponse: false, paused: false, muted: false, live: null, active: true }],
   conversations: { s1: { sessionId: "s1", items: [], truncated: false } },
   dismissed: [],
   dismissedRows: [],
@@ -272,7 +272,7 @@ describe("the one sink: its own conversation, never a delivery", () => {
     // One reply, after the first answer only.
     expect(items.filter((item) => item.text === PRACTICE_REPLY)).toHaveLength(1);
     // Any other session goes on through, untouched.
-    const other: TurnEvent = { type: "inject", sessionId: "s1", label: "dayloop", announce: "hi", origin: "user" };
+    const other: TurnEvent = { type: "inject", sessionId: "s1", label: "lowtide", announce: "hi", origin: "user" };
     expect(gate(other)).toBe("next");
     expect(passed).toEqual([other]);
   });

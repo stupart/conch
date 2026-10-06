@@ -327,7 +327,7 @@ struct OnbScreens {
                         OnboardingSummaryLine(step: .permissions, detail: "Accessibility later", status: "", done: !later),
                     ],
                     actions: [
-                        OnboardingFirstAction(id: "answer", symbol: "waveform", title: "Answer dayloop",
+                        OnboardingFirstAction(id: "answer", symbol: "waveform", title: "Answer lowtide",
                                               detail: "It finished a turn while you were setting up. conch reads it to you now."),
                         OnboardingFirstAction(id: "start", symbol: "plus", title: "Start a session",
                                               detail: "Claude Code or Codex, in a folder you pick. It opens in Terminal."),
@@ -382,7 +382,7 @@ struct TourDesktop: View {
                     Spacer()
                     HStack(spacing: 6) {
                         Image(systemName: "lock.fill").font(.system(size: 10, weight: .semibold))
-                        Text("arch.blueprint.studio/join").font(.system(size: 13))
+                        Text("morrow.example/join").font(.system(size: 13))
                     }
                     .foregroundStyle(ink.opacity(0.7))
                     .frame(width: 380, height: 30)
@@ -397,8 +397,8 @@ struct TourDesktop: View {
                 HStack(alignment: .top, spacing: 56) {
                     VStack(alignment: .leading, spacing: 0) {
                         Text("Blueprint Studio").font(.system(size: 15, weight: .semibold)).foregroundStyle(ink)
-                        Text("Join the Arch team").font(.system(size: 44, weight: .bold)).tracking(-0.8).foregroundStyle(ink).padding(.top, 96)
-                        Text("You'll see Arch's boards and drafts as soon as you're in.").font(.system(size: 18)).foregroundStyle(ink.opacity(0.65)).padding(.top, 12)
+                        Text("Join the Morrow team").font(.system(size: 44, weight: .bold)).tracking(-0.8).foregroundStyle(ink).padding(.top, 96)
+                        Text("You'll see Morrow's boards and drafts as soon as you're in.").font(.system(size: 18)).foregroundStyle(ink.opacity(0.65)).padding(.top, 12)
                         HStack(spacing: 22) {
                             Text("Join").font(.system(size: 17, weight: .semibold)).foregroundStyle(dark ? Color.black : Color.white)
                                 .frame(width: tourJoin.width, height: tourJoin.height)

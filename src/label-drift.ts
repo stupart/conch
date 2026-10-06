@@ -1,7 +1,7 @@
 /**
  * A session label that no longer says what the session is doing.
  *
- * Feedback (2026-10-03): a session stayed "Remove Jaidon from blueprintstudio.ai" in the sidebar
+ * Feedback (2026-10-03): a session stayed "Remove Rowan from the Morrow site" in the sidebar
  * long after its work had moved on to a headline and a photo edit, so the user looked for that work
  * under the wrong name. Labels come from the first prompt (Claude Code's own title, Codex's thread
  * name), and nothing moved them on. conch never renames a session itself: it tells the agent, in

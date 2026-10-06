@@ -46,8 +46,8 @@ describe("two windows on one id, end to end", () => {
         pid, sessionId: UUID, name, startedAt,
         cwd: "/Users/t", kind: "interactive", entrypoint: "cli",
       }));
-    write(39889, "arch site", 1_000);
-    write(21210, "arch-prime", 9_000);
+    write(39889, "morrow site", 1_000);
+    write(21210, "morrow-prime", 9_000);
     return claudeDir;
   }
   const opts = (dir: string) => ({ configDir: join(dir, "conch-config") });
@@ -102,7 +102,7 @@ describe("two windows on one id, end to end", () => {
     const dir = mkdtempSync(join(tmpdir(), "conch-window-l-"));
     const labelsPath = join(dir, "labels.json");
     writeFileSync(labelsPath, JSON.stringify({ [UUID]: "Abacus" }));
-    const info = { sessionId: `${UUID}#39889`, agentSessionId: UUID, name: "arch site" };
+    const info = { sessionId: `${UUID}#39889`, agentSessionId: UUID, name: "morrow site" };
     expect(sessionLabel(info, "/Users/t", { labelsPath })).toBe("Abacus");
     // and the window's own name wins over the session's when both exist
     writeFileSync(labelsPath, JSON.stringify({ [UUID]: "Abacus", [`${UUID}#39889`]: "site" }));

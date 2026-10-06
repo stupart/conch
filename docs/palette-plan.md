@@ -30,7 +30,7 @@ current official configuration reference before changing the plan.
 | --- | --- | --- |
 | `~/.codex/config.toml` is the MCP registry | Nine top-level `mcp_servers` tables are present. Five use `command`/`args` and four use `url`. | Codex MCP transport and configured state are cheap, deterministic reads. |
 | A server has an `enabled` switch | One of the nine currently says `enabled = false`; the other eight omit the key. The earlier measurement of one explicit `true` no longer matches the live file. The official reference says `enabled` disables without removing the definition, so omission means the normal enabled default. | The reader reports omitted Codex server flags as enabled-for-next-session, not unknown. A future Codex row can offer a real next-session switch. |
-| MCP tools have their own policy | Four tool tables currently carry `approval_mode = "approve"`: three under Linear and one under atlas-nura. The official schema also defines server allow/deny lists and per-tool approval modes. | Tool policy belongs on child rows. It must not be collapsed into the server switch. |
+| MCP tools have their own policy | Four tool tables currently carry `approval_mode = "approve"`: three under Linear and one under another server. The official schema also defines server allow/deny lists and per-tool approval modes. | Tool policy belongs on child rows. It must not be collapsed into the server switch. |
 | Codex records project trust | The file has 34 `projects` tables; every observed table contains only `trust_level`, and the current repository plus its parent are marked `trusted`. | Trust is a cheap Codex context read and closes the untrusted-folder visibility gap for Codex sessions. Untrusted project config can be inventoried, but it must not be applied as effective config. |
 | Plugins and skills live on disk | Both `~/.codex/plugins` and `~/.codex/skills` are directories. The current config names 16 plugins; the plugin directory contains marketplace caches. The skills directory currently has eight user skills and six `.system` skills with `SKILL.md`. This differs from the older six-name snapshot, so names must be scanned rather than hard-coded. | Filesystem discovery is a strong configured/discoverable signal. Cache presence alone is not installation state; join it to the config plugin table. |
 | Threads record per-session configuration | The read-only `threads` schema in `~/.codex/state_5.sqlite` has `sandbox_policy`, `approval_mode`, `model`, `reasoning_effort`, `memory_mode`, `history_mode`, `agent_path` and `cli_version`, as well as source/provider/timestamps. The current thread row agrees with the running Codex environment for model, effort, approval, sandbox and CLI version. | For a Codex session id, show a **Codex-recorded thread configuration** receipt. This is stronger than a disk default, but it is not proof that every value remains live in process memory. |
@@ -199,7 +199,7 @@ the selected host's effective-config API. Passive results must continue to say
 ## Measured cost
 
 Measured on Tyler's current Mac on 2026-08-19 with Bun 1.3.3 and cwd
-`/Users/tylerstupart/conch`. Disk numbers are 100 iterations after a first call
+`~/conch`. Disk numbers are 100 iterations after a first call
 and include parsing, manifest/frontmatter joins, policy evaluation and sorting;
 serialization is separate. They are filesystem-cache-warm measurements, not a
 cold-boot promise.
@@ -239,9 +239,9 @@ and had 32 exact-path project records.
 | `allowedTools` | 32 | 0 non-empty |
 | project-local `mcpServers` | 32 | 2 non-empty records |
 
-The records are exact-path, not inherited. `/Users/tylerstupart` currently has
+The records are exact-path, not inherited. `~` currently has
 trust accepted, two enabled MCP names and two disabled names, while the child
-`/Users/tylerstupart/conch` has trust false and empty project-MCP/permission
+`~/conch` has trust false and empty project-MCP/permission
 arrays. A session can nevertheless exist in the child. The flag is persisted
 project UI state; it is not proof that an attached process is currently at or
 past a trust prompt.

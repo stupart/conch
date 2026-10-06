@@ -493,10 +493,10 @@ describe("Codex's echoed answer to an async question is not Tyler's own words", 
   // this: only strip when the reply exactly matches an option the SAME
   // conversation actually offered via `request_user_input_async` earlier.
   const question = "The Blueprint plugin is installed locally. To test the real connection, "
-    + "please open this sign-in link, choose Arch, and authorize it. Both the existing Claude "
+    + "please open this sign-in link, choose Morrow, and authorize it. Both the existing Claude "
     + "connection and the new Codex connection currently need sign-in. I’m continuing the "
-    + "code review meanwhile.  https://tools.blueprintstudio.ai/oauth/authorize?response_type=code&client_id=bp_client_2GLz9eesn2a_zStv5rgoAw";
-  const echoed = `> ${question}\n\nSigned in to Arch`;
+    + "code review meanwhile.  https://auth.morrow.example/oauth/authorize?response_type=code&client_id=demo_client_7Kq2Lm9xRt4Vw8Np";
+  const echoed = `> ${question}\n\nSigned in to Morrow`;
 
   /** Files the exact `request_user_input_async` call conch actually observed. */
   function askAsync(conversation: Conversation, callId: string, options: string[]): void {
@@ -514,7 +514,7 @@ describe("Codex's echoed answer to an async question is not Tyler's own words", 
 
   test("the UserMessage item strips the quoted question, keeping only the reply — once the question was actually asked", () => {
     const conversation = emptyConversation("s");
-    askAsync(conversation, "call_1", ["Signed in to Arch", "I’ll do it later"]);
+    askAsync(conversation, "call_1", ["Signed in to Morrow", "I’ll do it later"]);
     reduceCodexLine(conversation, {
       type: "event_msg",
       ordinal: 1,
@@ -524,20 +524,20 @@ describe("Codex's echoed answer to an async question is not Tyler's own words", 
     expect(conversation.order.length).toBe(2);
     const item = conversation.items[conversation.order[1]!]!;
     expect(item.kind).toBe("user");
-    expect(item.text).toBe("Signed in to Arch");
+    expect(item.text).toBe("Signed in to Morrow");
     expect(item.text).not.toContain("Blueprint plugin");
   });
 
   test("event_msg:user_message strips the same way, once the question was actually asked", () => {
     const conversation = emptyConversation("s");
-    askAsync(conversation, "call_1", ["Signed in to Arch", "I’ll do it later"]);
+    askAsync(conversation, "call_1", ["Signed in to Morrow", "I’ll do it later"]);
     reduceCodexLine(conversation, {
       type: "event_msg",
       ordinal: 1,
       payload: { type: "user_message", message: echoed },
     });
     const item = conversation.items[conversation.order.at(-1)!]!;
-    expect(item.text).toBe("Signed in to Arch");
+    expect(item.text).toBe("Signed in to Morrow");
   });
 
   // The blocking case: Tyler blockquotes things constantly (he opened the very
@@ -546,7 +546,7 @@ describe("Codex's echoed answer to an async question is not Tyler's own words", 
   // survive completely whole, quote and all.
   test("a genuine Tyler quote-then-reply is never touched, even shaped exactly like the echo", () => {
     const conversation = emptyConversation("s");
-    askAsync(conversation, "call_1", ["Signed in to Arch", "I’ll do it later"]);
+    askAsync(conversation, "call_1", ["Signed in to Morrow", "I’ll do it later"]);
     const text = `> some prior assistant paragraph, quoted on purpose\n\nno, that's wrong, do it this way instead`;
     reduceCodexLine(conversation, {
       type: "event_msg",
@@ -570,8 +570,8 @@ describe("Codex's echoed answer to an async question is not Tyler's own words", 
 
   test("an assistant message is never stripped, even if it starts with a quote", () => {
     const conversation = emptyConversation("s");
-    askAsync(conversation, "call_1", ["Signed in to Arch", "I’ll do it later"]);
-    const text = `> quoting something\n\nSigned in to Arch`;
+    askAsync(conversation, "call_1", ["Signed in to Morrow", "I’ll do it later"]);
+    const text = `> quoting something\n\nSigned in to Morrow`;
     reduceCodexLine(conversation, {
       type: "response_item",
       ordinal: 1,
@@ -583,7 +583,7 @@ describe("Codex's echoed answer to an async question is not Tyler's own words", 
 
   test("a user message that is ALL quote (no reply survives) is left intact rather than emptied", () => {
     const conversation = emptyConversation("s");
-    askAsync(conversation, "call_1", ["Signed in to Arch"]);
+    askAsync(conversation, "call_1", ["Signed in to Morrow"]);
     const text = "> just a quote, no blank-line reply after it";
     reduceCodexLine(conversation, {
       type: "event_msg",
@@ -677,11 +677,11 @@ describe("plans render as plans, not as tool calls", () => {
   test("Codex's inline update_plan becomes the same steps", () => {
     const steps = planSteps(
       'const r = await tools.update_plan({explanation:"x","plan":['
-      + '{"step":"Map Humain and Sea Shell architecture","status":"completed"},'
+      + '{"step":"Map Lowtide and Sea Shell architecture","status":"completed"},'
       + '{"step":"Define the boundary","status":"in_progress"}]}); text(r)',
     );
     expect(steps.length).toBe(2);
-    expect(steps[0]!.text).toBe("Map Humain and Sea Shell architecture");
+    expect(steps[0]!.text).toBe("Map Lowtide and Sea Shell architecture");
     expect(steps[1]!.status).toBe("running");
   });
 

@@ -68,7 +68,7 @@ test("dictation goes to the session that asked, not the one now focused", () => 
   // The applied id must OUTLIVE the process. `live.dictated` is sticky on the daemon's side and deliberately never
   // cleared, so the id is the only thing stopping a dictation being applied twice. Holding it in memory meant every
   // relaunch reset it to 0 and a dictation the user had already received — and deleted — was appended again. Tyler,
-  // after a dozen rebuilds: "this text keeps showing in the 'arch prime' session input box. i keep delting it and it
+  // after a dozen rebuilds: "this text keeps showing in the 'morrow prime' session input box. i keep delting it and it
   // keeps coming back."
   expect(composer).toContain('private static let appliedDictationKey = "conch.mac.appliedDictationID.v1"');
   expect(composer).toContain("appliedDictationID = defaults.integer(forKey: Self.appliedDictationKey)");

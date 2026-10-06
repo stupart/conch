@@ -42,8 +42,8 @@ function between(source: string, start: string, end: string): string {
 
 describe("Open in Terminal: claude attach <jobId>", () => {
   test("the command is exactly claude attach <jobId> in the job's folder, shell-quoted", () => {
-    expect(attachTerminalCommand("f31f0d15", "/Users/tylerstupart"))
-      .toBe("cd -- '/Users/tylerstupart' && claude attach 'f31f0d15'");
+    expect(attachTerminalCommand("f31f0d15", "/Users/you"))
+      .toBe("cd -- '/Users/you' && claude attach 'f31f0d15'");
     expect(attachTerminalCommand("f31f0d15", "/tmp/it's here"))
       .toBe("cd -- '/tmp/it'\\''s here' && claude attach 'f31f0d15'");
     for (const hostile of ["", "-h", "f31f0d15; rm -rf ~", "a b", "$(id)", "'x'"]) {
