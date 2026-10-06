@@ -8,7 +8,7 @@ import AppKit
 // Tyler, on the Mac: "please please please fix the markdown rendering of docs across all surfaces … i think it might be
 // tables that are broken?" — and the bar: "make it as good as the one in apple xcode." Four renderers disagreed. The
 // Mac's SwiftUI rows took an inline parse with tables pre-flattened to `**first** — rest · rest` and headings promoted to
-// bold, so a 54-row document (atlas deep-review/mvps-and-backend-primitives.md, 2026-09-20) arrived as a wall of bold
+// bold, so a 54-row document (2026-09-20) arrived as a wall of bold
 // runs; the AppKit fallback rebuilt blocks by hand from Foundation's `.full` parse and tab-stopped table cells at 118 pt,
 // which no cell of that document fits; the phone had a real block model in its own file, and the Mac had nothing like it.
 //
@@ -44,7 +44,7 @@ enum MarkdownBlock: Equatable {
 }
 
 enum MarkdownDocument {
-    /// A document's YAML frontmatter is metadata, not prose: `type: document` on the first line of every atlas document
+    /// A document's YAML frontmatter is metadata, not prose: `type: document` on the first line of every design document
     /// read as its opening sentence. Stripped only when the text STARTS with the fence and the fence closes — across
     /// 256 live conversation items (2026-09-20) none begins with `---` and two carry a bare `---` mid-reply, so a rule
     /// in an agent's prose is never taken for one.
@@ -211,7 +211,7 @@ enum MarkdownDocument {
     }
 
     /// Each column's share of a table's width, from what it holds, the way a web table's are. Equal columns wrap the
-    /// atlas documents' 300-character third columns into rows 450 pt tall — 22,395 pt for a 155-line document at the
+    /// design documents' 300-character third columns into rows 450 pt tall — 22,395 pt for a 155-line document at the
     /// 748 pt measure — while a column of short labels sits mostly empty. Capped at 60 characters so one long cell does
     /// not starve the rest, with 8 added so an empty column still has a width.
     static func columnWeights(_ rows: [[String]]) -> [CGFloat] {
@@ -444,7 +444,7 @@ public struct MarkdownView: View {
     }
 
     /// A table is columns, or it is not a table. The cells wrap inside the measure rather than scrolling sideways —
-    /// the atlas documents' cells run to 300 characters, and a grid that never wraps is 3000 pt wide. Which is what a
+    /// the design documents' cells run to 300 characters, and a grid that never wraps is 3000 pt wide. Which is what a
     /// SwiftUI `Grid` does: it sizes every column to its widest cell's ideal width and the whole document with it
     /// (measured 2026-09-20: the paragraphs clipped at both edges of a 748 pt render). So the columns are laid out here,
     /// and the grid's lines are a rule per row and per column placed by the layout, not two overlays on every cell.

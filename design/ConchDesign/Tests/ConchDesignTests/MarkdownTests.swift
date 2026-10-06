@@ -5,9 +5,9 @@ import XCTest
 import AppKit
 #endif
 
-/// The markdown renderer against the document Tyler complained about — atlas deep-review/mvps-and-backend-primitives.md
-/// (2026-09-20: frontmatter, 10 headings, 54 table lines, a numbered list) and its sibling migration-plan.md (code
-/// fences) — and the failure modes the old renderers' comments named.
+/// The markdown renderer against two long sample documents in Fixtures/ — mvps-and-backend-primitives.md (frontmatter,
+/// 10 headings, 54 table lines with long cells, a numbered list) and its sibling migration-plan.md (a code fence) — and
+/// the failure modes the old renderers' comments named.
 final class MarkdownTests: XCTestCase {
     static func fixture(_ name: String) -> String {
         let url = Bundle.module.url(forResource: name, withExtension: "md", subdirectory: "Fixtures")!
@@ -25,7 +25,7 @@ final class MarkdownTests: XCTestCase {
     func testTheDocumentKeepsItsShape() {
         let blocks = MarkdownDocument.blocks(Self.corpus)
         // The frontmatter is gone and the title is a title, not "type: document" as an opening sentence.
-        XCTAssertEqual(blocks.first, .heading(1, "Atlas MVPs and backend primitives"))
+        XCTAssertEqual(blocks.first, .heading(1, "Morrow MVPs and backend primitives"))
         XCTAssertFalse(blocks.contains { if case let .paragraph(text) = $0 { text.contains("type: document") } else { false } })
         let headings = blocks.compactMap { if case let .heading(level, _) = $0 { level } else { nil } }
         XCTAssertEqual(headings, [1] + Array(repeating: 2, count: 9))
@@ -33,7 +33,7 @@ final class MarkdownTests: XCTestCase {
         let tables = Self.tables(blocks)
         XCTAssertEqual(tables.map(\.count), [7, 9, 14, 4, 15])
         for rows in tables { XCTAssertTrue(rows.allSatisfy { $0.count == rows[0].count }, "a ragged table") }
-        XCTAssertEqual(tables[1][0], ["Concern", "MediaWiki / Wikipedia software", "Mastodon, as a concrete social backend", "Proposed Atlas"])
+        XCTAssertEqual(tables[1][0], ["Concern", "CalDAV / iCalendar servers", "Google Calendar API, as a hosted backend", "Proposed Morrow"])
         XCTAssertEqual(tables[4][14][0], "Migration")
         // The four acceptance details, numbered.
         XCTAssertEqual(blocks.compactMap { if case let .ordered(_, ordinal, _) = $0 { ordinal } else { nil } }, [1, 2, 3, 4])
@@ -48,7 +48,7 @@ final class MarkdownTests: XCTestCase {
         XCTAssertEqual(blocks.first, .heading(1, "Module and migration plan"))
         let code = blocks.compactMap { if case let .code(text) = $0 { text } else { nil } }
         XCTAssertEqual(code.count, 1)
-        XCTAssertTrue(code[0].hasPrefix("Atlas repository (incremental target)\n  apps/web/"), "the fence's own newlines and indent stay")
+        XCTAssertTrue(code[0].hasPrefix("Morrow repository (incremental target)\n  apps/web/"), "the fence's own newlines and indent stay")
         XCTAssertEqual(Self.tables(blocks).count, 2)
     }
 
