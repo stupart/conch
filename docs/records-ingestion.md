@@ -124,7 +124,7 @@ paths. Mutation checks sabotage priority, batch bounds, replay, the off gate and
 receipt settlement, then restore the exact source using Python string replacement.
 
 The [PR 7a API](records-paging.md) supplies paged history; PR 7b adds its app clients.
-Atlas, arbitrary-edit hashing, retention
+Export, arbitrary-edit hashing, retention
 policy, attachment transport and new audio completion acknowledgements remain later
 work. The real record store is neither enabled nor used during validation.
 

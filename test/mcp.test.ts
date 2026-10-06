@@ -1442,7 +1442,7 @@ describe("real MCP tool handlers with injected dependencies", () => {
     try {
       const start = join(base, "Internal");
       const now = join(base, "Internal", "monorepo", ".worktrees", "task");
-      const moved = join(base, "Clients", "arch");
+      const moved = join(base, "Clients", "morrow");
       for (const dir of [join(start, "review-2026-09-30"), now, moved, join(base, "Outside")]) mkdirSync(dir, { recursive: true });
       writeFileSync(join(now, "page.html"), "<h1>ok</h1>");
       writeFileSync(join(moved, "page.html"), "<h1>ok</h1>");
@@ -2706,7 +2706,7 @@ describe("review_to_front waits for the daemon's verdict", () => {
   });
 
   test("a label its work drifted from is offered for renaming once, never for the user's own, and again for a new label", async () => {
-    let label = "Remove Jaidon from blueprintstudio.ai";
+    let label = "Remove Rowan from the Morrow site";
     let source: "user" | "agent" | "folder" = "agent";
     const held = (summaries: string[]) => JSON.stringify({ v: 1, rows: [{ id: "session-123", label, reviews: summaries.map((summary, n) => ({
       summary, id: `r-${n}`, at: n, artifact: `a-${n}`, version: 1, kind: "other",

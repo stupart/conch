@@ -114,7 +114,7 @@ describe("the guard, end to end over a fake tmux", () => {
     const g = guard(() => state);
     const first = g.make();
     await first.observe([
-      { sessionId: "a", label: "Cobra doc", pid: 12 },
+      { sessionId: "a", label: "Invoice doc", pid: 12 },
       { sessionId: "b", label: "seashell", pid: 13 },
       { sessionId: "job", label: "a Claude Code job", pid: 14, jobId: "b10e6872" },
     ], new Set(["a", "b"]));

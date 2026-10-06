@@ -10,8 +10,8 @@ final class SidebarRowTests: XCTestCase {
     func testOnlyWhatAsksSomethingEarnsASecondLine() {
         XCTAssertNil(SidebarRowText.subtitle(message: nil, blockedOn: nil, startedBy: nil))
         XCTAssertEqual(
-            SidebarRowText.subtitle(message: nil, blockedOn: "Allow rm -rf build/ in arch-site?", startedBy: nil),
-            "Allow rm -rf build/ in arch-site?"
+            SidebarRowText.subtitle(message: nil, blockedOn: "Allow rm -rf build/ in morrow-site?", startedBy: nil),
+            "Allow rm -rf build/ in morrow-site?"
         )
         XCTAssertEqual(
             SidebarRowText.subtitle(message: nil, blockedOn: nil, startedBy: "Sidebar names redesign"),
@@ -98,10 +98,10 @@ final class SidebarRowTests: XCTestCase {
 
     /// The whole name, which the row may fade, then the summary the row no longer draws.
     func testTheTooltipCarriesTheWholeNameAndTheSummary() {
-        let name = "Prime design system studio, with Nick's review notes"
+        let name = "Prime design system studio, with Mara's review notes"
         XCTAssertEqual(
-            SidebarRowText.tooltip(name: name, snippet: "Nick's review notes folded into the tokens page", startedBy: nil),
-            "\(name)\nNick's review notes folded into the tokens page"
+            SidebarRowText.tooltip(name: name, snippet: "Mara's review notes folded into the tokens page", startedBy: nil),
+            "\(name)\nMara's review notes folded into the tokens page"
         )
         XCTAssertEqual(
             SidebarRowText.tooltip(name: "codex review", snippet: "", startedBy: "Sidebar names redesign"),

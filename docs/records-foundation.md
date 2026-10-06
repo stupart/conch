@@ -103,7 +103,7 @@ complete coverage of every historical harness version.
 
 PR 6 adds discovery, incremental file reads, scheduling, reconciliation and live
 receipt producers. PR 7 adds full paged history. Existing snapshot caps, daemon
-behavior, Mac/iPhone UIs and `src/conversation.ts` are unchanged. Search, Atlas,
+behavior, Mac/iPhone UIs and `src/conversation.ts` are unchanged. Search, export,
 cross-harness forks, retention/purge policy and attachment transport are later work.
 
 ## Verification (2026-09-15)

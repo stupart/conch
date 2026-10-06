@@ -198,7 +198,7 @@ struct SessionView: View {
     /// reply per session. So a session that is not the most recent to speak
     /// gets no live text at all, and keying the refetch on it meant those
     /// sessions fetched once, ever — you opened conch and read a sentence
-    /// belonging to dayloop. This session's own ROW still moves whenever it
+    /// belonging to lowtide. This session's own ROW still moves whenever it
     /// produces a turn, which is the signal that actually tracks it.
     private var replyFingerprint: String? {
         if let reply = bridge.state?.reply, reply.sessionId == sessionId {

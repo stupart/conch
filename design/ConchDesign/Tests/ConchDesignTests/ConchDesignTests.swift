@@ -327,9 +327,9 @@ final class ConchDesignTests: XCTestCase {
         let sessions = [
             FogSession(id: "idle", label: "Idle", agent: "Claude", standing: .other),
             FogSession(id: "w1", label: "Build", agent: "Codex", standing: .working),
-            FogSession(id: "r1", label: "Arch", agent: "Claude", item: "The invite page", standing: .ready),
+            FogSession(id: "r1", label: "Morrow", agent: "Claude", item: "The invite page", standing: .ready),
             FogSession(id: "w2", label: "Docs", agent: "Claude", standing: .working),
-            FogSession(id: "r2", label: "Dayloop", agent: "Claude", standing: .ready),
+            FogSession(id: "r2", label: "Lowtide", agent: "Claude", standing: .ready),
         ]
         XCTAssertEqual(FogSession.ordered(sessions).map(\.id), ["r1", "r2", "w1", "w2", "idle"])
         XCTAssertEqual(sessions[2].item, "The invite page")

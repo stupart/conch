@@ -37,20 +37,20 @@ function cfgWithVoices(voices: string[]) {
 
 test("voiceFor is stable — same label, same voice, every time", () => {
   const cfg = cfgWithVoices(["a", "b", "c", "d"]);
-  const first = voiceFor(cfg, "dayloop");
-  for (let i = 0; i < 10; i++) expect(voiceFor(cfg, "dayloop")).toBe(first);
+  const first = voiceFor(cfg, "lowtide");
+  for (let i = 0; i < 10; i++) expect(voiceFor(cfg, "lowtide")).toBe(first);
 });
 
 test("voiceFor spreads distinct labels across the ring", () => {
   const cfg = cfgWithVoices(["a", "b", "c", "d", "e", "f", "g", "h"]);
-  const labels = ["dayloop", "tokenworks", "poaster", "conch", "blueprint", "arch"];
+  const labels = ["lowtide", "acme-web", "morrow-api", "conch", "acme-ui", "morrow"];
   const used = new Set(labels.map((l) => voiceFor(cfg, l)));
   expect(used.size).toBeGreaterThan(2); // not everyone lands on one voice
 });
 
 test("voiceFor falls back sanely with no label or no voices", () => {
   expect(voiceFor(cfgWithVoices(["x", "y"]), "")).toBe("x");
-  expect(voiceFor(cfgWithVoices([]), "dayloop")).toBe("af_heart");
+  expect(voiceFor(cfgWithVoices([]), "lowtide")).toBe("af_heart");
 });
 
 test("default voice ring parses from config", () => {
@@ -78,12 +78,12 @@ test("voice override reset returns a label to its automatic ring voice", () => {
   const voicesPath = join(root, "nested", "voices.json");
   const cfg = cfgWithVoices(["af_heart", "am_adam"]);
   try {
-    setVoiceOverride("  DayLoop  ", "am_adam", { voicesPath });
-    expect(voiceFor(cfg, "dayloop", { voicesPath })).toBe("am_adam");
-    expect(clearVoiceOverride("DAYLOOP", { voicesPath })).toBe(true);
-    expect(clearVoiceOverride("dayloop", { voicesPath })).toBe(false);
+    setVoiceOverride("  Lowtide  ", "am_adam", { voicesPath });
+    expect(voiceFor(cfg, "lowtide", { voicesPath })).toBe("am_adam");
+    expect(clearVoiceOverride("LOWTIDE", { voicesPath })).toBe(true);
+    expect(clearVoiceOverride("lowtide", { voicesPath })).toBe(false);
     expect(JSON.parse(readFileSync(voicesPath, "utf8"))).toEqual({});
-    expect(availableVoiceRing(cfg, null)).toContain(voiceFor(cfg, "dayloop", { voicesPath }));
+    expect(availableVoiceRing(cfg, null)).toContain(voiceFor(cfg, "lowtide", { voicesPath }));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -146,9 +146,9 @@ test("persisted voice-pin migration moves the normalized old key to the new labe
 
 test("invalid persisted override selects a known ring voice instead", () => {
   const available = ["af_heart", "am_adam"];
-  expect(selectVoice(available, "dayloop", "not_on_server", available)).toBeOneOf(available);
-  expect(selectVoice(available, "dayloop", "bad voice", available)).toBeOneOf(available);
-  expect(selectVoice(available, "dayloop", "am_adam", available)).toBe("am_adam");
+  expect(selectVoice(available, "lowtide", "not_on_server", available)).toBeOneOf(available);
+  expect(selectVoice(available, "lowtide", "bad voice", available)).toBeOneOf(available);
+  expect(selectVoice(available, "lowtide", "am_adam", available)).toBe("am_adam");
 });
 
 test("later sentence batching keeps sentence one separate and is disableable", () => {

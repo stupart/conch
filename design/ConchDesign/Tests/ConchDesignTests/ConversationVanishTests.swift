@@ -99,13 +99,13 @@ final class ConversationVanishTests: XCTestCase {
     // MARK: - What the single-reply pane says
 
     func testOnlyAnEmptySessionIsToldThereIsNothing() {
-        let empty = ConversationPlaceholder.text(name: "atlas", transcript: .empty)
-        XCTAssertEqual(empty, "Nothing from atlas yet. Send a message below to start.")
+        let empty = ConversationPlaceholder.text(name: "morrow", transcript: .empty)
+        XCTAssertEqual(empty, "Nothing from morrow yet. Send a message below to start.")
         for transcript: ConversationPlaceholder.Transcript in [.unread, .awaitingReply, .unreadable] {
-            let said = ConversationPlaceholder.text(name: "atlas", transcript: transcript)
+            let said = ConversationPlaceholder.text(name: "morrow", transcript: transcript)
             XCTAssertFalse(said.localizedCaseInsensitiveContains("nothing"), "\(transcript) said \(said)")
             XCTAssertFalse(said.contains("to start"), "\(transcript) told a running session to start")
-            XCTAssertTrue(said.contains("atlas"))
+            XCTAssertTrue(said.contains("morrow"))
         }
     }
 }

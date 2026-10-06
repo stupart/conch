@@ -47,7 +47,7 @@ extends the conversation panel (the overlay, `Fog*` in code) and the pill; it is
     checks. Remove only appeared once #411 stopped the Mac dropping `features`.
   - Screen context (#403): observers → ordered resolvers → `showing`; `conch_on_screen`; a local
     screen log. Tyler: "modular so we could potentially add a light local (or cloud) vision
-    model", and the raw log is for Atlas and time tracking later.
+    model", and the raw log is for a knowledge base and time tracking later.
   - The panel (#404): header, session switcher, Previous/Next over every held deliverable, no
     content → full-screen transcript, optional reply line.
   - Phone (#402): every held deliverable, HTML with its folder's assets, markdown images.
@@ -460,7 +460,7 @@ extends the conversation panel (the overlay, `Fog*` in code) and the pill; it is
   keeping magnet travel. `4ebbec8`
 - **done** — One markdown renderer for both transcripts: headings kept their hashes, tables were a
   wall of pipes, links had no underline. `fbd413b`
-- **done** — The Arch Prime text that kept coming back. Four independent layers: Whisper doubled
+- **done** — The Morrow Prime text that kept coming back. Four independent layers: Whisper doubled
   the clause (`46d8507`), the exit drain joined five captures (`a370445`), `live.dictated` is
   sticky by design (cleared by hand), and the applied id did not survive relaunch (`0fd6ea1`).
 - **done** — Codex refuses the flag pair conch was sending it; `conflictsWith` at the shared

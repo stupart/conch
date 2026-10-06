@@ -595,7 +595,7 @@ export function screenContextFromPublished(
 
 /**
  * One line of the local screen log: what was showing, from `at` until `until`. For time tracking
- * ("seeing where my time is going per-project and activity type") and a later Atlas export, both
+ * ("seeing where my time is going per-project and activity type") and a later export, both
  * out of scope; conch only writes it. No surface location: `artifact` is the one path or URL kept,
  * because it says which deliverable, and none of it is ever sent anywhere.
  */

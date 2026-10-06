@@ -343,16 +343,16 @@ describe("Claude session names match what /resume shows", () => {
     // Tyler: "The resume names i see in conch are weird - they don't match what
     // i see when i run /resume in the apps". conch was labelling every row with
     // the first thing ever said in that session, so the ones he recognises —
-    // conch, honeyb, arch site — each read as an ancient opening line.
+    // conch, acme-web, morrow site — each read as an ancient opening line.
     const home = mkdtempSync(join(tmpdir(), "conch-title-"));
     writeClaude(home, "proj", "s1", [
       { type: "user", cwd: "/work/thing", entrypoint: "cli", message: { role: "user", content: "please look at the thing i mentioned" } },
       { type: "ai-title", aiTitle: "Look at the mentioned thing" },
-      { type: "custom-title", customTitle: "arch site" },
+      { type: "custom-title", customTitle: "morrow site" },
     ], Date.now());
 
     const rows = readResumableSessions({ configDir: home, claudeHome: home, codexHome: join(home, "nope") });
-    expect(rows.map((r) => r.label)).toEqual(["arch site"]);
+    expect(rows.map((r) => r.label)).toEqual(["morrow site"]);
     rmSync(home, { recursive: true, force: true });
   });
 

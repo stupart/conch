@@ -33,7 +33,7 @@ describe("Codex durable records", () => {
       "<codex_internal_context source=\"goal\">\nContinue",
       "<turn_aborted>\nThe user interrupted the previous turn",
       "<external_codex_apps_writing_block_edits>",
-      "# AGENTS.md instructions for /Users/tylerstupart/Projects/Conch",
+      "# AGENTS.md instructions for /Users/you/Projects/Conch",
     ];
     const his = [
       "<image name=[Image #1] path=\"/var/folders/x/codex-clipboard.png\"></image>the outline is wrong [Image #1]",
@@ -348,8 +348,8 @@ describe("Codex's echoed answer to an async question is not recorded as Tyler's 
   // when the reply exactly matches an option this session actually offered
   // via `request_user_input_async` earlier.
   const question = "The Blueprint plugin is installed locally. To test the real connection, "
-    + "please open this sign-in link, choose Arch, and authorize it.";
-  const echoed = `> ${question}\n\nSigned in to Arch`;
+    + "please open this sign-in link, choose Morrow, and authorize it.";
+  const echoed = `> ${question}\n\nSigned in to Morrow`;
 
   const askAsync = (f: ReturnType<typeof fixture>, callId: string, options: string[]) =>
     f.read("response_item", {
@@ -359,10 +359,10 @@ describe("Codex's echoed answer to an async question is not recorded as Tyler's 
 
   test("the quoted question is stripped; only the reply is recorded under role user — once the question was actually asked", () => {
     const f = fixture();
-    askAsync(f, "call_1", ["Signed in to Arch", "I’ll do it later"]);
+    askAsync(f, "call_1", ["Signed in to Morrow", "I’ll do it later"]);
     const out = f.read("response_item", responseMessage("user", echoed));
     expect(out.items).toHaveLength(1);
-    expect(out.items[0]).toMatchObject({ kind: "message", role: "user", text: "Signed in to Arch" });
+    expect(out.items[0]).toMatchObject({ kind: "message", role: "user", text: "Signed in to Morrow" });
     expect(out.items[0]?.text).not.toContain("Blueprint plugin");
   });
 
@@ -372,7 +372,7 @@ describe("Codex's echoed answer to an async question is not recorded as Tyler's 
   // recorded completely whole, quote and all.
   test("a genuine Tyler quote-then-reply is never touched, even shaped exactly like the echo", () => {
     const f = fixture();
-    askAsync(f, "call_1", ["Signed in to Arch", "I’ll do it later"]);
+    askAsync(f, "call_1", ["Signed in to Morrow", "I’ll do it later"]);
     const text = `> some prior assistant paragraph, quoted on purpose\n\nno, that's wrong, do it this way instead`;
     const out = f.read("response_item", responseMessage("user", text));
     expect(out.items[0]?.text).toBe(text);
@@ -386,15 +386,15 @@ describe("Codex's echoed answer to an async question is not recorded as Tyler's 
 
   test("an assistant message starting with a quote is never stripped", () => {
     const f = fixture();
-    askAsync(f, "call_1", ["Signed in to Arch"]);
-    const text = `> quoting something\n\nSigned in to Arch`;
+    askAsync(f, "call_1", ["Signed in to Morrow"]);
+    const text = `> quoting something\n\nSigned in to Morrow`;
     const out = f.read("response_item", responseMessage("assistant", text));
     expect(out.items[0]?.text).toBe(text);
   });
 
   test("a user item that is ALL quote (no reply survives the split) is recorded intact", () => {
     const f = fixture();
-    askAsync(f, "call_1", ["Signed in to Arch"]);
+    askAsync(f, "call_1", ["Signed in to Morrow"]);
     const text = "> just a quote, no blank-line reply after it";
     const out = f.read("response_item", responseMessage("user", text));
     expect(out.items[0]?.text).toBe(text);

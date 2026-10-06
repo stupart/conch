@@ -211,7 +211,7 @@ final class PanelKeysTests: XCTestCase {
 final class PanelStateTests: XCTestCase {
     /// The reply line says whom a reply goes to.
     func testThePlaceholderNamesTheSession() {
-        XCTAssertEqual(ConversationFog.placeholder(for: FogSession(id: "a", label: "Arch brand page", agent: "Claude")), "Reply to Arch brand page")
+        XCTAssertEqual(ConversationFog.placeholder(for: FogSession(id: "a", label: "Morrow brand page", agent: "Claude")), "Reply to Morrow brand page")
         XCTAssertEqual(ConversationFog.placeholder(for: nil), "Reply")
     }
 
@@ -227,11 +227,11 @@ final class PanelStateTests: XCTestCase {
 
     /// Only the item changes: the header crosses over on it, so a new item in the same session never cuts.
     func testTheHeaderCrossesOverOnItsItemToo() {
-        let session = FogSession(id: "a", label: "Arch", agent: "Claude", item: "v1: the hero")
+        let session = FogSession(id: "a", label: "Morrow", agent: "Claude", item: "v1: the hero")
         XCTAssertNotEqual(ConversationFog.crossKey(session), ConversationFog.crossKey(session.with(item: "v2: the hero, tightened")))
         XCTAssertNotEqual(ConversationFog.crossKey(session), ConversationFog.crossKey(session.with(item: nil)))
         XCTAssertEqual(session.with(item: nil).item, nil)
-        XCTAssertEqual(session.with(item: "x").label, "Arch")
+        XCTAssertEqual(session.with(item: "x").label, "Morrow")
     }
 
     /// The panel on version 1 of an artifact moves to version 2 when it is published; another artifact arriving doesn't

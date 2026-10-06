@@ -380,7 +380,7 @@ lmstudio|ollama` cover local models.
 
 Tyler's ChatGPT → OpenAI-API switch stayed within one vendor, and the session continued.
 
-**A neutral record of a Codex thread** (for Atlas) needs:
+**A neutral record of a Codex thread** (for export) needs:
 
 - thread id and root `session_id`;
 - the parent edge, `forked_from_id` and `forked_from_ordinal_exclusive`;
@@ -398,8 +398,8 @@ de-duplicated `ThreadItem`s, readable without resuming. A cross-harness continue
 seeded with plain messages (`thread/start` plus `thread/inject_items`, `README.md:1150-1160`), never a
 live join (C8's rule).
 
-**What conch should do.** When Atlas starts, write the neutral record from `thread_items`, not from the
-rollout conch parses today. Touches the Atlas index, C2.
+**What conch should do.** When export starts, write the neutral record from `thread_items`, not from the
+rollout conch parses today. Touches C2.
 
 ## 8. MCP
 
@@ -526,11 +526,11 @@ Ranked by value.
    log: pid 0 with no holder means closed; an app-server or daemon holder means do not type. Evidence:
    `state/migrations/0021`, `0041`; `writer_lock.rs:40-160`; live `lsof` (2383 holds the parent and
    three helpers, 74676 the Desktop thread). Rows: C4/C15, E8, R.
-5. **Atlas's neutral Codex record, from `thread_items` and without the ciphertext.** Keep messages,
+5. **A neutral Codex record for export, from `thread_items` and without the ciphertext.** Keep messages,
    tool calls, diffs, compaction summaries, inter-agent messages, per-turn provider and model, and
    per-response usage. Drop `encrypted_content` (all 167 reasoning items in the live parent are
    opaque). Continue elsewhere as `thread/start` plus `thread/inject_items`. Evidence:
-   `client.rs:995`; `README.md:443, 1150-1160`; `spawn.rs:424-435`. Rows: Atlas, C2.
+   `client.rs:995`; `README.md:443, 1150-1160`; `spawn.rs:424-435`. Rows: C2.
 
 Also found, smaller (fixed in #178): the shipped plugin's `${CLAUDE_PLUGIN_ROOT}` is never expanded by Codex
 (section 8), and `codex mcp-server` no longer exists in 0.154.0.

@@ -61,14 +61,14 @@ test("the level lives only while the mic is open, and survives partial updates",
   setState("idle");
   setMicLevel(0.5);
   expect(getLiveState().level).toBeUndefined();
-  setState("recording", "arch");
+  setState("recording", "morrow");
   setMicLevel(0.4321);
   expect(getLiveState().level).toBe(0.43);
-  setState("recording", "arch", "a partial");
+  setState("recording", "morrow", "a partial");
   expect(getLiveState().level).toBe(0.43);
   setMicLevel(1.7);
   expect(getLiveState().level).toBe(1);
-  setState("transcribing", "arch");
+  setState("transcribing", "morrow");
   expect(getLiveState().level).toBeUndefined();
   setState("idle");
 });

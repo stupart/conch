@@ -330,7 +330,7 @@ describe("new work does not replace what you are reading", () => {
    *
    * `isManual` read `global || row.paused`, which is true on every press while the conch is
    * globally paused — so the button always said "Manual" and always sent a resume. Measured in
-   * /tmp/conch-daemon.log on 2026-09-22: four "auto for Arch Prime" lines in 25 seconds
+   * /tmp/conch-daemon.log on 2026-09-22: four "auto for Morrow Prime" lines in 25 seconds
    * (18:14:13/15/17/38), someone pressing a control that looked dead. The 17:15 press is why
    * that one session announced a turn and opened the mic at 17:55 while the rest stayed quiet.
    *

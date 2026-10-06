@@ -1326,7 +1326,7 @@ function upsertCodexMessage(
  * agent's own prior words, not anything Tyler typed — rendering it whole
  * put an agent's paragraph in Tyler's mouth (the "Asset Generator" session,
  * 2026-09-21: a Blueprint OAuth explanation attributed to him for one word
- * of actual reply, "Signed in to Arch").
+ * of actual reply, "Signed in to Morrow").
  *
  * The record carries no field naming this as an echo — Codex files it as
  * ordinary `role: "user"` text, same as anything typed by hand, and Tyler
@@ -1754,7 +1754,7 @@ function bridgeSuffix(id: unknown): string {
  *    and the branch is the chain through it. Walking down from the window's
  *    last anchor stops where another window's anchor takes over: a window idle
  *    since the other resumed from its leaf keeps its own history, not the
- *    other's work — which is exactly the `arch site` / arch-swap bug.
+ *    other's work — which is exactly the `morrow site` / morrow-swap bug.
  * 2. Failing that, when exactly one branch's leaf is newer than the window's
  *    registry `startedAt`, it is that branch: the other's work predates this
  *    window entirely.

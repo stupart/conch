@@ -157,7 +157,7 @@ describe("what the sidechain and the parent transcript say about subagents", () 
 
 describe("the panel row model nests subagents", () => {
   const parent: SessionInfo = { sessionId: "p1", name: "conch", status: "idle", statusUpdatedAt: 50 };
-  const other: SessionInfo = { sessionId: "p2", name: "arch", status: "busy", statusUpdatedAt: 50 };
+  const other: SessionInfo = { sessionId: "p2", name: "morrow", status: "busy", statusUpdatedAt: 50 };
   const older: SessionInfo = {
     sessionId: "agent-old", parentSessionId: "p1", name: "Older task", status: "busy", statusUpdatedAt: 10,
   };

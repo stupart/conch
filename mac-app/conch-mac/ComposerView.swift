@@ -22,7 +22,7 @@ final class ComposerDraftStore: ObservableObject {
     /// transitions that follow it, because the app applies it whenever it next reads state. The guard that makes that
     /// safe is the id. Holding the id only in memory meant every relaunch reset it to 0, so a dictation the user had
     /// already received — and deleted — looked new again and was appended once more. Tyler, after a dozen rebuilds:
-    /// "this text keeps showing in the 'arch prime' session input box. i keep delting it and it keeps coming back."
+    /// "this text keeps showing in the 'morrow prime' session input box. i keep delting it and it keeps coming back."
     private static let appliedDictationKey = "conch.mac.appliedDictationID.v1"
 
     /// One store for the dashboard's composer and the conversation fog (M3), so a session has one draft

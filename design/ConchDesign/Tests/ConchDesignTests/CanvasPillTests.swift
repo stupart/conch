@@ -41,8 +41,8 @@ final class CanvasPillTests: XCTestCase {
     }
 
     func testASendThatWentSaysWhereForAMoment() {
-        let sent = CanvasToolPill.Notice.sent(to: "Arch brand page")
-        XCTAssertEqual(sent.text, "Sent to Arch brand page")
+        let sent = CanvasToolPill.Notice.sent(to: "Morrow brand page")
+        XCTAssertEqual(sent.text, "Sent to Morrow brand page")
         XCTAssertEqual(sent.tone, .done)
         XCTAssertTrue(sent.actions.isEmpty)
         XCTAssertEqual(CanvasToolPill.Notice.sentFor, .milliseconds(1500))
@@ -53,20 +53,20 @@ final class CanvasPillTests: XCTestCase {
     func testASendThatDidntLandSaysWhyInTheSharedReasonTable() throws {
         for reason in ["session-stopped", "session-ended", "system-dialog-blocking", "automation-permission-denied", "session-awaiting-answer", "delivery-unconfirmed"] {
             let clause = try XCTUnwrap(ConchSendFailure.clause(for: reason))
-            let notice = CanvasToolPill.Notice.notSent(to: "Arch", sentence: ConchSendFailure.sentence(reason: reason))
-            XCTAssertEqual(notice.text, "Not sent to Arch: \(clause) Your marks are still here.", reason)
+            let notice = CanvasToolPill.Notice.notSent(to: "Morrow", sentence: ConchSendFailure.sentence(reason: reason))
+            XCTAssertEqual(notice.text, "Not sent to Morrow: \(clause) Your marks are still here.", reason)
             XCTAssertEqual(notice.actions, [.showInFinder])
         }
-        XCTAssertTrue(CanvasToolPill.Notice.notSent(to: "Arch", sentence: ConchSendFailure.sentence(reason: "session-stopped")).text.contains("Resume it"))
+        XCTAssertTrue(CanvasToolPill.Notice.notSent(to: "Morrow", sentence: ConchSendFailure.sentence(reason: "session-stopped")).text.contains("Resume it"))
         // The clipboard's line is the prompt's, not the marks': it goes.
         XCTAssertEqual(
-            CanvasToolPill.Notice.notSent(to: "Arch", sentence: ConchSendFailure.sentence(reason: "window-not-focusable", onClipboard: true)).text,
-            "Not sent to Arch: couldn't reach that session's window. Your marks are still here."
+            CanvasToolPill.Notice.notSent(to: "Morrow", sentence: ConchSendFailure.sentence(reason: "window-not-focusable", onClipboard: true)).text,
+            "Not sent to Morrow: couldn't reach that session's window. Your marks are still here."
         )
         // A reason conch has no words for, and the daemon not answering at all.
-        XCTAssertEqual(CanvasToolPill.Notice.notSent(to: "Arch", sentence: ConchSendFailure.sentence(reason: "something-new")).text, "Not sent to Arch. Your marks are still here.")
-        XCTAssertEqual(CanvasToolPill.Notice.notSent(to: "Arch", sentence: nil).text, "Not sent to Arch: conch isn't answering. Your marks are still here.")
-        XCTAssertEqual(CanvasToolPill.Notice.notSent(to: "Arch", sentence: nil, kept: "The recording is kept.").text, "Not sent to Arch: conch isn't answering. The recording is kept.")
+        XCTAssertEqual(CanvasToolPill.Notice.notSent(to: "Morrow", sentence: ConchSendFailure.sentence(reason: "something-new")).text, "Not sent to Morrow. Your marks are still here.")
+        XCTAssertEqual(CanvasToolPill.Notice.notSent(to: "Morrow", sentence: nil).text, "Not sent to Morrow: conch isn't answering. Your marks are still here.")
+        XCTAssertEqual(CanvasToolPill.Notice.notSent(to: "Morrow", sentence: nil, kept: "The recording is kept.").text, "Not sent to Morrow: conch isn't answering. The recording is kept.")
     }
 
     /// A Show stopped under it says so in conch's words, with where it got to; frames that couldn't be made, the same.
@@ -176,25 +176,25 @@ final class CanvasPillTests: XCTestCase {
 
     // MARK: Where Send goes
 
-    private let sessions = ["arch", "dev", "api", "docs"]
+    private let sessions = ["morrow", "dev", "api", "docs"]
 
     /// Tyler's pick first; the screen's owner when sure; the panel's, as a guess Send asks about.
     func testOnlyAPickOrASureOwnerIsSureThePanelsIsAGuess() {
-        XCTAssertEqual(CanvasRouting.choice(picked: nil, onScreen: "dev", confidence: 0.9, panel: "arch", sessions: sessions), .init(id: "dev", sure: true))
-        XCTAssertEqual(CanvasRouting.choice(picked: nil, onScreen: "dev", confidence: 0.8, panel: "arch", sessions: sessions), .init(id: "dev", sure: true))
+        XCTAssertEqual(CanvasRouting.choice(picked: nil, onScreen: "dev", confidence: 0.9, panel: "morrow", sessions: sessions), .init(id: "dev", sure: true))
+        XCTAssertEqual(CanvasRouting.choice(picked: nil, onScreen: "dev", confidence: 0.8, panel: "morrow", sessions: sessions), .init(id: "dev", sure: true))
         // A localhost page at 0.7 fell to the panel's session without a word: a guess.
-        XCTAssertEqual(CanvasRouting.choice(picked: nil, onScreen: "dev", confidence: 0.7, panel: "arch", sessions: sessions), .init(id: "arch", sure: false))
-        XCTAssertEqual(CanvasRouting.choice(picked: "api", onScreen: "dev", confidence: 0.9, panel: "arch", sessions: sessions), .init(id: "api", sure: true))
+        XCTAssertEqual(CanvasRouting.choice(picked: nil, onScreen: "dev", confidence: 0.7, panel: "morrow", sessions: sessions), .init(id: "morrow", sure: false))
+        XCTAssertEqual(CanvasRouting.choice(picked: "api", onScreen: "dev", confidence: 0.9, panel: "morrow", sessions: sessions), .init(id: "api", sure: true))
         // A pick or an owner that isn't a session any more doesn't count.
-        XCTAssertEqual(CanvasRouting.choice(picked: "gone", onScreen: "gone", confidence: 1, panel: "arch", sessions: sessions), .init(id: "arch", sure: false))
+        XCTAssertEqual(CanvasRouting.choice(picked: "gone", onScreen: "gone", confidence: 1, panel: "morrow", sessions: sessions), .init(id: "morrow", sure: false))
         XCTAssertNil(CanvasRouting.choice(picked: nil, onScreen: nil, confidence: 0, panel: nil, sessions: sessions))
     }
 
     /// The menu, most likely first: where it goes now, the screen's owner however unsure, the panel's, then the rest.
     func testTheMenuIsMostLikelyFirstEachOnce() {
-        XCTAssertEqual(CanvasRouting.ranked(picked: nil, onScreen: "dev", confidence: 0.7, panel: "api", sessions: sessions), ["api", "dev", "arch", "docs"])
-        XCTAssertEqual(CanvasRouting.ranked(picked: nil, onScreen: "dev", confidence: 0.9, panel: "api", sessions: sessions), ["dev", "api", "arch", "docs"])
-        XCTAssertEqual(CanvasRouting.ranked(picked: "docs", onScreen: "gone", confidence: 0.9, panel: "arch", sessions: sessions), ["docs", "arch", "dev", "api"])
+        XCTAssertEqual(CanvasRouting.ranked(picked: nil, onScreen: "dev", confidence: 0.7, panel: "api", sessions: sessions), ["api", "dev", "morrow", "docs"])
+        XCTAssertEqual(CanvasRouting.ranked(picked: nil, onScreen: "dev", confidence: 0.9, panel: "api", sessions: sessions), ["dev", "api", "morrow", "docs"])
+        XCTAssertEqual(CanvasRouting.ranked(picked: "docs", onScreen: "gone", confidence: 0.9, panel: "morrow", sessions: sessions), ["docs", "morrow", "dev", "api"])
     }
 
     // MARK: Ink

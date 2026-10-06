@@ -4164,7 +4164,7 @@ function log(msg: string): void {
   // It carried the time only, and the log is never rotated, so entries from
   // different days sat next to each other looking simultaneous. That is not
   // theoretical: investigating why conch spoke aloud, I read "manual — holding
-  // honeyb" as current evidence twice, and both lines were from the previous
+  // acme-web" as current evidence twice, and both lines were from the previous
   // day. A timestamp that can mislead the person reading it is worse than no
   // timestamp, because it is trusted.
   const now = new Date();

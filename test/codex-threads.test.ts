@@ -65,7 +65,7 @@ describe("observing Codex sessions without touching them", () => {
     const home = codexHome(
       [
         { id: "a", name: "asset generator", updated_at_ms: NOW - 1000, source: "cli" },
-        { id: "b", title: "humain", updated_at_ms: NOW - 2000, source: "vscode" },
+        { id: "b", title: "release notes", updated_at_ms: NOW - 2000, source: "vscode" },
       ],
       [
         // Only the LATEST turn decides busy/idle — an older completed turn on
@@ -81,7 +81,7 @@ describe("observing Codex sessions without touching them", () => {
       expect(read.complete).toBe(true);
       expect(read.entries.map((e) => [(e as any).name, e.status])).toEqual([
         ["asset generator", "busy"],
-        ["humain", "idle"],
+        ["release notes", "idle"],
       ]);
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -190,7 +190,7 @@ describe("observing Codex sessions without touching them", () => {
  * — which the panel renders as "working" — the entire time.
  */
 const STARTED_LINE = String.raw`{"timestamp":"2026-09-19T11:51:05.614Z","ordinal":89,"type":"event_msg","payload":{"type":"task_started","turn_id":"01a0b981-7a87-7cb2-8320-79a8e0312f86","started_at":1789818665,"model_context_window":258400,"collaboration_mode_kind":"default"}}`;
-const ESCALATED_LINE = String.raw`{"timestamp":"2026-09-19T11:51:31.795Z","ordinal":107,"type":"response_item","payload":{"type":"custom_tool_call","id":"ctc_0f19e8bf8f5bb023016aae7740998087d29c15626dd510a213","status":"completed","call_id":"call_R3SFJWQHZ4ebOGHTATol2WJF","name":"exec","input":"text(await tools.exec_command({cmd:\"bun install --frozen-lockfile\",workdir:\"/Users/tylerstupart/Projects/Seashell/.worktrees/fix-humain-integration\",sandbox_permissions:\"require_escalated\",justification:\"May I download the locked Seashell dependencies to run its test suite and reproduce bugs?\",prefix_rule:[\"bun\",\"install\"],yield_time_ms:10000,max_output_tokens:1500}));\n","internal_chat_message_metadata_passthrough":{"turn_id":"01a0b981-7a87-7cb2-8320-79a8e0312f86","create_time":1789818678.512885}}}`;
+const ESCALATED_LINE = String.raw`{"timestamp":"2026-09-19T11:51:31.795Z","ordinal":107,"type":"response_item","payload":{"type":"custom_tool_call","id":"ctc_0f19e8bf8f5bb023016aae7740998087d29c15626dd510a213","status":"completed","call_id":"call_R3SFJWQHZ4ebOGHTATol2WJF","name":"exec","input":"text(await tools.exec_command({cmd:\"bun install --frozen-lockfile\",workdir:\"/Users/you/Projects/Seashell/.worktrees/fix-model-download\",sandbox_permissions:\"require_escalated\",justification:\"May I download the locked Seashell dependencies to run its test suite and reproduce bugs?\",prefix_rule:[\"bun\",\"install\"],yield_time_ms:10000,max_output_tokens:1500}));\n","internal_chat_message_metadata_passthrough":{"turn_id":"01a0b981-7a87-7cb2-8320-79a8e0312f86","create_time":1789818678.512885}}}`;
 const ESCALATED_ANSWERED = String.raw`{"timestamp":"2026-09-19T11:52:02.118Z","ordinal":113,"type":"response_item","payload":{"type":"custom_tool_call_output","id":"ctco_01a0b981-aac4-7182-bc32-ff832f55110f","call_id":"call_R3SFJWQHZ4ebOGHTATol2WJF","output":[{"type":"input_text","text":"Script completed\nWall time 12.4 seconds\nOutput:\n"}]}}`;
 
 describe("Codex sessions blocked on a permission ask", () => {
@@ -330,7 +330,7 @@ describe("deciding a Codex turn has ended", () => {
 
 describe("inter-agent traffic is not a reply", () => {
   test("recognises a subagent envelope", () => {
-    // Verbatim from Tyler's "humain" thread, whose last agent_message was
+    // Verbatim from Tyler's "release notes" thread, whose last agent_message was
     // addressed to a parent agent rather than to him.
     expect(isInterAgentEnvelope(
       "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/some_agent\n\nresult",
@@ -1213,7 +1213,7 @@ describe("discovery runs without freezing the daemon's one thread", () => {
     const home = realCodexHome({
       threads: [
         { id: "open", name: "asset generator", updated_at_ms: NOW - 12 * 3_600_000 },
-        { id: "recent", name: "humain", updated_at_ms: NOW - 60_000 },
+        { id: "recent", name: "release notes", updated_at_ms: NOW - 60_000 },
         { id: "gone", name: "last week", updated_at_ms: NOW - 7 * 86_400_000 },
       ],
       turns: [["open", 1, "completed"], ["open", 2, "inProgress"], ["recent", 1, "completed"]],
@@ -1226,7 +1226,7 @@ describe("discovery runs without freezing the daemon's one thread", () => {
       expect(read.available).toBe(true);
       expect((read.entries as CodexRow[]).map((row) => [row.sessionId, row.name, row.status, row.pid]))
         .toEqual([
-          ["recent", "humain", "idle", 0],
+          ["recent", "release notes", "idle", 0],
           ["open", "asset generator", "busy", 2383],
         ]);
     } finally {

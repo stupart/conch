@@ -262,8 +262,8 @@ describe("Codex", () => {
   });
 
   test("the commands Codex runs most read as what they do", () => {
-    const places = ["/Users/you/Projects/atlas"];
-    expect(shellPhrase("sed -n '355,530p' /Users/you/Projects/atlas/server/oauth/owner-consent.ts", places))
+    const places = ["/Users/you/Projects/morrow-api"];
+    expect(shellPhrase("sed -n '355,530p' /Users/you/Projects/morrow-api/server/oauth/owner-consent.ts", places))
       .toBe("Reading server/oauth/owner-consent.ts");
     expect(shellPhrase("rg -n -A7 \"const execute|runner\" server", places)).toBe("Searching for “const execute|runner”");
     expect(shellPhrase("rg --files server/oauth | rg 'store|consent'", places)).toBe("Listing files");

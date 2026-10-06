@@ -46,7 +46,7 @@ async function daemon() {
   const options = {
     controller,
     pause: { open: () => {}, close: () => {} },
-    targetForSessionId: () => ({ sessionId: "s1", label: "arch", backend: "claude" as const, pid: 4242 }),
+    targetForSessionId: () => ({ sessionId: "s1", label: "morrow", backend: "claude" as const, pid: 4242 }),
   };
   const dir = mkdtempSync("/tmp/conch-deliver-");
   const socketPath = join(dir, "control.sock");
@@ -54,7 +54,7 @@ async function daemon() {
     socketPath,
     ownerDeviceId: "this-mac",
     log: () => {},
-    sessions: { resolve: (value) => value, current: () => ({ published: true, label: "arch", pid: 4242 }) },
+    sessions: { resolve: (value) => value, current: () => ({ published: true, label: "morrow", pid: 4242 }) },
     application: {
       configuration: () => ({ kind: "config-error", error: "stub" }),
       session: (message, delivered) => applySessionCommand(message, options, delivered),
@@ -88,7 +88,7 @@ const ackLine = (command: string, extra: object) =>
     {
       controller: { setSettings: async () => true, rename: (_t: unknown, label: string) => label } as unknown as SessionActionsController,
       pause: { open: () => {}, close: () => {} },
-      targetForSessionId: () => ({ sessionId: "s1", label: "arch", pid: 4242 }),
+      targetForSessionId: () => ({ sessionId: "s1", label: "morrow", pid: 4242 }),
     },
   )) + "\n";
 
@@ -99,7 +99,7 @@ const ackLine = (command: string, extra: object) =>
  * `awaitDelivery`, the ack still goes out at once (the app shows it), then the
  * daemon waits for the typing and says `session-delivered`.
  */
-for (const [command, extra] of [["set-model", { model: "opus" }], ["set-settings", { effort: "high" }], ["rename", { label: "arch" }]] as const) {
+for (const [command, extra] of [["set-model", { model: "opus" }], ["set-settings", { effort: "high" }], ["rename", { label: "morrow" }]] as const) {
   test(`an awaitDelivery ${command} is acked at once and delivered only once typed`, async () => {
     const d = await daemon();
     const p = peer(d.socketPath, { kind: "session-command", sessionId: "s1", command, ...extra, awaitDelivery: true });
@@ -123,8 +123,8 @@ test("every other sender keeps the lone immediate ack, typing or not", async () 
   expect(p.ended()).toBe(true);
   // The CLI's client reads exactly that.
   await expect(sendControlMessage(d.socketPath, {
-    kind: "session-command", sessionId: "s1", command: "rename", label: "arch",
-  })).resolves.toEqual({ ok: true, response: JSON.parse(ackLine("rename", { label: "arch" })) });
+    kind: "session-command", sessionId: "s1", command: "rename", label: "morrow",
+  })).resolves.toEqual({ ok: true, response: JSON.parse(ackLine("rename", { label: "morrow" })) });
 });
 
 test("awaitDelivery must be true when present", async () => {

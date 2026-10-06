@@ -275,7 +275,7 @@ splits in two:
 ## The local log
 
 This is the raw record for later uses. Tyler: *"would like that raw data live
-pumped into atlas in the future but can just use for conch for now. Could also be
+pumped into [a knowledge base] in the future but can just use for conch for now. Could also be
 the used for time tracking and seeing where my time is going per-project and
 activity type ... as a separate future app - out of scope."* For now conch only
 writes it.
@@ -322,8 +322,8 @@ writes it.
 
 ## Future work (out of scope)
 
-- **The Atlas export.** Stream the log's lines, or the live `showing` changes,
-  into Atlas as they happen. The line format is versioned (`v: 1`) and
+- **An export.** Stream the log's lines, or the live `showing` changes,
+  into another tool as they happen. The line format is versioned (`v: 1`) and
   self-contained (`at`/`until`, no joins), so an exporter can tail the files
   without reading conch's state.
 - **Time tracking.** Sum `until - at` by `projectCwd` and `surfaceKind` per day.

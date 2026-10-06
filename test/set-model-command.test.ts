@@ -34,16 +34,16 @@ function harness(target: SessionActionsTarget | null) {
  * a session conch only observes has none — and comes back before anything is typed.
  */
 test("set-model hands the model to the controller and acks by whether there was a window", () => {
-  const withPid = harness({ sessionId: "s1", label: "arch", backend: "claude", pid: 4242 });
+  const withPid = harness({ sessionId: "s1", label: "morrow", backend: "claude", pid: 4242 });
   expect(withPid.reply("sonnet[1m]")).toEqual({
-    kind: "session-ack", sessionId: "s1", command: "set-model", changed: true, label: "arch",
+    kind: "session-ack", sessionId: "s1", command: "set-model", changed: true, label: "morrow",
   });
   expect(withPid.sent).toEqual([{
-    target: { sessionId: "s1", label: "arch", backend: "claude", pid: 4242 },
+    target: { sessionId: "s1", label: "morrow", backend: "claude", pid: 4242 },
     model: "sonnet[1m]",
   }]);
 
-  const observed = harness({ sessionId: "s1", label: "arch" });
+  const observed = harness({ sessionId: "s1", label: "morrow" });
   expect((observed.reply() as { changed: boolean }).changed).toBe(false);
 
   const unknown = harness(null);
@@ -52,13 +52,13 @@ test("set-model hands the model to the controller and acks by whether there was 
 });
 
 test("set-settings hands model and effort, either or both, to the same drive", () => {
-  const h = harness({ sessionId: "s1", label: "arch", backend: "codex", pid: 4242 });
+  const h = harness({ sessionId: "s1", label: "morrow", backend: "codex", pid: 4242 });
   const send = (extra: Record<string, string>) => applySessionCommand(
     { kind: "session-command", sessionId: "s1", command: "set-settings", ...extra },
     h.options,
   );
   expect(send({ model: "gpt-6-luna", effort: "max" })).toEqual({
-    kind: "session-ack", sessionId: "s1", command: "set-settings", changed: true, label: "arch",
+    kind: "session-ack", sessionId: "s1", command: "set-settings", changed: true, label: "morrow",
   });
   send({ effort: "high" });
   send({ model: "gpt-5.5" });
@@ -80,14 +80,14 @@ afterEach(async () => {
 test("over the real socket, the CLI's client gets a validated set-model ack", async () => {
   const dir = mkdtempSync("/tmp/conch-model-");
   const socketPath = join(dir, "control.sock");
-  const h = harness({ sessionId: "s1", label: "arch", pid: 4242 });
+  const h = harness({ sessionId: "s1", label: "morrow", pid: 4242 });
   const server = createControlServer({
     socketPath,
     ownerDeviceId: "this-mac",
     log: () => {},
     sessions: {
       resolve: (value) => value,
-      current: () => ({ published: true, label: "arch", cwd: "/x", pid: 4242 }),
+      current: () => ({ published: true, label: "morrow", cwd: "/x", pid: 4242 }),
     },
     application: {
       configuration: () => ({ kind: "config-error", error: "stub" }),
@@ -104,7 +104,7 @@ test("over the real socket, the CLI's client gets a validated set-model ack", as
     kind: "session-command", sessionId: "s1", command: "set-model", model: "opus",
   })).resolves.toEqual({
     ok: true,
-    response: { kind: "session-ack", sessionId: "s1", command: "set-model", changed: true, label: "arch" },
+    response: { kind: "session-ack", sessionId: "s1", command: "set-model", changed: true, label: "morrow" },
   });
   expect(h.sent.map((s) => s.model)).toEqual(["opus"]);
 

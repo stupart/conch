@@ -31,7 +31,7 @@ test("marketplace registration precedes installation in exactly the selected acc
 });
 test("plugin toggles preserve the other profile and unrelated settings, with a backup", async () => {
   const business = profile(), personal = profile();
-  const original = { enabledPlugins: { "conch@conch": true, "atlas@atlas-local": true }, model: "opus" };
+  const original = { enabledPlugins: { "conch@conch": true, "notes@notes-local": true }, model: "opus" };
   for (const account of [business, personal]) writeFileSync(join(account.configDir, "settings.json"), JSON.stringify(original));
   mkdirSync(join(business.configDir, "plugins"));
   writeFileSync(join(business.configDir, "plugins", "installed_plugins.json"), JSON.stringify({ version: 2, plugins: { "conch@conch": [{ scope: "user", installPath: business.configDir }] } }));

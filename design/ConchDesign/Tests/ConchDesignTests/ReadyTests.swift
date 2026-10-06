@@ -113,9 +113,9 @@ final class ReadyTests: XCTestCase {
         XCTAssertEqual(bar.lines.title, "Prime page wireframe")
         XCTAssertEqual(bar.lines.subtitle, "Ready · 1 of 3")
         // One alone says nothing about a count; what the agent asked you to check follows the tooltip's first line.
-        let one = ControlBar.Ready(label: "Arch brand page", position: 1, count: 1, inspect: "The button sits above the fold")
+        let one = ControlBar.Ready(label: "Morrow brand page", position: 1, count: 1, inspect: "The button sits above the fold")
         XCTAssertEqual(one.line, "Ready")
-        XCTAssertEqual(one.help, "Open Arch brand page\nThe button sits above the fold")
+        XCTAssertEqual(one.help, "Open Morrow brand page\nThe button sits above the fold")
         // Speaking over it, the bar says what it is speaking about, and that something is still ready.
         let speaking = ControlBar(state: .speaking, detail: "Blueprint monorepo", mode: .constant(.talk), ready: ready, onTap: {})
         XCTAssertEqual(speaking.lines.title, "Blueprint monorepo")
@@ -199,7 +199,7 @@ final class ReadyTests: XCTestCase {
     /// rows still open conch on the session.
     func testReadyRowsOpenTheItemAndOptionOpensConch() {
         let rows = StatusMenu.rows(input(
-            ready: [.init(id: "r1", label: "Prime page wireframe"), .init(id: "r2", label: "Arch")],
+            ready: [.init(id: "r1", label: "Prime page wireframe"), .init(id: "r2", label: "Morrow")],
             working: [.init(id: "w1", label: "Parser")]
         ))
         let ready = rows.firstIndex(of: .section("Ready for you"))

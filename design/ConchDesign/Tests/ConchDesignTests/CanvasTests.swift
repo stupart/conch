@@ -281,10 +281,10 @@ final class CanvasTests: XCTestCase {
         document.add(mark(.note, at(950, 480), text: "  "))
         document.add(mark(.note, at(900, 20), text: "and this"))
         XCTAssertEqual(
-            CanvasPrompt.text(for: document, about: "Arch brand page (http://localhost:3000/invite)", picture: "/c/flat.png", clean: "/c/raw.png", marks: "/c/canvas.json"),
+            CanvasPrompt.text(for: document, about: "Morrow brand page (http://localhost:3000/invite)", picture: "/c/flat.png", clean: "/c/raw.png", marks: "/c/canvas.json"),
             """
             /c/flat.png
-            [canvas] Tyler marked up Arch brand page (http://localhost:3000/invite).
+            [canvas] Tyler marked up Morrow brand page (http://localhost:3000/invite).
             1. box (62%,18%): "make this bigger"
             2. arrow (10%,80%)→(30%,60%): "move here"
             4. note (90%,4%): "and this"

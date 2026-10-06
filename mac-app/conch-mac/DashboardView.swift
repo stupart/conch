@@ -1252,7 +1252,7 @@ private struct DashboardRow: View {
                         // rather than spending three characters on an ellipsis. The tooltip and
                         // VoiceOver have the whole of it.
                         //
-                        // The middle cut was for sibling names that share a start ("dayloop-
+                        // The middle cut was for sibling names that share a start ("lowtide-
                         // feature-flags" and "…-rollout") when the name had 60-odd points beside a
                         // summary. With the line to itself, two names alike for its whole width
                         // are rare, and the tooltip tells them apart.

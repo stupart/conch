@@ -220,7 +220,7 @@ final class FogTextTests: XCTestCase {
         XCTAssertEqual(FogReply.lines(of: "Looks good.", width: width, fontSize: 24), 1)
         XCTAssertEqual(FogReply.lines(of: "a\nb\nc", width: width, fontSize: 24), 3)
         XCTAssertEqual(FogReply.lines(of: "a\n", width: width, fontSize: 24), 2)
-        let three = "Looks good. Ship it, then do the same for the Dayloop invite, and keep its heading on one line on phones."
+        let three = "Looks good. Ship it, then do the same for the Lowtide invite, and keep its heading on one line on phones."
         XCTAssertEqual(FogReply.lines(of: three, width: width, fontSize: 24), 3)
         let huge = String(repeating: "The quick brown fox jumps over the lazy dog. ", count: 1140)
         XCTAssertGreaterThan(huge.utf8.count, 50_000)
@@ -265,8 +265,8 @@ final class FogTextTests: XCTestCase {
     func testTheHeaderPagerAndSwitcherKeepTheirClicks() throws {
         final class Frames { var value: [CGRect] = [] }
         let frames = Frames(), size = CGSize(width: 900, height: 640)
-        let here = FogSession(id: "a", label: "Arch brand page", agent: "Claude", item: "The invite card", standing: .ready)
-        let sessions = [here, FogSession(id: "b", label: "Dayloop", agent: "Codex", standing: .working)]
+        let here = FogSession(id: "a", label: "Morrow brand page", agent: "Claude", item: "The invite card", standing: .ready)
+        let sessions = [here, FogSession(id: "b", label: "Lowtide", agent: "Codex", standing: .working)]
         let fog = ConversationFog(turns: Self.turns(4), draft: .constant(""), text: FogTextState(), isListening: false, isFullScreen: false, insets: Self.dock, session: here, sessions: sessions, isSwitching: .constant(true), showsReply: false, onPrevious: {}, onNext: {}, onMic: {}, onSend: {}, onCollapse: {}, onFullScreen: {})
             .frame(width: size.width, height: size.height)
             .coordinateSpace(name: FogControls.space)
@@ -405,7 +405,7 @@ final class FogTextTests: XCTestCase {
     @MainActor
     func testLongUnbrokenStringsWrapInsideTheColumn() throws {
         let size = CGSize(width: 900, height: 640)
-        let path = "/Users/tylerstupart/Projects/conch-design/lab-shots/native-1d-a-really-long-file-name-with-no-breaks-at-all-anywhere.png?query=abcdefghijklmnopqrstuvwxyz0123456789"
+        let path = "/Users/you/Projects/conch-design/lab-shots/native-1d-a-really-long-file-name-with-no-breaks-at-all-anywhere.png?query=abcdefghijklmnopqrstuvwxyz0123456789"
         // Only the path, so every bit of ink above the reply line is its.
         let turns = [ConversationTurn(id: "2", fromYou: false, text: path)]
         let renderer = ImageRenderer(content: ConversationFog(turns: turns, draft: .constant(""), text: FogTextState(), isListening: false, isFullScreen: false, insets: Self.dock, showsButtons: false, onMic: {}, onSend: {}, onCollapse: {}, onFullScreen: {})

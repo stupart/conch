@@ -219,9 +219,9 @@ final class SidebarActivityRenderTests: XCTestCase {
                 (name: "Map building blocks for big ideas", activity: "Searching for “liveBackgroundAgents”"),
                 (name: "Adversarial review of PR #301", activity: nil),
             ])
-            SidebarRow(name: "atals and nura", mark: .working, line: activity("Reading server/oauth/owner-consent.ts"))
+            SidebarRow(name: "morrow and lowtide", mark: .working, line: activity("Reading server/oauth/owner-consent.ts"))
             SidebarRow(name: "seashell", mark: .waiting, semibold: true)
-            SidebarRow(name: "Cobra doc in documents/healthcare", mark: .idle)
+            SidebarRow(name: "Invoice doc in documents/finance", mark: .idle)
             SidebarRow(name: "settings migration", mark: .needs, semibold: true,
                        line: SidebarRowText.secondLine(message: nil, blockedOn: "Claude is asking what to do with three legacy settings", activity: nil, startedBy: nil))
         }

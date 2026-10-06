@@ -197,9 +197,9 @@ final class CanvasShowTests: XCTestCase {
     }
 
     func testTheStoryboardIsALineAFrame() {
-        let text = CanvasStoryboard.storyboard(frames.map { ($0.moment, $0.name) }, about: "Arch brand page (http://localhost:3000)", length: 23.6)
+        let text = CanvasStoryboard.storyboard(frames.map { ($0.moment, $0.name) }, about: "Morrow brand page (http://localhost:3000)", length: 23.6)
         XCTAssertEqual(text, """
-        # Tyler showed Arch brand page (http://localhost:3000) (0:23)
+        # Tyler showed Morrow brand page (http://localhost:3000) (0:23)
 
         A recording of his screen with his ink over it (his is orange). Agents can't watch video, so these are its frames: one just after each thing he marked, and one wherever the screen changed.
 

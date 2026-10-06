@@ -71,13 +71,13 @@ describe("structured app errors", () => {
         ownerDeviceId: "test-device",
         ts: 9,
         mode: { muted: false, paused: true, holding: 1 },
-        live: { state: "recording", label: "arch", partial: "p".repeat(5_000), level: 0.4, transcriptPrefix: essay },
+        live: { state: "recording", label: "morrow", partial: "p".repeat(5_000), level: 0.4, transcriptPrefix: essay },
         reply: { sessionId: "s1", text: essay, spokenChars: 0 },
         preview: { sessionId: "s1", text: essay, spokenChars: 0 },
         conversation: { sessionId: "s1", items: [] } as never,
         conversations: { s1: { sessionId: "s1", items: [] } as never },
         rows: [{
-          id: "s1", label: "arch", backend: "codex", status: "working", active: true, paused: false, live: "recording",
+          id: "s1", label: "morrow", backend: "codex", status: "working", active: true, paused: false, live: "recording",
           needsResponse: false, muted: false, snippet: essay, transcriptPath: "/x", detail: essay,
         }],
         dismissed: ["s2"],
@@ -94,8 +94,8 @@ describe("structured app errors", () => {
       v: 1,
       ts: 9,
       mode: { muted: false, paused: true, holding: 1 },
-      live: { state: "recording", label: "arch", partial: "p".repeat(200), level: 0.4 },
-      rows: [{ id: "s1", label: "arch", backend: "codex", status: "working", active: true, paused: false, live: "recording" }],
+      live: { state: "recording", label: "morrow", partial: "p".repeat(200), level: 0.4 },
+      rows: [{ id: "s1", label: "morrow", backend: "codex", status: "working", active: true, paused: false, live: "recording" }],
       dismissed: ["s2"],
     });
   });

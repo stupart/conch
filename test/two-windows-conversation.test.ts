@@ -68,7 +68,7 @@ const assistant = (uuid: string, parentUuid: string, text: string, clock: string
 const lines = (...entries: unknown[]) => entries.map((entry) => JSON.stringify(entry));
 
 /**
- * Window A (`~/arch-website`) starts the session; B resumes it and forks at
+ * Window A (`~/morrow-site`) starts the session; B resumes it and forks at
  * A's reply; A carries on from the same leaf; B writes last. The `cwd` on
  * each record is deliberately the OTHER window's directory — a session's cwd
  * moves as it `cd`s (one real window wrote three), so it must never decide.
@@ -77,14 +77,14 @@ function twoWindows(bridges: boolean): string[] {
   const a = bridges ? BRIDGE_A : undefined;
   const b = bridges ? BRIDGE_B : undefined;
   return lines(
-    ...preamble("u1", a), user("u1", null, "shared question", "10:00", "/Users/t/arch-website"),
-    ...preamble("u1", a), assistant("a1", "u1", "shared answer", "10:01", "/Users/t/arch-website"),
-    ...preamble("a1", b), user("u2", "a1", "B asks", "10:05", "/Users/t/arch-website"),
-    ...preamble("u2", b), assistant("a2", "u2", "B answer", "10:06", "/Users/t/arch-website"),
-    ...preamble("a1", a), user("u3", "a1", "A asks", "10:07", "/Users/t/arch-swap"),
-    ...preamble("u3", a), assistant("a3", "u3", "A answer", "10:08", "/Users/t/arch-swap"),
-    ...preamble("a2", b), user("u4", "a2", "B asks again", "10:20", "/Users/t/arch-website"),
-    ...preamble("u4", b), assistant("a4", "u4", "B latest", "10:21", "/Users/t/arch-website"),
+    ...preamble("u1", a), user("u1", null, "shared question", "10:00", "/Users/t/morrow-site"),
+    ...preamble("u1", a), assistant("a1", "u1", "shared answer", "10:01", "/Users/t/morrow-site"),
+    ...preamble("a1", b), user("u2", "a1", "B asks", "10:05", "/Users/t/morrow-site"),
+    ...preamble("u2", b), assistant("a2", "u2", "B answer", "10:06", "/Users/t/morrow-site"),
+    ...preamble("a1", a), user("u3", "a1", "A asks", "10:07", "/Users/t/morrow-swap"),
+    ...preamble("u3", a), assistant("a3", "u3", "A answer", "10:08", "/Users/t/morrow-swap"),
+    ...preamble("a2", b), user("u4", "a2", "B asks again", "10:20", "/Users/t/morrow-site"),
+    ...preamble("u4", b), assistant("a4", "u4", "B latest", "10:21", "/Users/t/morrow-site"),
   );
 }
 
@@ -98,7 +98,7 @@ describe("which branch of a shared transcript is this window's", () => {
   test("the bridge id picks each window's own branch, and recency would have picked wrong", () => {
     const transcript = twoWindows(true);
     // B wrote last. A's branch is still A's — with recency the pane showed
-    // `arch site` displaying arch-swap's work, which is the bug.
+    // `morrow site` displaying morrow-swap's work, which is the bug.
     expect(pick(transcript, { bridgeSessionId: `session_${BRIDGE_A}`, startedAt: ms("09:00") }))
       .toEqual({ texts: ["shared question", "shared answer", "A asks", "A answer"], shared: false });
     expect(pick(transcript, { bridgeSessionId: `session_${BRIDGE_B}`, startedAt: ms("09:00") }))
@@ -106,16 +106,16 @@ describe("which branch of a shared transcript is this window's", () => {
   });
 
   test("a window idle since the other resumed keeps its own history, not the other's work", () => {
-    // The reported shape exactly: `arch site` had gone quiet, arch-swap
+    // The reported shape exactly: `morrow site` had gone quiet, morrow-swap
     // resumed from its leaf and worked on. There is only one leaf in the file
     // — B's — so "the chain with its own leaf" alone would hand A that work.
     const transcript = lines(
-      ...preamble("u1", BRIDGE_A), user("u1", null, "shared question", "10:00", "/Users/t/arch-website"),
-      ...preamble("u1", BRIDGE_A), assistant("a1", "u1", "shared answer", "10:01", "/Users/t/arch-website"),
-      ...preamble("a1", BRIDGE_B), user("u2", "a1", "B asks", "10:05", "/Users/t/arch-swap"),
-      ...preamble("u2", BRIDGE_B), assistant("a2", "u2", "B answer", "10:06", "/Users/t/arch-swap"),
-      ...preamble("a2", BRIDGE_B), user("u4", "a2", "B asks again", "10:20", "/Users/t/arch-swap"),
-      ...preamble("u4", BRIDGE_B), assistant("a4", "u4", "B latest", "10:21", "/Users/t/arch-swap"),
+      ...preamble("u1", BRIDGE_A), user("u1", null, "shared question", "10:00", "/Users/t/morrow-site"),
+      ...preamble("u1", BRIDGE_A), assistant("a1", "u1", "shared answer", "10:01", "/Users/t/morrow-site"),
+      ...preamble("a1", BRIDGE_B), user("u2", "a1", "B asks", "10:05", "/Users/t/morrow-swap"),
+      ...preamble("u2", BRIDGE_B), assistant("a2", "u2", "B answer", "10:06", "/Users/t/morrow-swap"),
+      ...preamble("a2", BRIDGE_B), user("u4", "a2", "B asks again", "10:20", "/Users/t/morrow-swap"),
+      ...preamble("u4", BRIDGE_B), assistant("a4", "u4", "B latest", "10:21", "/Users/t/morrow-swap"),
     );
     expect(pick(transcript, { bridgeSessionId: `session_${BRIDGE_A}` }))
       .toEqual({ texts: ["shared question", "shared answer"], shared: false });
@@ -355,13 +355,13 @@ describe("a reply counts only on its own window's branch (finding 9)", () => {
   const WINDOW_B = { bridgeSessionId: `session_${BRIDGE_B}` };
   // A asked and was answered; B resumed from A's leaf and worked on.
   const base = () => lines(
-    ...preamble("u1", BRIDGE_A), user("u1", null, "shared question", "10:00", "/Users/t/arch-website"),
-    ...preamble("u1", BRIDGE_A), assistant("a1", "u1", "shared answer", "10:01", "/Users/t/arch-website"),
-    ...preamble("a1", BRIDGE_B), user("u2", "a1", "B asks", "10:05", "/Users/t/arch-swap"),
-    ...preamble("u2", BRIDGE_B), assistant("a2", "u2", "B answer", "10:06", "/Users/t/arch-swap"),
+    ...preamble("u1", BRIDGE_A), user("u1", null, "shared question", "10:00", "/Users/t/morrow-site"),
+    ...preamble("u1", BRIDGE_A), assistant("a1", "u1", "shared answer", "10:01", "/Users/t/morrow-site"),
+    ...preamble("a1", BRIDGE_B), user("u2", "a1", "B asks", "10:05", "/Users/t/morrow-swap"),
+    ...preamble("u2", BRIDGE_B), assistant("a2", "u2", "B answer", "10:06", "/Users/t/morrow-swap"),
   );
-  const fromB = () => lines(...preamble("a2", BRIDGE_B), user("u4", "a2", "B asks again", "10:20", "/Users/t/arch-swap"));
-  const fromA = () => lines(...preamble("a1", BRIDGE_A), user("u3", "a1", "A asks", "10:21", "/Users/t/arch-website"));
+  const fromB = () => lines(...preamble("a2", BRIDGE_B), user("u4", "a2", "B asks again", "10:20", "/Users/t/morrow-swap"));
+  const fromA = () => lines(...preamble("a1", BRIDGE_A), user("u3", "a1", "A asks", "10:21", "/Users/t/morrow-site"));
 
   async function shared(content = base()) {
     const root = mkdtempSync(join(tmpdir(), "conch-reply-cursor-"));
@@ -408,7 +408,7 @@ describe("a reply counts only on its own window's branch (finding 9)", () => {
     ] as const) {
       const t = await shared([...content]);
       try {
-        t.append(lines(...preamble("a4"), user("u9", "a4", "someone asks", "10:30", "/Users/t/arch-swap")));
+        t.append(lines(...preamble("a4"), user("u9", "a4", "someone asks", "10:30", "/Users/t/morrow-swap")));
         expect(await promptSince(t.path, t.mark, window)).toBe("unknown");
         expect(await userRespondedSince(t.path, t.mark, window)).toBe(false);
       } finally { t.cleanup(); }
