@@ -2472,6 +2472,9 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         holding: pending.size,
         // Published so `conch_speak` can say an agent's speech was held (A17).
         ...(pause.paused && pauseOrigin.agentOwns("") ? { pausedByAgent: true } : {}),
+        // Read replies aloud is off: the phone and the menu bar read it here. This is the mode that is published; the
+        // two built earlier in a render are replaced by it, which is why #523 alone never reached the file (2026-10-09).
+        ...(cfg.speak ? {} : { speechOff: true as const }),
       };
       lastPanelModel = model;
       breadcrumb("panel: drawing the terminal panel");
