@@ -40,6 +40,7 @@ for pair in "arm64:bun-darwin-arm64:arm64" "x64:bun-darwin-x64:x86_64"; do
     if xcodebuild -project mac-app/conch-mac.xcodeproj -scheme conch-mac \
          -configuration Release -derivedDataPath "$derived" \
          ARCHS="$xcode_arch" ONLY_ACTIVE_ARCH=NO \
+         MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$(git rev-list --count HEAD)" \
          CONCH_DAEMON_BINARY="$PWD/$DIST/conch" CONCH_DAEMON_SOURCE=bundled \
          build >"$derived.log" 2>&1; then
       APP_SRC="$derived/Build/Products/Release/conch-mac.app"

@@ -51,8 +51,11 @@ if printf '%s' "$state" | grep -qE "unavailable|disconnected|shutdown"; then
 fi
 
 echo "→ building for the device"
+# conch's version and the commit count, as the Mac app's (scripts/build-app.sh), not the project's placeholder 1.0.
+APP_VERSION="$(sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' "$ROOT/package.json" | head -1)"
 xcodebuild -project "$ROOT/mobile/conch-ios/conch-ios.xcodeproj" -scheme conch-ios \
   -configuration Debug -destination "id=$UDID" -derivedDataPath "$DD" \
+  MARKETING_VERSION="${APP_VERSION:-1.0}" CURRENT_PROJECT_VERSION="$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)" \
   -allowProvisioningUpdates -quiet build
 echo "→ installing (this REPLACES the app and relaunches it)"
 xcrun devicectl device install app --device "$UDID" \
