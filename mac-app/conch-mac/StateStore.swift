@@ -1478,7 +1478,8 @@ final class StateStore: ObservableObject {
     /// Whitespace-insensitive, and a suffix counts because the daemon may prepend to what it
     /// typed. The phone's rule, spelled the same way.
     static func sameMessage(_ transcript: String, _ sent: String) -> Bool {
-        let squash = { (text: String) in text.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+        // Words only: a picture is a path in what was sent and gone from what the daemon shows (`SentMessageText`).
+        let squash = { (text: String) in SentMessageText.withoutImages(text).split(whereSeparator: \.isWhitespace).joined(separator: " ") }
         let seen = squash(transcript)
         let words = squash(sent)
         return !words.isEmpty && (seen == words || seen.hasSuffix(words))

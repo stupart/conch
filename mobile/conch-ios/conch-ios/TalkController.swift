@@ -416,7 +416,8 @@ final class TalkController: NSObject, ObservableObject {
     /// The transcript's copy of a sent message: the same words give or take
     /// whitespace, or ending with them when a picture's path leads the line.
     static func sameMessage(_ transcript: String, _ sent: String) -> Bool {
-        let squash = { (text: String) in text.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+        // Words only: a picture is a path in what was sent and gone from what the daemon shows (`SentMessageText`).
+        let squash = { (text: String) in SentMessageText.withoutImages(text).split(whereSeparator: \.isWhitespace).joined(separator: " ") }
         let seen = squash(transcript)
         let words = squash(sent)
         return !words.isEmpty && (seen == words || seen.hasSuffix(words))

@@ -25,6 +25,8 @@
  * over a metered relay on every render.
  */
 
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   SUBAGENT_ROW_PREFIX,
@@ -557,19 +559,89 @@ export async function attachCanvasCounts(conversation: Conversation): Promise<vo
   }
 }
 
+/**
+ * Where a picture too big to send inline is kept, so the conversation can still show it: a file the Mac draws from its
+ * path and the phone fetches through the bridge, as any material with a path. A screenshot dropped on the composer is
+ * ~0.5 MB of base64 and more, over MAX_INLINE_IMAGE_BASE64, and showed as "Image attachment" with no picture (2026-10-09,
+ * Tyler: "images aren't rendering properly as images in the chat"). Named by the picture's own hash, so a transcript
+ * read again writes nothing new; the oldest go past MAX_CACHED_IMAGES.
+ */
+export function conversationImagesDir(): string {
+  return process.env.CONCH_CONVERSATION_IMAGES_DIR
+    || join(process.env.CONCH_CONFIG_DIR ?? join(conchHome(), ".config", "conch"), "conversation-images");
+}
+const MAX_CACHED_IMAGES = 400;
+const IMAGE_EXTENSION_FOR: Record<string, string> = {
+  "image/png": "png", "image/jpeg": "jpg", "image/jpg": "jpg", "image/gif": "gif", "image/webp": "webp",
+};
+const cachedImagePaths = new Map<string, string>();
+
+function cachedAttachmentImage(mediaType: string, data: string): string | undefined {
+  const extension = IMAGE_EXTENSION_FOR[mediaType.toLowerCase()];
+  if (!extension) return undefined;
+  const memo = `${data.length}:${data.slice(0, 96)}:${data.slice(-96)}`;
+  const known = cachedImagePaths.get(memo);
+  if (known && existsSync(known)) return known;
+  try {
+    const dir = conversationImagesDir();
+    const path = join(dir, `${createHash("sha256").update(data).digest("hex").slice(0, 32)}.${extension}`);
+    if (!existsSync(path)) {
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      writeFileSync(path, Buffer.from(data, "base64"), { mode: 0o600 });
+      pruneCachedImages(dir);
+    }
+    cachedImagePaths.set(memo, path);
+    return path;
+  } catch {
+    return undefined;
+  }
+}
+
+function pruneCachedImages(dir: string): void {
+  try {
+    const files = readdirSync(dir).map((name) => join(dir, name));
+    if (files.length <= MAX_CACHED_IMAGES) return;
+    const oldestFirst = files
+      .map((path) => ({ path, at: statSync(path).mtimeMs }))
+      .sort((a, b) => a.at - b.at);
+    for (const { path } of oldestFirst.slice(0, files.length - MAX_CACHED_IMAGES)) unlinkSync(path);
+  } catch {}
+}
+
 function attachmentMaterial(part: any): ConversationMaterial | null {
   if (part?.type !== "image" && part?.type !== "document") return null;
   const image = part.type === "image";
   const source = part.source;
   const mediaType = typeof source?.media_type === "string" ? source.media_type : "image/png";
   const data = typeof source?.data === "string" ? source.data : "";
+  const inline = image && data && data.length <= MAX_INLINE_IMAGE_BASE64;
+  const kept = image && data && !inline ? cachedAttachmentImage(mediaType, data) : undefined;
   return {
     kind: image ? "image" : "document",
     title: image ? "Image attachment" : "Document attachment",
-    ...(image && data && data.length <= MAX_INLINE_IMAGE_BASE64
-      ? { dataUrl: `data:${mediaType};base64,${data}` }
-      : {}),
+    ...(inline ? { dataUrl: `data:${mediaType};base64,${data}` } : {}),
+    ...(kept ? { path: kept } : {}),
   };
+}
+
+/** Claude Code's stand-in for a pasted image, `[Image #10]`, glued to the words after it. */
+const IMAGE_PLACEHOLDER = /\[Image #\d+\]\s*/g;
+
+/** The words of a message whose pictures are shown beside it: their stand-ins said nothing the pictures don't. */
+function withoutImagePlaceholders(text: string, attachments: readonly ConversationMaterial[]): string {
+  return attachments.some((material) => material.kind === "image") ? text.replace(IMAGE_PLACEHOLDER, "").trim() : text;
+}
+
+function upsertMaterials(conversation: Conversation, key: string, materials: readonly ConversationMaterial[], at?: number): void {
+  for (const [index, material] of materials.entries()) {
+    upsertConversationItem(conversation, {
+      id: `${key}:material:${index}`,
+      kind: "material",
+      text: material.detail ?? material.title,
+      at,
+      material,
+    });
+  }
 }
 
 /**
@@ -601,17 +673,22 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
   const queued = entry.type === "attachment" && entry.attachment?.type === "queued_command"
     && entry.attachment.origin?.kind === "human" ? entry.attachment : null;
   if (queued) {
-    const text = unwrapPastedContent(typeof queued.prompt === "string"
+    // Its pictures as well as its words: a screenshot sent mid-turn arrives here, base64 beside "[Image #10]".
+    const attachments = Array.isArray(queued.prompt)
+      ? queued.prompt.map(attachmentMaterial).filter((material: ConversationMaterial | null): material is ConversationMaterial => material !== null)
+      : [];
+    const text = withoutImagePlaceholders(unwrapPastedContent(typeof queued.prompt === "string"
       ? queued.prompt.trim()
-      : Array.isArray(queued.prompt) ? textFromClaudeParts(queued.prompt, "text").trim() : "");
+      : Array.isArray(queued.prompt) ? textFromClaudeParts(queued.prompt, "text").trim() : ""), attachments);
+    const key = `queued:${typeof queued.source_uuid === "string" ? queued.source_uuid : id ?? conversation.order.length}`;
+    const when = Date.parse(queued.timestamp ?? "") || at;
     if (text) {
-      const key = `queued:${typeof queued.source_uuid === "string" ? queued.source_uuid : id ?? conversation.order.length}`;
-      const when = Date.parse(queued.timestamp ?? "") || at;
       // A canvas sent while the session was busy is queued like anything else.
       const sent = splitSentReceipts(text);
       if (sent.text) upsertConversationItem(conversation, { id: key, kind: "user", text: sent.text, at: when });
       upsertReceipts(conversation, key, sent.receipts, !sent.text, when);
     }
+    upsertMaterials(conversation, key, attachments, when);
     return;
   }
 
@@ -681,11 +758,11 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
     }
 
     // What conch sent first, so its pictures are receipts rather than materials; then the rest as it always was.
-    const sent = splitSentReceipts(rawText);
-    const split = splitMaterialPaths(sent.text);
     const attachments = parts
       .map(attachmentMaterial)
       .filter((material): material is ConversationMaterial => material !== null);
+    const sent = splitSentReceipts(withoutImagePlaceholders(rawText, attachments));
+    const split = splitMaterialPaths(sent.text);
     const materials = [...split.materials, ...attachments];
     const key = id ?? `user:${conversation.order.length}`;
     if (split.text) {
