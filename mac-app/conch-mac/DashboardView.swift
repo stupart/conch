@@ -2190,7 +2190,8 @@ private struct ConversationPane: View {
     private var note: String? {
         switch state?.live.state {
         case "speaking":
-            return "space to cut in · the mic opens when it finishes"
+            // Esc, which works with the message box focused; space never reached here while it was (2026-10-08).
+            return "esc to stop reading"
         case "listening", "recording":
             // "pause to send" meant a pause in your SPEECH, but conch also has
             // a pause mode, so it read as a control — Tyler: "it also says

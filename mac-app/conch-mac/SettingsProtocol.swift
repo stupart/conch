@@ -257,8 +257,11 @@ final class ConchSettingsStore: ObservableObject {
                     settings = snapshot.map { key, entry in
                         ConchConfigSetting(key: key, entry: entry)
                     }
+                    // Read replies aloud first: it is the one switch people come here looking for (2026-10-08,
+                    // "how do i just turn it off"), and alphabetical put it among the tuning knobs.
                     .sorted {
-                        $0.key.localizedStandardCompare($1.key) == .orderedAscending
+                        if ($0.key == "speak") != ($1.key == "speak") { return $0.key == "speak" }
+                        return $0.key.localizedStandardCompare($1.key) == .orderedAscending
                     }
                     globalFeedback = nil
                     rowFeedback = [:]

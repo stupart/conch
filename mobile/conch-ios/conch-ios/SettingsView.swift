@@ -140,7 +140,11 @@ struct SettingsView: View {
         case let .loaded(settings):
             // Alphabetical by the name shown, not by registry order — a list
             // ordered by something invisible cannot be scanned.
-            entries = settings.sorted { $0.displayName < $1.displayName }
+            // Read replies aloud first, as on the Mac: the switch people come here for.
+            entries = settings.sorted {
+                if ($0.key == "speak") != ($1.key == "speak") { return $0.key == "speak" }
+                return $0.displayName < $1.displayName
+            }
         case let .failed(reason):
             loadError = reason
         }

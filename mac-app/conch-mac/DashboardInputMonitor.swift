@@ -5,7 +5,9 @@ import WebKit
 enum DashboardKey: Equatable {
     case talkOrStop
     case pauseOrResume
-    case recite
+    /// Esc while conch is reading aloud, wherever the keyboard is, the message box included. Unclaimed when nothing is
+    /// being read, so Esc stays the text field's, or releases the selection.
+    case stopSpeaking
     case showKeyboardShortcuts
     case moveUp
     case moveDown
@@ -57,6 +59,14 @@ struct DashboardInputMonitor: NSViewRepresentable {
                 // undo: the composer keeps its own undo stack, and that comes first.
                 if let self, isEnabled, belongsToMonitoredWindow(event), Self.isUndo(event), !firstResponderIsEditableText() {
                     return onKey(.undoApproval) ? nil : event
+                }
+                // Esc stops a reading from anywhere, the message box included: it usually has the keyboard, so the
+                // space the hint offered never reached here and the reading went on (2026-10-08, Tyler: "it also says
+                // space to cut in but that doesn't work"). Only while conch is reading; otherwise Esc goes on as before.
+                if let self, isEnabled, belongsToMonitoredWindow(event), event.keyCode == 53,
+                   event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
+                   onKey(.stopSpeaking) {
+                    return nil
                 }
                 guard let self,
                       isEnabled,
@@ -176,8 +186,8 @@ struct DashboardInputMonitor: NSViewRepresentable {
                 return .talkOrStop
             case "p":
                 return .pauseOrResume
-            case "r":
-                return .recite
+            // No bare "r": it read the selected session aloud whenever a stray r landed outside a text field, the same
+            // trap the bare space that opened the mic was (2026-10-08). Recite is in the command palette.
             default:
                 return nil
             }
@@ -207,9 +217,9 @@ struct DashboardInputMonitor: NSViewRepresentable {
 private extension DashboardKey {
     var isGlobalDashboardControl: Bool {
         switch self {
-        case .talkOrStop, .releaseSelection:
+        case .talkOrStop, .releaseSelection, .stopSpeaking:
             return true
-        case .pauseOrResume, .recite, .showKeyboardShortcuts,
+        case .pauseOrResume, .showKeyboardShortcuts,
              .moveUp, .moveDown, .returnKey, .undoApproval:
             return false
         }
