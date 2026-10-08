@@ -932,7 +932,7 @@ private struct RemoteDocumentView: View {
                 ScrollView {
                     Group {
                         if renderMarkdown {
-                            MarkdownView(text: content, image: images)
+                            MarkdownView(text: MarkdownSoftBreaks.joined(content), image: images)
                         } else {
                             // Logs and tables keep their columns: wrap breaks
                             // "712 pass, 0 fail" across lines.
