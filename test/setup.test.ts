@@ -227,13 +227,15 @@ describe("one-command setup", () => {
     // Codex 0.144.1 never executes ~/.codex/hooks.json, proven with a bare
     // `touch` hook that did not fire. An unfinished integration should be
     // named honestly and left off, not put at the top of the getting-started.
+    // conch follows Codex without its hooks, so it is named as working, not "unfinished" (2026-10-09).
     const ready = renderSetupReady(
       { service: "installed", plugin: "installed" },
       { codexNeedsInstall: true, color: false },
     );
     expect(ready.split("\n")[0]).toContain("Type /hooks");
     expect(ready).not.toContain("conch install --codex");
-    expect(ready).toContain("unfinished");
+    expect(ready).not.toContain("unfinished");
+    expect(ready).toContain("Codex needs nothing more");
   });
 
   test("hard-dependency guidance is copyable and includes Homebrew when absent", () => {

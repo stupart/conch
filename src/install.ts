@@ -230,12 +230,14 @@ export function renderSetupReady(
   completion: SetupCompletion,
   options: SetupReadyOptions = {},
 ): string {
-  // No Codex nudge. It used to lead with "Run `conch install --codex`", which
-  // wires hooks that Codex 0.144.1 never executes — the first thing a new
-  // person was told to do was the one thing that does not work.
+  // No Codex step. It used to lead with "Run `conch install --codex`", which wires hooks that Codex 0.144.1 never
+  // executes, so the first thing a new person was told to do was the one thing that did not work. conch follows Codex
+  // sessions without them (its rollouts and app-server: a Mac with no ~/.codex/hooks.json still hears every Codex turn
+  // end), so Codex is named as working. Until 2026-10-09 this line said Codex support was "unfinished and stays off",
+  // in 0.4.0's own setup, the release that shipped Codex support.
   const first = "╭─ DO THIS FIRST — Type /hooks in any Claude Code session you already have open.";
   const pickup = options.codexNeedsInstall
-    ? "│ Codex is present; its support is unfinished and stays off (see the README)."
+    ? "│ Sessions opened from now on pick conch up automatically, Codex's as well as\n│ Claude Code's; Codex needs nothing more."
     : "│ Sessions opened from now on pick conch up automatically.";
   const then = completion.service === "skipped"
     ? "│ THEN — Run `conch daemon` to start the voice loop; leave it open, then\n│ finish a turn. conch reads it aloud, plays a tink, and opens the mic."
