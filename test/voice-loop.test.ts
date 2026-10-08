@@ -1789,6 +1789,22 @@ describe("the speech funnel", () => {
     await h.voice.close();
   });
 
+  // Tyler, 2026-10-08: "how do i just turn it off and have it stop talking??" Manual holds only what conch
+  // volunteers; Read replies aloud off (settings `speak`) is silence, a person's own recite included.
+  test("Read replies aloud off: nothing is said, a recite included, and no state claims a reading", async () => {
+    const h = harness({ paused: true, cfg: { speak: false } });
+    await h.voice.speak(h.cfg, "you asked for this", "alpha", true);
+    await h.voice.handle({
+      type: "recite", sessionId: "s1", label: "alpha", announce: "", origin: "user",
+      transcriptPath: transcript(assistant({ type: "text", text: "Here is the whole reply." })),
+    });
+    expect(h.said).toEqual([]);
+    expect(getLiveState().state).toBe("idle");
+    expect(h.logs).toContain("not reciting — Read replies aloud is off");
+    expect(h.voice.speakBlocker(true)).toBe("voice-off");
+    await h.voice.close();
+  });
+
   test("the phone owning the voice: the state names the session, the bound is armed, nothing is synthesised here", async () => {
     const h = harness();
     h.lease.request("phone", 1);

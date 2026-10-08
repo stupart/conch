@@ -2615,6 +2615,9 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   const configController = createConfigController(cfg, {
     settingsPath: daemonSettingsPath,
     onLiveChange: (key, value) => {
+      // Off means quiet now, not after the sentence: the reading in progress stops, and every later one is
+      // refused at `speak` (cfg.speak is already false here).
+      if (key === "speak" && value === false) speech.cancelCurrent();
       if (key === "meeting-autopause") meetingMic?.setEnabled(value === true);
       if (key === "phone" || key === "phone-port" || key === "phone-relay-url" || key === "phone-lan") syncPhoneBridge();
       if (key === "whisper-idle-unload") whisperSupervisor?.armIdleUnload(); // re-arm with the new window (cfg is already updated)

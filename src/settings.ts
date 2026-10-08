@@ -51,6 +51,7 @@ export const SETTING_KEYS = [
   "phone-port",
   "phone-relay-url",
   "phone-lan",
+  "speak",
   "read-full",
   "interrupt-on-manual-reply",
   "handoff-order",
@@ -85,6 +86,7 @@ export type SettingField =
   | "phonePort"
   | "phoneRelayURL"
   | "phoneLan"
+  | "speak"
   | "readFull"
   | "interruptOnManualReply"
   | "handoffOrder"
@@ -380,6 +382,21 @@ export const SETTING_DESCRIPTORS = [
     choices: ["auto", "on", "off"],
     apply: "live",
     help: "plaintext Wi-Fi bridge: auto (closed once phone-relay-url is set), on, off — Wi-Fi pairing needs on",
+  },
+  {
+    // Tyler, 2026-10-08: "how do i just turn it off and have it stop talking??" This was CONCH_SPEAK alone,
+    // which the app's clean-environment daemon never sees, so nobody could reach it. Off: conch never speaks
+    // (announcements, recite, approvals, `say` and Kokoro alike) and everything still shows as text. Turning it
+    // off stops whatever is being read (daemon.ts `onLiveChange`). Not agent-tunable (mcp.ts).
+    key: "speak",
+    field: "speak",
+    env: "CONCH_SPEAK",
+    kind: "boolean",
+    default: true,
+    parse: parseBoolean,
+    bounds: null,
+    apply: "live",
+    help: "read replies aloud; off and conch never speaks, everything still shows as text",
   },
   {
     key: "read-full",
