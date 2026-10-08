@@ -43,3 +43,18 @@ describe("stopping a reading on the Mac", () => {
     expect(read("mobile/conch-ios/conch-ios/SettingsView.swift")).toContain('if ($0.key == "speak") != ($1.key == "speak") { return $0.key == "speak" }');
   });
 });
+
+describe("the speaker button stops what it started", () => {
+  // Tyler, 2026-10-08: "i want to be able to click the speak button again and it stops talking".
+  const composer = read("mac-app/conch-mac/ComposerView.swift");
+  test("while this session is read aloud, the speaker button stops it with the mic's own stop", () => {
+    expect(composer).toContain('private var isReadingAloud: Bool { voiceState == "speaking" }');
+    expect(composer).toContain("Button(action: isReadingAloud ? onTalk : onRecite) {");
+    expect(composer).toContain('.help(isReadingAloud ? "Stop reading" : "Read the last reply again")');
+    // onTalk stops an active exchange, and speaking is one: the button can't open the mic or start a second reading.
+    const models = read("mac-app/conch-mac/Models.swift");
+    expect(models).toContain('|| state == "speaking" || state == "transcribing"');
+    const talk = composer.slice(composer.indexOf("onTalk: {"), composer.indexOf("onRecite: {"));
+    expect(talk.indexOf("if LiveState.isExchangeActive(voiceState(for: row)) {")).toBeLessThan(talk.indexOf("store.send(.stop())"));
+  });
+});
