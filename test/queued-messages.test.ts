@@ -19,9 +19,11 @@ test("a message sent while the session was busy is Tyler's message", () => {
   expect(rows(queued("actually keep the space it occupied"))).toEqual([["user", "actually keep the space it occupied"]]);
 });
 
-test("one with an image keeps its words", () => {
+// Its picture shows beside its words, and the stand-in for it leaves them (2026-10-09: "images aren't rendering
+// properly as images in the chat").
+test("one with an image keeps its words, and shows its picture", () => {
   expect(rows(queued([{ type: "text", text: "[Image #10] look at this" }, { type: "image", source: { data: "…" } }], "human", "x2")))
-    .toEqual([["user", "[Image #10] look at this"]]);
+    .toEqual([["user", "look at this"], ["material", "Image attachment"]]);
 });
 
 test("a task notification queued the same way is not Tyler's", () => {
