@@ -65,6 +65,9 @@ describe("the phone honours Read replies aloud", () => {
     const daemon = read("src/daemon.ts");
     const publishes = daemon.split("mode: { muted: false, paused: pause.paused, holding: pending.size, ...(cfg.speak ? {} : { speechOff: true as const }) },").length - 1;
     expect(publishes).toBe(2);
+    // And the mode a render publishes, which replaces those two after the registry snapshot: the one that reaches the file.
+    const published = daemon.slice(daemon.indexOf("      model.mode = {"), daemon.indexOf("      lastPanelModel = model;"));
+    expect(published).toContain("...(cfg.speak ? {} : { speechOff: true as const }),");
     expect(daemon).not.toContain("mode: { muted: false, paused: pause.paused, holding: pending.size },");
     expect(read("src/panel.ts")).toContain("speechOff?: true;");
   });
