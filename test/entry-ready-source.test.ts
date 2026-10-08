@@ -102,8 +102,9 @@ describe("one state, one name", () => {
     expect(sheet).not.toContain("Auto / manual");
     // P reaches the selected session, or every session with none selected (`pauseOrResume`).
     expect(sheet).toContain('ShortcutHelpRow(command: "P", result: "Quiet / speak for the selected session (all, if none)")');
-    // Space stops and never starts (`talkOrStop`).
-    expect(sheet).toContain('ShortcutHelpRow(command: "Space", result: "Stop speaking or listening")');
+    // Space stops and never starts (`talkOrStop`), outside a text field; Esc stops a reading from anywhere (2026-10-08).
+    expect(sheet).toContain('ShortcutHelpRow(command: "Space", result: "Stop speaking or listening (outside a text field)")');
+    expect(sheet).toContain('ShortcutHelpRow(command: "Esc", result: "Stop reading aloud, from anywhere")');
     for (const row of [
       'ShortcutHelpRow(command: "⌃⌥⌘P", result: "Draw on screen")',
       'ShortcutHelpRow(command: "1 – 5", result: "Pick a pen tool")',

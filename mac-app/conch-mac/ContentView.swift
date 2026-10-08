@@ -400,6 +400,16 @@ struct ContentView: View {
         }
     }
 
+    private func recite() {
+        guard let actionTarget else { return }
+        store.send(
+            .recite(
+                sessionId: actionTarget.id,
+                label: actionTarget.label
+            )
+        )
+    }
+
     private func moveSelection(by delta: Int) {
         guard delta == -1 || delta == 1,
               let rows = store.state?.rows,
