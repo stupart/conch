@@ -35,6 +35,9 @@ The defaults below are read from `src/settings.ts`; `conch settings` prints the 
 
 | Setting | Variable | Default | What it does |
 |---|---|---|---|
+| `speak` | `CONCH_SPEAK` | `true` | Read replies aloud. `false` and conch never speaks, on the Mac or the phone; everything still shows as text. In the apps: Settings › Read replies aloud |
+| `bell` | `CONCH_BELL` | `true` | The chime (Glass) before an announcement, a review or a permission question. It plays even with `speak` off |
+| `mic-cues` | `CONCH_MIC_CUES` | `true` | Tink when the mic opens, Bottle when it closes without sending, Pop when your words are sent |
 | `read-full` | `CONCH_READ_FULL` | `true` | Read the whole final reply aloud; `false` reads only the announcement |
 | `announce-sentences` | `CONCH_SPEAK_SENTENCES` | `2` | Sentences in a turn's announcement |
 | `announce-max-chars` | `CONCH_SPEAK_MAX_CHARS` | `350` | Character cap on an announcement |
@@ -95,9 +98,7 @@ yourself (`conch daemon`) or the launchd service.
 | `CONCH_UV` | the app's | The uv conch builds its voice environment with; the Mac app sets it to its own copy |
 | `CONCH_VOICE` | system voice | The `say` voice, for example `Ava (Premium)` |
 | `CONCH_SAY_VOLUME` | `0.4` | `say` loudness, matched to the natural voices |
-| `CONCH_BELL` / `CONCH_BELL_SOUND` | `1` / Glass.aiff | The ding at a finished turn, and its sound file |
-| `CONCH_SPEAK` | `1` | `0` turns spoken announcements off |
-| `CONCH_MIC_CUES` | `1` | The tink when the mic opens, and the bottle sound when it closes on silence |
+| `CONCH_BELL_SOUND` | Glass.aiff | The chime's sound file (turn the chime itself on or off with the `bell` setting) |
 | `CONCH_MAX_UTTERANCE_SECS` | `120` | Cap on one utterance |
 | `CONCH_CONTINUE_SENTENCES` | `6` | Sentences per read-aloud chunk |
 | `CONCH_GAP_SECS` | `0` | Extra pause between read-aloud chunks |
