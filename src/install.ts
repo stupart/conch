@@ -609,7 +609,9 @@ export async function runService(cfg: Config, action: "install" | "off"): Promis
 
   // launchd exec's this directly — no shell, so every word is its own argv
   // entry and nothing needs quoting.
-  const daemonArgv = serviceDaemonArgv(IS_COMPILED, process.execPath, conchRoot);
+  // Homebrew's stable path, not this version's Cellar folder, which the next `brew upgrade` deletes: the hooks broke
+  // that way (#496), and a login service pointing there would simply never start again.
+  const daemonArgv = serviceDaemonArgv(IS_COMPILED, stableExecPath(), conchRoot);
 
   const path = [
     "/opt/homebrew/bin",
