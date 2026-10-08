@@ -47,7 +47,7 @@ describe("build-app.sh carries the lagoon only when it is there, and never commi
     expect(install).toContain(`trap 'rm -rf "$LAGOON_SCRATCH"' EXIT`);
     const missing = install.indexOf('if [[ -n "$LAGOON_BUNDLE" && ! -f "$BUILT_APP_PATH/Contents/Resources/Lagoon/index.html" ]]; then');
     expect(missing).toBeGreaterThan(install.indexOf("xcodebuild \\"));
-    expect(missing).toBeLessThan(install.indexOf('rm -rf "$INSTALLED_APP_PATH"'));
+    expect(missing).toBeLessThan(install.indexOf('mv "$INSTALLED_APP_PATH" "$RETIRED_APP_PATH"'));
   });
 
   test("the copy is a build phase before Xcode's seal, after the helpers, never a folder reference", () => {

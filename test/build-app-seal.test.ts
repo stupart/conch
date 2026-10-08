@@ -23,7 +23,7 @@ test("the built product is removed before xcodebuild, so the bundle is made and 
 test("the built app is verified before the installed one is touched", () => {
   const verify = at('codesign --verify --deep --strict --verbose=2 "$BUILT_APP_PATH"');
   expect(verify).toBeGreaterThan(at("xcodebuild \\"));
-  expect(verify).toBeLessThan(at('rm -rf "$INSTALLED_APP_PATH"'));
+  expect(verify).toBeLessThan(at('mv "$INSTALLED_APP_PATH" "$RETIRED_APP_PATH"'));
   expect(verify).toBeLessThan(at('for pid in $RUNNING_PIDS; do kill "$pid"'));
   // A failed check stops the script there.
   const guard = at('if ! codesign --verify --deep --strict --verbose=2 "$BUILT_APP_PATH"; then');
