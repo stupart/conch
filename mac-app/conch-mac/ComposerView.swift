@@ -384,19 +384,25 @@ struct ComposerView: View {
                 // composer and single-letter shortcuts at once — but it silently
                 // took the feature with it. A button cannot be shadowed by a
                 // text field.
-                Button(action: onRecite) {
+                // The same button both ways, like the phone's: while this session
+                // is being read aloud it stops the reading. Tyler, 2026-10-08:
+                // "i want to be able to click the speak button again and it
+                // stops talking". `onTalk` sends `.stop()` while an exchange is
+                // active, and speaking is one (`LiveState.isExchangeActive`), so
+                // this is the mic's own stop, never a new reading or the mic.
+                Button(action: isReadingAloud ? onTalk : onRecite) {
                     // A counterclockwise arrow reads as UNDO, which beside a
                     // mic is an alarming thing to offer by accident — Tyler had
                     // to ask twice what it did. This one says "sound", which is
                     // what it does.
-                    Image(systemName: "speaker.wave.2.circle")
+                    Image(systemName: isReadingAloud ? "stop.circle.fill" : "speaker.wave.2.circle")
                         .font(.system(size: 13, weight: .medium))
                         .frame(width: 28, height: 28)
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(ConchPalette.textDim)
-                .help("Read the last reply again")
-                .accessibilityLabel("Read the last reply again")
+                .foregroundStyle(isReadingAloud ? ConchPalette.textPrimary : ConchPalette.textDim)
+                .help(isReadingAloud ? "Stop reading" : "Read the last reply again")
+                .accessibilityLabel(isReadingAloud ? "Stop reading" : "Read the last reply again")
 
                 // Send becomes Stop while a turn is running. One control in
                 // one place: the button you reach for is always the one that
@@ -638,6 +644,9 @@ struct ComposerView: View {
         default: return ConchPalette.textDim
         }
     }
+
+    /// This session is the one being read aloud: the speaker button stops it.
+    private var isReadingAloud: Bool { voiceState == "speaking" }
 
     private var micHelp: String {
         switch voiceState {

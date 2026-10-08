@@ -313,7 +313,7 @@ describe("Cut B Swift, by site", () => {
     expect(dashboard).toContain("isDisabled: audioHeldElsewhere,");
     const toggle = section(dashboard, "private struct ModeToggle: View {", "\n}\n");
     ordered(toggle, ".disabled(isDisabled)", ".opacity(isDisabled ? 0.35 : 1)");
-    const mic = section(composer, "Button(action: onTalk) {", "Button(action: onRecite) {");
+    const mic = section(composer, "Button(action: onTalk) {", "Button(action: isReadingAloud ? onTalk : onRecite) {");
     ordered(mic, ".disabled(audioHeldElsewhere)", ".opacity(audioHeldElsewhere ? 0.35 : 1)");
     // Nothing else in the composer is gated on it: sending, attaching and reciting keep working.
     expect(count(composer, "audioHeldElsewhere")).toBe(6);

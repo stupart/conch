@@ -241,7 +241,7 @@ describe("the Mac composer belongs to one session", () => {
     // pinned the order, which is how it drifted.
     const iDest = composer.indexOf("AgentBadge(backend: backend)");
     const iSpacer = composer.indexOf("Spacer(minLength: 8)");
-    const iRecite = composer.indexOf("Button(action: onRecite)");
+    const iRecite = composer.indexOf("Button(action: isReadingAloud ? onTalk : onRecite)");
     const iSend = composer.indexOf("Button(action: send)");
     for (const at of [iDest, iSpacer, iRecite, iSend]) expect(at).toBeGreaterThan(-1);
     expect(iDest).toBeLessThan(iSpacer);
