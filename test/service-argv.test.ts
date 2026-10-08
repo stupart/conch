@@ -20,3 +20,10 @@ test("the service plist's argv carries no shell quoting", () => {
   expect(plist).not.toContain("&quot;");
   expect(plist).not.toContain('<string>"');
 });
+
+// The login service names Homebrew's stable path, as the hooks do (#496): a Cellar path is gone after `brew upgrade`.
+test("the service is written with the upgrade-proof path, never this version's Cellar folder", async () => {
+  const src = await Bun.file(new URL("../src/install.ts", import.meta.url)).text();
+  expect(src).toContain("const daemonArgv = serviceDaemonArgv(IS_COMPILED, stableExecPath(), conchRoot);");
+  expect(src).not.toContain("serviceDaemonArgv(IS_COMPILED, process.execPath, conchRoot)");
+});
