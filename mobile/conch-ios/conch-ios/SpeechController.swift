@@ -79,6 +79,13 @@ final class SpeechController: NSObject, ObservableObject {
             return
         }
         guard spoken[reply.sessionId] != text else { return }
+        // Read replies aloud is off on the Mac (2026-10-09: the phone kept reading with it off). Marked spoken, so
+        // turning it back on reads what arrives next, not a backlog.
+        if state.mode.speechOff {
+            spoken[reply.sessionId] = text
+            if isSpeaking { stop() }
+            return
+        }
         // Off screen, a reply WAITS rather than being read or discarded.
         //
         // Tyler: "new ones are queued and dont start until I open it". Not
