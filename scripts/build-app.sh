@@ -101,8 +101,26 @@ if [[ -n "$RUNNING_PIDS" ]]; then
   for pid in $RUNNING_PIDS; do kill "$pid" 2>/dev/null || true; done
   sleep 1
 fi
-rm -rf "$INSTALLED_APP_PATH"
-ditto "$BUILT_APP_PATH" "$INSTALLED_APP_PATH"
+# Swapped in by rename, not deleted and then copied. `rm -rf` then `ditto` left /Applications/conch.app missing
+# or half-written for seconds, and the Dock, which watches its pinned apps, cached the "can't open" circle-slash
+# for conch and kept it (Tyler, 2026-10-04: "the icon has no image"; seen again 2026-10-08 after a day of
+# installs). The new build is copied beside the old one first, on the same volume, so the swap is two renames
+# microseconds apart.
+STAGED_APP_PATH="$(dirname "$INSTALLED_APP_PATH")/.conch-installing.app"
+RETIRED_APP_PATH="$(dirname "$INSTALLED_APP_PATH")/.conch-retired.app"
+rm -rf "$STAGED_APP_PATH" "$RETIRED_APP_PATH"
+ditto "$BUILT_APP_PATH" "$STAGED_APP_PATH"
+if [[ -e "$INSTALLED_APP_PATH" ]]; then mv "$INSTALLED_APP_PATH" "$RETIRED_APP_PATH"; fi
+mv "$STAGED_APP_PATH" "$INSTALLED_APP_PATH"
+rm -rf "$RETIRED_APP_PATH"
+# Only the installed copy is conch to Launch Services: the build product Xcode registered, and the two names
+# above, would each be another "conch" in Spotlight, Launchpad and Open With (301 of them had piled up by
+# 2026-10-08). Re-registering the installed copy refreshes its icon for the Dock and Finder.
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+"$LSREGISTER" -u "$BUILT_APP_PATH" >/dev/null 2>&1 || true
+"$LSREGISTER" -u "$STAGED_APP_PATH" >/dev/null 2>&1 || true
+"$LSREGISTER" -u "$RETIRED_APP_PATH" >/dev/null 2>&1 || true
+"$LSREGISTER" -f "$INSTALLED_APP_PATH" >/dev/null 2>&1 || true
 
 echo "Verifying installed signature:"
 codesign --verify --strict --verbose=2 "$INSTALLED_APP_PATH"
