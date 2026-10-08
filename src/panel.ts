@@ -61,6 +61,11 @@ export interface DashboardMode {
   paused: boolean;
   holding: number;
   /**
+   * Read replies aloud is off (settings `speak`): nothing speaks, the phone included, which reads replies itself and
+   * only knows the switch from here. Absent is on. 2026-10-09: the phone kept reading with the switch off.
+   */
+  speechOff?: true;
+  /**
    * The global pause is an agent's own (`PauseOriginLedger`, A17). Absent is
    * anyone else's — yours, a meeting's, one restored at boot — and that pause
    * holds an agent's `conch_speak`, which the MCP server reads here to say so.

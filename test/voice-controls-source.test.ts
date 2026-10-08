@@ -58,3 +58,25 @@ describe("the speaker button stops what it started", () => {
     expect(talk.indexOf("if LiveState.isExchangeActive(voiceState(for: row)) {")).toBeLessThan(talk.indexOf("store.send(.stop())"));
   });
 });
+
+describe("the phone honours Read replies aloud", () => {
+  // 2026-10-09: the phone reads replies itself (SpeechController), and kept reading with the switch off.
+  test("the daemon publishes the switch in the mode, only when it's off", () => {
+    const daemon = read("src/daemon.ts");
+    const publishes = daemon.split("mode: { muted: false, paused: pause.paused, holding: pending.size, ...(cfg.speak ? {} : { speechOff: true as const }) },").length - 1;
+    expect(publishes).toBe(2);
+    expect(daemon).not.toContain("mode: { muted: false, paused: pause.paused, holding: pending.size },");
+    expect(read("src/panel.ts")).toContain("speechOff?: true;");
+  });
+
+  test("the phone reads nothing aloud while it's off, and has no read button", () => {
+    const models = read("mobile/conch-ios/conch-ios/Models.swift");
+    expect(models).toContain("speechOff = (try? c.decodeIfPresent(Bool.self, forKey: .speechOff)) ?? false");
+    const speech = read("mobile/conch-ios/conch-ios/SpeechController.swift");
+    const consider = speech.slice(speech.indexOf("func consider(state: PublishedState?) {"), speech.indexOf("func speak(_ markdown: String, from label: String?) {"));
+    const off = consider.indexOf("if state.mode.speechOff {");
+    expect(off).toBeGreaterThan(-1);
+    expect(off).toBeLessThan(consider.indexOf("speak(text, from: label, followUpSessionId: reply.sessionId)"));
+    expect(read("mobile/conch-ios/conch-ios/SessionView.swift")).toContain("if bridge.state?.mode.speechOff != true {");
+  });
+});

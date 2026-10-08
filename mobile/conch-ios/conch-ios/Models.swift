@@ -60,8 +60,10 @@ struct PublishedState: Decodable, Equatable {
     struct Mode: Decodable, Equatable {
         var paused = false
         var holding = 0
+        /// Read replies aloud is off on the Mac (settings `speak`): this phone reads nothing aloud either.
+        var speechOff = false
 
-        private enum CodingKeys: String, CodingKey { case paused, holding }
+        private enum CodingKeys: String, CodingKey { case paused, holding, speechOff }
 
         init() {}
 
@@ -69,6 +71,7 @@ struct PublishedState: Decodable, Equatable {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             paused = (try? c.decodeIfPresent(Bool.self, forKey: .paused)) ?? false
             holding = (try? c.decodeIfPresent(Int.self, forKey: .holding)) ?? 0
+            speechOff = (try? c.decodeIfPresent(Bool.self, forKey: .speechOff)) ?? false
         }
     }
 

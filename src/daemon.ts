@@ -2235,7 +2235,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       pausedSessionIds,
       resumedSessionIds,
       live: liveState,
-      mode: { muted: false, paused: pause.paused, holding: pending.size },
+      mode: { muted: false, paused: pause.paused, holding: pending.size, ...(cfg.speak ? {} : { speechOff: true as const }) },
       activeSessionId: null,
       navSelectedId: null,
       now: Date.now(),
@@ -2407,7 +2407,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         pausedSessionIds,
         resumedSessionIds,
         live: committedLiveState,
-        mode: { muted: false, paused: pause.paused, holding: pending.size },
+        mode: { muted: false, paused: pause.paused, holding: pending.size, ...(cfg.speak ? {} : { speechOff: true as const }) },
         activeSessionId: nextActiveSessionId,
         navSelectedId,
         reply: contentEvent && shownReply.text
@@ -2640,7 +2640,11 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       // refused at `speak` (cfg.speak is already false here).
       if (key === "speak" && value === false) speech.cancelCurrent();
       // Off unloads the voice (nothing will speak); on brings it back, in manual mode too where memory allows.
-      if (key === "speak") kokoroByMode(pause.paused);
+      if (key === "speak") {
+        kokoroByMode(pause.paused);
+        // The phone reads replies itself and learns the switch from the published mode.
+        void renderSessionPanel();
+      }
       if (key === "meeting-autopause") meetingMic?.setEnabled(value === true);
       if (key === "phone" || key === "phone-port" || key === "phone-relay-url" || key === "phone-lan") syncPhoneBridge();
       if (key === "whisper-idle-unload") whisperSupervisor?.armIdleUnload(); // re-arm with the new window (cfg is already updated)

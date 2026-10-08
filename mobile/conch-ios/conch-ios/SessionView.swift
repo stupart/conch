@@ -419,7 +419,9 @@ struct SessionView: View {
             // Read it to me. The Mac and terminal have always had `recite`;
             // without it the phone could only speak replies that happened to
             // arrive while you were watching, which is the opposite of the
-            // case the phone exists for.
+            // case the phone exists for. Not while Read replies aloud is off:
+            // off is off, as on the Mac.
+            if bridge.state?.mode.speechOff != true {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     if speech.isSpeaking {
@@ -434,6 +436,7 @@ struct SessionView: View {
                 }
                 .disabled(replyText == nil || isTalkingHere)
                 .accessibilityLabel(speech.isSpeaking ? "Stop reading" : "Read this aloud")
+            }
             }
 
             // Ending a resumable agent is the most expensive tap on this
