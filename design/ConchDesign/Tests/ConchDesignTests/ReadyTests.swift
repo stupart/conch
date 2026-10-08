@@ -170,7 +170,7 @@ final class ReadyTests: XCTestCase {
     func testTheMenuNamesEachSurfaceOnceInTitleCase() {
         let titles = items(StatusMenu.rows(input())).map(\.title)
         // With Panel Off is Reply Line's own setting, a step in under it (ComposerPlacementTests).
-        XCTAssertEqual(titles, ["Talk", "Quiet", "Stop Speaking", "Control Bar", "Conversation Panel", "Reply Line", "With Panel Off", "Draw on Screen", "Open conch"])
+        XCTAssertEqual(titles, ["Talk", "Quiet", "Read Replies Aloud", "Stop Speaking", "Control Bar", "Conversation Panel", "Reply Line", "With Panel Off", "Draw on Screen", "Open conch"])
         XCTAssertFalse(titles.contains { $0.hasPrefix("Show") })
         let draw = items(StatusMenu.rows(input())).first { $0.command == .draw }
         XCTAssertEqual(draw?.key, "p")
@@ -282,5 +282,18 @@ final class ReadyTests: XCTestCase {
     /// back through the wait (`SO_ERROR`), so it takes an address nothing can be reached on to fail at the first step.
     func testAConnectThatFailsAtOnceIsNotAListener() {
         XCTAssertFalse(LocalServer.accepts(.v4(0xFFFF_FFFF), port: 9, timeout: 0.1))
+    }
+
+    /// Read replies aloud, one click from the menu bar, ticked while it's on (2026-10-09).
+    func testTheMenuOffersReadRepliesAloudTickedWhileOn() {
+        func mark(_ on: Bool) -> StatusMenu.Mark? {
+            let input = StatusMenu.Input(voice: .ready, quiet: true, exchangeActive: false, controlBar: false, conversation: false,
+                                         collapsed: false, replyLine: false, drawing: false, ready: [], working: [], overlays: false,
+                                         readAloud: on)
+            for row in StatusMenu.rows(input) { if case let .item(item) = row, item.command == .readAloud { return item.mark } }
+            return nil
+        }
+        XCTAssertEqual(mark(true), .on)
+        XCTAssertEqual(mark(false), .off)
     }
 }

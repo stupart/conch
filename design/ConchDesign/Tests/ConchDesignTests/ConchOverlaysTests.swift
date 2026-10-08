@@ -106,7 +106,7 @@ final class ConchOverlaysTests: XCTestCase {
             let on = items(menu(overlays: true, ready: ready, working: working)).map(\.command)
             for command in overlayCommands { XCTAssertTrue(on.contains(command), "\(command)") }
         }
-        XCTAssertEqual(items(menu(overlays: false)).map(\.title), ["Talk", "Quiet", "Stop Speaking", "Open conch"])
+        XCTAssertEqual(items(menu(overlays: false)).map(\.title), ["Talk", "Quiet", "Read Replies Aloud", "Stop Speaking", "Open conch"])
     }
 
     // MARK: Setup

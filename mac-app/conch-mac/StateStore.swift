@@ -1424,6 +1424,19 @@ final class StateStore: ObservableObject {
         ))
     }
 
+    /// Read replies aloud on or off (settings `speak`), from the menu bar: the same `set-config` Settings sends. The
+    /// daemon applies it live, stops a reading when it goes off, and republishes `mode.speechOff`.
+    func setReadAloud(_ on: Bool) {
+        let socketClient = socketClient
+        Task { _ = await socketClient.request(ReadAloudSetting(value: on), timeout: 5) }
+    }
+
+    private struct ReadAloudSetting: Encodable, Sendable {
+        let kind = "set-config"
+        let key = "speak"
+        let value: Bool
+    }
+
     /// A send the person cleared from the conversation: one that failed, or that conch could not confirm.
     ///
     /// Remembered as dismissed (`ConchOutbox.dismiss`), so neither the outcome the daemon keeps publishing for it nor
