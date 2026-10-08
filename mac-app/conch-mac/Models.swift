@@ -359,21 +359,26 @@ struct DismissedSessionRow: Decodable, Equatable, Identifiable, Sendable {
 struct ModeState: Decodable, Equatable, Sendable {
     let paused: Bool
     let holding: Int
+    /// Read replies aloud is off (settings `speak`): the daemon publishes this only while it is.
+    let speechOff: Bool
 
-    init(paused: Bool = false, holding: Int = 0) {
+    init(paused: Bool = false, holding: Int = 0, speechOff: Bool = false) {
         self.paused = paused
         self.holding = holding
+        self.speechOff = speechOff
     }
 
     private enum CodingKeys: String, CodingKey {
         case paused
         case holding
+        case speechOff
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         paused = (try? container.decodeIfPresent(Bool.self, forKey: .paused)) ?? false
         holding = (try? container.decodeIfPresent(Int.self, forKey: .holding)) ?? 0
+        speechOff = (try? container.decodeIfPresent(Bool.self, forKey: .speechOff)) ?? false
     }
 }
 

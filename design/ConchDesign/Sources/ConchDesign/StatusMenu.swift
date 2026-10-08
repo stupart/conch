@@ -10,6 +10,8 @@ public enum StatusMenu {
     /// What choosing an item does.
     public enum Command: Equatable, Sendable {
         case talk, quiet, stop, controlBar, conversation, replyLine, replyLineAlone, draw, openConch
+        /// Read replies aloud on or off (settings `speak`).
+        case readAloud
         /// A ready session's next item, opened the way the Ready pill opens one.
         case openItem(session: String)
         /// conch's window on a session: a working one, or a ready one with ⌥ held.
@@ -90,11 +92,13 @@ public enum StatusMenu {
         /// The overlays are on (`ConchOverlays`): the items for the control bar, the panel, the reply line and the pen
         /// are there only then.
         public var overlays: Bool
+        /// Read replies aloud is on (settings `speak`; the daemon publishes `mode.speechOff` while it's off).
+        public var readAloud: Bool
 
         public init(
             voice: VoiceState, quiet: Bool, exchangeActive: Bool, controlBar: Bool, conversation: Bool, collapsed: Bool,
             replyLine: Bool, replyLineAlone: Bool = true, drawing: Bool, ready: [Session], working: [Session], setupLeft: [String] = [],
-            overlays: Bool
+            overlays: Bool, readAloud: Bool = true
         ) {
             self.voice = voice
             self.quiet = quiet
@@ -109,6 +113,7 @@ public enum StatusMenu {
             self.working = working
             self.setupLeft = setupLeft
             self.overlays = overlays
+            self.readAloud = readAloud
         }
     }
 
@@ -119,6 +124,9 @@ public enum StatusMenu {
         rows += [.header, .separator]
         rows.append(.item(Item(title: "Talk", command: .talk, mark: input.quiet ? .off : .on)))
         rows.append(.item(Item(title: "Quiet", command: .quiet, mark: input.quiet ? .on : .off)))
+        // The voice itself, one click from anywhere (2026-10-08, Tyler: "how do i just turn it off and have it stop
+        // talking??"). Talk and Quiet are whether conch speaks up on its own; this is whether it speaks at all.
+        rows.append(.item(Item(title: "Read Replies Aloud", command: .readAloud, mark: input.readAloud ? .on : .off)))
         rows.append(.separator)
         // Space is the conch window's stop key.
         rows.append(.item(Item(title: input.voice == .listening ? "Stop Listening" : "Stop Speaking", command: .stop, key: " ", enabled: input.exchangeActive)))

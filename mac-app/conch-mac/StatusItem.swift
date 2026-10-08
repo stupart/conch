@@ -195,7 +195,8 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
             setupLeft: OnboardingController.shared.menuReminder(),
             // Off, the overlays' own items (Control Bar, Conversation Panel, Reply Line, With Panel Off, Draw on Screen)
             // aren't there.
-            overlays: Self.overlaysOn
+            overlays: Self.overlaysOn,
+            readAloud: !(state?.mode.speechOff ?? false)
         )
         for row in StatusMenu.rows(input) {
             switch row {
@@ -285,6 +286,7 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         case .openItem: #selector(openItem(_:))
         case .openSession: #selector(openSession(_:))
         case .openConch: #selector(openConch)
+        case .readAloud: #selector(toggleReadAloud)
         case .finishSetup: #selector(finishSetup)
         }
     }
@@ -312,6 +314,8 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
     // Talk and Quiet are the daemon's global resume and pause, as the dashboard sends with no session selected.
     @objc private func talk() { store.send(.global(.resume)) }
     @objc private func quietMode() { store.send(.global(.pause)) }
+    // Read replies aloud: on if it is off now, off if it is on.
+    @objc private func toggleReadAloud() { store.setReadAloud(store.state?.mode.speechOff ?? false) }
     // The dashboard's spacebar: stops the speech or listening that is running.
     @objc private func stopSpeaking() { store.send(.stop()) }
 
