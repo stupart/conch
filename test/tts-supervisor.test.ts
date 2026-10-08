@@ -544,8 +544,12 @@ describe("D1 wiring inside runDaemon", () => {
     expect(daemonSource).toContain("const KOKORO_MANUAL_GRACE_MS = 60_000");
     const helper = between("const kokoroByMode = (paused: boolean", "pause = new PauseController({");
     expect(helper).toContain("for (const engine of [ttsWorker, ttsSupervisor])");
-    expect(helper).toContain('if (paused) engine?.unloadAfter(graceMs, "unloaded — manual mode; reloads in auto mode")');
-    expect(helper).toContain('else engine?.prewarm("auto mode")');
+    // 2026-10-08: manual mode keeps the voice while Read replies aloud is on and memory allows (`keepVoiceLoaded`),
+    // so what Tyler asks to hear is in his voice, not `say`. Off, or a small Mac, unloads as before.
+    expect(helper).toContain("const keep = keepVoiceLoaded(paused);");
+    expect(helper).toContain('if (!keep) engine?.unloadAfter(graceMs, cfg.speak ? "unloaded — manual mode; reloads in auto mode" : "unloaded — Read replies aloud is off")');
+    expect(helper).toContain('else engine?.prewarm(paused ? "manual mode, kept for what you ask to hear" : "auto mode")');
+    expect(daemonSource).toContain("cfg.speak && (!paused || totalmem() >= KOKORO_KEEP_IN_MANUAL_MIN_BYTES)");
     // Both markers must EXIST before their order means anything.
     const mode = between("setModeState: (paused) => {", "speak: (text) => voice.speak(cfg, text)");
     const state = mode.indexOf('setState(paused ? "paused" : "idle")');
@@ -554,9 +558,9 @@ describe("D1 wiring inside runDaemon", () => {
     expect(kokoro).toBeGreaterThan(state);
   });
 
-  test("a daemon booting in manual mode unloads before either engine starts", () => {
+  test("a daemon booting in manual mode unloads before either engine starts, unless manual mode keeps the voice", () => {
     const boot = between("ttsSupervisor = new TtsSupervisor({", "const whisperBinaryAvailable");
-    const unload = boot.indexOf("if (pause.paused) kokoroByMode(true, 0)");
+    const unload = boot.indexOf("if (pause.paused && !keepVoiceLoaded(true)) kokoroByMode(true, 0)");
     // The worker starts when voiceEnv hands it an interpreter (setPython), so
     // voiceEnv's start is the worker's start; an unloaded worker stays unloaded
     // through a handover (test/voice-env.test.ts).
