@@ -54,12 +54,19 @@ rm -rf "$BUILT_APP_PATH"
 # daemon from the checkout first (DaemonHost.prefersCheckout) — the bundled one
 # would be stale the moment anyone edits the source. It still carries the
 # bundled daemon and engine, checked below exactly as a release checks them.
+# The version the app shows (About, Finder's Get Info) is conch's, from package.json, and the build number is the
+# commit count, rising with every commit. The project's MARKETING_VERSION is a placeholder 1.0, which every build
+# shipped as until 2026-10-09 (conch 0.4.0 called itself "1.0").
+APP_VERSION="$(sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' "$REPO_ROOT/package.json" | head -1)"
+APP_BUILD="$(git -C "$REPO_ROOT" rev-list --count HEAD 2>/dev/null || echo 1)"
 xcodebuild \
   -project "$PROJECT_PATH" \
   -scheme conch-mac \
   -configuration Release \
   -destination 'platform=macOS' \
   -derivedDataPath "$DERIVED_DATA_PATH" \
+  MARKETING_VERSION="${APP_VERSION:-1.0}" \
+  CURRENT_PROJECT_VERSION="$APP_BUILD" \
   CONCH_LAGOON_BUNDLE="$LAGOON_BUNDLE" \
   CONCH_DAEMON_SOURCE=checkout \
   build
