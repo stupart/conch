@@ -61,6 +61,13 @@ mkdir -p "$LOGS"
 RESULTS=()
 FAILED=""
 
+# Xcode registers every app it builds with Launch Services, so each worktree's build became another "conch" in
+# Spotlight, Launchpad and Open With, and stayed one after the worktree went: 301 had piled up by 2026-10-08. Only
+# /Applications/conch.app should be conch to macOS. Never fails a stage.
+unregister() { # <app>
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$1" >/dev/null 2>&1 || true
+}
+
 run() { # <check>
   local name=$1 log="$LOGS/$1.log" start=$SECONDS rc detail=""
   echo "→ $name"
@@ -75,10 +82,12 @@ run() { # <check>
                -destination 'platform=macOS' -derivedDataPath "$LOGS/mac.noindex" \
                CODE_SIGNING_ALLOWED=NO -quiet build \
                && CONCH_SIDEBAR_SETTLE=1 bun test test/sidebar-settle.test.ts \
+               && unregister "$LOGS/mac.noindex/Build/Products/Debug/conch-mac.app" \
                && ls -d "$LOGS/mac.noindex/Build/Products/Debug/conch-mac.app" ;;
     ios)     xcodebuild -project mobile/conch-ios/conch-ios.xcodeproj -scheme conch-ios -configuration Debug \
                -destination 'generic/platform=iOS Simulator' -derivedDataPath "$LOGS/ios.noindex" \
                CODE_SIGNING_ALLOWED=NO -quiet build \
+               && unregister "$LOGS/ios.noindex/Build/Products/Debug-iphonesimulator/conch-ios.app" \
                && ls -d "$LOGS/ios.noindex/Build/Products/Debug-iphonesimulator/conch-ios.app" ;;
     gap)     release_gap ;;
   esac >"$log" 2>&1
