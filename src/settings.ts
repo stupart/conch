@@ -52,6 +52,8 @@ export const SETTING_KEYS = [
   "phone-relay-url",
   "phone-lan",
   "speak",
+  "bell",
+  "mic-cues",
   "read-full",
   "interrupt-on-manual-reply",
   "handoff-order",
@@ -87,6 +89,8 @@ export type SettingField =
   | "phoneRelayURL"
   | "phoneLan"
   | "speak"
+  | "bell"
+  | "micCues"
   | "readFull"
   | "interruptOnManualReply"
   | "handoffOrder"
@@ -397,6 +401,32 @@ export const SETTING_DESCRIPTORS = [
     bounds: null,
     apply: "live",
     help: "read replies aloud; off and conch never speaks, everything still shows as text",
+  },
+  {
+    // The chime before an announcement, a review or a permission question (Glass.aiff). It was CONCH_BELL alone, which
+    // the app's daemon never sees, so it could not be turned off (found 2026-10-09 inventorying conch's sounds).
+    key: "bell",
+    field: "bell",
+    env: "CONCH_BELL",
+    kind: "boolean",
+    default: true,
+    parse: parseBoolean,
+    bounds: null,
+    apply: "live",
+    help: "the chime before an announcement, a review or a question; it plays even with Read replies aloud off",
+  },
+  {
+    // Tink when the mic opens, Bottle when it closes with nothing sent, Pop when a dictation lands. CONCH_MIC_CUES alone
+    // until 2026-10-09, for the same reason as `bell`.
+    key: "mic-cues",
+    field: "micCues",
+    env: "CONCH_MIC_CUES",
+    kind: "boolean",
+    default: true,
+    parse: parseBoolean,
+    bounds: null,
+    apply: "live",
+    help: "sounds when the mic opens, closes without sending, and when your words are sent",
   },
   {
     key: "read-full",

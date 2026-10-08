@@ -33,7 +33,7 @@ export interface Config {
   speechEngine: SpeechEngine;
   /** TTS voice for `say`; empty string = system default */
   voice: string;
-  /** speech rate for `say`, words per minute; 0 = system default (~175) */
+  /** speech rate for `say`, words per minute (setting `say-rate`, default 210); 0 = the system's own (~175) */
   sayRate: number;
   /** `say` playback volume (0-1) via [[volm]]; matches the quieter Kokoro voices (say is ~3x louder raw) */
   sayVolume: number;
@@ -184,7 +184,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     sayVolume: num(env.CONCH_SAY_VOLUME, 0.4), // measured: [[volm 0.4]] ≈ Kokoro loudness (say raw is ~3.4x louder)
     speakSentences: settings["announce-sentences"].value as number,
     speakMaxChars: settings["announce-max-chars"].value as number,
-    bell: flag(env.CONCH_BELL, true),
+    bell: settings["bell"].value as boolean,
     bellSound: env.CONCH_BELL_SOUND ?? "/System/Library/Sounds/Glass.aiff",
     speak: settings["speak"].value as boolean,
     listenWindowSecs: settings["listen-window"].value as number,
@@ -204,7 +204,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     bargeThresholdPct: settings["barge-threshold"].value as number, // 0 disables; tune above speaker bleed to opt in
 
     continueSentences: num(env.CONCH_CONTINUE_SENTENCES, 6), // bigger chunks = fewer inter-chunk pauses
-    micCues: flag(env.CONCH_MIC_CUES, true),
+    micCues: settings["mic-cues"].value as boolean,
     autoSubmit: flag(env.CONCH_AUTO_SUBMIT, true),
     holdSubmit: flag(env.CONCH_HOLD_SUBMIT, true),
     holdSubmitSecs: settings["hold-submit-delay"].value as number,

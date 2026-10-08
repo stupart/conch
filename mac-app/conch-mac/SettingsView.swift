@@ -438,6 +438,8 @@ private struct ConchSettingRowView: View {
         "voice-speed": "Voice speed",
         "keystroke-fallback": "Type into the session window",
         "speak": "Read replies aloud",
+        "bell": "Attention chime",
+        "mic-cues": "Mic sounds",
         "read-full": "Read the full reply",
         "interrupt-on-manual-reply": "Stop reading when you type",
         "handoff-order": "Hand-off order",
