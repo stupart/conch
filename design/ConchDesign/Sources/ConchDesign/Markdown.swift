@@ -794,3 +794,61 @@ public enum MarkdownTypesetter {
     }
 }
 #endif
+
+/// A Markdown *file*'s line breaks, as Markdown means them: a single newline inside a paragraph or a list item is a
+/// space. Conversation text keeps its newlines (`MarkdownDocument.blocks` says why); a document wrapped at 120 columns,
+/// as this repo's README is, showed every source line as a line of its own in the review pane, breaking sentences
+/// mid-way ("…shows up in one" / "window. Each one…", 2026-10-09).
+///
+/// Rewrites the text rather than the parse, so the renderers and their caches stay as they are: the file viewers hand
+/// `joined(_:)`'s result to the same `MarkdownView` and `MarkdownTypesetter` the conversation uses. A line ending in two
+/// spaces or a backslash keeps its break, as CommonMark has it; code, tables, quotes, headings and rules are untouched.
+public enum MarkdownSoftBreaks {
+    public static func joined(_ text: String) -> String {
+        var output: [String] = []
+        /// Whether the last line written is one a following plain line continues: a paragraph's or a list item's.
+        var continuable = false
+        var inCode = false
+        var lines = text.replacingOccurrences(of: "\r\n", with: "\n").split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        // Frontmatter is key: value lines, each its own; it passes through as it is.
+        if lines.first == "---", let close = lines.dropFirst().firstIndex(of: "---") {
+            output.append(contentsOf: lines[...close])
+            lines.removeSubrange(...close)
+        }
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
+                inCode.toggle()
+                output.append(line)
+                continuable = false
+                continue
+            }
+            if inCode || trimmed.isEmpty || trimmed.hasPrefix("|") || trimmed.hasPrefix(">")
+                || MarkdownDocument.heading(trimmed) != nil || MarkdownDocument.isRule(trimmed)
+                || MarkdownDocument.image(trimmed) != nil {
+                output.append(line)
+                continuable = false
+                continue
+            }
+            if MarkdownDocument.bullet(line) != nil || MarkdownDocument.ordered(line) != nil {
+                output.append(line)
+                continuable = true
+                continue
+            }
+            // A plain line: the rest of the paragraph or list item above it, unless that line asked for a break.
+            if continuable, let previous = output.last {
+                let hardBreak = previous.hasSuffix("  ") || previous.hasSuffix("\\")
+                if !hardBreak {
+                    output[output.count - 1] = previous.trimmingCharacters(in: .whitespaces).isEmpty
+                        ? trimmed
+                        : previous.replacingOccurrences(of: #"\s+$"#, with: "", options: .regularExpression) + " " + trimmed
+                    continue
+                }
+                if previous.hasSuffix("\\") { output[output.count - 1] = String(previous.dropLast()) }
+            }
+            output.append(line)
+            continuable = true
+        }
+        return output.joined(separator: "\n")
+    }
+}

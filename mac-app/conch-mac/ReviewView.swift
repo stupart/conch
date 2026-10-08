@@ -1341,7 +1341,8 @@ private struct DeliverableDocumentView: NSViewRepresentable {
                 color: NSColor(ConchPalette.textPrimary)
             )
             textView.textStorage?.setAttributedString(
-                ConversationDocument.markdown(content, attributes: attributes)
+                // A file: its soft line breaks are spaces, as Markdown means them (`MarkdownSoftBreaks`).
+                ConversationDocument.markdown(MarkdownSoftBreaks.joined(content), attributes: attributes)
             )
         } else {
             let paragraph = NSMutableParagraphStyle()

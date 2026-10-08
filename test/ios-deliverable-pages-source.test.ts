@@ -168,7 +168,7 @@ describe("the page reads through the bridge, and never sees the token", () => {
 
   test("a markdown document's pictures come through the same read", () => {
     const document = between(sheet, "private struct RemoteDocumentView", "private struct BridgedWebView");
-    expect(document).toContain("MarkdownView(text: content, image: images)");
+    expect(document).toContain("MarkdownView(text: MarkdownSoftBreaks.joined(content), image: images)");
     expect(document).toContain("AnyView(MarkdownImage(bridge: bridge, source: source, alt: alt, document: document))");
     const picture = between(sheet, "private struct MarkdownImage: View {", "\n}\n");
     expect(picture).toContain("ConchPagePath.markdownImage(source, document: document)");
