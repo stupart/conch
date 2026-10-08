@@ -643,7 +643,8 @@ struct ComposerView: View {
         switch voiceState {
         case "listening", "recording": return "Listening — click to stop"
         case "transcribing": return "Transcribing…"
-        case "speaking": return "Reading aloud — click to cut in"
+        // The click sends `.stop()` (onTalk): it stops the reading, it opens nothing (2026-10-08).
+        case "speaking": return "Reading aloud — click or press Esc to stop"
         default: return "Talk to this session"
         }
     }

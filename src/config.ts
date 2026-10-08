@@ -186,7 +186,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     speakMaxChars: settings["announce-max-chars"].value as number,
     bell: flag(env.CONCH_BELL, true),
     bellSound: env.CONCH_BELL_SOUND ?? "/System/Library/Sounds/Glass.aiff",
-    speak: flag(env.CONCH_SPEAK, true),
+    speak: settings["speak"].value as boolean,
     listenWindowSecs: settings["listen-window"].value as number,
     maxUtteranceSecs: num(env.CONCH_MAX_UTTERANCE_SECS, 120),
     endSilenceSecs: settings["end-silence"].value as number, // 2.5 clipped natural mid-thought pauses (live)

@@ -459,8 +459,9 @@ struct ContentView: View {
             talkOrStop()
         case .pauseOrResume:
             pauseOrResume()
-        case .recite:
-            recite()
+        case .stopSpeaking:
+            guard store.state?.live.state == "speaking" else { return false }
+            store.send(.stop())
         case .showKeyboardShortcuts:
             showKeyboardShortcuts()
         case .moveUp:
@@ -1188,11 +1189,11 @@ private struct KeyboardShortcutsSheet: View {
     private let keyRows = [
         // Space stops and never starts (`talkOrStop`). P quiets one session or lets it speak, and
         // every session when none is selected (`pauseOrResume`).
-        ShortcutHelpRow(command: "Space", result: "Stop speaking or listening"),
+        ShortcutHelpRow(command: "Esc", result: "Stop reading aloud, from anywhere"),
+        ShortcutHelpRow(command: "Space", result: "Stop speaking or listening (outside a text field)"),
         ShortcutHelpRow(command: "P", result: "Quiet / speak for the selected session (all, if none)"),
-        ShortcutHelpRow(command: "R", result: "Recite"),
         ShortcutHelpRow(command: "↑ / ↓", result: "Select"),
-        ShortcutHelpRow(command: "Esc", result: "Release selection / close"),
+        ShortcutHelpRow(command: "Esc", result: "Release selection / close (when nothing is being read)"),
         ShortcutHelpRow(command: "Right-click a row", result: "Rename, dismiss"),
         ShortcutHelpRow(command: "⌘K", result: "Command palette"),
         ShortcutHelpRow(command: "⌘,", result: "Settings"),

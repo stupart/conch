@@ -89,7 +89,7 @@ describe("the Mac sidebar", () => {
 });
 
 describe("P and the header's Manual/Auto", () => {
-  const press = section(content, "    private func pauseOrResume() {", "    private func recite() {");
+  const press = section(content, "    private func pauseOrResume() {", "    private func moveSelection(by delta: Int) {");
 
   test("one session's toggle sends what its voice says, from the mark as from P", () => {
     const toggle = section(press, "private func toggleQuiet(", "private func showQuietToast(");
@@ -127,7 +127,7 @@ describe("P and the header's Manual/Auto", () => {
       expect(at).toBeGreaterThan(-1);
       expect(at).toBeLessThan(dispatch);
     }
-    expect(section(monitor, "var isGlobalDashboardControl: Bool {", "\n    }\n")).toContain("case .pauseOrResume, .recite");
+    expect(section(monitor, "var isGlobalDashboardControl: Bool {", "\n    }\n")).toContain("case .pauseOrResume, .showKeyboardShortcuts");
   });
 
   test("the header button's tooltip names its scope: this session, or every session", () => {

@@ -437,6 +437,7 @@ private struct ConchSettingRowView: View {
         "barge-threshold": "Barge-in threshold",
         "voice-speed": "Voice speed",
         "keystroke-fallback": "Type into the session window",
+        "speak": "Read replies aloud",
         "read-full": "Read the full reply",
         "interrupt-on-manual-reply": "Stop reading when you type",
         "handoff-order": "Hand-off order",

@@ -73,7 +73,7 @@ import { currentTurnText } from "./transcript-turn.ts";
 import {
   existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { hostname, tmpdir } from "node:os";
+import { hostname, tmpdir, totalmem } from "node:os";
 import { deviceExecutionCatalog } from "./execution-model.ts";
 import { installAccountUsage, uninstallAccountUsage, clearAccountUsage, readAccountUsage, repairAccountUsage } from "./claude-account-usage.ts";
 import { loadDeviceId } from "./device-identity.ts";
@@ -1196,11 +1196,30 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   // unloaded goes through `say`, exactly as while it is loading. Whichever
   // engine is live acts; the other is a no-op.
   const KOKORO_MANUAL_GRACE_MS = 60_000;
+  // 2026-10-08, Tyler: "why is it using default mac voice instead of our nice voices?" Manual mode on his Mac is where
+  // he lives, and the only speech there is what he asks for, so every recite found Kokoro unloaded and spoke through
+  // `say`. Reloading on request costs ~17 s (load 4 s + warmup 13 s, 2026-09-27) before a word. So: with Read replies
+  // aloud on and memory to spare, manual mode keeps the voice; it is unloaded only when nothing will speak (the
+  // switch off) or on a Mac small enough that ~650MB matters.
+  const KOKORO_KEEP_IN_MANUAL_MIN_BYTES = 16 * 1024 ** 3;
+  const keepVoiceLoaded = (paused: boolean): boolean =>
+    cfg.speak && (!paused || totalmem() >= KOKORO_KEEP_IN_MANUAL_MIN_BYTES);
   const kokoroByMode = (paused: boolean, graceMs = KOKORO_MANUAL_GRACE_MS): void => {
+    const keep = keepVoiceLoaded(paused);
     for (const engine of [ttsWorker, ttsSupervisor]) {
-      if (paused) engine?.unloadAfter(graceMs, "unloaded — manual mode; reloads in auto mode");
-      else engine?.prewarm("auto mode");
+      if (!keep) engine?.unloadAfter(graceMs, cfg.speak ? "unloaded — manual mode; reloads in auto mode" : "unloaded — Read replies aloud is off");
+      else engine?.prewarm(paused ? "manual mode, kept for what you ask to hear" : "auto mode");
     }
+  };
+  /**
+   * A person asked to hear something while the voice is unloaded (a small Mac in manual mode): this one is read in
+   * `say`, but the voice loads now and stays ten minutes, so the next thing they ask for is in it. Never waited on
+   * here: events are handled one at a time, and a send queued behind a ~17 s load is the trap `handle` describes.
+   */
+  const voiceForRequest = (): void => {
+    if (!cfg.speak || ttsWorker.isReady() || keepVoiceLoaded(pause.paused)) return;
+    for (const engine of [ttsWorker, ttsSupervisor]) engine?.prewarm("you asked to hear something");
+    kokoroByMode(pause.paused, 10 * 60_000);
   };
   const speech = new SpeechManager(
     { speakCancellable: backendSpeakCancellable, stopSpeaking: backendStopSpeaking },
@@ -2584,6 +2603,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     // is waiting on right now — an interrupt most of all, since its whole value
     // is arriving before the agent does more of what you are stopping.
     if (event.type !== "inject" && event.type !== "interrupt" && event.type !== "session-start") await ttsStartup;
+    // A recite is someone asking to hear it: in their voice, even if that takes a moment to load.
+    if (event.type === "recite") voiceForRequest();
     breadcrumb(`event: ${event.type} for "${event.label}"`);
     return voice.handle(event);
   }
@@ -2615,6 +2636,11 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   const configController = createConfigController(cfg, {
     settingsPath: daemonSettingsPath,
     onLiveChange: (key, value) => {
+      // Off means quiet now, not after the sentence: the reading in progress stops, and every later one is
+      // refused at `speak` (cfg.speak is already false here).
+      if (key === "speak" && value === false) speech.cancelCurrent();
+      // Off unloads the voice (nothing will speak); on brings it back, in manual mode too where memory allows.
+      if (key === "speak") kokoroByMode(pause.paused);
       if (key === "meeting-autopause") meetingMic?.setEnabled(value === true);
       if (key === "phone" || key === "phone-port" || key === "phone-relay-url" || key === "phone-lan") syncPhoneBridge();
       if (key === "whisper-idle-unload") whisperSupervisor?.armIdleUnload(); // re-arm with the new window (cfg is already updated)
@@ -3609,8 +3635,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       log,
     });
   }
-  // D1: a daemon booting in manual mode never loads Kokoro; auto mode will.
-  if (pause.paused) kokoroByMode(true, 0);
+  // D1: a daemon booting in manual mode loads Kokoro only if it keeps it there (keepVoiceLoaded); auto mode will.
+  if (pause.paused && !keepVoiceLoaded(true)) kokoroByMode(true, 0);
   if (cfg.ttsEngine === "worker") {
     // Checking the environment, building it on a first run, loading and the
     // first Metal/G2P warmup all take time. None of it holds the turn queue:

@@ -522,7 +522,7 @@ export interface VoiceLoop {
    */
   filePublication(event: TurnEvent): Promise<ReviewVerdict>;
   speak(speechCfg: Config, text: string, label?: string, volunteered?: boolean, sessionId?: string): Promise<void>;
-  speakBlocker(volunteered: boolean): "mic-open" | "manual" | null;
+  speakBlocker(volunteered: boolean): "voice-off" | "mic-open" | "manual" | null;
   /** Exactly the mic gate, narration included — never just `micOpen` (see the stop contract in control-server.ts). */
   capturing(): boolean;
   /**
@@ -782,8 +782,8 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
    * speech lane. Kept in step with the two checks at the top of `speak` — the
    * synchronous `audio-present` entry has to answer "held" without awaiting.
    */
-  const speakBlocker = (volunteered: boolean): "mic-open" | "manual" | null =>
-    normalMicOpen() ? "mic-open" : pause.paused && !volunteered ? "manual" : null;
+  const speakBlocker = (volunteered: boolean): "voice-off" | "mic-open" | "manual" | null =>
+    !cfg.speak ? "voice-off" : normalMicOpen() ? "mic-open" : pause.paused && !volunteered ? "manual" : null;
 
   const speak = async (
     speechCfg: Config,
@@ -826,6 +826,10 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     // be recited whenever he wants it, so nothing is lost that cannot be asked
     // for again — whereas holding audio behind an open mic invites the deadlock
     // where each is waiting on the other.
+    //
+    // First of all: Read replies aloud is off (settings `speak`), so nothing is said, here or on the phone, and no
+    // state claims a reading. Even a line a person asked for: off is off. Everything still shows as text.
+    if (!speechCfg.speak) return;
     if (normalMicOpen()) {
       log(`held "${label || "announcement"}" — the mic is open`);
       return;
@@ -1778,6 +1782,12 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     }
 
     if (event.type === "recite") {
+      // Read replies aloud is off (settings `speak`): a recite has nothing to do, and must not put the app in a
+      // "speaking" state for a reading that will never be heard.
+      if (!cfg.speak) {
+        log("not reciting — Read replies aloud is off");
+        return;
+      }
       const rememberedTurn = latestVisibleTurn();
       const target: TurnEvent | null = event.sessionId
         ? event
