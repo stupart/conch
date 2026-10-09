@@ -32,6 +32,11 @@ export interface StartSessionRequest {
   /** Daemon-owned snapshot, never accepted from a wire request. */
   claudeHandoff?: { transcriptPath: string; sessionId: string };
   resumeSessionId?: string;
+  /**
+   * Fork `resumeSessionId` with the agent's own fork command (`forkArgs`: Codex's `codex fork <id>`) rather than resume
+   * it. Built by the daemon for a fork (session-fork.ts), never accepted from a wire request.
+   */
+  fork?: true;
   /** Claude cloud session to open as a new local copy, never a live join. */
   teleportSessionId?: string;
   cwd?: string;
@@ -274,7 +279,7 @@ export function terminalSessionCommand(request: StartSessionRequest): string {
   const args = teleport && adapter.teleportArgs
     ? adapter.teleportArgs(shellQuote(teleport))
     : resume
-    ? adapter.resumeArgs(shellQuote(resume))
+    ? (request.fork && adapter.forkArgs ? adapter.forkArgs(shellQuote(resume)) : adapter.resumeArgs(shellQuote(resume)))
     : "";
   // Before the subcommand's own arguments, not after: `codex resume <id>` takes
   // the id as a positional, and a global flag trailing it reads as a second one.

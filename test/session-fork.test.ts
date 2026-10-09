@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { PanelSessionState, SessionReview } from "../src/panel.ts";
 import { forkRequest, inheritedState, pendingForkFor, type PendingFork } from "../src/session-fork.ts";
+import { terminalSessionCommand } from "../src/session-lifecycle.ts";
 import { validateControlMessage } from "../src/settings.ts";
 
 // 2026-10-09, Tyler: "we should make it easier to fork sessions in app and have them bring over a snapshot of the current
@@ -16,9 +17,18 @@ describe("starting a fork", () => {
     expect(fork.request.options?.["fork-session"]).toBe(true);
   });
 
-  test("not a Codex session, nor a Claude background job, which conch can't relaunch yet", () => {
-    expect(() => forkRequest({ ...session, backend: "codex" }, [])).toThrow("Codex sessions can't be forked");
-    expect(() => forkRequest({ ...session, jobId: "f31f0d15" }, [])).toThrow("background job can't be forked");
+  test("a Codex session with Codex's own `codex fork <id>`", () => {
+    const fork = forkRequest({ ...session, backend: "codex", codexAccountId: "work" }, ["resume", ID]);
+    expect(fork.request).toMatchObject({ backend: "codex", resumeSessionId: ID, fork: true, codexAccountId: "work" });
+    expect(fork.request.options?.["fork-session"]).toBeUndefined();
+    expect(terminalSessionCommand({ ...fork.request, codexAccountId: undefined })).toContain(` fork '${ID}'`);
+  });
+
+  test("a Claude background job: its conversation, in conch's background host, saying its flags couldn't come", () => {
+    const fork = forkRequest({ ...session, jobId: "f31f0d15", agentSessionId: ID, claudeAccountId: "work" }, []);
+    expect(fork.request).toEqual({ backend: "claude", host: "background", resumeSessionId: ID, cwd: "/Users/alex/acme-web",
+      claudeAccountId: "work", options: { "fork-session": true } });
+    expect(fork.notCarriedOver).toEqual(["the flags it was started with (a background job's can't be read)"]);
   });
 
   test("the request names the session to fork, and nothing else", () => {
@@ -36,6 +46,11 @@ describe("recognising the fork when it appears", () => {
   test("a process resuming that conversation with --fork-session, started after the fork was asked for", () => {
     expect(pendingForkFor(child, ["--resume", ID, "--fork-session"], pending)).toBe(pending[0]);
     expect(pendingForkFor(child, ["-r", ID, "--fork-session"], pending)).toBe(pending[0]);
+  });
+
+  test("a Codex fork, `codex fork <id>`, after any global flags", () => {
+    expect(pendingForkFor(child, ["--dangerously-bypass-approvals-and-sandbox", "fork", ID, "-c", "model=x"], pending)).toBe(pending[0]);
+    expect(pendingForkFor(child, ["resume", ID], pending)).toBeUndefined();
   });
 
   test("not without --fork-session, not another conversation, not one started before, and never the original", () => {

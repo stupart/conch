@@ -212,10 +212,10 @@ struct PublishedState: Decodable, Equatable {
         /// nest a subagent under its parent instead of listing it as a peer.
         var parentSessionId: String?
 
-        /// The Mac can fork it (daemon `forkLiveSession`): a top-level Claude Code session in a terminal or conch's
-        /// background host; not Codex, nor a Claude background job.
+        /// The Mac can fork it (daemon `forkLiveSession`, session-fork.ts): a top-level session in a terminal or conch's
+        /// background host, Claude Code's or Codex's, or a Claude background job.
         var canFork: Bool {
-            parentSessionId == nil && backend != "codex" && noTerminal == nil && !attachable
+            parentSessionId == nil && (noTerminal == nil || attachable)
         }
         var startedBySessionId: String?
         /// Working only because agents it started are still running; its own turn is over, so
