@@ -109,6 +109,7 @@ struct ContentView: View {
                     onCommitRename: commitRename,
                     onCancelRename: cancelRename,
                     onDismiss: dismissSession,
+                    onFork: { store.forkSession($0) },
                     onRestore: restoreSession,
                     onUndoDismiss: store.undoLastDismissal,
                     onDismissNewerDaemonWarning: store.dismissNewerDaemonWarning,

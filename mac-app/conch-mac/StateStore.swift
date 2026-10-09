@@ -866,7 +866,7 @@ final class StateStore: ObservableObject {
                 let message = Self.nonempty(error.error) ?? "Could not start session"
                 reportAppError(operation: "session-start", message: message)
                 return .failed(message)
-            case .started, .closed, .unknown:
+            case .started, .closed, .forked, .unknown:
                 let message = "Unexpected start reply from daemon"
                 reportAppError(operation: "session-start", message: message)
                 return .failed(message)
@@ -907,6 +907,57 @@ final class StateStore: ObservableObject {
         }
     }
 
+    /// Fork it: the same conversation again as a new session beside this one, holding the deliverables it holds now
+    /// (daemon `forkLiveSession`). Tyler, 2026-10-09: "we should make it easier to fork sessions in app and have them
+    /// bring over a snapshot of the current conch plugin review / deliverables". The original keeps running.
+    func forkSession(_ row: SessionRow) {
+        rowMessages[row.id] = "Forking…"
+        let socketClient = socketClient
+        let previous = sessionLifecycleTask
+        sessionLifecycleTask = Task { @MainActor [weak self] in
+            await previous?.value
+            guard !Task.isCancelled else { return }
+            // A fork opens a Terminal window, as the second half of a restart does.
+            let outcome = await socketClient.request(ConchSessionForkRequest(sessionId: row.id), timeout: Self.sessionRestartTimeout)
+            guard let self else { return }
+            finishFork(row, outcome: outcome)
+        }
+    }
+
+    private func finishFork(_ row: SessionRow, outcome: ConchSocketRequestOutcome) {
+        var notCarriedOver: [String] = []
+        let failure: String?
+        switch outcome {
+        case let .reply(data):
+            switch try? JSONDecoder().decode(ConchSessionLifecycleReply.self, from: data) {
+            case let .forked(forked)?:
+                failure = nil
+                notCarriedOver = forked.notCarriedOver ?? []
+            case let .error(error)?:
+                failure = Self.nonempty(error.error) ?? "Could not fork session"
+            default:
+                failure = "Unexpected fork reply from daemon"
+            }
+        case .connectFailed:
+            failure = "Daemon not running"
+            forceLivenessProbe()
+        case .timeout:
+            failure = "Daemon did not reply"
+            forceLivenessProbe()
+        }
+        if let failure {
+            rowMessages[row.id] = failure
+            reportAppError(operation: "session-fork", message: failure, sessionId: row.id)
+            return
+        }
+        let done = notCarriedOver.isEmpty ? "Forked: it opens beside this one" : "Forked without \(notCarriedOver.joined(separator: ", "))"
+        rowMessages[row.id] = done
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            if self?.rowMessages[row.id] == done { self?.rowMessages[row.id] = nil }
+        }
+    }
+
     private func finishClose(
         _ row: SessionRow,
         outcome: ConchSocketRequestOutcome,
@@ -929,7 +980,7 @@ final class StateStore: ObservableObject {
                 notCarriedOver = closed.notCarriedOver ?? []
             case let .error(error):
                 failure = Self.nonempty(error.error) ?? "Could not close session"
-            case .closed, .started, .needsTrust, .unknown:
+            case .closed, .forked, .started, .needsTrust, .unknown:
                 failure = "Unexpected close reply from daemon"
             }
         case .connectFailed:

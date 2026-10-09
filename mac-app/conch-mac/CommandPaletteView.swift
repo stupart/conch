@@ -11,7 +11,7 @@ struct PaletteCommand: Identifiable, Equatable {
     }
 
     enum Action: Equatable {
-        case pause, resume, wake, recite, stop, reveal, rename, setModel
+        case pause, resume, wake, recite, stop, reveal, rename, setModel, fork
         case dismiss, inspect, helpSession
         case restore(id: String, label: String)
         /// Typed into the session as written; an argument, if given, follows it.
@@ -102,12 +102,19 @@ enum PaletteCatalog {
             PaletteCommand(id: "wake", section: .conch, title: "Wake", detail: "Open the mic to reply to \(row.label)", action: .wake),
             PaletteCommand(id: "recite", section: .conch, title: "Recite", detail: "Read \(row.label)'s latest reply aloud again", action: .recite),
             PaletteCommand(id: "stop", section: .conch, title: "Stop", detail: "Stop reading or listening, whichever conch is doing", action: .stop),
+
             PaletteCommand(
                 id: "rename", section: .conch, title: "Rename…",
                 detail: "Give \(row.label) the name you use for it; Claude Code's own label follows",
                 argumentHint: "new name", action: .rename
             ),
         ]
+        // The same conversation again beside it, with its deliverables (StateStore `forkSession`), after Stop.
+        if row.canFork, let stop = out.firstIndex(where: { $0.id == "stop" }) {
+            out.insert(PaletteCommand(id: "fork", section: .conch, title: "Fork",
+                                      detail: "The same conversation again beside \(row.label), holding its deliverables", action: .fork),
+                       at: stop + 1)
+        }
         if row.revealable {
             out.append(PaletteCommand(
                 id: "reveal", section: .conch, title: "Reveal terminal",
@@ -433,6 +440,7 @@ struct CommandPaletteSheet: View {
         case .wake: store.send(.wake(sessionId: row.id, label: row.label))
         case .recite: store.send(.recite(sessionId: row.id, label: row.label))
         case .stop: store.send(.stop())
+        case .fork: store.forkSession(row)
         case .reveal: store.reveal(row)
         case .rename: store.renameSession(id: row.id, label: argument)
         // The daemon's answer lands in errors.jsonl when it could not type;

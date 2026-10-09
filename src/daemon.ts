@@ -151,6 +151,7 @@ import {
   withHeldQuestion,
 } from "./conversation.ts";
 import type { PendingApproval } from "./approval.ts";
+import { FORK_ADOPT_WITHIN_MS, forkRequest, inheritedState, pendingForkFor, type PendingFork } from "./session-fork.ts";
 import { isWindowKey, parseWindowKey } from "./window-key.ts";
 import { contextUsageFromLines, readTranscriptTailLines, type SessionContextUsage } from "./context-meter.ts";
 import { LiveActivity, withLiveActivity, type ActivitySource } from "./live-activity.ts";
@@ -726,6 +727,8 @@ export function injectTimeoutFor(line: string): number {
     // A restart then opens a Terminal window, which a start alone gets 8s for.
     if (kind === "session-close") return JSON.parse(line)?.restart === true ? 55_000 : 45_000;
     if (kind === "session-start") return JSON.parse(line)?.claudeSourceAccountId !== undefined ? 20_000 : 8_000;
+    // A fork reads the session's command line and opens a Terminal window, as a start does, with the same room.
+    if (kind === "session-fork") return 20_000;
   } catch {}
   return 4_000;
 }
@@ -874,6 +877,9 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   let holderExpiry: ReturnType<typeof setTimeout> | null = null;
   let shuttingDown = false;
   const ledger = new SessionLedger(REVIEWS_FILE, LEGACY_REVIEWS_FILE);
+  // Forks conch has started and not yet seen appear (`forkLiveSession`, `adoptForks`). Up here because every render
+  // reads it, and the first renders run before the code that forks is reached.
+  const pendingForks: PendingFork[] = [];
   // Dismissals survive a restart (`dismissed-store.ts`).
   const dismissedFile = join(dirname(daemonSettingsPath), "dismissed.json");
   for (const id of loadDismissed(dismissedFile)) ledger.dismissedSessionIds.add(id);
@@ -2459,6 +2465,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         ...readClaudeAccounts(cfg.claudeDir).flatMap(account => [account.configDir, join(account.configDir, "sessions")]),
         ...readCodexAccounts().flatMap(account => [account.configDir, join(account.configDir, "thread-writer-locks")]),
       ]);
+      // A fork conch started, once Claude Code has given it its id (`adoptForks`).
+      if (pendingForks.length) void adoptForks(visible);
       transcriptWatch.update(visible.flatMap((session) => {
         const path = session.transcriptPath ?? findTranscript(cfg.claudeDir, session.sessionId);
         return path ? [path] : [];
@@ -2738,6 +2746,78 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     }
     log(`restarted "${labelForSessionId(sessionId)}"${relaunch.notCarriedOver.length ? ` without ${relaunch.notCarriedOver.join(", ")}` : ""}`);
     return { notCarriedOver: relaunch.notCarriedOver };
+  };
+
+  /**
+   * Fork a session from conch: the same conversation again as a new session beside it, holding the deliverables the
+   * original holds. Tyler, 2026-10-09: "we should make it easier to fork sessions in app and have them bring over a
+   * snapshot of the current conch plugin review / deliverables that the last session had when u fork. (just did a bunch
+   * of forks but had to do it through terminal)".
+   *
+   * Claude Code's own fork (`--resume <id> --fork-session`), built the way a restart relaunches (`restartRequest`: the
+   * same folder, account and flags, on the same host), and the original keeps running. The fork's id is Claude Code's to
+   * choose, so it is adopted when it appears (`adoptForks`).
+   */
+  const forkLiveSession = async (sessionId: string): Promise<{ notCarriedOver: string[] }> => {
+    const session = panelSessions.get(sessionId);
+    if (!session) throw new Error("session is not live");
+    if (!session.pid && !session.jobId) throw new Error(session.noTerminal ?? "session has no routable pid");
+    const args = session.pid ? await readProcessArgs(session.pid) : null;
+    if (!args && !session.jobId) throw new Error("could not read the session's command line, so it was not forked");
+    const fork = forkRequest(session, args ?? []);
+    if (session.pid && await managedBackgroundSession(session.pid)) {
+      fork.request.host = "background";
+      fork.notCarriedOver = fork.notCarriedOver.filter(flag => flag !== "--no-daemon");
+    }
+    if (session.cwd && adapterFor(session.backend).folderTrusted(session.cwd) === false) fork.request.trustFolder = true;
+    terminalSessionCommand(fork.request); // throws on anything invalid, before anything starts
+    const label = labelForSessionId(sessionId);
+    const pending: PendingFork = { parentId: sessionId, conversationId: fork.request.resumeSessionId!, label, at: Date.now() };
+    pendingForks.push(pending);
+    try {
+      await launchSession(fork.request);
+    } catch (error) {
+      pendingForks.splice(pendingForks.indexOf(pending), 1);
+      throw error;
+    }
+    log(`forked "${label}"${fork.notCarriedOver.length ? ` without ${fork.notCarriedOver.join(", ")}` : ""}`);
+    void renderSessionPanel();
+    return { notCarriedOver: fork.notCarriedOver };
+  };
+  /**
+   * A fork that has appeared (`pendingForkFor`): it gets its parent's deliverables as they were (`inheritedState`) and,
+   * while it still reads as its parent, a label that tells the two apart.
+   */
+  let adoptingForks = false;
+  const adoptForks = async (sessions: readonly SessionInfo[]): Promise<void> => {
+    if (adoptingForks) return;
+    adoptingForks = true;
+    try {
+      const now = Date.now();
+      pendingForks.splice(0, pendingForks.length, ...pendingForks.filter((fork) => now - fork.at < FORK_ADOPT_WITHIN_MS));
+      for (const session of sessions) {
+        if (!pendingForks.length) break;
+        if (!session.pid || !pendingForks.some((fork) => (session.startedAt ?? 0) >= fork.at - 10_000)) continue;
+        const match = pendingForkFor(session, await readProcessArgs(session.pid), pendingForks);
+        if (!match) continue;
+        pendingForks.splice(pendingForks.indexOf(match), 1);
+        const state = inheritedState(ledger.sessionStates.get(match.parentId), ledger.sessionStates.get(session.sessionId), match.label, now);
+        if (state) {
+          ledger.sessionStates.set(session.sessionId, state);
+          ledger.saveReviews();
+        }
+        const current = labelForSessionId(session.sessionId);
+        if (current === match.label) {
+          const renamed = renameSessionLabel(session.sessionId, current, `${match.label} · fork`);
+          relabelRuntimeSession(session.sessionId, current, renamed.label);
+        }
+        const held = state?.reviews?.length ?? 0;
+        log(`adopted the fork of "${match.label}"${held ? `, holding its ${held} deliverable${held === 1 ? "" : "s"}` : ""}`);
+        void renderSessionPanel();
+      }
+    } finally {
+      adoptingForks = false;
+    }
   };
   // 2026-10-05, Tyler, after using #502: "I don't really get the point of the approve button... maybe we only show it if
   // the AI sets some sort of flag in the review that it's asking for me to approve some work?" So Approve is offered
@@ -3234,6 +3314,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     folderTrusted: (backend, cwd, accountId) => accountId && accountId !== "default" ? null : adapterFor(backend).folderTrusted(cwd),
     log,
     close: closeLiveSession,
+    fork: forkLiveSession,
     report: (message) => {
       appendConchError(
         {

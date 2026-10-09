@@ -302,6 +302,7 @@ export function dispatchControlMessage(
     || validated.value.kind === "account-tools" || validated.value.kind === "claude-accounts" || validated.value.kind === "codex-accounts"
     || validated.value.kind === "session-start"
     || validated.value.kind === "session-close"
+    || validated.value.kind === "session-fork"
     || validated.value.kind === "app-error"
     || validated.value.kind === "config-toggle"
     || validated.value.kind === "config-rollback"
@@ -365,6 +366,8 @@ export interface RuntimeControlDispatchOptions {
   log?(line: string): void;
   /** Resolves to the flags a restart did not carry over; nothing for a plain close. */
   close(sessionId: string, restart?: boolean): void | Promise<void | { notCarriedOver: string[] }>;
+  /** The same conversation again as a new session beside this one, holding its deliverables (daemon `forkLiveSession`). */
+  fork?(sessionId: string): Promise<{ notCarriedOver: string[] }>;
   report(message: Extract<RuntimeControlMessage, { kind: "app-error" }>): void | Promise<void>;
   /** Where the agents' config files live and how they are written; absent means the real homes (B3). */
   configWrite?: { homes?: ConfigWriteHomes; io?: ConfigWriteIo };
@@ -487,6 +490,15 @@ export async function applyRuntimeControlMessage(
         backend: message.backend,
         resumed: Boolean(message.resumeSessionId),
         ...(message.teleportSessionId ? { teleported: true as const } : {}),
+      };
+    }
+    if (message.kind === "session-fork") {
+      if (!options.fork) throw new Error("this daemon can't fork sessions");
+      const forked = await options.fork(message.sessionId);
+      return {
+        kind: "session-forked",
+        sessionId: message.sessionId,
+        ...(forked.notCarriedOver.length ? { notCarriedOver: forked.notCarriedOver } : {}),
       };
     }
     if (message.kind === "session-close") {
@@ -1310,7 +1322,7 @@ export interface ControlServer {
 
 function isRuntimeControlCandidate(value: unknown): boolean {
   return socketRecord(value) && (
-    value.kind === "account-tools" || value.kind === "claude-accounts" || value.kind === "codex-accounts" || value.kind === "session-start" || value.kind === "session-close"
+    value.kind === "account-tools" || value.kind === "claude-accounts" || value.kind === "codex-accounts" || value.kind === "session-start" || value.kind === "session-close" || value.kind === "session-fork"
     || value.kind === "history-page" || value.kind === "history-item"
     || value.kind === "app-error" || value.kind === "resumable"
     || value.kind === "agent-capabilities"
