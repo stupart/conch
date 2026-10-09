@@ -64,6 +64,7 @@ const expected = {
   "speak": ["speak", "CONCH_SPEAK", "live", true],
   "bell": ["bell", "CONCH_BELL", "live", true],
   "mic-cues": ["micCues", "CONCH_MIC_CUES", "live", true],
+  "claude-rotation": ["claudeRotation", "CONCH_CLAUDE_ROTATION", "live", false],
   "read-full": ["readFull", "CONCH_READ_FULL", "live", true],
   "interrupt-on-manual-reply": ["interruptOnManualReply", "CONCH_INTERRUPT_ON_MANUAL_REPLY", "live", true],
   "handoff-order": ["handoffOrder", "CONCH_HANDOFF_ORDER", "live", "oldest"],
@@ -86,10 +87,10 @@ const expected = {
 } as const;
 
 describe("settings registry", () => {
-  test("contains exactly the 33 curated, default-bearing knobs", () => {
+  test("contains exactly the 34 curated, default-bearing knobs", () => {
     const keys = [...SETTING_REGISTRY.keys()];
     expect(keys.sort()).toEqual(Object.keys(expected).sort());
-    expect(SETTING_DESCRIPTORS).toHaveLength(33);
+    expect(SETTING_DESCRIPTORS).toHaveLength(34);
     for (const [key, [field, env, apply, defaultValue]] of Object.entries(expected)) {
       const descriptor = SETTING_REGISTRY.get(key);
       expect(descriptor).toMatchObject({ field, env, apply, default: defaultValue });

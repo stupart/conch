@@ -84,6 +84,8 @@ export interface Config {
   continueSentences: number;
   /** audible tink/blip when the mic opens/closes */
   micCues: boolean;
+  /** Rotate Default's Claude login across Max accounts (settings `claude-rotation`, claude-rotation.ts). */
+  claudeRotation: boolean;
   /** press Enter after injecting the transcript */
   autoSubmit: boolean;
   /**
@@ -205,6 +207,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
 
     continueSentences: num(env.CONCH_CONTINUE_SENTENCES, 6), // bigger chunks = fewer inter-chunk pauses
     micCues: settings["mic-cues"].value as boolean,
+    claudeRotation: settings["claude-rotation"].value as boolean,
     autoSubmit: flag(env.CONCH_AUTO_SUBMIT, true),
     holdSubmit: flag(env.CONCH_HOLD_SUBMIT, true),
     holdSubmitSecs: settings["hold-submit-delay"].value as number,

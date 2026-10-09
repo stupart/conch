@@ -217,10 +217,21 @@ final class ClaudeAccountsStore: ObservableObject {
     @Published var pendingLoginId: String?
     /// A Claude sign-in shown in the app (`ClaudeSignInSheet`), not Terminal and the browser.
     @Published var signIn: ClaudeSignInRequest?
+    /// Account rotation (daemon claude-rotation.ts): claude-swap installed, on, running, and its accounts.
+    @Published var rotation: ClaudeRotationState?
+    /// The in-app sign-in under way is adding an account to the rotation: `rotation-add` once it's done.
+    var addToRotationAfterSignIn = false
     let providerId: String
     init(providerId: String = "claude") { self.providerId = providerId }
     private var providerName: String { providerId == "codex" ? "Codex" : "Claude" }
     private let client = ConchSocketClient()
+
+    /// Rotation on or off: the daemon's `claude-rotation` setting, applied live, then the state read back.
+    func setRotation(_ on: Bool) async {
+        struct SetConfig: Encodable { let kind = "set-config"; let key = "claude-rotation"; let value: Bool }
+        _ = await client.request(SetConfig(value: on), timeout: 10)
+        await send("rotation-status")
+    }
 
     @discardableResult
     func send(_ action: String, id: String? = nil, label: String? = nil, configDir: String? = nil) async -> Bool {
@@ -239,6 +250,7 @@ final class ClaudeAccountsStore: ObservableObject {
             let error: String?
             let loginOpened: Bool?
             let loginUrl: String?
+            let rotation: ClaudeRotationState?
             let cloudOpened: Bool?
             let createdAccountId: String?
             let execution: ExecutionCatalog?
@@ -269,6 +281,10 @@ final class ClaudeAccountsStore: ObservableObject {
                 return account
             }
             createdAccountId = reply.createdAccountId
+            if let state = reply.rotation {
+                rotation = state
+                if state.ok == false { error = state.output.map { "claude-swap: \($0)" } ?? "claude-swap failed." }
+            }
             execution = reply.execution
             if let update = reply.usage { usage = update }
             if let link = reply.loginUrl, let url = URL(string: link), let id {
@@ -355,9 +371,12 @@ private struct ProviderAccountSection: View {
                     }
                 }
             }
+            if providerId == "claude" { rotationBlock }
             DisclosureGroup("How accounts and usage work", isExpanded: $showAbout) {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Choose an account when starting a new session. Resume and restart keep its original account. Accounts do not switch automatically when a limit is reached.")
+                    Text(providerId == "claude"
+                        ? "Choose an account when starting a new session. Resume and restart keep its original account. With rotation on, Default's sign-in moves to your next Max account as one nears its limit; other accounts never switch."
+                        : "Choose an account when starting a new session. Resume and restart keep its original account. Accounts do not switch automatically when a limit is reached.")
                     Text(providerId == "codex"
                         ? "Usage comes from Codex’s official account interface. Refresh checks the current limits. Your ChatGPT subscription and API billing are separate."
                         : "Usage comes from Claude Code’s status line after an API response (Claude 2.1.251 or later). Refresh reads the latest local measurement.")
@@ -374,6 +393,7 @@ private struct ProviderAccountSection: View {
         }
         .task {
             await store.send("list")
+            if providerId == "claude" { await store.send("rotation-status") }
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
                 guard !Task.isCancelled else { return }
@@ -397,7 +417,12 @@ private struct ProviderAccountSection: View {
                         // Claude's listener has the code; give it a moment to write the credential, then read who it is.
                         try? await Task.sleep(nanoseconds: 1_500_000_000)
                         await store.send("refresh", id: request.accountId)
+                        if store.addToRotationAfterSignIn {
+                            store.addToRotationAfterSignIn = false
+                            await store.send("rotation-add")
+                        }
                     } else {
+                        store.addToRotationAfterSignIn = false
                         store.pendingLoginId = nil
                         await store.send("cancel-login", id: request.accountId)
                     }
@@ -416,6 +441,56 @@ private struct ProviderAccountSection: View {
         } message: {
             Text("Your sign-in and conversation files stay on this Mac. Close this account’s sessions first.")
         }
+    }
+
+    /// One sign-in for Default that moves to your next Max account as one nears its limit (daemon claude-rotation.ts,
+    /// claude-swap's switcher). 2026-10-09, Tyler: "ideally its like one account that just rotates to the next max account
+    /// via logout and login when one hits its limit".
+    private var rotationBlock: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Rotate between Max accounts").font(ConchTypography.font(size: 13, weight: .semibold))
+            Text("Default's sign-in moves to your next Max account as one nears its limit. Sessions on Default keep running and follow it within about 30 seconds. Switching is done by claude-swap (MIT).")
+                .font(ConchTypography.font(size: 12)).foregroundStyle(SwapPalette.secondaryText)
+            if let rotation = store.rotation {
+                if !rotation.installed {
+                    Button("Set up rotation") { Task { await store.send("rotation-install") } }.disabled(store.busy)
+                    Text("Installs claude-swap with the uv conch carries.").font(ConchTypography.font(size: 11)).foregroundStyle(SwapPalette.secondaryText)
+                } else {
+                    Toggle("Rotate automatically", isOn: Binding(
+                        get: { rotation.on },
+                        set: { on in Task { await store.setRotation(on) } }
+                    )).toggleStyle(.switch).disabled(store.busy)
+                    if rotation.on {
+                        Text(rotation.running ? "Watching usage: it switches at 90%." : "Starting claude-swap's switcher…")
+                            .font(ConchTypography.font(size: 11)).foregroundStyle(SwapPalette.secondaryText)
+                    }
+                    TimelineView(.periodic(from: .now, by: 30)) { context in
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(rotation.dashboard?.accounts ?? [], id: \.id) { account in
+                                SwapUsageRow(account: account, now: context.date, showsIdentity: true, providerId: "claude")
+                            }
+                            if (rotation.dashboard?.accounts ?? []).isEmpty {
+                                Text("No accounts in the rotation yet.").font(ConchTypography.font(size: 12)).foregroundStyle(SwapPalette.secondaryText)
+                            }
+                        }
+                    }
+                    HStack {
+                        if let current = store.accounts.first(where: { $0.id == "default" })?.email {
+                            Button("Add \(current)") { Task { await store.send("rotation-add") } }
+                        }
+                        Button("Sign in another account…") {
+                            store.addToRotationAfterSignIn = true
+                            Task { await store.send("login", id: "default") }
+                        }
+                        Spacer()
+                        Button { Task { await store.send("rotation-status") } } label: { Image(systemName: "arrow.clockwise") }
+                            .buttonStyle(.plain).help("Refresh the rotation")
+                    }.disabled(store.busy)
+                }
+            }
+        }
+        .padding(14)
+        .background(SwapPalette.surface, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func accountRow(_ account: ClaudeAccountProfile, now: Date) -> some View {
@@ -605,4 +680,15 @@ private struct ClaudeSignInWebView: NSViewRepresentable {
             return nil
         }
     }
+}
+
+
+/// Account rotation, as the daemon reports it (claude-rotation.ts).
+struct ClaudeRotationState: Decodable {
+    let installed: Bool
+    let on: Bool
+    let running: Bool
+    let dashboard: SwapDashboard?
+    let output: String?
+    let ok: Bool?
 }

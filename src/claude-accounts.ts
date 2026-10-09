@@ -20,7 +20,8 @@ export interface ClaudeAccountStatus extends ClaudeAccount {
 }
 
 export type ClaudeAccountRequest = ({ kind: "claude-accounts" } | { kind: "codex-accounts" }) & {
-  action: "list" | "add" | "remove" | "login" | "refresh" | "usage" | "cloud" | "cancel-login";
+  action: "list" | "add" | "remove" | "login" | "refresh" | "usage" | "cloud" | "cancel-login"
+    | "rotation-status" | "rotation-install" | "rotation-add";
   id?: string;
   label?: string;
   configDir?: string;
@@ -33,6 +34,8 @@ export interface ClaudeAccountsReply {
   loginOpened?: true;
   /** Anthropic's authorize URL for an in-app sign-in (`inApp`), shown in a web view with no cookies of its own. */
   loginUrl?: string;
+  /** Account rotation (claude-rotation.ts), on the rotation actions. */
+  rotation?: { installed: boolean; on: boolean; running: boolean; dashboard?: SwapDashboard; output?: string; ok?: boolean };
   createdAccountId?: string;
   cloudOpened?: true;
   execution?: ExecutionCatalog;
@@ -44,7 +47,7 @@ export const validAccountId = (value: unknown): value is string =>
   typeof value === "string" && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(value);
 
 export function accountRequestError(value: Record<string, unknown>): string | undefined {
-  if (!["list", "add", "remove", "login", "refresh", "usage", ...(value.kind === "codex-accounts" ? ["cloud"] : ["cancel-login"])].includes(String(value.action))) return "Unknown account action";
+  if (!["list", "add", "remove", "login", "refresh", "usage", ...(value.kind === "codex-accounts" ? ["cloud"] : ["cancel-login", "rotation-status", "rotation-install", "rotation-add"])].includes(String(value.action))) return "Unknown account action";
   if (value.id !== undefined && !validAccountId(value.id)) return "Invalid account id";
   if (["remove", "login", "refresh", "cloud", "cancel-login"].includes(String(value.action)) && !validAccountId(value.id)) return "Choose an account";
   if (value.inApp !== undefined && value.inApp !== true) return "inApp must be true when present";
