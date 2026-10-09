@@ -24,16 +24,35 @@ export interface PendingFork {
 export const FORK_ADOPT_WITHIN_MS = 5 * 60_000;
 
 /**
- * Claude Code's own fork, `--resume <id> --fork-session`, built the way a restart relaunches (the same folder, account
- * and flags), with what couldn't be carried over. Codex and Claude background jobs aren't forked from conch yet.
+ * The agent's own fork of the conversation, built the way a restart relaunches (the same folder, account and flags),
+ * with what couldn't be carried over:
+ * - Claude Code: `--resume <id> --fork-session`;
+ * - Codex: `codex fork <id>` (`forkArgs`);
+ * - a Claude background job, whose flags live in Claude Code's own daemon where nothing can read them: its conversation,
+ *   forked in conch's background host with the defaults a new session gets.
  */
 export function forkRequest(
   session: Pick<SessionInfo, "sessionId" | "agentSessionId" | "backend" | "cwd" | "claudeAccountId" | "codexAccountId" | "jobId">,
   args: readonly string[],
 ): ReturnType<typeof restartRequest> {
-  if (session.backend === "codex") throw new Error("Codex sessions can't be forked from conch yet: fork it in Codex with `codex fork`");
-  if (session.jobId) throw new Error("a background job can't be forked from conch yet: fork it from its terminal");
+  if (session.jobId) {
+    return {
+      request: {
+        backend: "claude",
+        host: "background",
+        resumeSessionId: session.agentSessionId ?? session.sessionId,
+        ...(session.cwd ? { cwd: session.cwd } : {}),
+        ...(session.claudeAccountId ? { claudeAccountId: session.claudeAccountId } : {}),
+        options: { "fork-session": true },
+      },
+      notCarriedOver: ["the flags it was started with (a background job's can't be read)"],
+    };
+  }
   const fork = restartRequest(session, args);
+  if ((session.backend ?? "claude") === "codex") {
+    fork.request.fork = true;
+    return fork;
+  }
   fork.request.options = { ...fork.request.options, "fork-session": true };
   return fork;
 }
@@ -47,9 +66,13 @@ export function pendingForkFor(
   args: readonly string[] | null,
   pending: readonly PendingFork[],
 ): PendingFork | undefined {
-  if (!args?.includes("--fork-session")) return undefined;
+  if (!args) return undefined;
+  // Claude Code: `--resume <id> --fork-session`. Codex: `fork <id>`, a subcommand after any global flags.
   const flag = args.findIndex((arg) => arg === "--resume" || arg === "-r");
-  const resumed = flag >= 0 ? args[flag + 1] : undefined;
+  const subcommand = args.indexOf("fork");
+  const resumed = args.includes("--fork-session") && flag >= 0 ? args[flag + 1]
+    : subcommand >= 0 ? args[subcommand + 1]
+    : undefined;
   if (!resumed) return undefined;
   return pending.find((fork) => fork.conversationId === resumed && fork.parentId !== session.sessionId
     && (session.startedAt ?? 0) >= fork.at - 10_000);

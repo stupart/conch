@@ -2763,10 +2763,13 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     const session = panelSessions.get(sessionId);
     if (!session) throw new Error("session is not live");
     if (!session.pid && !session.jobId) throw new Error(session.noTerminal ?? "session has no routable pid");
-    const args = session.pid ? await readProcessArgs(session.pid) : null;
-    if (!args && !session.jobId) throw new Error("could not read the session's command line, so it was not forked");
-    const fork = forkRequest(session, args ?? []);
-    if (session.pid && await managedBackgroundSession(session.pid)) {
+    // A background job's pid, when it has one, is the window attached to it (`claude attach`), not its command line.
+    const args = session.jobId ? [] : session.pid ? await readProcessArgs(session.pid) : null;
+    if (!args) throw new Error("could not read the session's command line, so it was not forked");
+    const fork = forkRequest(session, args);
+    // A background job's own flags can't be read: it gets the default a new session gets, permissions included.
+    if (session.jobId && cfg.bypassPermissions) fork.request.bypassPermissions = true;
+    if (!session.jobId && session.pid && await managedBackgroundSession(session.pid)) {
       fork.request.host = "background";
       fork.notCarriedOver = fork.notCarriedOver.filter(flag => flag !== "--no-daemon");
     }

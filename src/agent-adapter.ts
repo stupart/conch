@@ -117,6 +117,11 @@ export interface AgentAdapter {
   readonly inputBoxText: ((screen: string) => string | null) | null;
   /** The agent's own spelling of "resume this id"; the id arrives shell-quoted. */
   resumeArgs(quotedSessionId: string): string;
+  /**
+   * The agent's own "fork this id" as a command of its own (Codex: `codex fork <id>`), for a fork started from conch;
+   * null where forking is a resume with an option instead (Claude Code: `--resume <id> --fork-session`).
+   */
+  readonly forkArgs: ((quotedSessionId: string) => string) | null;
   /** `--teleport <cloud id>` where the agent can open a cloud session locally; null where it cannot. */
   readonly teleportArgs: ((quotedSessionId: string) => string) | null;
   /**
@@ -313,6 +318,7 @@ export const claudeAdapter: AgentAdapter = {
   questionKeys: claudeQuestionKeys,
   inputBoxText: claudeInputBoxText,
   resumeArgs: (id) => ` --resume ${id}`,
+  forkArgs: null,
   teleportArgs: (id) => ` --teleport ${id}`,
   bypassPermissionsFlag: "--dangerously-skip-permissions",
   // `claude --help`, 2.1.266.
@@ -408,6 +414,8 @@ export const codexAdapter: AgentAdapter = {
   questionKeys: null,
   inputBoxText: null,
   resumeArgs: (id) => ` resume ${id}`,
+  // `codex fork --help`, codex-cli 0.159.2: "Fork a previous interactive session", the id as a positional.
+  forkArgs: (id) => ` fork ${id}`,
   teleportArgs: null,
   bypassPermissionsFlag: "--dangerously-bypass-approvals-and-sandbox",
   // `codex --help` and `codex resume --help`, codex-cli 0.154.0: the same

@@ -1174,10 +1174,10 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     /// conch is speaking for. Older daemons never send it.
     let parentSessionId: String?
 
-    /// conch can fork it (daemon `forkLiveSession`): a top-level Claude Code session running in a terminal or conch's own
-    /// background host. Not a Codex session, nor a Claude background job, which it can't relaunch yet.
+    /// conch can fork it (daemon `forkLiveSession`, session-fork.ts): a top-level session running in a terminal or conch's
+    /// own background host, Claude Code's or Codex's, or a Claude background job (from its conversation).
     var canFork: Bool {
-        parentSessionId == nil && backend != "codex" && noTerminal == nil && !attachable
+        parentSessionId == nil && (noTerminal == nil || attachable)
     }
     /// Present when another listed session's process started this one (C15):
     /// a `codex` run from Claude's Bash tool, or a `claude` run from Codex's

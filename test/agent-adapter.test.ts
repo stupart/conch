@@ -78,6 +78,7 @@ describe("a third backend is one row", () => {
     inputBoxText: null,
     trustTypedAtLaunch: false,
     resumeArgs: (id) => ` --continue ${id}`,
+    forkArgs: null,
     teleportArgs: null,
     bypassPermissionsFlag: "--trust-me",
     startOptions: [],
