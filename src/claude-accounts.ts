@@ -20,15 +20,19 @@ export interface ClaudeAccountStatus extends ClaudeAccount {
 }
 
 export type ClaudeAccountRequest = ({ kind: "claude-accounts" } | { kind: "codex-accounts" }) & {
-  action: "list" | "add" | "remove" | "login" | "refresh" | "usage" | "cloud";
+  action: "list" | "add" | "remove" | "login" | "refresh" | "usage" | "cloud" | "cancel-login";
   id?: string;
   label?: string;
   configDir?: string;
+  /** A login the Mac shows itself (`claude-web-login.ts`): the reply carries `loginUrl` instead of opening Terminal. */
+  inApp?: true;
 };
 export interface ClaudeAccountsReply {
   kind: "claude-accounts" | "codex-accounts";
   accounts: ClaudeAccountStatus[];
   loginOpened?: true;
+  /** Anthropic's authorize URL for an in-app sign-in (`inApp`), shown in a web view with no cookies of its own. */
+  loginUrl?: string;
   createdAccountId?: string;
   cloudOpened?: true;
   execution?: ExecutionCatalog;
@@ -40,9 +44,10 @@ export const validAccountId = (value: unknown): value is string =>
   typeof value === "string" && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(value);
 
 export function accountRequestError(value: Record<string, unknown>): string | undefined {
-  if (!["list", "add", "remove", "login", "refresh", "usage", ...(value.kind === "codex-accounts" ? ["cloud"] : [])].includes(String(value.action))) return "Unknown account action";
+  if (!["list", "add", "remove", "login", "refresh", "usage", ...(value.kind === "codex-accounts" ? ["cloud"] : ["cancel-login"])].includes(String(value.action))) return "Unknown account action";
   if (value.id !== undefined && !validAccountId(value.id)) return "Invalid account id";
-  if (["remove", "login", "refresh", "cloud"].includes(String(value.action)) && !validAccountId(value.id)) return "Choose an account";
+  if (["remove", "login", "refresh", "cloud", "cancel-login"].includes(String(value.action)) && !validAccountId(value.id)) return "Choose an account";
+  if (value.inApp !== undefined && value.inApp !== true) return "inApp must be true when present";
   if (value.action === "add") {
     if (typeof value.label !== "string" || !value.label.trim() || value.label.trim().length > 60 || CONTROL.test(value.label)) return "Account name must be 1–60 printable characters";
     if (value.configDir !== undefined && (typeof value.configDir !== "string" || !isAbsolute(value.configDir) || value.configDir.length > 4096 || CONTROL.test(value.configDir))) return "Account directory must be an absolute path";

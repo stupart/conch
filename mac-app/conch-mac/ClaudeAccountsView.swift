@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import WebKit
 import ConchDesign
 
 // Native adaptation of claude-swap tui/widgets.py, theme.py and data.py at
@@ -214,6 +215,8 @@ final class ClaudeAccountsStore: ObservableObject {
     @Published var notice: String?
     @Published var createdAccountId: String?
     @Published var pendingLoginId: String?
+    /// A Claude sign-in shown in the app (`ClaudeSignInSheet`), not Terminal and the browser.
+    @Published var signIn: ClaudeSignInRequest?
     let providerId: String
     init(providerId: String = "claude") { self.providerId = providerId }
     private var providerName: String { providerId == "codex" ? "Codex" : "Claude" }
@@ -228,11 +231,14 @@ final class ClaudeAccountsStore: ObservableObject {
             let id: String?
             let label: String?
             let configDir: String?
+            /// Claude's sign-in in the app: the daemon hands back Anthropic's page (`loginUrl`) instead of opening Terminal.
+            let inApp: Bool?
         }
         struct Reply: Decodable {
             let accounts: [ClaudeAccountProfile]?
             let error: String?
             let loginOpened: Bool?
+            let loginUrl: String?
             let cloudOpened: Bool?
             let createdAccountId: String?
             let execution: ExecutionCatalog?
@@ -243,7 +249,8 @@ final class ClaudeAccountsStore: ObservableObject {
         error = nil
         notice = nil
         defer { busy = false }
-        switch await client.request(Request(kind: providerId == "codex" ? "codex-accounts" : "claude-accounts", action: action, id: id, label: label, configDir: configDir), timeout: 20) {
+        switch await client.request(Request(kind: providerId == "codex" ? "codex-accounts" : "claude-accounts", action: action, id: id, label: label, configDir: configDir,
+                                           inApp: providerId == "claude" && action == "login" ? true : nil), timeout: 20) {
         case let .reply(data):
             guard let reply = try? JSONDecoder().decode(Reply.self, from: data) else {
                 error = "Could not read \(providerName) accounts from the daemon."
@@ -264,7 +271,12 @@ final class ClaudeAccountsStore: ObservableObject {
             createdAccountId = reply.createdAccountId
             execution = reply.execution
             if let update = reply.usage { usage = update }
-            if reply.loginOpened == true {
+            if let link = reply.loginUrl, let url = URL(string: link), let id {
+                // Anthropic's page in the app, with no cookies of its own: whoever the browser is signed in as can't sign
+                // this account in by accident (2026-10-09, Default ended up as the other account that way).
+                pendingLoginId = id
+                signIn = ClaudeSignInRequest(accountId: id, label: accounts.first(where: { $0.id == id })?.label ?? "Claude", url: url)
+            } else if reply.loginOpened == true {
                 pendingLoginId = wasSignedIn ? nil : id
                 notice = wasSignedIn ? "Finish signing in in Terminal, then choose Check connection." : "Finish signing in with \(providerName) in Terminal. Conch will check the connection automatically."
             }
@@ -377,6 +389,21 @@ private struct ProviderAccountSection: View {
             }
             store.notice = "Still waiting for sign-in. Finish in Terminal, then choose Check connection."
         }
+        .sheet(item: $store.signIn) { request in
+            ClaudeSignInSheet(request: request) { finished in
+                store.signIn = nil
+                Task {
+                    if finished {
+                        // Claude's listener has the code; give it a moment to write the credential, then read who it is.
+                        try? await Task.sleep(nanoseconds: 1_500_000_000)
+                        await store.send("refresh", id: request.accountId)
+                    } else {
+                        store.pendingLoginId = nil
+                        await store.send("cancel-login", id: request.accountId)
+                    }
+                }
+            }
+        }
         .alert("Remove account from Conch?", isPresented: Binding(
             get: { removing != nil }, set: { if !$0 { removing = nil } }
         )) {
@@ -402,6 +429,11 @@ private struct ProviderAccountSection: View {
                     }
                     Text(account.email ?? account.statusLabel).font(ConchTypography.font(size: 12))
                         .foregroundStyle(SwapPalette.secondaryText).textSelection(.enabled)
+                    // Two profiles signed in as one person: usage, limits and sessions all land on that one account.
+                    if let email = account.email, let twin = store.accounts.first(where: { $0.id != account.id && $0.email == email }) {
+                        Text("Same account as \(twin.label). Sign in again to use a different one.")
+                            .font(ConchTypography.font(size: 11)).foregroundStyle(SwapPalette.severity(80))
+                    }
                 }
                 Spacer()
                 if account.status == "signed-out" {
@@ -474,5 +506,103 @@ private struct ProviderAccountSection: View {
         panel.allowsMultipleSelection = false
         panel.prompt = "Use account folder"
         if panel.runModal() == .OK { existingDirectory = panel.url?.path }
+    }
+}
+
+
+/// A Claude sign-in shown in the app (daemon `claude-web-login.ts`): the account and Anthropic's authorize page.
+struct ClaudeSignInRequest: Identifiable, Equatable {
+    var id: String { accountId }
+    let accountId: String
+    let label: String
+    let url: URL
+}
+
+/// Claude's own sign-in page, in conch (2026-10-09, Tyler: "make it so u can like popup ui for me too in the deliverables
+/// area and i can login there"). A web view with no cookies of its own and none of Safari's, so it signs in whoever you
+/// sign in as, never whoever the browser already was: that is how Default came to be the other account. The page sends its
+/// code to Claude Code's listener on this Mac (`localhost/callback`), which finishes the sign-in as it always does; conch
+/// sees no password or token. `onFinish(true)` once that callback has gone through, `false` on Cancel.
+struct ClaudeSignInSheet: View {
+    let request: ClaudeSignInRequest
+    let onFinish: (Bool) -> Void
+    @State private var finished = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Image("AgentClaude").resizable().scaledToFit().frame(width: 18, height: 18)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Sign in to Claude: \(request.label)").font(ConchTypography.font(size: 13, weight: .semibold))
+                    Text(finished ? "Signed in. Checking which account it is…" : "Choose the email for this account. Nothing from your browser is used here.")
+                        .font(ConchTypography.font(size: 11)).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Cancel") { onFinish(false) }.keyboardShortcut(.cancelAction).disabled(finished)
+            }
+            .padding(12)
+            Divider()
+            ClaudeSignInWebView(url: request.url) {
+                guard !finished else { return }
+                finished = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { onFinish(true) }
+            }
+        }
+        .frame(minWidth: 520, idealWidth: 560, minHeight: 640, idealHeight: 720)
+    }
+}
+
+private struct ClaudeSignInWebView: NSViewRepresentable {
+    let url: URL
+    let onCallback: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onCallback: onCallback) }
+
+    func makeNSView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        let view = WKWebView(frame: .zero, configuration: configuration)
+        // Google's sign-in turns away browsers it takes for embedded ones; this view is Safari's engine, so it says so.
+        view.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
+        view.navigationDelegate = context.coordinator
+        view.uiDelegate = context.coordinator
+        view.load(URLRequest(url: url))
+        return view
+    }
+
+    func updateNSView(_ nsView: WKWebView, context: Context) {}
+
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+        let onCallback: () -> Void
+        private var calledBack = false
+        init(onCallback: @escaping () -> Void) { self.onCallback = onCallback }
+
+        /// Claude Code's listener on this Mac, which the page hands its code to.
+        private static func isCallback(_ url: URL?) -> Bool {
+            guard let url, let host = url.host else { return false }
+            return ["localhost", "127.0.0.1"].contains(host) && url.path == "/callback"
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            if !calledBack, Self.isCallback(webView.url) || webView.backForwardList.backList.contains(where: { Self.isCallback($0.url) }) {
+                calledBack = true
+                onCallback()
+            }
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            // The listener can answer the callback and close at once; reaching it is what counts.
+            if !calledBack, Self.isCallback((error as NSError).userInfo[NSURLErrorFailingURLErrorKey] as? URL) {
+                calledBack = true
+                onCallback()
+            }
+        }
+
+        /// A sign-in that opens a window (Google, Apple) opens here instead.
+        func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                     for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+            if navigationAction.targetFrame == nil, let url = navigationAction.request.url { webView.load(URLRequest(url: url)) }
+            return nil
+        }
     }
 }
