@@ -152,6 +152,7 @@ import {
 } from "./conversation.ts";
 import type { PendingApproval } from "./approval.ts";
 import { FORK_ADOPT_WITHIN_MS, forkRequest, inheritedState, pendingForkFor, type PendingFork } from "./session-fork.ts";
+import { cancelClaudeWebLogin, startClaudeWebLogin } from "./claude-web-login.ts";
 import { isWindowKey, parseWindowKey } from "./window-key.ts";
 import { contextUsageFromLines, readTranscriptTailLines, type SessionContextUsage } from "./context-meter.ts";
 import { LiveActivity, withLiveActivity, type ActivitySource } from "./live-activity.ts";
@@ -3168,6 +3169,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         invalidateClaudeAccountStatus(account);
         removeClaudeAccount(message.id!);
       }
+      if (message.action === "cancel-login") cancelClaudeWebLogin(message.id!);
+      let loginUrl: string | undefined;
       if (message.action === "login") {
         const account = requireClaudeAccount(message.id!, cfg.claudeDir);
         await assertClaudeAccountIdle(account);
@@ -3175,12 +3178,29 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         installAccountUsage(account);
         clearAccountUsage(account);
         invalidateClaudeAccountStatus(account);
-        await startClaudeAccountLogin(account);
+        // In the app, when the Mac asks: Anthropic's page in a web view with no cookies, so it can't sign in as
+        // whoever the browser already is (claude-web-login.ts). Terminal when it can't be started that way.
+        const web = message.inApp ? await startClaudeWebLogin(account, { executable: Bun.which("claude") ?? "claude" }) : null;
+        if (web) {
+          loginUrl = web.url;
+          void web.done.then(async (code) => {
+            invalidateClaudeAccountStatus(account);
+            if (code !== 0) return;
+            const statuses = await Promise.all(readClaudeAccounts(cfg.claudeDir).map((one) => cachedClaudeAccountStatus(one, one.id === account.id)));
+            const signedIn = statuses.find((one) => one.id === account.id);
+            const twin = statuses.find((one) => one.id !== account.id && one.email && one.email === signedIn?.email);
+            log(`signed "${account.label}" in to Claude in the app${signedIn?.email ? ` as ${signedIn.email}` : ""}${twin ? ` (the same account as "${twin.label}")` : ""}`);
+            void renderSessionPanel();
+          });
+        } else {
+          await startClaudeAccountLogin(account);
+        }
       }
       const accounts = await Promise.all(readClaudeAccounts(cfg.claudeDir).map(account =>
         cachedClaudeAccountStatus(account, message.action === "refresh" && message.id === account.id)));
       void renderSessionPanel();
       return { kind: "claude-accounts", accounts,
+        ...(loginUrl ? { loginUrl } : {}),
         execution: deviceExecutionCatalog(ownerDeviceId, hostname(), accounts, readCodexAccounts()),
         usage: readAccountUsage(accounts),
         ...(created ? { createdAccountId: created.id } : {}),

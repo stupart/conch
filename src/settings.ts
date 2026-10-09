@@ -1347,7 +1347,8 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
     return { ok: true, value: { kind: value.kind, action: value.action as ClaudeAccountRequest["action"],
       ...(typeof value.id === "string" ? { id: value.id } : {}),
       ...(typeof value.label === "string" ? { label: value.label } : {}),
-      ...(typeof value.configDir === "string" ? { configDir: value.configDir } : {}) } };
+      ...(typeof value.configDir === "string" ? { configDir: value.configDir } : {}),
+      ...(value.inApp === true ? { inApp: true as const } : {}) } };
   }
   if (value.kind === "history-page" || value.kind === "history-item") return validateHistoryRequest(value);
   if (value.kind === "resumable") {
