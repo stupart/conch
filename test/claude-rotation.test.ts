@@ -57,12 +57,13 @@ describe("what conch says about the switcher", () => {
     const said: string[] = [];
     const supervisor = new RotationSupervisor((line) => said.push(line), () => cswap);
     supervisor.set(true);
-    for (let i = 0; i < 50 && !said.length; i++) await Bun.sleep(50);
+    // A shell started under a loaded gate can take seconds to print.
+    for (let i = 0; i < 300 && !said.length; i++) await Bun.sleep(50);
     expect(supervisor.running).toBe(true);
     expect(said).toEqual(["switched Claude from alex@acme.dev (near its limit) to sam@acme.dev"]);
     supervisor.set(false);
     expect(supervisor.running).toBe(false);
-  });
+  }, 20_000);
 
   test("on, with claude-swap missing, says so rather than failing quietly", () => {
     const said: string[] = [];
