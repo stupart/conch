@@ -54,6 +54,7 @@ export const SETTING_KEYS = [
   "speak",
   "bell",
   "mic-cues",
+  "claude-rotation",
   "read-full",
   "interrupt-on-manual-reply",
   "handoff-order",
@@ -91,6 +92,7 @@ export type SettingField =
   | "speak"
   | "bell"
   | "micCues"
+  | "claudeRotation"
   | "readFull"
   | "interruptOnManualReply"
   | "handoffOrder"
@@ -427,6 +429,19 @@ export const SETTING_DESCRIPTORS = [
     bounds: null,
     apply: "live",
     help: "sounds when the mic opens, closes without sending, and when your words are sent",
+  },
+  {
+    // Rotate the Default profile's Claude login across your Max accounts when one nears its limit (claude-rotation.ts,
+    // claude-swap's auto-switcher). Off by default: it signs sessions in as another account.
+    key: "claude-rotation",
+    field: "claudeRotation",
+    env: "CONCH_CLAUDE_ROTATION",
+    kind: "boolean",
+    default: false,
+    parse: parseBoolean,
+    bounds: null,
+    apply: "live",
+    help: "rotate Default's Claude login to the next Max account as one nears its limit (claude-swap)",
   },
   {
     key: "read-full",

@@ -152,6 +152,8 @@ import {
 } from "./conversation.ts";
 import type { PendingApproval } from "./approval.ts";
 import { FORK_ADOPT_WITHIN_MS, forkRequest, inheritedState, pendingForkFor, type PendingFork } from "./session-fork.ts";
+import { readSwapDashboard } from "./claude-swap.ts";
+import { addSignedInAccountToRotation, installClaudeSwap, RotationSupervisor, swapExecutable } from "./claude-rotation.ts";
 import { cancelClaudeWebLogin, startClaudeWebLogin } from "./claude-web-login.ts";
 import { isWindowKey, parseWindowKey } from "./window-key.ts";
 import { contextUsageFromLines, readTranscriptTailLines, type SessionContextUsage } from "./context-meter.ts";
@@ -2645,9 +2647,13 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     }
   }
 
+  // One Claude login rotating across Max accounts (claude-rotation.ts): claude-swap's auto-switcher while it's on.
+  const rotation = new RotationSupervisor((line) => log(line));
+  rotation.set(cfg.claudeRotation);
   const configController = createConfigController(cfg, {
     settingsPath: daemonSettingsPath,
     onLiveChange: (key, value) => {
+      if (key === "claude-rotation") rotation.set(value === true);
       // Off means quiet now, not after the sentence: the reading in progress stops, and every later one is
       // refused at `speak` (cfg.speak is already false here).
       if (key === "speak" && value === false) speech.cancelCurrent();
@@ -3173,6 +3179,19 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         removeClaudeAccount(message.id!);
       }
       if (message.action === "cancel-login") cancelClaudeWebLogin(message.id!);
+      if (message.action === "rotation-status" || message.action === "rotation-install" || message.action === "rotation-add") {
+        const done = message.action === "rotation-install" ? await installClaudeSwap()
+          : message.action === "rotation-add" ? await addSignedInAccountToRotation()
+          : undefined;
+        if (done) log(`${message.action === "rotation-install" ? "installed claude-swap" : "added Default's Claude account to the rotation"}${done.ok ? "" : ` — failed: ${done.output.slice(-200)}`}`);
+        if (done?.ok && message.action === "rotation-install") rotation.set(cfg.claudeRotation);
+        const installed = swapExecutable() !== undefined;
+        const accounts = await Promise.all(readClaudeAccounts(cfg.claudeDir).map(account => cachedClaudeAccountStatus(account, false)));
+        return { kind: "claude-accounts", accounts,
+          rotation: { installed, on: cfg.claudeRotation, running: rotation.running,
+            ...(installed ? { dashboard: await readSwapDashboard() } : {}),
+            ...(done ? { ok: done.ok, output: done.output } : {}) } };
+      }
       let loginUrl: string | undefined;
       if (message.action === "login") {
         const account = requireClaudeAccount(message.id!, cfg.claudeDir);
@@ -3652,6 +3671,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     rendererLifecycle.restore();
     theaterNavigation.dispose();
     shuttingDown = true;
+    rotation.stop();
     // The practice session and its card go with the daemon: nothing of it is left for the next one.
     practice?.stop("conch is closing");
     // An approval inside its undo window reaches nobody now: said in the log (review-approval.ts).

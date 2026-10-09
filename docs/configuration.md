@@ -38,6 +38,7 @@ The defaults below are read from `src/settings.ts`; `conch settings` prints the 
 | `speak` | `CONCH_SPEAK` | `true` | Read replies aloud. `false` and conch never speaks, on the Mac or the phone; everything still shows as text. In the apps: Settings › Read replies aloud |
 | `bell` | `CONCH_BELL` | `true` | The chime (Glass) before an announcement, a review or a permission question. It plays even with `speak` off |
 | `mic-cues` | `CONCH_MIC_CUES` | `true` | Tink when the mic opens, Bottle when it closes without sending, Pop when your words are sent |
+| `claude-rotation` | `CONCH_CLAUDE_ROTATION` | `false` | Rotate Default's Claude sign-in to your next Max account as one nears its limit, with [claude-swap](https://github.com/realiti4/claude-swap) (MIT). Set it up in Settings › Providers › Claude |
 | `read-full` | `CONCH_READ_FULL` | `true` | Read the whole final reply aloud; `false` reads only the announcement |
 | `announce-sentences` | `CONCH_SPEAK_SENTENCES` | `2` | Sentences in a turn's announcement |
 | `announce-max-chars` | `CONCH_SPEAK_MAX_CHARS` | `350` | Character cap on an announcement |
