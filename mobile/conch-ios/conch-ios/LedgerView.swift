@@ -418,6 +418,17 @@ struct LedgerView: View {
         Button(quiet ? "Quiet" : "Let it speak", systemImage: (quiet ? SessionVoice.Mark.quiet : .speaks).symbol) {
             toggleQuiet(row)
         }
+        // The same conversation again beside it, on the Mac, holding its deliverables (2026-10-09).
+        if row.canFork {
+            Button("Fork", systemImage: "arrow.triangle.branch") {
+                Task {
+                    if let failure = await bridge.forkSession(sessionId: row.id) {
+                        sessionActionError = failure
+                        showingSessionActionError = true
+                    }
+                }
+            }
+        }
         if let location = row.location {
             Button("\(location.label) on Mac", systemImage: location.symbol) {
                 Task {

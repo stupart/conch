@@ -327,6 +327,18 @@ struct ConchSessionCloseRequest: Encodable, Sendable {
     var restart: Bool? = nil
 }
 
+/// The same conversation again as a new session beside this one, holding its deliverables (daemon `forkLiveSession`).
+struct ConchSessionForkRequest: Encodable, Sendable {
+    let kind = "session-fork"
+    let sessionId: String
+}
+
+struct ConchSessionForkedReply: Decodable, Equatable, Sendable {
+    let sessionId: String
+    /// Flags on the original's command line the fork could not validate, so did not carry over.
+    let notCarriedOver: [String]?
+}
+
 struct ConchSessionStartedReply: Decodable, Equatable, Sendable {
     var backgroundId: String? = nil
     var sessionId: String? = nil
@@ -351,6 +363,7 @@ enum ConchSessionLifecycleReply: Decodable, Equatable, Sendable {
     case needsTrust(ConchSessionNeedsTrustReply)
     case started(ConchSessionStartedReply)
     case closed(ConchSessionClosedReply)
+    case forked(ConchSessionForkedReply)
     case error(ConchSessionErrorReply)
     case unknown(kind: String?)
 
@@ -366,6 +379,8 @@ enum ConchSessionLifecycleReply: Decodable, Equatable, Sendable {
             self = .started(try ConchSessionStartedReply(from: decoder))
         case "session-closed":
             self = .closed(try ConchSessionClosedReply(from: decoder))
+        case "session-forked":
+            self = .forked(try ConchSessionForkedReply(from: decoder))
         case "session-error":
             self = .error(try ConchSessionErrorReply(from: decoder))
         default:

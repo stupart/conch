@@ -944,6 +944,7 @@ export type RuntimeControlMessage =
   }
   /** `restart`: close it, then resume the same conversation with the same start flags. */
   | { kind: "session-close"; sessionId: string; restart?: true }
+  | { kind: "session-fork"; sessionId: string }
   | {
     kind: "app-error";
     source: "ios" | "mac";
@@ -1091,6 +1092,7 @@ export type RuntimeControlResponse =
   }
   /** `notCarriedOver`: flags on the old command line a restart could not validate, so did not replay. */
   | { kind: "session-closed"; sessionId: string; restarted?: true; notCarriedOver?: string[] }
+  | { kind: "session-forked"; sessionId: string; notCarriedOver?: string[] }
   | { kind: "app-error-ack" }
   | {
     kind: "config-toggle";
@@ -1156,6 +1158,7 @@ export function isControlMessageCandidate(value: unknown): boolean {
     || value.kind === "account-tools" || value.kind === "claude-accounts" || value.kind === "codex-accounts"
     || value.kind === "session-start"
     || value.kind === "session-close"
+    || value.kind === "session-fork"
     || value.kind === "app-error"
     || value.kind === "config-toggle"
     || value.kind === "config-rollback"
@@ -1416,6 +1419,11 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
     if (value.restart !== undefined && value.restart !== true) return { ok: false, err: "restart must be true when present" };
     return { ok: true, value: { kind: "session-close", sessionId: sessionId.value, ...(value.restart ? { restart: true as const } : {}) } };
   }
+  if (value.kind === "session-fork") {
+    const sessionId = validateSessionId(value.sessionId);
+    if (!sessionId.ok) return sessionId;
+    return { ok: true, value: { kind: "session-fork", sessionId: sessionId.value } };
+  }
   if (value.kind === "session-start") {
     if (value.host !== undefined && value.host !== "terminal" && value.host !== "background") return { ok: false, err: "Session host must be terminal or background" };
     if (value.codexAccountId !== undefined && (value.backend !== "codex" || !validAccountId(value.codexAccountId))) return { ok: false, err: "Choose a valid Codex account" };
@@ -1607,6 +1615,7 @@ export function validateControlMessage(value: unknown): ParseResult<AnyControlMe
     || value.kind === "account-tools" || value.kind === "claude-accounts" || value.kind === "codex-accounts"
     || value.kind === "session-start"
     || value.kind === "session-close"
+    || value.kind === "session-fork"
     || value.kind === "app-error"
     || value.kind === "config-toggle"
     || value.kind === "config-rollback"

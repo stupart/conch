@@ -781,6 +781,35 @@ final class BridgeClient: ObservableObject {
         return true
     }
 
+    /// Fork it on the Mac: the same conversation again as a new session beside this one, holding its deliverables
+    /// (daemon `forkLiveSession`). Nil when it's started, else what went wrong. Waits as long as a restart does, since a
+    /// fork opens a Terminal window on the Mac.
+    func forkSession(sessionId: String) async -> String? {
+        guard !sessionId.isEmpty,
+              let reply = await postControlRaw([
+                  "kind": "session-fork",
+                  "sessionId": sessionId,
+              ], within: .seconds(70)) else {
+            let failure = "The Mac didn't confirm the fork."
+            lastError = failure
+            _ = await reportAppError(operation: "session-fork", message: failure, sessionId: sessionId)
+            return failure
+        }
+        if reply["kind"] as? String == "session-error" {
+            let failure = (reply["error"] as? String) ?? "The Mac couldn't fork it."
+            lastError = failure
+            _ = await reportAppError(operation: "session-fork", message: failure, sessionId: sessionId)
+            return failure
+        }
+        guard reply["kind"] as? String == "session-forked" else {
+            let failure = "The Mac didn't confirm the fork."
+            lastError = failure
+            return failure
+        }
+        lastError = nil
+        return nil
+    }
+
     /// Failures observed only on the phone need durable evidence on the Mac.
     /// Reporting stays best effort and non-recursive because an unavailable
     /// channel is already represented by the phone's connection journal.

@@ -24,6 +24,8 @@ struct DashboardActions {
     let onCommitRename: (SessionRow) -> Void
     let onCancelRename: () -> Void
     let onDismiss: (SessionRow) -> Void
+    /// The same conversation again beside it, with its deliverables (StateStore `forkSession`).
+    var onFork: (SessionRow) -> Void = { _ in }
     let onRestore: (DismissedSessionRow) -> Void
     let onUndoDismiss: () -> Void
     let onDismissNewerDaemonWarning: () -> Void
@@ -682,6 +684,7 @@ private struct SessionLedger: View {
                                                 onCommitRename: { actions.onCommitRename(row) },
                                                 onCancelRename: actions.onCancelRename,
                                                 onDismiss: { actions.onDismiss(row) },
+                                                onFork: row.canFork ? { actions.onFork(row) } : nil,
                                                 // The starter's current label, so a rename
                                                 // there reads through here (C15).
                                                 startedByLabel: row.startedBySessionId.flatMap { id in
@@ -1010,6 +1013,8 @@ private struct DashboardRow: View {
     let onCommitRename: () -> Void
     let onCancelRename: () -> Void
     let onDismiss: () -> Void
+    /// Fork it (StateStore `forkSession`); nil where conch can't (`SessionRow.canFork`).
+    var onFork: (() -> Void)? = nil
     /// The label of the session whose process started this one (C15); nil for
     /// a session nobody listed started.
     var startedByLabel: String? = nil
@@ -1163,6 +1168,9 @@ private struct DashboardRow: View {
         .onTapGesture(count: 2, perform: onDoubleClick)
         .contextMenu {
             Button("Rename", action: onBeginRename)
+            if let onFork {
+                Button("Fork", action: onFork)
+            }
             Button(voice.togglesToQuiet ? "Make Quiet" : "Let It Speak", action: onToggleQuiet)
             Button("Dismiss", action: onDismiss)
         }
@@ -2565,6 +2573,11 @@ private struct ConversationPane: View {
                         sessionPendingRestart = row
                     }
                     .disabled(row.noTerminal != nil)
+                    // The same conversation again beside this one, holding its deliverables; this one keeps running.
+                    Button("Fork session") {
+                        store.forkSession(row)
+                    }
+                    .disabled(!row.canFork)
                     Button("Close session…", role: .destructive) {
                         sessionPendingClose = row
                     }
