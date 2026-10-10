@@ -18,7 +18,7 @@ const root = join(import.meta.dir, "..");
  * This is the table pinned against the daemon's own reasons, end to end from the wire.
  */
 const SENTENCES: Record<string, string> = {
-  "system-dialog-blocking": "Not delivered — a dialog is open on your Mac and it's blocking conch. Dismiss it and send again.",
+  "system-dialog-blocking": "Not delivered — your Mac didn't answer in time. It's very busy, or a dialog is open. Send again in a moment.",
   "automation-permission-denied": "Not delivered — macOS is blocking conch from controlling Terminal. Turn conch on under Privacy & Security → Automation.",
   "accessibility-permission-denied": "Not delivered — conch can't type into Terminal: allow conch in Accessibility.",
   "window-not-focusable": "Not delivered — couldn't reach that session's window.",

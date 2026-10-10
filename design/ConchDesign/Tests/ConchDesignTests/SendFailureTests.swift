@@ -9,7 +9,7 @@ final class SendFailureTests: XCTestCase {
     func testTheBlockedMacNamesTheThingToGoAndFix() {
         XCTAssertEqual(
             ConchSendFailure.sentence(reason: "system-dialog-blocking"),
-            "Not delivered — a dialog is open on your Mac and it's blocking conch. Dismiss it and send again."
+            "Not delivered — your Mac didn't answer in time. It's very busy, or a dialog is open. Send again in a moment."
         )
         XCTAssertEqual(
             ConchSendFailure.sentence(reason: "automation-permission-denied"),

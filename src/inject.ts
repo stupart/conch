@@ -1,4 +1,5 @@
 import { paneTarget, qualifyPane, tmuxServers } from "./tmux-binary.ts";
+import { TERMINAL_SCRIPT_TIMEOUT_MS, terminalTabLookup } from "./terminal-tab.ts";
 import { appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Config } from "./config.ts";
@@ -154,7 +155,7 @@ async function injectKeysInTransaction(
   const typed = keys.reduce((sum, key) => sum + (typeof key === "object" && "type" in key ? key.type.length : 1), 0);
   // Long enough for every key and gap: a script cut off mid-`keystroke` keeps
   // typing after conch has given up (see PASTE_OVER_CHARS).
-  const timeoutMs = 4_000 + keys.length * (ANSWER_KEY_GAP_MS + 100) + typed * 40;
+  const timeoutMs = TERMINAL_SCRIPT_TIMEOUT_MS + keys.length * (ANSWER_KEY_GAP_MS + 100) + typed * 40;
   const osa = safeOsa(options.osa ?? ((lines, argv = []) => runUICommand(
     ["osascript", ...lines.flatMap((line) => ["-e", line]), ...(argv.length ? ["--", ...argv] : [])],
     undefined,
@@ -556,26 +557,22 @@ export async function readSessionScreen(sessionPid: number | undefined): Promise
 export async function readTerminalTab(tty: string): Promise<string | null> {
   if (!/^ttys?\d+$/.test(tty)) return null;
   try {
-    // By index: in a `repeat with t in tabs` loop, `contents of t` is AppleScript's own
-    // dereference of the loop variable, not the tab's text.
-    const shown = await runOsa([`
-tell application "Terminal"
-  repeat with wi from 1 to count windows
-    repeat with ti from 1 to count tabs of window wi
-      if tty of tab ti of window wi is "/dev/${tty}" then return contents of tab ti of window wi
-    end repeat
-  end repeat
-end tell
-return "conch:notfound"`]);
+    // By index (terminal-tab.ts): `contents of` a loop variable would be AppleScript's own dereference of it, not the
+    // tab's text.
+    const shown = await runOsa([`${terminalTabLookup(tty)}
+if conchTab = 0 then return "conch:notfound"
+tell application "Terminal" to return contents of tab conchTab of window id conchWindow`]);
     return shown.timedOut || shown.exitCode !== 0 || shown.text.trim() === "conch:notfound" ? null : shown.text;
   } catch {
     return null;
   }
 }
 
-/** The process deadline covers stdout, stderr, and exit, with per-call errors. */
+/** The process deadline covers stdout, stderr, and exit, with per-call errors. As long as a busy Mac's Terminal can take
+ * to answer (terminal-tab.ts): at four seconds, a session in a Terminal tab couldn't be sent to while the Mac was busy. */
 async function runOsa(lines: string[], argv: string[] = []): Promise<OsaResult> {
-  return runUICommand(["osascript", ...lines.flatMap((line) => ["-e", line]), ...(argv.length ? ["--", ...argv] : [])]);
+  return runUICommand(["osascript", ...lines.flatMap((line) => ["-e", line]), ...(argv.length ? ["--", ...argv] : [])],
+    undefined, { timeoutMs: TERMINAL_SCRIPT_TIMEOUT_MS });
 }
 
 /** The controlling tty of a pid (`ttys003`), or "" when it has none. */
@@ -643,22 +640,17 @@ async function revealSessionWindowInTransaction(sessionPid: number, osa: OsaRunn
   try {
     const tty = await ttyForPid(sessionPid);
     if (!tty) return false;
-    const script = `
+    const script = `${terminalTabLookup(tty)}
+if conchTab = 0 then return "notfound"
 tell application "Terminal"
-  repeat with w in windows
-    repeat with t in tabs of w
-      if tty of t is "/dev/${tty}" then
-        set selected tab of w to t
-        set winName to name of w
-        try
-          tell application "System Events" to perform action "AXRaise" of (first window of process "Terminal" whose name is winName)
-        end try
-        return "ok"
-      end if
-    end repeat
-  end repeat
+  set w to window id conchWindow
+  set selected tab of w to tab conchTab of w
+  set winName to name of w
 end tell
-return "notfound"`;
+try
+  tell application "System Events" to perform action "AXRaise" of (first window of process "Terminal" whose name is winName)
+end try
+return "ok"`;
     const result = await osa([script]);
     return osaSucceeded(result) && result.text.trim() === "ok";
   } catch {
@@ -673,20 +665,15 @@ return "notfound"`;
  */
 export async function focusSessionWindow(tty: string, osa: OsaRunner): Promise<OsaResult> {
   try {
-    const script = `
+    const script = `${terminalTabLookup(tty)}
+if conchTab = 0 then return "notfound"
 tell application "Terminal"
-  repeat with w in windows
-    repeat with t in tabs of w
-      if tty of t is "/dev/${tty}" then
-        activate
-        set index of w to 1
-        set selected tab of w to t
-        return "ok"
-      end if
-    end repeat
-  end repeat
+  activate
+  set w to window id conchWindow
+  set index of w to 1
+  set selected tab of w to tab conchTab of w
 end tell
-return "notfound"`;
+return "ok"`;
     return await osa([script]);
   } catch {
     return { text: "", timedOut: false, exitCode: -1 };

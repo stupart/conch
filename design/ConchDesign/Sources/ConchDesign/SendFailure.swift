@@ -26,9 +26,10 @@ public enum ConchSendFailure {
     /// Every reason the daemon can name. `nil` for one it cannot, which stays "Not delivered".
     public static func clause(for reason: String?) -> String? {
         switch reason {
-        // The Mac is blocked by something only a person standing at it can clear.
+        // Terminal didn't answer conch in time. A dialog only a person at the Mac can clear does that, and so does a Mac
+        // too busy to answer: on 2026-10-11 it was the second, and "a dialog is open" sent Tyler looking for one.
         case "system-dialog-blocking":
-            "a dialog is open on your Mac and it's blocking conch. Dismiss it and send again."
+            "your Mac didn't answer in time. It's very busy, or a dialog is open. Send again in a moment."
         case "automation-permission-denied":
             "macOS is blocking conch from controlling Terminal. Turn conch on under Privacy & Security → Automation."
         // The keystrokes themselves were refused: conch isn't allowed in Accessibility (`ConchPermissionTrouble.typing`).

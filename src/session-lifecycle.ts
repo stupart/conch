@@ -1,6 +1,7 @@
 import { paneTarget } from "./tmux-binary.ts";
 import { FOCUS_GUARD_LINES, focusedAction, focusSessionWindow, readTerminalTab, withUITransaction, type OsaRunner } from "./inject.ts";
 import { runUICommand, type UICommandScope } from "./pasteboard.ts";
+import { terminalTabLookup } from "./terminal-tab.ts";
 import { processMatchesProvider, readProcessIdentity, sameProcessIdentity, type ProcessIdentity, type ProcessIdentityProbe } from "./process-identity.ts";
 import { conchHome } from "./home.ts";
 import { CODEX_ACCOUNT_ENV_REMOVE, codexAccountForLaunch, type CodexAccount } from "./codex-accounts.ts";
@@ -852,16 +853,13 @@ async function sendExitKeys(
  * busy and left alone, never closed with its process still in it.
  */
 async function closeSessionTabAndReturn(tty: string, osa: OsaRunner): Promise<void> {
-  const script = `
-tell application "Terminal"
-  repeat with w in windows
-    repeat with t in tabs of w
-      if tty of t is "/dev/${tty}" and not (busy of t) then
-        close t saving no
-      end if
-    end repeat
-  end repeat
-end tell
+  const script = `${terminalTabLookup(tty)}
+if conchTab > 0 then
+  tell application "Terminal"
+    set conchTabRef to tab conchTab of window id conchWindow
+    if not (busy of conchTabRef) then close conchTabRef saving no
+  end tell
+end if
 tell application "conch" to activate`;
   try {
     await osa([script]);
