@@ -92,7 +92,12 @@ export async function startClaudeWebLogin(
     if (running.get(account.id) === login) running.delete(account.id);
   };
   const cancel = () => {
-    if (!finished) child.kill();
+    if (finished) return;
+    child.kill();
+    // One that doesn't stop when asked (a probe fed endless input spun for 90 minutes that way, 2026-10-11) is stopped.
+    setTimeout(() => {
+      if (!finished) child.kill("SIGKILL");
+    }, 3_000).unref?.();
   };
   const done = child.exited.then((code) => {
     cleanup();
