@@ -4,7 +4,7 @@
 #
 # The folder comes from CONCH_LAGOON_BUNDLE, a build setting scripts/build-app.sh passes once scripts/prepare-lagoon.sh has
 # built or found it in the brand repo. Without it (any other build: Xcode's own, the CI gate's, a release) the app has no
-# lagoon, which this says in one line, and Debug › Show Lagoon says it isn't in this build. A Lagoon left in the product
+# lagoon, which this says in one line, and the window has no lagoon switch. A Lagoon left in the product
 # by an earlier build is removed either way, so what is sealed is only ever what was asked for.
 #
 # Signing: these are plain files, served by the app and never run, so nothing here signs (unlike the helpers, which

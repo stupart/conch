@@ -59,10 +59,10 @@ describe("the switch", () => {
     expect(count(mac, "@AppStorage(ConchOverlays.key)")).toBe(count(mac, "= ConchOverlays.byDefault"));
   });
 
-  test("is in the Debug menu, beside the lagoon's and the Terminal Mirror's, which stay", () => {
+  test("is in the Debug menu, beside the Terminal Mirror's, which stays (the lagoon's moved to the title bar's switch)", () => {
     const debug = app.slice(app.indexOf('CommandMenu("Debug") {'), app.indexOf("CommandGroup(after: .help) {"));
     expect(debug).toContain("TerminalMirrorMenuToggle()");
-    expect(debug).toContain("LagoonMenuToggle()");
+    expect(debug).not.toContain("Lagoon");
     expect(debug).toContain("OverlaysMenuToggle()");
     const toggle = item.slice(item.indexOf("struct OverlaysMenuToggle: View {"), item.indexOf("\n}\n", item.indexOf("struct OverlaysMenuToggle: View {")));
     expect(toggle).toContain("@AppStorage(ConchOverlays.key) private var isOn = ConchOverlays.byDefault");

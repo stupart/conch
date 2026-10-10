@@ -12,8 +12,8 @@
 #   scripts/prepare-lagoon.sh <scratch folder>
 #
 # No brand repo, no node, or a build that failed: a one-line note on stderr, nothing on stdout, exit 0, and conch.app is
-# built without the lagoon (Debug › Show Lagoon then says it isn't in this build). The lagoon is a hidden, read-only page
-# while it is tried out; it never holds the app's build hostage.
+# built without the lagoon (the window then has no lagoon switch). The lagoon is a read-only page while it is tried
+# out; it never holds the app's build hostage.
 #
 # Environment: CONCH_LAGOON_BRIDGE (the bridge folder; default ~/Projects/conch-design/brand/experiments/bridge),
 # NODE (default node). Both are test seams too (test/lagoon-page.test.ts).

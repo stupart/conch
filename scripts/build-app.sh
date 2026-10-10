@@ -163,7 +163,7 @@ if [[ -n "$WAS_RUNNING" ]]; then
 fi
 
 if [[ -d "$INSTALLED_APP_PATH/Contents/Resources/Lagoon" ]]; then
-  echo "The lagoon is in the app: $(du -sh "$INSTALLED_APP_PATH/Contents/Resources/Lagoon" | cut -f1) (Debug › Show Lagoon)"
+  echo "The lagoon is in the app: $(du -sh "$INSTALLED_APP_PATH/Contents/Resources/Lagoon" | cut -f1) (the switch beside the title)"
 fi
 
 echo "Installed $INSTALLED_APP_PATH"

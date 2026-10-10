@@ -49,7 +49,7 @@ struct DashboardView: View {
     let onSelectRemote: (RemoteSessionID) -> Void
     /// The conversation, or the lagoon in its place (LagoonPane.swift).
     let page: Lagoon.Page
-    /// Switched on and in this build: the header's shell is there.
+    /// This build carries the lagoon: the title bar's lagoon switch is there.
     let lagoonAvailable: Bool
     /// Put away and brought back with ⌘B, and remembered: a window that reopens with the
     /// sidebar back after you deliberately closed it is a window arguing with you.
@@ -334,6 +334,17 @@ private struct DashboardHeader: View {
                 Text("conch")
                     .font(ConchTypography.font(size: 12, weight: .medium))
                     .foregroundStyle(ConchPalette.textDim)
+
+                // The lagoon switch (2026-10-11, ConchDesign/LagoonSwitch.swift), right of the title at x = 156, where the
+                // design's title-bar shot puts it: off, the sessions; on, the lagoon. It posts what ⌘0 posts, so the two
+                // are one path, and it is there only in a build that carries the lagoon. It replaced Debug ▸ Show Lagoon
+                // and the shell button among the controls.
+                if lagoonAvailable {
+                    LagoonSwitch(isOn: page == .lagoon) {
+                        NotificationCenter.default.post(name: .showLagoon, object: nil)
+                    }
+                    .padding(.leading, 4.5)
+                }
             }
 
             Spacer(minLength: 12)
@@ -386,17 +397,6 @@ private struct DashboardHeader: View {
             // own chrome. Deleting the strip gave the ledger and composer the
             // full height of the window; E1 then folded this row into the
             // title-bar strip, so the wordmark costs no height at all.
-            //
-            // The lagoon's shell (2026-10-04), beside them: the beach, or back to the conversation. It posts what ⌘0
-            // posts, so the two are one path, and it is only there while the lagoon is switched on and in this build.
-            if lagoonAvailable {
-                HeaderButton(
-                    symbol: "fossil.shell",
-                    help: page == .lagoon ? "Back to the conversation (⌘0)" : "The lagoon (⌘0)",
-                    isSelected: page == .lagoon,
-                    action: { NotificationCenter.default.post(name: .showLagoon, object: nil) }
-                )
-            }
             HeaderControls(
                 isManual: isManual,
                 modeHelp: modeHelp,
