@@ -106,7 +106,8 @@ describe("the daemon wires both ends", () => {
     expect(daemon).toContain("withHeldQuestion(read, voice.heldQuestionFor(session.sessionId)),");
   });
   test("a key is pressed only after reading Claude's registry now, not the last snapshot", () => {
-    expect(daemon).toMatch(/freshStatus: async \(sessionId\) => \(await registrySnapshot\(cfg\.claudeDir\)\)\?\.infos\s*\.find\(\(session\) => session\.sessionId === sessionId\)\?\.status,/);
+    // From the session's own account's registry: Default's held nothing for a session on another profile (2026-10-11).
+    expect(daemon).toMatch(/freshStatus: async \(sessionId\) => \(await registrySnapshot\(panelSessions\.get\(sessionId\)\?\.claudeConfigDir \?\? cfg\.claudeDir\)\)\?\.infos\s*\.find\(\(session\) => session\.sessionId === sessionId\)\?\.status,/);
   });
 });
 

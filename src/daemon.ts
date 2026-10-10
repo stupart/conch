@@ -1851,7 +1851,9 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     window: (sessionId) => panelSessions.get(sessionId),
     // The registry file itself, not the last snapshot: a permission key is pressed only while
     // Claude Code says its dialog is up.
-    freshStatus: async (sessionId) => (await registrySnapshot(cfg.claudeDir))?.infos
+    // The session's own account: each keeps its own registry, and reading the default one for a session on another
+    // (Blueprint's, this one) found nothing (2026-10-11).
+    freshStatus: async (sessionId) => (await registrySnapshot(panelSessions.get(sessionId)?.claudeConfigDir ?? cfg.claudeDir))?.infos
       .find((session) => session.sessionId === sessionId)?.status,
     sessionGone: async (sessionId) => sessionGoneFromSnapshot(await registrySnapshot(cfg.claudeDir), sessionId),
     // Where a session is now, for its deliverable's link: from its own transcript, found here, never an event's word.
