@@ -288,6 +288,7 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         case .openConch: #selector(openConch)
         case .readAloud: #selector(toggleReadAloud)
         case .finishSetup: #selector(finishSetup)
+        case .settings: #selector(openSettings)
         }
     }
 
@@ -360,6 +361,12 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
 
     @objc private func openConch() {
         Self.bringConchForward()
+    }
+
+    /// Settings…: conch's window, forward, on its Settings page where it was left. The page is the window's
+    /// (`SettingsRouter`), so a window that has to be built first opens on it too.
+    @objc private func openSettings() {
+        SettingsRouter.shared.open()
     }
 
     /// Setup's window, where it was left.
@@ -498,8 +505,9 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         }
     }
 
-    /// The one place the status item takes focus, for Open conch, choosing a session, and the Ready pill's conch scene.
-    private static func bringConchForward() {
+    /// The one place the status item takes focus, for Open conch, choosing a session, and the Ready pill's conch scene: conch's
+    /// window in front, or built again when it was closed. Settings comes forward the same way (`SettingsRouter`).
+    static func bringConchForward() {
         NSApp.activate(ignoringOtherApps: true)
         guard let window = ReviewNotifications.shared.reviewWindow else {
             // No dashboard window: open conch the way a Dock click does, which builds one.

@@ -170,8 +170,13 @@ final class ReadyTests: XCTestCase {
     func testTheMenuNamesEachSurfaceOnceInTitleCase() {
         let titles = items(StatusMenu.rows(input())).map(\.title)
         // With Panel Off is Reply Line's own setting, a step in under it (ComposerPlacementTests).
-        XCTAssertEqual(titles, ["Talk", "Quiet", "Read Replies Aloud", "Stop Speaking", "Control Bar", "Conversation Panel", "Reply Line", "With Panel Off", "Draw on Screen", "Open conch"])
+        XCTAssertEqual(titles, ["Talk", "Quiet", "Read Replies Aloud", "Stop Speaking", "Control Bar", "Conversation Panel", "Reply Line", "With Panel Off", "Draw on Screen", "Open conch", "Settings…"])
         XCTAssertFalse(titles.contains { $0.hasPrefix("Show") })
+        // Settings…, last, with the window's own ⌘, beside it: it opens the window on its Settings page.
+        let settings = items(StatusMenu.rows(input())).last
+        XCTAssertEqual(settings?.command, .settings)
+        XCTAssertEqual(settings?.key, ",")
+        XCTAssertEqual(settings?.modifiers, [.command])
         let draw = items(StatusMenu.rows(input())).first { $0.command == .draw }
         XCTAssertEqual(draw?.key, "p")
         XCTAssertEqual(draw?.modifiers, [.control, .option, .command])

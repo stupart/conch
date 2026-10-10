@@ -123,7 +123,7 @@ describe("nothing of them installs while it is off", () => {
     }
     expect(member(item, "func menuNeedsUpdate(_ menu: NSMenu) {")).toContain("overlays: Self.overlaysOn");
     // The Help menu's tour and the shortcut list's pen and panel keys go with them.
-    const help = app.slice(app.indexOf("CommandGroup(after: .help) {"), app.indexOf("Settings {"));
+    const help = app.slice(app.indexOf("CommandGroup(after: .help) {"), app.indexOf("@MainActor\nprivate final class ConchAppDelegate"));
     expect(help).toContain("TakeTheTourMenuItem()");
     expect(help).not.toContain('Button("Take the tour")');
     expect(count(app, 'Button("Take the tour")')).toBe(1);

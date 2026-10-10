@@ -1,4 +1,5 @@
 import AppKit
+import ConchDesign
 import CoreImage.CIFilterBuiltins
 import SwiftUI
 
@@ -18,8 +19,12 @@ struct ConchPairingView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: SettingsLayout.headerGap) {
+                SettingsSectionHeader(title: "Phone app", subtitle: "Pair conch on your iPhone with this Mac.")
+
                 RemoteMacPairingsView()
+
+                SettingsHairline()
 
                 status
 
@@ -41,7 +46,7 @@ struct ConchPairingView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .padding(24)
+            .padding(SettingsLayout.inset)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(ConchPalette.bg)
@@ -74,7 +79,7 @@ struct ConchPairingView: View {
     private func relaySection(_ relay: ConchRelayPairing) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Scan with conch on your iPhone")
-                .font(.system(size: 13, weight: .medium))
+                .font(ConchType.uiEmphasis)
                 .foregroundStyle(ConchPalette.textPrimary)
             Text("Works from anywhere — cellular or any Wi-Fi. Your Mac and phone "
                  + "reach each other through the relay, which only ever sees encrypted bytes.")
@@ -104,7 +109,7 @@ struct ConchPairingView: View {
     private var noRelaySection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Internet access is off")
-                .font(.system(size: 13, weight: .medium))
+                .font(ConchType.uiEmphasis)
                 .foregroundStyle(ConchPalette.textPrimary)
             Text("Your phone can only reach this Mac on the same Wi-Fi. To use conch "
                  + "from anywhere, deploy the relay (relay/README.md) and set "
@@ -118,12 +123,12 @@ struct ConchPairingView: View {
 
     private func lanSection(_ pairing: ConchPairingOpen) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Divider().background(ConchPalette.divider)
+            SettingsHairline()
             Text("Or on this Wi-Fi")
-                .font(.system(size: 13, weight: .medium))
+                .font(ConchType.uiEmphasis)
                 .foregroundStyle(ConchPalette.textPrimary)
             ForEach(store.lanHosts, id: \.self) { host in
-                Text("\(host):\(pairing.port)")
+                Text(verbatim: "\(host):\(pairing.port)")
                     .font(.system(.callout, design: .monospaced))
                     .foregroundStyle(ConchPalette.textDim)
                     .textSelection(.enabled)

@@ -85,7 +85,7 @@ describe("Mac", () => {
 
   test("Settings shows each agent's own defaults, read-only", () => {
     const settings = read("mac-app/conch-mac/SettingsView.swift");
-    expect(settings).toContain("SessionVoicesSection()\n                        AgentDefaultsSection()");
+    expect(settings).toContain("SessionVoicesSection()\n                    AgentDefaultsSection()");
     const section = settings.slice(settings.indexOf("private struct AgentDefaultsSection: View {"));
     expect(section).toContain("(try? JSONDecoder().decode(SessionSettingsEnvelope.self, from: data))?.sessionSettings");
     expect(section).toContain("SessionSettingsPresentation.defaultsLine(defaults)");

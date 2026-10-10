@@ -363,10 +363,9 @@ final class NaturalVoicesNoticeStore: ObservableObject {
 }
 
 /// One line in the window's notices, in their pattern: an icon, the words, at most one action, and OK for a line that
-/// needs you. Why? opens Settings, where the natural voices' own status and sentence are.
+/// needs you. Why? opens Settings › General, where the natural voices' own status and sentence are.
 private struct NaturalVoicesNoticeLine: View {
     @ObservedObject private var voices = NaturalVoicesNoticeStore.shared
-    @Environment(\.openSettings) private var openSettings
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -384,7 +383,7 @@ private struct NaturalVoicesNoticeLine: View {
                         Button(action.title) {
                             switch action {
                             case .tryAgain: voices.tryAgain()
-                            case .why: openSettings()
+                            case .why: SettingsRouter.shared.open(.general)
                             }
                         }
                         .buttonStyle(.plain)

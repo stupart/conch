@@ -59,7 +59,8 @@ public struct AccountToolsView: View {
 
     public var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
+            // On the 4-point scale, and the gap under every Settings section's title (`SettingsLayout.headerGap`).
+            VStack(alignment: .leading, spacing: ConchSpace.x5) {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         Text("Plugins & MCP").font(ConchType.title)

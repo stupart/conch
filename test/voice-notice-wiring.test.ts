@@ -46,7 +46,8 @@ describe("the Mac", () => {
     const line = flat(notices.slice(notices.indexOf("private struct NaturalVoicesNoticeLine")));
     expect(line).toContain("if let notice = voices.notice {");
     expect(line).toContain("case .tryAgain: voices.tryAgain()");
-    expect(line).toContain("case .why: openSettings()");
+    // Why? leads to Settings › General, where the voices' own line is: a page of the window now (SettingsRouter).
+    expect(line).toContain("case .why: SettingsRouter.shared.open(.general)");
     expect(line).toContain('if notice.dismissible { Button("OK", action: voices.dismiss)');
   });
 

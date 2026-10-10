@@ -191,7 +191,7 @@ struct LedgerHost: View {
             actions: DashboardActions(
                 onStartSession: {}, onSelectSession: { _ in }, onDoubleClickSession: { _ in }, onBeginRename: { _ in },
                 onCommitRename: { _ in }, onCancelRename: {}, onDismiss: { _ in }, onRestore: { _ in }, onUndoDismiss: {},
-                onDismissNewerDaemonWarning: {}, onToggleLogs: {}, onConnectPhone: {}, onShowKeyboardShortcuts: {},
+                onDismissNewerDaemonWarning: {}, onToggleLogs: {}, onOpenSettings: {}, onShowKeyboardShortcuts: {},
                 onShowCommandPalette: {}, onTalkOrStop: {}, onPauseOrResume: {}, onToggleQuiet: { _ in }, onRecite: {},
                 onMoveUp: {}, onMoveDown: {}, onReleaseSelection: {}
             )

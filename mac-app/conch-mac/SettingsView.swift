@@ -1,3 +1,4 @@
+import AppKit
 import ConchDesign
 import SwiftUI
 
@@ -6,82 +7,64 @@ struct ConchSettingsView: View {
     @EnvironmentObject private var daemon: DaemonHost
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
+        // One scroll view, header and all: on the Settings page it is what stops at the readable column
+        // (`SettingsLayout`), so nothing here is pinned outside it.
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                SettingsSectionHeader(title: "General", subtitle: "Values are read from the running daemon.") {
+                    HStack(spacing: 10) {
+                        if store.isRefreshing, !store.isLoading {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Button {
+                            Task { await store.load() }
+                        } label: {
+                            Label("Refresh", systemImage: "arrow.clockwise")
+                        }
+                        .disabled(store.isRefreshing)
+                        .help("Reload settings from the daemon")
+                    }
+                }
+                .padding(.bottom, SettingsLayout.headerGap)
 
-            Rectangle()
-                .fill(ConchPalette.divider)
-                .frame(height: 1)
+                // Deliberately NOT one of the rows below: those are read from the
+                // daemon over its socket, so the one control that can turn the
+                // daemon off cannot be among the things that disappear when it is.
+                // The app's login item sits with it, for the same reason: opening
+                // at login is macOS's answer, not a daemon setting. One card, the
+                // design system's (Settings › Setup's).
+                OnboardingCard {
+                    DaemonPowerRow(daemon: daemon)
+                    Rectangle()
+                        .fill(ConchPalette.divider)
+                        .frame(height: 1)
+                    LoginItemRow()
+                }
 
-            // Deliberately NOT one of the rows below: those are read from the
-            // daemon over its socket, so the one control that can turn the
-            // daemon off cannot be among the things that disappear when it is.
-            DaemonPowerRow(daemon: daemon)
-
-            Rectangle()
-                .fill(ConchPalette.divider)
-                .frame(height: 1)
-
-            // The app's too, like the switch above: opening at login is macOS's answer, not a daemon setting.
-            LoginItemRow()
-
-            Rectangle()
-                .fill(ConchPalette.divider)
-                .frame(height: 1)
-
-            content
+                content
+            }
+            .padding(SettingsLayout.inset)
         }
         // No frame here. This view used to BE the settings window and sized it;
-        // inside a TabView that became a second, competing demand and the
-        // window grew past the screen with nothing to scroll. The scene owns
-        // the size now.
+        // the page around it owns the size now.
         .background(ConchPalette.bg)
         .task {
             await store.load()
         }
     }
 
-    private var header: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Settings")
-                    .font(ConchTypography.font(size: 18, weight: .semibold))
-                    .foregroundStyle(ConchPalette.textPrimary)
-                Text("Values are read from the running daemon.")
-                    .font(ConchTypography.font(size: 12))
-                    .foregroundStyle(ConchPalette.textDim)
-            }
-
-            Spacer()
-
-            if store.isRefreshing, !store.isLoading {
-                ProgressView()
-                    .controlSize(.small)
-            }
-
-            Button {
-                Task { await store.load() }
-            } label: {
-                Label("Refresh", systemImage: "arrow.clockwise")
-                    .frame(minHeight: 28)
-            }
-            .disabled(store.isRefreshing)
-            .help("Reload settings from the daemon")
-        }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 16)
-    }
-
     @ViewBuilder
     private var content: some View {
         if store.isLoading, store.settings.isEmpty {
-            VStack(spacing: 12) {
+            HStack(spacing: 8) {
                 ProgressView()
+                    .controlSize(.small)
                 Text("Loading settings…")
                     .font(ConchTypography.font(size: 12))
                     .foregroundStyle(ConchPalette.textDim)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.top, 24)
         } else if store.settings.isEmpty {
             SettingsEmptyView(feedback: store.globalFeedback) {
                 Task { await store.load() }
@@ -90,34 +73,32 @@ struct ConchSettingsView: View {
             VStack(spacing: 0) {
                 if let feedback = store.globalFeedback {
                     SettingsGlobalFeedback(feedback: feedback)
+                        .padding(.top, 16)
                 }
 
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(store.settings) { setting in
-                            ConchSettingRowView(
-                                setting: setting,
-                                feedback: store.rowFeedback[setting.key],
-                                isPending: store.pendingKeys.contains(setting.key),
-                                onSet: { value in
-                                    Task { await store.setValue(value, for: setting.key) }
-                                },
-                                onReset: {
-                                    Task { await store.reset(setting.key) }
-                                }
-                            )
+                LazyVStack(spacing: 0) {
+                    ForEach(store.settings) { setting in
+                        ConchSettingRowView(
+                            setting: setting,
+                            feedback: store.rowFeedback[setting.key],
+                            isPending: store.pendingKeys.contains(setting.key),
+                            onSet: { value in
+                                Task { await store.setValue(value, for: setting.key) }
+                            },
+                            onReset: {
+                                Task { await store.reset(setting.key) }
+                            }
+                        )
 
-                            Rectangle()
-                                .fill(ConchPalette.divider)
-                                .frame(height: 1)
-                                .padding(.horizontal, 22)
-                        }
-
-                        SessionVoicesSection()
-                        AgentDefaultsSection()
+                        Rectangle()
+                            .fill(ConchPalette.divider)
+                            .frame(height: 1)
                     }
-                    .padding(.bottom, 12)
+
+                    SessionVoicesSection()
+                    AgentDefaultsSection()
                 }
+                .padding(.top, 8)
             }
         }
     }
@@ -205,7 +186,6 @@ private struct SessionVoicesSection: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 22)
                 .padding(.top, 18)
             }
         }
@@ -263,7 +243,6 @@ private struct AgentDefaultsSection: View {
                     if let codex = catalog.codex { agent("Codex", codex.defaults) }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 22)
                 .padding(.top, 18)
             }
         }
@@ -384,20 +363,18 @@ private struct SettingsEmptyView: View {
     let feedback: ConchSettingsFeedback?
     let onRetry: () -> Void
 
+    /// Under the card, where the rows would be, rather than centred in a window that no longer exists.
     var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "gearshape")
-                .font(.system(size: 24, weight: .light))
-                .foregroundStyle(ConchPalette.textDim)
+        VStack(alignment: .leading, spacing: 12) {
             Text(feedback?.text ?? "No settings were published")
                 .font(ConchTypography.font(size: 13))
                 .foregroundStyle(feedbackColor(feedback?.tone ?? .warning))
-                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
             Button("Try Again", action: onRetry)
                 .frame(minHeight: 28)
         }
-        .padding(32)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.top, 24)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -409,9 +386,9 @@ private struct SettingsGlobalFeedback: View {
             .font(ConchTypography.font(size: 12))
             .foregroundStyle(feedbackColor(feedback.tone))
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 22)
+            .padding(.horizontal, ConchSpace.x3)
             .padding(.vertical, 9)
-            .background(ConchPalette.raised.opacity(0.72))
+            .background(ConchPalette.raised.opacity(0.72), in: RoundedRectangle(cornerRadius: ConchRadius.small, style: .continuous))
     }
 }
 
@@ -548,7 +525,6 @@ private struct ConchSettingRowView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(.horizontal, 22)
         .padding(.vertical, 15)
     }
 
@@ -821,13 +797,11 @@ private struct DaemonPowerRow: View {
             ))
             .labelsHidden()
             .toggleStyle(.switch)
-            .controlSize(.small)
             .disabled(adopted)
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, ConchSpace.x4)
         .padding(.vertical, 11)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ConchPalette.raised)
     }
 
     private var adopted: Bool {
@@ -901,67 +875,360 @@ private struct LoginItemRow: View {
             Toggle("", isOn: Binding(get: { login.isOn }, set: { login.set($0) }))
                 .labelsHidden()
                 .toggleStyle(.switch)
-                .controlSize(.small)
                 .accessibilityLabel("Open conch when you log in")
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, ConchSpace.x4)
         .padding(.vertical, 11)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ConchPalette.raised)
         .onAppear { login.refresh() }
     }
 }
 
 
-/// Persistent navigation keeps provider setup, usage, and app preferences in one place.
-struct ConchSettingsRootView: View {
-    @AppStorage("conch.settings.section") private var section = "providers"
-    private let sections = [
-        ("providers", "Providers", "person.crop.circle"),
-        ("environments", "Environments", "desktopcomputer"),
-        ("tools", "Plugins & MCP", "puzzlepiece.extension"),
-        ("general", "General", "slider.horizontal.3"),
-        ("phone", "Phone app", "iphone"),
-        ("permissions", "Permissions", "hand.raised"),
-        ("setup", "Setup", "checklist")
-    ]
+/// The one Settings page for the app (`SettingsPageState`): whether conch's window shows it, and which section. Every way in
+/// comes here: the header's gear, ⌘, and conch › Settings…, the menu bar menu's Settings…, Manage… beside an account in the
+/// New session sheet, and the natural voices' Why?. The window reads it rather than being told, so a way in that has to
+/// build the window first (the menu bar menu, with the window closed) still opens on Settings.
+@MainActor
+final class SettingsRouter: ObservableObject {
+    static let shared = SettingsRouter()
+
+    @Published private(set) var state: SettingsPageState
+    /// conch's window in front, or built again (`ConchStatusItem.bringConchForward`).
+    var bringForward: () -> Void = { ConchStatusItem.bringConchForward() }
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        state = SettingsPageState(section: SettingsSection(stored: defaults.string(forKey: SettingsSection.storageKey)))
+    }
+
+    private let defaults: UserDefaults
+
+    /// A way in: the page in a window in front, at `section`, or where it was left.
+    func open(_ section: SettingsSection? = nil) {
+        state.open(section)
+        remember()
+        bringForward()
+    }
+
+    /// ⌘, and conch › Settings…: the page, or back to the sessions when it already shows in the window in front.
+    func command() {
+        let window = ReviewNotifications.shared.reviewWindow
+        let inFront = NSApp.isActive && window?.isVisible == true && window?.isMiniaturized == false && window?.isMainWindow == true
+        state.toggle(windowInFront: inFront)
+        if state.isShown { bringForward() }
+    }
+
+    /// The back control, and a session chosen while the page shows: the sessions, as they were. Nothing to publish when
+    /// the page isn't showing, which is every row click.
+    func close() {
+        guard state.isShown else { return }
+        state.close()
+    }
+
+    /// Esc, once nothing is being read aloud. False when the page isn't showing, so Esc goes on to the sessions.
+    func escape() -> Bool {
+        state.escape()
+    }
+
+    func select(_ section: SettingsSection) {
+        guard section != state.section else { return }
+        state.select(section)
+        remember()
+    }
+
+    private func remember() {
+        defaults.set(state.section.rawValue, forKey: SettingsSection.storageKey)
+    }
+}
+
+/// Settings, a page of conch's window in place of the sessions (2026-10-11; it was SwiftUI's `Settings` window, 840 by 620
+/// at most). The strip along the top is the sessions' own, where the way back sits beside the traffic lights; the sections
+/// are listed down the side; and the one shown runs from beside the list to a readable width (`SettingsLayout`), with its
+/// scroller still at the window's edge.
+///
+/// It stays dark, the whole window with it, while it shows (`SettingsAppearance`). Providers is drawn in claude-swap's dark
+/// palette (ClaudeAccountsView), so a Settings that followed a light system would put a dark block in a light page. One
+/// dark page is a place you went; a dark block in a light one looks broken.
+struct ConchSettingsPage: View {
+    @ObservedObject var router: SettingsRouter
+
     var body: some View {
-        HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Settings").font(ConchTypography.font(size: 16, weight: .semibold)).padding(.bottom, 20)
-                ForEach(sections, id: \.0) { item in
-                    Button { section = item.0 } label: {
-                        Label(item.1, systemImage: item.2)
-                            .font(ConchTypography.font(size: 12, weight: section == item.0 ? .medium : .regular))
-                            .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 9)
-                            .background(section == item.0 ? ConchColor.hairline.color(.dark) : .clear, in: RoundedRectangle(cornerRadius: 6))
-                    }.buttonStyle(.plain)
-                }
-                Spacer()
-                Text("conch").font(ConchTypography.font(size: 13)).foregroundStyle(ConchColor.textSecondary.color(.dark))
-            }.padding(20).frame(width: 180).background(ConchColor.surface.color(.dark))
-            Rectangle().fill(ConchColor.hairline.color(.dark)).frame(width: 1)
-            Group {
-                switch section {
-                case "tools": AccountToolsView { request in
-                    switch await ConchSocketClient().request(request, timeout: 22) {
-                    case .reply(let data): return data
-                    case .connectFailed, .timeout:
-                        throw NSError(domain: "ConchTools", code: 1, userInfo: [NSLocalizedDescriptionKey: "Could not reach the Conch daemon."])
+        GeometryReader { proxy in
+            VStack(spacing: 0) {
+                SettingsStrip(titleBarInset: proxy.safeAreaInsets.top, onBack: router.close)
+
+                Rectangle()
+                    .fill(ConchPalette.divider)
+                    .frame(height: 1)
+
+                HStack(spacing: 0) {
+                    SettingsSectionList(selected: router.state.section, onSelect: router.select)
+                        .frame(width: SettingsLayout.listWidth)
+
+                    Rectangle()
+                        .fill(ConchPalette.divider)
+                        .frame(width: 1)
+
+                    GeometryReader { content in
+                        section(router.state.section)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                            // Every section is one scroll view: this stops its content at the column and leaves the
+                            // scroll view, and its scroller, the full width.
+                            .contentMargins(.trailing, SettingsLayout.trailingMargin(width: content.size.width), for: .scrollContent)
                     }
                 }
-                case "environments": ConchEnvironmentsView()
-                case "general": ConchSettingsView()
-                case "phone": ConchPairingView()
-                case "permissions": ConchPermissionsView()
-                case "setup": SetupSettingsTab()
-                default: ClaudeAccountsView()
-                }
-            }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            // The strip extends under the traffic lights, as the sessions' header does (DashboardView, E1).
+            .ignoresSafeArea(.container, edges: .top)
         }
-        .foregroundStyle(ConchColor.textPrimary.color(.dark))
-        .background(ConchColor.ground.color(.dark))
-        .preferredColorScheme(.dark)
+        .foregroundStyle(ConchPalette.textPrimary)
+        .background(ConchPalette.bg)
+        .background(SettingsAppearance(name: SettingsAppearance.pinned))
+        .font(ConchTypography.font(size: 12.5))
+    }
+
+    @ViewBuilder
+    private func section(_ section: SettingsSection) -> some View {
+        switch section {
+        case .providers: ClaudeAccountsView()
+        case .environments: ConchEnvironmentsView()
+        case .tools: AccountToolsView { request in
+            switch await ConchSocketClient().request(request, timeout: 22) {
+            case .reply(let data): return data
+            case .connectFailed, .timeout:
+                throw NSError(domain: "ConchTools", code: 1, userInfo: [NSLocalizedDescriptionKey: "Could not reach the Conch daemon."])
+            }
+        }
+        case .general: ConchSettingsView()
+        case .phone: ConchPairingView()
+        case .permissions: ConchPermissionsView()
+        case .setup: SetupSettingsTab()
+        }
+    }
+}
+
+/// The sessions' strip, on the Settings page: the way back where the sidebar's button sits, beside the traffic lights.
+private struct SettingsStrip: View {
+    /// The title-bar strip: 32 pt on macOS 26 with the title bar hidden, 0 in full screen (DashboardHeader's rule).
+    let titleBarInset: CGFloat
+    let onBack: () -> Void
+
+    /// The sessions' header's clearance (DashboardHeader.trafficLightClearance).
+    private static let trafficLightClearance: CGFloat = 78
+
+    var body: some View {
+        HStack(spacing: 0) {
+            SettingsBackButton(action: onBack)
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, titleBarInset > 0 ? Self.trafficLightClearance : ConchSpace.x4)
+        .padding(.trailing, ConchSpace.x2)
+        .frame(height: max(titleBarInset, 28))
+        .frame(maxWidth: .infinity)
+        .background(ConchPalette.bg)
+    }
+}
+
+/// "‹ Sessions": the header's buttons' size and states (HeaderButton), with the place it goes back to named.
+private struct SettingsBackButton: View {
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("Sessions")
+                    .font(ConchTypography.font(size: 12, weight: .medium))
+            }
+            .padding(.leading, 8)
+            .padding(.trailing, 10)
+            .frame(height: 28)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(isHovered ? ConchPalette.hover : .clear)
+            )
+            .foregroundStyle(isHovered ? ConchPalette.textPrimary : ConchPalette.textDim)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help("Back to your sessions (Esc or ⌘,)")
+        .accessibilityLabel("Back to your sessions")
+    }
+}
+
+/// The sections, down the side: their marks in one column so their names start on one line, and the rows the ledger's
+/// (30 pt, radius 7, its hover and selection).
+private struct SettingsSectionList: View {
+    let selected: SettingsSection
+    let onSelect: (SettingsSection) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Settings")
+                .font(ConchType.heading)
+                .foregroundStyle(ConchPalette.textPrimary)
+                .padding(.horizontal, ConchSpace.x2)
+                .padding(.bottom, ConchSpace.x3)
+                .accessibilityAddTraits(.isHeader)
+            ForEach(SettingsSection.allCases) { section in
+                SettingsSectionRow(section: section, isSelected: section == selected) { onSelect(section) }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, ConchSpace.x3)
+        .padding(.top, SettingsLayout.inset)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+private struct SettingsSectionRow: View {
+    let section: SettingsSection
+    let isSelected: Bool
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: ConchSpace.x2) {
+                Image(systemName: section.symbol)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(isSelected ? ConchPalette.textPrimary : ConchPalette.textDim)
+                    .frame(width: 18)
+                Text(section.title)
+                    .font(ConchTypography.font(size: 13, weight: isSelected ? .medium : .regular))
+                    .foregroundStyle(ConchPalette.textPrimary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, ConchSpace.x2)
+            .frame(maxWidth: .infinity, minHeight: 30)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(isSelected ? ConchPalette.selection : isHovered ? ConchPalette.hover : .clear)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+}
+
+/// A section's title and the line under it, where every section starts: `SettingsLayout.inset` in, the design system's
+/// title over its secondary line (Plugins & MCP's, ConchDesign/AccountTools.swift).
+struct SettingsSectionHeader<Trailing: View>: View {
+    let title: String
+    let subtitle: String
+    @ViewBuilder var trailing: Trailing
+
+    var body: some View {
+        // Top, not a baseline: a taller control beside the title would push the title down, off every other section's.
+        HStack(alignment: .top, spacing: ConchSpace.x3) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title)
+                    .font(ConchType.title)
+                    .foregroundStyle(ConchPalette.textPrimary)
+                    .accessibilityAddTraits(.isHeader)
+                Text(subtitle)
+                    .font(ConchType.secondary)
+                    .foregroundStyle(ConchPalette.textDim)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+            trailing
+        }
+    }
+}
+
+extension SettingsSectionHeader where Trailing == EmptyView {
+    init(title: String, subtitle: String) {
+        self.init(title: title, subtitle: subtitle) { EmptyView() }
+    }
+}
+
+/// A heading inside a section ("This Mac", "Other Macs", "Codex cloud"): the design system's emphasis, after its mark in
+/// a 22-point column, so every heading's words start on one line whatever the mark.
+struct SettingsSubheading<Mark: View>: View {
+    let title: String
+    @ViewBuilder var mark: Mark
+
+    var body: some View {
+        HStack(spacing: ConchSpace.x2) {
+            mark.frame(width: 22, height: 22)
+            Text(title)
+                .font(ConchType.uiEmphasis)
+                .foregroundStyle(ConchPalette.textPrimary)
+                .accessibilityAddTraits(.isHeader)
+        }
+    }
+}
+
+extension SettingsSubheading where Mark == EmptyView {
+    init(title: String) {
+        self.init(title: title) { EmptyView() }
+    }
+}
+
+/// The page's one rule between blocks: the hairline token, as the strip's and the list's are. SwiftUI's `Divider` draws
+/// its own, heavier grey.
+struct SettingsHairline: View {
+    var body: some View {
+        Rectangle()
+            .fill(ConchPalette.divider)
+            .frame(height: 1)
+    }
+}
+
+/// The window's appearance while Settings shows, set on the window itself so everything in it agrees: the strip, the
+/// traffic lights, the controls, and the palette's dynamic colours. Put back as it was when Settings goes.
+///
+/// On the window rather than `.preferredColorScheme`, whose going back to the system is SwiftUI's to get right: here the
+/// page sets it as it arrives and restores it as it leaves.
+struct SettingsAppearance: NSViewRepresentable {
+    /// Dark, while Providers draws in claude-swap's dark palette (ClaudeAccountsView). Nil follows the system, like the
+    /// rest of the window: the one line to change once Providers draws from ConchPalette.
+    static let pinned: NSAppearance.Name? = .darkAqua
+
+    let name: NSAppearance.Name?
+
+    func makeNSView(context: Context) -> NSView { Pin(name: name) }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+    static func dismantleNSView(_ nsView: NSView, coordinator: ()) { (nsView as? Pin)?.release() }
+
+    final class Pin: NSView {
+        private let name: NSAppearance.Name?
+        private weak var pinned: NSWindow?
+        private var previous: NSAppearance?
+
+        init(name: NSAppearance.Name?) {
+            self.name = name
+            super.init(frame: .zero)
+        }
+
+        required init?(coder: NSCoder) { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if pinned !== window { release() }
+            guard let window, let name, pinned == nil else { return }
+            previous = window.appearance
+            pinned = window
+            window.appearance = NSAppearance(named: name)
+        }
+
+        func release() {
+            guard let window = pinned else { return }
+            window.appearance = previous
+            pinned = nil
+            previous = nil
+        }
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
 }
 
@@ -971,36 +1238,39 @@ struct ConchEnvironmentsView: View {
     @State private var accountId = "default"
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Environments").font(ConchTypography.font(size: 20, weight: .semibold))
-                    Text("Where your sessions run").font(ConchTypography.font(size: 12)).foregroundStyle(ConchColor.textSecondary.color(.dark))
-                }
-                VStack(alignment: .leading, spacing: 10) {
-                    Label("This Mac", systemImage: "laptopcomputer").font(ConchTypography.font(size: 14, weight: .semibold))
-                    Text("New sessions open here in Terminal with the account you choose. Resume keeps the original account and working folder.")
-                }
-                RemoteMacPairingsView()
-                Divider()
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack(spacing: 8) {
-                        Image("AgentCodex").resizable().scaledToFit().frame(width: 22, height: 22)
-                        Text("Codex cloud").font(ConchTypography.font(size: 14, weight: .semibold))
-                    }
-                    Text("Browse your cloud environments and tasks in Codex’s terminal interface. Cloud environments belong to the selected OpenAI account.")
-                    Picker("Account", selection: $accountId) {
-                        if accounts.accounts.isEmpty { Text("Default").tag("default") }
-                        ForEach(accounts.accounts) { account in
-                            Text([account.label, account.email].compactMap { $0 }.joined(separator: " · ")).tag(account.id)
+            VStack(alignment: .leading, spacing: SettingsLayout.headerGap) {
+                SettingsSectionHeader(title: "Environments", subtitle: "Where your sessions run")
+                VStack(alignment: .leading, spacing: 24) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        SettingsSubheading(title: "This Mac") {
+                            Image(systemName: "laptopcomputer").font(.system(size: 14, weight: .regular))
                         }
+                        Text("New sessions open here in Terminal with the account you choose. Resume keeps the original account and working folder.")
                     }
-                    Button("Open Codex cloud in Terminal") { Task { await accounts.send("cloud", id: accountId) } }
-                        .disabled(accounts.busy || accounts.accounts.first(where: { $0.id == accountId })?.authType != "chatgpt")
-                    if let error = accounts.error { Text(error).foregroundStyle(ConchPalette.statusNeeds) }
-                    if let notice = accounts.notice { Text(notice) }
+                    SettingsHairline()
+                    RemoteMacPairingsView()
+                    SettingsHairline()
+                    VStack(alignment: .leading, spacing: 12) {
+                        SettingsSubheading(title: "Codex cloud") {
+                            Image("AgentCodex").resizable().scaledToFit()
+                        }
+                        Text("Browse your cloud environments and tasks in Codex’s terminal interface. Cloud environments belong to the selected OpenAI account.")
+                        Picker("Account", selection: $accountId) {
+                            if accounts.accounts.isEmpty { Text("Default").tag("default") }
+                            ForEach(accounts.accounts) { account in
+                                Text([account.label, account.email].compactMap { $0 }.joined(separator: " · ")).tag(account.id)
+                            }
+                        }
+                        Button("Open Codex cloud in Terminal") { Task { await accounts.send("cloud", id: accountId) } }
+                            .disabled(accounts.busy || accounts.accounts.first(where: { $0.id == accountId })?.authType != "chatgpt")
+                        if let error = accounts.error { Text(error).foregroundStyle(ConchPalette.statusNeeds) }
+                        if let notice = accounts.notice { Text(notice) }
+                    }
                 }
             }
-            .font(ConchTypography.font(size: 12)).padding(24)
+            .font(ConchTypography.font(size: 12))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(SettingsLayout.inset)
         }
         .task { await accounts.send("list") }
         .onChange(of: accounts.accounts.map(\.id)) { _, ids in

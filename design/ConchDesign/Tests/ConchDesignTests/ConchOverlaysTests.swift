@@ -88,7 +88,7 @@ final class ConchOverlaysTests: XCTestCase {
     }
 
     /// Off, Control Bar, Conversation Panel, Reply Line, With Panel Off and Draw on Screen are gone; Talk, Quiet, Stop, the
-    /// sessions and Open conch stay, and no two separators meet.
+    /// sessions, Open conch and Settings… stay, and no two separators meet.
     func testWithTheOverlaysOffTheMenuHasNoOverlayItems() {
         let overlayCommands: [StatusMenu.Command] = [.controlBar, .conversation, .replyLine, .replyLineAlone, .draw]
         let ready = [StatusMenu.Session(id: "r", label: "Ready one")]
@@ -98,7 +98,7 @@ final class ConchOverlaysTests: XCTestCase {
             let off = menu(overlays: false, ready: ready, working: working)
             let commands = items(off).map(\.command)
             for command in overlayCommands { XCTAssertFalse(commands.contains(command), "\(command)") }
-            for command in [StatusMenu.Command.talk, .quiet, .stop, .openConch] { XCTAssertTrue(commands.contains(command), "\(command)") }
+            for command in [StatusMenu.Command.talk, .quiet, .stop, .openConch, .settings] { XCTAssertTrue(commands.contains(command), "\(command)") }
             for session in ready { XCTAssertTrue(commands.contains(.openItem(session: session.id))) }
             for session in working { XCTAssertTrue(commands.contains(.openSession(session.id))) }
             for (row, next) in zip(off, off.dropFirst()) { XCTAssertFalse(row == .separator && next == .separator, "two separators meet") }
@@ -106,7 +106,7 @@ final class ConchOverlaysTests: XCTestCase {
             let on = items(menu(overlays: true, ready: ready, working: working)).map(\.command)
             for command in overlayCommands { XCTAssertTrue(on.contains(command), "\(command)") }
         }
-        XCTAssertEqual(items(menu(overlays: false)).map(\.title), ["Talk", "Quiet", "Read Replies Aloud", "Stop Speaking", "Open conch"])
+        XCTAssertEqual(items(menu(overlays: false)).map(\.title), ["Talk", "Quiet", "Read Replies Aloud", "Stop Speaking", "Open conch", "Settings…"])
     }
 
     // MARK: Setup

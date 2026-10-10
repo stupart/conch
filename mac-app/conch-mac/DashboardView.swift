@@ -30,8 +30,8 @@ struct DashboardActions {
     let onUndoDismiss: () -> Void
     let onDismissNewerDaemonWarning: () -> Void
     let onToggleLogs: () -> Void
-    /// Opens Settings on the Phone tab, where the pairing QR lives.
-    let onConnectPhone: () -> Void
+    /// The gear: Settings, a page of this window, where it was left (`SettingsRouter`).
+    let onOpenSettings: () -> Void
     let onShowKeyboardShortcuts: () -> Void
     /// ⌘K (B4): the command palette for the selected session.
     let onShowCommandPalette: () -> Void
@@ -435,7 +435,7 @@ private struct HeaderControls: View {
             HeaderButton(
                 symbol: "gearshape",
                 help: "Settings — connect a phone, and everything else",
-                action: actions.onConnectPhone
+                action: actions.onOpenSettings
             )
             HeaderButton(
                 symbol: "text.alignleft",

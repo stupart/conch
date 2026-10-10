@@ -287,7 +287,8 @@ describe("Cut B Swift, by site", () => {
     const quit = section(holder, "func releaseOnQuit() {", "private func release(");
     expect(quit).not.toMatch(/\bawait\b/);
     expect(app).toContain("AudioHolderStore(local: store, remotes: remotes)");
-    expect(app.match(/\.environmentObject\(audio\)/g)).toHaveLength(2);
+    // One scene now: Settings is a page of the window (2026-10-11), so it has the window's objects.
+    expect(app.match(/\.environmentObject\(audio\)/g)).toHaveLength(1);
   });
 
   test("the non-holder dims exactly the composer mic button and the auto/manual control, with the Take it line", () => {
