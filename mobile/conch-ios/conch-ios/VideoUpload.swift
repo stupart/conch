@@ -1,7 +1,6 @@
 import AVFoundation
 import ConchDesign
 import CoreTransferable
-import ImageIO
 import UIKit
 import UniformTypeIdentifiers
 
@@ -10,7 +9,8 @@ import UniformTypeIdentifiers
 // sheet of its frames and its words, timed, as a Show's storyboard does (`VideoStoryboard`, in the shared package).
 //
 // The phone does the AVFoundation work, since it has the video open anyway: it transcodes, writes the sound as whisper
-// takes it, and pulls the frames. The Mac transcribes (`/transcript`), because whisper is there. The words come back
+// takes it, and pulls the frames, the last two by `VideoFrames.swift` in the shared package, which the Mac's composer
+// runs on a video dropped there too. The Mac transcribes (`/transcript`), because whisper is there. The words come back
 // before the frames are chosen, since where he finished saying something is where a frame is worth taking.
 
 /// A video picked in Photos, copied to a file the app owns: Photos' own file is gone once the import returns.
@@ -73,7 +73,7 @@ enum VideoPrep {
         let video = try await transcode(source)
         let length = try await AVURLAsset(url: video).load(.duration).seconds
         let recording = try? await recording(of: source)
-        let poster = try? await generator(video, edge: 192).image(at: .zero).image
+        let poster = try? await VideoStoryboard.frames(of: video, edge: 192).image(at: .zero).image
         return PreparedVideo(video: video, recording: recording, length: length, poster: poster.map(UIImage.init(cgImage:)))
     }
 
@@ -183,88 +183,13 @@ enum VideoPrep {
         }
     }
 
-    /// Its sound as whisper takes it: 16 kHz mono 16-bit PCM in a WAV, the first two minutes. Nil with no sound.
+    /// Its sound as whisper takes it, in a WAV in the phone's temp folder (`VideoStoryboard.speech`, the Mac's code too).
+    /// Nil with no sound.
     static func recording(of source: URL) async throws -> URL? {
-        let asset = AVURLAsset(url: source)
-        guard let track = try await asset.loadTracks(withMediaType: .audio).first else { return nil }
-        let duration = try await asset.load(.duration)
-        let reader = try AVAssetReader(asset: asset)
-        reader.timeRange = CMTimeRange(start: .zero, duration: CMTimeMinimum(duration, CMTime(seconds: VideoStoryboard.longest, preferredTimescale: 600)))
-        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: 16_000,
-            AVNumberOfChannelsKey: 1,
-            AVLinearPCMBitDepthKey: 16,
-            AVLinearPCMIsFloatKey: false,
-            AVLinearPCMIsBigEndianKey: false,
-            AVLinearPCMIsNonInterleaved: false,
-        ])
-        reader.add(output)
-        guard reader.startReading() else { throw reader.error ?? VideoPrepError.unreadable }
-        var pcm = Data()
-        while let sample = output.copyNextSampleBuffer() {
-            guard let block = CMSampleBufferGetDataBuffer(sample) else { continue }
-            let length = CMBlockBufferGetDataLength(block)
-            var bytes = Data(count: length)
-            let copied = bytes.withUnsafeMutableBytes { CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length, destination: $0.baseAddress!) }
-            if copied == kCMBlockBufferNoErr { pcm.append(bytes) }
-        }
-        guard reader.status == .completed, !pcm.isEmpty else { return nil }
+        guard let wav = try await VideoStoryboard.speech(of: source) else { return nil }
         let out = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension("wav")
-        try (wavHeader(pcmBytes: pcm.count) + pcm).write(to: out)
+        try wav.write(to: out)
         return out
-    }
-
-    /// A canonical 44-byte WAV header for 16 kHz mono 16-bit PCM: the one shape the Mac accepts as a recording.
-    static func wavHeader(pcmBytes: Int) -> Data {
-        var header = Data()
-        func text(_ value: String) { header.append(contentsOf: Array(value.utf8)) }
-        func u32(_ value: UInt32) { withUnsafeBytes(of: value.littleEndian) { header.append(contentsOf: $0) } }
-        func u16(_ value: UInt16) { withUnsafeBytes(of: value.littleEndian) { header.append(contentsOf: $0) } }
-        text("RIFF"); u32(UInt32(36 + pcmBytes)); text("WAVE")
-        text("fmt "); u32(16); u16(1); u16(1); u32(16_000); u32(32_000); u16(2); u16(16)
-        text("data"); u32(UInt32(pcmBytes))
-        return header
-    }
-
-    /// Frames of the video, upright, no longer than `edge`.
-    static func generator(_ video: URL, edge: CGFloat) -> AVAssetImageGenerator {
-        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: video))
-        generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: edge, height: edge)
-        let near = CMTime(seconds: 0.2, preferredTimescale: 600)
-        generator.requestedTimeToleranceBefore = near
-        generator.requestedTimeToleranceAfter = near
-        return generator
-    }
-
-    /// The contact sheet (`VideoStoryboard.contactSheet`) and the moments on it: the Show's own choice of moments from
-    /// what he said (`VideoStoryboard.moments`), near-duplicates dropped by the same thumbprints (`CanvasStoryboard.keep`).
-    static func sheet(of video: URL, said: [CanvasStoryboard.Said], length: Double) async -> (frames: [CanvasStoryboard.Moment], jpeg: Data)? {
-        func at(_ seconds: Double) -> CMTime { CMTime(seconds: seconds, preferredTimescale: 600) }
-        let moments = VideoStoryboard.moments(said: said, length: length)
-        let small = generator(video, edge: 160)
-        var prints: [[UInt8]] = []
-        for moment in moments {
-            guard let image = try? await small.image(at: at(moment.at)).image else { return nil }
-            prints.append(CanvasStoryboard.thumbprint(image))
-        }
-        let kept = CanvasStoryboard.keep(moments, prints: prints)
-        let full = generator(video, edge: VideoStoryboard.cellEdge)
-        var frames: [(at: Double, image: CGImage)] = []
-        for moment in kept {
-            guard let image = try? await full.image(at: at(moment.at)).image else { return nil }
-            frames.append((moment.at, image))
-        }
-        guard let sheet = VideoStoryboard.contactSheet(frames), let jpeg = jpeg(sheet) else { return nil }
-        return (kept, jpeg)
-    }
-
-    private static func jpeg(_ image: CGImage) -> Data? {
-        let output = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(output, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
-        CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.85] as CFDictionary)
-        return CGImageDestinationFinalize(destination) ? output as Data : nil
     }
 }
 
@@ -280,7 +205,7 @@ enum VideoMessage {
            let path = await bridge.upload(data: data, ext: "wav", id: video.recordingId) {
             said = await bridge.transcript(of: path) ?? []
         }
-        guard let sheet = await VideoPrep.sheet(of: video.video, said: said, length: video.length),
+        guard let sheet = await VideoStoryboard.sheet(of: video.video, said: said, length: video.length),
               // A new id each time: the sheet is drawn again from the words this attempt has, which a Retry can have
               // when the last one didn't. Under the last one's id the Mac joined the two, or handed back the old sheet.
               let sheetPath = await bridge.upload(data: sheet.jpeg, ext: "jpg", id: ImageUpload.newUploadID()),

@@ -7,11 +7,14 @@ import { PhoneUploads } from "../src/phone-uploads.ts";
 /**
  * The phone's side of sending a video (phone-uploads.test.ts and phone-video.test.ts have the Mac's). Tyler (09-25):
  * "vise versa if possible": the phone's own recordings, to the Mac. The iOS app has no test target, so the Foundation
- * pieces run under `swift`, against the Mac's own validator where they meet it, and the rest is read.
+ * pieces run under `swift`, against the Mac's own validator where they meet it, and the rest is read. Its sound and its
+ * contact sheet are pulled by the shared package (`VideoFrames.swift`), which the Mac's composer runs too, and which
+ * `swift test` runs on real movies (VideoFramesTests).
  */
 const root = join(import.meta.dir, "..");
 const ios = (name: string): string => readFileSync(join(root, "mobile/conch-ios/conch-ios", name), "utf8");
 const video = ios("VideoUpload.swift");
+const frames = readFileSync(join(root, "design/ConchDesign/Sources/ConchDesign/VideoFrames.swift"), "utf8");
 const bridge = ios("BridgeClient.swift");
 const session = ios("SessionView.swift");
 const swift = Bun.which("swift");
@@ -36,7 +39,7 @@ describe("the pieces the Mac checks", () => {
   test.skipIf(!swift)("the phone's WAV header is the one shape the Mac accepts as a recording", async () => {
     const dir = mkdtempSync(join(tmpdir(), "conch-ios-video-"));
     try {
-      const header = between(video, "    static func wavHeader(pcmBytes: Int) -> Data {", "\n    }\n") + "\n    }\n";
+      const header = between(frames, "    public static func wavHeader(pcmBytes: Int) -> Data {", "\n    }\n") + "\n    }\n";
       runSwift([
         `enum Probe {\n${header}\n}`,
         "let pcm = Data(repeating: 7, count: 32_000)",
@@ -159,15 +162,15 @@ describe("a Retry sends the contact sheet it made, not pieces of the last one", 
       const newId = between(ios("ImageUpload.swift"), "    static func newUploadID() -> String {", "\n    }\n") + "\n    }\n";
       const out = runSwift([
         "enum CanvasStoryboard { struct Said { let start: Double; let end: Double; let text: String }; struct Moment {} }",
-        "enum VideoStoryboard { static func prompt(_ frames: [CanvasStoryboard.Moment], said: [CanvasStoryboard.Said], length: Double, sheet: String, video: String) -> String { sheet } }",
-        `enum ImageUpload {\n${newId}\n}`,
-        prepared,
-        "enum VideoPrep {",
+        "enum VideoStoryboard {",
+        "    static func prompt(_ frames: [CanvasStoryboard.Moment], said: [CanvasStoryboard.Said], length: Double, sheet: String, video: String) -> String { sheet }",
         "    // Its frames are chosen by the words: with none, a frame every three seconds; with some, where they end.",
         "    static func sheet(of video: URL, said: [CanvasStoryboard.Said], length: Double) async -> (frames: [CanvasStoryboard.Moment], jpeg: Data)? {",
         "        ([CanvasStoryboard.Moment()], Data([0xff, 0xd8, 0xff] + [UInt8](repeating: said.isEmpty ? 0xaa : 0xbb, count: 21)))",
         "    }",
         "}",
+        `enum ImageUpload {\n${newId}\n}`,
+        prepared,
         "@MainActor final class BridgeClient {",
         "    var attempt = 0",
         "    func upload(data: Data, ext: String, id: String) async -> String? {",
@@ -304,15 +307,23 @@ describe("made ready on the phone", () => {
     expect(transcode).toContain("picture.transform = transform");
   });
 
-  test("its sound as whisper takes it, and its frames chosen by the Show's own rule", () => {
+  test("its sound as whisper takes it, and its frames chosen by the Show's own rule, by the code the Mac runs too", () => {
+    // The phone writes the shared code's WAV to its temp folder; nothing of its own decides the shape.
     const recording = between(video, "    static func recording(of source: URL) async throws -> URL? {", "\n    }\n");
+    expect(recording).toContain("guard let wav = try await VideoStoryboard.speech(of: source) else { return nil }");
+    const speech = between(frames, "    public static func speech(of source: URL) async throws -> Data? {", "\n    }\n");
     for (const setting of ["AVSampleRateKey: 16_000,", "AVNumberOfChannelsKey: 1,", "AVLinearPCMBitDepthKey: 16,", "AVLinearPCMIsFloatKey: false,"]) {
-      expect(recording).toContain(setting);
+      expect(speech).toContain(setting);
     }
-    const sheet = between(video, "    static func sheet(of video: URL, said: [CanvasStoryboard.Said], length: Double) async", "\n    }\n");
-    expect(sheet).toContain("let moments = VideoStoryboard.moments(said: said, length: length)");
-    expect(sheet).toContain("let kept = CanvasStoryboard.keep(moments, prints: prints)");
-    expect(sheet).toContain("guard let sheet = VideoStoryboard.contactSheet(frames), let jpeg = jpeg(sheet) else { return nil }");
+    expect(speech).toContain("CMTime(seconds: longest, preferredTimescale: 600)");
+    const sheet = between(frames, "    public static func sheet(of video: URL, said: [CanvasStoryboard.Said], length: Double) async", "\n    }\n");
+    expect(sheet).toContain("let looks = moments(said: said, length: length)");
+    expect(sheet).toContain("let kept = CanvasStoryboard.keep(looks, prints: prints)");
+    expect(sheet).toContain("guard let sheet = contactSheet(pulled), let jpeg = jpeg(sheet) else { return nil }");
+    // Nothing of it is left behind in the app to drift from the Mac's.
+    for (const gone of ["static func wavHeader(", "static func sheet(", "static func generator(", "CGImageDestinationCreateWithData"]) {
+      expect(video).not.toContain(gone);
+    }
   });
 
   test("sent in order: the words first, which choose the frames; then the sheet; then the video; one message", () => {
@@ -320,7 +331,7 @@ describe("made ready on the phone", () => {
     const order = [
       'await bridge.upload(data: data, ext: "wav", id: video.recordingId)',
       "said = await bridge.transcript(of: path) ?? []",
-      "await VideoPrep.sheet(of: video.video, said: said, length: video.length)",
+      "await VideoStoryboard.sheet(of: video.video, said: said, length: video.length)",
       'await bridge.upload(data: sheet.jpeg, ext: "jpg", id: ImageUpload.newUploadID())',
       'await bridge.upload(data: data, ext: "mp4", id: video.videoId)',
       "return VideoStoryboard.prompt(sheet.frames, said: said, length: video.length, sheet: sheetPath, video: videoPath)",

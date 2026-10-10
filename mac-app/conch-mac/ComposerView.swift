@@ -267,6 +267,8 @@ struct ComposerView: View {
     var chrome: ComposerChrome = .window
 
     @State private var isTargetedForDrop = false
+    /// Each video on the composer as it is made ready for the agent, and drops on their way (`ComposerVideos`).
+    @ObservedObject private var videos = ComposerVideos.shared
     /// Drawn for a picture (`ComposerSwoop`, through ImageRenderer): the text view, the scroll view and the bridges are
     /// AppKit's, which a picture cannot draw, so their words are drawn as they would sit.
     @Environment(\.conchRendersStatically) private var rendersStatically
@@ -280,10 +282,13 @@ struct ComposerView: View {
         // No gap: `#ta` carries its own 4 of bottom padding and `.cbar` its own 34 height,
         // so a stack spacing here is height the lab does not have.
         VStack(alignment: .leading, spacing: 0) {
-            if !attachments.isEmpty {
-                AttachmentStrip(attachments: attachments) { url in
-                    attachments.removeAll { $0 == url }
-                }
+            if !attachments.isEmpty || !arrivals.isEmpty {
+                AttachmentStrip(
+                    attachments: attachments,
+                    arrivals: arrivals,
+                    onRemove: { url in attachments.removeAll { $0 == url } },
+                    onDismiss: { id in videos.dismiss(id, from: sessionID) }
+                )
             }
 
             // The field first, controls beneath — the phone's layout, adopted.
@@ -304,7 +309,7 @@ struct ComposerView: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(ConchPalette.textDim)
-                .help("Attach an image")
+                .help("Attach pictures, videos or files")
 
                 // Speech belongs HERE, not in a bar at the far edge of the
                 // window. Talking is what conch is for, and the control for it
@@ -439,7 +444,7 @@ struct ComposerView: View {
                 .buttonStyle(.plain)
                 .disabled(!canSend)
                 .keyboardShortcut(.return, modifiers: [])
-                .help(messageUnavailableReason ?? "Send to \(sessionLabel)")
+                .help(messageUnavailableReason ?? videoReadiness ?? "Send to \(sessionLabel)")
                 }
             }
             // `.cbar`: a fixed 34 tall with 2 of leading padding, so the row keeps its height
@@ -459,6 +464,8 @@ struct ComposerView: View {
         // never even lit, which is why it read as "doesn't seem to work" rather than as an
         // error. `.image` is the whole tree (png, jpeg, tiff, heic, gif conform to it), the
         // same way the file picker asks for `.image` rather than listing extensions.
+        // `.movie` too, for the same reason: a screen recording's thumbnail, a video from Photos or one from a browser is a
+        // PROMISED movie, not a file URL, and was refused as image bytes once were (`load`, `ComposerVideos`).
         .modifier(ComposerDropTarget(live: !rendersStatically, isTargeted: $isTargetedForDrop, load: load))
         .onChange(of: focusRequest) { _, _ in
             // Somewhere else asked for the cursor — the "Something else…" row
@@ -661,8 +668,17 @@ struct ComposerView: View {
     /// Not while a dictation fills the field: the draft would go without the words still being spoken, and they would
     /// land after it in an empty field. Once they land, Return sends the lot.
     private var canSend: Bool {
-        !composed.isEmpty && !isSending && messageUnavailableReason == nil && dictation == nil
+        !composed.isEmpty && !isSending && messageUnavailableReason == nil && dictation == nil && videoReadiness == nil
     }
+
+    /// Why the videos on it hold the send, or nil: one still being made ready, or one that can't go until it is taken off
+    /// (`VideoAttachment.readiness`). Its tile says which.
+    private var videoReadiness: String? {
+        VideoAttachment.readiness(attachments.filter(VideoAttachment.isVideo).map { videos.status(of: $0) })
+    }
+
+    /// This session's drops on their way, and the ones that never arrived.
+    private var arrivals: [ComposerVideos.Arrival] { videos.arrivals[sessionID] ?? [] }
 
     /// A send of this session's on its way, pressed here or wherever the input was when it was pressed.
     private var isSending: Bool { ComposerDraftStore.shared.isSending(sessionID) }
@@ -684,17 +700,16 @@ struct ComposerView: View {
     /// The lab's `#ta` sets `22px` line height on the reading font (`ComposerEditing.lineHeight`).
     private static let lineHeight = ComposerEditing.lineHeight
 
-    /// Paths first, then the words.
+    /// Paths first, then each video, then the words.
     ///
     /// Both Claude Code and Codex read an image when its path appears in the
     /// message, so an attachment is literally its own absolute path on a line.
     /// Leading rather than trailing because a trailing path after a long
     /// message reads as an afterthought and is easier for a model to skim past.
+    /// Neither can watch a video, so a video goes as the phone's does: its contact sheet, its frames and words, timed,
+    /// and its path, for people (`VideoAttachment.message`, `ComposerVideos`).
     private var composed: String {
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !attachments.isEmpty else { return text }
-        let paths = attachments.map(\.path).joined(separator: "\n")
-        return text.isEmpty ? paths : "\(paths)\n\(text)"
+        VideoAttachment.message(text: draft, attachments: attachments) { videos.block(for: $0) }
     }
 
     private func send() {
@@ -729,7 +744,7 @@ struct ComposerView: View {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
-        panel.allowedContentTypes = [.image, .pdf, .plainText]
+        panel.allowedContentTypes = [.image, .movie, .pdf, .plainText]
         // A modal picker brings conch forward, which would call the input home to the window (ComposerDock): it is held
         // where it is while the picker is up, and from the panel the app Tyler was in gets the front back after.
         let previous = chrome == .panel ? NSWorkspace.shared.frontmostApplication : nil
@@ -739,30 +754,84 @@ struct ComposerView: View {
         attach(panel.urls)
     }
 
-    /// A dropped provider is one of two things, and only one of them is a file.
+    /// A dropped provider is a file, a video with no file of its own yet, picture bytes, or something conch can't
+    /// attach, which the composer says rather than dropping.
     ///
     /// Asked by CONFORMANCE rather than by coercing `public.image`: a provider registers the
     /// concrete type it actually holds (`public.png`), and asking it for the abstract parent
     /// is not guaranteed to transcode.
     private func load(_ providers: [NSItemProvider]) {
+        let session = sessionID
+        let videos = ComposerVideos.shared
         for provider in providers {
             if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
                 _ = provider.loadObject(ofClass: URL.self) { url, _ in
                     // A promised file can arrive as a URL that is not written yet; attaching a
-                    // path with nothing behind it would fail later, at send.
-                    guard let url, FileManager.default.fileExists(atPath: url.path) else { return }
+                    // path with nothing behind it would fail later, at send. Said, not dropped.
+                    guard let url, FileManager.default.fileExists(atPath: url.path) else {
+                        let name = url?.lastPathComponent ?? "A file"
+                        Task { @MainActor in videos.refused(name, to: session, because: "conch couldn't find it") }
+                        return
+                    }
                     Task { @MainActor in attach([url]) }
                 }
                 continue
             }
+            // A screen recording's thumbnail, a video from Photos or a browser: promised, or bytes. Asked for before a
+            // picture, so a video that also carries a still of itself goes as the video.
+            if let movie = provider.registeredTypeIdentifiers.first(where: { UTType($0)?.conforms(to: .movie) == true }) {
+                receive(movie, from: provider)
+                continue
+            }
             guard let type = provider.registeredTypeIdentifiers.first(where: {
                 UTType($0)?.conforms(to: .image) == true
-            }) else { continue }
+            }) else {
+                videos.refused(provider.suggestedName ?? "That", to: session, because: "conch attaches files, pictures and videos")
+                continue
+            }
+            let name = provider.suggestedName ?? "A picture"
             provider.loadDataRepresentation(forTypeIdentifier: type) { data, _ in
                 guard let data, let image = NSImage(data: data),
-                      let url = ComposerPasteBridge.temporaryPNG(image, prefix: "conch-drop") else { return }
+                      let url = ComposerPasteBridge.temporaryPNG(image, prefix: "conch-drop") else {
+                    Task { @MainActor in videos.refused(name, to: session, because: "conch couldn't read it") }
+                    return
+                }
                 Task { @MainActor in attach([url]) }
             }
+        }
+    }
+
+    /// A video without a file of its own: promised by its source, which writes it once the drop is taken (a screen
+    /// recording's thumbnail, Photos, which may fetch it from iCloud first), or handed over as bytes. It is kept where
+    /// conch keeps such files (`ComposerDropFolder`), under the name it had, and attached as a file is. Its tile says it
+    /// is on its way; one that never arrives says so, after five minutes.
+    private func receive(_ type: String, from provider: NSItemProvider) {
+        let session = sessionID
+        let videos = ComposerVideos.shared
+        let suggested = provider.suggestedName
+        let arrival = videos.arriving(suggested ?? "A video", to: session)
+        let progress = provider.loadFileRepresentation(forTypeIdentifier: type) { file, error in
+            // The provider's file goes once this returns: copied out first.
+            let kept = Result { () throws -> URL in
+                guard let file else { throw error ?? CocoaError(.fileReadUnknown) }
+                return try ComposerDropFolder.keep(file, named: suggested, type: UTType(type))
+            }
+            Task { @MainActor in
+                switch kept {
+                case let .success(url):
+                    videos.arrived(arrival, to: session)
+                    attach([url])
+                case let .failure(failure):
+                    NSLog("conch: a dropped video didn't arrive: %@", failure.localizedDescription)
+                    videos.arrived(arrival, to: session, failure: "It never arrived")
+                }
+            }
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(300))
+            guard videos.arrivals[session]?.contains(where: { $0.id == arrival && $0.failure == nil }) == true else { return }
+            progress.cancel()
+            videos.arrived(arrival, to: session, failure: "It never arrived")
         }
     }
 
@@ -773,6 +842,9 @@ struct ComposerView: View {
         guard !fresh.isEmpty else { return }
         let wasEmpty = attachments.isEmpty
         attachments.append(contentsOf: fresh)
+        // A video is made ready for the agent from the moment it is attached, so one that can't be read says so on its
+        // tile before anything is sent.
+        for url in fresh where VideoAttachment.isVideo(url) { ComposerVideos.shared.prepare(url, again: true) }
         if wasEmpty { onDraftStarted() }
     }
 }
@@ -850,7 +922,7 @@ private struct ComposerDropTarget: ViewModifier {
 
     func body(content: Content) -> some View {
         if live {
-            content.onDrop(of: [.fileURL, .image], isTargeted: $isTargeted) { providers in
+            content.onDrop(of: [.fileURL, .movie, .image], isTargeted: $isTargeted) { providers in
                 load(providers)
                 return true
             }
@@ -958,11 +1030,14 @@ struct SessionComposer: View {
     }
 }
 
-/// Attached images preview as images; other supported files keep the compact
-/// filename treatment. The path remains available as hover help for both.
+/// Attached images preview as images, and videos as their first frame; other supported files keep the compact
+/// filename treatment. The path remains available as hover help for each. After them, drops still on their way and
+/// those that never arrived, each saying so.
 private struct AttachmentStrip: View {
     let attachments: [URL]
+    var arrivals: [ComposerVideos.Arrival] = []
     let onRemove: (URL) -> Void
+    var onDismiss: (UUID) -> Void = { _ in }
     @Environment(\.conchRendersStatically) private var rendersStatically
 
     var body: some View {
@@ -987,6 +1062,9 @@ private struct AttachmentStrip: View {
             ForEach(attachments, id: \.self) { url in
                 AttachmentPreview(url: url) { onRemove(url) }
             }
+            ForEach(arrivals) { arrival in
+                ArrivalTile(arrival: arrival) { onDismiss(arrival.id) }
+            }
         }
     }
 }
@@ -995,11 +1073,17 @@ private struct AttachmentPreview: View {
     let url: URL
     let onRemove: () -> Void
 
-    private var image: NSImage? { NSImage(contentsOf: url) }
+    /// A video is never decoded as a picture: `NSImage(contentsOf:)` reads the whole file to learn what it is, and this
+    /// runs every time the strip draws. A 95 MB screen recording measured 199 MB resident for one call, on the main
+    /// thread; a long recording is gigabytes.
+    private var isVideo: Bool { VideoAttachment.isVideo(url) }
+    private var image: NSImage? { isVideo ? nil : NSImage(contentsOf: url) }
 
     @ViewBuilder
     var body: some View {
-        if let image {
+        if isVideo {
+            VideoTile(url: url, remove: removeButton)
+        } else if let image {
             // `.att{height:52px;border-radius:9px;box-shadow:inset 0 0 0 .5px var(--hair2)}`
             // and `.att.img{width:68px}`. It was 54x44 at radius 6 — a different shape from
             // the lab's in both dimensions, which is what made a row of them look crooked.
@@ -1047,11 +1131,20 @@ private struct AttachmentPreview: View {
         }
     }
 
-    /// `.att .x{width:18px;height:18px;border-radius:50%;background:rgba(29,29,31,.62);
-    /// color:#fff}` — it was 14x14 on the window ground at 88%, which on a pale screenshot
-    /// was a grey dot on a grey picture.
     private var removeButton: some View {
-        Button(action: onRemove) {
+        AttachmentRemoveButton(name: url.lastPathComponent, action: onRemove)
+    }
+}
+
+/// `.att .x{width:18px;height:18px;border-radius:50%;background:rgba(29,29,31,.62);
+/// color:#fff}` — it was 14x14 on the window ground at 88%, which on a pale screenshot
+/// was a grey dot on a grey picture.
+private struct AttachmentRemoveButton: View {
+    let name: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
             Image(systemName: "xmark")
                 .font(.system(size: 9, weight: .bold))
                 .foregroundStyle(.white)
@@ -1059,7 +1152,158 @@ private struct AttachmentPreview: View {
                 .background(Circle().fill(Color(red: 0.114, green: 0.114, blue: 0.122).opacity(0.62)))
         }
         .buttonStyle(.plain)
-        .help("Remove \(url.lastPathComponent)")
+        .help("Remove \(name)")
+    }
+}
+
+/// A video's tile: its first frame at a picture's size (`.att.img`), how long it is on it, and while it is made ready
+/// for the agent a spinner there instead. One that can't go is a file's chip saying why (`AttachmentNotice`).
+private struct VideoTile<Remove: View>: View {
+    let url: URL
+    let remove: Remove
+    @ObservedObject private var videos = ComposerVideos.shared
+    @State private var poster: NSImage?
+
+    private var status: VideoAttachment.Status? { videos.status(of: url) }
+
+    var body: some View {
+        Group {
+            if case let .failed(reason)? = status {
+                AttachmentNotice(name: url.lastPathComponent, detail: reason, failed: true) { remove }
+                    .help("\(url.path)\n\(reason)")
+            } else {
+                ZStack(alignment: .topTrailing) {
+                    ZStack(alignment: .bottomLeading) {
+                        picture
+                        badge.padding(4)
+                    }
+                    .frame(width: 68, height: 52)
+                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .strokeBorder(ConchPalette.hairlineStrong, lineWidth: 0.5)
+                    }
+
+                    remove
+                        .padding(4)
+                }
+                .help(help)
+            }
+        }
+        // A draft's video after a relaunch is made ready again here; one just attached already is (`attach`).
+        .task(id: url) {
+            videos.prepare(url)
+            poster = await ComposerVideoPrep.poster(of: url)
+        }
+    }
+
+    @ViewBuilder
+    private var picture: some View {
+        if let poster {
+            Image(nsImage: poster)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 68, height: 52)
+        } else {
+            ConchPalette.fill
+        }
+    }
+
+    /// Its length on a dark pill, the remove button's ink; a spinner while it is made ready.
+    private var badge: some View {
+        HStack(spacing: 3) {
+            if case let .ready(brief)? = status {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 7, weight: .bold))
+                Text(CanvasStoryboard.clock(brief.length))
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .monospacedDigit()
+            } else {
+                // Light on the dark pill, in either appearance.
+                ProgressView()
+                    .controlSize(.mini)
+                    .environment(\.colorScheme, .dark)
+            }
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 5)
+        .frame(height: 15)
+        .background(Capsule().fill(Color(red: 0.114, green: 0.114, blue: 0.122).opacity(0.62)))
+    }
+
+    private var help: String {
+        switch status {
+        case let .ready(brief)?:
+            let frames = "\(brief.frames.count) frame\(brief.frames.count == 1 ? "" : "s")"
+            let read = VideoStoryboard.isCut(brief.length) ? " The agent reads its \(VideoAttachment.caption(length: brief.length))." : ""
+            return "\(url.path)\nGoes as a contact sheet of \(frames)\(brief.said.isEmpty ? "" : " and what was said, timed").\(read)"
+        default:
+            return "\(url.path)\nGetting it ready for the agent: its frames and what was said"
+        }
+    }
+}
+
+/// A drop on its way (a promised video being written), or one that never arrived, in the file chip's shape.
+private struct ArrivalTile: View {
+    let arrival: ComposerVideos.Arrival
+    let onDismiss: () -> Void
+
+    var body: some View {
+        if let failure = arrival.failure {
+            AttachmentNotice(name: arrival.name, detail: failure, failed: true) {
+                AttachmentRemoveButton(name: arrival.name, action: onDismiss)
+            }
+            .help("\(arrival.name): \(failure)")
+        } else {
+            AttachmentNotice(name: arrival.name, detail: "Arriving…", failed: false) { EmptyView() }
+                .help("\(arrival.name) is being handed over")
+        }
+    }
+}
+
+/// The file chip (`.att.fl`) with a second line: what is happening to it, or, failed, why it can't go, in the colour
+/// that asks for attention.
+private struct AttachmentNotice<Trailing: View>: View {
+    let name: String
+    let detail: String
+    let failed: Bool
+    @ViewBuilder let trailing: () -> Trailing
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if failed {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(ConchPalette.statusNeeds)
+            } else {
+                ProgressView()
+                    .controlSize(.mini)
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(name)
+                    .font(ConchTypography.font(size: 12.5))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(detail)
+                    .font(ConchTypography.font(size: 11))
+                    .foregroundStyle(failed ? ConchPalette.statusNeeds : ConchPalette.textFaint)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+        }
+        .foregroundStyle(ConchPalette.textDim)
+        .padding(.leading, 10)
+        .padding(.trailing, 30)
+        .frame(height: 52)
+        .frame(maxWidth: 220)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous).fill(ConchPalette.fill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(ConchPalette.hairlineStrong, lineWidth: 0.5)
+        )
+        .overlay(alignment: .trailing) { trailing().padding(.trailing, 4) }
     }
 }
 

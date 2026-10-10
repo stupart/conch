@@ -47,7 +47,7 @@ test("the editor stops accepting file drops, and keeps everything else", () => {
  */
 test("a dropped image is attached whether it is a file or bytes", () => {
   // The live composer's drop target (ComposerDropTarget; the swoop's picture leaves it out).
-  expect(composer).toContain("content.onDrop(of: [.fileURL, .image], isTargeted: $isTargeted)");
+  expect(composer).toContain("content.onDrop(of: [.fileURL, .movie, .image], isTargeted: $isTargeted)");
   expect(composer).toContain(".modifier(ComposerDropTarget(live: !rendersStatically, isTargeted: $isTargetedForDrop, load: load))");
   const load = composer.slice(composer.indexOf("private func load(_ providers: [NSItemProvider])"));
   const body = load.slice(0, load.indexOf("\n    }\n"));

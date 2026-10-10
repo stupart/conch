@@ -61,6 +61,7 @@
 		C10000000000000000000B01 /* CanvasShow.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000B01 /* CanvasShow.swift */; };
 		D10000000000000000000C01 /* ComposerDock.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000C01 /* ComposerDock.swift */; };
 		D10000000000000000000C02 /* ComposerEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000C02 /* ComposerEditor.swift */; };
+		D10000000000000000000C03 /* ComposerVideo.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000C03 /* ComposerVideo.swift */; };
 		A10000000000000000000963 /* HistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000963 /* HistoryStore.swift */; };
 		A10000000000000000000961 /* ConchDesign in Frameworks */ = {isa = PBXBuildFile; productRef = AB0000000000000000000002 /* ConchDesign */; };
 		F1000000000000000000AA01 /* LagoonSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2000000000000000000AA01 /* LagoonSource.swift */; };
@@ -125,6 +126,7 @@
 		C20000000000000000000B01 /* CanvasShow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasShow.swift; sourceTree = "<group>"; };
 		D20000000000000000000C01 /* ComposerDock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerDock.swift; sourceTree = "<group>"; };
 		D20000000000000000000C02 /* ComposerEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerEditor.swift; sourceTree = "<group>"; };
+		D20000000000000000000C03 /* ComposerVideo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerVideo.swift; sourceTree = "<group>"; };
 		A20000000000000000000963 /* HistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryStore.swift; sourceTree = "<group>"; };
 		F2000000000000000000AA01 /* LagoonSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LagoonSource.swift; sourceTree = "<group>"; };
 		F2000000000000000000AA02 /* LagoonWeb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LagoonWeb.swift; sourceTree = "<group>"; };
@@ -182,6 +184,7 @@
 				C20000000000000000000B01 /* CanvasShow.swift */,
 				D20000000000000000000C01 /* ComposerDock.swift */,
 				D20000000000000000000C02 /* ComposerEditor.swift */,
+				D20000000000000000000C03 /* ComposerVideo.swift */,
 				A20000000000000000000963 /* HistoryStore.swift */,
 				A20000000000000000000006 /* ReviewView.swift */,
 				A2000000000000000000CA01 /* VersionCompareView.swift */,
@@ -451,6 +454,7 @@
 				C10000000000000000000B01 /* CanvasShow.swift in Sources */,
 				D10000000000000000000C01 /* ComposerDock.swift in Sources */,
 				D10000000000000000000C02 /* ComposerEditor.swift in Sources */,
+				D10000000000000000000C03 /* ComposerVideo.swift in Sources */,
 				A10000000000000000000963 /* HistoryStore.swift in Sources */,
 				F1000000000000000000AA01 /* LagoonSource.swift in Sources */,
 				F1000000000000000000AA02 /* LagoonWeb.swift in Sources */,

@@ -12,6 +12,7 @@ import {
 } from "../src/phone-bridge.ts";
 import { decodePracticeRequest, PRACTICE_REQUEST_KINDS } from "../src/practice.ts";
 import { decodeSetupRequest, SETUP_REQUEST_KINDS } from "../src/setup.ts";
+import { decodeVideoTranscriptRequest, VIDEO_TRANSCRIPT_KIND } from "../src/video-transcript.ts";
 
 // D1 (review 2026-09-28): the phone's /control forwarded setup's and the practice's requests to the daemon, so a paired
 // phone could run an agent's installer (`curl … | bash`) on the Mac, rewrite `~/.claude/settings.json`, or stop a
@@ -63,8 +64,10 @@ function macOnlyBodies(): Array<{ kind: string; body: Record<string, unknown> }>
     // the review pane's sign-ins is never a phone's to ask for.
     "page-capture": { url: "https://acme.dev", roots: [], viewport: { width: 1440, height: 900 } },
     "page-capture-answer": { request: "r", path: "/tmp/x.png" },
+    // A video dropped on the Mac's composer: its words, from the recording the app wrote. The phone has `/transcript`.
+    [VIDEO_TRANSCRIPT_KIND]: { path: "/Users/t/.cache/conch/uploads/mac-1.wav" },
   };
-  const kinds = [...SETUP_REQUEST_KINDS, ...PRACTICE_REQUEST_KINDS, ...narrationKinds(), ...MAC_APP_ONLY_KINDS];
+  const kinds = [...SETUP_REQUEST_KINDS, ...PRACTICE_REQUEST_KINDS, ...narrationKinds(), VIDEO_TRANSCRIPT_KIND, ...MAC_APP_ONLY_KINDS];
   return kinds.flatMap((kind) => [
     { kind, body: { kind, ...(shaped[kind] ?? {}) } },
     { kind, body: { kind, agent: "gemini", seconds: -1, voice: "", what: "everything", canvasId: "nope" } },
@@ -93,6 +96,8 @@ describe("every request the control server takes before a session is one side's 
     expect(MAC_APP_ONLY_DECODERS.decodeSetupRequest).toBe(decodeSetupRequest);
     expect(MAC_APP_ONLY_DECODERS.decodePracticeRequest).toBe(decodePracticeRequest);
     expect(MAC_APP_ONLY_DECODERS.decodeNarrationRequest).toBe(decodeNarrationRequest);
+    expect(MAC_APP_ONLY_DECODERS.decodeVideoTranscriptRequest).toBe(decodeVideoTranscriptRequest);
+    expect(decodeVideoTranscriptRequest({ kind: VIDEO_TRANSCRIPT_KIND })).not.toBeNull();
     // Each kind derived from a decoder is one that decoder takes.
     for (const kind of SETUP_REQUEST_KINDS) expect(decodeSetupRequest({ kind }), kind).not.toBeNull();
     for (const kind of PRACTICE_REQUEST_KINDS) expect(decodePracticeRequest({ kind }), kind).not.toBeNull();
@@ -136,7 +141,7 @@ describe("the phone's /control refuses them all, and forwards nothing", () => {
     const forwarded: string[] = [];
     const app = bridge(async (line) => { forwarded.push(line); return JSON.stringify({ kind: "ack" }); });
     const bodies = macOnlyBodies();
-    expect(bodies.length).toBeGreaterThanOrEqual(3 * 14);
+    expect(bodies.length).toBeGreaterThanOrEqual(3 * 15);
     for (const { kind, body } of bodies) {
       const response = await app.handle(post(body))!;
       expect(response.status, `${kind} ${JSON.stringify(body)}`).toBe(403);

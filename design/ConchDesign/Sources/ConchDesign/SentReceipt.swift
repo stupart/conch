@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Something Tyler sent through conch itself — a canvas, a Show, a video from the phone — as the daemon sums it up
-/// (`SentReceipt` in `src/conversation.ts`).
+/// Something Tyler sent through conch itself — a canvas, a Show, a video from the phone or dropped on the Mac's
+/// composer — as the daemon sums it up (`SentReceipt` in `src/conversation.ts`).
 ///
 /// Each reaches the session as one message written for the agent: the picture's path, the files beside it, how to
 /// draw an answer back. Drawn as written, his own conversation showed him a 320 pt picture of the screen he was
