@@ -1359,11 +1359,15 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
   if (value.kind === "claude-accounts" || value.kind === "codex-accounts") {
     const err = accountRequestError(value);
     if (err) return { ok: false, err };
-    return { ok: true, value: { kind: value.kind, action: value.action as ClaudeAccountRequest["action"],
+    // Typed on its own: as one literal against the whole union, kind × action is past TypeScript's 25 combinations.
+    const request: ClaudeAccountRequest = { kind: value.kind, action: value.action as ClaudeAccountRequest["action"],
       ...(typeof value.id === "string" ? { id: value.id } : {}),
       ...(typeof value.label === "string" ? { label: value.label } : {}),
       ...(typeof value.configDir === "string" ? { configDir: value.configDir } : {}),
-      ...(value.inApp === true ? { inApp: true as const } : {}) } };
+      ...(typeof value.slot === "number" ? { slot: value.slot } : {}),
+      ...(typeof value.email === "string" ? { email: value.email } : {}),
+      ...(value.inApp === true ? { inApp: true as const } : {}) };
+    return { ok: true, value: request };
   }
   if (value.kind === "history-page" || value.kind === "history-item") return validateHistoryRequest(value);
   if (value.kind === "resumable") {

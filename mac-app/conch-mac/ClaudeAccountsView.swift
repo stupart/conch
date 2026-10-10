@@ -37,16 +37,23 @@ struct SwapUsageAccount: Decodable, Identifiable {
     let windows: [SwapUsageWindow]
     let fetchedAt: String?
     let lastGood: Bool
+    /// Held out of switching (`cswap disable`).
+    var disabled: Bool?
+    /// When its stored sign-in stops renewing.
+    var loginExpiresAt: String?
+
+    /// Its sign-in has stopped working, so it can't be switched to until it's signed in again.
+    var needsSignIn: Bool { ["token_expired", "relogin_required", "no_credentials", "foreign_credential"].contains(status) }
 
     var statusLabel: String {
         switch status {
         case "ok": return "Usage available"
         case "api_key": return "API billing · no subscription quota"
-        case "token_expired": return "Login expired"
+        case "token_expired": return "Sign-in expired"
         case "no_credentials": return "Sign in needed"
         case "keychain_unavailable": return "Keychain unavailable"
-        case "relogin_required": return "Sign in again in claude-swap"
-        case "foreign_credential": return "Account identity changed · check claude-swap"
+        case "relogin_required": return "Signed out"
+        case "foreign_credential": return "Signed in as someone else"
         default: return "Usage unavailable"
         }
     }
@@ -217,24 +224,84 @@ final class ClaudeAccountsStore: ObservableObject {
     @Published var pendingLoginId: String?
     /// A Claude sign-in shown in the app (`ClaudeSignInSheet`), not Terminal and the browser.
     @Published var signIn: ClaudeSignInRequest?
-    /// Account rotation (daemon claude-rotation.ts): claude-swap installed, on, running, and its accounts.
+    /// Your Claude accounts (daemon claude-rotation.ts): claude-swap's list, whether it switches between them, and how.
     @Published var rotation: ClaudeRotationState?
-    /// The in-app sign-in under way is adding an account to the rotation: `rotation-add` once it's done.
-    var addToRotationAfterSignIn = false
+    /// What a slow action is doing, while it does it.
+    @Published var working: String?
+    /// Sign-ins closed before they finished: whatever the daemon says about them after is not news.
+    private var cancelledSignIns: Set<String> = []
     let providerId: String
     init(providerId: String = "claude") { self.providerId = providerId }
     private var providerName: String { providerId == "codex" ? "Codex" : "Claude" }
     private let client = ConchSocketClient()
 
-    /// Rotation on or off: the daemon's `claude-rotation` setting, applied live, then the state read back.
+    /// Switching on or off: the daemon's `claude-rotation` setting, applied live, then the state read back.
     func setRotation(_ on: Bool) async {
         struct SetConfig: Encodable { let kind = "set-config"; let key = "claude-rotation"; let value: Bool }
         _ = await client.request(SetConfig(value: on), timeout: 10)
         await send("rotation-status")
     }
 
+    /// "Add a Claude account", or sign one in again (`email`): Claude's sign-in in a folder of its own, shown here, so
+    /// the login your sessions use never changes while you do it. The first time, claude-swap is installed and the account
+    /// this Mac is signed in as goes in the list first, which can take a minute.
+    func addAccount(email: String? = nil) async {
+        working = rotation?.installed == true ? "Opening Claude's sign-in…" : "Setting up your accounts list. The first time takes about a minute…"
+        defer { working = nil }
+        await send("rotation-add-account", email: email, timeout: 240)
+    }
+
+    /// Default signs in as this account now; running sessions follow within about 30 seconds.
+    func use(_ account: SwapUsageAccount) async {
+        if await send("rotation-switch", slot: account.number, timeout: 60), rotation?.ok != false {
+            notice = "Switched to \(account.email). Running sessions follow within about 30 seconds."
+        }
+    }
+
+    func removeFromList(_ account: SwapUsageAccount) async {
+        if await send("rotation-remove", slot: account.number, timeout: 60), rotation?.ok != false {
+            notice = "Removed \(account.email)."
+        }
+    }
+
+    /// Closes a sign-in without finishing it. Sent even while a refresh is under way (`send` waits its turn), so Claude's
+    /// sign-in never keeps listening after the sheet has gone.
+    func cancelSignIn(_ request: ClaudeSignInRequest) async {
+        struct Request: Encodable { let kind = "claude-accounts"; let action = "cancel-login"; let id: String }
+        if signIn?.id == request.id { signIn = nil }
+        if request.adding { cancelledSignIns.insert(request.accountId) } else { pendingLoginId = nil }
+        _ = await client.request(Request(id: request.accountId), timeout: 10)
+    }
+
+    /// The daemon adds the account once its sign-in finishes, wherever that happened; this waits to hear how it went.
+    private func finishAdding(_ id: String, email: String?) async {
+        struct Request: Encodable { let kind = "claude-accounts"; let action = "rotation-finish-add"; let id: String }
+        struct Reply: Decodable { let rotation: ClaudeRotationState? }
+        let outcome = await client.request(Request(id: id), timeout: 700)
+        if signIn?.accountId == id { signIn = nil }
+        guard !cancelledSignIns.contains(id) else { return }
+        guard case let .reply(data) = outcome, let state = (try? JSONDecoder().decode(Reply.self, from: data))?.rotation else {
+            error = "Couldn't tell whether the account was added. Refresh to check."
+            return
+        }
+        rotation = state
+        guard state.ok == true else {
+            error = state.output ?? "The account wasn't added."
+            return
+        }
+        let who = state.added ?? email ?? "The account"
+        notice = email == nil ? "Added \(who)." : "\(who) is signed in again."
+        // Two accounts that could take turns: what they were added for (2026-10-09, Tyler: "ideally its like one account
+        // that just rotates to the next max account").
+        if !state.on, (state.dashboard?.accounts.filter { !$0.needsSignIn }.count ?? 0) >= 2 {
+            await setRotation(true)
+            notice = "Added \(who). Switching between your accounts is on."
+        }
+    }
+
     @discardableResult
-    func send(_ action: String, id: String? = nil, label: String? = nil, configDir: String? = nil) async -> Bool {
+    func send(_ action: String, id: String? = nil, label: String? = nil, configDir: String? = nil,
+              slot: Int? = nil, email: String? = nil, timeout: TimeInterval = 20) async -> Bool {
         guard !busy else { return false }
         struct Request: Encodable {
             let kind: String
@@ -242,15 +309,19 @@ final class ClaudeAccountsStore: ObservableObject {
             let id: String?
             let label: String?
             let configDir: String?
+            let slot: Int?
+            let email: String?
             /// Claude's sign-in in the app: the daemon hands back Anthropic's page (`loginUrl`) instead of opening Terminal.
             let inApp: Bool?
         }
+        struct Adding: Decodable { let id: String; let url: String }
         struct Reply: Decodable {
             let accounts: [ClaudeAccountProfile]?
             let error: String?
             let loginOpened: Bool?
             let loginUrl: String?
             let rotation: ClaudeRotationState?
+            let adding: Adding?
             let cloudOpened: Bool?
             let createdAccountId: String?
             let execution: ExecutionCatalog?
@@ -261,8 +332,9 @@ final class ClaudeAccountsStore: ObservableObject {
         error = nil
         notice = nil
         defer { busy = false }
-        switch await client.request(Request(kind: providerId == "codex" ? "codex-accounts" : "claude-accounts", action: action, id: id, label: label, configDir: configDir,
-                                           inApp: providerId == "claude" && action == "login" ? true : nil), timeout: 20) {
+        switch await client.request(Request(kind: providerId == "codex" ? "codex-accounts" : "claude-accounts", action: action, id: id, label: label,
+                                            configDir: configDir, slot: slot, email: email,
+                                            inApp: providerId == "claude" && action == "login" ? true : nil), timeout: timeout) {
         case let .reply(data):
             guard let reply = try? JSONDecoder().decode(Reply.self, from: data) else {
                 error = "Could not read \(providerName) accounts from the daemon."
@@ -283,15 +355,23 @@ final class ClaudeAccountsStore: ObservableObject {
             createdAccountId = reply.createdAccountId
             if let state = reply.rotation {
                 rotation = state
-                if state.ok == false { error = state.output.map { "claude-swap: \($0)" } ?? "claude-swap failed." }
+                if state.ok == false { error = state.output ?? "claude-swap failed." }
             }
             execution = reply.execution
             if let update = reply.usage { usage = update }
-            if let link = reply.loginUrl, let url = URL(string: link), let id {
+            if let adding = reply.adding, let url = URL(string: adding.url) {
+                signIn = ClaudeSignInRequest(accountId: adding.id, title: email.map { "Sign in again: \($0)" } ?? "Add a Claude account",
+                                             detail: email.map { "Sign in as \($0). Nothing from your browser is used here." }
+                                                ?? "Sign in with the account you want to add. Nothing from your browser is used here.",
+                                             url: url, adding: true)
+                Task { await finishAdding(adding.id, email: email) }
+            } else if let link = reply.loginUrl, let url = URL(string: link), let id {
                 // Anthropic's page in the app, with no cookies of its own: whoever the browser is signed in as can't sign
                 // this account in by accident (2026-10-09, Default ended up as the other account that way).
                 pendingLoginId = id
-                signIn = ClaudeSignInRequest(accountId: id, label: accounts.first(where: { $0.id == id })?.label ?? "Claude", url: url)
+                let label = accounts.first(where: { $0.id == id })?.label ?? "Claude"
+                signIn = ClaudeSignInRequest(accountId: id, title: "Sign in to Claude: \(label)",
+                                             detail: "Choose the email for this sign-in. Nothing from your browser is used here.", url: url)
             } else if reply.loginOpened == true {
                 pendingLoginId = wasSignedIn ? nil : id
                 notice = wasSignedIn ? "Finish signing in in Terminal, then choose Check connection." : "Finish signing in with \(providerName) in Terminal. Conch will check the connection automatically."
@@ -319,8 +399,8 @@ struct ClaudeAccountsView: View {
                     Text("Providers").font(ConchTypography.font(size: 20, weight: .semibold))
                     Text("Your accounts on this Mac").font(ConchTypography.font(size: 12)).foregroundStyle(SwapPalette.secondaryText)
                 }
-                ProviderAccountSection(providerId: "codex")
                 ProviderAccountSection(providerId: "claude")
+                ProviderAccountSection(providerId: "codex")
             }.padding(24)
         }
         .foregroundStyle(SwapPalette.foreground).tint(SwapPalette.foreground)
@@ -336,8 +416,10 @@ private struct ProviderAccountSection: View {
     @State private var name = ""
     @State private var existingDirectory: String?
     @State private var removing: ClaudeAccountProfile?
+    @State private var removingFromList: SwapUsageAccount?
     @State private var expanded: Set<String> = []
     @State private var showAbout = false
+    @State private var showProfiles = false
     private var providerName: String { providerId == "codex" ? "Codex" : "Claude" }
 
     init(providerId: String) {
@@ -352,36 +434,26 @@ private struct ProviderAccountSection: View {
                 Text(providerId == "codex" ? "OpenAI · Codex" : "Anthropic · Claude Code").font(ConchTypography.font(size: 14, weight: .semibold))
                 Spacer()
                 if store.busy { ProgressView().controlSize(.small) }
-                Button { Task { await store.send("usage") } } label: {
+                Button { Task { await refresh() } } label: {
                     Image(systemName: "arrow.clockwise").frame(width: 24, height: 24)
                 }.buttonStyle(.plain).help("Refresh accounts and usage").accessibilityLabel("Refresh \(providerName) accounts and usage").disabled(store.busy)
-                Button("Connect account") { adding = true }.disabled(store.busy || adding)
+                if providerId == "codex" { Button("Connect account") { adding = true }.disabled(store.busy || adding) }
             }
             if let notice = store.notice { feedback(notice, isError: false) }
             if let error = store.error { feedback(error, isError: true) }
-            if adding { addForm }
-            if store.accounts.isEmpty && !store.busy {
-                Text("Connect to the Conch daemon to load your accounts.").font(ConchTypography.font(size: 12)).foregroundStyle(SwapPalette.secondaryText)
-            }
-            TimelineView(.periodic(from: .now, by: 30)) { context in
-                VStack(spacing: 0) {
-                    ForEach(store.accounts) { account in
-                        accountRow(account, now: context.date)
-                        Rectangle().fill(SwapPalette.divider).frame(height: 1)
-                    }
-                }
-            }
-            if providerId == "claude" { rotationBlock }
+            if providerId == "claude" { claudeAccounts } else { profiles }
             DisclosureGroup("How accounts and usage work", isExpanded: $showAbout) {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text(providerId == "claude"
-                        ? "Choose an account when starting a new session. Resume and restart keep its original account. With rotation on, Default's sign-in moves to your next Max account as one nears its limit; other accounts never switch."
-                        : "Choose an account when starting a new session. Resume and restart keep its original account. Accounts do not switch automatically when a limit is reached.")
-                    Text(providerId == "codex"
-                        ? "Usage comes from Codex’s official account interface. Refresh checks the current limits. Your ChatGPT subscription and API billing are separate."
-                        : "Usage comes from Claude Code’s status line after an API response (Claude 2.1.251 or later). Refresh reads the latest local measurement.")
-                    Text("Each account has a separate configuration and conversation history on this Mac. Your sign-in stays with \(providerName). Accounts on other devices are separate connections.")
-                    if providerId == "codex" { Text("Approve Codex’s hook trust review if prompted when you first start a session with a new account.") }
+                    if providerId == "claude" {
+                        Text("Your Claude accounts and their sign-ins are kept in this Mac's Keychain by claude-swap (MIT). Conch shows them and adds to them; it never sees a password or a token.")
+                        Text("Use now, and switching automatically, change which account the Default sign-in is. Sessions keep running and follow within about 30 seconds.")
+                        Text("Usage is claude-swap's own reading of each account's limits. A separate sign-in is its own Claude folder: its sessions keep its account and don't switch.")
+                    } else {
+                        Text("Choose an account when starting a new session. Resume and restart keep its original account. Accounts do not switch automatically when a limit is reached.")
+                        Text("Usage comes from Codex’s official account interface. Refresh checks the current limits. Your ChatGPT subscription and API billing are separate.")
+                        Text("Each account has a separate configuration and conversation history on this Mac. Your sign-in stays with Codex. Accounts on other devices are separate connections.")
+                        Text("Approve Codex’s hook trust review if prompted when you first start a session with a new account.")
+                    }
                     Button("Usage bar design · claude-swap (MIT) ↗") {
                         appStore.openLink("https://github.com/realiti4/claude-swap", cwd: nil, rowId: nil) { store.error = $0 }
                     }
@@ -398,6 +470,7 @@ private struct ProviderAccountSection: View {
                 try? await Task.sleep(for: .seconds(60))
                 guard !Task.isCancelled else { return }
                 await store.send("list")
+                if providerId == "claude" { await store.send("rotation-status") }
             }
         }
         .task(id: store.pendingLoginId) {
@@ -411,25 +484,21 @@ private struct ProviderAccountSection: View {
         }
         .sheet(item: $store.signIn) { request in
             ClaudeSignInSheet(request: request) { finished in
+                guard finished else {
+                    Task { await store.cancelSignIn(request) }
+                    return
+                }
+                // Adding: the daemon puts it in the list and the sheet closes when it has (`finishAdding`).
+                guard !request.adding else { return }
                 store.signIn = nil
                 Task {
-                    if finished {
-                        // Claude's listener has the code; give it a moment to write the credential, then read who it is.
-                        try? await Task.sleep(nanoseconds: 1_500_000_000)
-                        await store.send("refresh", id: request.accountId)
-                        if store.addToRotationAfterSignIn {
-                            store.addToRotationAfterSignIn = false
-                            await store.send("rotation-add")
-                        }
-                    } else {
-                        store.addToRotationAfterSignIn = false
-                        store.pendingLoginId = nil
-                        await store.send("cancel-login", id: request.accountId)
-                    }
+                    // Claude's listener has the code; give it a moment to write the credential, then read who it is.
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    await store.send("refresh", id: request.accountId)
                 }
             }
         }
-        .alert("Remove account from Conch?", isPresented: Binding(
+        .alert("Remove sign-in from Conch?", isPresented: Binding(
             get: { removing != nil }, set: { if !$0 { removing = nil } }
         )) {
             Button("Remove", role: .destructive) {
@@ -441,56 +510,189 @@ private struct ProviderAccountSection: View {
         } message: {
             Text("Your sign-in and conversation files stay on this Mac. Close this account’s sessions first.")
         }
+        .alert("Remove \(removingFromList?.email ?? "this account") from your Claude accounts?", isPresented: Binding(
+            get: { removingFromList != nil }, set: { if !$0 { removingFromList = nil } }
+        )) {
+            Button("Remove", role: .destructive) {
+                guard let account = removingFromList else { return }
+                removingFromList = nil
+                Task { await store.removeFromList(account) }
+            }
+            Button("Cancel", role: .cancel) { removingFromList = nil }
+        } message: {
+            Text(removingFromList?.defaultLogin == true
+                 ? "Its saved sign-in is deleted from this Mac. Sessions stay on it, since it's the account in use now, but won't switch back to it."
+                 : "Its saved sign-in is deleted from this Mac, and sessions won't switch to it. Add it again any time.")
+        }
     }
 
-    /// One sign-in for Default that moves to your next Max account as one nears its limit (daemon claude-rotation.ts,
-    /// claude-swap's switcher). 2026-10-09, Tyler: "ideally its like one account that just rotates to the next max account
-    /// via logout and login when one hits its limit".
-    private var rotationBlock: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Rotate between Max accounts").font(ConchTypography.font(size: 13, weight: .semibold))
-            Text("Default's sign-in moves to your next Max account as one nears its limit. Sessions on Default keep running and follow it within about 30 seconds. Switching is done by claude-swap (MIT).")
+    private func refresh() async {
+        await store.send("usage")
+        if providerId == "claude" { await store.send("rotation-status") }
+    }
+
+    /// Claude accounts are claude-swap's list (daemon claude-rotation.ts), not whoever this Mac is signed in as
+    /// (2026-10-11, Tyler: "the signin and rotate shit is jacked and ux is terrible ... make it clear and 'just work'"; "we
+    /// should probably have the store be in the app and be self correcting"). One list; add an account by signing in here;
+    /// use one now; switch between them automatically. Conch's separate sign-ins are tucked under it, for the rare session
+    /// that must keep one account.
+    private var claudeAccounts: some View {
+        let list = store.rotation?.dashboard?.accounts ?? []
+        let current = store.accounts.first(where: { $0.id == "default" })
+        return VStack(alignment: .leading, spacing: 14) {
+            Text("Your sessions use one account at a time, and move to the next as it nears its limit. Sessions keep running when it switches.")
                 .font(ConchTypography.font(size: 12)).foregroundStyle(SwapPalette.secondaryText)
-            if let rotation = store.rotation {
-                if !rotation.installed {
-                    Button("Set up rotation") { Task { await store.send("rotation-install") } }.disabled(store.busy)
-                    Text("Installs claude-swap with the uv conch carries.").font(ConchTypography.font(size: 11)).foregroundStyle(SwapPalette.secondaryText)
-                } else {
-                    Toggle("Rotate automatically", isOn: Binding(
-                        get: { rotation.on },
-                        set: { on in Task { await store.setRotation(on) } }
-                    )).toggleStyle(.switch).disabled(store.busy)
-                    if rotation.on {
-                        Text(rotation.running ? "Watching usage: it switches at 90%." : "Starting claude-swap's switcher…")
-                            .font(ConchTypography.font(size: 11)).foregroundStyle(SwapPalette.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            TimelineView(.periodic(from: .now, by: 30)) { context in
+                VStack(spacing: 0) {
+                    ForEach(list) { account in
+                        listRow(account, now: context.date)
+                        Rectangle().fill(SwapPalette.divider).frame(height: 1)
                     }
-                    TimelineView(.periodic(from: .now, by: 30)) { context in
-                        VStack(alignment: .leading, spacing: 6) {
-                            ForEach(rotation.dashboard?.accounts ?? [], id: \.id) { account in
-                                SwapUsageRow(account: account, now: context.date, showsIdentity: true, providerId: "claude")
-                            }
-                            if (rotation.dashboard?.accounts ?? []).isEmpty {
-                                Text("No accounts in the rotation yet.").font(ConchTypography.font(size: 12)).foregroundStyle(SwapPalette.secondaryText)
-                            }
+                    if list.isEmpty, let current, let email = current.email {
+                        currentRow(email)
+                        Rectangle().fill(SwapPalette.divider).frame(height: 1)
+                    }
+                }
+            }
+            // Signed in as someone the list doesn't have: switching would leave that account behind.
+            if let email = current?.email, !list.isEmpty, !list.contains(where: { $0.email == email }) {
+                HStack(spacing: 10) {
+                    Text("This Mac is signed in as \(email), which isn't in your accounts.")
+                        .font(ConchTypography.font(size: 12)).foregroundStyle(SwapPalette.secondaryText)
+                    Spacer()
+                    Button("Add it") { Task { await store.send("rotation-add", timeout: 60) } }.disabled(store.busy)
+                }
+            }
+            Button { Task { await store.addAccount() } } label: {
+                Label("Add a Claude account", systemImage: "plus").font(ConchTypography.font(size: 13, weight: .medium))
+            }
+            .controlSize(.large).disabled(store.busy || store.signIn != nil)
+            .help("Sign in with another Claude account here. The account you're using now doesn't change.")
+            if let working = store.working {
+                Text(working).font(ConchTypography.font(size: 11)).foregroundStyle(SwapPalette.secondaryText)
+            }
+            switching(list)
+            DisclosureGroup(isExpanded: $showProfiles) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("A separate sign-in is its own Claude folder on this Mac. Sessions started on one keep its account and never switch. Default is the one that switches.")
+                        .font(ConchTypography.font(size: 11)).foregroundStyle(SwapPalette.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                    profiles
+                    if !adding { Button("New separate sign-in…") { adding = true }.disabled(store.busy) }
+                }.padding(.top, 8)
+            } label: {
+                Text("Separate sign-ins (\(store.accounts.count))").font(ConchTypography.font(size: 12, weight: .medium))
+            }
+        }
+    }
+
+    private func listRow(_ account: SwapUsageAccount, now: Date) -> some View {
+        let state = listState(account, now: now)
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image("AgentClaude").resizable().scaledToFit().frame(width: 26, height: 26)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 7) {
+                        Text(account.email).font(ConchTypography.font(size: 13, weight: .medium))
+                            .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                        if let organization = account.organization, !organization.isEmpty, organization != account.email {
+                            Text(organization).font(ConchTypography.font(size: 10)).foregroundStyle(SwapPalette.secondaryText).lineLimit(1)
                         }
                     }
-                    HStack {
-                        if let current = store.accounts.first(where: { $0.id == "default" })?.email {
-                            Button("Add \(current)") { Task { await store.send("rotation-add") } }
-                        }
-                        Button("Sign in another account…") {
-                            store.addToRotationAfterSignIn = true
-                            Task { await store.send("login", id: "default") }
-                        }
-                        Spacer()
-                        Button { Task { await store.send("rotation-status") } } label: { Image(systemName: "arrow.clockwise") }
-                            .buttonStyle(.plain).help("Refresh the rotation")
-                    }.disabled(store.busy)
+                    Text(state.text).font(ConchTypography.font(size: 11)).foregroundStyle(state.color)
+                }
+                Spacer(minLength: 8)
+                if account.needsSignIn {
+                    Button("Sign in again") { Task { await store.addAccount(email: account.email) } }
+                } else if !account.defaultLogin {
+                    Button("Use now") { Task { await store.use(account) } }
+                        .help("Sessions move to this account within about 30 seconds")
+                }
+                Menu {
+                    if !account.defaultLogin, !account.needsSignIn { Button("Use now") { Task { await store.use(account) } } }
+                    Button("Sign in again…") { Task { await store.addAccount(email: account.email) } }
+                    Divider()
+                    Button("Remove…", role: .destructive) { removingFromList = account }
+                } label: {
+                    Image(systemName: "ellipsis").frame(width: 24, height: 24)
+                }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                .accessibilityLabel("More for \(account.email)")
+            }
+            .disabled(store.busy || store.signIn != nil)
+            if !account.windows.isEmpty {
+                SwapUsageRow(account: account, now: now, showsIdentity: false, providerId: "claude")
+            }
+        }.padding(.vertical, 14)
+    }
+
+    private func listState(_ account: SwapUsageAccount, now: Date) -> (text: String, color: Color) {
+        if account.needsSignIn { return ("\(account.statusLabel) · sign in again to use it", SwapPalette.severity(95)) }
+        if account.defaultLogin { return ("In use now", SwapPalette.severity(0)) }
+        if account.disabled == true { return ("Paused · never switched to", SwapPalette.secondaryText) }
+        if let expiry = swapDate(account.loginExpiresAt), expiry.timeIntervalSince(now) < 7 * 86_400 {
+            return ("Sign-in ends in \(swapDuration(max(60, expiry.timeIntervalSince(now)))) · sign in again to keep it", SwapPalette.severity(75))
+        }
+        return ("Ready", SwapPalette.secondaryText)
+    }
+
+    /// Nothing in the list yet: the account this Mac is signed in as, which the first add puts there.
+    private func currentRow(_ email: String) -> some View {
+        HStack(spacing: 10) {
+            Image("AgentClaude").resizable().scaledToFit().frame(width: 26, height: 26)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(email).font(ConchTypography.font(size: 13, weight: .medium)).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                Text("In use now · add another account to switch between them")
+                    .font(ConchTypography.font(size: 11)).foregroundStyle(SwapPalette.secondaryText)
+            }
+            Spacer()
+        }.padding(.vertical, 14)
+    }
+
+    private func switching(_ list: [SwapUsageAccount]) -> some View {
+        let usable = list.filter { !$0.needsSignIn && $0.disabled != true }.count
+        let rotation = store.rotation
+        let on = rotation?.on ?? false
+        let caption: String
+        if rotation?.installed != true || usable < 2 {
+            caption = on ? "On. Add another account for it to switch to." : "Add a second account to switch between them."
+        } else if on {
+            caption = rotation?.running == true
+                ? "On. When the account in use reaches 90% of a limit, sessions move to the one with the most left."
+                : "Starting…"
+        } else {
+            caption = "Off. Sessions stay on the account in use until you choose Use now."
+        }
+        return VStack(alignment: .leading, spacing: 4) {
+            Toggle(isOn: Binding(get: { on }, set: { value in Task { await store.setRotation(value) } })) {
+                Text("Switch accounts automatically").font(ConchTypography.font(size: 13, weight: .medium))
+            }
+            .toggleStyle(.switch).disabled(store.busy || rotation?.installed != true)
+            Text(caption).font(ConchTypography.font(size: 11)).foregroundStyle(SwapPalette.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(SwapPalette.surface, in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// Conch's own sign-ins, each a Claude or Codex folder of its own: the Codex accounts, and Claude's separate sign-ins.
+    private var profiles: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if adding { addForm }
+            if store.accounts.isEmpty && !store.busy {
+                Text("Connect to the Conch daemon to load your accounts.").font(ConchTypography.font(size: 12)).foregroundStyle(SwapPalette.secondaryText)
+            }
+            TimelineView(.periodic(from: .now, by: 30)) { context in
+                VStack(spacing: 0) {
+                    ForEach(store.accounts) { account in
+                        accountRow(account, now: context.date)
+                        Rectangle().fill(SwapPalette.divider).frame(height: 1)
+                    }
                 }
             }
         }
-        .padding(14)
-        .background(SwapPalette.surface, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func accountRow(_ account: ClaudeAccountProfile, now: Date) -> some View {
@@ -540,9 +742,11 @@ private struct ProviderAccountSection: View {
 
     private var addForm: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Connect a \(providerName) account").font(ConchTypography.font(size: 14, weight: .medium))
-            TextField("Account name, e.g. Work", text: $name).textFieldStyle(.roundedBorder)
-            Text("\(providerName) will open its sign-in in Terminal. Choose the email for this account in your browser.")
+            Text(providerId == "claude" ? "New separate sign-in" : "Connect a Codex account").font(ConchTypography.font(size: 14, weight: .medium))
+            TextField("Name, e.g. Work", text: $name).textFieldStyle(.roundedBorder)
+            Text(providerId == "claude"
+                 ? "Claude's sign-in opens here. Choose the email for this sign-in."
+                 : "Codex will open its sign-in in Terminal. Choose the email for this account in your browser.")
                 .font(ConchTypography.font(size: 12)).foregroundStyle(SwapPalette.secondaryText)
             DisclosureGroup("Use an existing account folder") {
                 if let directory = existingDirectory {
@@ -585,12 +789,16 @@ private struct ProviderAccountSection: View {
 }
 
 
-/// A Claude sign-in shown in the app (daemon `claude-web-login.ts`): the account and Anthropic's authorize page.
+/// A Claude sign-in shown in the app (daemon `claude-web-login.ts`): what it's for, and Anthropic's authorize page.
 struct ClaudeSignInRequest: Identifiable, Equatable {
     var id: String { accountId }
+    /// A separate sign-in's id, or the daemon's id for an account being added (`adding`).
     let accountId: String
-    let label: String
+    let title: String
+    let detail: String
     let url: URL
+    /// Adding to your Claude accounts (`rotation-add-account`): the daemon finishes it, and the sheet closes once it has.
+    var adding = false
 }
 
 /// Claude's own sign-in page, in conch (2026-10-09, Tyler: "make it so u can like popup ui for me too in the deliverables
@@ -602,34 +810,64 @@ struct ClaudeSignInSheet: View {
     let request: ClaudeSignInRequest
     let onFinish: (Bool) -> Void
     @State private var finished = false
+    @State private var inChrome = false
+    private static let chrome = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome")
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 Image("AgentClaude").resizable().scaledToFit().frame(width: 18, height: 18)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Sign in to Claude: \(request.label)").font(ConchTypography.font(size: 13, weight: .semibold))
-                    Text(finished ? "Signed in. Checking which account it is…" : "Choose the email for this account. Nothing from your browser is used here.")
+                    Text(request.title).font(ConchTypography.font(size: 13, weight: .semibold))
+                    Text(finished ? (request.adding ? "Signed in. Adding it to your accounts…" : "Signed in. Checking which account it is…") : request.detail)
                         .font(ConchTypography.font(size: 11)).foregroundStyle(.secondary)
                 }
                 Spacer()
+                if finished { ProgressView().controlSize(.small) }
                 Button("Cancel") { onFinish(false) }.keyboardShortcut(.cancelAction).disabled(finished)
             }
             .padding(12)
             Divider()
-            ClaudeSignInWebView(url: request.url) {
-                guard !finished else { return }
-                finished = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { onFinish(true) }
+            if inChrome {
+                VStack(spacing: 10) {
+                    Text("Finish signing in in Chrome").font(ConchTypography.font(size: 14, weight: .semibold))
+                    Text("It opened in a private window, so it isn't signed in as anyone yet. This closes by itself once you're done.")
+                        .font(ConchTypography.font(size: 12)).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                }
+                .padding(32).frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ClaudeSignInWebView(url: request.url) {
+                    guard !finished else { return }
+                    finished = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { onFinish(true) }
+                }
+            }
+            // Should a provider's page turn the app's web view away, the same sign-in finishes from Chrome: the page hands
+            // its code to Claude's listener on this Mac, whichever browser it's in.
+            if request.adding, let chrome = Self.chrome, !inChrome, !finished {
+                Divider()
+                HStack {
+                    Text("Trouble signing in here?").font(ConchTypography.font(size: 11)).foregroundStyle(.secondary)
+                    Button("Open in a private Chrome window") {
+                        let configuration = NSWorkspace.OpenConfiguration()
+                        configuration.arguments = ["--incognito", request.url.absoluteString]
+                        NSWorkspace.shared.openApplication(at: chrome, configuration: configuration)
+                        inChrome = true
+                    }.buttonStyle(.link).font(ConchTypography.font(size: 11))
+                    Spacer()
+                }.padding(.horizontal, 12).padding(.vertical, 8)
             }
         }
         .frame(minWidth: 520, idealWidth: 560, minHeight: 640, idealHeight: 720)
     }
 }
 
+/// The page, with no cookies of its own (`.nonPersistent()`). Conch's in-app browser work will give each account a
+/// profile of its own; when it does, this is the one place a sign-in would take that account's data store instead.
 private struct ClaudeSignInWebView: NSViewRepresentable {
     let url: URL
     let onCallback: () -> Void
+    static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
 
     func makeCoordinator() -> Coordinator { Coordinator(onCallback: onCallback) }
 
@@ -638,7 +876,7 @@ private struct ClaudeSignInWebView: NSViewRepresentable {
         configuration.websiteDataStore = .nonPersistent()
         let view = WKWebView(frame: .zero, configuration: configuration)
         // Google's sign-in turns away browsers it takes for embedded ones; this view is Safari's engine, so it says so.
-        view.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
+        view.customUserAgent = Self.userAgent
         view.navigationDelegate = context.coordinator
         view.uiDelegate = context.coordinator
         view.load(URLRequest(url: url))
@@ -673,17 +911,30 @@ private struct ClaudeSignInWebView: NSViewRepresentable {
             }
         }
 
-        /// A sign-in that opens a window (Google, Apple) opens here instead.
+        /// A sign-in that opens a window (Continue with Google, Continue with Apple) opens over the page, as a real popup
+        /// it keeps talking to. Loading it in the page instead loses the opener it reports back to, and Claude's page then
+        /// says "There was an error logging you in" (2026-10-11, the Google sign-in in this sheet).
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                      for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-            if navigationAction.targetFrame == nil, let url = navigationAction.request.url { webView.load(URLRequest(url: url)) }
-            return nil
+            let popup = WKWebView(frame: webView.bounds, configuration: configuration)
+            popup.autoresizingMask = [.width, .height]
+            popup.customUserAgent = ClaudeSignInWebView.userAgent
+            popup.navigationDelegate = self
+            popup.uiDelegate = self
+            webView.addSubview(popup)
+            return popup
+        }
+
+        /// The popup closed itself (it has reported back): the page beneath carries on.
+        func webViewDidClose(_ webView: WKWebView) {
+            webView.removeFromSuperview()
         }
     }
 }
 
 
-/// Account rotation, as the daemon reports it (claude-rotation.ts).
+/// Your Claude accounts, as the daemon reports them (claude-rotation.ts): claude-swap installed, switching on and running,
+/// its list, and how the last action went.
 struct ClaudeRotationState: Decodable {
     let installed: Bool
     let on: Bool
@@ -691,4 +942,6 @@ struct ClaudeRotationState: Decodable {
     let dashboard: SwapDashboard?
     let output: String?
     let ok: Bool?
+    /// The account `rotation-finish-add` put in the list.
+    let added: String?
 }

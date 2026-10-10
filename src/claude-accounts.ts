@@ -21,10 +21,15 @@ export interface ClaudeAccountStatus extends ClaudeAccount {
 
 export type ClaudeAccountRequest = ({ kind: "claude-accounts" } | { kind: "codex-accounts" }) & {
   action: "list" | "add" | "remove" | "login" | "refresh" | "usage" | "cloud" | "cancel-login"
-    | "rotation-status" | "rotation-install" | "rotation-add";
+    | "rotation-status" | "rotation-install" | "rotation-add"
+    | "rotation-add-account" | "rotation-finish-add" | "rotation-switch" | "rotation-remove";
   id?: string;
   label?: string;
   configDir?: string;
+  /** An account in claude-swap's list, by its number (`rotation-switch`, `rotation-remove`). */
+  slot?: number;
+  /** Pre-fills Claude's sign-in (`rotation-add-account` for an account signing in again). */
+  email?: string;
   /** A login the Mac shows itself (`claude-web-login.ts`): the reply carries `loginUrl` instead of opening Terminal. */
   inApp?: true;
 };
@@ -34,8 +39,11 @@ export interface ClaudeAccountsReply {
   loginOpened?: true;
   /** Anthropic's authorize URL for an in-app sign-in (`inApp`), shown in a web view with no cookies of its own. */
   loginUrl?: string;
-  /** Account rotation (claude-rotation.ts), on the rotation actions. */
-  rotation?: { installed: boolean; on: boolean; running: boolean; dashboard?: SwapDashboard; output?: string; ok?: boolean };
+  /** Account rotation (claude-rotation.ts), on the rotation actions. `added`: the account `rotation-finish-add` put in the
+   * list. */
+  rotation?: { installed: boolean; on: boolean; running: boolean; dashboard?: SwapDashboard; output?: string; ok?: boolean; added?: string };
+  /** `rotation-add-account`: the sign-in under way, for the Mac to show and then finish (`rotation-finish-add` with `id`). */
+  adding?: { id: string; url: string };
   createdAccountId?: string;
   cloudOpened?: true;
   execution?: ExecutionCatalog;
@@ -46,10 +54,15 @@ const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 export const validAccountId = (value: unknown): value is string =>
   typeof value === "string" && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(value);
 
+const ROTATION_ACTIONS = ["rotation-status", "rotation-install", "rotation-add", "rotation-add-account", "rotation-finish-add", "rotation-switch", "rotation-remove"];
+
 export function accountRequestError(value: Record<string, unknown>): string | undefined {
-  if (!["list", "add", "remove", "login", "refresh", "usage", ...(value.kind === "codex-accounts" ? ["cloud"] : ["cancel-login", "rotation-status", "rotation-install", "rotation-add"])].includes(String(value.action))) return "Unknown account action";
+  if (!["list", "add", "remove", "login", "refresh", "usage", ...(value.kind === "codex-accounts" ? ["cloud"] : ["cancel-login", ...ROTATION_ACTIONS])].includes(String(value.action))) return "Unknown account action";
   if (value.id !== undefined && !validAccountId(value.id)) return "Invalid account id";
-  if (["remove", "login", "refresh", "cloud", "cancel-login"].includes(String(value.action)) && !validAccountId(value.id)) return "Choose an account";
+  if (["remove", "login", "refresh", "cloud", "cancel-login", "rotation-finish-add"].includes(String(value.action)) && !validAccountId(value.id)) return "Choose an account";
+  if (value.slot !== undefined && !(Number.isSafeInteger(value.slot) && (value.slot as number) >= 1 && (value.slot as number) <= 999)) return "Invalid account number";
+  if (["rotation-switch", "rotation-remove"].includes(String(value.action)) && value.slot === undefined) return "Choose an account";
+  if (value.email !== undefined && (typeof value.email !== "string" || !/^[^\s@]{1,64}@[^\s@]{1,190}$/.test(value.email) || CONTROL.test(value.email))) return "Invalid email";
   if (value.inApp !== undefined && value.inApp !== true) return "inApp must be true when present";
   if (value.action === "add") {
     if (typeof value.label !== "string" || !value.label.trim() || value.label.trim().length > 60 || CONTROL.test(value.label)) return "Account name must be 1–60 printable characters";

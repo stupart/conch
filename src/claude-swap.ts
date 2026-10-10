@@ -1,5 +1,7 @@
-/** Read-only dashboard bridge to claude-swap schema v1. No switching, login,
- * credential import or quota-based routing. See third-party/claude-swap/LICENSE. */
+/** Read-only dashboard bridge to claude-swap schema v1 (switching, adding and removing are claude-rotation.ts).
+ * See third-party/claude-swap/LICENSE. */
+import { rotationEnvironment, swapExecutable } from "./claude-rotation.ts";
+
 export interface UsageWindow {
   name: string;
   pct: number;
@@ -16,6 +18,10 @@ export interface SwapUsageAccount {
   windows: UsageWindow[];
   fetchedAt?: string;
   lastGood: boolean;
+  /** Held out of switching (`cswap disable`). */
+  disabled?: true;
+  /** When the stored sign-in stops renewing and needs signing in again. */
+  loginExpiresAt?: string;
 }
 export interface SwapDashboard {
   source: "claude-swap" | "claude-statusline" | "codex-app-server";
@@ -63,6 +69,7 @@ export function decodeSwapDashboard(raw: string): SwapDashboard {
       const lastGood = status !== "ok";
       const fetchedAt = date(lastGood ? row.lastGoodFetchedAt : row.usageFetchedAt);
       const organization = safeText(row.organizationName);
+      const loginExpiresAt = date(row.loginExpiresAt);
       return {
         // Slots can be reused. An old slot's measurement must never follow a new identity.
         id: JSON.stringify([number, email, organizationId]), number,
@@ -70,6 +77,7 @@ export function decodeSwapDashboard(raw: string): SwapDashboard {
         ...(organization ? { organization } : {}), defaultLogin: row.active === true, status,
         windows: usageWindows(lastGood ? row.lastGoodUsage : row.usage),
         ...(fetchedAt ? { fetchedAt } : {}), lastGood,
+        ...(row.disabled === true ? { disabled: true as const } : {}), ...(loginExpiresAt ? { loginExpiresAt } : {}),
       };
     });
     return { source: "claude-swap", state: "ready", accounts };
@@ -91,7 +99,8 @@ export function parseSwapDashboard(value: unknown): SwapDashboard | undefined {
     accounts.push({ id: row.id as string, number: row.number as number, label: row.label as string, email: row.email as string,
       ...(safeText(row.organization) ? { organization: row.organization as string } : {}),
       defaultLogin: row.defaultLogin === true, status: STATUSES.has(String(row.status)) ? String(row.status) : "unavailable",
-      lastGood: row.lastGood === true, windows, ...(date(row.fetchedAt) ? { fetchedAt: date(row.fetchedAt) } : {}) });
+      lastGood: row.lastGood === true, windows, ...(date(row.fetchedAt) ? { fetchedAt: date(row.fetchedAt) } : {}),
+      ...(row.disabled === true ? { disabled: true as const } : {}), ...(date(row.loginExpiresAt) ? { loginExpiresAt: date(row.loginExpiresAt) } : {}) });
   }
   return { source: value.source as SwapDashboard["source"], state: value.state as SwapDashboard["state"], accounts,
     ...(safeText(value.message, 300) ? { message: value.message as string } : {}) };
@@ -99,11 +108,10 @@ export function parseSwapDashboard(value: unknown): SwapDashboard | undefined {
 
 /** Explicit refresh only. cswap owns its cache/backoff and may refresh OAuth.
  * It is optional and is never installed or launched as part of daemon startup. */
-export async function readSwapDashboard(): Promise<SwapDashboard> {
-  const executable = Bun.which("cswap");
+export async function readSwapDashboard(executable = swapExecutable()): Promise<SwapDashboard> {
   if (!executable) return { source: "claude-swap", state: "unavailable", accounts: [], message: "Install claude-swap and add your accounts there to read usage here. Conch launch profiles remain separate." };
   try {
-    const child = Bun.spawn([executable, "list", "--json"], { stdout: "pipe", stderr: "ignore", stdin: "ignore" });
+    const child = Bun.spawn([executable, "list", "--json"], { env: rotationEnvironment(), stdout: "pipe", stderr: "ignore", stdin: "ignore" });
     let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, 12_000);
     try {
