@@ -76,8 +76,10 @@ test("a file attachment is the same height as a picture", () => {
  * which over a pale screenshot is a grey dot on a grey picture.
  */
 test("the remove button is the lab's 18pt disc, in its own ink", () => {
-  const button = composer.slice(composer.indexOf("private var removeButton"));
-  const body = button.slice(0, button.indexOf("\n    }\n"));
+  // One button for every tile on the strip: a picture's, a file's, a video's and a drop that never arrived.
+  expect(composer).toContain("AttachmentRemoveButton(name: url.lastPathComponent, action: onRemove)");
+  const button = composer.slice(composer.indexOf("private struct AttachmentRemoveButton"));
+  const body = button.slice(0, button.indexOf("\n}\n"));
   expect(body).toContain(".frame(width: 18, height: 18)");
   expect(body).toContain(".foregroundStyle(.white)");
   expect(body).toContain("opacity(0.62)");

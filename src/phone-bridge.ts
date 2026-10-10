@@ -1,7 +1,7 @@
 import { connect } from "node:net";
 import { ControlFrameError, ControlFrameReader, decodeControlText, encodeControlFrame, readControlBody } from "./control-framing.ts";
 import { validateHistoryRequest } from "./history.ts";
-import type { UploadChunk, UploadResult } from "./phone-uploads.ts";
+import { ownUpload, type UploadChunk, type UploadResult } from "./phone-uploads.ts";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
@@ -11,6 +11,7 @@ import { conchHome } from "./home.ts";
 import { decodeNarrationRequest } from "./narration.ts";
 import { decodePracticeRequest } from "./practice.ts";
 import { decodeSetupRequest } from "./setup.ts";
+import { decodeVideoTranscriptRequest } from "./video-transcript.ts";
 import { checkLocalFile } from "./snippet.ts";
 import { tempFolders } from "./temp-folders.ts";
 import { breadcrumb } from "./loop-watchdog.ts";
@@ -158,9 +159,10 @@ function historyRequest(pathname: string, value: unknown): ReturnType<typeof val
 
 /**
  * What only the Mac app sends: Show's narration (its lease is a local connection held open, which a
- * phone never holds), its answer to a window snapshot the daemon asked it for, what it saw on
- * screen, first-run setup (an agent's official installer, conch's hooks written into an agent's own
- * settings, the microphone check, a voice sample, a download retried) and setup's practice turn. A
+ * phone never holds), the words of a video dropped on its composer (the phone has `/transcript`),
+ * its answer to a window snapshot the daemon asked it for, what it saw on screen, first-run setup
+ * (an agent's official installer, conch's hooks written into an agent's own settings, the
+ * microphone check, a voice sample, a download retried) and setup's practice turn. A
  * phone forwarding one would be speaking as the Mac app: a paired phone could run `curl … | bash`
  * on the Mac, rewrite `~/.claude/settings.json`, or stop a practice the Mac is running.
  *
@@ -178,6 +180,7 @@ export const MAC_APP_ONLY_DECODERS: Readonly<Record<string, (value: unknown) => 
   decodeNarrationRequest,
   decodeSetupRequest,
   decodePracticeRequest,
+  decodeVideoTranscriptRequest,
 };
 
 /** A control body only the Mac app may send, as the control server would read it (one envelope unwrapped, as it does). */
@@ -914,18 +917,6 @@ async function neverWidened(folder: string): Promise<boolean> {
     Promise.all([homedir(), conchHome()].map((root) => realpath(root).catch(() => root))),
   ]);
   return folder === "/" || temps.includes(folder) || homes.some((home) => home === folder || home.startsWith(`${folder}/`));
-}
-
-/**
- * A picture the phone itself sent. conch named and wrote it (`phone-uploads.ts`) in its own cache,
- * a hidden folder the publish rule refuses, so under that rule alone every picture Tyler sends from
- * the phone would vanish from his own side of the conversation.
- */
-async function ownUpload(requested: string, uploads: string): Promise<string | null> {
-  const [real, folder] = await Promise.all([realpath(requested).catch(() => null), realpath(uploads).catch(() => null)]);
-  if (!real || !folder || dirname(real) !== folder) return null;
-  const file = await stat(real).catch(() => null);
-  return file?.isFile() && (file.mode & 0o111) === 0 ? real : null;
 }
 
 /**

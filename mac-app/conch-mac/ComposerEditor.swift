@@ -1,6 +1,7 @@
 import AppKit
 import ConchDesign
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The composer's text field: AppKit's text view, built and owned here.
 ///
@@ -452,12 +453,32 @@ final class ComposerTextView: NSTextView {
     /// image inline or drops it, the same loss as the pasted paths wearing a different shape. Every name for each type,
     /// the pasteboard's old ones included, and as the types AppKit registers, rather than unregistering once: AppKit
     /// registers them again whenever the view's editable or rich-text state changes.
+    ///
+    /// Promised files and a movie's bytes as well, now that the composer takes videos (`ComposerVideos`): a screen
+    /// recording's thumbnail and a video from Photos are PROMISES, and AppKit registers a text view for the files-promise
+    /// type under its dynamic UTI, which no name here matched. Over the words, the editor was the view under the pointer
+    /// registered for the drag, so it took the drop and turned it away, and the composer never saw it. And a file's URL by
+    /// its old name (`NSURLPboardType`), which every drag out of Finder carries beside the file URL: the editor took that
+    /// one and typed `file:///…/clip.mov` into the message (measured, 2026-10-11). A link from a browser still lands
+    /// here as text, by `public.url`.
     static let refusedDragTypes: Set<NSPasteboard.PasteboardType> = [
         .fileURL, NSPasteboard.PasteboardType("NSFilenamesPboardType"), .png, .tiff,
+        NSPasteboard.PasteboardType("Apple URL pasteboard type"),
         NSPasteboard.PasteboardType("Apple PNG pasteboard type"), NSPasteboard.PasteboardType("NeXT TIFF v4.0 pasteboard type"),
         NSPasteboard.PasteboardType("com.apple.NSFilePromiseItemMetaData"),
         NSPasteboard.PasteboardType("com.apple.pasteboard.promised-file-content-type"),
+        filePromise, filePromiseAsRegistered,
+        // 'moov': a QuickTime movie's bytes, by its old flavor name.
+        NSPasteboard.PasteboardType("CorePasteboardFlavorType 0x6D6F6F76"),
     ]
+
+    /// The files-promise type by its name (`NSFilesPromisePboardType`, deprecated as API, still what AppKit registers).
+    static let filePromise = NSPasteboard.PasteboardType("Apple files promise pasteboard type")
+    /// The files-promise type as AppKit registers a text view for it: its dynamic UTI, `dyn.ah62d4rv4gu8yc6d…`.
+    static let filePromiseAsRegistered = NSPasteboard.PasteboardType(
+        UTType(tag: filePromise.rawValue, tagClass: UTTagClass(rawValue: "com.apple.nspboard-type"), conformingTo: .data)?.identifier
+            ?? filePromise.rawValue
+    )
 
     override var acceptableDragTypes: [NSPasteboard.PasteboardType] {
         super.acceptableDragTypes.filter { !Self.refusedDragTypes.contains($0) }

@@ -2,11 +2,12 @@ import CoreGraphics
 import CoreText
 import Foundation
 
-// A video Tyler sends from his phone, as an agent can read it: the model can't watch video, so, as for a Show
-// (`CanvasStoryboard`), it gets frames with their times, what he said at each, and everything he said, timed. Tyler
-// (09-25): "vise versa if possible": the phone's own recordings, to the Mac. The frames go as one contact sheet, a
-// picture the model reads at once, rather than a dozen files to open. Pure: the phone pulls the frames and the Mac
-// transcribes the sound.
+// A video Tyler sends from his phone or drops on the Mac's composer, as an agent can read it: the model can't watch
+// video, so, as for a Show (`CanvasStoryboard`), it gets frames with their times, what he said at each, and everything
+// he said, timed. Tyler (09-25): "vise versa if possible": the phone's own recordings, to the Mac; and (10-11) "we
+// should be able to attach videos via drag and drop". The frames go as one contact sheet, a picture the model reads at
+// once, rather than a dozen files to open. Pure: the frames and the sound are pulled by `VideoFrames.swift`, the same
+// code on both, and the daemon transcribes the sound.
 
 public enum VideoStoryboard {
     /// The longest a video sent this way runs: Show's two minutes.
@@ -83,17 +84,34 @@ public enum VideoStoryboard {
         CTLineDraw(line, context)
     }
 
+    /// Where a video came from. The phone sends a copy it made (`phone-uploads.ts`); the Mac sends the file where it is,
+    /// dropped or picked on its composer (`ComposerVideo.swift` there). Its raw value is the word the message says.
+    public enum Sender: String, Sendable {
+        case phone
+        case mac = "Mac"
+    }
+
+    /// Whether a video `length` seconds long runs past what its frames and words cover (`longest`). The phone's never
+    /// does: it sends its first two minutes. A file on the Mac is sent whole, so its message says how much was read.
+    public static func isCut(_ length: Double) -> Bool { length > longest + 0.5 }
+
     /// The one message a video sends, in the Show's voice: how long, the contact sheet and a line a frame (its time, its
     /// number, what he said there, what happened), then everything he said, timed, and the video itself, for people.
-    public static func prompt(_ frames: [CanvasStoryboard.Moment], said: [CanvasStoryboard.Said], length: Double, sheet: String, video: String) -> String {
+    /// One longer than `longest` says its frames and words are its first two minutes, and its last frame is where they
+    /// stop rather than its end.
+    public static func prompt(_ frames: [CanvasStoryboard.Moment], said: [CanvasStoryboard.Said], length: Double, sheet: String, video: String, from sender: Sender = .phone) -> String {
+        let cut = isCut(length)
+        var heading = "[video] Tyler sent a video from his \(sender.rawValue) (\(CanvasStoryboard.clock(length)))."
+        if cut { heading += " The frames and words below are its first \(CanvasStoryboard.clock(longest))." }
         var lines = [
-            "[video] Tyler sent a video from his phone (\(CanvasStoryboard.clock(length))).",
+            heading,
             "Contact sheet: \(sheet) — \(frames.count) frame\(frames.count == 1 ? "" : "s"), left to right and down, each stamped with its time:",
         ]
         let words = CanvasStoryboard.words(said, at: frames.map(\.at))
         lines += frames.enumerated().map { index, frame in
             let heard = words[index].isEmpty ? "" : "\"\(words[index])\" · "
-            return "\(CanvasStoryboard.stamp(frame.at)) frame \(String(format: "%02d", index + 1)) — \(heard)\(CanvasStoryboard.caption(frame, first: index == 0))"
+            let happened = cut && frame.kind == .end ? "where the frames stop" : CanvasStoryboard.caption(frame, first: index == 0)
+            return "\(CanvasStoryboard.stamp(frame.at)) frame \(String(format: "%02d", index + 1)) — \(heard)\(happened)"
         }
         let spoken = said.sorted { $0.start < $1.start }.map { "\(CanvasStoryboard.stamp($0.start)) \($0.text.split(whereSeparator: \.isNewline).joined(separator: " "))" }
         if !spoken.isEmpty { lines += ["What he said:"] + spoken }

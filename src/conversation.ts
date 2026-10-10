@@ -27,7 +27,7 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import {
   SUBAGENT_ROW_PREFIX,
   sidechainTranscriptPath,
@@ -301,8 +301,8 @@ function splitMaterialPaths(text: string): { text: string; materials: Conversati
 /**
  * Something Tyler sent through conch itself, as the one line he needs to see.
  *
- * A canvas, a Show and a video from the phone each reach the session as one message written for the agent: the
- * picture's path, the files beside it, how to draw an answer back. Rendered as it was written, his own conversation
+ * A canvas, a Show and a video from the phone or the Mac each reach the session as one message written for the agent:
+ * the picture's path, the files beside it, how to draw an answer back. Rendered as it was written, his own conversation
  * showed him a 320 pt picture of the screen he was already looking at, under the agent's instructions. Tyler: "There's
  * an image of the work in the convo and then you see the work itself behind. Don't need the image of the work I'm
  * currently looking at to also be in the convo if I'm currently looking at it." And: "It's repetitive."
@@ -324,8 +324,9 @@ export interface SentReceipt {
 
 /**
  * Where conch keeps what these messages point at: `~/.cache/conch/canvas/<uuid>/` for a canvas and a Show
- * (`CanvasFolder`), `~/.cache/conch/uploads/` for what the phone sent (`phone-uploads.ts`). A message is a receipt only
- * when its paths are there: conch wrote those files, so the words around them are conch's too.
+ * (`CanvasFolder`), `~/.cache/conch/uploads/` for what the phone sent (`phone-uploads.ts`) and a video's contact sheet
+ * from the Mac's composer. A message is a receipt only when its paths are there: conch wrote those files, so the words
+ * around them are conch's too.
  */
 function conchFolders(): { canvas: string; uploads: string } {
   const data = join(conchHome(), ".cache", "conch");
@@ -444,11 +445,14 @@ function canvasShow(lines: readonly string[], start: number): ReceiptBlock | nul
 }
 
 /**
- * A video from the phone (`VideoStoryboard.prompt`): "[video] Tyler sent a video from his phone (0:42).", its
- * contact sheet and a line a frame, what he said, timed, and the video. Both files are ones the phone uploaded.
+ * A video from the phone or the Mac's composer (`VideoStoryboard.prompt`): "[video] Tyler sent a video from his phone
+ * (0:42).", its contact sheet and a line a frame, what he said, timed, and the video. The contact sheet is conch's,
+ * in its uploads folder, either way. From the phone the video is one it uploaded there too; from the Mac it is the file
+ * he dropped, wherever it is, and one longer than two minutes says how much of it was read.
  */
-function phoneVideo(lines: readonly string[], start: number): ReceiptBlock | null {
-  const sent = /^\[video\] Tyler sent a video from his phone \((\d+:\d{2})\)\.$/.exec(lines[start]!);
+function sentVideo(lines: readonly string[], start: number): ReceiptBlock | null {
+  const sent = /^\[video\] Tyler sent a video from his (phone|Mac) \((\d+:\d{2})\)\.(?: The frames and words below are its first \d+:\d{2}\.)?$/
+    .exec(lines[start]!);
   const sheet = sent
     ? /^Contact sheet: (.+) — (\d+) frames?, left to right and down, each stamped with its time:$/.exec(lines[start + 1] ?? "")
     : null;
@@ -463,12 +467,12 @@ function phoneVideo(lines: readonly string[], start: number): ReceiptBlock | nul
     at += 1;
   }
   const video = /^The video itself, for people \(agents can't watch video\): (.+)$/.exec(lines[at] ?? "")?.[1];
-  if (!video || !isPhoneUpload(video, /\.mp4$/)) return null;
+  if (!video || !(sent[1] === "Mac" ? isAbsolute(video) : isPhoneUpload(video, /\.mp4$/))) return null;
   return {
     end: at,
     receipt: {
       kind: "video",
-      title: `Sent a video · ${sent[1]}`,
+      title: `Sent a video · ${sent[2]}`,
       ...(words.length ? { detail: quoted(words.join(" "), 140) } : {}),
       thumb: sheet[1]!,
       open: video,
@@ -477,7 +481,7 @@ function phoneVideo(lines: readonly string[], start: number): ReceiptBlock | nul
 }
 
 /**
- * Take what conch sent out of a message of Tyler's: each canvas, Show and phone video it carries becomes a receipt,
+ * Take what conch sent out of a message of Tyler's: each canvas, Show and video it carries becomes a receipt,
  * and the lines around them — his own words, a picture he pasted — are left as they were. A block that is not exactly
  * conch's format is left as it was too, so the worst a changed format can do is show what it always showed.
  */
@@ -488,7 +492,7 @@ export function splitSentReceipts(text: string): { text: string; receipts: SentR
   const kept: string[] = [];
   const receipts: SentReceipt[] = [];
   for (let index = 0; index < lines.length; index += 1) {
-    const block = canvasStill(trimmed, index) ?? canvasShow(trimmed, index) ?? phoneVideo(trimmed, index);
+    const block = canvasStill(trimmed, index) ?? canvasShow(trimmed, index) ?? sentVideo(trimmed, index);
     if (!block) {
       kept.push(lines[index]!);
       continue;

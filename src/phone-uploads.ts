@@ -14,7 +14,8 @@
  * the trip rather than a bandwidth compromise.
  */
 import { chmodSync, lstatSync, mkdirSync, rmSync, statSync, readdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { realpath, stat } from "node:fs/promises";
+import { dirname, join } from "node:path";
 
 /**
  * What an upload may be, and how big, each told by its first bytes rather than its name: a file
@@ -118,6 +119,20 @@ export function sanitizeUploadId(raw: string): string | null {
 export function sanitizeExtension(raw: string): string | null {
   const ext = raw.trim().toLowerCase().replace(/^\./, "");
   return ALLOWED_EXTENSIONS.has(ext) ? (ext === "jpeg" ? "jpg" : ext) : null;
+}
+
+/**
+ * A file in conch's uploads folder, as its real path, or null: one the phone sent (conch named and wrote it, above), or
+ * one the Mac app wrote there beside them for a video dropped on its composer (its sound and contact sheet,
+ * `ComposerVideo.swift`). A hidden folder the publish rule refuses, so under that rule alone every picture Tyler sends
+ * from the phone would vanish from his own side of the conversation. Directly in the folder, a plain file, nothing
+ * executable, and never a link out of it.
+ */
+export async function ownUpload(requested: string, uploads: string): Promise<string | null> {
+  const [real, folder] = await Promise.all([realpath(requested).catch(() => null), realpath(uploads).catch(() => null)]);
+  if (!real || !folder || dirname(real) !== folder) return null;
+  const file = await stat(real).catch(() => null);
+  return file?.isFile() && (file.mode & 0o111) === 0 ? real : null;
 }
 
 export class PhoneUploads {

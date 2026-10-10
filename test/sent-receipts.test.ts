@@ -64,6 +64,18 @@ const videoMessage = [
   `The video itself, for people (agents can't watch video): ${join(uploads, "video123.mp4")}`,
 ].join("\n");
 
+/** `VideoStoryboard.prompt(from: .mac)`, as VideoStoryboardTests pins it: the file he dropped, wherever it is. */
+const macVideo = "/Users/tyler/Desktop/Screen Recording 2026-10-11 at 1.12.58\u202fAM.mov";
+const macVideoMessage = (length = "0:04", cut = "") => [
+  `[video] Tyler sent a video from his Mac (${length}).${cut}`,
+  `Contact sheet: ${join(uploads, "mac-0F3C1A2B-4D5E-4F60-8A7B-9C0D1E2F3A4B.jpg")} — 2 frames, left to right and down, each stamped with its time:`,
+  '[00:00] frame 01 — "watch the footer" · the start',
+  "[00:03] frame 02 — the end",
+  "What he said:",
+  "[00:00] watch the footer",
+  `The video itself, for people (agents can't watch video): ${macVideo}`,
+].join("\n");
+
 /** Nothing written for the agent reaches Tyler's rows. */
 const AGENT_LINES = /Clean screen|To mark your answer|frame your marks|Storyboard:|Contact sheet:|for people|\/\.cache\/conch\//;
 
@@ -125,6 +137,32 @@ describe("what Tyler sent through conch is a receipt, not the message", () => {
       open: join(uploads, "video123.mp4"),
     });
     expect(items.map((item) => item.text).join("\n")).not.toMatch(/Contact sheet|frame 0|What he said|for people/);
+  });
+
+  test("a video dropped on the Mac: the same receipt, its contact sheet from conch's folder, the file he dropped to open", () => {
+    const items = rows(`${macVideoMessage()}\nwhat's wrong here?`);
+    expect(items.map((item) => [item.id, item.kind, item.text.split("\n")[0]])).toEqual([
+      ["u1", "user", "what's wrong here?"],
+      ["u1:receipt:0", "user", "Sent a video · 0:04"],
+    ]);
+    expect(items[1]!.receipt).toEqual({
+      kind: "video",
+      title: "Sent a video · 0:04",
+      detail: "“watch the footer”",
+      thumb: join(uploads, "mac-0F3C1A2B-4D5E-4F60-8A7B-9C0D1E2F3A4B.jpg"),
+      open: macVideo,
+    });
+    expect(items.map((item) => item.text).join("\n")).not.toMatch(/Contact sheet|frame 0|What he said|for people/);
+    // Longer than two minutes, it says how much was read; still the one receipt, at its whole length.
+    const long = rows(macVideoMessage("5:12", " The frames and words below are its first 2:00."));
+    expect(long.map((item) => item.receipt?.title)).toEqual(["Sent a video · 5:12"]);
+  });
+
+  test("a Mac video is a receipt only with conch's own contact sheet and a real path to the video", () => {
+    const today = (text: string) => expect(rows(text).some((item) => item.receipt)).toBe(false);
+    today(macVideoMessage().replace(join(uploads, "mac-0F3C1A2B-4D5E-4F60-8A7B-9C0D1E2F3A4B.jpg"), "/tmp/mac-0F3C1A2B.jpg"));
+    today(macVideoMessage().replace(macVideo, "Desktop/clip.mov"));
+    today(macVideoMessage("0:04", " Some other words."));
   });
 
   test("a screenshot he pasted is not a receipt, even from the phone's own folder", () => {
@@ -272,7 +310,7 @@ describe("the phone is served a receipt's picture from conch's own folders, and 
 describe("the parser reads the formats the apps write", () => {
   const read = (path: string) => readFileSync(join(import.meta.dir, "..", path), "utf8");
 
-  test("the canvas's, the Show's and the phone video's message lines", () => {
+  test("the canvas's, the Show's and a video's message lines, from the phone and the Mac", () => {
     const canvas = read("design/ConchDesign/Sources/ConchDesign/Canvas.swift");
     expect(canvas).toContain('var lines = [picture, "[canvas] Tyler marked up \\(label)."]');
     expect(canvas).toContain('lines.append("Clean screen + marks: \\(clean), \\(marks)")');
@@ -285,7 +323,9 @@ describe("the parser reads the formats the apps write", () => {
     expect(show).toContain('lines.append("The recording, for people (agents can\'t watch video): \\(video)")');
     expect(show).toContain('(words.isEmpty ? "" : "\\"\\(words)\\" · ") + caption(moment, first: first)');
     const video = read("design/ConchDesign/Sources/ConchDesign/VideoStoryboard.swift");
-    expect(video).toContain('"[video] Tyler sent a video from his phone (\\(CanvasStoryboard.clock(length))).",');
+    expect(video).toContain('var heading = "[video] Tyler sent a video from his \\(sender.rawValue) (\\(CanvasStoryboard.clock(length)))."');
+    expect(video).toContain('if cut { heading += " The frames and words below are its first \\(CanvasStoryboard.clock(longest))." }');
+    expect(video).toContain('case mac = "Mac"');
     expect(video).toContain('"Contact sheet: \\(sheet) — \\(frames.count) frame\\(frames.count == 1 ? "" : "s"), left to right and down, each stamped with its time:",');
     expect(video).toContain('if !spoken.isEmpty { lines += ["What he said:"] + spoken }');
     expect(video).toContain('lines.append("The video itself, for people (agents can\'t watch video): \\(video)")');
