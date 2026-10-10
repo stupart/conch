@@ -112,3 +112,96 @@ test("Continue with Google and Apple open as real popups in the sign-in, with Ch
   expect(view).not.toContain("webView.load(URLRequest(url: url)) }\n            return nil");
   expect(view).toContain('configuration.arguments = ["--incognito", request.url.absoluteString]');
 });
+
+/** A cswap that records its arguments, CLAUDE_CONFIG_DIR and what it was given on stdin. */
+function fakeSwap(): { cswap: string; calls: () => string[] } {
+  const dir = mkdtempSync(join(tmpdir(), "cswap-"));
+  const cswap = join(dir, "cswap");
+  const record = join(dir, "calls");
+  writeFileSync(cswap, `#!/bin/sh\nread -r answer || answer=-\nprintf '%s|%s|%s\\n' "$*" "\${CLAUDE_CONFIG_DIR:-default}" "$answer" >> '${record}'\n`);
+  chmodSync(cswap, 0o755);
+  return { cswap, calls: () => existsSync(record) ? readFileSync(record, "utf8").trim().split("\n") : [] };
+}
+
+/** Claude's sign-in, faked: `finish(0)` writes who signed in to the folder, as Claude does, and exits. */
+function fakeSignIn(email = "sam@acme.dev") {
+  let account: { configDir: string } | undefined;
+  let exit!: (code: number) => void;
+  let options: { email?: string } | undefined;
+  const done = new Promise<number>((resolve) => { exit = resolve; });
+  const login: ClaudeWebLogin = { url: "https://claude.com/cai/oauth/authorize?x=1", done, cancel: () => exit(143) };
+  return {
+    start: (async (given: { configDir: string }, opts?: { email?: string }) => { account = given; options = opts; return login; }) as never,
+    folder: () => account!.configDir,
+    options: () => options,
+    finish(code: number) {
+      if (code === 0) writeFileSync(join(account!.configDir, ".claude.json"), JSON.stringify({ oauthAccount: { emailAddress: email } }));
+      exit(code);
+    },
+  };
+}
+
+describe("Claude accounts are claude-swap's list, added by signing in in the app", () => {
+  // 2026-10-11, Tyler: "we should probably have the store be in the app and be self correcting or something instead of
+  // just reading from the one im currently signed into on the device right?"
+  test("adding signs in in a folder of its own, puts that account in the list, then leaves no copy behind", async () => {
+    const home = mkdtempSync(join(tmpdir(), "home-"));
+    const { cswap, calls } = fakeSwap();
+    const signIn = fakeSignIn();
+    const forgotten: string[] = [];
+    let resynced = 0;
+    const said: string[] = [];
+    const started = await startAddingAccount({ home, cswap, start: signIn.start, forget: async (service) => { forgotten.push(service); },
+      resync: async () => { resynced += 1; }, report: (line) => said.push(line) });
+    expect(started?.url).toBe("https://claude.com/cai/oauth/authorize?x=1");
+    const folder = signIn.folder();
+    expect(folder).toBe(addingDirectory(started!.id, home));
+    expect(folder.endsWith(join("claude-sign-ins", started!.id))).toBe(true);
+    // Nothing touches the login your sessions use: claude-swap reads the new folder.
+    signIn.finish(0);
+    const result = await finishAddingAccount(started!.id, 5_000);
+    expect(result).toMatchObject({ ok: true, email: "sam@acme.dev" });
+    expect(calls()).toEqual([`add|${folder}|-`]);
+    expect(forgotten).toEqual([profileKeychainService(folder)]);
+    expect(existsSync(folder)).toBe(false);
+    expect(resynced).toBe(1);
+    expect(said).toEqual(["added sam@acme.dev to the Claude accounts"]);
+  });
+
+  test("closing the sign-in adds nothing and clears its folder", async () => {
+    const home = mkdtempSync(join(tmpdir(), "home-"));
+    const { cswap, calls } = fakeSwap();
+    const signIn = fakeSignIn();
+    const started = await startAddingAccount({ home, cswap, start: signIn.start, forget: async () => {}, resync: async () => {} });
+    expect(cancelAddingAccount(started!.id)).toBe(true);
+    expect(await finishAddingAccount(started!.id, 5_000)).toMatchObject({ ok: false });
+    expect(calls()).toEqual([]);
+    expect(existsSync(signIn.folder())).toBe(false);
+  });
+
+  test("signing an account in again pre-fills its email", async () => {
+    const signIn = fakeSignIn();
+    const started = await startAddingAccount({ home: mkdtempSync(join(tmpdir(), "home-")), email: "sam@acme.dev", start: signIn.start });
+    expect(signIn.options()?.email).toBe("sam@acme.dev");
+    cancelAddingAccount(started!.id);
+  });
+
+  test("a sign-in that never started leaves nothing behind", async () => {
+    const home = mkdtempSync(join(tmpdir(), "home-"));
+    let folder = "";
+    expect(await startAddingAccount({ home, start: (async (account: { configDir: string }) => { folder = account.configDir; return null; }) as never })).toBeNull();
+    expect(folder).not.toBe("");
+    expect(existsSync(folder)).toBe(false);
+  });
+
+  test("use now and remove go to claude-swap by number, on Default, and remove answers its question", async () => {
+    const { cswap, calls } = fakeSwap();
+    expect((await switchRotation(2, cswap)).ok).toBe(true);
+    expect((await removeFromRotation(3, cswap)).ok).toBe(true);
+    expect(calls()).toEqual(["switch 2|default|-", "remove 3|default|y"]);
+  });
+
+  test("a profile's Keychain item is named as Claude Code names it", () => {
+    expect(profileKeychainService("/Users/alex/.config/conch/claude-sign-ins/add-1")).toBe("Claude Code-credentials-243abee3");
+  });
+});
