@@ -25,6 +25,7 @@ import {
   parseTmuxCapture,
   terminalFocusScript,
   terminalLocateScript,
+  TERMINAL_BUSY,
   tmuxCaptureArgv,
   tmuxHistoryArgv,
   UNKNOWN_SESSION,
@@ -205,7 +206,7 @@ describe("reading a Terminal.app tab", () => {
     const reply = await mirror.screen("s2", { pid: 321 }, { text: true, history: 3 });
     expect(reply).toMatchObject({ host: "terminal", text: "shown", history: "line 27\nline 28\nline 29" });
     expect(mac.scripts.at(-1)).toBe(terminalLocateScript("ttys012", true, "history"));
-    expect(terminalLocateScript("ttys012", true, "history")).toContain("(history of tab ti of window wi)");
+    expect(terminalLocateScript("ttys012", true, "history")).toContain("(history of tab conchTab of window id conchWindow)");
     expect(lastLines("a\nb\nc\n", 2)).toBe("b\nc");
     expect(lastLines("a\nb", 9)).toBe("a\nb");
   });
@@ -226,9 +227,14 @@ describe("reading a Terminal.app tab", () => {
     const script = terminalLocateScript("ttys012", true);
     // The first thing it does, before anything is told to Terminal.
     expect(script.trim().split("\n")[0]).toBe('if application "Terminal" is not running then return "conch:notrunning"');
-    expect(script.split('tell application "Terminal"')).toHaveLength(2);
-    expect(script).toContain('if tty of tab ti of window wi is "/dev/ttys012" then');
-    expect(script).toContain("id of window wi");
+    // Two Apple events to find the tab, however many windows and tabs (terminal-tab.ts), then one tell to read it.
+    expect(script.split('tell application "Terminal"')).toHaveLength(3);
+    expect(script).toContain("set conchIds to id of every window");
+    expect(script).toContain("set conchTtys to tty of every tab of every window");
+    expect(script).toContain('if item ti of conchRow is "/dev/ttys012" then');
+    expect(script).not.toMatch(/repeat with \w+ in (windows|tabs)|tty of tab ti of window wi/);
+    expect(script).toContain('if conchTab = 0 then return "conch:notfound"');
+    expect(script).toContain("conchWindow as text");
     // `tab` inside Terminal's tell names its tab class, so the separator is spelled out.
     expect(script).toContain("character id 9");
     expect(script).not.toMatch(/activate|set index|set selected|AXRaise|miniaturized of window wi to/);
@@ -309,9 +315,9 @@ describe("reading is view-only", () => {
     const source = readFileSync(join(import.meta.dir, "../src/terminal-mirror.ts"), "utf8");
     const defaults = source.slice(source.indexOf("export function defaultTerminalMirrorDeps"), source.indexOf("/**\n * Terminal's window and tab"));
     expect(defaults).toContain("run: (argv) => runUICommand(argv, undefined, { scope: mirrorScope, timeoutMs: 2_000 })");
-    expect(defaults).toContain("osa: (script) => runUICommand(osaArgv(script), undefined, { scope: mirrorScope, timeoutMs: 3_000 })");
+    expect(defaults).toContain("osa: (script) => runUICommand(osaArgv(script), undefined, { scope: mirrorScope, timeoutMs: 8_000 })");
     // Only the press shares the typing paths' scope and queue.
-    expect(defaults).toContain("focusOsa: (script) => runUICommand(osaArgv(script), undefined, { timeoutMs: 4_000 })");
+    expect(defaults).toContain("focusOsa: (script) => runUICommand(osaArgv(script), undefined, { timeoutMs: TERMINAL_SCRIPT_TIMEOUT_MS })");
     expect(defaults).toContain("transaction: withUITransaction");
   });
 });
@@ -323,7 +329,7 @@ describe("Open in Terminal", () => {
     expect(mac.transactions()).toBe(1);
     expect(mac.focused).toEqual([terminalFocusScript("ttys012")]);
     const script = mac.focused[0]!;
-    for (const line of ["if miniaturized of w then set miniaturized of w to false", "set selected tab of w to t", "set index of w to 1", "activate"]) {
+    for (const line of ["set w to window id conchWindow", "if miniaturized of w then set miniaturized of w to false", "set selected tab of w to tab conchTab of w", "set index of w to 1", "activate"]) {
       expect(script).toContain(line);
     }
     expect(script.trim().split("\n")[0]).toBe('if application "Terminal" is not running then return "conch:notrunning"');
@@ -356,6 +362,15 @@ describe("Open in Terminal", () => {
     expect(mac.focused[0]).toContain("attach-session");
     expect(mac.focused[0]).toContain("$3");
     expect(mac.focused[0]).not.toContain("new-session");
+  });
+
+  // 2026-10-11: a Mac with its load past 250 left Terminal minutes behind, and "couldn't find this session's Terminal
+  // window" sent Tyler looking for a window that was there all along.
+  test("Terminal that doesn't answer in time is busy, not missing", async () => {
+    const mac = fakeMac({ tty: "ttys012", focus: () => ({ text: "", stderr: "", exitCode: -1, timedOut: true }) });
+    expect(await createTerminalMirror(mac.deps).focus("s7", { pid: 321 }))
+      .toMatchObject({ focused: false, reason: TERMINAL_BUSY });
+    expect(TERMINAL_BUSY).not.toContain("couldn't find");
   });
 
   test("a window Terminal can't find is a refusal in words", async () => {

@@ -3,6 +3,7 @@ import { CONTROL_FRAME_MAX_BYTES } from "./control-framing.ts";
 import { runUICommand, type UICommandResult, type UICommandScope } from "./pasteboard.ts";
 import { withUITransaction } from "./inject.ts";
 import { shellQuote } from "./agent-adapter.ts";
+import { TERMINAL_SCRIPT_TIMEOUT_MS, terminalTabLookup } from "./terminal-tab.ts";
 
 /**
  * The agent's own terminal: where the session's Claude Code or Codex is running, and what that terminal shows, read
@@ -120,6 +121,7 @@ export const MAX_HISTORY_LINES = 10_000;
 export const NOT_IN_TERMINAL = "This session isn't running in a terminal conch can see: only Terminal and tmux are mirrored here.";
 export const NO_PROCESS = "conch doesn't know this session's process, so it can't find its terminal.";
 export const UNKNOWN_SESSION = "conch doesn't know this session.";
+export const TERMINAL_BUSY = "Terminal didn't answer in time. Your Mac is very busy right now; try again in a moment.";
 
 /** Attach by tmux's exact server-local session ID, without starting another agent. */
 export function tmuxAttachScript(tmux: string[], session: string): string {
@@ -138,8 +140,10 @@ function osaArgv(script: string): string[] {
 export function defaultTerminalMirrorDeps(): TerminalMirrorDeps {
   return {
     run: (argv) => runUICommand(argv, undefined, { scope: mirrorScope, timeoutMs: 2_000 }),
-    osa: (script) => runUICommand(osaArgv(script), undefined, { scope: mirrorScope, timeoutMs: 3_000 }),
-    focusOsa: (script) => runUICommand(osaArgv(script), undefined, { timeoutMs: 4_000 }),
+    // A Mac this busy answers in seconds, not milliseconds (terminal-tab.ts): a read waits a while, and a press of
+    // Terminal waits as long as finding the tab can take.
+    osa: (script) => runUICommand(osaArgv(script), undefined, { scope: mirrorScope, timeoutMs: 8_000 }),
+    focusOsa: (script) => runUICommand(osaArgv(script), undefined, { timeoutMs: TERMINAL_SCRIPT_TIMEOUT_MS }),
     transaction: withUITransaction,
     now: () => Date.now(),
     tmux: defaultTmux(),
@@ -156,17 +160,12 @@ export function terminalLocateScript(tty: string, withText: boolean, property: "
   if (!TTY.test(tty)) throw new Error(`not a tty: ${tty}`);
   return `
 if application "Terminal" is not running then return "conch:notrunning"
+${terminalTabLookup(tty)}
+if conchTab = 0 then return "conch:notfound"
 tell application "Terminal"
-repeat with wi from 1 to count windows
-repeat with ti from 1 to count tabs of window wi
-if tty of tab ti of window wi is "/dev/${tty}" then
-set found to (id of window wi as text) & (character id 9) & (miniaturized of window wi as text) & (character id 9) & (selected of tab ti of window wi as text)
-${withText ? `return found & (character id 10) & (${property} of tab ti of window wi)` : "return found"}
-end if
-end repeat
-end repeat
-end tell
-return "conch:notfound"`;
+set conchFound to (conchWindow as text) & (character id 9) & (miniaturized of window id conchWindow as text) & (character id 9) & (selected of tab conchTab of window id conchWindow as text)
+${withText ? `return conchFound & (character id 10) & (${property} of tab conchTab of window id conchWindow)` : "return conchFound"}
+end tell`;
 }
 
 /**
@@ -177,20 +176,16 @@ export function terminalFocusScript(tty: string): string {
   if (!TTY.test(tty)) throw new Error(`not a tty: ${tty}`);
   return `
 if application "Terminal" is not running then return "conch:notrunning"
+${terminalTabLookup(tty)}
+if conchTab = 0 then return "conch:notfound"
 tell application "Terminal"
-repeat with w in windows
-repeat with t in tabs of w
-if tty of t is "/dev/${tty}" then
+set w to window id conchWindow
 if miniaturized of w then set miniaturized of w to false
-set selected tab of w to t
+set selected tab of w to tab conchTab of w
 set index of w to 1
 activate
-return "ok"
-end if
-end repeat
-end repeat
 end tell
-return "conch:notfound"`;
+return "ok"`;
 }
 
 /** `display-message` then `capture-pane`, as one tmux call: the size line first, then the screen. */
@@ -462,6 +457,9 @@ export function createTerminalMirror(deps: TerminalMirrorDeps = defaultTerminalM
         if (!ok(result) && /-1743|not allowed|not authori[sz]ed/i.test(result.stderr)) {
           return refused("conch isn't allowed to control Terminal: allow conch in Automation.");
         }
+        // Terminal that didn't answer in time is busy, not missing: saying the window can't be found sent Tyler looking
+        // for a problem that wasn't there (2026-10-11).
+        if (result.timedOut) return refused(TERMINAL_BUSY);
         return refused(host.kind === "tmux"
           ? "tmux is attached in a terminal conch can't bring forward: only Terminal is."
           : "conch couldn't find this session's Terminal window.");

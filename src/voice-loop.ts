@@ -2595,7 +2595,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
           cfg,
           PERMISSION_LINES[receiptCode]
             ?? (receiptCode === "system-dialog-blocking"
-              ? "A system dialog is open on the Mac and it's blocking me. Dismiss it and send again."
+              ? "The Mac didn't answer in time. It's very busy, or a dialog is open. Send again in a moment."
               : "Couldn't reach the session's window — your words are on the clipboard, just paste."),
           event.label,
           false,

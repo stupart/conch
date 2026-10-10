@@ -134,8 +134,8 @@ describe("native Terminal session lifecycle", () => {
       expect(tidyIndex).toBeGreaterThan(calls.indexOf(pressCall));
       const tidyScript = calls[tidyIndex]!.join(" ");
       // Never a tab running something: a new session can be given the freed tty during the exit wait.
-      expect(tidyScript).toContain('if tty of t is "/dev/ttys007" and not (busy of t) then');
-      expect(tidyScript).toContain("close t saving no");
+      expect(tidyScript).toContain('if item ti of conchRow is "/dev/ttys007" then');
+      expect(tidyScript).toContain("if not (busy of conchTabRef) then close conchTabRef saving no");
       expect(tidyScript).toContain('tell application "conch" to activate');
       expect(tidyScript).not.toMatch(/kill|SIG|tmux/);
     });
@@ -241,18 +241,19 @@ describe("native Terminal session lifecycle", () => {
     // close) never has any literal to match against, because this session's tty is the only
     // one the script ever embeds.
     expect(script).not.toContain("ttys099");
-    const terminalStart = script.indexOf('tell application "Terminal"');
+    // The tab is found by its tty in one read of every tab's (terminal-tab.ts), then closed in a tell of its own, only
+    // when one was found.
+    expect(script).toContain('if item ti of conchRow is "/dev/ttys042" then');
+    const foundIndex = script.indexOf("if conchTab > 0 then");
+    const terminalStart = script.indexOf('tell application "Terminal"', foundIndex);
     const terminalEnd = script.indexOf("end tell", terminalStart);
-    expect(terminalStart).toBeGreaterThanOrEqual(0);
-    expect(terminalEnd - terminalStart).toBeGreaterThan(60); // a real repeat/if body, not an empty tell
+    expect(foundIndex).toBeGreaterThanOrEqual(0);
+    expect(terminalStart).toBeGreaterThan(foundIndex);
     const block = script.slice(terminalStart, terminalEnd);
-    const ifIndex = block.indexOf('if tty of t is "/dev/ttys042" and not (busy of t) then');
-    const closeIndex = block.indexOf("close t saving no");
-    const endIfIndex = block.indexOf("end if", closeIndex);
-    expect(ifIndex).toBeGreaterThanOrEqual(0);
-    // The close sits between the matching `if` and its `end if` — never outside it.
-    expect(closeIndex).toBeGreaterThan(ifIndex);
-    expect(endIfIndex).toBeGreaterThan(closeIndex);
+    // The tab on that tty, and only while nothing runs in it.
+    expect(block).toContain("set conchTabRef to tab conchTab of window id conchWindow");
+    expect(block).toContain("if not (busy of conchTabRef) then close conchTabRef saving no");
+    expect(script.indexOf("end if", terminalEnd)).toBeGreaterThan(terminalEnd);
     // Exactly one close in the whole Terminal block, and it targets a tab, never a window.
     expect(block.match(/\bclose /g)?.length).toBe(1);
     expect(block).not.toMatch(/close w\b/);
