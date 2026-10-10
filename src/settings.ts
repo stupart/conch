@@ -46,6 +46,7 @@ export const SETTING_KEYS = [
   "voice-speed",
   "keystroke-fallback",
   "bypass-permissions",
+  "browser-open-in-conch",
   "records",
   "phone",
   "phone-port",
@@ -75,6 +76,7 @@ export const SETTING_KEYS = [
 export type SettingKey = typeof SETTING_KEYS[number];
 export type SettingField =
   | "bypassPermissions"
+  | "browserOpenInConch"
   | "recordsEnabled"
   | "endSilenceSecs"
   | "micGainDb"
@@ -304,6 +306,21 @@ export const SETTING_DESCRIPTORS = [
     bounds: null,
     apply: "live",
     help: "start sessions with all permission prompts skipped (claude --dangerously-skip-permissions, codex --dangerously-bypass-approvals-and-sandbox)",
+  },
+  {
+    // Tyler, 2026-10-09: "even tho the terminals everywhere problem was solved I now have browser windows and tabs
+    // everywhere". On: the sessions conch starts get its `open` first on PATH and $BROWSER (browser-open.ts), so a
+    // link they open lands in conch's Workbench. A session takes it as it starts; turning it off also sends the links
+    // of sessions already running back to the default browser (the shim folder's off marker).
+    key: "browser-open-in-conch",
+    field: "browserOpenInConch",
+    env: "CONCH_BROWSER_OPEN_IN_CONCH",
+    kind: "boolean",
+    default: true,
+    parse: parseBoolean,
+    bounds: null,
+    apply: "live",
+    help: "open links from the sessions conch starts (open, $BROWSER) in conch's Workbench, not your default browser; on reaches sessions started after, off applies at once",
   },
   {
     key: "keystroke-fallback",

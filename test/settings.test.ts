@@ -55,6 +55,8 @@ const expected = {
   // Ships OFF. conch starts sessions on other people's machines; removing every
   // confirmation from them is a thing you turn on, never something you inherit.
   "bypass-permissions": ["bypassPermissions", "CONCH_BYPASS_PERMISSIONS", "live", false],
+  // Ships ON: links the sessions conch starts open land in conch's Workbench, not a pile of browser tabs (browser-open.ts).
+  "browser-open-in-conch": ["browserOpenInConch", "CONCH_BROWSER_OPEN_IN_CONCH", "live", true],
   "phone": ["phoneEnabled", "CONCH_PHONE", "live", false],
   "phone-port": ["phonePort", "CONCH_PHONE_PORT", "live", 8674],
   "phone-relay-url": ["phoneRelayURL", "CONCH_PHONE_RELAY_URL", "live", ""],
@@ -87,10 +89,10 @@ const expected = {
 } as const;
 
 describe("settings registry", () => {
-  test("contains exactly the 34 curated, default-bearing knobs", () => {
+  test("contains exactly the 35 curated, default-bearing knobs", () => {
     const keys = [...SETTING_REGISTRY.keys()];
     expect(keys.sort()).toEqual(Object.keys(expected).sort());
-    expect(SETTING_DESCRIPTORS).toHaveLength(34);
+    expect(SETTING_DESCRIPTORS).toHaveLength(35);
     for (const [key, [field, env, apply, defaultValue]] of Object.entries(expected)) {
       const descriptor = SETTING_REGISTRY.get(key);
       expect(descriptor).toMatchObject({ field, env, apply, default: defaultValue });

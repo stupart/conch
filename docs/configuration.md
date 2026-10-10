@@ -67,6 +67,7 @@ The defaults below are read from `src/settings.ts`; `conch settings` prints the 
 | `keystroke-fallback` | `CONCH_KEYSTROKE_FALLBACK` | `true` | For a session outside tmux, bring its Terminal window forward and type your words there; `false` puts them on the clipboard instead |
 | `reveal-on-turn` | `CONCH_REVEAL_ON_TURN` | `false` | Raise a session's Terminal window on every finished turn |
 | `reveal-typing-grace` | `CONCH_REVEAL_TYPING_GRACE_SECS` | `2` | Don't raise a window if you touched the keyboard or mouse this recently |
+| `browser-open-in-conch` | `CONCH_BROWSER_OPEN_IN_CONCH` | `true` | Links the sessions conch starts open (`open <url>`, `$BROWSER`) land in conch's Workbench instead of your default browser. conch keeps its `open` in `~/.config/conch/bin`; a link it can't place, anything that isn't a plain link (`open -a`, a file) and anything run with `CONCH_OPEN_EXTERNAL=1` go to macOS's `open`. On reaches sessions started after; off applies at once |
 
 **iPhone**
 

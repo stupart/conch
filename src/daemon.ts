@@ -261,7 +261,8 @@ import { assertCodexAccountIdle, assertClaudeAccountIdle, accountRegistrySnapsho
 import { transcriptFolder } from "./review-roots.ts";
 import { defaultCodexDir, readCodexAccounts, addCodexAccount, removeCodexAccount, requireCodexAccount, cachedCodexAccount, invalidateCodexAccount, codexAccountForLaunch } from "./codex-accounts.ts";
 import { claudeAccountForLaunch, readClaudeAccounts, addClaudeAccount, removeClaudeAccount, requireClaudeAccount, cachedClaudeAccountStatus, readClaudeAccountStatus, invalidateClaudeAccountStatus, type ClaudeAccountStatus } from "./claude-accounts.ts";
-import { runInstall as installAccountHooks, repairConchHooks } from "./install.ts";
+import { conchInvocation, runInstall as installAccountHooks, repairConchHooks } from "./install.ts";
+import { setUpSessionBrowsers } from "./browser-open.ts";
 import {
   addressParkedWindow,
   processConversation,
@@ -2656,10 +2657,18 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   // One Claude login rotating across Max accounts (claude-rotation.ts): claude-swap's auto-switcher while it's on.
   const rotation = new RotationSupervisor((line) => log(line));
   rotation.set(cfg.claudeRotation);
+  // `open` and $BROWSER in the sessions conch starts, into the Workbench while `browser-open-in-conch` is on
+  // (browser-open.ts): the shim folder written for the setting, and the sessions started from now on routed through it.
+  const setUpBrowsers = (on: boolean): void => {
+    const error = setUpSessionBrowsers(on, conchInvocation());
+    if (error) log(error);
+  };
+  setUpBrowsers(cfg.browserOpenInConch);
   const configController = createConfigController(cfg, {
     settingsPath: daemonSettingsPath,
     onLiveChange: (key, value) => {
       if (key === "claude-rotation") rotation.set(value === true);
+      if (key === "browser-open-in-conch") setUpBrowsers(value === true);
       // Off means quiet now, not after the sentence: the reading in progress stops, and every later one is
       // refused at `speak` (cfg.speak is already false here).
       if (key === "speak" && value === false) speech.cancelCurrent();

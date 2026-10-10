@@ -19,6 +19,7 @@ import { ensureHelpSession, helpSessionDir } from "./help-session.ts";
 import type { SessionInfo } from "./sessions.ts";
 import { acceptBackgroundTrust, managedBackgroundSession, startBackgroundProcess, type BackgroundTrustOutcome } from "./background-sessions.ts";
 import { probeCommand } from "./probe.ts";
+import { sessionBrowserAssignments } from "./browser-open.ts";
 
 export type { SessionBackend };
 
@@ -274,7 +275,11 @@ export function terminalSessionCommand(request: StartSessionRequest): string {
   const adapter = adapterFor(request.backend);
   const account = claudeAccountForLaunch(request);
   const codexAccount = codexAccountForLaunch(request);
-  const environment = account ? claudeProfileCommandPrefix(account, request.claudeHandoff || request.host === "background" ? true : undefined) : codexAccount ? codexProfileCommandPrefix(codexAccount, request.host === "background" ? true : undefined) : "";
+  const profile = account ? claudeProfileCommandPrefix(account, request.claudeHandoff || request.host === "background" ? true : undefined) : codexAccount ? codexProfileCommandPrefix(codexAccount, request.host === "background" ? true : undefined) : "";
+  // `open` and $BROWSER into conch's Workbench while `browser-open-in-conch` is on (browser-open.ts): after the
+  // profile's own `env` options, or an `env` of their own.
+  const browser = sessionBrowserAssignments(request.backend);
+  const environment = browser ? (profile || "env ") + browser : profile;
   const resume = request.claudeHandoff?.transcriptPath ?? request.resumeSessionId?.trim();
   const teleport = request.teleportSessionId?.trim();
   const args = teleport && adapter.teleportArgs
