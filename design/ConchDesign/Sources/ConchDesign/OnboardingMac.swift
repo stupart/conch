@@ -2173,11 +2173,13 @@ public struct OnboardingSettingsPane: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        // The gap under every Settings section's title (`SettingsLayout.headerGap`).
+        VStack(alignment: .leading, spacing: SettingsLayout.headerGap) {
             HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Setup").font(.system(size: 18, weight: .semibold)).foregroundStyle(ConchColor.textPrimary)
-                    Text("What conch has on this Mac, and what's still off.").font(.system(size: 12)).foregroundStyle(ConchColor.textSecondary)
+                // Every Settings section's title, where they all start (SettingsSectionHeader in the Mac app).
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Setup").font(ConchType.title).foregroundStyle(ConchColor.textPrimary)
+                    Text("What conch has on this Mac, and what's still off.").font(ConchType.secondary).foregroundStyle(ConchColor.textSecondary)
                 }
                 Spacer()
                 OnboardingButton("Run setup again", style: .row, action: onRunAgain)
@@ -2219,8 +2221,9 @@ public struct OnboardingSettingsPane: View {
                 }
             }
         }
-        .padding(24)
-        .frame(width: 620, alignment: .topLeading)
+        .padding(SettingsLayout.inset)
+        // The Settings page's column, which every section runs to (`SettingsLayout`).
+        .frame(maxWidth: SettingsLayout.column, alignment: .topLeading)
         .background(ConchColor.ground)
     }
 }

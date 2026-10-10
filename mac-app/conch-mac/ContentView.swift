@@ -34,16 +34,14 @@ struct ContentView: View {
     /// What the last P did, said for a moment (`pauseOrResume`).
     @State private var quietToast: QuietToast?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// SwiftUI's own way to open the Settings scene. Doing it by sending
-    /// showSettingsWindow: to nil is the usual hack and breaks between
-    /// releases; this is the supported route on macOS 14+.
-    @Environment(\.openSettings) private var openSettings
+    /// Settings, a page of this window in place of the sessions (2026-10-11): whether it shows and which section, for the
+    /// whole app, so every way in reaches it (`SettingsRouter`).
+    @ObservedObject private var settings = SettingsRouter.shared
 
-    /// Wrapped rather than passed through: openSettings is an
-    /// OpenSettingsAction, and handing it to a twenty-argument initialiser as
-    /// a closure made Swift give up type-checking the whole expression.
-    private func connectPhone() {
-        openSettings()
+    /// The header's gear: Settings where it was left. A function rather than a closure in the dashboard's long initialiser,
+    /// which the type checker gives up on.
+    private func openSettings() {
+        settings.open()
     }
 
     private var reviewItems: [ReviewItem] {
@@ -93,39 +91,45 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            DashboardView(
-                onSelectRemote: { remoteSelection = $0 },
-                page: page,
-                lagoonAvailable: LagoonFeature.available(enabled: lagoonEnabled),
-                state: store.state,
-                selectedSessionID: workspace.viewing,
-                renamingSessionID: renamingSessionID,
-                renameDraft: $renameDraft,
-                actions: DashboardActions(
-                    onStartSession: { isShowingSessionStart = true },
-                    onSelectSession: selectSession,
-                    onDoubleClickSession: doubleClickSession,
-                    onBeginRename: beginRename,
-                    onCommitRename: commitRename,
-                    onCancelRename: cancelRename,
-                    onDismiss: dismissSession,
-                    onFork: { store.forkSession($0) },
-                    onRestore: restoreSession,
-                    onUndoDismiss: store.undoLastDismissal,
-                    onDismissNewerDaemonWarning: store.dismissNewerDaemonWarning,
-                    onToggleLogs: store.toggleLogDrawer,
-                    onConnectPhone: connectPhone,
-                    onShowKeyboardShortcuts: showKeyboardShortcuts,
-                    onShowCommandPalette: showCommandPalette,
-                    onTalkOrStop: talkOrStop,
-                    onPauseOrResume: pauseOrResume,
-                    onToggleQuiet: { toggleQuiet($0) },
-                    onRecite: recite,
-                    onMoveUp: { moveSelection(by: -1) },
-                    onMoveDown: { moveSelection(by: 1) },
-                    onReleaseSelection: releaseSelection
+            if settings.state.isShown {
+                // The whole window, its own strip included; the sessions come back as they were left, since what they
+                // show is this view's (the workspace, the lagoon, the approvals), not the dashboard's.
+                ConchSettingsPage(router: settings)
+            } else {
+                DashboardView(
+                    onSelectRemote: { remoteSelection = $0 },
+                    page: page,
+                    lagoonAvailable: LagoonFeature.available(enabled: lagoonEnabled),
+                    state: store.state,
+                    selectedSessionID: workspace.viewing,
+                    renamingSessionID: renamingSessionID,
+                    renameDraft: $renameDraft,
+                    actions: DashboardActions(
+                        onStartSession: { isShowingSessionStart = true },
+                        onSelectSession: selectSession,
+                        onDoubleClickSession: doubleClickSession,
+                        onBeginRename: beginRename,
+                        onCommitRename: commitRename,
+                        onCancelRename: cancelRename,
+                        onDismiss: dismissSession,
+                        onFork: { store.forkSession($0) },
+                        onRestore: restoreSession,
+                        onUndoDismiss: store.undoLastDismissal,
+                        onDismissNewerDaemonWarning: store.dismissNewerDaemonWarning,
+                        onToggleLogs: store.toggleLogDrawer,
+                        onOpenSettings: openSettings,
+                        onShowKeyboardShortcuts: showKeyboardShortcuts,
+                        onShowCommandPalette: showCommandPalette,
+                        onTalkOrStop: talkOrStop,
+                        onPauseOrResume: pauseOrResume,
+                        onToggleQuiet: { toggleQuiet($0) },
+                        onRecite: recite,
+                        onMoveUp: { moveSelection(by: -1) },
+                        onMoveDown: { moveSelection(by: 1) },
+                        onReleaseSelection: releaseSelection
+                    )
                 )
-            )
+            }
         }
         // Over the top of the work, under the title strip, and never in the way of a click.
         .overlay(alignment: .top) {
@@ -195,7 +199,9 @@ struct ContentView: View {
         // ⌘0 and the header's shell: the lagoon, or back to the conversation. Nothing while it isn't available.
         .onReceive(NotificationCenter.default.publisher(for: .showLagoon)) { _ in
             guard LagoonFeature.available(enabled: lagoonEnabled) else { return }
-            storedPage = page == .lagoon ? .sessions : .lagoon
+            // From Settings, ⌘0 is the lagoon, not back to the conversation behind the page.
+            storedPage = page == .lagoon && !settings.state.isShown ? .sessions : .lagoon
+            settings.close()
         }
         // A row picked while the lagoon shows (a click, the arrows, the menu bar): the camera glides to its crab, and the
         // page stays.
@@ -242,6 +248,8 @@ struct ContentView: View {
         // Already picked: `viewing` doesn't change, so the glide is asked for here (the camera may have wandered off it).
         if page == .lagoon, workspace.viewing == row.id { lagoon.focus(row.id) }
         workspace.viewing = row.id
+        // A session chosen from Settings (the menu bar menu, the command palette) is a session to see.
+        settings.close()
     }
 
     /// A row's double-click renames it, as every file list has taught. On the lagoon a single click only moves the camera,
@@ -263,6 +271,7 @@ struct ContentView: View {
         workspace.show(work: .deliverable, for: row.id)
         if let review { workspace.select(deliverable: review, for: row.id) }
         storedPage = .sessions
+        settings.close()
     }
 
     /// From the lagoon to a session's conversation: double-click or Return on its row.
@@ -276,6 +285,7 @@ struct ContentView: View {
     /// from Terminal, the rule `refocusAfterDelivery` keeps: anywhere else Tyler went meanwhile, he stays.
     private func showStarted(_ id: SessionRow.ID) {
         workspace.viewing = id
+        settings.close()
         guard !NSApp.isActive, NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.Terminal" else { return }
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -455,6 +465,20 @@ struct ContentView: View {
     }
 
     private func handleDashboardKey(_ key: DashboardKey) -> Bool {
+        // Settings in place of the sessions: Esc stops a reading first, as it does everywhere, and then goes back to the
+        // sessions. The rest are the sessions' keys, and pass on to the page (Space presses its focused button).
+        if settings.state.isShown {
+            switch key {
+            case .stopSpeaking:
+                guard store.state?.live.state == "speaking" else { return false }
+                store.send(.stop())
+                return true
+            case .releaseSelection:
+                return settings.escape()
+            default:
+                return false
+            }
+        }
         switch key {
         case .talkOrStop:
             talkOrStop()
@@ -590,8 +614,6 @@ private struct StartSessionSheet: View {
     @State private var sessionsBeforeLaunch: Set<String> = []
     @StateObject private var codexAccounts = ClaudeAccountsStore(providerId: "codex")
     @State private var codexAccountId = "default"
-    @Environment(\.openSettings) private var openAccountSettings
-    @AppStorage("conch.settings.section") private var settingsSection = "providers"
     @State private var backend = ConchAgentBackend.claude
     @State private var mode = StartMode.new
     @State private var cwd = FileManager.default.homeDirectoryForCurrentUser.path
@@ -756,7 +778,7 @@ private struct StartSessionSheet: View {
                         }
                         .help("Refresh reported usage").accessibilityLabel("Refresh reported usage")
                         .disabled(activeAccounts.busy)
-                        Button("Manage…") { settingsSection = "providers"; dismiss(); openAccountSettings() }
+                        Button("Manage…") { dismiss(); SettingsRouter.shared.open(.providers) }
                     }
                     if !activeAccounts.busy || !activeAccounts.accounts.isEmpty {
                     StartAccountPicker(catalog: activeAccounts.startCatalog, provider: effectiveBackend.rawValue,
@@ -1197,7 +1219,7 @@ private struct KeyboardShortcutsSheet: View {
         ShortcutHelpRow(command: "Esc", result: "Release selection / close (when nothing is being read)"),
         ShortcutHelpRow(command: "Right-click a row", result: "Rename, dismiss"),
         ShortcutHelpRow(command: "⌘K", result: "Command palette"),
-        ShortcutHelpRow(command: "⌘,", result: "Settings"),
+        ShortcutHelpRow(command: "⌘,", result: "Settings, and back to your sessions"),
         ShortcutHelpRow(command: "?", result: "This list"),
     ]
 

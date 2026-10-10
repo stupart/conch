@@ -73,6 +73,12 @@ struct ConchMacApp: App {
         .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .newItem) {}
+            // conch › Settings…, ⌘,: a page of this window, not a window of its own (2026-10-11). There is no `Settings`
+            // scene, so this is the app menu's item; pressed while the page shows in front, it goes back to the sessions.
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") { SettingsRouter.shared.command() }
+                    .keyboardShortcut(",", modifiers: .command)
+            }
             // ⌘K (B4). A menu item so the shortcut is discoverable and works
             // whatever has focus; the view opens it, like Keyboard Shortcuts.
             CommandMenu("Session") {
@@ -127,21 +133,6 @@ struct ConchMacApp: App {
                     )
                 }
             }
-        }
-
-        Settings {
-            ConchSettingsRootView()
-                .frame(minWidth: 760, idealWidth: 840, minHeight: 480, idealHeight: 620)
-            // `Settings` is its own SCENE. Environment objects injected into
-            // the WindowGroup above do not reach it, and SwiftUI answers a
-            // missing @EnvironmentObject with a trap rather than a nil — so
-            // opening Settings killed the app outright (EXC_BREAKPOINT in
-            // EnvironmentObject.error, straight out of ConchSettingsView.body).
-            // Every scene that reads these has to be handed them itself.
-            .environmentObject(store)
-            .environmentObject(remotes)
-            .environmentObject(audio)
-            .environmentObject(appDelegate.daemon)
         }
     }
 }

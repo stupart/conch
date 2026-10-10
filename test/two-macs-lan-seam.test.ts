@@ -99,7 +99,8 @@ test("A1 Swift pairing stores many Macs with one Keychain account per owner", ()
   expect(swift("RemoteMacViews.swift")).toContain('private var port = "8674"');
   expect(swift("RemoteMacViews.swift")).toContain('Button("Remove") { remotes.remove(pairing) }');
   expect(swift("PairingView.swift")).toContain("RemoteMacPairingsView()");
-  expect(swift("ConchMacApp.swift").match(/\.environmentObject\(remotes\)/g)).toHaveLength(2);
+  // One scene, the window: Settings is a page of it (2026-10-11), so its Other Macs have the window's store.
+  expect(swift("ConchMacApp.swift").match(/\.environmentObject\(remotes\)/g)).toHaveLength(1);
 });
 
 test("A1 Swift observer transport polls old bridges and fetches reply/files only over HTTP", () => {

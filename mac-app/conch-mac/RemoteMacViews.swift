@@ -12,9 +12,9 @@ struct RemoteMacPairingsView: View {
     @State private var busy = false
 
     var body: some View {
+        // No rule above it: Environments and Phone app each put one where it sits.
         VStack(alignment: .leading, spacing: 12) {
-            Divider()
-            Text("Other Macs").font(.headline)
+            SettingsSubheading(title: "Other Macs")
             Text("See sessions and send typed text on your LAN. Use the host and new six-digit code from the other Mac’s Phone app tab.")
                 .font(.callout).foregroundStyle(ConchPalette.textDim)
             ForEach(remotes.pairings) { pairing in

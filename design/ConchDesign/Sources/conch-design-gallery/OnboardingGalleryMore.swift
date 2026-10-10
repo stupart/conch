@@ -200,6 +200,7 @@ func renderOnboardingStates() throws {
                     OnboardingSummaryLine(step: .voice, detail: "MacBook Pro Microphone · 8 natural voices", status: "Ready", done: true),
                     OnboardingSummaryLine(step: .phone, detail: "Not paired", status: "Pair", done: false),
                 ], downloads: dlDone)
+                .frame(width: 620)
                 .clipShape(RoundedRectangle(cornerRadius: ConchRadius.large, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: ConchRadius.large, style: .continuous).strokeBorder(ConchColor.hairline, lineWidth: 1))
             }

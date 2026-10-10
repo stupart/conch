@@ -236,26 +236,16 @@ struct ConchPermissionsView: View {
     @EnvironmentObject private var daemon: DaemonHost
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Permissions")
-                        .font(ConchTypography.font(size: 18, weight: .semibold))
-                        .foregroundStyle(ConchPalette.textPrimary)
-                    Text("macOS asks once for each. One grant to conch covers everything that needs it.")
-                        .font(ConchTypography.font(size: 12))
-                        .foregroundStyle(ConchPalette.textDim)
-                }
-                Spacer()
-            }
-            .padding(.horizontal, 22)
-            .padding(.vertical, 16)
+        // One scroll view, header and all, so the Settings page stops all of it at its readable column.
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                SettingsSectionHeader(title: "Permissions", subtitle: "macOS asks once for each. One grant to conch covers everything that needs it.")
+                    .padding([.horizontal, .top], SettingsLayout.inset)
+                    .padding(.bottom, SettingsLayout.headerGap)
 
-            Rectangle()
-                .fill(ConchPalette.divider)
-                .frame(height: 1)
+                SettingsHairline()
+                    .padding(.horizontal, SettingsLayout.inset)
 
-            ScrollView {
                 ConchPermissionList(
                     statuses: center.statuses,
                     notes: center.notes,
@@ -264,7 +254,7 @@ struct ConchPermissionsView: View {
                     titleFont: ConchTypography.font(size: 14, weight: .medium),
                     detailFont: ConchTypography.font(size: 12),
                     statusFont: ConchTypography.font(size: 11),
-                    inset: 22,
+                    inset: SettingsLayout.inset,
                     onAction: { permission, action in center.perform(action, for: permission, store: store) }
                 )
                 .padding(.bottom, 12)

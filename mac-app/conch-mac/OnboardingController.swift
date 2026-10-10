@@ -1221,7 +1221,8 @@ struct SetupSettingsTab: View {
                                    onAction: { OnboardingController.shared.open(step: $0) },
                                    onRetry: { model.retry($0) },
                                    onRunAgain: { OnboardingController.shared.runAgain() })
-                .frame(maxWidth: .infinity, alignment: .top)
+                // Beside the section list, where every section starts (`SettingsLayout`).
+                .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .background(ConchColor.ground)
         .environment(\.conchAppIcon, Image(nsImage: NSApp.applicationIconImage))

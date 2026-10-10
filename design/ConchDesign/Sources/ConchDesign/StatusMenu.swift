@@ -18,6 +18,8 @@ public enum StatusMenu {
         case openSession(String)
         /// Setup's window, where it was left.
         case finishSetup
+        /// conch's window on its Settings page, where it was left (`SettingsPageState.open`).
+        case settings
     }
 
     /// A toggle's tick. `mixed` is on but not showing: the conversation panel folded to its handle, which ticked read
@@ -159,6 +161,8 @@ public enum StatusMenu {
         }
         rows.append(.separator)
         rows.append(.item(Item(title: "Open conch", command: .openConch)))
+        // Settings is a page of conch's window (2026-10-11): this brings the window forward on it, as ⌘, does there.
+        rows.append(.item(Item(title: "Settings…", command: .settings, key: ",", modifiers: [.command])))
         return rows
     }
 
