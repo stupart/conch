@@ -144,6 +144,7 @@ interface Options {
   holdCues?: boolean;
   sessionGone?: (sessionId: string) => boolean | Promise<boolean>;
   window?: (sessionId: string) => SessionInfo | undefined;
+  freshStatus?: (sessionId: string) => Promise<string | undefined>;
   /** Where the session's transcript says it is now; absent means the daemon reads no transcript. */
   sessionFolder?: (sessionId: string) => string | undefined;
   inject?: (text: string) => InjectTextResult;
@@ -289,6 +290,7 @@ function harness(options: Options = {}) {
     audio: { lease, holder },
     quietOverrideBlocked: () => false,
     window: options.window ?? (() => undefined),
+    ...(options.freshStatus ? { freshStatus: options.freshStatus } : {}),
     ...(options.sessionFolder ? { sessionFolder: async (sessionId: string) => options.sessionFolder!(sessionId) } : {}),
     sessionGone: async (sessionId) => {
       gone.push(sessionId);
@@ -3879,13 +3881,47 @@ describe("a question known only from Claude Code's PermissionRequest hook", () =
   const picker = (status: string) => ({ ...busy(), status }) as SessionInfo;
 
   test("is held while the picker is open, and answered through its keys by card or by words", async () => {
+    const byCard = harness({ window: () => picker("waiting") });
+    const cardPath = quiet();
+    await byCard.voice.handle(accepted(byCard, needs(cardPath)));
+    expect(byCard.voice.heldQuestionFor("s1")?.questions.map((q) => q.header)).toEqual(["Delta"]);
+    expect(await byCard.voice.handle(inject("Delta: D2", { transcriptPath: cardPath, answers: [{ choices: [1] }], questionId: `tool:${asking.id}` }))).toBe(true);
+    expect(byCard.answered).toEqual([[{ press: "2" }]]);
+    const byWords = harness({ window: () => picker("waiting") });
+    const wordsPath = quiet();
+    await byWords.voice.handle(accepted(byWords, needs(wordsPath)));
+    expect(await byWords.voice.handle(inject("d1", { transcriptPath: wordsPath }))).toBe(true);
+    expect(byWords.answered).toEqual([[{ press: "1" }]]);
+    expect([...byCard.texts, ...byWords.texts]).toEqual([]);
+  });
+
+  // 2026-10-11: Tyler answered a two-question card, sent a message a second later, and it was refused ("the session is
+  // asking 2 questions at once…"): the hook's copy of the questions outlived the answer while the row still read
+  // "waiting", until the session's next event.
+  test("once answered, the questions are spent: the next words are a message, not another answer", async () => {
+    // The last registry read still says "waiting" (the picker just answered); Claude Code itself, asked afresh, doesn't.
+    let asked = 0;
+    const h = harness({
+      window: () => picker("waiting"),
+      freshStatus: async () => (asked++ === 0 ? "waiting" : "busy"),
+      // Claude Code's hook saying the prompt went in, as it does for a message it takes.
+      promptSubmitted: (_id, _since, words) => words === "what were the sims being used for?",
+    });
     const path = quiet();
-    const h = harness({ window: () => picker("waiting") });
     await h.voice.handle(accepted(h, needs(path)));
-    expect(h.voice.heldQuestionFor("s1")?.questions.map((q) => q.header)).toEqual(["Delta"]);
     expect(await h.voice.handle(inject("Delta: D2", { transcriptPath: path, answers: [{ choices: [1] }], questionId: `tool:${asking.id}` }))).toBe(true);
-    expect(await h.voice.handle(inject("d1", { transcriptPath: path }))).toBe(true);
-    expect(h.answered).toEqual([[{ press: "2" }], [{ press: "1" }]]);
+    expect(h.voice.heldQuestionFor("s1")).toBeNull();
+    expect(await h.voice.handle(inject("what were the sims being used for?", { transcriptPath: path }))).toBe(true);
+    expect(h.answered).toEqual([[{ press: "2" }]]);
+    expect(h.texts).toEqual(["what were the sims being used for?"]);
+  });
+
+  test("a session still waiting after its answer, or asking again, is still refused rather than typed into", async () => {
+    const h = harness({ window: () => picker("waiting"), freshStatus: async () => "waiting" });
+    const path = quiet();
+    await h.voice.handle(accepted(h, needs(path)));
+    expect(await h.voice.handle(inject("Delta: D2", { transcriptPath: path, answers: [{ choices: [1] }], questionId: `tool:${asking.id}` }))).toBe(true);
+    expect(await h.voice.handle(inject("hello", { transcriptPath: path }))).toMatchObject({ delivered: false, reason: "session-awaiting-answer" });
     expect(h.texts).toEqual([]);
   });
 

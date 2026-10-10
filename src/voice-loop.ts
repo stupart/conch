@@ -1297,6 +1297,26 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
    * the same terms as `hookApprovals`.
    */
   const hookQuestions = new Map<string, { id: string; questions: AgentQuestion[]; at: number }>();
+  /** When conch last saw a picker's answer recorded, per session, until the session asks for something else. */
+  const answeredAt = new Map<string, number>();
+  /** How long after an answer a row's "waiting" may be the picker that answer closed. */
+  const ANSWER_SETTLE_MS = 15_000;
+
+  /**
+   * Whether a session the last registry read calls "waiting" still is. Just after a picker's answer, that read can be
+   * the picker the answer closed: refusing then turned Tyler's message away a second after he submitted the card
+   * (2026-10-11). So for a moment after an answer, Claude Code is asked afresh, a few times, before conch calls it a
+   * dialog. Otherwise it is, as before.
+   */
+  async function stillWaiting(sessionId: string): Promise<boolean> {
+    const at = answeredAt.get(sessionId);
+    if (at === undefined || Date.now() - at > ANSWER_SETTLE_MS || !deps.freshStatus) return true;
+    for (let tries = 0; tries < 12; tries++) {
+      if ((await deps.freshStatus(sessionId)) !== "waiting") return false;
+      await (deps.sleep ?? Bun.sleep)(250);
+    }
+    return true;
+  }
 
   function heldQuestionShowing(
     sessionId: string,
@@ -1476,6 +1496,11 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       return refuse("the picker didn't take the answer; answer it in the terminal");
     }
     receipt.emit("delivered", "transport-submitted");
+    // Answered, and recorded: the hook's copy of these questions is spent. Kept until the session's next event, it
+    // outlived the answer while the row still read "waiting", and the words Tyler sent a second after submitting the
+    // card were refused as answers to questions already answered (2026-10-11).
+    hookQuestions.delete(event.sessionId);
+    answeredAt.set(event.sessionId, Date.now());
     log(`answered ${questions.length} question${questions.length === 1 ? "" : "s"} in "${event.label}" via ${sent.via}`);
     return true;
   }
@@ -1657,6 +1682,8 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     // there were permissiosn questions it just said it was working". A prompt
     // that fired is proof the bypass did not apply to that session.
     // The hook's record of the dialog, when it sent one (see `hookApprovals`).
+    // Anything the session asks for next is not the picker an earlier answer closed.
+    if (event.type === "needs-you") answeredAt.delete(event.sessionId);
     if (event.type === "needs-you" && event.approval?.id.startsWith("hook:")) {
       hookApprovals.set(event.sessionId, { approval: event.approval, at: Date.now() });
     } else if (event.type === "needs-you" && event.asking) {
@@ -2497,7 +2524,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       // into an open permission prompt: the words went nowhere and the Return approved the
       // pending command. A question conch can see never gets here: the words answered it
       // (`answerWithWords`). What is left is refused, named when conch knows what it is.
-      if (target?.status === "waiting") {
+      if (target?.status === "waiting" && await stillWaiting(event.sessionId)) {
         return failedDelivery(approvalShowing(event.sessionId, transcriptPath, "waiting")
           ? "session-awaiting-permission"
           : "session-awaiting-answer");
