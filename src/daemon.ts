@@ -153,7 +153,10 @@ import {
 import type { PendingApproval } from "./approval.ts";
 import { FORK_ADOPT_WITHIN_MS, forkRequest, inheritedState, pendingForkFor, type PendingFork } from "./session-fork.ts";
 import { readSwapDashboard } from "./claude-swap.ts";
-import { addSignedInAccountToRotation, installClaudeSwap, RotationSupervisor, swapExecutable } from "./claude-rotation.ts";
+import {
+  addSignedInAccountToRotation, cancelAddingAccount, defaultLoginEmail, finishAddingAccount, installClaudeSwap, listedEmails,
+  removeFromRotation, RotationSupervisor, startAddingAccount, swapExecutable, switchRotation, type CommandOutcome,
+} from "./claude-rotation.ts";
 import { cancelClaudeWebLogin, startClaudeWebLogin } from "./claude-web-login.ts";
 import { isWindowKey, parseWindowKey } from "./window-key.ts";
 import { contextUsageFromLines, readTranscriptTailLines, type SessionContextUsage } from "./context-meter.ts";
@@ -3178,19 +3181,39 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         invalidateClaudeAccountStatus(account);
         removeClaudeAccount(message.id!);
       }
-      if (message.action === "cancel-login") cancelClaudeWebLogin(message.id!);
-      if (message.action === "rotation-status" || message.action === "rotation-install" || message.action === "rotation-add") {
-        const done = message.action === "rotation-install" ? await installClaudeSwap()
-          : message.action === "rotation-add" ? await addSignedInAccountToRotation()
-          : undefined;
-        if (done) log(`${message.action === "rotation-install" ? "installed claude-swap" : "added Default's Claude account to the rotation"}${done.ok ? "" : ` — failed: ${done.output.slice(-200)}`}`);
-        if (done?.ok && message.action === "rotation-install") rotation.set(cfg.claudeRotation);
+      if (message.action === "cancel-login" && !cancelAddingAccount(message.id!)) cancelClaudeWebLogin(message.id!);
+      // Claude accounts are claude-swap's list (claude-rotation.ts): add one by signing in in the app, use one now,
+      // remove one, and switch between them as one nears its limit.
+      if (message.action.startsWith("rotation-")) {
+        const said = (what: string, done: CommandOutcome) => log(`${what}${done.ok ? "" : ` — failed: ${done.output.slice(-200)}`}`);
+        let done: (CommandOutcome & { email?: string }) | undefined;
+        let adding: { id: string; url: string } | undefined;
+        const install = async () => {
+          done = await installClaudeSwap();
+          said("installed claude-swap", done);
+          if (done.ok) rotation.set(cfg.claudeRotation);
+          return done.ok;
+        };
+        if (message.action === "rotation-install") await install();
+        if (message.action === "rotation-add") said("added Default's Claude account to the list", done = await addSignedInAccountToRotation());
+        if (message.action === "rotation-switch") said(`switched Claude to account ${message.slot}`, done = await switchRotation(message.slot!));
+        if (message.action === "rotation-remove") said(`removed account ${message.slot} from the Claude accounts`, done = await removeFromRotation(message.slot!));
+        if (message.action === "rotation-finish-add") done = await finishAddingAccount(message.id!);
+        if (message.action === "rotation-add-account" && (swapExecutable() || await install())) {
+          // The first time: the account this Mac is signed in as goes in the list first, as claude-swap's README starts.
+          const cswap = swapExecutable()!;
+          if ((await listedEmails(cswap))?.length === 0 && defaultLoginEmail()) {
+            said("added Default's Claude account to the list", await addSignedInAccountToRotation(cswap));
+          }
+          adding = await startAddingAccount({ ...(message.email ? { email: message.email } : {}), report: log }) ?? undefined;
+          done = adding ? undefined : { ok: false, output: "Claude's sign-in didn't start. Check that Claude Code is installed, then try again." };
+        }
         const installed = swapExecutable() !== undefined;
         const accounts = await Promise.all(readClaudeAccounts(cfg.claudeDir).map(account => cachedClaudeAccountStatus(account, false)));
-        return { kind: "claude-accounts", accounts,
+        return { kind: "claude-accounts", accounts, ...(adding ? { adding } : {}),
           rotation: { installed, on: cfg.claudeRotation, running: rotation.running,
             ...(installed ? { dashboard: await readSwapDashboard() } : {}),
-            ...(done ? { ok: done.ok, output: done.output } : {}) } };
+            ...(done ? { ok: done.ok, output: done.output, ...(done.ok && done.email ? { added: done.email } : {}) } : {}) } };
       }
       let loginUrl: string | undefined;
       if (message.action === "login") {

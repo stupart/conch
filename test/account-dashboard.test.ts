@@ -58,6 +58,15 @@ test("usage adapter preserves measured zero, over-limit values, scoped windows, 
   expect(parseSwapDashboard(dashboard)).toEqual(dashboard);
 });
 
+test("an account held out of switching, and when its sign-in will need renewing, come through", () => {
+  const held = decodeSwapDashboard(fixture({ disabled: true, loginExpiresAt: "2026-11-01T00:00:00Z" }));
+  expect(held.accounts[0]).toMatchObject({ disabled: true, loginExpiresAt: "2026-11-01T00:00:00.000Z" });
+  expect(parseSwapDashboard(held)).toEqual(held);
+  const plain = decodeSwapDashboard(fixture({ disabled: false, loginExpiresAt: "soon" }));
+  expect("disabled" in plain.accounts[0]!).toBe(false);
+  expect("loginExpiresAt" in plain.accounts[0]!).toBe(false);
+});
+
 test("missing usage never becomes zero and failed reads only use explicitly labelled last-good data", () => {
   const absent = decodeSwapDashboard(fixture({ usage: null, usageStatus: "no_credentials", usageFetchedAt: undefined }));
   expect(absent.accounts[0]!.windows).toEqual([]);

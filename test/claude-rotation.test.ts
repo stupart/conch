@@ -1,8 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describeSwapEvent, RotationSupervisor, rotationEnvironment, swapExecutable } from "../src/claude-rotation.ts";
+import {
+  addingDirectory, cancelAddingAccount, describeSwapEvent, finishAddingAccount, profileKeychainService, removeFromRotation,
+  RotationSupervisor, rotationEnvironment, startAddingAccount, swapExecutable, switchRotation,
+} from "../src/claude-rotation.ts";
+import type { ClaudeWebLogin } from "../src/claude-web-login.ts";
 import { accountRequestError } from "../src/claude-accounts.ts";
 
 // 2026-10-09, Tyler: "ideally its like one account that just rotates to the next max account via logout and login when
@@ -26,10 +30,18 @@ describe("finding and running claude-swap", () => {
   });
 
   test("the account actions the app sends", () => {
-    for (const action of ["rotation-status", "rotation-install", "rotation-add"]) {
+    for (const action of ["rotation-status", "rotation-install", "rotation-add", "rotation-add-account"]) {
       expect(accountRequestError({ kind: "claude-accounts", action })).toBeUndefined();
       expect(accountRequestError({ kind: "codex-accounts", action })).toBe("Unknown account action");
     }
+    expect(accountRequestError({ kind: "claude-accounts", action: "rotation-switch", slot: 2 })).toBeUndefined();
+    expect(accountRequestError({ kind: "claude-accounts", action: "rotation-remove" })).toBe("Choose an account");
+    expect(accountRequestError({ kind: "claude-accounts", action: "rotation-switch", slot: "2" })).toBe("Invalid account number");
+    expect(accountRequestError({ kind: "claude-accounts", action: "rotation-switch", slot: 0 })).toBe("Invalid account number");
+    expect(accountRequestError({ kind: "claude-accounts", action: "rotation-finish-add" })).toBe("Choose an account");
+    expect(accountRequestError({ kind: "claude-accounts", action: "rotation-finish-add", id: "add-1" })).toBeUndefined();
+    expect(accountRequestError({ kind: "claude-accounts", action: "rotation-add-account", email: "sam@acme.dev" })).toBeUndefined();
+    expect(accountRequestError({ kind: "claude-accounts", action: "rotation-add-account", email: "not an email" })).toBe("Invalid email");
   });
 });
 
@@ -72,11 +84,31 @@ describe("what conch says about the switcher", () => {
   });
 });
 
-test("the Mac sets it up, adds accounts after an in-app sign-in, and turns it on and off", async () => {
+test("the Mac shows claude-swap's list as your Claude accounts, adds to it in the app, and switches", async () => {
   const view = await Bun.file(new URL("../mac-app/conch-mac/ClaudeAccountsView.swift", import.meta.url)).text();
-  expect(view).toContain('Button("Set up rotation") { Task { await store.send("rotation-install") } }');
+  // One list, and the one way to add to it: a sign-in here that never changes the login your sessions use.
+  expect(view).toContain("let list = store.rotation?.dashboard?.accounts ?? []");
+  expect(view).toContain('Label("Add a Claude account", systemImage: "plus")');
+  expect(view).toContain('await send("rotation-add-account", email: email, timeout: 240)');
+  expect(view).toContain('struct Request: Encodable { let kind = "claude-accounts"; let action = "rotation-finish-add"; let id: String }');
+  // Per account: use it now, sign it in again, remove it.
+  expect(view).toContain('await send("rotation-switch", slot: account.number, timeout: 60)');
+  expect(view).toContain('await send("rotation-remove", slot: account.number, timeout: 60)');
+  expect(view).toContain('Button("Sign in again") { Task { await store.addAccount(email: account.email) } }');
+  // The sign-in that signed Default in as someone else is gone.
+  expect(view).not.toContain("addToRotationAfterSignIn");
+  expect(view).not.toContain("Sign in another account");
+  // Switching on and off, and conch's own sign-ins tucked under the list.
   expect(view).toContain('struct SetConfig: Encodable { let kind = "set-config"; let key = "claude-rotation"; let value: Bool }');
-  expect(view).toContain("store.addToRotationAfterSignIn = true");
-  expect(view).toContain('await store.send("rotation-add")');
+  expect(view).toContain('Text("Switch accounts automatically")');
+  expect(view).toContain('Text("Separate sign-ins (\\(store.accounts.count))")');
   expect(view).toContain('if providerId == "claude" { await store.send("rotation-status") }');
+});
+
+test("Continue with Google and Apple open as real popups in the sign-in, with Chrome to fall back on", async () => {
+  const view = await Bun.file(new URL("../mac-app/conch-mac/ClaudeAccountsView.swift", import.meta.url)).text();
+  expect(view).toContain("let popup = WKWebView(frame: webView.bounds, configuration: configuration)");
+  expect(view).toContain("func webViewDidClose(_ webView: WKWebView)");
+  expect(view).not.toContain("webView.load(URLRequest(url: url)) }\n            return nil");
+  expect(view).toContain('configuration.arguments = ["--incognito", request.url.absoluteString]');
 });

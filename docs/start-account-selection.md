@@ -31,9 +31,13 @@ the fork are not merged back. Codex resumes remain pinned to their original
 account. iOS sends both source and destination identities for a Claude handoff,
 and scopes resume-list identities by provider, account and native session ID.
 
-Accounts never rotate automatically. An unavailable account stays selected with
-a reason until the person changes it; no silent fallback can launch under the
-wrong subscription.
+The start sheet never changes the account chosen in it. An unavailable account
+stays selected with a reason until the person changes it; no silent fallback can
+launch under the wrong subscription. Claude's switching is a different thing:
+with "Switch accounts automatically" on, the Default sign-in itself moves between
+your Claude accounts as one nears its limit (claude-swap's list, managed in
+Providers; `src/claude-rotation.ts`), and sessions on Default follow it. Sessions
+on a separate sign-in never switch.
 
 Validation lives in `StartAccountsTests.swift` (availability and reply decoding)
 and `test/start-accounts-ui.test.ts` (both native clients and their wire routing).
