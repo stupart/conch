@@ -175,15 +175,27 @@ if [[ -n "$WAS_RUNNING" ]]; then
   # A clean environment: run from inside an agent session, `open` hands the app that session's (its account
   # folder, its tmux), and the daemon the app starts would inherit them (2026-10-02). The app cleans its daemon's
   # environment too (DaemonEnvironment); this keeps the app itself out of it.
-  env -i HOME="$HOME" USER="${USER:-$(id -un)}" LOGNAME="${LOGNAME:-${USER:-$(id -un)}}" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
-    open -g -a "$INSTALLED_APP_PATH"
+  relaunch() {
+    env -i HOME="$HOME" USER="${USER:-$(id -un)}" LOGNAME="${LOGNAME:-${USER:-$(id -un)}}" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+      open -g -a "$INSTALLED_APP_PATH"
+  }
+  running() { pgrep -f "$INSTALLED_APP_PATH/Contents/MacOS/" >/dev/null; }
+  # Something else may be reopening it already: it was, on three deploys running (2026-10-12), and an `open` landing
+  # mid-launch failed with -600 and stopped this script. So: launched only when nothing is, a failed `open` is not
+  # the end of the deploy, and it is waited for.
+  sleep 1
+  running || relaunch || true
+  for _ in $(seq 1 50); do running && break; sleep 0.2; done
+  if ! running; then
+    relaunch || true
+    for _ in $(seq 1 50); do running && break; sleep 0.2; done
+  fi
+  running || { echo "error: conch.app didn't relaunch; open it from /Applications" >&2; exit 1; }
   # Launched in the background, conch came back with no window, only its menu bar item, until it was reopened
   # (2026-10-12: a deploy left Tyler's window gone). Once it's up, a second `open -g` is the Dock click that brings
   # its window back, still without taking focus.
-  for _ in $(seq 1 50); do pgrep -f "$INSTALLED_APP_PATH/Contents/MacOS/" >/dev/null && break; sleep 0.2; done
   sleep 2
-  env -i HOME="$HOME" USER="${USER:-$(id -un)}" LOGNAME="${LOGNAME:-${USER:-$(id -un)}}" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
-    open -g -a "$INSTALLED_APP_PATH"
+  relaunch || true
 fi
 
 if [[ -d "$INSTALLED_APP_PATH/Contents/Resources/Lagoon" ]]; then
