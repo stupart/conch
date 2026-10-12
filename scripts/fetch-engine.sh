@@ -7,8 +7,9 @@
 #
 # The directory holds whisper-cli and whisper-server (whisper.cpp at the
 # revision seashell pins, static, Metal on Apple silicon), sox (SoX 14.4.2,
-# static, CoreAudio and its built-in formats only), the Silero VAD model, and
-# the verified SoX source tarball that ships beside its binary. It is
+# static, CoreAudio and its built-in formats only, with one fix to its
+# `silence` effect — mac-app/third-party/sox/), the Silero VAD model, and the
+# verified SoX source tarball that ships beside its binary. It is
 # seashell's engine: the same whisper.cpp revision and build flags its formula
 # uses, the same model pins, and SoX for capture, as seashell captures.
 #
@@ -42,7 +43,9 @@ VAD_URL="https://huggingface.co/ggml-org/whisper-vad/resolve/main/$VAD_FILE"
 
 SCRIPT="${BASH_SOURCE[0]}"
 REPO_ROOT="$(cd "$(dirname "$SCRIPT")/.." && pwd)"
-KEY="$(shasum -a 256 "$SCRIPT" | cut -c1-12)"
+# SoX's `silence -l` never resets its pause count; the patch says why.
+SOX_PATCH="$REPO_ROOT/mac-app/third-party/sox/sox-$SOX_VERSION-silence-leave-reset.patch"
+KEY="$(cat "$SCRIPT" "$SOX_PATCH" | shasum -a 256 | cut -c1-12)"
 CACHE_ROOT="${CONCH_ENGINE_CACHE:-$REPO_ROOT/build/vendor}"
 OUT="$CACHE_ROOT/engine-$KEY-$ARCH"
 SOX_TARBALL="sox-$SOX_VERSION.tar.gz"
@@ -77,6 +80,7 @@ fetch "$SOX_URL" "$SOX_SHA256" "$work/$SOX_TARBALL"
 fetch "$VAD_URL" "$VAD_SHA256" "$work/$VAD_FILE"
 tar -xzf "$work/whisper.tar.gz" -C "$work"
 tar -xzf "$work/$SOX_TARBALL" -C "$work"
+patch -d "$work/sox-$SOX_VERSION" -p1 --forward --quiet < "$SOX_PATCH"
 
 # The same clean environment for every step: no Xcode build settings, no
 # Homebrew include paths, only the tools named here.

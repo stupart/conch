@@ -7,10 +7,13 @@ program) and the GNU Lesser General Public License, version 2.1 (libsox): see
 COPYING, LICENSE.GPL and LICENSE.LGPL beside this notice, unmodified from the
 SoX source tree.
 
-The complete corresponding source is included beside this notice as
-sox-14.4.2.tar.gz, unmodified (sha256
+The complete corresponding source is included beside this notice: the
+original release as sox-14.4.2.tar.gz, unmodified (sha256
 b45f598643ffbd8e363ff24d61166ccec4836fea6d3888881b8df53e3bb55f6c, from
-https://downloads.sourceforge.net/project/sox/sox/14.4.2/sox-14.4.2.tar.gz).
-It was built with no changes to the source, as a static program with only the
-CoreAudio driver and SoX's built-in formats; the exact configure and make
-invocation is in scripts/fetch-engine.sh in conch's source.
+https://downloads.sourceforge.net/project/sox/sox/14.4.2/sox-14.4.2.tar.gz),
+and conch's one change to it as sox-14.4.2-silence-leave-reset.patch, which
+the binary was built with (`patch -p1` in the source tree). The patch makes the
+`silence` effect's -l option end a pause when sound resumes; its header says
+why. It was built as a static program with only the CoreAudio driver and SoX's
+built-in formats; the exact configure and make invocation is in
+scripts/fetch-engine.sh in conch's source.
