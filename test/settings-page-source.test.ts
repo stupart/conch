@@ -163,11 +163,12 @@ describe("the page's layout and appearance", () => {
     expect(page).toContain(".frame(width: SettingsLayout.listWidth)");
     expect(page).toContain(".contentMargins(.trailing, SettingsLayout.trailingMargin(width: content.size.width), for: .scrollContent)");
     // Every section, and each one's header in the scroll view with it, so the column holds all of it.
-    for (const section of ["providers", "environments", "tools", "general", "phone", "permissions", "setup"]) {
+    for (const section of ["providers", "environments", "tools", "browser", "general", "phone", "permissions", "setup"]) {
       expect(page, section).toContain(`case .${section}:`);
     }
     expect(settings).toContain('SettingsSectionHeader(title: "General"');
     expect(settings).toContain('SettingsSectionHeader(title: "Environments"');
+    expect(macSources["BrowserSettingsView.swift"]).toContain('SettingsSectionHeader(title: "Browser"');
     expect(macSources["Permissions.swift"]).toContain('SettingsSectionHeader(title: "Permissions"');
     expect(macSources["PairingView.swift"]).toContain('SettingsSectionHeader(title: "Phone app"');
     expect(macSources["OnboardingController.swift"]).toContain(".frame(maxWidth: .infinity, alignment: .topLeading)");
