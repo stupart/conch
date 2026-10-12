@@ -106,7 +106,11 @@ if [[ -n "$RUNNING_PIDS" ]]; then
   WAS_RUNNING=1
   echo "conch.app is running (pids: $RUNNING_PIDS) — it will be relaunched on the new build"
   for pid in $RUNNING_PIDS; do kill "$pid" 2>/dev/null || true; done
-  sleep 1
+  # Until each has actually gone, not a fixed second: a copy still quitting when the bundle is swapped keeps running
+  # the old build.
+  for pid in $RUNNING_PIDS; do
+    for _ in $(seq 1 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.2; done
+  done
 fi
 # Swapped in by rename, not deleted and then copied. `rm -rf` then `ditto` left /Applications/conch.app missing
 # or half-written for seconds, and the Dock, which watches its pinned apps, cached the "can't open" circle-slash
@@ -151,6 +155,19 @@ codesign -dv --verbose=2 "$UV_HELPER" 2>&1 | grep -E '^(Authority=Developer ID A
 # the source's version.
 echo "Verifying the bundled daemon and speech engine:"
 "$SCRIPT_DIR/check-app-bundle.sh" "$INSTALLED_APP_PATH" checkout
+
+# A conch running now started before the swap, or during it, so it is the old build: something reopened it after it
+# was asked to quit (2026-10-12, the lagoon switch missing from a window whose title bar said "a newer conch is
+# installed"), and `open` below would only have brought that copy forward. Quit it too, and wait, before opening the new one.
+STALE_PIDS="$(pgrep -f "$INSTALLED_APP_PATH/Contents/MacOS/" || true)"
+if [[ -n "$STALE_PIDS" ]]; then
+  WAS_RUNNING=1
+  echo "conch.app was reopened on the old build (pids: $STALE_PIDS) — quitting it for the new one"
+  for pid in $STALE_PIDS; do kill "$pid" 2>/dev/null || true; done
+  for pid in $STALE_PIDS; do
+    for _ in $(seq 1 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.2; done
+  done
+fi
 
 if [[ -n "$WAS_RUNNING" ]]; then
   echo "Relaunching conch.app"
