@@ -21,10 +21,9 @@ struct ContentView: View {
     @StateObject private var lagoon = LagoonModel()
     /// Approving the result the review pane shows: its ✓ Approve, ↵ and ⌘Z (`ReviewApprovals`, 2026-10-05).
     @StateObject private var approvals = ReviewApprovals()
-    /// Which page the window shows, remembered so the lagoon survives a relaunch; the lagoon only while it is switched on
-    /// and in this build (`LagoonFeature.page`).
+    /// Which page the window shows, the title bar's lagoon switch, remembered so the lagoon survives a relaunch; the lagoon
+    /// only in a build that carries it (`LagoonFeature.page`).
     @AppStorage(Lagoon.pageKey) private var storedPage: Lagoon.Page = .sessions
-    @AppStorage(Lagoon.enabledKey) private var lagoonEnabled = false
     @State private var remoteSelection: RemoteSessionID?
     @State private var renamingSessionID: SessionRow.ID?
     @State private var renameDraft = ""
@@ -79,7 +78,7 @@ struct ContentView: View {
     }
 
     private var page: Lagoon.Page {
-        LagoonFeature.page(storedPage, enabled: lagoonEnabled)
+        LagoonFeature.page(storedPage)
     }
 
     /// What a command addresses when nothing was picked — Recite, ⌘K, the arrow keys' anchor.
@@ -99,7 +98,7 @@ struct ContentView: View {
                 DashboardView(
                     onSelectRemote: { remoteSelection = $0 },
                     page: page,
-                    lagoonAvailable: LagoonFeature.available(enabled: lagoonEnabled),
+                    lagoonAvailable: LagoonFeature.available,
                     state: store.state,
                     selectedSessionID: workspace.viewing,
                     renamingSessionID: renamingSessionID,
@@ -196,9 +195,9 @@ struct ContentView: View {
                   let row = store.state?.rows.first(where: { $0.id == open.sessionId }) else { return }
             openInWindow(row, review: open.reviewId)
         }
-        // ⌘0 and the header's shell: the lagoon, or back to the conversation. Nothing while it isn't available.
+        // ⌘0 and the title bar's switch: the lagoon, or back to the conversation. Nothing while it isn't available.
         .onReceive(NotificationCenter.default.publisher(for: .showLagoon)) { _ in
-            guard LagoonFeature.available(enabled: lagoonEnabled) else { return }
+            guard LagoonFeature.available else { return }
             // From Settings, ⌘0 is the lagoon, not back to the conversation behind the page.
             storedPage = page == .lagoon && !settings.state.isShown ? .sessions : .lagoon
             settings.close()
@@ -208,10 +207,6 @@ struct ContentView: View {
         .onChange(of: workspace.viewing) { _, id in
             guard page == .lagoon, let id else { return }
             lagoon.focus(id)
-        }
-        // Switched off: its web view goes now rather than in ten minutes.
-        .onChange(of: lagoonEnabled) { _, enabled in
-            if !enabled { lagoon.teardown() }
         }
         // Which session the window shows, for a debug capture's sidecar (`DebugSnapshot.viewing`).
         .onChange(of: workspace.viewing, initial: true) { _, id in DebugSnapshot.viewing = id }

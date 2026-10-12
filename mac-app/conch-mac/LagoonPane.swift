@@ -5,15 +5,16 @@ import SwiftUI
 import WebKit
 
 // The lagoon as a page in the window (the brand repo's experiments/bridge/MAC-APP-SPEC.md): conch's sessions as hermit
-// crabs on a three.js beach, in place of the conversation, in the same panel. Phase A (2026-10-04): read-only, behind the
-// hidden setting `conch.lagoon.enabled` (Debug ▸ Show Lagoon), and only in a build that carries the page
-// (`Contents/Resources/Lagoon`, copied in by scripts/build-app.sh from the brand repo; never committed here).
+// crabs on a three.js beach, in place of the conversation, in the same panel. Phase A (2026-10-04): read-only, and only in
+// a build that carries the page (`Contents/Resources/Lagoon`, copied in by scripts/build-app.sh from the brand repo; never
+// committed here). Since 2026-10-11 the title bar's lagoon switch (ConchDesign/LagoonSwitch.swift) shows it, in place of
+// the hidden Debug ▸ Show Lagoon.
 //
 // LagoonWeb.swift is the web view, its scheme and its script handler; this is the app around it: when it shows, what it
 // is fed, what it may do.
 
 extension Notification.Name {
-    /// ⌘0, Session ▸ Lagoon, and the header's shell: the lagoon, or back to the conversation. Posted, like ⌘1–⌘3
+    /// ⌘0, Session ▸ Lagoon, and the title bar's switch: the lagoon, or back to the conversation. Posted, like ⌘1–⌘3
     /// (`setStage`), so the shortcut works whatever holds focus and the menu and the button are one path.
     static let showLagoon = Notification.Name("com.conch.mac.show-lagoon")
 }
@@ -22,12 +23,12 @@ enum LagoonFeature {
     /// The app's copy of the page, when this build carries one. Read once: a bundle's resources don't change under it.
     static let bundleRoot: URL? = Bundle.main.url(forResource: Lagoon.bundleName, withExtension: nil)
 
-    /// Whether the lagoon can be shown at all: switched on, and in this build.
-    static func available(enabled: Bool) -> Bool { enabled && bundleRoot != nil }
+    /// Whether the lagoon can be shown at all: this build carries it. A build without it never shows the switch or ⌘0.
+    static var available: Bool { bundleRoot != nil }
 
     /// The page the window shows: the lagoon only while it is available, whatever was remembered.
-    static func page(_ stored: Lagoon.Page, enabled: Bool) -> Lagoon.Page {
-        available(enabled: enabled) ? stored : .sessions
+    static func page(_ stored: Lagoon.Page) -> Lagoon.Page {
+        available ? stored : .sessions
     }
 
     /// Every message the page sends, and what came of it: `log stream --predicate 'category == "lagoon"'`.
@@ -43,25 +44,10 @@ enum LagoonFeature {
     }
 }
 
-/// Debug ▸ Show Lagoon: the hidden setting, in the same place as the Terminal Mirror's. Off by default.
-struct LagoonMenuToggle: View {
-    @AppStorage(Lagoon.enabledKey) private var isOn = false
-
-    var body: some View {
-        if LagoonFeature.bundleRoot == nil {
-            Toggle("Show Lagoon (not in this build)", isOn: .constant(false)).disabled(true)
-        } else {
-            Toggle("Show Lagoon", isOn: $isOn)
-        }
-    }
-}
-
 /// Session ▸ Lagoon, ⌘0: only there while the lagoon is.
 struct LagoonMenuItem: View {
-    @AppStorage(Lagoon.enabledKey) private var enabled = false
-
     var body: some View {
-        if LagoonFeature.available(enabled: enabled) {
+        if LagoonFeature.available {
             Button("Lagoon") { NotificationCenter.default.post(name: .showLagoon, object: nil) }
                 .keyboardShortcut("0", modifiers: .command)
         }
@@ -97,12 +83,6 @@ final class LagoonModel: ObservableObject {
 
     func focus(_ sessionId: String) {
         host?.focus(sessionId)
-    }
-
-    /// Switched off: the web view goes now, not in ten minutes.
-    func teardown() {
-        host?.drop()
-        host = nil
     }
 
     private func log(_ report: LagoonWebHost.Report) {

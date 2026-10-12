@@ -21,10 +21,9 @@ public enum Lagoon {
     /// The `WKScriptMessageHandler` the page posts its intents to (`webkit.messageHandlers.conchWorld`).
     public static let messageHandlerName = "conchWorld"
 
-    /// The hidden setting (a UserDefaults bool, off by default; Debug ▸ Show Lagoon): with it off the page, ⌘0 and the
-    /// header's shell are not there at all.
-    public static let enabledKey = "conch.lagoon.enabled"
-    /// Which page the window shows (`Page`), remembered so the lagoon survives a relaunch.
+    /// Which page the window shows (`Page`), remembered so the lagoon survives a relaunch: the title bar's lagoon switch
+    /// (2026-10-11), off by default. It replaced the hidden `conch.lagoon.enabled` (Debug ▸ Show Lagoon); the switch, ⌘0
+    /// and the page are there in any build that carries the lagoon, and in no other.
     public static let pageKey = "conch.page"
     /// Which intents the app acts on, by name (`LagoonActionFlags`). Absent: none, which is phase A.
     public static let actionsKey = "conch.lagoon.actions"
