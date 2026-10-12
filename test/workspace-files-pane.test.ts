@@ -41,9 +41,11 @@ describe("the files are a second axis, not a fourth page", () => {
     // The new axis lives in its own type, with its own default. FOUR contents now: the
     // deliverable, the session's files, a shell running in the same folder, and the agent's own
     // terminal. All are things the work half can hold — none of them is a way of splitting the
-    // stage, which is what keeps StageMode at three and this a separate question.
+    // stage, which is what keeps StageMode at three and this a separate question. FIVE since the Workbench
+    // (2026-10-11): an agent's live browser tab is one more thing the work half holds.
     const work = section(workspace, "public enum WorkPane", "public struct SessionPresentation");
-    expect(work.match(/case \w+/g) ?? []).toHaveLength(4);
+    expect(work.match(/case \w+/g) ?? []).toHaveLength(5);
+    expect(work).toContain("case browser");
     expect(workspace).toContain("public var work: WorkPane = .deliverable");
   });
 

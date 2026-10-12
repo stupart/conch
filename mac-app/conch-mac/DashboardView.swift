@@ -1942,12 +1942,11 @@ private struct ConversationPane: View {
         Workbench.shown(in: browserTabs, picked: workspace.presentation(for: focusedRow?.id).selectedBrowserTab)
     }
 
-    /// A tab its agent just opened comes to the front when its session is the one in view, side by side if the
-    /// conversation had the stage; another session's arrives quietly on its row (`Workbench.front`).
+    /// A tab its agent just opened comes to the front of the work half when its session is the one in view; another
+    /// session's arrives quietly on its row (`Workbench.front`). The stage stays where it is: only a press moves it.
     private func bringBrowserTabForward(_ arrival: WorkbenchStore.Arrival?) {
         guard let arrival, let row = focusedRow, let tab = Workbench.front(of: arrival.tabs, viewing: row.id) else { return }
         workspace.show(browserTab: tab.id, for: row.id)
-        if stage(for: row) == .conversation { workspace.show(stage: .sideBySide, for: row.id) }
     }
 
     /// Debug › Show Terminal Mirror, off by default (`ConchTerminalStrip`).
@@ -2049,8 +2048,9 @@ private struct ConversationPane: View {
         if chosen == .terminal, strip.showsMirror { return .terminal }
         if selectedReview != nil { return .deliverable }
         if workingFolder != nil { return .files }
-        if strip.showsMirror { return .terminal }
-        return selectedBrowserTab != nil ? .browser : .deliverable
+        // A session with nothing else to show shows its browser.
+        if !strip.showsMirror, selectedBrowserTab != nil { return .browser }
+        return strip.showsMirror ? .terminal : .deliverable
     }
 
     /// What this session changed, resolved against its own folder.
@@ -2073,6 +2073,10 @@ private struct ConversationPane: View {
             WorkbenchPane(
                 page: page,
                 profile: tab.profile == Workbench.defaultProfile ? nil : workbench.profileNames[tab.profile] ?? tab.profile,
+                openInBrowser: { url in
+                    fallbackLinkFailure = nil
+                    store.openLink(url.absoluteString, cwd: row.cwd, rowId: row.id) { fallbackLinkFailure = $0 }
+                },
                 close: { workbench.close(tab.id) }
             )
             .id(tab.id)

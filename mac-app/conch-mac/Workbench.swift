@@ -352,7 +352,7 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
                 if once.take() { continuation.resume(returning: answer) }
             }
             let work = Task { @MainActor in
-                finish(await self.perform(request, text: text, deadline: deadline))
+                finish(await self.execute(request, text: text, deadline: deadline))
             }
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: UInt64(max(0, deadline.timeIntervalSinceNow) * 1_000_000_000))
@@ -362,7 +362,7 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
         }
     }
 
-    private func perform(_ request: PublishedState.BrowserRequest, text: String?, deadline: Date) async -> WorkbenchAnswer {
+    private func execute(_ request: PublishedState.BrowserRequest, text: String?, deadline: Date) async -> WorkbenchAnswer {
         // Its own deadline for a navigation a command sets off, inside the command's.
         let settleBy = min(deadline.addingTimeInterval(-1), Date().addingTimeInterval(10))
         switch request.op {
@@ -704,6 +704,8 @@ struct WorkbenchPane: View {
     @ObservedObject var page: WorkbenchPage
     /// The profile's name, shown when the tab isn't on the default.
     let profile: String?
+    /// Open in Browser, through the app's one door for links (`StateStore.openLink`), which says when it can't.
+    let openInBrowser: (URL) -> Void
     let close: () -> Void
 
     @State private var draft = ""
@@ -742,7 +744,7 @@ struct WorkbenchPane: View {
                     barButton("xmark.rectangle", help: "Close the window this page opened") { page.closeTopPopup() }
                 }
                 barButton("safari", help: "Open in your browser", enabled: page.url != nil) {
-                    if let url = page.url { NSWorkspace.shared.open(url) }
+                    if let url = page.url { openInBrowser(url) }
                 }
                 barButton("xmark", help: "Close this tab", action: close)
             }
