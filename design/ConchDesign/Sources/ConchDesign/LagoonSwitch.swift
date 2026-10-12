@@ -229,12 +229,14 @@ public struct LagoonSwitchArtwork: View {
     }
 
     private static func drawShell(_ shell: Shell, _ pictures: Pictures, in context: GraphicsContext) {
-        // filter: drop-shadow(0 .45 .7 rgba(80,45,15,.36)), CSS's blur being twice the deviation. Drawn as a pass of its
-        // own under the shell: a shadow filter over the shell itself rasterises it soft.
+        // filter: drop-shadow(0 .45 .7 rgba(80,45,15,.36)). For CSS's drop-shadow() the blur value IS the Gaussian's
+        // deviation, not twice it (a box-shadow's blur is), so SwiftUI's radius is the same 0.7: at 0.35 the shadow
+        // measured half as soft as the reference (σ 0.30–0.35 pt against the web's 0.65–0.75, the brand QA, 2026-10-12).
+        // Drawn as a pass of its own under the shell: a shadow filter over the shell itself rasterises it soft.
         var shadow = context
         shadow.addFilter(.shadow(
             color: Color(.sRGB, red: 80 / 255, green: 45 / 255, blue: 15 / 255, opacity: 0.36),
-            radius: 0.35, x: 0, y: 0.45, options: .shadowOnly
+            radius: 0.7, x: 0, y: 0.45, options: .shadowOnly
         ))
         shadow.drawLayer { drawShellBody(shell, pictures, in: &$0) }
         context.drawLayer { drawShellBody(shell, pictures, in: &$0) }
