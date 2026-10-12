@@ -48,7 +48,6 @@ Everyday:
   conch wake [name] | recite [name] | pause | resume  talk again | reread | manual (hold) | auto
   conch sessions | resumable [query] | start [claude|codex] [options]  live | past | open one in Terminal (start --help)
   conch rename <session> <name> | model <session> <model>  save a name | type /model into it
-  conch browse <url> [--profile <name>]     open a link in conch's Workbench (what open does in sessions conch starts)
 
 Voice and settings:
   conch voice <session> [voice] | voices [setup]  show/pin, audition, or set up voices now
@@ -62,7 +61,7 @@ Optional / manual setup:
   conch install [--codex] | pair   wire hooks · connect the iPhone app
   conch doctor | help-session | version | parity <session>   live checks | a Claude session that knows conch | version | debug: conch beside the session's terminal in one picture, PASS/FAIL on the last message sent (parity --help)
 
-Internal entrypoints: conch hook | codex-hook | daemon | mcp
+Internal entrypoints: conch hook | codex-hook | daemon | mcp | browse <url> [--profile <name>] (open, in sessions conch starts)
 `;
 
 /**

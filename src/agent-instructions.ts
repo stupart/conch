@@ -53,7 +53,7 @@ Whenever you produce something the user would look at (a page, screenshot, file,
 
 A link is an http(s) URL, or an absolute path to a file or a folder (shown as its file tree) under this session’s folders: where it started, where it is now, its git repository, \`conch_working_folders\`, or a temp folder (/tmp, or macOS’s per-user /var/folders/…/T), which conch copies when it files the link, so a cleaned temp folder can’t take it away. Never a hidden file, key or executable.
 
-To show part of a web page, use \`conch_capture\` rather than screenshotting a browser. In a session conch started, a link you \`open\` lands in conch’s Workbench; \`CONCH_OPEN_EXTERNAL=1 open <url>\` (or \`/usr/bin/open\`) sends it to the default browser.
+To show part of a web page, use \`conch_capture\` rather than screenshotting a browser. \`open <url>\` lands in conch’s Workbench; \`CONCH_OPEN_EXTERNAL=1 open <url>\` uses the default browser.
 
 Publishing makes the result available without interrupting the user, who chooses when to open it. Do not open applications, rearrange windows, or start the microphone as a publication side effect. Publish again whenever it changes in a way worth seeing, not after every edit: the same link or \`key\` files the artifact's next version. \`conch_deliverables\` lists what you have published; \`review_remove\` takes back one that is wrong or obsolete.
 
