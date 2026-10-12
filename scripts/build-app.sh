@@ -177,6 +177,13 @@ if [[ -n "$WAS_RUNNING" ]]; then
   # environment too (DaemonEnvironment); this keeps the app itself out of it.
   env -i HOME="$HOME" USER="${USER:-$(id -un)}" LOGNAME="${LOGNAME:-${USER:-$(id -un)}}" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
     open -g -a "$INSTALLED_APP_PATH"
+  # Launched in the background, conch came back with no window, only its menu bar item, until it was reopened
+  # (2026-10-12: a deploy left Tyler's window gone). Once it's up, a second `open -g` is the Dock click that brings
+  # its window back, still without taking focus.
+  for _ in $(seq 1 50); do pgrep -f "$INSTALLED_APP_PATH/Contents/MacOS/" >/dev/null && break; sleep 0.2; done
+  sleep 2
+  env -i HOME="$HOME" USER="${USER:-$(id -un)}" LOGNAME="${LOGNAME:-${USER:-$(id -un)}}" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+    open -g -a "$INSTALLED_APP_PATH"
 fi
 
 if [[ -d "$INSTALLED_APP_PATH/Contents/Resources/Lagoon" ]]; then
