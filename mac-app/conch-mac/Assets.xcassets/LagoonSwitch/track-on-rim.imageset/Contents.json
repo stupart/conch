@@ -1,22 +1,54 @@
 {
-  "images" : [
+  "images": [
     {
-      "idiom" : "universal",
-      "scale" : "1x"
+      "idiom": "universal",
+      "scale": "1x"
     },
     {
-      "filename" : "track-on-rim@2x.png",
-      "idiom" : "universal",
-      "scale" : "2x"
+      "filename": "track-on-rim@2x.png",
+      "idiom": "universal",
+      "scale": "2x"
     },
     {
-      "filename" : "track-on-rim@3x.png",
-      "idiom" : "universal",
-      "scale" : "3x"
+      "filename": "track-on-rim@3x.png",
+      "idiom": "universal",
+      "scale": "3x"
+    },
+    {
+      "appearances": [
+        {
+          "appearance": "luminosity",
+          "value": "dark"
+        }
+      ],
+      "idiom": "universal",
+      "scale": "1x"
+    },
+    {
+      "appearances": [
+        {
+          "appearance": "luminosity",
+          "value": "dark"
+        }
+      ],
+      "filename": "track-on-rim-dark@2x.png",
+      "idiom": "universal",
+      "scale": "2x"
+    },
+    {
+      "appearances": [
+        {
+          "appearance": "luminosity",
+          "value": "dark"
+        }
+      ],
+      "filename": "track-on-rim-dark@3x.png",
+      "idiom": "universal",
+      "scale": "3x"
     }
   ],
-  "info" : {
-    "author" : "xcode",
-    "version" : 1
+  "info": {
+    "author": "xcode",
+    "version": 1
   }
 }

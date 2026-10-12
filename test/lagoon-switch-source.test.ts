@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -149,10 +149,12 @@ describe("the art", () => {
       .toEqual(pieces.map((name) => `${name}.imageset`).sort());
     for (const name of pieces) {
       const set = JSON.parse(source(`${catalog}/${name}.imageset/Contents.json`));
-      const files = Object.fromEntries(set.images.filter((image: { filename?: string }) => image.filename)
+      // The appearance-neutral pictures; the two with dark variants are pinned below.
+      const files = Object.fromEntries(set.images.filter((image: { filename?: string; appearances?: unknown }) => image.filename && !image.appearances)
         .map((image: { scale: string; filename: string }) => [image.scale, image.filename]));
       expect(files, name).toEqual({ "2x": `${name}@2x.png`, "3x": `${name}@3x.png` });
-      expect(readdirSync(join(root, `${catalog}/${name}.imageset`)).sort()).toEqual(["Contents.json", `${name}@2x.png`, `${name}@3x.png`]);
+      const darkened = ["track-off", "track-on-rim"].includes(name) ? [`${name}-dark@2x.png`, `${name}-dark@3x.png`] : [];
+      expect(readdirSync(join(root, `${catalog}/${name}.imageset`)).sort()).toEqual(["Contents.json", `${name}@2x.png`, `${name}@3x.png`, ...darkened].sort());
       expect(size(`${catalog}/${name}.imageset/${name}@2x.png`), name).toEqual(pixels[name]![0]);
       expect(size(`${catalog}/${name}.imageset/${name}@3x.png`), name).toEqual(pixels[name]![1]);
     }
@@ -163,4 +165,17 @@ describe("the art", () => {
     expect(view).toContain('Image("LagoonSwitch/\\($0.rawValue)", bundle: bundle)');
     expect(view).toContain("@Entry public var lagoonSwitchArt: LagoonSwitchArt = .catalog");
   });
+});
+
+// 2026-10-13, Tyler: in dark appearance the light grey pill popped too hard against the dark title bar. The off track and
+// the rim that crossfades in for on have dark variants; AppKit picks them for a dark window and follows a live change,
+// and the wet sand, tinted from the off track, darkens with it.
+test("the off track and the on rim have dark-appearance variants", () => {
+  for (const name of ["track-off", "track-on-rim"]) {
+    const folder = join(import.meta.dir, "..", "mac-app", "conch-mac", "Assets.xcassets", "LagoonSwitch", `${name}.imageset`);
+    const images = JSON.parse(readFileSync(join(folder, "Contents.json"), "utf8")).images as Array<Record<string, unknown>>;
+    const dark = images.filter((image) => JSON.stringify(image.appearances ?? []).includes('"dark"'));
+    expect(dark.map((image) => image.filename).filter(Boolean)).toEqual([`${name}-dark@2x.png`, `${name}-dark@3x.png`]);
+    for (const image of dark) if (image.filename) expect(existsSync(join(folder, String(image.filename)))).toBe(true);
+  }
 });
