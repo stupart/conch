@@ -7,6 +7,7 @@ import {
   filterWhisperTranscript,
   isLikelyWhisperHallucination,
   serverSegments,
+  splitAtPauses,
   transcribePcm,
   transcribeWavSegments,
   WhisperServerClient,
@@ -461,5 +462,47 @@ describe("Whisper self-repetition", () => {
     const real = "the select outline shows up when i click it and then it shows up again";
     expect(filterWhisperTranscript(real, heard())).toBe(real);
     expect(filterWhisperTranscript(clause, heard())).toBe(clause);
+  });
+});
+
+describe("long captures", () => {
+  function speechWithPause(seconds: number, pauseAt: number, pauseSecs = 0.6): Uint8Array {
+    const pcm = new Uint8Array(16_000 * 2 * seconds);
+    const view = new DataView(pcm.buffer);
+    for (let sample = 0; sample < 16_000 * seconds; sample++) {
+      const t = sample / 16_000;
+      const quiet = t >= pauseAt && t < pauseAt + pauseSecs;
+      view.setInt16(sample * 2, quiet ? 0 : Math.round(8_000 * Math.sin(sample / 7)), true);
+    }
+    return pcm;
+  }
+
+  test("a capture inside one whisper window stays whole", () => {
+    expect(splitAtPauses(constantPcm(2_000, 28))).toHaveLength(1);
+  });
+
+  test("a long capture is cut at its pause, each piece inside one window", () => {
+    const pcm = speechWithPause(40, 19);
+    const pieces = splitAtPauses(pcm);
+    expect(pieces).toHaveLength(2);
+    const firstSecs = pieces[0]!.byteLength / 32_000;
+    expect(firstSecs).toBeGreaterThan(19);
+    expect(firstSecs).toBeLessThan(19.6);
+    expect(pieces.reduce((sum, piece) => sum + piece.byteLength, 0)).toBe(pcm.byteLength);
+  });
+
+  test("a failed piece keeps the words the other pieces heard", async () => {
+    let calls = 0;
+    const client = {
+      transcribeWarm: async () => {
+        calls++;
+        return calls === 1
+          ? { status: "ok" as const, body: { text: "first half" } }
+          : { status: "failed" as const };
+      },
+    } as unknown as WhisperServerClient;
+    const result = await transcribePcm(transcriptionConfig(), speechWithPause(40, 19), undefined, { client, coldFallback: false });
+    expect(calls).toBe(2);
+    expect(result).toEqual({ text: "first half" });
   });
 });
