@@ -321,6 +321,32 @@ https://brew.sh rather than trying to install Homebrew yourself.
   capture again.
   conch's Mac app must be open; a capture takes a few seconds and at most about
   40, and conch draws at most three at a time.
+- **Use conch's browser** — `browser_open {url, profile?, tab?}` opens a page as
+  a live tab in conch's Mac app, beside your deliverables, where the user can
+  watch it and take over by clicking and typing in it. Use it when the user
+  should see the page or has to sign in for you; you may still use other
+  browser tools (Claude in Chrome, Playwright, computer use) when you prefer.
+
+  - Tabs are your session's own, and need a verified `caller`. Each is signed in
+    with a browser profile, one per account: `profile` names one by name or id,
+    and `Default` (the default) shares the sign-ins of conch's review pane. A
+    tab keeps its profile.
+  - `browser_read {tab?}` returns the page's title, URL, visible text (trimmed),
+    its links and buttons each with a short ref (`e12`), and its form fields
+    (label, name, type and value; never a password's or a hidden field's value).
+    Refs last until the page changes: read again after it navigates.
+  - `browser_click {tab?, target}` and `browser_type {tab?, target, text,
+    submit?}` take a ref, a CSS selector, or the visible text of the element (a
+    field's label); a string is tried as each in that order, and `{ref}`,
+    `{selector}` or `{text}` says which. Typing replaces what the field holds;
+    `submit` presses Return.
+  - Agents don't type passwords: a password field is refused. Ask the user to
+    sign in themselves in the tab, then carry on.
+  - `browser_screenshot {tab?}` writes a PNG of what the tab shows to conch's
+    capture folder and returns its path, which `review_to_front` can publish.
+  - `browser_tabs` lists your tabs; a command naming no tab runs in the one you
+    used last (`current`). `browser_close {tab}` closes one.
+  - conch's Mac app must be open.
 - **Auto / manual** — `conch_mode {action, session?, scope?}` uses `pause` for lossless manual mode and `resume` for auto read-and-listen mode. Without `session` or `scope` it switches only YOUR session; `session` names another one. Switching every session at once — the whole daemon, what the user's `p` key and `conch pause` do — needs `scope: "all"` explicitly, and only when the user asked for exactly that. A `resume` from an agent is refused while the user put conch in manual themselves (the `p` key, the Mac's toggle, `conch pause`) — only a person undoes a person's pause, and a `conch_speak` is held then too: not spoken and not queued, and its result carries `held` saying so.
 - **Rename** — `conch_rename {session, label}` gives a session a name the user actually uses ("call that one 'the api work'").
 - **Say where you work** — `conch_working_folders {folders}` names the folder(s) you are actually working in when they differ from where the session started; conch's file tree, file viewer and sidebar grouping follow them. Once is enough; say it again only if you move.

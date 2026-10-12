@@ -349,7 +349,7 @@ async function pngSize(path: string): Promise<{ width: number; height: number } 
  * folder, 0600, a PNG by its own header, under the size cap, and passing the publish rule. Returned as the folder names
  * it, with the PNG's own size; null, with why, otherwise.
  */
-async function ownCapture(path: unknown, folder: string, name: string): Promise<{ ok: true; path: string; width: number; height: number } | { ok: false; why: string }> {
+export async function ownCapture(path: unknown, folder: string, name: string): Promise<{ ok: true; path: string; width: number; height: number } | { ok: false; why: string }> {
   if (typeof path !== "string" || !path.startsWith("/")) return { ok: false, why: "no file named" };
   const [real, home] = await Promise.all([realpath(path).catch(() => null), realpath(folder).catch(() => null)]);
   if (!real || !home || dirname(real) !== home || basename(real) !== name) return { ok: false, why: `not ${name} in conch's capture folder` };

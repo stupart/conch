@@ -119,6 +119,21 @@ If publication is unavailable, leave the result in your reply and end it with on
       "Remove a deliverable you published that is wrong or obsolete: one filing by id, or every version of an artifact. Your own session only. A newer version already supersedes an older one, so remove only what should not be looked at.",
     conch_capture:
       "Capture a web page, or one part of it, as a PNG drawn by conch's Mac app rather than a browser you drive: it loads the page at the viewport size, waits for it to settle (fonts, the images near the part, the layout no longer moving), scrolls the target (a selector or a quote) to the middle and captures it with a margin. Returns the file's path, its size in pixels, the target's box in them, the page's final URL and title, and whether it showed a sign-in screen; with mark, review_to_front marks round the target on the image; with publish, files it as your deliverable in the same call. Pages are drawn with the sign-ins of conch's own review pane, not your browser's, so a page behind a login needs the user to sign in there once. Needs conch's Mac app open; takes up to about 40 seconds.",
+    // The Workbench (browser-workbench.ts), 2026-10-11: conch's own browser, as tabs in the Mac app's deliverables pane.
+    browser_open:
+      "Open a page in conch's in-app browser: a live tab in conch's Mac app, beside your deliverables, that the user can watch and take over by clicking and typing in it. Tabs are signed in per account profile (profile names one, by name or id; Default shares the sign-ins of conch's review pane), so a page behind the user's login works once they have signed in there. Without tab it opens a new tab; with tab it goes to url in that tab. Returns the tab's id, URL and title. Use it when the user should see the page or sign in for you; you may still use other browser tools (Claude in Chrome, Playwright, computer use) when you prefer. Needs conch's Mac app open.",
+    browser_read:
+      "Read a tab of conch's in-app browser (your most recent when tab is omitted): its title and URL, its visible text (trimmed), its links and buttons each with a short ref for browser_click, and its form fields (label, name, type, value; never a password's or a hidden field's value). Refs last until the page changes: read again after it navigates.",
+    browser_click:
+      "Click in a tab of conch's in-app browser, as the user would: target is a ref from browser_read, a CSS selector, or the visible text of a link or button (a string tries them in that order; {ref}, {selector} or {text} says which). Returns the page's URL and title afterwards. The user sees it happen.",
+    browser_type:
+      "Type into a field in a tab of conch's in-app browser: target is a ref from browser_read, a CSS selector or the field's visible label; submit presses Return. Agents don't type passwords: a password field is refused, so ask the user to sign in themselves in the tab.",
+    browser_screenshot:
+      "A PNG of what a tab of conch's in-app browser shows now (your most recent when tab is omitted), written to conch's capture folder. Returns its path and size, which review_to_front can publish. For one part of a page, conch_capture.",
+    browser_tabs:
+      "List your session's tabs in conch's in-app browser: id, URL, title, profile, and which is current (the one a command naming no tab runs in).",
+    browser_close:
+      "Close one of your session's tabs in conch's in-app browser, by id.",
   },
 };
 

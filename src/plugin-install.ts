@@ -68,7 +68,8 @@ interface SmokeResult {
   error?: string;
 }
 
-const EXPECTED_MCP_TOOL_COUNT = 16;
+/** conch_* and review_* (16), and the Workbench's browser_* (7). */
+const EXPECTED_MCP_TOOL_COUNT = 23;
 
 // These static text imports are bundled into `bun build --compile` releases.
 // A Homebrew install has no source checkout to copy from, so the installer

@@ -37,6 +37,8 @@ import { decodeSetupRequest, type Setup, type SetupReply } from "./setup.ts";
 import { decodePracticeRequest, practiceRefusal, type Practice, type PracticeReply } from "./practice.ts";
 import { breadcrumb } from "./loop-watchdog.ts";
 import type { PageCaptureService } from "./page-capture.ts";
+import { decodeBrowserMessage, type BrowserReply, type BrowserService } from "./browser-workbench.ts";
+import { decodeBrowserOpenRequest } from "./browser-open.ts";
 import { refusedVerdict, REVIEW_FILING_WAIT_MS, REVIEW_VERDICT_WAIT_MS, verdictWithin, type ReviewPending, type ReviewVerdict } from "./review-verdict.ts";
 import { isMacAppPing } from "./surfaces.ts";
 import {
@@ -1283,6 +1285,11 @@ export interface ControlServerOptions {
    * app's `page-capture-answer`s. A capture the agent asked to publish is filed through this server's own turn path.
    */
   pageCapture?: PageCaptureService;
+  /**
+   * The Workbench, conch's in-app browser (browser-workbench.ts): its profiles, agent B's `open` redirected into a tab,
+   * an agent's commands (held open until the Mac app has run them), and the app's answers and its tabs' news.
+   */
+  browser?: BrowserService;
   /** First-run setup's requests (setup.ts): agents found and connected, a voice sample, the microphone check. */
   setup?: Setup;
   /** Setup's practice turn (practice.ts): a `practice-start` that is taken keeps its connection open, as the lease. */
@@ -1481,6 +1488,19 @@ export function createControlServer(options: ControlServerOptions): ControlServe
           sock.end(JSON.stringify(reply) + "\n");
           return;
         }
+        // A link a session opened (browser-open.ts, agent B's `open` shim): a tab of the session that ran it, found from
+        // `callerPid`, or a browser-error, on which the shim opens it in the default browser instead. Answered within
+        // the shim's wait (`BROWSER_OPEN_REPLY_MS`): the Workbench bounds its own lookup (`BROWSER_OPEN_RESOLVE_MS`).
+        const browserOpen = decodeBrowserOpenRequest(body);
+        if (browserOpen) {
+          const reply: BrowserReply = "error" in browserOpen
+            ? { kind: "browser-error", error: browserOpen.error }
+            : options.browser
+              ? await options.browser.handle(browserOpen)
+              : { kind: "browser-error", error: "this conch has no browser; update it" };
+          sock.end(encodeControlFrame(JSON.stringify(reply)));
+          return;
+        }
         // The Mac app's window snapshot, answering the daemon's own request: checked by the broker.
         if (socketRecord(body) && body.kind === "review-preview") {
           const answered = options.onReviewPreview ? await options.onReviewPreview(body) : { ok: false, error: "no snapshot is waiting" };
@@ -1511,6 +1531,23 @@ export function createControlServer(options: ControlServerOptions): ControlServe
         if (socketRecord(body) && body.kind === "page-capture-answer") {
           const answered = options.pageCapture ? await options.pageCapture.answer(body) : { ok: false, error: "no capture is waiting" };
           sock.end(JSON.stringify(answered.ok ? { kind: "capture-ack" } : { kind: "capture-error", error: answered.error }) + "\n");
+          return;
+        }
+        // The Workbench (browser-workbench.ts): every kind it takes, decoded in one place, which the phone bridge refuses
+        // with the same decoder. An agent's command is answered only once the Mac app has run it, or said why not.
+        const browserMessage = decodeBrowserMessage(body);
+        if (browserMessage) {
+          let reply: BrowserReply;
+          if ("refused" in browserMessage) reply = { kind: "browser-error", error: browserMessage.refused };
+          else if (!options.browser) reply = { kind: "browser-error", error: "this conch has no browser; update it" };
+          else reply = await options.browser.handle(browserMessage);
+          let frame: Buffer;
+          try {
+            frame = encodeControlFrame(JSON.stringify(reply));
+          } catch {
+            frame = encodeControlFrame(JSON.stringify({ kind: "browser-error", error: "the page's answer was too large to send; read less of it" }));
+          }
+          sock.end(frame);
           return;
         }
         // First-run setup (setup.ts) names an agent or the microphone, never a session. Its long requests stream lines

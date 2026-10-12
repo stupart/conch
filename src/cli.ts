@@ -58,7 +58,7 @@ Voice and settings:
 Optional / manual setup:
   conch service [install|off] | uninstall [--models]  manage or remove the install
   conch install-plugin | uninstall-plugin | config-toggle <agent> <plugin|mcp-server> <id> <on|off> [--scope user|project] [--project <dir>] [--preview] | config-rollback <file>  the conch plugin · a next-session switch in the agent's own file · undo it
-  conch install [--codex] | pair   wire hooks · connect the iPhone app
+  conch install [--codex] | pair | browser   wire hooks · connect the iPhone app · conch's in-app browser (its profiles, a page as a tab)
   conch doctor | help-session | version | parity <session>   live checks | a Claude session that knows conch | version | debug: conch beside the session's terminal in one picture, PASS/FAIL on the last message sent (parity --help)
 
 Internal entrypoints: conch hook | codex-hook | daemon | mcp
@@ -569,6 +569,13 @@ switch (command) {
     const said = command === "pause" ? "manual mode" : "auto mode";
     console.log(ok ? `[conch] ${said}` : "[conch] daemon not running");
     if (!ok) process.exit(1);
+    break;
+  }
+  case "browser": {
+    const { runBrowserCli } = await import("./browser-workbench.ts");
+    const { code, lines } = await runBrowserCli(rest, cfg.socketPath);
+    for (const line of lines) (code === 0 ? console.log : console.error)(line);
+    if (code) process.exitCode = code;
     break;
   }
   case "sessions": {

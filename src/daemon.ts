@@ -145,6 +145,9 @@ import { createPreviewRequester, previewFolder, PreviewLimiter, WindowPreviews, 
 import { captureFolder, createPageCaptureService, PageCaptures, pruneCaptures, withCaptureRequests } from "./page-capture.ts";
 import { accessCheckedLink, checkAnonymously, checkPageAccess, discardCapture, type AccessCheck } from "./page-access.ts";
 import { captureFolderPath } from "./capture-folder.ts";
+import { addBrowserProfile, readBrowserProfiles } from "./browser-profiles.ts";
+import { BrowserWorkbench, createBrowserService, fileTabStore, withBrowserState } from "./browser-workbench.ts";
+import { sessionForCallerPid } from "./caller-session.ts";
 import { CONCH_DATA } from "./config.ts";
 import {
   publishedConversation,
@@ -1741,6 +1744,42 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     now: Date.now,
   });
   /**
+   * The Workbench, conch's in-app browser (browser-workbench.ts): the tabs agents drive and Tyler watches in the Mac
+   * app's deliverables pane, and the profiles they are signed in with. Like `pageCaptures`, on the sessions file alone:
+   * a tab's address and a command's target are this Mac's business, never the phone's.
+   */
+  let browserProfiles = readBrowserProfiles();
+  const macAppRunning = () => macApp.surface(Date.now(), undefined) !== "not-running";
+  const browserWorkbench = new BrowserWorkbench({
+    publish: () => writeSessionsFile(),
+    folder: () => captureFolder(),
+    now: Date.now,
+    profiles: () => browserProfiles,
+    appRunning: macAppRunning,
+    store: fileTabStore(),
+  });
+  const browser = createBrowserService({
+    workbench: browserWorkbench,
+    profiles: () => browserProfiles,
+    addProfile: (name) => {
+      const added = addBrowserProfile(name);
+      browserProfiles = added.profiles;
+      return added;
+    },
+    // agent B's `open`: the process that ran it, walked up to its agent, as the MCP server finds its own caller.
+    resolveCaller: (pid) => sessionForCallerPid(pid, { infos: [...panelSessions.values()], claudeDir: cfg.claudeDir }),
+    publish: () => writeSessionsFile(),
+    appRunning: macAppRunning,
+    log,
+  });
+  // A session that ended a day ago and more takes its tabs with it; checked now and then, never on the publish path.
+  const browserPrune = setInterval(() => {
+    breadcrumb("timer: browser tabs");
+    const rows = lastPublishedPanelState?.rows ?? [];
+    if (rows.length) browserWorkbench.pruneEnded(new Set(rows.map((row) => row.id)));
+  }, 15 * 60_000);
+  browserPrune.unref?.();
+  /**
    * Delete the captures nothing holds (`pruneCaptures`): whatever a held deliverable links, draws its marks on, or keeps
    * as a page's snapshot (`SessionLedger.heldFiles`) is kept, however old. Before each new capture; tidying is never a
    * reason not to draw one.
@@ -2134,11 +2173,14 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   wakeWatch.unref?.();
 
   /**
-   * The sessions file: the published state, and the pages the Mac app is to draw for agents (`pageCaptures`). Only this
+   * The sessions file: the published state, the pages the Mac app is to draw for agents (`pageCaptures`), and the
+   * Workbench's profiles, tabs and commands (`browserWorkbench`). Only this
    * Mac's app reads the file; the phone, and a second Mac through it, read `lastPublishedPanelState`, which never has them.
    */
   function writeSessionsFile(): void {
-    if (lastPublishedPanelState) publishSessionsFile(withCaptureRequests(lastPublishedPanelState, pageCaptures.requests()));
+    if (lastPublishedPanelState) {
+      publishSessionsFile(withBrowserState(withCaptureRequests(lastPublishedPanelState, pageCaptures.requests()), browserWorkbench));
+    }
   }
 
   const publishedStateWriter = createPublishThrottle(() => {
@@ -3686,6 +3728,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     videoTranscripts: createVideoTranscripts({ uploads: phoneUploads.directory, transcribe: (wav) => transcribeWavSegments(cfg, wav) }),
     onReviewPreview: (message) => windowPreviews.answer(message),
     pageCapture,
+    browser,
     setup,
     practice: practiceTurns,
   });
@@ -3701,6 +3744,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     theaterNavigation.dispose();
     shuttingDown = true;
     rotation.stop();
+    clearInterval(browserPrune);
     // The practice session and its card go with the daemon: nothing of it is left for the next one.
     practice?.stop("conch is closing");
     // An approval inside its undo window reaches nobody now: said in the log (review-approval.ts).
