@@ -6,7 +6,10 @@ import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import {
   armBargeRecorder,
+  CAPTURE_PREROLL_SECS,
   CAPTURE_WATCHDOG_INTERVAL_MS,
+  capturePrerollSecs,
+  captureStopTailMs,
   createDictationSession,
   hasActiveRecorders,
   rawCaptureFileGrew,
@@ -22,7 +25,7 @@ test("any raw capture growth starts speech independently of transcription MIN", 
 });
 
 describe("sox capture arguments", () => {
-  test("puts configured mic gain immediately before silence", () => {
+  test("puts configured mic gain first, then the pre-roll, then silence", () => {
     const args = soxCaptureArgs(
       { micGainDb: 12, endSilenceSecs: 3.5, endThresholdPct: 2 },
       "/tmp/conch-test.raw",
@@ -34,28 +37,69 @@ describe("sox capture arguments", () => {
       "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw",
       "/tmp/conch-test.raw",
       "gain", "12",
+      "channels", "1", "remix", "1", "1", "delay", "0", "0.300",
       "silence", "-l",
       "1", "0.15", "2%",
-      "1", "3.5", "2%",
+      "1", "3.200", "2%",
+      "remix", "2",
     ]);
   });
 
-  test("keeps the existing arguments unchanged when mic gain is zero", () => {
+  test("leaves gain out when it is zero", () => {
     const args = soxCaptureArgs(
       { micGainDb: 0, endSilenceSecs: 3.5, endThresholdPct: 2 },
       "/tmp/conch-test.raw",
       2,
     );
 
-    expect(args).toEqual([
-      "sox", "-d", "-q",
-      "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw",
-      "/tmp/conch-test.raw",
-      "silence", "-l",
-      "1", "0.15", "2%",
-      "1", "3.5", "2%",
-    ]);
+    expect(args.slice(14, 22)).toEqual(["channels", "1", "remix", "1", "1", "delay", "0", "0.300"]);
     expect(args).not.toContain("gain");
+  });
+
+  test("a whole-number end silence is seconds, not samples", () => {
+    // sox's silence effect reads a bare "3" as three samples: every capture
+    // would close 0.18s in, and dictation would hear nothing at all.
+    const args = soxCaptureArgs({ micGainDb: 0, endSilenceSecs: 3, endThresholdPct: 2 }, "/tmp/conch-test.raw", 2);
+    const end = args.indexOf("silence") + 6;
+    expect(args[end]).toBe("2.700");
+    expect(args[end]).toContain(".");
+  });
+
+  test("the pre-roll never takes more than half the end silence", () => {
+    expect(capturePrerollSecs({ endSilenceSecs: 3.5 })).toBe(CAPTURE_PREROLL_SECS);
+    expect(capturePrerollSecs({ endSilenceSecs: 0.4 })).toBe(0.2);
+    const args = soxCaptureArgs({ micGainDb: 0, endSilenceSecs: 0.4, endThresholdPct: 2 }, "/tmp/conch-test.raw", 2);
+    expect(args).toContain("0.200");
+    expect(args[args.indexOf("silence") + 6]).toBe("0.200");
+  });
+});
+
+describe("stopping a capture behind its pre-roll", () => {
+  test("words the user meant to keep wait out the pre-roll; discards and shutdown do not", () => {
+    const cfg = { endSilenceSecs: 3.5 };
+    expect(captureStopTailMs(cfg, "dictation-spacebar", true)).toBe(300);
+    expect(captureStopTailMs(cfg, "max", true)).toBe(300);
+    expect(captureStopTailMs(cfg, "dictation-spacebar", false)).toBe(0);
+    for (const reason of ["shutdown", "abort", "manual-reply", "timeout"]) {
+      expect(captureStopTailMs(cfg, reason, true)).toBe(0);
+    }
+  });
+
+  test("a tail delays the SIGINT instead of dropping it", async () => {
+    const signals: unknown[] = [];
+    stopSoxProcess({ kill: (received: unknown) => signals.push(received) } as never, { tailMs: 30 });
+    expect(signals).toEqual([]);
+    await Bun.sleep(80);
+    expect(signals).toEqual(["SIGINT"]);
+  });
+
+  test("an immediate stop ignores the tail", () => {
+    const signals: unknown[] = [];
+    stopSoxProcess({
+      kill: (received: unknown) => signals.push(received),
+      exited: new Promise<number>(() => {}),
+    } as never, { tailMs: 300, immediate: true });
+    expect(signals).toEqual(["SIGINT", "SIGKILL"]);
   });
 });
 

@@ -8,6 +8,7 @@ import {
 } from "./audio-watchdog.ts";
 import type { Config } from "./config.ts";
 import { recordTelemetry, round } from "./telemetry.ts";
+import { transcriptionPrompt } from "./vocabulary.ts";
 import type { TranscriptionEngine } from "./diagnostics.ts";
 
 /**
@@ -339,6 +340,9 @@ export class WhisperServerClient {
           const form = new FormData();
           form.append("file", new Blob([wav.buffer as ArrayBuffer], { type: "audio/wav" }), "audio.wav");
           form.append("response_format", includeConfidence || timestamps ? "verbose_json" : "json");
+          // The names dictation should spell as written (vocabulary.ts).
+          const prompt = transcriptionPrompt(cfg);
+          if (prompt) form.append("prompt", prompt);
           if (timestamps) {
             form.append("no_timestamps", "false");
           } else if (includeConfidence) {
@@ -496,6 +500,17 @@ async function transcribeWavCli(
 }
 
 /** whisper-cli once, bounded: what it printed and how it exited. With `timestamps`, each line starts with its times. */
+/**
+ * `-mc 0` keeps one 30s window's text from steering the next, but it also
+ * drops the initial prompt entirely (checked: a prompt changed nothing under
+ * it). With a prompt the CLI runs at whisper's default context, as the warm
+ * server always has.
+ */
+function contextArgs(cfg: Config): string[] {
+  const prompt = transcriptionPrompt(cfg);
+  return prompt ? ["--prompt", prompt] : ["-mc", "0"];
+}
+
 async function runWhisperCli(
   cfg: Config,
   wavPath: string,
@@ -516,7 +531,7 @@ async function runWhisperCli(
       "-t", "6",
       ...(timestamps ? [] : ["-nt"]),
       "-np",
-      "-mc", "0",
+      ...contextArgs(cfg),
     ];
   const proc = options.spawnCold
     ? options.spawnCold(command)

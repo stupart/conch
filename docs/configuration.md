@@ -29,6 +29,7 @@ The defaults below are read from `src/settings.ts`; `conch settings` prints the 
 | `hold-submit-delay` | `CONCH_HOLD_SUBMIT_SECS` | `8` | Silence before held dictation is sent |
 | `mic-gain` | `CONCH_MIC_GAIN_DB` | `0` | Software gain on conch's capture, -20 to 30 dB, without changing the macOS input volume |
 | `barge-threshold` | `CONCH_BARGE_THRESHOLD_PCT` | `0` | Mic level that interrupts reading; `0` turns barge-in off |
+| `vocabulary` | `CONCH_VOCABULARY` | empty | Names and terms dictation should spell as written, comma-separated — `conch set vocabulary "Seashell, Humain, HoneyB"`. conch always adds Claude Code, Codex and conch, and the folder names of the projects your open sessions work in |
 | `whisper-idle-unload` | `CONCH_WHISPER_IDLE_UNLOAD_MINS` | `20` | Minutes without a transcription before the warm whisper-server (about 628 MB) is unloaded; it reloads when a mic is about to open. `0` keeps it loaded |
 
 **Speaking**

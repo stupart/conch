@@ -234,6 +234,7 @@ import {
   whisperServerClient,
   type WhisperRecoveryReason,
 } from "./transcribe.ts";
+import { setSessionVocabulary } from "./vocabulary.ts";
 import {
   LOG_FILE,
   prepareLogFile,
@@ -2236,6 +2237,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
 
   function reconcileSessionSnapshot(snap: Awaited<ReturnType<typeof registrySnapshot>>): void {
     const registryLive = snap?.infos ?? [];
+    // Open projects' names are words dictation should spell as written.
+    if (snap?.complete) setSessionVocabulary(registryLive);
     for (const session of registryLive) {
       if (shouldReportMissingCodexPid(session, reportedMissingCodexPid)) {
         recordDaemonError(
