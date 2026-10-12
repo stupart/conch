@@ -166,6 +166,10 @@ public enum WorkPane: String, Equatable, Sendable, Codable {
     /// Takes over the raw value "terminal" that the Shell tab used to be remembered under. It is picked from this
     /// session's own terminal or not at all, never started from what was remembered.
     case terminal
+    /// One of the session's Workbench tabs: a live page in conch's in-app browser that its agent drives and you can
+    /// take over (`SessionPresentation.selectedBrowserTab` says which). Tyler, 2026-10-09: "Agents's pages should live
+    /// as tabs in the deliverables plane just like the deliverables."
+    case browser
 }
 
 /// What the workspace remembers about ONE session, so leaving it and coming back returns
@@ -195,17 +199,22 @@ public struct SessionPresentation: Codable, Equatable, Sendable {
     /// daemon minted when it filed it. Nil means the newest — which is what every surface
     /// meant back when a session could only hold one.
     public var selectedDeliverable: String?
+    /// Which of the session's Workbench tabs the reader picked, by the daemon's tab id. Nil, or a tab that has closed,
+    /// means its newest (`Workbench.shown`).
+    public var selectedBrowserTab: String?
 
     public init(
         stage: StageMode = .conversation,
         work: WorkPane = .deliverable,
         expandedToolIDs: Set<String> = [],
-        selectedDeliverable: String? = nil
+        selectedDeliverable: String? = nil,
+        selectedBrowserTab: String? = nil
     ) {
         self.stage = stage
         self.work = work
         self.expandedToolIDs = expandedToolIDs
         self.selectedDeliverable = selectedDeliverable
+        self.selectedBrowserTab = selectedBrowserTab
     }
 
     /// Which deliverable a session is SHOWING, given the ones it holds and the reader's pick.
@@ -471,6 +480,15 @@ public final class WorkspaceModel: ObservableObject {
     /// the page already follows.
     public func select(deliverable: String?, for id: String?) {
         update(id) { $0.selectedDeliverable = deliverable }
+    }
+
+    /// Put one of the session's Workbench tabs in the work half: the tab's own click, or a tab its agent just opened
+    /// while you were looking at that session (`Workbench.arrivals`). The stage is the caller's to move.
+    public func show(browserTab: String, for id: String?) {
+        update(id) {
+            $0.work = .browser
+            $0.selectedBrowserTab = browserTab
+        }
     }
 
     public func toggleTool(_ toolID: String, for id: String?) {

@@ -1799,6 +1799,8 @@ private struct ConversationPane: View {
     @ObservedObject private var composerDrafts = ComposerDraftStore.shared
     /// Where the one input is: this window lays its composer out only while it is here (ComposerDock).
     @ObservedObject private var dock = ComposerDock.shared
+    /// The Workbench's tabs and pages (`WorkbenchStore`): its agents' live browser tabs, in this pane's strip.
+    @ObservedObject private var workbench = WorkbenchStore.shared
     /// `.ib:hover` for the session-actions menu, which a `Menu` label does not get for free.
     @State private var isHoveringActions = false
     @State private var sessionPendingClose: SessionRow?
@@ -1927,6 +1929,25 @@ private struct ConversationPane: View {
     /// Terminal button is not something to show there; the mirror is, while the debug view is on.
     private var hasWorkPane: Bool {
         selectedReview != nil || workingFolder != nil || focusedRow.map { terminalStrip(for: $0).showsMirror } == true
+            || !browserTabs.isEmpty
+    }
+
+    /// The focused session's Workbench tabs, oldest first: live pages its agent opened (`WorkbenchStore`).
+    private var browserTabs: [Workbench.Tab] {
+        focusedRow.map { workbench.tabs(of: $0.id) } ?? []
+    }
+
+    /// The tab the browser pane shows: the reader's pick while it is open, else the newest (`Workbench.shown`).
+    private var selectedBrowserTab: Workbench.Tab? {
+        Workbench.shown(in: browserTabs, picked: workspace.presentation(for: focusedRow?.id).selectedBrowserTab)
+    }
+
+    /// A tab its agent just opened comes to the front when its session is the one in view, side by side if the
+    /// conversation had the stage; another session's arrives quietly on its row (`Workbench.front`).
+    private func bringBrowserTabForward(_ arrival: WorkbenchStore.Arrival?) {
+        guard let arrival, let row = focusedRow, let tab = Workbench.front(of: arrival.tabs, viewing: row.id) else { return }
+        workspace.show(browserTab: tab.id, for: row.id)
+        if stage(for: row) == .conversation { workspace.show(stage: .sideBySide, for: row.id) }
     }
 
     /// Debug › Show Terminal Mirror, off by default (`ConchTerminalStrip`).
@@ -2008,7 +2029,8 @@ private struct ConversationPane: View {
         // still drawn, or those versions could not be reached.
         let groups = deliverableGroups
         let places = (workingFolder == nil ? 0 : 2) + terminalStrip(for: row).places
-        return groups.count + places > 1 || groups.contains(where: \.hasOlderVersions)
+        // A browser tab is always drawn: it is how the page is found, and closed, as a tab.
+        return groups.count + places > 1 || groups.contains(where: \.hasOlderVersions) || !browserTabs.isEmpty
     }
 
     /// Which content the work half is on, never trusting the remembered choice blindly: a
@@ -2016,6 +2038,7 @@ private struct ConversationPane: View {
     /// deliverable rather than showing an empty tree.
     private func workPane(for row: SessionRow) -> WorkPane {
         let chosen = workspace.presentation(for: row.id).work
+        if chosen == .browser, selectedBrowserTab != nil { return .browser }
         if chosen == .files, workingFolder != nil { return .files }
         // A shell needs somewhere to run as much as a tree needs somewhere to read.
         if chosen == .shell, workingFolder != nil { return .shell }
@@ -2026,7 +2049,8 @@ private struct ConversationPane: View {
         if chosen == .terminal, strip.showsMirror { return .terminal }
         if selectedReview != nil { return .deliverable }
         if workingFolder != nil { return .files }
-        return strip.showsMirror ? .terminal : .deliverable
+        if strip.showsMirror { return .terminal }
+        return selectedBrowserTab != nil ? .browser : .deliverable
     }
 
     /// What this session changed, resolved against its own folder.
@@ -2044,7 +2068,15 @@ private struct ConversationPane: View {
     /// into showing different things.
     @ViewBuilder
     private func workContent(for row: SessionRow) -> some View {
-        if workPane(for: row) == .files, let folder = workingFolder {
+        if workPane(for: row) == .browser, let tab = selectedBrowserTab, let page = workbench.page(for: tab.id) {
+            // Keyed on the tab: each page is its own live web view, moved here while it is shown (`WorkbenchPane`).
+            WorkbenchPane(
+                page: page,
+                profile: tab.profile == Workbench.defaultProfile ? nil : workbench.profileNames[tab.profile] ?? tab.profile,
+                close: { workbench.close(tab.id) }
+            )
+            .id(tab.id)
+        } else if workPane(for: row) == .files, let folder = workingFolder {
             WorkspaceFilesView(root: folder, rowID: row.id, changed: changedFiles(for: row))
         } else if workPane(for: row) == .shell, let folder = workingFolder {
             // Keyed on the session: a shell started in one session's folder must never be
@@ -2342,6 +2374,7 @@ private struct ConversationPane: View {
         .onReceive(NotificationCenter.default.publisher(for: .openDeliverableInPlace)) { _ in
             openDeliverableInPlace()
         }
+        .onChange(of: workbench.arrival) { _, arrival in bringBrowserTabForward(arrival) }
         // What ↵ approves, while the review pane has the keyboard (ContentView, `ReviewApproval.returnKey`).
         .onChange(of: approvalTarget, initial: true) { _, target in
             approvals.approvable = target
@@ -2714,7 +2747,7 @@ private struct ConversationPane: View {
                     )
                 }
 
-                if workingFolder != nil || strip.showsButton, !held.isEmpty {
+                if workingFolder != nil || strip.showsButton, !held.isEmpty || !browserTabs.isEmpty {
                     // The place, and the work that came out of it, are different kinds of
                     // thing. A hairline says so without a word.
                     Rectangle()
@@ -2728,6 +2761,20 @@ private struct ConversationPane: View {
                 // everything after it was laid out where no one could see or click it.
                 ScrollView(.horizontal) {
                     HStack(spacing: 2) {
+                        // The agent's live pages, as tabs among its work (Tyler, 2026-10-09: "Agents's pages should
+                        // live as tabs in the deliverables plane just like the deliverables").
+                        let shownTab = workPane(for: row) == .browser ? selectedBrowserTab?.id : nil
+                        ForEach(browserTabs) { tab in
+                            WorkbenchTabButton(
+                                tab: tab,
+                                isSelected: tab.id == shownTab,
+                                open: {
+                                    comparison = nil
+                                    workspace.show(browserTab: tab.id, for: row.id)
+                                },
+                                close: { workbench.close(tab.id) }
+                            )
+                        }
                         ForEach(deliverableGroups) { group in
                             let versions = group.versions.compactMap { byID[$0] }
                             DeliverableTab(

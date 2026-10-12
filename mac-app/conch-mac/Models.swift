@@ -60,6 +60,12 @@ struct PublishedState: Decodable, Equatable, Sendable {
     /// Pages the daemon is waiting on this app to draw for an agent's `conch_capture` (`PageCaptureRequests`). Only ever
     /// on this Mac's own sessions file, never sent to a phone or another Mac; absent whenever none is waiting.
     let captureRequests: [CaptureRequest]
+    /// The Workbench, conch's in-app browser (src/browser-workbench.ts; `WorkbenchStore`): its profiles and tabs, nil from
+    /// a daemon without one (which says nothing about tabs, so nothing is closed), and the commands agents are waiting
+    /// on. Only ever on this Mac's own sessions file.
+    let browserProfiles: [BrowserProfile]?
+    let browserTabs: [BrowserTab]?
+    let browserRequests: [BrowserRequest]
     /// Setup's practice turn while one runs (src/practice.ts): where it is and what it heard, for the tour.
     let practice: PracticeReport?
     /// Each agent's model and effort choices, and its own defaults (src/session-settings.ts).
@@ -100,6 +106,48 @@ struct PublishedState: Decodable, Equatable, Sendable {
         struct Viewport: Decodable, Equatable, Sendable {
             let width: Double
             let height: Double
+        }
+    }
+
+    /// A browser profile: one per account, each with its own sign-ins (`Workbench.dataStore`).
+    struct BrowserProfile: Decodable, Equatable, Sendable {
+        let id: String
+        let name: String
+    }
+
+    /// A Workbench tab (src/browser-workbench.ts `BrowserTab`).
+    struct BrowserTab: Decodable, Equatable, Sendable {
+        let id: String
+        let sessionId: String
+        let url: String
+        let title: String?
+        let profile: String
+        /// Epoch-ms.
+        let openedAt: Double
+    }
+
+    /// A command an agent gave a tab (src/browser-workbench.ts `BrowserAppRequest`). What it types isn't here: it comes
+    /// in the reply to the app's ack.
+    struct BrowserRequest: Decodable, Equatable, Sendable {
+        let id: String
+        let tab: String
+        /// open, read, click, type or screenshot.
+        let op: String
+        let url: String?
+        let fresh: Bool?
+        let target: Target?
+        let submit: Bool?
+        /// Where a screenshot is written: conch's capture folder (`PageCapture.folder` checks it).
+        let folder: String?
+        /// Epoch-ms by which to give up, and say so.
+        let deadline: Double
+
+        /// Exactly one of these.
+        struct Target: Decodable, Equatable, Sendable {
+            let ref: String?
+            let selector: String?
+            let text: String?
+            let auto: String?
         }
     }
 
@@ -150,6 +198,9 @@ struct PublishedState: Decodable, Equatable, Sendable {
         case showing
         case previewRequests
         case captureRequests
+        case browserProfiles
+        case browserTabs
+        case browserRequests
         case practice
         case sessionSettings
         case naturalVoices
@@ -177,6 +228,9 @@ struct PublishedState: Decodable, Equatable, Sendable {
         showing: Showing? = nil,
         previewRequests: [PreviewRequest] = [],
         captureRequests: [CaptureRequest] = [],
+        browserProfiles: [BrowserProfile]? = nil,
+        browserTabs: [BrowserTab]? = nil,
+        browserRequests: [BrowserRequest] = [],
         practice: PracticeReport? = nil,
         sessionSettings: SessionSettingsCatalog? = nil,
         naturalVoices: NaturalVoicesReport? = nil,
@@ -203,6 +257,9 @@ struct PublishedState: Decodable, Equatable, Sendable {
         self.showing = showing
         self.previewRequests = previewRequests
         self.captureRequests = captureRequests
+        self.browserProfiles = browserProfiles
+        self.browserTabs = browserTabs
+        self.browserRequests = browserRequests
         self.practice = practice
         self.sessionSettings = sessionSettings
         self.naturalVoices = naturalVoices
@@ -250,6 +307,9 @@ struct PublishedState: Decodable, Equatable, Sendable {
         showing = try? container.decodeIfPresent(Showing.self, forKey: .showing)
         previewRequests = Self.decodeLossyArray(PreviewRequest.self, from: container, forKey: .previewRequests)
         captureRequests = Self.decodeLossyArray(CaptureRequest.self, from: container, forKey: .captureRequests)
+        browserProfiles = container.contains(.browserProfiles) ? Self.decodeLossyArray(BrowserProfile.self, from: container, forKey: .browserProfiles) : nil
+        browserTabs = container.contains(.browserTabs) ? Self.decodeLossyArray(BrowserTab.self, from: container, forKey: .browserTabs) : nil
+        browserRequests = Self.decodeLossyArray(BrowserRequest.self, from: container, forKey: .browserRequests)
         practice = try? container.decodeIfPresent(PracticeReport.self, forKey: .practice)
         sessionSettings = try? container.decodeIfPresent(SessionSettingsCatalog.self, forKey: .sessionSettings)
         naturalVoices = try? container.decodeIfPresent(NaturalVoicesReport.self, forKey: .naturalVoices)
@@ -302,6 +362,9 @@ struct PublishedState: Decodable, Equatable, Sendable {
             && naturalVoices == other.naturalVoices
             // The lagoon's jar counts it.
             && seaGlass == other.seaGlass
+            // The deliverables strip draws a tab for each.
+            && browserTabs == other.browserTabs
+            && browserProfiles == other.browserProfiles
     }
 }
 
