@@ -231,7 +231,9 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
     private func sync() {
         guard !isClosed else { return }
         let view = front
-        if url != view.url { url = view.url }
+        // A load that failed leaves WebKit on about:blank: the bar keeps the address that was asked for.
+        let here = Workbench.isWeb(view.url) || view !== webView ? view.url : lastRequested ?? view.url
+        if url != here { url = here }
         let named = view.title ?? ""
         if title != named { title = named }
         if isLoading != view.isLoading { isLoading = view.isLoading }
@@ -313,7 +315,11 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
 
     func goBack() { front.goBack() }
     func goForward() { front.goForward() }
-    func reload() { failure = nil; front.reload() }
+    /// Again: the page in front, or, when the first load never got anywhere, the address that was asked for.
+    func reload() {
+        failure = nil
+        if front === webView, !Workbench.isWeb(webView.url), let lastRequested { load(lastRequested) } else { front.reload() }
+    }
     func stop() { front.stopLoading() }
 
     /// The newest window the page opened, closed, as its own close button would.
