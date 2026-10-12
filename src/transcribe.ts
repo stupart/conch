@@ -431,7 +431,76 @@ export function wavFromRawPcm(pcm: Uint8Array, sampleRate = 16000): Uint8Array {
   return out;
 }
 
+/**
+ * Whisper decodes in 30s windows. A capture past that is decoded across a seam,
+ * and a sentence straddling it can vanish — measured on 30s dictations: "Push the
+ * branch, then update the Homebrew tap formula…" came back as "156.". A long
+ * capture is therefore transcribed in pieces cut at its quietest moments, each
+ * well inside one window. Up to MAX + SLACK seconds stays whole.
+ */
+const CHUNK_MAX_SECS = 25;
+const CHUNK_MIN_SECS = 12;
+const CHUNK_SLACK_SECS = 3;
+const BYTES_PER_SEC = 32_000;
+
+/** Cut long 16kHz PCM16 at the quietest 300ms between MIN and MAX seconds into each piece. */
+export function splitAtPauses(pcm: Uint8Array): Uint8Array[] {
+  if (pcm.byteLength <= (CHUNK_MAX_SECS + CHUNK_SLACK_SECS) * BYTES_PER_SEC) return [pcm];
+  const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength - (pcm.byteLength % 2));
+  const frameSamples = 320; // 20ms
+  const spanFrames = 15; // 300ms
+  const pieces: Uint8Array[] = [];
+  let start = 0; // in samples
+  const total = view.byteLength / 2;
+  while ((total - start) * 2 > (CHUNK_MAX_SECS + CHUNK_SLACK_SECS) * BYTES_PER_SEC) {
+    const from = start + CHUNK_MIN_SECS * 16_000;
+    const to = start + CHUNK_MAX_SECS * 16_000;
+    const energies: number[] = [];
+    for (let frame = from; frame + frameSamples <= to; frame += frameSamples) {
+      let sum = 0;
+      for (let sample = frame; sample < frame + frameSamples; sample++) {
+        const value = view.getInt16(sample * 2, true);
+        sum += value * value;
+      }
+      energies.push(sum);
+    }
+    let best = Infinity;
+    let cut = to;
+    let window = energies.slice(0, spanFrames).reduce((a, b) => a + b, 0);
+    for (let index = 0; index + spanFrames <= energies.length; index++) {
+      if (index > 0) window += energies[index + spanFrames - 1]! - energies[index - 1]!;
+      if (window < best) {
+        best = window;
+        cut = from + (index + Math.floor(spanFrames / 2)) * frameSamples;
+      }
+    }
+    pieces.push(pcm.subarray(start * 2, cut * 2));
+    start = cut;
+  }
+  pieces.push(pcm.subarray(start * 2, total * 2));
+  return pieces;
+}
+
 export async function transcribePcm(
+  cfg: Config,
+  pcm: Uint8Array,
+  onEngine?: (engine: TranscriptionEngine) => void,
+  options: TranscribePcmOptions = {},
+): Promise<{ text: string; error?: string }> {
+  const pieces = splitAtPauses(pcm);
+  if (pieces.length === 1) return transcribePiece(cfg, pcm, onEngine, options);
+  const texts: string[] = [];
+  let error: string | undefined;
+  for (const piece of pieces) {
+    const result = await transcribePiece(cfg, piece, onEngine, options);
+    if (result.text) texts.push(result.text);
+    error ??= result.error;
+  }
+  // A piece that failed must not throw away the words the others heard.
+  return texts.length ? { text: texts.join(" ") } : { text: "", ...(error ? { error } : {}) };
+}
+
+async function transcribePiece(
   cfg: Config,
   pcm: Uint8Array,
   onEngine?: (engine: TranscriptionEngine) => void,
