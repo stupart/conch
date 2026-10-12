@@ -318,14 +318,12 @@ open class ZoomingTextScrollView: NSScrollView {
         onZoom?(readout)
     }
 
+    /// Where the fingers left it stays (2026-10-12, Tyler: "u zoom to one size visually and when your done it like
+    /// snaps to another position"). It used to settle on 100% when near, and scroll back to the line that had been at
+    /// the top: both moved what he had just put under his fingers. The text rewraps as the pinch goes (`tile()`), so
+    /// there is nothing left to do but say where it is.
     @objc private func liveMagnifyEnded() {
-        let settled = rules.settled(level, resting: 1)
-        if settled != level {
-            apply(settled)
-        } else {
-            reflow(keeping: topCharacter())
-            onZoom?(readout)
-        }
+        onZoom?(readout)
     }
 
     open override func tile() {

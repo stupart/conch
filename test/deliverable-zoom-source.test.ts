@@ -60,10 +60,16 @@ describe("every picture, PDF, page and text in the pane zooms, one way", () => {
     expect(viewer).toContain("if event.clickCount == 2 {");
     expect(viewer).toContain("self?.zoom(.toggle, around: point)");
     expect(viewer).toContain("override func mouseDragged(with event: NSEvent) {");
-    expect(viewer).toContain("let origin = ZoomAnchor.origin(");
+    // AppKit's magnification of one layout, like a canvas: a pinch scales what shows under the fingers, a key or
+    // double-click glides there, and nothing settles or lays out again when it ends (2026-10-12, Tyler: "u zoom to one
+    // size visually and when your done it like snaps to another position").
+    expect(viewer).toContain("allowsMagnification = true");
+    expect(viewer).toContain("animator().setMagnification(target, centeredAt: point)");
+    expect(viewer).not.toContain("ContentZoom.picture.settled(");
+    expect(viewer).not.toContain("if let zoom { targetWidth = size.width * zoom }");
+    expect(zoomViews).not.toContain("rules.settled(level, resting: 1)");
     // Fitted as before, zoomed from its own size: the fit line stays the one the decode test pins.
     expect(viewer).toContain("var targetWidth = min(paneWidth - 36, size.width)");
-    expect(viewer).toContain("if let zoom { targetWidth = size.width * zoom }");
   });
 
   test("⌘0 is taken only from a zoomed deliverable: otherwise it is still Session ▸ Lagoon", () => {

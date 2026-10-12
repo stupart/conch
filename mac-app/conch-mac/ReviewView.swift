@@ -1504,13 +1504,15 @@ private struct DeliverableImageView: NSViewRepresentable {
             let to = event.locationInWindow
             dragFrom = to
             // The picture follows the pointer, so what shows moves the other way; the window's y runs up, the picture's down.
+            // Magnified, a point of the window is 1/magnification of the document, so the picture keeps up with the hand.
+            let magnification = max(clip.enclosingScrollView?.magnification ?? 1, 0.01)
             var origin = clip.bounds.origin
-            origin.x -= to.x - from.x
-            origin.y += to.y - from.y
-            // Kept to the document, and on the pixel grid, as the picture on it is.
+            origin.x -= (to.x - from.x) / magnification
+            origin.y += (to.y - from.y) / magnification
+            // Kept to the document, and on the screen's pixel grid.
             let kept = clip.constrainBoundsRect(NSRect(origin: origin, size: clip.bounds.size)).origin
-            let scale = window?.backingScaleFactor ?? 2
-            clip.scroll(to: NSPoint(x: (kept.x * scale).rounded() / scale, y: (kept.y * scale).rounded() / scale))
+            let grid = (window?.backingScaleFactor ?? 2) * magnification
+            clip.scroll(to: NSPoint(x: (kept.x * grid).rounded() / grid, y: (kept.y * grid).rounded() / grid))
             clip.enclosingScrollView?.reflectScrolledClipView(clip)
         }
 
@@ -1561,11 +1563,15 @@ private struct DeliverableImageView: NSViewRepresentable {
         private var decoding: (key: String, width: Int)?
         private var decodeTask: Task<Void, Never>?
         var onFailure: (Error) -> Void = { _ in }
-        /// How far in, as a scale of the picture's own size in points (1 is 100%); nil is fitted to the pane's width,
-        /// as it opens, and stays fitted as the pane is resized.
-        private(set) var zoom: CGFloat?
-        /// The scale that fits the picture to the pane's width now, as the last layout found it.
+        /// The scale that fits the picture to the pane's width now, as the last layout found it. The picture is always
+        /// laid out at it; zoom is AppKit's magnification of that layout (1 is fitted), so a pinch scales what shows
+        /// under the fingers and nothing is laid out again until it ends (2026-10-12, Tyler: "u zoom to one size visually
+        /// and when your done it like snaps to another position - maybe needs to be canvas?"). It used to lay the
+        /// picture out afresh on every step of a pinch, settle on fitted or 100% when the fingers lifted, then swap in a
+        /// decode drawn at that decode's own size: three moves after the one you made.
         private var fit: CGFloat = 1
+        /// A pinch under way: no decode, no layout, until it ends.
+        private var magnifying = false
         /// Where it is, after every layout: for the control (`ZoomTarget`).
         var onZoom: (ZoomReadout) -> Void = { _ in }
         /// Pinched or double-clicked: the one the keys zoom next.
@@ -1575,7 +1581,8 @@ private struct DeliverableImageView: NSViewRepresentable {
         /// for fit, never one made for 75% and shrunk, which Core Animation does without mipmaps.
         private var rezoomed = false
 
-        private var level: ZoomLevel { zoom.map(ZoomLevel.scale) ?? .rest }
+        /// Fitted, or the picture's scale (fit × magnification).
+        private var level: ZoomLevel { abs(magnification - 1) < 0.001 ? .rest : .scale(fit * magnification) }
 
         init() {
             super.init(frame: .zero)
@@ -1584,6 +1591,7 @@ private struct DeliverableImageView: NSViewRepresentable {
             // Zoomed past the pane's width it scrolls across too; at fit the picture is never wider than the pane.
             hasHorizontalScroller = true
             autohidesScrollers = true
+            allowsMagnification = true
             container.addSubview(imageView)
             documentView = container
             container.onDoubleClick = { [weak self] point in
@@ -1591,15 +1599,47 @@ private struct DeliverableImageView: NSViewRepresentable {
                 self?.zoom(.toggle, around: point)
             }
             container.pans = { [weak self] in
-                guard let self, self.zoom != nil else { return false }
+                guard let self, abs(self.magnification - 1) > 0.001 else { return false }
                 return self.container.frame.width > self.contentView.bounds.width + 0.5
                     || self.container.frame.height > self.contentView.bounds.height + 0.5
             }
+            let center = NotificationCenter.default
+            center.addObserver(self, selector: #selector(magnifyStarted), name: NSScrollView.willStartLiveMagnifyNotification, object: self)
+            center.addObserver(self, selector: #selector(magnifyEnded), name: NSScrollView.didEndLiveMagnifyNotification, object: self)
+            // Zoomed out past fit, the shown area is bigger than the layout: laid out again to keep the picture centred.
+            contentView.postsBoundsChangedNotifications = true
+            center.addObserver(self, selector: #selector(shownChanged), name: NSView.boundsDidChangeNotification, object: contentView)
         }
 
         required init?(coder: NSCoder) { nil }
 
-        deinit { decodeTask?.cancel() }
+        deinit {
+            decodeTask?.cancel()
+            NotificationCenter.default.removeObserver(self)
+        }
+
+        private var shownSize: NSSize = .zero
+
+        @objc private func shownChanged() {
+            let size = contentView.bounds.size
+            guard abs(size.width - shownSize.width) > 0.5 || abs(size.height - shownSize.height) > 0.5 else { return }
+            shownSize = size
+            needsLayout = true
+        }
+
+        @objc private func magnifyStarted() {
+            magnifying = true
+            onTouch()
+        }
+
+        /// Where the fingers left it stays: no settling on fitted or 100%. Only the decode is made again, for the width
+        /// it is drawn at now, and swapped in where the picture already is.
+        @objc private func magnifyEnded() {
+            magnifying = false
+            rezoomed = true
+            needsLayout = true
+            onZoom(ContentZoom.picture.readout(level, resting: fit))
+        }
 
         /// What `url` holds, shown from the top. A GIF keeps AppKit's own view, which plays it; so does anything
         /// ImageIO has no header for (an SVG draws sharp at any size there). Anything else is decoded for its width.
@@ -1610,7 +1650,7 @@ private struct DeliverableImageView: NSViewRepresentable {
             decoded = nil
             picture = nil
             whole = nil
-            zoom = nil
+            magnification = 1
             self.url = url
             let moves = url.pathExtension.lowercased() == "gif"
             if !moves, let picture = ConchImage.picture(atPath: url.path) {
@@ -1641,23 +1681,25 @@ private struct DeliverableImageView: NSViewRepresentable {
         override func layout() {
             super.layout()
             guard let size = pointSize, size.width > 0, size.height > 0 else { return }
+            // Fitted to the pane's own width (unmagnified); the zoom is the magnification of this layout.
             let paneWidth = contentSize.width
             var targetWidth = min(paneWidth - 36, size.width)
             guard targetWidth > 0 else { return }
-            // Fitted, as it opens; zoomed, its own width times the zoom, wider or narrower than the pane.
             fit = targetWidth / size.width
-            if let zoom { targetWidth = size.width * zoom }
+            minMagnification = min(1, max(ContentZoom.picture.range.lowerBound / fit, 0.25))
+            maxMagnification = max(1, ContentZoom.picture.range.upperBound / fit)
             var height = targetWidth * size.height / size.width
-            // Drawn at the decode's own size when it was decoded for this width: a pixel of it to a pixel of the
-            // screen. ImageIO rounds, and a picture resampled one pixel narrower is soft all the way across.
-            if let decoded, abs(CGFloat(decoded.width) / scale - targetWidth) <= 1 / scale + 0.001 {
+            // Drawn at the decode's own size when it was decoded for this width, at rest: a pixel of it to a pixel of
+            // the screen. ImageIO rounds, and a picture resampled one pixel narrower is soft all the way across.
+            if abs(magnification - 1) < 0.001, let decoded, abs(CGFloat(decoded.width) / scale - targetWidth) <= 1 / scale + 0.001 {
                 targetWidth = CGFloat(decoded.width) / scale
                 height = CGFloat(decoded.height) / scale
             }
-            // The same 18 point margin all round, zoomed or not: the picture centred while it is smaller than the pane,
-            // and scrolled to its edges, margin and all, once it is bigger.
-            let containerWidth = max(paneWidth, targetWidth + 36)
-            let containerHeight = max(height + 36, contentSize.height)
+            // The same 18 point margin all round: the picture centred in what shows while it is smaller than that
+            // (zoomed out past fit, what shows is bigger than the pane), and scrolled to its edges once it is bigger.
+            let shown = contentView.bounds.size
+            let containerWidth = max(shown.width, paneWidth, targetWidth + 36)
+            let containerHeight = max(height + 36, shown.height)
             container.frame = NSRect(x: 0, y: 0, width: containerWidth, height: containerHeight)
             // On the pixel grid, so a pixel of the decode lands on a pixel of the screen.
             imageView.frame = container.backingAlignedRect(NSRect(
@@ -1666,7 +1708,9 @@ private struct DeliverableImageView: NSViewRepresentable {
                 width: targetWidth,
                 height: height
             ), options: [.alignMinXNearest, .alignMinYNearest, .alignWidthNearest, .alignHeightNearest])
-            decodeIfNeeded(forWidth: targetWidth * scale)
+            // For the width it is drawn at on screen: the layout's, magnified. Not mid-pinch: the decode it has is
+            // scaled until the fingers lift.
+            if !magnifying { decodeIfNeeded(forWidth: targetWidth * magnification * scale) }
             onZoom(ContentZoom.picture.readout(level, resting: fit))
         }
 
@@ -1679,15 +1723,10 @@ private struct DeliverableImageView: NSViewRepresentable {
             zoom(to: next, around: anchor)
         }
 
-        /// A pinch, about the fingers: followed as they move, and settled on fitted or 100% when they lift near either.
+        /// A pinch is AppKit's own, about the fingers (`allowsMagnification`): the layout scaled as it is, under them.
         override func magnify(with event: NSEvent) {
-            guard pointSize != nil else { return super.magnify(with: event) }
-            let lifted = event.phase == .ended || event.phase == .cancelled
-            guard event.magnification != 0 || lifted else { return }
-            onTouch()
-            var next = ContentZoom.picture.pinched(level, by: event.magnification, resting: fit)
-            if lifted { next = ContentZoom.picture.settled(next, resting: fit) }
-            zoom(to: next, around: container.convert(event.locationInWindow, from: nil))
+            super.magnify(with: event)
+            onZoom(ContentZoom.picture.readout(level, resting: fit))
         }
 
         /// A two-finger double tap: what a double-click does.
@@ -1697,35 +1736,30 @@ private struct DeliverableImageView: NSViewRepresentable {
             zoom(.toggle, around: container.convert(event.locationInWindow, from: nil))
         }
 
-        /// Laid out at `next` at once, and scrolled so the point of the picture under `anchor` stays where it was on
-        /// screen (`ZoomAnchor`).
+        /// To `next`, about `anchor` (in the picture's document), else the middle of what shows: the magnification
+        /// animated there, so a key, the control or a double-click glides rather than jumps. Laid out and decoded for
+        /// the new width once it arrives.
         private func zoom(to next: ZoomLevel, around anchor: NSPoint?) {
             let visible = contentView.bounds
             let point = anchor ?? NSPoint(x: visible.midX, y: visible.midY)
-            let before = imageView.frame
+            let target: CGFloat
             switch next {
-            case .rest: zoom = nil
-            case let .scale(scale): zoom = ContentZoom.picture.clamped(scale, resting: fit)
+            case .rest: target = 1
+            case let .scale(scale): target = min(max(ContentZoom.picture.clamped(scale, resting: fit) / fit, minMagnification), maxMagnification)
             }
-            rezoomed = true
-            needsLayout = true
-            layoutSubtreeIfNeeded()
-            if before.width > 0, before.height > 0 {
-                let origin = ZoomAnchor.origin(
-                    keeping: point,
-                    visibleOrigin: visible.origin,
-                    from: before,
-                    to: imageView.frame,
-                    document: container.frame.size,
-                    visible: contentView.bounds.size
-                )
-                // On the pixel grid, and laid out again where it lands: the picture is put on the grid for the scroll
-                // it is drawn at, and a scroll between pixels would leave it there, soft all the way across.
-                contentView.scroll(to: NSPoint(x: (origin.x * scale).rounded() / scale, y: (origin.y * scale).rounded() / scale))
-                reflectScrolledClipView(contentView)
-                needsLayout = true
-                layoutSubtreeIfNeeded()
-            }
+            guard abs(target - magnification) > 0.0005 else { return }
+            let still = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = still ? 0 : 0.22
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                context.allowsImplicitAnimation = true
+                animator().setMagnification(target, centeredAt: point)
+            }, completionHandler: { [weak self] in
+                guard let self else { return }
+                self.rezoomed = true
+                self.needsLayout = true
+                self.onZoom(ContentZoom.picture.readout(self.level, resting: self.fit))
+            })
             container.updateCursor()
         }
 
