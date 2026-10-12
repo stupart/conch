@@ -1,4 +1,5 @@
 import AppKit
+import ConchDesign
 import SwiftUI
 import WebKit
 
@@ -94,6 +95,15 @@ struct DeliverableWebView: NSViewRepresentable {
             if navigation == nil || navigation === activeNavigation {
                 activeNavigation = nil
             }
+            // A new page can come back at another pinch: said, so the control reads what shows.
+            reportZoom(of: webView)
+        }
+
+        /// The page's zoom (`ContentZoom.page`), for the control: its page zoom times its pinch.
+        weak var zoom: ZoomTarget?
+
+        func reportZoom(of webView: WKWebView) {
+            zoom?.report(ContentZoom.page.readout(DeliverableWebView.level(of: webView), resting: 1))
         }
 
         func webView(
@@ -272,11 +282,27 @@ struct DeliverableWebView: NSViewRepresentable {
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
 
-        let webView = WKWebView(frame: .zero, configuration: configuration)
+        let webView = DeliverableWKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true
+        // A pinch magnifies as Safari's does, without reflowing; ⌘+, ⌘− and the control set the page zoom, which does.
         webView.allowsMagnification = true
+        if let zoom = context.environment.conchZoomTarget {
+            let coordinator = context.coordinator
+            coordinator.zoom = zoom
+            zoom.attach(webView) { [weak webView, weak coordinator] action in
+                guard let webView else { return }
+                Self.zoom(webView, action)
+                coordinator?.reportZoom(of: webView)
+            }
+            webView.onMagnify = { [weak webView, weak coordinator, weak zoom] in
+                guard let webView else { return }
+                zoom?.touch()
+                coordinator?.reportZoom(of: webView)
+            }
+            coordinator.reportZoom(of: webView)
+        }
         webView.underPageBackgroundColor = NSColor(ConchPalette.bg)
         webView.wantsLayer = true
         webView.layer?.backgroundColor = NSColor(ConchPalette.bg).cgColor
@@ -307,6 +333,20 @@ struct DeliverableWebView: NSViewRepresentable {
         webView.stopLoading()
     }
 
+    /// Where a page is: at rest at 100% and no pinch; else its page zoom times its pinch.
+    static func level(of webView: WKWebView) -> ZoomLevel {
+        let atRest = abs(webView.pageZoom - 1) < 0.001 && abs(webView.magnification - 1) < 0.001
+        return atRest ? .rest : .scale(webView.pageZoom * webView.magnification)
+    }
+
+    /// A key or the control: a step from what shows, pinch and all, as a page zoom with the pinch let go, so the page
+    /// reflows to the pane at its new size rather than running off its edges.
+    static func zoom(_ webView: WKWebView, _ action: ZoomAction) {
+        guard let next = ContentZoom.page.level(after: action, from: level(of: webView), resting: 1) else { return }
+        webView.magnification = 1
+        webView.pageZoom = ContentZoom.page.clamped(next.scale(resting: 1), resting: 1)
+    }
+
     private func load(_ link: String, in webView: WKWebView) -> WKNavigation? {
         let url = DeliverableLink.url(for: link)
         if !url.isFileURL {
@@ -320,6 +360,24 @@ struct DeliverableWebView: NSViewRepresentable {
             url,
             allowingReadAccessTo: URL(fileURLWithPath: "/", isDirectory: true)
         )
+    }
+}
+
+/// The review pane's web view, which says when a pinch has zoomed it: WebKit pinches by itself
+/// (`allowsMagnification`), and tells no one.
+final class DeliverableWKWebView: WKWebView {
+    var onMagnify: () -> Void = {}
+
+    override func magnify(with event: NSEvent) {
+        super.magnify(with: event)
+        onMagnify()
+    }
+
+    /// A two-finger double tap: WebKit animates it, so it is read again once it has landed.
+    override func smartMagnify(with event: NSEvent) {
+        super.smartMagnify(with: event)
+        onMagnify()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in self?.onMagnify() }
     }
 }
 
