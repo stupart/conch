@@ -179,19 +179,26 @@ public struct VersionCompareSlider: View {
 
 /// Two versions each whole, captioned, beside each other or one above the other: `axis`. Any content, so the Mac can
 /// put two pages or two PDFs here as readily as two pictures.
+///
+/// Beside each other on the Mac, with `split`, the gap between them is a divider you drag (2026-10-12, Tyler: "i want
+/// ot be able to control the size of that plane as well"): `split` is the before's share of the width, remembered by
+/// the host (`PaneFraction.compare`). Without it, or stacked, or on the phone, they share the room equally as before.
 public struct VersionPanes<Before: View, After: View>: View {
     private let beforeLine: String
     private let afterLine: String
     private let axis: Axis
     private let spacing: CGFloat
+    private let split: Binding<Double>?
     private let before: Before
     private let after: After
+    @State private var drag: CGFloat = 0
 
     public init(
         beforeLine: String,
         afterLine: String,
         axis: Axis = .horizontal,
         spacing: CGFloat = 12,
+        split: Binding<Double>? = nil,
         @ViewBuilder before: () -> Before,
         @ViewBuilder after: () -> After
     ) {
@@ -199,23 +206,84 @@ public struct VersionPanes<Before: View, After: View>: View {
         self.afterLine = afterLine
         self.axis = axis
         self.spacing = spacing
+        self.split = split
         self.before = before()
         self.after = after()
     }
 
     public var body: some View {
+        #if os(macOS)
+        if let split, axis == .horizontal {
+            resizable(split)
+        } else {
+            equal
+        }
+        #else
+        equal
+        #endif
+    }
+
+    private var equal: some View {
         let layout = axis == .horizontal ? AnyLayout(HStackLayout(spacing: spacing)) : AnyLayout(VStackLayout(spacing: spacing))
-        layout {
-            VStack(spacing: 6) {
-                VersionCaption(.before, line: beforeLine)
-                before.frame(maxWidth: .infinity, maxHeight: .infinity)
+        return layout {
+            beforeColumn
+            afterColumn
+        }
+    }
+
+    private var beforeColumn: some View {
+        VStack(spacing: 6) {
+            VersionCaption(.before, line: beforeLine)
+            before.frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private var afterColumn: some View {
+        VStack(spacing: 6) {
+            VersionCaption(.after, line: afterLine)
+            after.frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    #if os(macOS)
+    /// The before a remembered share of the width, the after the rest, and the gap between them the handle: drag it,
+    /// double-click it to halve them again.
+    private func resizable(_ stored: Binding<Double>) -> some View {
+        GeometryReader { proxy in
+            let shared = max(proxy.size.width - spacing, 0)
+            let leading = PaneFraction.compare.leadingWidth(stored.wrappedValue, dragged: drag, in: shared)
+            HStack(spacing: spacing) {
+                beforeColumn.frame(width: leading)
+                afterColumn.frame(maxWidth: .infinity)
             }
-            VStack(spacing: 6) {
-                VersionCaption(.after, line: afterLine)
-                after.frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .topLeading) {
+                PaneDividerHandle(
+                    label: "Resize the two versions",
+                    showsGrip: true,
+                    onDrag: { drag = $0 },
+                    onEnd: {
+                        stored.wrappedValue = PaneFraction.compare.fraction(stored.wrappedValue, dragged: drag, in: shared)
+                        drag = 0
+                    },
+                    onReset: {
+                        drag = 0
+                        stored.wrappedValue = PaneFraction.compare.standard
+                    },
+                    onStep: { step in
+                        stored.wrappedValue = PaneFraction.compare.fraction(stored.wrappedValue, dragged: CGFloat(step) * PaneSplit.step, in: shared)
+                    }
+                )
+                .frame(height: proxy.size.height)
+                .offset(x: Self.handleOffset(leading: leading, spacing: spacing))
             }
         }
     }
+
+    /// Where the handle's left edge goes so its middle is the gap's middle.
+    public static func handleOffset(leading: CGFloat, spacing: CGFloat) -> CGFloat {
+        leading + spacing / 2 - PaneDividerHandle.thickness / 2
+    }
+    #endif
 }
 
 /// Two versions of a picture side by side, or stacked when that draws them bigger (`CompareLayout.axis`).
@@ -224,12 +292,15 @@ public struct VersionPicturesSideBySide: View {
     private let after: CGImage
     private let beforeLine: String
     private let afterLine: String
+    private let split: Binding<Double>?
 
-    public init(before: CGImage, after: CGImage, beforeLine: String, afterLine: String) {
+    /// `split`: the before's share of the width when they are beside each other, for a divider to drag (`VersionPanes`).
+    public init(before: CGImage, after: CGImage, beforeLine: String, afterLine: String, split: Binding<Double>? = nil) {
         self.before = before
         self.after = after
         self.beforeLine = beforeLine
         self.afterLine = afterLine
+        self.split = split
     }
 
     public var body: some View {
@@ -243,7 +314,7 @@ public struct VersionPicturesSideBySide: View {
             )
             // Each picture right under its caption: centred in its half, a stacked pair floated away from the words
             // naming it, with the gap between the two reading as belonging to neither.
-            VersionPanes(beforeLine: beforeLine, afterLine: afterLine, axis: axis) {
+            VersionPanes(beforeLine: beforeLine, afterLine: afterLine, axis: axis, split: split) {
                 VersionCompareSlider.picture(before, alignment: .top)
                     .accessibilityLabel("Before: \(beforeLine)")
             } after: {

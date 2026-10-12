@@ -35,6 +35,9 @@ struct DeliverableCompareView: View {
     @State private var fraction = CompareSlider.start
     @State private var beforeAddress: String?
     @State private var afterAddress: String?
+    /// The before's share of the width side by side: the gap between the two is a divider you drag, and double-click
+    /// to halve them again (2026-10-12). Remembered for every comparison, like the stage's own split.
+    @AppStorage(PaneFraction.compare.key) private var sideBySide = PaneFraction.compare.standard
 
     private var before: ReviewItem? { versions.first { $0.id == pair.before } }
     private var after: ReviewItem? { versions.first { $0.id == pair.after } }
@@ -158,6 +161,7 @@ struct DeliverableCompareView: View {
                     after: after,
                     mode: shownMode,
                     fraction: $fraction,
+                    split: $sideBySide,
                     names: (name(before), name(after)),
                     lines: (line(before, now: now), line(after, now: now))
                 )
@@ -168,7 +172,7 @@ struct DeliverableCompareView: View {
             } else {
                 // The pane's own viewer, twice: a page, a PDF, a folder, a video — whatever one version shows alone, each
                 // side shows here. Without agent ink: two of them would fight over one canvas.
-                VersionPanes(beforeLine: line(before, now: now), afterLine: line(after, now: now), spacing: 12) {
+                VersionPanes(beforeLine: line(before, now: now), afterLine: line(after, now: now), spacing: 12, split: $sideBySide) {
                     pane(before, address: $beforeAddress)
                 } after: {
                     pane(after, address: $afterAddress)
@@ -218,6 +222,8 @@ private struct ComparePictures: View {
     let after: ReviewItem
     let mode: CompareMode
     @Binding var fraction: Double
+    /// The before's share of the width side by side (`VersionPanes`).
+    @Binding var split: Double
     let names: (before: String, after: String)
     let lines: (before: String, after: String)
 
@@ -237,7 +243,7 @@ private struct ComparePictures: View {
                         matte: ConchColor.surface
                     )
                 } else {
-                    VersionPicturesSideBySide(before: pictures.before, after: pictures.after, beforeLine: lines.before, afterLine: lines.after)
+                    VersionPicturesSideBySide(before: pictures.before, after: pictures.after, beforeLine: lines.before, afterLine: lines.after, split: $split)
                 }
             } else if let failure {
                 VersionCompareNotice(symbol: "photo.badge.exclamationmark", title: "Couldn't draw both versions", detail: failure)

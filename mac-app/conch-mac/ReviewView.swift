@@ -331,8 +331,10 @@ struct WorkspaceFilesView: View {
     @State private var expanded: Set<String> = []
     @State private var selected: String?
     @State private var isWebLoading = false
-
-    private static let railWidth: CGFloat = 232
+    /// How wide the tree is: the divider beside it drags (2026-10-12, Tyler: "i want ot be able to control the size of
+    /// that plane as well"), and a double-click on it puts it back to 232. Remembered once for every tree, a folder
+    /// deliverable's and the Files tab's alike, as the sidebar's width is: the names in it want the same room in both.
+    @AppStorage(PaneSplit.fileTree.key) private var railWidth = Double(PaneSplit.fileTree.standard)
 
     private var rows: [ConchFileRow] {
         ConchFileTree.rows(root: root, listings: listings, expanded: expanded)
@@ -341,9 +343,10 @@ struct WorkspaceFilesView: View {
     private var pointedAt: ConchFileFocus { ConchFileFocus(focus: focus, relativeTo: root) }
 
     var body: some View {
-        HStack(spacing: 0) {
+        // The tree, a hairline, and the file picked in it; the hairline is the divider (`ConchSplitView`).
+        ConchSplitView(split: .fileTree, width: $railWidth, label: "Resize the file list") {
             rail
-                .frame(width: Self.railWidth)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 // `raised`, never `bg`. Nothing inside the stage repaints the WINDOW ground:
                 // the pane is a panel sitting on that ground, and painting it again in here
                 // punches a hole in the panel — the "right shape, wrong colour" §3 fixed once
@@ -353,11 +356,7 @@ struct WorkspaceFilesView: View {
                 // apart by the hairline beside it rather than by its fill — exactly how the
                 // origin bar below already behaves.
                 .background(ConchPalette.raised)
-
-            Rectangle()
-                .fill(ConchPalette.divider)
-                .frame(width: 1)
-
+        } trailing: {
             Group {
                 if let selected {
                     // No header arrow in this pane, so nothing consumes the live address.
@@ -558,9 +557,16 @@ private struct ReviewContent: View {
     /// A link or file this pane could not open, in the OS's own words with
     /// the resolved target, shown here rather than as a Finder alert (A13).
     @State private var linkFailure: String?
+    /// How far in the picture, PDF, page or text is drawn (2026-10-12, Tyler: "make it so I can zoom in on items in the
+    /// deliverables place that are images or files"): pinched, ⌘+ ⌘− ⌘0, a double-click on a picture, or the control in
+    /// the bottom right corner. The renderer below attaches itself to it (`conchZoomTarget`); a video, a folder, or a
+    /// file conch can't preview never does, so the control is never drawn there. One per file shown: the pane is keyed
+    /// on it, so the next file opens fitted.
+    @StateObject private var zoom = ZoomTarget()
 
     var body: some View {
         content.overlay(alignment: .bottom) { LinkFailureLine(message: $linkFailure) }
+            .environment(\.conchZoomTarget, zoom)
     }
 
     /// Every open from this pane goes through the one door that reports
@@ -592,6 +598,8 @@ private struct ReviewContent: View {
             DeliverableImageView(url: url, onFailure: { loadFailed(url, $0) })
                 .padding(18)
                 .background(ConchPalette.surface)
+                // In the PANE's corner, outside the picture's 18 point margin: 10 in, as the corner buttons above it.
+                .overlay(alignment: .bottomTrailing) { ZoomOverlay(target: zoom) }
                 .onAppear {
                     isWebLoading = false
                 }
@@ -604,6 +612,7 @@ private struct ReviewContent: View {
         case let .pdf(url):
             DeliverablePDFView(url: url, onFailure: { loadFailed(url, $0) })
                 .background(ConchPalette.surface)
+                .overlay(alignment: .bottomTrailing) { ZoomOverlay(target: zoom) }
                 .onAppear {
                     isWebLoading = false
                 }
@@ -612,12 +621,14 @@ private struct ReviewContent: View {
                 open(link, cwd: url.deletingLastPathComponent().path)
             }
                 .background(ConchPalette.surface)
+                .overlay(alignment: .bottomTrailing) { ZoomOverlay(target: zoom) }
                 .onAppear {
                     isWebLoading = false
                 }
         case let .text(url):
             DeliverableDocumentView(url: url, renderMarkdown: false, onFailure: { loadFailed(url, $0) })
                 .background(ConchPalette.surface)
+                .overlay(alignment: .bottomTrailing) { ZoomOverlay(target: zoom) }
                 .onAppear {
                     isWebLoading = false
                 }
@@ -757,6 +768,8 @@ private struct ReviewContent: View {
                     addressDraft = addressText
                     liveAddress = addressText
                 }
+                // On the page itself, under the loading cover and the failure card drawn over it below.
+                .overlay(alignment: .bottomTrailing) { ZoomOverlay(target: zoom) }
                 }
 
                 // WKWebView paints the document white until the page's own
@@ -1241,12 +1254,21 @@ private struct DeliverableVideoView: NSViewRepresentable {
 
 /// A PDF deliverable, whole and scrollable — WKWebView happened to preview
 /// PDFs, but PDFKit gives continuous scroll, fit-to-width, and Select/Copy.
+///
+/// Zoomed by PDFKit itself: a pinch is its own, and the keys and the control set its scale, with "fitted" its auto
+/// scale (`ContentZoom.pdf`). A double-click still selects a word, as it does in any PDF.
 private struct DeliverablePDFView: NSViewRepresentable {
     let url: URL
     let onFailure: (Error) -> Void
 
     final class Coordinator {
         var loadedURL: URL?
+        /// PDFKit's word that its scale changed: a pinch, a resize while fitted, or the keys.
+        var scaled: NSObjectProtocol?
+
+        deinit {
+            if let scaled { NotificationCenter.default.removeObserver(scaled) }
+        }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -1257,6 +1279,23 @@ private struct DeliverablePDFView: NSViewRepresentable {
         view.displayMode = .singlePageContinuous
         view.displaysPageBreaks = true
         view.backgroundColor = NSColor(ConchPalette.surface)
+        view.minScaleFactor = ContentZoom.pdf.range.lowerBound
+        view.maxScaleFactor = ContentZoom.pdf.range.upperBound
+        if let zoom = context.environment.conchZoomTarget {
+            zoom.attach(view) { [weak view, weak zoom] action in
+                guard let view else { return }
+                Self.zoom(view, action)
+                zoom?.report(Self.readout(of: view))
+            }
+            context.coordinator.scaled = NotificationCenter.default.addObserver(
+                forName: .PDFViewScaleChanged, object: view, queue: .main
+            ) { [weak view, weak zoom] _ in
+                MainActor.assumeIsolated {
+                    guard let view else { return }
+                    zoom?.report(Self.readout(of: view))
+                }
+            }
+        }
         return view
     }
 
@@ -1270,6 +1309,35 @@ private struct DeliverablePDFView: NSViewRepresentable {
         if view.document == nil {
             let error = DeliverableLoadError.reason(url)
             DispatchQueue.main.async { onFailure(error) }
+        } else {
+            context.environment.conchZoomTarget?.report(Self.readout(of: view))
+        }
+    }
+
+    /// Fitted while PDFKit auto scales; else its scale, 1 being the page's own size.
+    private static func level(of view: PDFView) -> ZoomLevel {
+        view.autoScales ? .rest : .scale(view.scaleFactor)
+    }
+
+    /// The scale fitting gives at the pane's width now: what PDFKit's auto scale would pick.
+    private static func fit(of view: PDFView) -> CGFloat {
+        let fit = view.scaleFactorForSizeToFit
+        return fit > 0 ? fit : 1
+    }
+
+    static func readout(of view: PDFView) -> ZoomReadout {
+        ContentZoom.pdf.readout(level(of: view), resting: fit(of: view))
+    }
+
+    static func zoom(_ view: PDFView, _ action: ZoomAction) {
+        guard view.document != nil,
+              let next = ContentZoom.pdf.level(after: action, from: level(of: view), resting: fit(of: view)) else { return }
+        switch next {
+        case .rest:
+            view.autoScales = true
+        case let .scale(scale):
+            view.autoScales = false
+            view.scaleFactor = ContentZoom.pdf.clamped(scale, resting: fit(of: view))
         }
     }
 }
@@ -1303,9 +1371,16 @@ private struct DeliverableDocumentView: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSScrollView()
+        // Zooms as a page does: pinched, or by the keys and the control, wrapped to the pane at every scale
+        // (`ZoomingTextScrollView`), 100% where it opens.
+        let scrollView = ZoomingTextScrollView()
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
+        if let zoom = context.environment.conchZoomTarget {
+            zoom.attach(scrollView) { [weak scrollView] action in scrollView?.zoom(action) }
+            scrollView.onZoom = { [weak zoom] readout in zoom?.report(readout) }
+            zoom.report(scrollView.readout)
+        }
 
         let textView = NSTextView()
         // TextKit 1, up front: `NSTextView()` starts on TextKit 2, which has no `NSTextTable`, and a rendered
@@ -1395,15 +1470,86 @@ private struct DeliverableImageView: NSViewRepresentable {
     /// through CARenderer, 28 Sep). ImageIO's decode at the drawn width averages
     /// every pixel, and is drawn a pixel to a pixel; it is also a fifth of the
     /// memory (a 2880 x 30000 capture was 345 MB decoded whole).
-    private final class FlippedView: NSView {
+    ///
+    /// Zoomed (2026-10-12): pinched about the fingers, ⌘+ ⌘− ⌘0 and the control about the middle of what shows, a
+    /// double-click between fitted and 100% (200% for a picture that opens at its own size) about where it lands
+    /// (`ContentZoom.picture`). Zoomed, it is still decoded for the width it is drawn at, so a picture at 100% is a
+    /// pixel of it to a pixel of the screen, and it pans by scrolling or dragging (`PictureCanvas`).
+    ///
+    /// The picture's document: flipped, so the document's origin is the top; and the one view a click lands on, so a
+    /// double-click zooms and a drag pans wherever on the picture or its margin they start.
+    final class PictureCanvas: NSView {
         override var isFlipped: Bool { true }
+        var onDoubleClick: (NSPoint) -> Void = { _ in }
+        /// Whether a drag moves the picture: zoomed in, with more of it than shows.
+        var pans: () -> Bool = { false }
+        private var dragFrom: NSPoint?
+
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            super.hitTest(point) == nil ? nil : self
+        }
+
+        override func mouseDown(with event: NSEvent) {
+            if event.clickCount == 2 {
+                onDoubleClick(convert(event.locationInWindow, from: nil))
+                return
+            }
+            guard pans() else { return super.mouseDown(with: event) }
+            dragFrom = event.locationInWindow
+            NSCursor.closedHand.push()
+        }
+
+        override func mouseDragged(with event: NSEvent) {
+            guard let from = dragFrom, let clip = superview as? NSClipView else { return super.mouseDragged(with: event) }
+            let to = event.locationInWindow
+            dragFrom = to
+            // The picture follows the pointer, so what shows moves the other way; the window's y runs up, the picture's down.
+            var origin = clip.bounds.origin
+            origin.x -= to.x - from.x
+            origin.y += to.y - from.y
+            // Kept to the document, and on the pixel grid, as the picture on it is.
+            let kept = clip.constrainBoundsRect(NSRect(origin: origin, size: clip.bounds.size)).origin
+            let scale = window?.backingScaleFactor ?? 2
+            clip.scroll(to: NSPoint(x: (kept.x * scale).rounded() / scale, y: (kept.y * scale).rounded() / scale))
+            clip.enclosingScrollView?.reflectScrolledClipView(clip)
+        }
+
+        override func mouseUp(with event: NSEvent) {
+            guard dragFrom != nil else { return super.mouseUp(with: event) }
+            dragFrom = nil
+            NSCursor.pop()
+            updateCursor(event)
+        }
+
+        /// The open hand where a drag would pan: over the picture zoomed in, never over the zoom control drawn above
+        /// it, which a cursor rect (only a rect) could not tell apart.
+        private lazy var pointer = NSTrackingArea(rect: .zero, options: [.cursorUpdate, .mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self)
+
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            if !trackingAreas.contains(pointer) { addTrackingArea(pointer) }
+        }
+
+        override func cursorUpdate(with event: NSEvent) { updateCursor(event) }
+
+        override func mouseMoved(with event: NSEvent) {
+            super.mouseMoved(with: event)
+            updateCursor(event)
+        }
+
+        func updateCursor(_ event: NSEvent? = nil) {
+            guard dragFrom == nil else { return }
+            let location = event?.locationInWindow ?? window?.mouseLocationOutsideOfEventStream ?? .zero
+            let onPicture = window?.contentView?.hitTest(location) === self
+            (pans() && onPicture ? NSCursor.openHand : NSCursor.arrow).set()
+        }
     }
 
     final class FitWidthImageScrollView: NSScrollView {
         /// The picture's own view, exactly the rect it is drawn in: what the agent's marks are placed on
         /// (`AgentInkController`).
         let imageView = DeliverablePictureView()
-        private let container = FlippedView()
+        private let container = PictureCanvas()
         /// The picture as ImageIO reads it, decoded for the width it is drawn at (`ConchImage.decode(_:forWidth:)`).
         private(set) var picture: ConchImage.Picture?
         /// The file shown, for a decode that fails to say which.
@@ -1415,13 +1561,40 @@ private struct DeliverableImageView: NSViewRepresentable {
         private var decoding: (key: String, width: Int)?
         private var decodeTask: Task<Void, Never>?
         var onFailure: (Error) -> Void = { _ in }
+        /// How far in, as a scale of the picture's own size in points (1 is 100%); nil is fitted to the pane's width,
+        /// as it opens, and stays fitted as the pane is resized.
+        private(set) var zoom: CGFloat?
+        /// The scale that fits the picture to the pane's width now, as the last layout found it.
+        private var fit: CGFloat = 1
+        /// Where it is, after every layout: for the control (`ZoomTarget`).
+        var onZoom: (ZoomReadout) -> Void = { _ in }
+        /// Pinched or double-clicked: the one the keys zoom next.
+        var onTouch: () -> Void = {}
+        /// Zoomed since the last decode was asked for: the next is made for exactly the width it is drawn at, not kept
+        /// from another scale because it is near enough. A picture zoomed back out to fit is drawn from a decode made
+        /// for fit, never one made for 75% and shrunk, which Core Animation does without mipmaps.
+        private var rezoomed = false
+
+        private var level: ZoomLevel { zoom.map(ZoomLevel.scale) ?? .rest }
 
         init() {
             super.init(frame: .zero)
             drawsBackground = false
             hasVerticalScroller = true
+            // Zoomed past the pane's width it scrolls across too; at fit the picture is never wider than the pane.
+            hasHorizontalScroller = true
+            autohidesScrollers = true
             container.addSubview(imageView)
             documentView = container
+            container.onDoubleClick = { [weak self] point in
+                self?.onTouch()
+                self?.zoom(.toggle, around: point)
+            }
+            container.pans = { [weak self] in
+                guard let self, self.zoom != nil else { return false }
+                return self.container.frame.width > self.contentView.bounds.width + 0.5
+                    || self.container.frame.height > self.contentView.bounds.height + 0.5
+            }
         }
 
         required init?(coder: NSCoder) { nil }
@@ -1437,6 +1610,7 @@ private struct DeliverableImageView: NSViewRepresentable {
             decoded = nil
             picture = nil
             whole = nil
+            zoom = nil
             self.url = url
             let moves = url.pathExtension.lowercased() == "gif"
             if !moves, let picture = ConchImage.picture(atPath: url.path) {
@@ -1470,6 +1644,9 @@ private struct DeliverableImageView: NSViewRepresentable {
             let paneWidth = contentSize.width
             var targetWidth = min(paneWidth - 36, size.width)
             guard targetWidth > 0 else { return }
+            // Fitted, as it opens; zoomed, its own width times the zoom, wider or narrower than the pane.
+            fit = targetWidth / size.width
+            if let zoom { targetWidth = size.width * zoom }
             var height = targetWidth * size.height / size.width
             // Drawn at the decode's own size when it was decoded for this width: a pixel of it to a pixel of the
             // screen. ImageIO rounds, and a picture resampled one pixel narrower is soft all the way across.
@@ -1477,16 +1654,79 @@ private struct DeliverableImageView: NSViewRepresentable {
                 targetWidth = CGFloat(decoded.width) / scale
                 height = CGFloat(decoded.height) / scale
             }
+            // The same 18 point margin all round, zoomed or not: the picture centred while it is smaller than the pane,
+            // and scrolled to its edges, margin and all, once it is bigger.
+            let containerWidth = max(paneWidth, targetWidth + 36)
             let containerHeight = max(height + 36, contentSize.height)
-            container.frame = NSRect(x: 0, y: 0, width: paneWidth, height: containerHeight)
+            container.frame = NSRect(x: 0, y: 0, width: containerWidth, height: containerHeight)
             // On the pixel grid, so a pixel of the decode lands on a pixel of the screen.
             imageView.frame = container.backingAlignedRect(NSRect(
-                x: (paneWidth - targetWidth) / 2,
+                x: (containerWidth - targetWidth) / 2,
                 y: (containerHeight - height) / 2,
                 width: targetWidth,
                 height: height
             ), options: [.alignMinXNearest, .alignMinYNearest, .alignWidthNearest, .alignHeightNearest])
             decodeIfNeeded(forWidth: targetWidth * scale)
+            onZoom(ContentZoom.picture.readout(level, resting: fit))
+        }
+
+        // MARK: Zoom
+
+        /// A key, the control, or a double-click: about `anchor` (in the picture's document), else the middle of what
+        /// shows.
+        func zoom(_ action: ZoomAction, around anchor: NSPoint? = nil) {
+            guard pointSize != nil, let next = ContentZoom.picture.level(after: action, from: level, resting: fit) else { return }
+            zoom(to: next, around: anchor)
+        }
+
+        /// A pinch, about the fingers: followed as they move, and settled on fitted or 100% when they lift near either.
+        override func magnify(with event: NSEvent) {
+            guard pointSize != nil else { return super.magnify(with: event) }
+            let lifted = event.phase == .ended || event.phase == .cancelled
+            guard event.magnification != 0 || lifted else { return }
+            onTouch()
+            var next = ContentZoom.picture.pinched(level, by: event.magnification, resting: fit)
+            if lifted { next = ContentZoom.picture.settled(next, resting: fit) }
+            zoom(to: next, around: container.convert(event.locationInWindow, from: nil))
+        }
+
+        /// A two-finger double tap: what a double-click does.
+        override func smartMagnify(with event: NSEvent) {
+            guard pointSize != nil else { return super.smartMagnify(with: event) }
+            onTouch()
+            zoom(.toggle, around: container.convert(event.locationInWindow, from: nil))
+        }
+
+        /// Laid out at `next` at once, and scrolled so the point of the picture under `anchor` stays where it was on
+        /// screen (`ZoomAnchor`).
+        private func zoom(to next: ZoomLevel, around anchor: NSPoint?) {
+            let visible = contentView.bounds
+            let point = anchor ?? NSPoint(x: visible.midX, y: visible.midY)
+            let before = imageView.frame
+            switch next {
+            case .rest: zoom = nil
+            case let .scale(scale): zoom = ContentZoom.picture.clamped(scale, resting: fit)
+            }
+            rezoomed = true
+            needsLayout = true
+            layoutSubtreeIfNeeded()
+            if before.width > 0, before.height > 0 {
+                let origin = ZoomAnchor.origin(
+                    keeping: point,
+                    visibleOrigin: visible.origin,
+                    from: before,
+                    to: imageView.frame,
+                    document: container.frame.size,
+                    visible: contentView.bounds.size
+                )
+                // On the pixel grid, and laid out again where it lands: the picture is put on the grid for the scroll
+                // it is drawn at, and a scroll between pixels would leave it there, soft all the way across.
+                contentView.scroll(to: NSPoint(x: (origin.x * scale).rounded() / scale, y: (origin.y * scale).rounded() / scale))
+                reflectScrolledClipView(contentView)
+                needsLayout = true
+                layoutSubtreeIfNeeded()
+            }
+            container.updateCursor()
         }
 
         override func viewDidChangeBackingProperties() {
@@ -1509,9 +1749,10 @@ private struct DeliverableImageView: NSViewRepresentable {
             let wanted = ConchImage.decodeWidth(forDrawnWidth: width, of: picture.pixels)
             guard wanted > 0 else { return }
             let have = decoding?.key == picture.key ? decoding?.width : decoded.map(\.width)
-            if let have, have >= wanted, have <= 2 * wanted { return }
             // A decode that rounded a pixel short of what was asked is the same decode.
             if let have, have >= wanted - 1, have <= wanted { return }
+            if !rezoomed, let have, have >= wanted, have <= 2 * wanted { return }
+            rezoomed = false
             // The first decode at once; a later one after the width has held still for a moment.
             let settle = decoded != nil
             decoding = (picture.key, wanted)
@@ -1540,6 +1781,11 @@ private struct DeliverableImageView: NSViewRepresentable {
     func makeNSView(context: Context) -> FitWidthImageScrollView {
         let view = FitWidthImageScrollView()
         if let item = context.environment.agentInkItem { AgentInkController.shared.appeared(view.imageView, image: url.path, showing: item) }
+        if let zoom = context.environment.conchZoomTarget {
+            zoom.attach(view) { [weak view] action in view?.zoom(action) }
+            view.onZoom = { [weak zoom] readout in zoom?.report(readout) }
+            view.onTouch = { [weak zoom] in zoom?.touch() }
+        }
         return view
     }
 

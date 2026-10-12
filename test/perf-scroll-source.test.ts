@@ -94,8 +94,11 @@ describe("deliverable pictures are decoded for the width they are drawn at", () 
     expect(viewer).toContain("ConchImage.decode(picture, forWidth: CGFloat(wanted))");
     expect(viewer).toContain("let wanted = ConchImage.decodeWidth(forDrawnWidth: width, of: picture.pixels)");
     // Grows past the decode, or falls under half of it: decoded again. A pixel short from ImageIO's rounding is not.
-    expect(viewer).toContain("if let have, have >= wanted, have <= 2 * wanted { return }");
+    // Zoomed (2026-10-12), the decode is made for exactly the new width, never kept from another scale because it is
+    // near enough: a picture zoomed back out to fit was drawn from its 75% decode, shrunk without mipmaps.
+    expect(viewer).toContain("if !rezoomed, let have, have >= wanted, have <= 2 * wanted { return }");
     expect(viewer).toContain("if let have, have >= wanted - 1, have <= wanted { return }");
+    expect(viewer).toContain("rezoomed = true");
     expect(viewer).toContain("guard let picture, !inLiveResize else { return }");
     // A divider dragged a few points a frame decodes once it stops, not once a frame.
     expect(viewer).toContain("let settle = decoded != nil");

@@ -1214,6 +1214,9 @@ private struct KeyboardShortcutsSheet: View {
         ShortcutHelpRow(command: "Esc", result: "Release selection / close (when nothing is being read)"),
         ShortcutHelpRow(command: "Right-click a row", result: "Rename, dismiss"),
         ShortcutHelpRow(command: "⌘K", result: "Command palette"),
+        // A picture, PDF, page or text in the deliverable pane; the one under the pointer when two show.
+        ShortcutHelpRow(command: "⌘+ / ⌘−", result: "Zoom the deliverable in / out (or pinch)"),
+        ShortcutHelpRow(command: "⌘0", result: "A zoomed deliverable back to fit"),
         ShortcutHelpRow(command: "⌘,", result: "Settings, and back to your sessions"),
         ShortcutHelpRow(command: "?", result: "This list"),
     ]
