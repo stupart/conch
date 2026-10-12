@@ -36,3 +36,13 @@ test("a deploy waits for the old app to quit, and never leaves an old copy runni
   expect(stale).toBeGreaterThan(swap);
   expect(stale).toBeLessThan(relaunch);
 });
+
+// 2026-10-12: relaunched in the background, conch came back with only its menu bar item and no window until reopened.
+test("a relaunch reopens conch once it's up, so its window comes back without taking focus", () => {
+  const script = readFileSync(join(import.meta.dir, "../scripts/build-app.sh"), "utf8");
+  const opens = [...script.matchAll(/open -g -a "\$INSTALLED_APP_PATH"/g)].map((m) => m.index!);
+  expect(opens).toHaveLength(2);
+  const between = script.slice(opens[0], opens[1]);
+  expect(between).toContain('pgrep -f "$INSTALLED_APP_PATH/Contents/MacOS/" >/dev/null && break');
+  expect(script).not.toMatch(/open -a "\$INSTALLED_APP_PATH"/);
+});
