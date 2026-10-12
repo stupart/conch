@@ -155,6 +155,9 @@ describe("cold transcription recovery", () => {
     expect(commands[0]![0]).toBe("fake-whisper-cli");
     // The text path keeps its timestamps off.
     expect(commands[0]).toContain("-nt");
+    // The vocabulary prompt rides the cold path too, without the -mc 0 that would drop it.
+    expect(commands[0]![commands[0]!.indexOf("--prompt") + 1]).toBe("Dictating to Claude Code and Codex about conch.");
+    expect(commands[0]).not.toContain("-mc");
     const inputIndex = commands[0]!.indexOf("-f");
     expect(inputIndex).toBeGreaterThan(0);
     expect(existsSync(commands[0]![inputIndex + 1]!)).toBeFalse();

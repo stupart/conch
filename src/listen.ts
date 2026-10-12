@@ -134,6 +134,42 @@ interface Capture {
 // (barge-in sits above speaker bleed). `-l` keeps the trailing below-threshold
 // audio: voices trail off at the end of sentences, and without it sox trimmed
 // the last words as "silence" (observed live: final couple words missing).
+// SoX 14.4.2's `-l` never ended a pause when sound resumed, so every pause in
+// an utterance added to one total and a capture closed once they reached the
+// end silence — mid-sentence, every few seconds of natural speech. conch.app's
+// sox carries the fix (mac-app/third-party/sox/); another sox still has it.
+//
+// The start had the mirror-image problem. `silence` begins a capture only once
+// speech has stayed above the threshold for 0.15s, and discards everything
+// before — where a soft first word lives ("the", "just", "so"), or a short one
+// followed by a stop consonant ("Switch the…" arrived as "the…", "Pause conch"
+// as "Cause conch"). Through this exact recipe, word error on 73 LibriSpeech
+// utterances was 18% against 4.4% for the same audio sent whole, and 14 of 90
+// synthetic dictations lost their opening words.
+//
+// sox has no pre-roll, so the capture rides a delayed copy of the mic:
+// `remix 1 1` makes two channels, `delay 0 P` holds the second back P seconds,
+// `silence` starts on the live one (any channel above threshold counts), and
+// `remix 2` keeps only the delayed one — so the capture begins P seconds before
+// the trigger. Ending waits until both channels have been quiet, which the
+// delayed one reaches P later, so the end duration is shortened by P and the
+// utterance still ends when it did. Measured: WER 18% → 11.5% (LibriSpeech),
+// 12 of the 14 clipped dictations whole again.
+export const CAPTURE_PREROLL_SECS = 0.3;
+
+/** The pre-roll for this config: never more than half the end silence it is taken from. */
+export function capturePrerollSecs(cfg: Pick<Config, "endSilenceSecs">): number {
+  return Math.min(CAPTURE_PREROLL_SECS, cfg.endSilenceSecs / 2);
+}
+
+/**
+ * A duration for sox's `silence` effect. It reads a bare integer as a sample
+ * count — `end-silence 3` became "3", three samples, and every capture closed
+ * 0.18s in — so every duration carries a decimal point.
+ */
+function soxSeconds(seconds: number): string {
+  return seconds.toFixed(3);
+}
 const activeRecorders = new Set<ReturnType<typeof Bun.spawn>>();
 const tracedRecorders = new Map<ReturnType<typeof Bun.spawn>, Capture>();
 const activeControllers = new Set<DictationController>();
@@ -144,16 +180,30 @@ export function soxCaptureArgs(
   raw: string,
   startPct: number,
 ): string[] {
+  const preroll = capturePrerollSecs(cfg);
   return [
     // conch.app's own sox when it carries one (speech-engine.ts); bare `sox` is PATH's.
     cfg.soxBin || "sox", "-d", "-q",
     "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw",
     raw,
     ...(cfg.micGainDb ? ["gain", String(cfg.micGainDb)] : []),
+    "channels", "1", "remix", "1", "1", "delay", "0", soxSeconds(preroll),
     "silence", "-l",
     "1", "0.15", `${startPct}%`,
-    "1", `${cfg.endSilenceSecs}`, `${cfg.endThresholdPct}%`,
+    "1", soxSeconds(cfg.endSilenceSecs - preroll), `${cfg.endThresholdPct}%`,
+    "remix", "2",
   ];
+}
+
+/**
+ * Stops whose audio is going to be heard wait out the pre-roll, so the words
+ * just spoken leave the delay first. Discards, shutdown, and an idle window
+ * with nothing said stop at once.
+ */
+const UNHEARD_STOPS = new Set(["shutdown", "abort", "manual-reply", "timeout"]);
+
+export function captureStopTailMs(cfg: Pick<Config, "endSilenceSecs">, reason: string, speechStarted: boolean): number {
+  return speechStarted && !UNHEARD_STOPS.has(reason) ? Math.round(capturePrerollSecs(cfg) * 1000) : 0;
 }
 
 /**
@@ -176,8 +226,16 @@ export function soxCaptureArgs(
  */
 export function stopSoxProcess(
   proc: Pick<ReturnType<typeof Bun.spawn>, "kill"> & { exited?: Promise<number> },
-  options: { graceMs?: number; immediate?: boolean } = {},
+  options: { graceMs?: number; immediate?: boolean; tailMs?: number } = {},
 ): void {
+  // A capture runs its pre-roll behind the mic, and SIGINT discards what the
+  // delay still holds: stopping the moment a sentence ends would cut its last
+  // pre-roll of audio. Keep recording that long first, then stop as usual.
+  if (!options.immediate && options.tailMs && options.tailMs > 0) {
+    const { tailMs: _tail, ...rest } = options;
+    setTimeout(() => stopSoxProcess(proc, rest), options.tailMs);
+    return;
+  }
   proc.kill("SIGINT");
   // Shutdown cannot wait, and has nothing to wait FOR. The daemon calls
   // `process.exit(0)` on the next line, so the grace timer below would simply
@@ -634,7 +692,7 @@ export function armBargeRecorder(cfg: Config, traceParent?: string, traceSequenc
         ? "shutdown"
         : "abort";
     markKill(capture, cause);
-    stopSoxProcess(proc);
+    stopSoxProcess(proc, { tailMs: captureStopTailMs(cfg, reason, fileSize(raw) > 0) });
   };
   const hardStop = setTimeout(() => stopCapture("max"), cfg.maxUtteranceSecs * 1000);
   const finished = proc.exited.then((exitCode): CapturedAudio => {
@@ -818,7 +876,7 @@ function armContinuousRecorder(
     if (speechStartedAt !== null && (now - speechStartedAt) / 1000 >= cfg.maxUtteranceSecs) {
       stopReason = "max";
       markKill(capture, "max");
-      stopSoxProcess(proc);
+      stopSoxProcess(proc, { tailMs: captureStopTailMs(cfg, "max", true) });
     }
 
     if (
@@ -872,7 +930,8 @@ function armContinuousRecorder(
           ? "shutdown"
           : "abort";
       markKill(capture, cause);
-      stopSoxProcess(proc);
+      // Read growth without observing it: a stop must not announce speech starting.
+      stopSoxProcess(proc, { tailMs: captureStopTailMs(cfg, reason, speechStartedAt !== null || fileSize(raw) > 0) });
     },
   };
 }
