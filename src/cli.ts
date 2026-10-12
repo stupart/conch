@@ -61,7 +61,7 @@ Optional / manual setup:
   conch install [--codex] | pair | browser   wire hooks · connect the iPhone app · conch's in-app browser (its profiles, a page as a tab)
   conch doctor | help-session | version | parity <session>   live checks | a Claude session that knows conch | version | debug: conch beside the session's terminal in one picture, PASS/FAIL on the last message sent (parity --help)
 
-Internal entrypoints: conch hook | codex-hook | daemon | mcp
+Internal entrypoints: conch hook | codex-hook | daemon | mcp | browse <url> [--profile <name>] (open, in sessions conch starts)
 `;
 
 /**
@@ -239,6 +239,16 @@ async function readDaemonSnapshot(): Promise<ConfigSnapshot | "daemon-down" | "a
   const result = await sendControlMessage(cfg.socketPath, { kind: "get-config" });
   if (!result.ok) return result.reason;
   return result.response.kind === "config-snapshot" ? result.response.snapshot : "ack-unknown";
+}
+
+/**
+ * A session started from here, not through the daemon, goes through the daemon's shim folder all the same while
+ * `browser-open-in-conch` is on (browser-open.ts). Only once the daemon has written it: `conch browse` needs the daemon.
+ */
+async function routeDirectStartBrowsers(): Promise<void> {
+  const { browserShimDir, browserShimsReady, routeSessionBrowsers } = await import("./browser-open.ts");
+  const dir = browserShimDir();
+  routeSessionBrowsers(cfg.browserOpenInConch && browserShimsReady(dir) ? dir : undefined);
 }
 
 switch (command) {
@@ -769,6 +779,7 @@ switch (command) {
     // Launched directly, like help-session: the person is at this Terminal,
     // so an agent's own trust prompt is theirs to answer.
     const { startRequestFromArgv, startTerminalSession, startBackgroundSession, startUsage } = await import("./session-lifecycle.ts");
+    await routeDirectStartBrowsers();
     const { adapterFor, agentAdapters } = await import("./agent-adapter.ts");
     if (rest.includes("--help") || rest.includes("-h")) {
       console.log(agentAdapters().map(startUsage).join("\n\n"));
@@ -793,12 +804,30 @@ switch (command) {
     console.log(`[conch] opened ${adapterFor(request.backend).displayName} ${request.host === "background" ? "in the background" : "in Terminal"}, in ${request.cwd ?? "~"}`);
     break;
   }
+  case "browse": {
+    // What `open` and $BROWSER call in the sessions conch starts (browser-open.ts). Its parent is the shim, under the
+    // agent the daemon finds the session by. Silent when the link is open; otherwise one line and a failing exit, and
+    // the shim opens the link in the default browser.
+    const { browseRequest, requestBrowserOpen } = await import("./browser-open.ts");
+    const request = browseRequest(rest, process.ppid);
+    if ("error" in request) {
+      console.error(request.error);
+      process.exit(2);
+    }
+    const opened = await requestBrowserOpen(cfg.socketPath, request);
+    if (!opened.ok) {
+      console.error(`[conch] ${opened.error}`);
+      process.exit(1);
+    }
+    break;
+  }
   case "help-session": {
     if (rest.length > 0) {
       console.error("usage: conch help-session");
       process.exit(1);
     }
     const { startHelpSession } = await import("./session-lifecycle.ts");
+    await routeDirectStartBrowsers();
     const { HELP_SESSION_LABEL } = await import("./help-session.ts");
     const cwd = await startHelpSession({ bypassPermissions: cfg.bypassPermissions });
     console.log(`[conch] opened "${HELP_SESSION_LABEL}" in Terminal, in ${cwd}`);

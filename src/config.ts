@@ -102,6 +102,8 @@ export interface Config {
   keystrokeFallback: boolean;
   /** Start sessions with every permission prompt skipped. Off unless asked for. */
   bypassPermissions: boolean;
+  /** Links the sessions conch starts open land in conch's Workbench (settings `browser-open-in-conch`, browser-open.ts). */
+  browserOpenInConch: boolean;
   /** Allow constructing local record-store clients; no ingestion runs yet. */
   recordsEnabled: boolean;
   phoneEnabled: boolean;
@@ -214,6 +216,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     recentInjectSuppressMs: num(env.CONCH_INJECT_SUPPRESS_MS, 30_000),
     keystrokeFallback: settings["keystroke-fallback"].value as boolean,
     bypassPermissions: settings["bypass-permissions"].value as boolean,
+    browserOpenInConch: settings["browser-open-in-conch"].value as boolean,
     recordsEnabled: settings["records"].value as boolean,
     phoneEnabled: settings["phone"].value as boolean,
     phonePort: settings["phone-port"].value as number,
