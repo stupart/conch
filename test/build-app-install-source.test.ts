@@ -37,12 +37,19 @@ test("a deploy waits for the old app to quit, and never leaves an old copy runni
   expect(stale).toBeLessThan(relaunch);
 });
 
-// 2026-10-12: relaunched in the background, conch came back with only its menu bar item and no window until reopened.
-test("a relaunch reopens conch once it's up, so its window comes back without taking focus", () => {
+// 2026-10-12: relaunched in the background, conch came back with only its menu bar item and no window until reopened;
+// and something else reopening it mid-deploy made an `open` fail with -600, which stopped the script.
+test("a relaunch tolerates conch being reopened by something else, and brings its window back", () => {
   const script = readFileSync(join(import.meta.dir, "../scripts/build-app.sh"), "utf8");
-  const opens = [...script.matchAll(/open -g -a "\$INSTALLED_APP_PATH"/g)].map((m) => m.index!);
-  expect(opens).toHaveLength(2);
-  const between = script.slice(opens[0], opens[1]);
-  expect(between).toContain('pgrep -f "$INSTALLED_APP_PATH/Contents/MacOS/" >/dev/null && break');
+  const block = script.slice(script.indexOf('echo "Relaunching conch.app"'), script.indexOf('if [[ -d "$INSTALLED_APP_PATH/Contents/Resources/Lagoon" ]]'));
+  expect(block).toContain('open -g -a "$INSTALLED_APP_PATH"');
+  // Launched only when nothing is, and a failed `open` never ends the deploy.
+  expect(block).toContain("running || relaunch || true");
+  expect(block).not.toMatch(/^\s*relaunch\s*$/m);
+  // Waited for, and an error only when conch never comes back.
+  expect(block).toContain("for _ in $(seq 1 50); do running && break; sleep 0.2; done");
+  expect(block).toContain('running || { echo "error: conch.app didn\'t relaunch; open it from /Applications" >&2; exit 1; }');
+  // Then reopened, which brings the window back without taking focus.
+  expect(block.lastIndexOf("relaunch || true")).toBeGreaterThan(block.indexOf("sleep 2"));
   expect(script).not.toMatch(/open -a "\$INSTALLED_APP_PATH"/);
 });
