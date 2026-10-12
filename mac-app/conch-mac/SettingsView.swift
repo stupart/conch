@@ -1001,6 +1001,7 @@ struct ConchSettingsPage: View {
                 throw NSError(domain: "ConchTools", code: 1, userInfo: [NSLocalizedDescriptionKey: "Could not reach the Conch daemon."])
             }
         }
+        case .browser: ConchBrowserSettingsView()
         case .general: ConchSettingsView()
         case .phone: ConchPairingView()
         case .permissions: ConchPermissionsView()

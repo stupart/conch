@@ -7,12 +7,14 @@ import XCTest
 final class SettingsPageTests: XCTestCase {
     // MARK: Sections
 
-    func testTheSectionsAreTheSevenTheWindowHadInItsOrder() {
+    /// The seven the window had, in its order, and Browser (2026-10-11): conch's browser profiles, and Chrome's sign-ins
+    /// copied into them.
+    func testTheSectionsAreTheWindowsSevenAndBrowserInTheirOrder() {
         XCTAssertEqual(SettingsSection.allCases.map(\.title),
-                       ["Providers", "Environments", "Plugins & MCP", "General", "Phone app", "Permissions", "Setup"])
+                       ["Providers", "Environments", "Plugins & MCP", "Browser", "General", "Phone app", "Permissions", "Setup"])
         // The raw values are what the separate window remembered, so the section left there is the one the page opens on.
         XCTAssertEqual(SettingsSection.allCases.map(\.rawValue),
-                       ["providers", "environments", "tools", "general", "phone", "permissions", "setup"])
+                       ["providers", "environments", "tools", "browser", "general", "phone", "permissions", "setup"])
         XCTAssertEqual(SettingsSection.storageKey, "conch.settings.section")
         XCTAssertEqual(Set(SettingsSection.allCases.map(\.symbol)).count, SettingsSection.allCases.count, "a mark each")
     }
@@ -20,6 +22,7 @@ final class SettingsPageTests: XCTestCase {
     func testARememberedSectionIsReadBackAndAnythingElseIsTheFirst() {
         XCTAssertEqual(SettingsSection(stored: "phone"), .phone)
         XCTAssertEqual(SettingsSection(stored: "tools"), .tools)
+        XCTAssertEqual(SettingsSection(stored: "browser"), .browser)
         XCTAssertEqual(SettingsSection(stored: nil), .providers, "never viewed")
         XCTAssertEqual(SettingsSection(stored: "accounts"), .providers, "a section this build doesn't have")
         XCTAssertEqual(SettingsSection(stored: ""), .providers)
