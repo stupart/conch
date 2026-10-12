@@ -89,7 +89,8 @@ describe("deliverable pictures are decoded for the width they are drawn at", () 
   const viewer = slice(review, "private struct DeliverableImageView: NSViewRepresentable {", "final class DeliverablePictureView: NSView {");
 
   test("the Mac viewer decodes at its drawn width in device pixels, again when that grows, never mid-resize", () => {
-    expect(viewer).toContain("decodeIfNeeded(forWidth: targetWidth * scale)");
+    // For the width it is drawn at on screen, magnified; never mid-pinch (2026-10-12).
+    expect(viewer).toContain("if !magnifying { decodeIfNeeded(forWidth: targetWidth * magnification * scale) }");
     expect(viewer).toContain("private var scale: CGFloat { window?.backingScaleFactor ?? 2 }");
     expect(viewer).toContain("ConchImage.decode(picture, forWidth: CGFloat(wanted))");
     expect(viewer).toContain("let wanted = ConchImage.decodeWidth(forDrawnWidth: width, of: picture.pixels)");
@@ -111,7 +112,8 @@ describe("deliverable pictures are decoded for the width they are drawn at", () 
   });
 
   test("it is drawn a pixel to a pixel: at the decode's own width, on the pixel grid", () => {
-    expect(viewer).toContain("if let decoded, abs(CGFloat(decoded.width) / scale - targetWidth) <= 1 / scale + 0.001 {");
+    // At rest only: zoomed, the decode is for the magnified width and the layout stays where it is.
+    expect(viewer).toContain("if abs(magnification - 1) < 0.001, let decoded, abs(CGFloat(decoded.width) / scale - targetWidth) <= 1 / scale + 0.001 {");
     expect(viewer).toContain("targetWidth = CGFloat(decoded.width) / scale");
     expect(viewer).toContain("height = CGFloat(decoded.height) / scale");
     expect(viewer).toContain("imageView.frame = container.backingAlignedRect(NSRect(");
