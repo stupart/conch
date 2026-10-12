@@ -1,5 +1,5 @@
-import { readFile, stat } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { stat } from "node:fs/promises";
+import { resolve } from "node:path";
 import type { AudioControl } from "./audio-holder.ts";
 import { audioTimeoutMs } from "./audio-watchdog.ts";
 import { loadConfig, type Config } from "./config.ts";
@@ -95,7 +95,21 @@ import {
   type PageCaptureReply,
   type PageCaptureSend,
 } from "./page-capture.ts";
-import { windowKey } from "./window-key.ts";
+import { sessionOfProcess, unverified, type CallerBinding } from "./caller-session.ts";
+import {
+  BROWSER_REPLY_MS,
+  BROWSER_TARGET_MAX,
+  BROWSER_TEXT_MAX,
+  BROWSER_URL_MAX,
+  isBrowserTabId,
+  parseBrowserTarget,
+  requestBrowser,
+  webUrl,
+  type BrowserMessage,
+  type BrowserReply,
+  type BrowserSend,
+  type BrowserTarget,
+} from "./browser-workbench.ts";
 import { appServerNoTerminal } from "./codex-threads.ts";
 import { transcriptFormatFor } from "./agent-adapter.ts";
 import {
@@ -651,8 +665,119 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
         additionalProperties: false,
       },
     },
+    {
+      name: "browser_open",
+      description: text.tools.browser_open,
+      inputSchema: {
+        type: "object",
+        properties: {
+          url: {
+            type: "string",
+            minLength: 1,
+            maxLength: BROWSER_URL_MAX,
+            description: "An http(s) URL: a live site, a preview deployment, a dev server on localhost.",
+          },
+          profile: {
+            type: "string",
+            minLength: 1,
+            maxLength: 80,
+            description: "Optional. The browser profile to sign in with, by name or id; Default when omitted. A tab keeps the profile it was opened with.",
+          },
+          tab: { ...BROWSER_TAB_SCHEMA, description: "Optional. One of your tabs to go to url in, instead of opening a new one." },
+        },
+        required: ["url"],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: "browser_read",
+      description: text.tools.browser_read,
+      inputSchema: {
+        type: "object",
+        properties: { tab: BROWSER_TAB_SCHEMA },
+        additionalProperties: false,
+      },
+    },
+    {
+      name: "browser_click",
+      description: text.tools.browser_click,
+      inputSchema: {
+        type: "object",
+        properties: { tab: BROWSER_TAB_SCHEMA, target: BROWSER_TARGET_SCHEMA },
+        required: ["target"],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: "browser_type",
+      description: text.tools.browser_type,
+      inputSchema: {
+        type: "object",
+        properties: {
+          tab: BROWSER_TAB_SCHEMA,
+          target: BROWSER_TARGET_SCHEMA,
+          text: { type: "string", maxLength: BROWSER_TEXT_MAX, description: "What to type; it replaces what the field holds. Never a password." },
+          submit: { type: "boolean", default: false, description: "Optional. Press Return afterwards, submitting the field's form." },
+        },
+        required: ["target", "text"],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: "browser_screenshot",
+      description: text.tools.browser_screenshot,
+      inputSchema: {
+        type: "object",
+        properties: { tab: BROWSER_TAB_SCHEMA },
+        additionalProperties: false,
+      },
+    },
+    {
+      name: "browser_tabs",
+      description: text.tools.browser_tabs,
+      inputSchema: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+    },
+    {
+      name: "browser_close",
+      description: text.tools.browser_close,
+      inputSchema: {
+        type: "object",
+        properties: { tab: { ...BROWSER_TAB_SCHEMA, description: "The tab to close: one of your tab ids (browser_tabs)." } },
+        required: ["tab"],
+        additionalProperties: false,
+      },
+    },
   ] as const satisfies readonly McpToolDefinition[];
 }
+
+/** A Workbench tab, by the id `browser_open` and `browser_tabs` give. */
+const BROWSER_TAB_SCHEMA = {
+  type: "string",
+  minLength: 1,
+  maxLength: 40,
+  description: "Optional. One of your tab ids (browser_tabs); your most recent tab when omitted.",
+} as const;
+
+/** What a click or a type is aimed at. */
+const BROWSER_TARGET_SCHEMA = {
+  anyOf: [
+    { type: "string", minLength: 1, maxLength: BROWSER_TARGET_MAX },
+    {
+      type: "object",
+      properties: {
+        ref: { type: "string", minLength: 1, maxLength: BROWSER_TARGET_MAX },
+        selector: { type: "string", minLength: 1, maxLength: BROWSER_TARGET_MAX },
+        text: { type: "string", minLength: 1, maxLength: BROWSER_TARGET_MAX },
+      },
+      additionalProperties: false,
+    },
+  ],
+  description: "A ref from browser_read (e12), a CSS selector, or the visible text of the element (a link's or button's words, a field's label). A string is tried as each in that order; {ref}, {selector} or {text} names which.",
+} as const;
 
 export const MCP_TOOLS = buildMcpTools();
 
@@ -707,6 +832,8 @@ export interface McpDependencies {
   parentPid(): number;
   /** `conch_capture`'s request to the daemon, held open for its answer (`requestPageCapture`). */
   capturePage?(socketPath: string, message: PageCaptureMessage, timeoutMs?: number): Promise<PageCaptureSend>;
+  /** The browser tools' commands to the daemon, held open for their answer (`requestBrowser`). */
+  browser?(socketPath: string, message: BrowserMessage, timeoutMs?: number): Promise<BrowserSend>;
 }
 
 export const defaultMcpDependencies: McpDependencies = {
@@ -745,6 +872,7 @@ export const defaultMcpDependencies: McpDependencies = {
   now: Date.now,
   parentPid: () => process.ppid,
   capturePage: requestPageCapture,
+  browser: requestBrowser,
 };
 
 class ToolInputError extends Error {
@@ -908,9 +1036,7 @@ async function resolveSession(
 }
 
 /** Whether conch could tell which session is calling this server, and why not when it could not. */
-export type CallerBinding =
-  | { status: "verified"; session: SessionInfo }
-  | { status: "unverified"; reason: string };
+export type { CallerBinding } from "./caller-session.ts";
 
 /**
  * The session that OWNS this MCP server, verified or not.
@@ -930,7 +1056,6 @@ async function callerBinding(
   dependencies: McpDependencies,
   meta?: unknown,
 ): Promise<CallerBinding> {
-  const unverified = (reason: string): CallerBinding => ({ status: "unverified", reason });
   const parentPid = dependencies.parentPid();
   const threadId = codexCallingThread(meta);
   const hasParent = Number.isSafeInteger(parentPid) && parentPid > 1;
@@ -954,25 +1079,10 @@ async function callerBinding(
       ? { status: "verified", session: thread[0]! }
       : unverified(`codex thread ${threadId} not found among the live Codex sessions conch knows`);
   }
-  const byPid = infos.filter((session) => session.pid === parentPid);
-  if (byPid.length === 1) return { status: "verified", session: byPid[0]! };
-  if (byPid.length > 1) {
-    return unverified(
-      `its parent (pid ${parentPid}) runs ${byPid.length} sessions`
-        + ` (${byPid.map((session) => session.sessionId).join(", ")}), so the pid cannot say which one is calling`,
-    );
-  }
-  const own = await readFile(join(config.claudeDir, "sessions", `${parentPid}.json`), "utf8")
-    .then((raw) => JSON.parse(raw)?.sessionId)
-    .catch(() => undefined);
-  const window = typeof own === "string" && own ? windowKey(own, parentPid, true) : undefined;
-  const found = window === undefined
-    ? undefined
-    : infos.find((session) => session.sessionId === window)
-      ?? infos.find((session) => session.sessionId === own);
-  return found
-    ? { status: "verified", session: found }
-    : unverified(`its parent (pid ${parentPid}) is not a live session conch knows`);
+  // The pid, then its registry file: the rule the Workbench's `browser-open` walks a process tree with (caller-session.ts).
+  const who = `its parent (pid ${parentPid})`;
+  return await sessionOfProcess(parentPid, infos, config.claudeDir, who)
+    ?? unverified(`${who} is not a live session conch knows`);
 }
 
 /**
@@ -1227,6 +1337,14 @@ function captureToolResult(reply: PageCaptureReply): Record<string, unknown> {
   };
 }
 
+/** A browser tool's `target`, as the daemon takes it (`parseBrowserTarget`). */
+function browserTarget(args: Readonly<Record<string, unknown>>): BrowserTarget {
+  if (!Object.hasOwn(args, "target")) throw new ToolInputError("target is required: a ref from browser_read, a CSS selector, or visible text");
+  const parsed = parseBrowserTarget(args.target);
+  if ("error" in parsed) throw new ToolInputError(parsed.error);
+  return parsed;
+}
+
 export function createMcpToolHandlers(
   config: McpRuntimeConfig,
   dependencies: McpDependencies = defaultMcpDependencies,
@@ -1239,6 +1357,41 @@ export function createMcpToolHandlers(
   let speakingUntil = 0;
   // A relabel is offered once per label (label-drift.ts); this server lives as long as its session.
   const relabelHints = new RelabelHints();
+
+  /**
+   * One browser tool's command: its arguments checked, the caller verified (a tab is its session's), sent to the daemon
+   * and held open until the Mac app has run it. A refusal is this server's or the daemon's; a failure says which part
+   * of conch wasn't there.
+   */
+  async function browserCommand(
+    tool: string,
+    argumentsValue: unknown,
+    meta: unknown,
+    allowed: readonly string[],
+    build: (args: Record<string, unknown>) => Omit<Extract<BrowserMessage, { kind: "browser-command" }>, "kind" | "sessionId" | "tab">,
+  ): Promise<Extract<BrowserReply, { kind: "browser-result" }>> {
+    const message = await (async () => {
+      const args = toolArguments(argumentsValue);
+      allowOnly(args, allowed);
+      const tab = optionalString(args, "tab")?.trim();
+      if (tab !== undefined && !isBrowserTabId(tab)) throw new ToolInputError(`tab must be a tab's id, as browser_tabs lists them`);
+      const command = build(args);
+      const session = await verifiedCaller(`use conch's browser for any session (${tool} tabs are their session's own)`, config, dependencies, meta);
+      return { kind: "browser-command", sessionId: session.sessionId, ...command, ...(tab ? { tab } : {}) } as BrowserMessage;
+    })().catch((error) => {
+      const said = errorMessage(error);
+      throw new ToolInputError(said.startsWith("refused:") ? said : `refused: ${said}`);
+    });
+    const sent = await (dependencies.browser ?? requestBrowser)(config.socketPath, message, BROWSER_REPLY_MS);
+    if (!sent.ok) {
+      throw new Error(sent.reason === "daemon-down"
+        ? "failed: conch daemon is not running, so its browser isn't either"
+        : `failed: conch's daemon didn't answer the browser${sent.diagnostic ? ` (${sent.diagnostic})` : ""}`);
+    }
+    if (sent.reply.kind === "browser-error") throw new Error(`failed: ${sent.reply.error}`);
+    if (sent.reply.kind !== "browser-result") throw new Error("ack-unknown: the daemon's reply wasn't the browser's");
+    return sent.reply;
+  }
 
   async function readHistory(request: HistoryRequest, meta: unknown): Promise<HistoryResponse> {
     if (request.session === "self") {
@@ -1924,6 +2077,60 @@ export function createMcpToolHandlers(
           : `failed: conch's daemon didn't answer the capture${sent.diagnostic ? ` (${sent.diagnostic})` : ""}`);
       }
       return captureToolResult(sent.reply);
+    },
+
+    // conch's in-app browser (browser-workbench.ts): every tab is its caller's, so each needs a verified one.
+    async browser_open(argumentsValue, meta) {
+      const reply = await browserCommand("browser_open", argumentsValue, meta, ["url", "profile", "tab"], (args) => {
+        const url = webUrl(requiredString(args, "url").trim());
+        if (!url) throw new ToolInputError("url must be an http(s) URL (a dev server is http://localhost:<port>)");
+        const profile = optionalString(args, "profile");
+        return { op: "open", url, ...(profile ? { profile: profile.trim() } : {}) };
+      });
+      return { tab: reply.tab?.id, ...reply.result, profile: reply.tab?.profileName };
+    },
+
+    async browser_read(argumentsValue, meta) {
+      const reply = await browserCommand("browser_read", argumentsValue, meta, ["tab"], () => ({ op: "read" }));
+      return { tab: reply.tab?.id, ...reply.result };
+    },
+
+    async browser_click(argumentsValue, meta) {
+      const reply = await browserCommand("browser_click", argumentsValue, meta, ["tab", "target"], (args) => ({
+        op: "click",
+        target: browserTarget(args),
+      }));
+      return { tab: reply.tab?.id, ...reply.result };
+    },
+
+    async browser_type(argumentsValue, meta) {
+      const reply = await browserCommand("browser_type", argumentsValue, meta, ["tab", "target", "text", "submit"], (args) => {
+        const text = args.text;
+        if (typeof text !== "string" || text.length > BROWSER_TEXT_MAX) {
+          throw new ToolInputError(`text must be a string of up to ${BROWSER_TEXT_MAX} characters`);
+        }
+        if (Object.hasOwn(args, "submit") && typeof args.submit !== "boolean") throw new ToolInputError("submit must be true or false");
+        return { op: "type", target: browserTarget(args), text, ...(args.submit === true ? { submit: true } : {}) };
+      });
+      return { tab: reply.tab?.id, ...reply.result };
+    },
+
+    async browser_screenshot(argumentsValue, meta) {
+      const reply = await browserCommand("browser_screenshot", argumentsValue, meta, ["tab"], () => ({ op: "screenshot" }));
+      return { tab: reply.tab?.id, ...reply.result };
+    },
+
+    async browser_tabs(argumentsValue, meta) {
+      const reply = await browserCommand("browser_tabs", argumentsValue, meta, [], () => ({ op: "tabs" }));
+      return { tabs: reply.tabs ?? [] };
+    },
+
+    async browser_close(argumentsValue, meta) {
+      const reply = await browserCommand("browser_close", argumentsValue, meta, ["tab"], (args) => {
+        if (!Object.hasOwn(args, "tab")) throw new ToolInputError("tab is required: the id of the tab to close (browser_tabs)");
+        return { op: "close" };
+      });
+      return { closed: (reply.result?.closed as string | undefined) ?? undefined };
     },
 
     // Anyone may ask, verified or not: it names what is on screen, and changes nothing.

@@ -8,6 +8,8 @@ import { realpath, stat } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { conchHome } from "./home.ts";
+import { decodeBrowserMessage } from "./browser-workbench.ts";
+import { decodeBrowserOpenRequest } from "./browser-open.ts";
 import { decodeNarrationRequest } from "./narration.ts";
 import { decodePracticeRequest } from "./practice.ts";
 import { decodeSetupRequest } from "./setup.ts";
@@ -170,6 +172,10 @@ function historyRequest(pathname: string, value: unknown): ReturnType<typeof val
  * a capture draws an address with the cookies of conch's own review pane, where the user may be signed in, and leaves
  * the picture on this Mac, so it is for an agent on this Mac to ask (page-capture.ts), never a phone.
  *
+ * The Workbench's kinds (browser-workbench.ts `decodeBrowserMessage`, and browser-open.ts `decodeBrowserOpenRequest`
+ * for a link a session opened) are on this side too: its profiles, an agent's browser command and a session's `open`
+ * drive pages with the Mac's sign-ins, and the app's answers carry what the page showed. A phone may ask for none.
+ *
  * The requests with a decoder are refused by that decoder, the one the control server dispatches
  * with (`createControlServer`), so a kind added to setup's or the practice's is refused here the day
  * it is added. test/phone-mac-only.test.ts holds every branch the control server takes before a
@@ -177,6 +183,8 @@ function historyRequest(pathname: string, value: unknown): ReturnType<typeof val
  */
 export const MAC_APP_ONLY_KINDS: ReadonlySet<string> = new Set(["review-preview", "screen-observation", "page-capture", "page-capture-answer"]);
 export const MAC_APP_ONLY_DECODERS: Readonly<Record<string, (value: unknown) => unknown>> = {
+  decodeBrowserMessage,
+  decodeBrowserOpenRequest,
   decodeNarrationRequest,
   decodeSetupRequest,
   decodePracticeRequest,

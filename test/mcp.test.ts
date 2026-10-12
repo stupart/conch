@@ -57,6 +57,7 @@ import { artifactIdentity } from "../src/deliverables.ts";
 import { reviewIdentity } from "../src/records-receipts.ts";
 import { MAC_APP_DOWN, type PageCaptureMessage, type PageCaptureReply, type PageCaptureSend } from "../src/page-capture.ts";
 import type { PublishReply } from "../src/review-verdict.ts";
+import { BROWSER_APP_DOWN, BROWSER_REPLY_MS, type BrowserMessage, type BrowserSend } from "../src/browser-workbench.ts";
 
 const TOOL_NAMES = [
   "conch_sessions",
@@ -75,6 +76,13 @@ const TOOL_NAMES = [
   "conch_deliverables",
   "review_remove",
   "conch_capture",
+  "browser_open",
+  "browser_read",
+  "browser_click",
+  "browser_type",
+  "browser_screenshot",
+  "browser_tabs",
+  "browser_close",
 ] as const satisfies readonly McpToolName[];
 
 const DEFERRED_TOOL_NAMES = [
@@ -369,6 +377,13 @@ function recordingHandlers(
     conch_deliverables: handler("conch_deliverables"),
     review_remove: handler("review_remove"),
     conch_capture: handler("conch_capture"),
+    browser_open: handler("browser_open"),
+    browser_read: handler("browser_read"),
+    browser_click: handler("browser_click"),
+    browser_type: handler("browser_type"),
+    browser_screenshot: handler("browser_screenshot"),
+    browser_tabs: handler("browser_tabs"),
+    browser_close: handler("browser_close"),
   };
 }
 
@@ -510,8 +525,8 @@ describe("MCP tool discovery", () => {
 
     expect(response?.id).toBe(11);
     expect(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).toEqual([...TOOL_NAMES]);
-    expect(result.tools).toHaveLength(16);
-    expect(new Set(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).size).toBe(16);
+    expect(result.tools).toHaveLength(23);
+    expect(new Set(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).size).toBe(23);
     for (const deferred of DEFERRED_TOOL_NAMES) {
       expect(result.tools.some((tool: unknown) => isRecord(tool) && tool.name === deferred)).toBe(false);
     }
@@ -533,6 +548,13 @@ describe("MCP tool discovery", () => {
       conch_deliverables: [],
       review_remove: ["id", "artifact"],
       conch_capture: ["url", "target", "viewport", "fullPage", "mark", "publish"],
+      browser_open: ["url", "profile", "tab"],
+      browser_read: ["tab"],
+      browser_click: ["tab", "target"],
+      browser_type: ["tab", "target", "text", "submit"],
+      browser_screenshot: ["tab"],
+      browser_tabs: [],
+      browser_close: ["tab"],
     };
     const expectedRequired: Record<McpToolName, string[]> = {
       conch_sessions: [],
@@ -553,6 +575,13 @@ describe("MCP tool discovery", () => {
       // Exactly one of id or artifact, which the handler enforces.
       review_remove: [],
       conch_capture: ["url"],
+      browser_open: ["url"],
+      browser_read: [],
+      browser_click: ["target"],
+      browser_type: ["target", "text"],
+      browser_screenshot: [],
+      browser_tabs: [],
+      browser_close: ["tab"],
     };
 
     for (const tool of result.tools) {
@@ -2775,6 +2804,102 @@ describe("review_to_front waits for the daemon's verdict", () => {
       expect(marks.description).toContain('or pixels with units "px"');
     } finally {
       rmSync(folder, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * conch's in-app browser (browser-workbench.ts): each tool checks its arguments, verifies its caller (a tab is its
+ * session's), and sends one `browser-command` naming that session; the daemon's answer comes back in the tool's shape.
+ */
+describe("the browser tools", () => {
+  const config = { claudeDir: "/virtual/claude", socketPath: "/virtual/conch.sock" };
+  function browserHarness(reply: (message: BrowserMessage) => BrowserSend, parentPid = 4321) {
+    const h = fakeHarness({ parentPid });
+    const sent: BrowserMessage[] = [];
+    const handlers = createMcpToolHandlers(config, {
+      ...h.dependencies,
+      async browser(socketPath, message, timeoutMs) {
+        expect(socketPath).toBe(config.socketPath);
+        expect(timeoutMs).toBe(BROWSER_REPLY_MS);
+        sent.push(message);
+        return reply(message);
+      },
+    });
+    return { handlers, sent };
+  }
+  const tab = { id: "tab-1a2b3c4d", url: "https://acme.dev/pricing", title: "Pricing", profile: "default", profileName: "Default", current: true as const };
+  const ok = (op: string, extra: Record<string, unknown> = {}): BrowserSend => ({ ok: true, reply: { kind: "browser-result", op: op as never, tab, ...extra } });
+
+  test("each tool sends one command for the verified caller's session, in the daemon's shape", async () => {
+    const { handlers, sent } = browserHarness((message) => {
+      const op = (message as { op: string }).op;
+      if (op === "tabs") return { ok: true, reply: { kind: "browser-result", op: "tabs", tabs: [tab] } };
+      if (op === "close") return { ok: true, reply: { kind: "browser-result", op: "close", result: { closed: tab.id } } };
+      return ok(op, { result: op === "screenshot" ? { path: "/caps/x.png", width: 10, height: 10, url: tab.url, title: tab.title } : { url: tab.url, title: tab.title } });
+    });
+    const call = async (name: McpToolName, args: Record<string, unknown>) => JSON.parse(toolText(await callTool(handlers, name, args)));
+    expect(await call("browser_open", { url: "https://acme.dev/pricing", profile: " Work " }))
+      .toEqual({ tab: tab.id, url: tab.url, title: tab.title, profile: "Default" });
+    expect(await call("browser_read", {})).toEqual({ tab: tab.id, url: tab.url, title: tab.title });
+    await call("browser_click", { tab: tab.id, target: "Sign in" });
+    await call("browser_click", { target: { ref: "e4" } });
+    await call("browser_type", { target: { selector: "#email" }, text: "agent@example.com", submit: true });
+    expect(await call("browser_screenshot", {})).toEqual({ tab: tab.id, path: "/caps/x.png", width: 10, height: 10, url: tab.url, title: tab.title });
+    expect(await call("browser_tabs", {})).toEqual({ tabs: [tab] });
+    expect(await call("browser_close", { tab: tab.id })).toEqual({ closed: tab.id });
+    expect(sent).toEqual([
+      { kind: "browser-command", sessionId: "session-123", op: "open", url: "https://acme.dev/pricing", profile: "Work" },
+      { kind: "browser-command", sessionId: "session-123", op: "read" },
+      { kind: "browser-command", sessionId: "session-123", op: "click", target: { auto: "Sign in" }, tab: tab.id },
+      { kind: "browser-command", sessionId: "session-123", op: "click", target: { ref: "e4" } },
+      { kind: "browser-command", sessionId: "session-123", op: "type", target: { selector: "#email" }, text: "agent@example.com", submit: true },
+      { kind: "browser-command", sessionId: "session-123", op: "screenshot" },
+      { kind: "browser-command", sessionId: "session-123", op: "tabs" },
+      { kind: "browser-command", sessionId: "session-123", op: "close", tab: tab.id },
+    ]);
+  });
+
+  test("an unverified caller is refused before anything is sent: a tab is its session's", async () => {
+    const { handlers, sent } = browserHarness(() => ok("read"), 999_999);
+    const response = await callTool(handlers, "browser_read", {});
+    expect(toolText(response)).toStartWith("refused: conch cannot verify which session is calling");
+    expect(toolText(response)).toContain("so it will not use conch's browser for any session");
+    expect(sent).toEqual([]);
+  });
+
+  test("bad arguments are refused here, with why", async () => {
+    const { handlers, sent } = browserHarness(() => ok("read"));
+    const refusal = async (name: McpToolName, args: Record<string, unknown>) => toolText(await callTool(handlers, name, args));
+    expect(await refusal("browser_open", { url: "file:///etc/passwd" })).toBe("refused: url must be an http(s) URL (a dev server is http://localhost:<port>)");
+    expect(await refusal("browser_open", { url: "javascript:alert(1)" })).toStartWith("refused: url must be an http(s) URL");
+    expect(await refusal("browser_read", { tab: "../etc" })).toBe("refused: tab must be a tab's id, as browser_tabs lists them");
+    expect(await refusal("browser_click", {})).toBe("refused: target is required: a ref from browser_read, a CSS selector, or visible text");
+    expect(await refusal("browser_click", { target: { ref: "e1", selector: "a" } })).toBe("refused: target must be a string, or exactly one of {ref}, {selector} or {text}");
+    expect(await refusal("browser_type", { target: "Email" })).toBe("refused: text must be a string of up to 4000 characters");
+    expect(await refusal("browser_type", { target: "Email", text: "x", submit: "yes" })).toBe("refused: submit must be true or false");
+    expect(await refusal("browser_close", {})).toBe("refused: tab is required: the id of the tab to close (browser_tabs)");
+    expect(await refusal("browser_tabs", { tab: "tab-1" })).toBe('refused: unknown argument "tab"');
+    expect(sent).toEqual([]);
+  });
+
+  test("the daemon's refusal, a daemon that's down, or one that doesn't answer: each said as a failure", async () => {
+    const said = async (send: BrowserSend) => toolText(await callTool(browserHarness(() => send).handlers, "browser_read", {}));
+    expect(await said({ ok: true, reply: { kind: "browser-error", error: BROWSER_APP_DOWN } })).toBe(`failed: ${BROWSER_APP_DOWN}`);
+    expect(await said({ ok: false, reason: "daemon-down" })).toBe("failed: conch daemon is not running, so its browser isn't either");
+    expect(await said({ ok: false, reason: "no-reply", diagnostic: "timed out" })).toBe("failed: conch's daemon didn't answer the browser (timed out)");
+  });
+
+  test("the descriptions say it is conch's in-app browser the user sees, signed in per profile, and other browsers are fine", () => {
+    const open = AGENT_INSTRUCTIONS.tools.browser_open;
+    expect(open).toContain("conch's in-app browser");
+    expect(open).toContain("the user can watch and take over");
+    expect(open).toContain("signed in per account profile");
+    expect(open).toContain("you may still use other browser tools (Claude in Chrome, Playwright, computer use) when you prefer");
+    expect(AGENT_INSTRUCTIONS.tools.browser_read).toContain("never a password's or a hidden field's value");
+    expect(AGENT_INSTRUCTIONS.tools.browser_type).toContain("Agents don't type passwords");
+    for (const name of ["browser_open", "browser_read", "browser_click", "browser_type", "browser_screenshot", "browser_tabs", "browser_close"] as const) {
+      expect(AGENT_INSTRUCTIONS.tools[name]).toContain("conch's in-app browser");
     }
   });
 });

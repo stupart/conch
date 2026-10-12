@@ -169,7 +169,8 @@ describe("where a request may go", () => {
     const daemon = read("src/daemon.ts");
     // The sessions file, which only this Mac's app reads, gets them; the phone (and a second Mac through it) reads
     // `lastPublishedPanelState`, which never does.
-    expect(daemon).toContain("publishSessionsFile(withCaptureRequests(lastPublishedPanelState, pageCaptures.requests()))");
+    // The Workbench's tabs and commands go on the same file, round it (browser-workbench.ts).
+    expect(daemon).toContain("publishSessionsFile(withBrowserState(withCaptureRequests(lastPublishedPanelState, pageCaptures.requests()), browserWorkbench))");
     expect(daemon).toContain("publish: () => writeSessionsFile(),");
     expect(daemon).toContain("getState: () => lastPublishedPanelState,");
     expect(daemon).not.toMatch(/lastPublishedPanelState\s*=\s*[^;]*captureRequests/);
