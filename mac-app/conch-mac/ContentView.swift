@@ -203,10 +203,9 @@ struct ContentView: View {
             settings.close()
         }
         // A row picked while the lagoon shows (a click, the arrows, the menu bar): the camera glides to its crab, and the
-        // page stays.
+        // page stays. Not for the session the page picked itself (`focusSession`): its camera is already there.
         .onChange(of: workspace.viewing) { _, id in
-            guard page == .lagoon, let id else { return }
-            lagoon.focus(id)
+            lagoon.selectionChanged(to: id, onLagoon: page == .lagoon)
         }
         // Which session the window shows, for a debug capture's sidecar (`DebugSnapshot.viewing`).
         .onChange(of: workspace.viewing, initial: true) { _, id in DebugSnapshot.viewing = id }

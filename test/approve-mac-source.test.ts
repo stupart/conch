@@ -145,7 +145,7 @@ describe("the store, the socket and the models", () => {
     const reply = between(lagoon, "func reply(sessionId: String, text: String) {", "func answer(");
     expect(reply).toContain("store?.send(.inject(sessionId: row.id, label: row.label, text: text))");
     const intents = read("design/ConchDesign/Sources/ConchDesign/LagoonIntents.swift");
-    expect(intents).toContain("public static let byDefaultInOrder: [Name] = [.approve, .unapprove, .reply]");
+    expect(intents).toContain("public static let byDefaultInOrder: [Name] = [.approve, .unapprove, .reply, .focusSession]");
     expect(intents).toContain("public static let phaseC: Set<Name> = [.answer, .pause]");
     expect(read("design/ConchDesign/Sources/ConchDesign/Lagoon.swift")).toContain("LagoonIntent.actTokens.joined(separator: \",\")");
   });

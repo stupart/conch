@@ -34,19 +34,19 @@ public enum Lagoon {
         case lagoon
     }
 
-    /// `index.html?app=1&readonly=1&act=approve,unapprove`: the app hosts it (`?app=1`), and while `readOnly` the page shows
+    /// `index.html?app=1&readonly=1&act=approve,unapprove,…`: the app hosts it (`?app=1`), and while `readOnly` the page shows
     /// a "would do: …" toast for each intent and marks every message `readOnly: true`. Phase C (any of reply, answer or
     /// pause switched on) drops `readonly=1`, as spec §8 says; nothing else about the page changes between phases.
     ///
     /// `act` names the intents the app acts on whatever the phase (`LagoonIntent.byDefault`), so the page treats them as
     /// live rather than "would do": Approve and its Undo (2026-10-05, Tyler's decision; the brand side asked for this
-    /// parameter), and, later that day, the reply bar (Tyler's go, replies only). A page that doesn't read it still sends
-    /// them, and the app still acts.
+    /// parameter), and, later that day, the reply bar (Tyler's go, replies only); on 2026-10-13, `focusSession`, so the
+    /// sidebar follows the panel. A page that doesn't read it still sends them, and the app still acts.
     public static func pageURL(readOnly: Bool) -> URL {
         URL(string: "\(scheme)://\(host)/index.html?app=1\(readOnly ? "&readonly=1" : "")&act=\(actsByDefault)")!
     }
 
-    /// `approve,unapprove,reply,viewed`: `LagoonIntent.actTokens`, in the order the lagoon names them.
+    /// `approve,unapprove,reply,viewed,focusSession`: `LagoonIntent.actTokens`, in the order the lagoon names them.
     public static var actsByDefault: String {
         LagoonIntent.actTokens.joined(separator: ",")
     }

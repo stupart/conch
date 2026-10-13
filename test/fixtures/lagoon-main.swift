@@ -42,12 +42,12 @@ final class Recorder {
     }
 }
 
-/// The sink phase A reaches only to approve a result, take it back, or reply to a session (`LagoonIntent.byDefault`,
-/// 2026-10-05).
+/// The sink phase A reaches only to approve a result, take it back, reply to a session (`LagoonIntent.byDefault`,
+/// 2026-10-05), or select a session in the sidebar (2026-10-13).
 @MainActor
 final class Sink: LagoonActionSink {
     var calls: [String] = []
-    func focusSession(_ sessionId: String) { calls.append("focusSession") }
+    func focusSession(_ sessionId: String) { calls.append("focusSession \(sessionId)") }
     func markReviewViewed(sessionId: String, reviewId: String) { calls.append("markReviewViewed") }
     func openReview(sessionId: String, reviewId: String) { calls.append("openReview") }
     func reply(sessionId: String, text: String) { calls.append("reply \(sessionId) \(text)") }
@@ -203,8 +203,8 @@ func page(bundle: URL, statePath: String, out: URL, kind: String) async {
         Line.print("post", ["status": post ?? NSNull()])
 
         // What the page says: checked, logged, and in phase A acted on by nothing, not even a valid one, but approving a
-        // result, taking it back and replying (2026-10-05), which act with no flag; one for a review the session doesn't
-        // hold doesn't.
+        // result, taking it back and replying (2026-10-05), and focusing a session (2026-10-13), which act with no flag;
+        // one for a review the session doesn't hold doesn't.
         let before = recorder.reports.count
         let noWindow = await js(web, """
             const h = window.webkit.messageHandlers.conchWorld;

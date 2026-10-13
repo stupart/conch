@@ -113,19 +113,19 @@ final class LagoonIntentTests: XCTestCase {
 
     func testFlagsFromWhatEverDefaultsHolds() {
         XCTAssertEqual(LagoonActionFlags(defaultsValue: nil).on, [])
-        XCTAssertEqual(LagoonActionFlags(defaultsValue: ["focusSession": true, "reply": false, "pause": NSNumber(value: true)]).on, [.focusSession, .pause])
+        XCTAssertEqual(LagoonActionFlags(defaultsValue: ["openReview": true, "reply": false, "pause": NSNumber(value: true)]).on, [.openReview, .pause])
         XCTAssertEqual(LagoonActionFlags(defaultsValue: ["openReview", "answer", "bogus"]).on, [.openReview, .answer])
-        XCTAssertEqual(LagoonActionFlags(defaultsValue: "focusSession, pause").on, [.focusSession, .pause])
-        // Names with no flag can't be switched on: newSession has no action, and approve, unapprove and (since
-        // 2026-10-05) reply need none.
-        XCTAssertEqual(LagoonActionFlags(defaultsValue: ["approve", "unapprove", "reply", "newSession", "ready"]).on, [])
-        XCTAssertEqual(LagoonActionFlags(defaultsValue: "focusSession, reply").on, [.focusSession])
+        XCTAssertEqual(LagoonActionFlags(defaultsValue: "openReview, pause").on, [.openReview, .pause])
+        // Names with no flag can't be switched on: newSession has no action, and approve, unapprove, (since 2026-10-05)
+        // reply and (since 2026-10-13) focusSession need none.
+        XCTAssertEqual(LagoonActionFlags(defaultsValue: ["approve", "unapprove", "reply", "focusSession", "newSession", "ready"]).on, [])
+        XCTAssertEqual(LagoonActionFlags(defaultsValue: "focusSession, reply, pause").on, [.pause])
         XCTAssertEqual(LagoonActionFlags(defaultsValue: 1).on, [])
     }
 
     func testThePageIsReadOnlyUntilAPhaseCNameIsOn() {
         XCTAssertTrue(LagoonActionFlags().pageReadOnly)
-        XCTAssertTrue(LagoonActionFlags([.focusSession, .openReview]).pageReadOnly)
+        XCTAssertTrue(LagoonActionFlags([.openReview]).pageReadOnly)
         XCTAssertFalse(LagoonActionFlags([.answer]).pageReadOnly)
         XCTAssertFalse(LagoonActionFlags([.pause]).pageReadOnly)
         // A reply is no flag's: it acts read-only or not, and asking for it changes nothing about the page.
@@ -161,20 +161,22 @@ final class LagoonIntentTests: XCTestCase {
         ].compactMap { accepted($0) }
     }
 
-    /// Phase A: with no flag set, nothing acts except approving a result, taking it back (2026-10-05, Tyler's decision)
-    /// and replying to a session (2026-10-05, Tyler's go, replies only). Answering a permission prompt, pausing, focusing
-    /// and opening stay logged behind their flags.
-    func testPhaseAOnlyApproveUnapproveReplyAndViewedAct() {
+    /// Phase A: with no flag set, nothing acts except approving a result, taking it back (2026-10-05, Tyler's decision),
+    /// replying to a session (2026-10-05, Tyler's go, replies only), marking a result looked at, and the sidebar following
+    /// the panel (2026-10-13). Answering a permission prompt, pausing and opening stay logged behind their flags.
+    func testPhaseAOnlyApproveUnapproveReplyViewedAndFocusAct() {
         let recorder = Recorder()
         let messages = everyMessage
         XCTAssertEqual(messages.count, 10)
         let routed = messages.map { LagoonIntentRouter.route($0, flags: LagoonActionFlags(), sink: recorder) }
         // `openReview` viewed acts (marking a result looked at, as the app does on opening it); `open` stays phase B.
-        XCTAssertEqual(routed, [.ready, .logged, .acted, .logged, .acted, .logged, .logged, .acted, .acted, .logged])
-        XCTAssertEqual(recorder.calls, ["viewed s1 r1", "reply s1 hi", "approve s1 r1", "unapprove s1 r1"], "nothing else reaches an agent, or the app")
-        XCTAssertEqual(LagoonIntent.actTokens, ["approve", "unapprove", "reply", "viewed"])
-        XCTAssertEqual(LagoonIntent.byDefault, [.approve, .unapprove, .reply])
-        XCTAssertEqual(LagoonIntent.byDefaultInOrder, [.approve, .unapprove, .reply])
+        XCTAssertEqual(routed, [.ready, .acted, .acted, .logged, .acted, .logged, .logged, .acted, .acted, .logged])
+        XCTAssertEqual(recorder.calls, ["focus s1", "viewed s1 r1", "reply s1 hi", "approve s1 r1", "unapprove s1 r1"],
+                       "nothing else reaches an agent, or the app")
+        XCTAssertEqual(LagoonIntent.actTokens, ["approve", "unapprove", "reply", "viewed", "focusSession"])
+        XCTAssertEqual(LagoonIntent.byDefault, [.approve, .unapprove, .reply, .focusSession])
+        XCTAssertEqual(LagoonIntent.byDefaultInOrder, [.approve, .unapprove, .reply, .focusSession])
+        XCTAssertEqual(LagoonIntent.phaseB, [.openReview])
         XCTAssertEqual(LagoonIntent.phaseC, [.answer, .pause])
         XCTAssertTrue(LagoonIntent.byDefault.isDisjoint(with: LagoonIntent.phaseB.union(LagoonIntent.phaseC)))
         // Acting by default leaves the page read-only: no phase C name is on, and `act=` says which are live.
@@ -209,11 +211,28 @@ final class LagoonIntentTests: XCTestCase {
         }
     }
 
-    /// One flag on: that name acts, approve, unapprove, reply and viewed act as they always do, and nothing else does.
+    /// The sidebar follows the panel (2026-10-13): `focusSession` acts with no flag, from a page that doesn't yet list it in
+    /// its `act=` (it sends `readOnly: true`) and from one that does, and is checked as before: a session in the state.
+    func testFocusSessionActsByDefaultFromAnyPage() {
+        let recorder = Recorder()
+        let live = accepted(["v": 1, "name": "focusSession", "sessionId": "s2"])!
+        let flagged = accepted(["v": 1, "name": "focusSession", "sessionId": "s1", "readOnly": true])!
+        XCTAssertTrue(LagoonIntent.actsByDefault(live))
+        XCTAssertEqual(LagoonIntentRouter.route(live, flags: LagoonActionFlags(), sink: recorder), .acted)
+        XCTAssertEqual(LagoonIntentRouter.route(flagged, flags: LagoonActionFlags(), sink: recorder), .acted)
+        XCTAssertEqual(recorder.calls, ["focus s2", "focus s1"])
+        XCTAssertEqual(LagoonIntentRouter.route(live, flags: LagoonActionFlags(), sink: nil), .logged)
+        refused(["v": 1, "name": "focusSession", "sessionId": "gone"])
+        // Its token is in the page's address, so a page that knows it sends it for real.
+        XCTAssertTrue(Lagoon.pageURL(readOnly: true).absoluteString.hasSuffix("&act=approve,unapprove,reply,viewed,focusSession"))
+    }
+
+    /// One flag on: that name acts, approve, unapprove, reply, viewed and focusSession act as they always do, and
+    /// nothing else does.
     func testWithOneFlagOnOnlyThatNameActs() {
-        let always = ["viewed s1 r1", "reply s1 hi", "approve s1 r1", "unapprove s1 r1"]
+        let always = ["focus s1", "viewed s1 r1", "reply s1 hi", "approve s1 r1", "unapprove s1 r1"]
         let expected: [LagoonIntent.Name: [String]] = [
-            .focusSession: ["focus s1"],
+            .focusSession: [],
             .openReview: ["open s1 r2"],
             .reply: [],
             .answer: ["answer s1 false p1"],

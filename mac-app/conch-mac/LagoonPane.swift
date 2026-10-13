@@ -17,6 +17,9 @@ extension Notification.Name {
     /// ⌘0, Session ▸ Lagoon, and the title bar's switch: the lagoon, or back to the conversation. Posted, like ⌘1–⌘3
     /// (`setStage`), so the shortcut works whatever holds focus and the menu and the button are one path.
     static let showLagoon = Notification.Name("com.conch.mac.show-lagoon")
+    /// The lagoon's panel is on this session (its id is the object): the sidebar unfolds the folder that holds its row
+    /// and brings the row into view, even when it was already the selected one (`SessionLedger`).
+    static let revealSessionInSidebar = Notification.Name("com.conch.mac.reveal-session-in-sidebar")
 }
 
 enum LagoonFeature {
@@ -81,7 +84,16 @@ final class LagoonModel: ObservableObject {
         return made
     }
 
+    /// The sidebar picked a session that was already picked: the camera glides to its crab (it may have wandered off).
     func focus(_ sessionId: String) {
+        host?.focus(sessionId)
+    }
+
+    /// The window's selection changed. On the lagoon the camera glides to that crab, unless the page picked it itself
+    /// (`focusSession`), when it is already there (`LagoonFocus`). Told whatever page shows, so a pick the page made and
+    /// the window then left is forgotten either way.
+    func selectionChanged(to sessionId: String?, onLagoon: Bool) {
+        guard actions.focus.selectionChanged(to: sessionId), onLagoon, let sessionId else { return }
         host?.focus(sessionId)
     }
 
@@ -105,12 +117,14 @@ final class LagoonModel: ObservableObject {
 }
 
 /// The lagoon's actions, on the app's own paths (spec §5). Phase B and C's are compiled and never reached in phase A:
-/// `LagoonIntentRouter` hands one here only when its name's flag is on in `conch.lagoon.actions`. Approve, its undo and
-/// a reply act with no flag (`LagoonIntent.byDefault`).
+/// `LagoonIntentRouter` hands one here only when its name's flag is on in `conch.lagoon.actions`. Approve, its undo, a
+/// reply, marking a result looked at and focusing a session act with no flag (`LagoonIntent.actsByDefault`).
 @MainActor
 final class LagoonStoreActions: LagoonActionSink {
     weak var store: StateStore?
     weak var workspace: WorkspaceModel?
+    /// Which session the page picked, so the selection it moves isn't sent back to it (`LagoonModel.selectionChanged`).
+    var focus = LagoonFocus()
 
     private func row(_ id: String) -> SessionRow? {
         store?.state?.rows.first { $0.id == id }
@@ -125,10 +139,13 @@ final class LagoonStoreActions: LagoonActionSink {
         return nil
     }
 
-    /// B: the crab was clicked. The sidebar highlights it; the page stays.
+    /// The page's panel opened on a session or moved to another, or its crab was clicked (by default since 2026-10-13):
+    /// the sidebar selects it and brings its row into view. The window stays on the lagoon, and the camera isn't sent
+    /// back to the crab the page is already on (`LagoonFocus`).
     func focusSession(_ sessionId: String) {
-        guard row(sessionId) != nil else { return }
-        workspace?.viewing = sessionId
+        guard let workspace, row(sessionId) != nil else { return }
+        if focus.pageFocused(sessionId, viewing: workspace.viewing) { workspace.viewing = sessionId }
+        NotificationCenter.default.post(name: .revealSessionInSidebar, object: sessionId)
     }
 
     /// B: the lagoon showed the work on its glass.
