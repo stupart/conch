@@ -3,6 +3,7 @@ import { PROMPT_DIGEST } from "./delivery-evidence.ts";
 import type { ClaudeAccountRequest, ClaudeAccountsReply } from "./claude-accounts.ts";
 import { ControlFrameError, ControlFrameReader, encodeControlFrame } from "./control-framing.ts";
 import type { HistoryPageRequest, HistoryItemRequest, HistoryResponse } from "./history.ts";
+import { fitLoginInventoryReply, type LoginInventoryReply, type LoginInventoryRequest } from "./login-inventory.ts";
 import { createServer, connect } from "node:net";
 import { chmodSync, existsSync, lstatSync, renameSync, unlinkSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -303,6 +304,7 @@ export function dispatchControlMessage(
     || validated.value.kind === "history-page" || validated.value.kind === "history-item"
     || validated.value.kind === "agent-capabilities"
     || validated.value.kind === "account-tools" || validated.value.kind === "claude-accounts" || validated.value.kind === "codex-accounts"
+    || validated.value.kind === "login-inventory"
     || validated.value.kind === "session-start"
     || validated.value.kind === "session-close"
     || validated.value.kind === "session-fork"
@@ -349,6 +351,8 @@ export function applyConfigControlMessage(
 
 export interface RuntimeControlDispatchOptions {
   accountTools?(message: AccountToolsRequest): Promise<AccountToolsReply>;
+  /** The logins inventory (login-inventory.ts): what is installed and signed in on this Mac, as whom. Read only. */
+  loginInventory?(message: LoginInventoryRequest): Promise<LoginInventoryReply>;
   claudeAccounts?(message: ClaudeAccountRequest): Promise<ClaudeAccountsReply>;
   historyPage?(message: HistoryPageRequest): HistoryResponse | Promise<HistoryResponse>;
   historyItem?(message: HistoryItemRequest): HistoryResponse | Promise<HistoryResponse>;
@@ -430,6 +434,10 @@ export async function applyRuntimeControlMessage(
     if (message.kind === "account-tools") {
       if (!options.accountTools) throw new Error("Tools management requires an updated Conch daemon");
       return await options.accountTools(message);
+    }
+    if (message.kind === "login-inventory") {
+      if (!options.loginInventory) throw new Error("The logins inventory requires an updated conch daemon");
+      return fitLoginInventoryReply(await options.loginInventory(message));
     }
     if (message.kind === "claude-accounts" || message.kind === "codex-accounts") {
       if (!options.claudeAccounts) throw new Error("Account management requires an updated Conch daemon");
@@ -1333,6 +1341,7 @@ export interface ControlServer {
 function isRuntimeControlCandidate(value: unknown): boolean {
   return socketRecord(value) && (
     value.kind === "account-tools" || value.kind === "claude-accounts" || value.kind === "codex-accounts" || value.kind === "session-start" || value.kind === "session-close" || value.kind === "session-fork"
+    || value.kind === "login-inventory"
     || value.kind === "history-page" || value.kind === "history-item"
     || value.kind === "app-error" || value.kind === "resumable"
     || value.kind === "agent-capabilities"
@@ -1424,6 +1433,20 @@ export function createControlServer(options: ControlServerOptions): ControlServe
             sock.end(encodeControlFrame(JSON.stringify({ kind: "history-error",
               code: error instanceof ControlFrameError ? "response-too-large" : "unavailable", error: "history response unavailable" })));
           }
+          return;
+        }
+        // The logins inventory (login-inventory.ts) names no session: what is installed and signed in on this Mac, as whom.
+        // The Mac app's and the CLI's to ask, never a phone's (phone-bridge.ts `MAC_APP_ONLY_KINDS`). Validated as every
+        // runtime message is (settings.ts), and answered in one frame (`fitLoginInventoryReply`).
+        if (socketRecord(body) && body.kind === "login-inventory") {
+          const inventory = await dispatchRuntimeRequest(body, (message) => application.runtime(message));
+          let frame: Buffer;
+          try {
+            frame = encodeControlFrame(JSON.stringify(inventory.handled ? inventory.response : { kind: "session-error", error: "invalid login inventory request" }));
+          } catch {
+            frame = encodeControlFrame(JSON.stringify({ kind: "session-error", error: "the logins inventory was too large to send" }));
+          }
+          sock.end(frame);
           return;
         }
         // C9b Cut B: the audio-holder commands are decoded here, after the

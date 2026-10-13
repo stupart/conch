@@ -66,6 +66,8 @@ function macOnlyBodies(): Array<{ kind: string; body: Record<string, unknown> }>
     "page-capture-answer": { request: "r", path: "/tmp/x.png" },
     // A video dropped on the Mac's composer: its words, from the recording the app wrote. The phone has `/transcript`.
     [VIDEO_TRANSCRIPT_KIND]: { path: "/Users/t/.cache/conch/uploads/mac-1.wav" },
+    // The logins inventory: who this Mac is signed in as, everywhere, and asking for it runs the Mac's CLIs.
+    "login-inventory": { action: "refresh" },
   };
   const kinds = [...SETUP_REQUEST_KINDS, ...PRACTICE_REQUEST_KINDS, ...narrationKinds(), VIDEO_TRANSCRIPT_KIND, ...MAC_APP_ONLY_KINDS];
   return kinds.flatMap((kind) => [

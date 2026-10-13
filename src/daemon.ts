@@ -3,6 +3,7 @@ import { BackgroundGuard } from "./background-recovery.ts";
 import { dismissedWriter, loadDismissed } from "./dismissed-store.ts";
 import { defaultIsPidAlive } from "./codex-sessions.ts";
 import { handleAccountTools } from "./account-tools.ts";
+import { createLoginInventory, loginProjects, loginSources } from "./login-inventory.ts";
 import { accountModelCatalog, modelCatalogForSession } from "./provider-models.ts";
 import { prepareClaudeHandoff, settleClaudeHandoff, claudeHandoffReceipt, requireClaudeHandoffSupport } from "./claude-account-handoff.ts";
 import { SessionReconciler } from "./session-reconciler.ts";
@@ -3182,6 +3183,19 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     isDismissed: (sessionId) => dismissedSessionIds.has(sessionId),
   };
   const terminalMirror = createTerminalMirror();
+  /**
+   * The logins inventory (login-inventory.ts): read when the Mac app's Settings › Logins or `conch logins` asks, then kept
+   * for a few minutes. Project-scoped MCP servers are read for the folders conch's live sessions work in, for the account
+   * each runs as.
+   */
+  const loginInventory = createLoginInventory({
+    sources: () => loginSources({
+      claudeDir: cfg.claudeDir,
+      browserProfiles: () => browserProfiles,
+      projects: () => loginProjects(panelSessions.values()),
+    }),
+    log,
+  });
   const runtimeControlDispatchOptions: RuntimeControlDispatchOptions = {
     historyPage: (message) => records.historyPage({ ...message,
       session: historySessionFor(ownerDeviceId, message.session, { sessions: panelSessions, agents: panelAgents }) }),
@@ -3198,6 +3212,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         : { claudeHome: cfg.claudeDir }),
     }, readClaudeAccounts(cfg.claudeDir), readCodexAccounts()),
     accountTools: message => handleAccountTools(message, cfg.claudeDir),
+    loginInventory: message => loginInventory.handle(message),
     claudeAccounts: async (message) => {
       if (message.kind === "codex-accounts") {
         const created = message.action === "add" ? addCodexAccount(message.label!, message.configDir) : undefined;

@@ -9,7 +9,7 @@ import CoreGraphics
 /// (the header's gear, ⌘, and conch › Settings…, the menu bar menu, Manage… beside an account, the voices' Why?) goes
 /// through it.
 public enum SettingsSection: String, CaseIterable, Identifiable, Sendable {
-    case providers, environments, tools, browser, general, phone, permissions, setup
+    case providers, environments, tools, browser, logins, general, phone, permissions, setup
 
     public var id: String { rawValue }
 
@@ -19,6 +19,7 @@ public enum SettingsSection: String, CaseIterable, Identifiable, Sendable {
         case .environments: "Environments"
         case .tools: "Plugins & MCP"
         case .browser: "Browser"
+        case .logins: "Logins"
         case .general: "General"
         case .phone: "Phone app"
         case .permissions: "Permissions"
@@ -33,6 +34,7 @@ public enum SettingsSection: String, CaseIterable, Identifiable, Sendable {
         case .environments: "desktopcomputer"
         case .tools: "puzzlepiece.extension"
         case .browser: "globe"
+        case .logins: "person.badge.key"
         case .general: "slider.horizontal.3"
         case .phone: "iphone"
         case .permissions: "hand.raised"

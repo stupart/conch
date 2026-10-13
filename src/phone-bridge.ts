@@ -176,12 +176,16 @@ function historyRequest(pathname: string, value: unknown): ReturnType<typeof val
  * for a link a session opened) are on this side too: its profiles, an agent's browser command and a session's `open`
  * drive pages with the Mac's sign-ins, and the app's answers carry what the page showed. A phone may ask for none.
  *
+ * The logins inventory (`login-inventory`, login-inventory.ts) is on this side too: which CLIs, agents, MCP servers and
+ * browser profiles this Mac has and who each is signed in as is the Mac app's Settings and `conch logins`, never a phone's
+ * to ask, and asking runs the Mac's CLIs.
+ *
  * The requests with a decoder are refused by that decoder, the one the control server dispatches
  * with (`createControlServer`), so a kind added to setup's or the practice's is refused here the day
  * it is added. test/phone-mac-only.test.ts holds every branch the control server takes before a
  * session is resolved to one side or the other.
  */
-export const MAC_APP_ONLY_KINDS: ReadonlySet<string> = new Set(["review-preview", "screen-observation", "page-capture", "page-capture-answer"]);
+export const MAC_APP_ONLY_KINDS: ReadonlySet<string> = new Set(["review-preview", "screen-observation", "page-capture", "page-capture-answer", "login-inventory"]);
 export const MAC_APP_ONLY_DECODERS: Readonly<Record<string, (value: unknown) => unknown>> = {
   decodeBrowserMessage,
   decodeBrowserOpenRequest,

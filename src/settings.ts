@@ -1,4 +1,5 @@
 import { accountToolsRequestError, isAccountToolsReply, type AccountToolsRequest, type AccountToolsReply } from "./account-tools.ts";
+import { isLoginInventoryReply, loginInventoryRequestError, type LoginInventoryReply, type LoginInventoryRequest } from "./login-inventory.ts";
 import { claudeHandoffError } from "./claude-account-handoff.ts";
 import { accountRequestError, validAccountId, type ClaudeAccountRequest, type ClaudeAccountsReply } from "./claude-accounts.ts";
 import { parseExecutionCatalog } from "./execution-model.ts";
@@ -950,6 +951,8 @@ export type SessionControlMessage =
 export type RuntimeControlMessage =
   | ClaudeAccountRequest
   | AccountToolsRequest
+  /** The logins inventory (login-inventory.ts): the Mac app's and the CLI's alone; the phone bridge refuses it. */
+  | LoginInventoryRequest
   | HistoryRequest
   | { kind: "resumable"; query?: string; limit?: number }
   | {
@@ -1091,6 +1094,7 @@ export interface PairingOpen {
 export type RuntimeControlResponse =
   | ClaudeAccountsReply
   | AccountToolsReply
+  | LoginInventoryReply
   | HistoryResponse
   | { kind: "resumable"; sessions: ResumableSession[]; complete: boolean }
   | {
@@ -1188,6 +1192,7 @@ export function isControlMessageCandidate(value: unknown): boolean {
     || value.kind === "history-page" || value.kind === "history-item"
     || value.kind === "agent-capabilities"
     || value.kind === "account-tools" || value.kind === "claude-accounts" || value.kind === "codex-accounts"
+    || value.kind === "login-inventory"
     || value.kind === "session-start"
     || value.kind === "session-close"
     || value.kind === "session-fork"
@@ -1372,6 +1377,12 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
     if (err) return { ok: false, err };
     const { kind, backend, accountId, action, requestId, id, source, url, command, args, enabled } = value;
     return { ok: true, value: { kind, backend, accountId, action, requestId, id, source, url, command, args, enabled } as AccountToolsRequest };
+  }
+  if (value.kind === "login-inventory") {
+    const err = loginInventoryRequestError(value);
+    if (err) return { ok: false, err };
+    return { ok: true, value: { kind: "login-inventory", action: value.action as LoginInventoryRequest["action"],
+      ...(typeof value.id === "string" ? { id: value.id } : {}) } };
   }
   if (value.kind === "claude-accounts" || value.kind === "codex-accounts") {
     const err = accountRequestError(value);
@@ -1650,6 +1661,7 @@ export function validateControlMessage(value: unknown): ParseResult<AnyControlMe
     || value.kind === "history-page" || value.kind === "history-item"
     || value.kind === "agent-capabilities"
     || value.kind === "account-tools" || value.kind === "claude-accounts" || value.kind === "codex-accounts"
+    || value.kind === "login-inventory"
     || value.kind === "session-start"
     || value.kind === "session-close"
     || value.kind === "session-fork"
@@ -1733,6 +1745,8 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
   if (!record(value) || typeof value.kind !== "string") return { ok: false, err: "invalid control response" };
   if (value.kind === "account-tools") return isAccountToolsReply(value)
     ? { ok: true, value } : { ok: false, err: "Invalid account tools response" };
+  if (value.kind === "login-inventory") return isLoginInventoryReply(value)
+    ? { ok: true, value } : { ok: false, err: "invalid login inventory response" };
   if (value.kind === "claude-accounts" || value.kind === "codex-accounts") {
     if (!Array.isArray(value.accounts) || value.accounts.length > 17 || value.accounts.some((account) =>
       !record(account) || !validAccountId(account.id) || typeof account.label !== "string"
