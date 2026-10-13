@@ -77,8 +77,11 @@ struct DashboardInputMonitor: NSViewRepresentable {
 
                 // Inline editing owns the full text-input contract, including spaces
                 // and Escape. Web content owns ordinary navigation and typing keys,
-                // while the dashboard's safety controls remain global there: Escape
-                // releases selection and Space cuts into a read.
+                // Space among them: a page's own text field (the lagoon's reply bar, a
+                // Workbench form) is invisible from here, and taking Space ate every
+                // space typed into one (2026-10-13, Tyler's message from the lagoon
+                // arrived as "Realizingwedon'tneed..."). Escape stays global there:
+                // it stops a reading, and releases the selection.
                 if firstResponderIsEditableText() {
                     return event
                 }
@@ -217,9 +220,9 @@ struct DashboardInputMonitor: NSViewRepresentable {
 private extension DashboardKey {
     var isGlobalDashboardControl: Bool {
         switch self {
-        case .talkOrStop, .releaseSelection, .stopSpeaking:
+        case .releaseSelection, .stopSpeaking:
             return true
-        case .pauseOrResume, .showKeyboardShortcuts,
+        case .talkOrStop, .pauseOrResume, .showKeyboardShortcuts,
              .moveUp, .moveDown, .returnKey, .undoApproval:
             return false
         }

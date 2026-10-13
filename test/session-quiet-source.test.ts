@@ -127,7 +127,18 @@ describe("P and the header's Manual/Auto", () => {
       expect(at).toBeGreaterThan(-1);
       expect(at).toBeLessThan(dispatch);
     }
-    expect(section(monitor, "var isGlobalDashboardControl: Bool {", "\n    }\n")).toContain("case .pauseOrResume, .showKeyboardShortcuts");
+    expect(section(monitor, "var isGlobalDashboardControl: Bool {", "\n    }\n")).toContain("case .talkOrStop, .pauseOrResume, .showKeyboardShortcuts");
+  });
+
+  // 2026-10-13: every space Tyler typed into the lagoon's reply bar was eaten. A page's own text field can't be seen
+  // from the monitor, so Space in web content is the page's; Esc, which stops a reading from anywhere, stays global.
+  test("Space in a web page is the page's: only Esc stays the dashboard's there", () => {
+    const monitor = read("mac-app/conch-mac/DashboardInputMonitor.swift");
+    const global = section(monitor, "var isGlobalDashboardControl: Bool {", "\n    }\n");
+    const yes = global.slice(0, global.indexOf("return true"));
+    expect(yes).toContain("case .releaseSelection, .stopSpeaking:");
+    expect(yes).not.toContain(".talkOrStop");
+    expect(global.slice(global.indexOf("return true"))).toContain(".talkOrStop");
   });
 
   test("the header button's tooltip names its scope: this session, or every session", () => {
