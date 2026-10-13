@@ -106,6 +106,10 @@ public enum SettingsLayout {
     public static let inset: CGFloat = ConchSpace.x6
     /// From a section's title and the line under it to what follows (`ConchSpace.x5`), in every section.
     public static let headerGap: CGFloat = ConchSpace.x5
+    /// How much lower the section list's "Settings" starts than a section's title, so the two sit on one baseline across
+    /// the rule: the title's 22 points set its baseline 21.3 into a 26-point line, the list heading's 15 points 15.2 into
+    /// 19, and the 6.1 between them rounds to 6. They shared a top, and the list's baseline sat 6 points above the title's.
+    public static let listHeadingDrop: CGFloat = 6
 
     /// What a section's scroll view leaves empty on its right in a content area `width` wide, so the section stops at `column`
     /// while the scroll view, and its scroller, still reach the window's edge.

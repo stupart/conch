@@ -80,7 +80,8 @@ private struct LoginGroupBlock: View {
     private static let browserPrefix = "browser-profile:"
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        // 12 under the subheading, as Browser's and Environments' blocks have.
+        VStack(alignment: .leading, spacing: 12) {
             SettingsSubheading(title: group.title) {
                 Image(systemName: group.symbol).font(.system(size: 13, weight: .regular))
             }

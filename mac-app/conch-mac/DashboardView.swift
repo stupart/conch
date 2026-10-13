@@ -2833,7 +2833,11 @@ private struct ConversationPane: View {
                 }
                 .scrollIndicators(.never)
             }
-            .padding(.horizontal, 8)
+            // 6 in, so the first tab's mark starts on the pane's left axis, 15 points in: where the session's name above it
+            // starts (14.5), and a page's globe and the Workbench's back arrow below it. At 8 it started 2.5 points right
+            // of the name. The right keeps 8, the header's.
+            .padding(.leading, 6)
+            .padding(.trailing, 8)
             .padding(.vertical, 5)
         }
     }

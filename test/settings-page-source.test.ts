@@ -167,6 +167,7 @@ describe("the page's layout and appearance", () => {
       expect(page, section).toContain(`case .${section}:`);
     }
     expect(settings).toContain('SettingsSectionHeader(title: "General"');
+    expect(macSources["ClaudeAccountsView.swift"]).toContain('SettingsSectionHeader(title: "Providers"');
     expect(settings).toContain('SettingsSectionHeader(title: "Environments"');
     expect(macSources["BrowserSettingsView.swift"]).toContain('SettingsSectionHeader(title: "Browser"');
     expect(macSources["LoginsSettingsView.swift"]).toContain('SettingsSectionHeader(title: "Logins"');
@@ -180,9 +181,13 @@ describe("the page's layout and appearance", () => {
     expect(macSources["OnboardingController.swift"]).toContain(".frame(maxWidth: .infinity, alignment: .topLeading)");
   });
 
-  test("dark while it shows, set on the window and put back as it was", () => {
+  test("it follows the system appearance; a pin, were one set, goes on the window and is put back as it was", () => {
     expect(settings).toContain(".background(SettingsAppearance(name: SettingsAppearance.pinned))");
-    expect(settings).toContain("static let pinned: NSAppearance.Name? = .darkAqua");
+    // Providers draws from ConchPalette (2026-10-14), so nothing keeps Settings dark any more.
+    expect(settings).toContain("static let pinned: NSAppearance.Name? = nil");
+    const providers = macSources["ClaudeAccountsView.swift"];
+    expect(providers).not.toContain("environment(\\.colorScheme, .dark)");
+    expect(providers).not.toContain("ConchColor.ground.color(.dark)");
     const pin = settings.slice(settings.indexOf("final class Pin: NSView {"));
     expect(pin).toContain("previous = window.appearance");
     expect(pin).toContain("window.appearance = NSAppearance(named: name)");

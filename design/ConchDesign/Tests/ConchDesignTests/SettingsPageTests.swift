@@ -1,3 +1,7 @@
+#if os(macOS)
+import AppKit
+import SwiftUI
+#endif
 import XCTest
 @testable import ConchDesign
 
@@ -95,4 +99,21 @@ final class SettingsPageTests: XCTestCase {
         XCTAssertEqual(SettingsLayout.trailingMargin(width: 640 - 221), 0, "the smallest window: the section takes it all")
         XCTAssertEqual(SettingsLayout.trailingMargin(width: 900.6), 180, "whole points, so the column's edge is crisp")
     }
+
+    #if os(macOS)
+    /// The list's "Settings" (15 pt, `ConchType.heading`) and a section's title (22 pt, `ConchType.title`) sit on one baseline
+    /// across the rule: the drop is how much lower SF sets the title's baseline in its line than the heading's in its own,
+    /// each line as SwiftUI lays the text out (19 and 26 points).
+    @MainActor
+    func testListHeadingSitsOnTheTitlesBaseline() {
+        func baseline(_ font: Font, size: CGFloat) -> CGFloat {
+            let line = NSHostingView(rootView: Text("Settings").font(font)).fittingSize.height
+            let metrics = NSFont.systemFont(ofSize: size)
+            return (line - (metrics.ascender - metrics.descender)) / 2 + metrics.ascender
+        }
+        let drop = baseline(ConchType.title, size: 22) - baseline(ConchType.heading, size: 15)
+        XCTAssertEqual(drop, SettingsLayout.listHeadingDrop, accuracy: 0.5, "measured 6.1")
+        XCTAssertEqual(SettingsLayout.listHeadingDrop, SettingsLayout.listHeadingDrop.rounded(), "a whole point, so the heading stays crisp")
+    }
+    #endif
 }
