@@ -58,7 +58,7 @@ Voice and settings:
 Optional / manual setup:
   conch service [install|off] | uninstall [--models]  manage or remove the install
   conch install-plugin | uninstall-plugin | config-toggle <agent> <plugin|mcp-server> <id> <on|off> [--scope user|project] [--project <dir>] [--preview] | config-rollback <file>  the conch plugin · a next-session switch in the agent's own file · undo it
-  conch install [--codex] | pair | browser   wire hooks · connect the iPhone app · conch's in-app browser (its profiles, a page as a tab)
+  conch install [--codex] | pair | browser | logins [--refresh] [--json]   wire hooks · connect the iPhone app · conch's in-app browser (its profiles, a page as a tab) · which CLIs, agents, MCP servers and plugins are signed in, as whom
   conch doctor | help-session | version | parity <session>   live checks | a Claude session that knows conch | version | debug: conch beside the session's terminal in one picture, PASS/FAIL on the last message sent (parity --help)
 
 Internal entrypoints: conch hook | codex-hook | daemon | mcp | browse <url> [--profile <name>] (open, in sessions conch starts)
@@ -579,6 +579,33 @@ switch (command) {
     const said = command === "pause" ? "manual mode" : "auto mode";
     console.log(ok ? `[conch] ${said}` : "[conch] daemon not running");
     if (!ok) process.exit(1);
+    break;
+  }
+  case "logins": {
+    // The logins inventory (login-inventory.ts), from the daemon, which reads it and keeps it a few minutes.
+    const unknown = rest.filter((arg) => arg !== "--refresh" && arg !== "--json");
+    if (unknown.length) {
+      console.error("usage: conch logins [--refresh] [--json]");
+      process.exitCode = 2;
+      break;
+    }
+    const result = await sendControlMessage(cfg.socketPath, { kind: "login-inventory", action: rest.includes("--refresh") ? "refresh" : "list" }, 60_000);
+    if (!result.ok) {
+      console.error(result.reason === "daemon-down" ? "[conch] daemon not running" : `[conch] the daemon didn't answer${result.diagnostic ? ` (${result.diagnostic})` : ""}`);
+      process.exitCode = 1;
+      break;
+    }
+    if (result.response.kind !== "login-inventory") {
+      const said = "error" in result.response && typeof result.response.error === "string" ? result.response.error : result.response.kind;
+      console.error(`[conch] ${said} — the daemon may need updating`);
+      process.exitCode = 1;
+      break;
+    }
+    if (rest.includes("--json")) console.log(JSON.stringify(result.response, null, 2));
+    else {
+      const { formatLoginTable } = await import("./login-inventory.ts");
+      for (const line of formatLoginTable(result.response)) console.log(line);
+    }
     break;
   }
   case "browser": {

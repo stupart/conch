@@ -1002,6 +1002,7 @@ struct ConchSettingsPage: View {
             }
         }
         case .browser: ConchBrowserSettingsView()
+        case .logins: ConchLoginsSettingsView()
         case .general: ConchSettingsView()
         case .phone: ConchPairingView()
         case .permissions: ConchPermissionsView()

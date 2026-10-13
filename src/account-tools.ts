@@ -64,11 +64,16 @@ export function isAccountToolsReply(v: unknown): v is AccountToolsReply {
 function statePath(account: ClaudeAccount): string {
   return account.id === "default" && account.configDir === join(conchHome(), ".claude") ? join(conchHome(), ".claude.json") : join(account.configDir, ".claude.json");
 }
-function inventory(backend: Backend, account: ClaudeAccount) {
-  // The profile directory is not a project. No unrelated cwd/project config is included.
-  return readAgentCapabilities({ backend, cwd: account.configDir, configDir: account.configDir,
+/**
+ * One account's capabilities as the inspector reads them. By default `cwd` is the profile directory, which is not a
+ * project, so no unrelated cwd/project config is included; the logins inventory (login-inventory.ts) passes a session's
+ * working folder to see that project's servers for the account the session runs as.
+ */
+export function accountCapabilities(backend: Backend, account: ClaudeAccount, cwd: string = account.configDir) {
+  return readAgentCapabilities({ backend, cwd, configDir: account.configDir,
     ...(backend === "claude" ? { claudeHome: account.configDir, claudeStatePath: statePath(account) } : { codexHome: account.configDir }) });
 }
+const inventory = (backend: Backend, account: ClaudeAccount) => accountCapabilities(backend, account);
 export function toolsItems(entities: AgentCapabilityEntity[]): AccountToolItem[] {
   return entities.flatMap((e): AccountToolItem[] => {
     if (e.kind === "mcp-tool" || e.scope === "local" || e.scope === "project") return [];

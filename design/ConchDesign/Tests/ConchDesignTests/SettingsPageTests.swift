@@ -8,13 +8,14 @@ final class SettingsPageTests: XCTestCase {
     // MARK: Sections
 
     /// The seven the window had, in its order, and Browser (2026-10-11): conch's browser profiles, and Chrome's sign-ins
-    /// copied into them.
-    func testTheSectionsAreTheWindowsSevenAndBrowserInTheirOrder() {
+    /// copied into them. Then Logins (2026-10-14) beside it: which CLIs, agents, MCP servers, plugins and browser profiles
+    /// are signed in, as whom.
+    func testTheSectionsAreTheWindowsSevenThenBrowserAndLoginsInTheirOrder() {
         XCTAssertEqual(SettingsSection.allCases.map(\.title),
-                       ["Providers", "Environments", "Plugins & MCP", "Browser", "General", "Phone app", "Permissions", "Setup"])
+                       ["Providers", "Environments", "Plugins & MCP", "Browser", "Logins", "General", "Phone app", "Permissions", "Setup"])
         // The raw values are what the separate window remembered, so the section left there is the one the page opens on.
         XCTAssertEqual(SettingsSection.allCases.map(\.rawValue),
-                       ["providers", "environments", "tools", "browser", "general", "phone", "permissions", "setup"])
+                       ["providers", "environments", "tools", "browser", "logins", "general", "phone", "permissions", "setup"])
         XCTAssertEqual(SettingsSection.storageKey, "conch.settings.section")
         XCTAssertEqual(Set(SettingsSection.allCases.map(\.symbol)).count, SettingsSection.allCases.count, "a mark each")
     }
@@ -23,6 +24,7 @@ final class SettingsPageTests: XCTestCase {
         XCTAssertEqual(SettingsSection(stored: "phone"), .phone)
         XCTAssertEqual(SettingsSection(stored: "tools"), .tools)
         XCTAssertEqual(SettingsSection(stored: "browser"), .browser)
+        XCTAssertEqual(SettingsSection(stored: "logins"), .logins)
         XCTAssertEqual(SettingsSection(stored: nil), .providers, "never viewed")
         XCTAssertEqual(SettingsSection(stored: "accounts"), .providers, "a section this build doesn't have")
         XCTAssertEqual(SettingsSection(stored: ""), .providers)
