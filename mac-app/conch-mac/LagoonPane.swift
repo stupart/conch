@@ -90,9 +90,19 @@ final class LagoonModel: ObservableObject {
     }
 
     /// What the lagoon is sent of `state`: the store's state, with the record's conversation for each session the daemon
-    /// published none for.
+    /// published none for, and the sidebar's folders in the order Tyler dragged them into.
     func source(_ state: PublishedState) -> LagoonSnapshot.Source {
-        LagoonSnapshot.Source(state, recorded: records.conversations)
+        LagoonSnapshot.Source(
+            state,
+            recorded: records.conversations,
+            folderOrder: SessionGrouping.storedOrder(UserDefaults.standard.string(forKey: SessionGrouping.orderKey) ?? "")
+        )
+    }
+
+    /// The same state, with something about it changed here (a folder dragged in the sidebar): sent again, though the
+    /// store's `ts` didn't move.
+    func revise(_ state: PublishedState) {
+        host?.revise(source(state))
     }
 
     /// The store's state changed, or the lagoon was shown: hand the page the newest, and read from the record what it lacks.
@@ -296,6 +306,8 @@ struct LagoonPane: View {
     @Environment(\.conchHidden) private var windowHidden
     @State private var appHidden = NSApp.isHidden
     @State private var shown = false
+    /// The sidebar's folder order (`SessionGrouping.orderKey`): a drag there reorders the lagoon's `folders` too.
+    @AppStorage(SessionGrouping.orderKey) private var folderOrder = ""
 
     /// The sand the page paints, behind it until its first frame.
     private static let sand = Color(red: 0.914, green: 0.812, blue: 0.690)
@@ -334,6 +346,10 @@ struct LagoonPane: View {
             lagoon.offer(state)
         }
         .onReceive(store.$liveness) { host?.setLiveness(LagoonFeature.name($0)) }
+        .onChange(of: folderOrder) { _, _ in
+            guard let state = store.state else { return }
+            lagoon.revise(state)
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("The lagoon: your sessions as hermit crabs")
     }

@@ -529,9 +529,9 @@ private struct SessionLedger: View {
     /// preferences (`conch.sidebarWidth`, `conch.sidebarCollapsed`) so it survives a relaunch;
     /// `WorkspaceModel` is in-memory and forgets everything at quit. The rule for what the
     /// order means — and why rows are not draggable — is ConchDesign/SessionGrouping.swift.
-    @AppStorage("conch.folderOrder") private var storedFolderOrder = ""
+    @AppStorage(SessionGrouping.orderKey) private var storedFolderOrder = ""
     private var folderOrder: [String] {
-        get { storedFolderOrder.split(separator: "\n").map(String.init) }
+        get { SessionGrouping.storedOrder(storedFolderOrder) }
         nonmutating set { storedFolderOrder = newValue.joined(separator: "\n") }
     }
     /// Dismissed sessions start folded away, as the lab starts them (`showDismissed: false`).
@@ -545,21 +545,10 @@ private struct SessionLedger: View {
     private var showsDismissedRows: Bool { showsDismissed || undoDismissal != nil }
 
     /// The rows grouped by the folder they run in. A folder the reader collapsed keeps its
-    /// rows out of the list entirely, which is why the count moves onto its header.
+    /// rows out of the list entirely, which is why the count moves onto its header. The rule is
+    /// `SessionGrouping.sidebar`, which the lagoon is sent the names of (`LagoonSnapshot.folders`).
     private var sessionFolders: [SessionFolder] {
-        let grouped = SessionGrouping.folders(
-            for: (state?.rows ?? []).map {
-                ($0.id, $0.workFolder, $0.parentSessionId ?? $0.startedBySessionId)
-            }
-        )
-        .map { folder in
-            // A session started in the home folder headed the list with the account name —
-            // "tylerstupart" — which reads like a project and is not one. Seen on the live
-            // window, not in any test: every fixture uses a project path.
-            guard folder.id == NSHomeDirectory() else { return folder }
-            return SessionFolder(id: folder.id, name: "Home", sessionIDs: folder.sessionIDs)
-        }
-        return SessionGrouping.ordered(grouped, by: folderOrder)
+        SessionGrouping.sidebar((state?.rows ?? []).map(\.groupedAs), home: NSHomeDirectory(), order: folderOrder)
     }
 
     /// A folder header dropped on another takes its slot (SessionGrouping.order). Anything

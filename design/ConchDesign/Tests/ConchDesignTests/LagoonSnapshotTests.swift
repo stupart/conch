@@ -26,6 +26,8 @@ final class LagoonSnapshotTests: XCTestCase {
         "approvedAt", "seaGlass",
         // Later that day: whether its agent asked for your yes, and what a yes does.
         "asksApproval", "approvalLabel",
+        // 2026-10-13, agreed with the brand repo: the sidebar's folder for each row, and its folders in order.
+        "folder", "folders",
     ]
 
     private let home = "/Users/someone"
@@ -276,6 +278,58 @@ final class LagoonSnapshotTests: XCTestCase {
         let asked = LagoonSnapshot(bare, home: home).rows[0].reviews[0]
         XCTAssertEqual(asked.asksApproval, true)
         XCTAssertNil(asked.approvalLabel)
+    }
+
+    /// The sidebar's folders (`SessionGrouping.sidebar`), by name and in its order, and each row's (2026-10-13): the page
+    /// groups as the sidebar does.
+    func testFoldersAreTheSidebars() throws {
+        let source = LagoonSnapshot.Source(
+            ts: 1, paused: false, holding: 0, liveState: nil,
+            rows: [
+                // Its work folder, not where it started.
+                .init(id: "harbour", cwd: "/Users/someone/Projects", workDirs: ["/Users/someone/Projects/harbour-app", "/Users/someone/Projects/x"]),
+                // Started in home, with nothing declared: "Home".
+                .init(id: "errand", cwd: "/Users/someone/"),
+                // Two checkouts of one repo: told apart as the sidebar tells them apart.
+                .init(id: "kite-a", cwd: "/Users/someone/Projects/kite"),
+                .init(id: "kite-b", cwd: "/Users/someone/scratch/kite"),
+                // A subagent, and a session another started: their parent's folder, whatever their own.
+                .init(id: "helper", cwd: "/tmp/elsewhere", parentSessionId: "kite-b"),
+                .init(id: "spawned", cwd: "/Users/someone/Projects/otter", startedBySessionId: "harbour"),
+                // No folder known: under no header, so none.
+                .init(id: "bare"),
+                // A name longer than 60 is no name, never cut (sanitize.mjs `folderOf`); one of exactly 60 is sent.
+                .init(id: "long", cwd: "/Users/someone/Projects/" + String(repeating: "n", count: 61)),
+                .init(id: "sixty", cwd: "/Users/someone/Projects/" + String(repeating: "s", count: 60)),
+            ],
+            conversations: [:], dismissed: [],
+            // Tyler dragged the second checkout to the top.
+            folderOrder: ["/Users/someone/scratch/kite"]
+        )
+        let snapshot = LagoonSnapshot(source, home: "/Users/someone")
+        let sixty = String(repeating: "s", count: 60)
+        XCTAssertEqual(snapshot.folders, ["scratch/kite", "harbour-app", "Home", "Projects/kite", sixty])
+        XCTAssertEqual(Dictionary(uniqueKeysWithValues: snapshot.rows.map { ($0.id, $0.folder) }), [
+            "harbour": "harbour-app", "errand": "Home", "kite-a": "Projects/kite", "kite-b": "scratch/kite",
+            "helper": "scratch/kite", "spawned": "harbour-app", "bare": nil, "long": nil, "sixty": sixty,
+        ])
+        // The same names, the same order as the sidebar draws them, from the one rule.
+        let sidebar = SessionGrouping.sidebar(source.rows.map(\.groupedAs), home: "/Users/someone", order: source.folderOrder)
+        XCTAssertEqual(sidebar.compactMap { LagoonSnapshot.folderName($0.name) }, snapshot.folders)
+        XCTAssertEqual(LagoonSnapshot.folderName("  kite  "), "kite")
+        XCTAssertNil(LagoonSnapshot.folderName("   "))
+        XCTAssertNil(LagoonSnapshot.folderName(String(repeating: "é", count: 61)))
+        // Counted as JavaScript counts: one emoji is two.
+        XCTAssertNil(LagoonSnapshot.folderName(String(repeating: "🐚", count: 31)))
+        XCTAssertNotNil(LagoonSnapshot.folderName(String(repeating: "🐚", count: 30)))
+        // On the wire: `folders` always, `folder` only on a row the sidebar heads.
+        let object = try json(snapshot)
+        XCTAssertEqual(object["folders"] as? [String], snapshot.folders)
+        let rows = try XCTUnwrap(object["rows"] as? [[String: Any]])
+        XCTAssertEqual(rows[0]["folder"] as? String, "harbour-app")
+        XCTAssertNil(rows.first { $0["id"] as? String == "bare" }?["folder"])
+        XCTAssertEqual(try json(LagoonSnapshot(.init(ts: 1, paused: false, holding: 0, liveState: nil, rows: [], conversations: [:], dismissed: []),
+                                               home: "/Users/someone"))["folders"] as? [String], [])
     }
 
     func testDismissedOnceEach() {
