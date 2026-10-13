@@ -6,19 +6,46 @@ import ConchDesign
 // Native adaptation of claude-swap tui/widgets.py, theme.py and data.py at
 // 3a4e5c14873eb5b32f182d55c68da98ac8c0db45. Copyright (c) 2026 Onur Cetinkol.
 // MIT: third-party/claude-swap/LICENSE and bundled ClaudeSwapLicense.txt.
+
+/// Providers in the app's own colours, light and dark (`ConchPalette`), so Settings follows the system appearance (2026-10-14).
+/// It was claude-swap's fixed dark palette, and Settings stayed dark while it showed so Providers wasn't a dark block in a
+/// light page. The usage bars keep claude-swap's design, a thin track with a gap where the fill ends, and its three
+/// levels; each level is also a percentage's colour, so it holds 4.5:1 on the ground in both appearances (claude-swap's
+/// own green and amber measured 2.19 and 1.83 on the light ground).
 private enum SwapPalette {
-    static let background = ConchColor.ground.color(.dark)
-    static let surface = ConchColor.surface.color(.dark)
-    static let foreground = ConchColor.textPrimary.color(.dark)
-    static let secondaryText = ConchColor.textSecondary.color(.dark)
-    static let divider = ConchColor.hairline.color(.dark)
-    static let track = Color(white: 58/255)
-    static let accent = Color(red: 215/255, green: 135/255, blue: 95/255)
+    static let background = ConchPalette.bg
+    static let foreground = ConchPalette.textPrimary
+    static let secondaryText = ConchPalette.textDim
+    static let divider = ConchPalette.divider
+    /// The bar's track: the selected row's step off the ground, #393938 on dark where claude-swap drew #3A3A3A.
+    static let track = ConchPalette.selection
     static func severity(_ pct: Double) -> Color {
-        if pct >= 90 { return Color(red: 215/255, green: 95/255, blue: 95/255) }
-        if pct >= 70 { return Color(red: 215/255, green: 175/255, blue: 95/255) }
-        return Color(red: 135/255, green: 175/255, blue: 135/255)
+        if pct >= 90 { return ConchPalette.statusNeeds }
+        if pct >= 70 { return caution }
+        return ConchPalette.added
     }
+
+    /// Near a limit: claude-swap's amber on dark (8.78:1 on the ground), and #946200 in light (4.64:1).
+    private static let caution = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(srgbRed: 215 / 255, green: 175 / 255, blue: 95 / 255, alpha: 1)
+            : NSColor(srgbRed: 148 / 255, green: 98 / 255, blue: 0, alpha: 1)
+    })
+}
+
+/// A heading's or a row's icon control (refresh, ⋯): a 24-point square whose right edge is the column's, so every one of
+/// them is centred on one line, 12 points in from it. A borderless menu sizes itself to its glyph (20 wide), and was
+/// centred 2 points to the right of the buttons above and below it until it was put in the same square.
+private struct ProviderIcon: View {
+    let symbol: String
+
+    var body: some View {
+        Image(systemName: symbol)
+            .frame(width: Self.side, height: Self.side)
+            .contentShape(Rectangle())
+    }
+
+    static let side: CGFloat = 24
 }
 
 struct SwapDashboard: Decodable {
@@ -393,18 +420,23 @@ final class ClaudeAccountsStore: ObservableObject {
 
 struct ClaudeAccountsView: View {
     var body: some View {
+        // Laid out as every Settings section is (`SettingsLayout`): the section's own header, then each provider under its
+        // subheading, with the page's hairline between them. It drew a 20-point title of its own, 2 points under the
+        // others' baselines.
         ScrollView {
-            VStack(alignment: .leading, spacing: 28) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Providers").font(ConchTypography.font(size: 20, weight: .semibold))
-                    Text("Your accounts on this Mac").font(ConchTypography.font(size: 12)).foregroundStyle(SwapPalette.secondaryText)
+            VStack(alignment: .leading, spacing: SettingsLayout.headerGap) {
+                SettingsSectionHeader(title: "Providers", subtitle: "Your accounts on this Mac")
+                VStack(alignment: .leading, spacing: 24) {
+                    ProviderAccountSection(providerId: "claude")
+                    SettingsHairline()
+                    ProviderAccountSection(providerId: "codex")
                 }
-                ProviderAccountSection(providerId: "claude")
-                ProviderAccountSection(providerId: "codex")
-            }.padding(24)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(SettingsLayout.inset)
         }
-        .foregroundStyle(SwapPalette.foreground).tint(SwapPalette.foreground)
-        .background(SwapPalette.background).environment(\.colorScheme, .dark)
+        .foregroundStyle(SwapPalette.foreground)
+        .background(SwapPalette.background)
     }
 }
 
@@ -429,13 +461,15 @@ private struct ProviderAccountSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Image(providerId == "codex" ? "AgentCodex" : "AgentClaude").resizable().scaledToFit().frame(width: 22, height: 22)
-                Text(providerId == "codex" ? "OpenAI · Codex" : "Anthropic · Claude Code").font(ConchTypography.font(size: 14, weight: .semibold))
+            HStack(spacing: ConchSpace.x2) {
+                // The page's subheading, as Environments' Codex cloud is: the mark in its 22-point column, the words after.
+                SettingsSubheading(title: providerId == "codex" ? "OpenAI · Codex" : "Anthropic · Claude Code") {
+                    Image(providerId == "codex" ? "AgentCodex" : "AgentClaude").resizable().scaledToFit()
+                }
                 Spacer()
                 if store.busy { ProgressView().controlSize(.small) }
                 Button { Task { await refresh() } } label: {
-                    Image(systemName: "arrow.clockwise").frame(width: 24, height: 24)
+                    ProviderIcon(symbol: "arrow.clockwise")
                 }.buttonStyle(.plain).help("Refresh accounts and usage").accessibilityLabel("Refresh \(providerName) accounts and usage").disabled(store.busy)
                 if providerId == "codex" { Button("Connect account") { adding = true }.disabled(store.busy || adding) }
             }
@@ -593,7 +627,8 @@ private struct ProviderAccountSection: View {
             HStack(spacing: 10) {
                 Image("AgentClaude").resizable().scaledToFit().frame(width: 26, height: 26)
                 VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 7) {
+                    // On one baseline: the small words after the address sat a point above it, centred on it.
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
                         Text(account.email).font(ConchTypography.font(size: 13, weight: .medium))
                             .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
                         if let organization = account.organization, !organization.isEmpty, organization != account.email {
@@ -615,9 +650,11 @@ private struct ProviderAccountSection: View {
                     Divider()
                     Button("Remove…", role: .destructive) { removingFromList = account }
                 } label: {
-                    Image(systemName: "ellipsis").frame(width: 24, height: 24)
+                    Image(systemName: "ellipsis")
                 }
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                // The borderless menu is its glyph's size whatever its label asks for: the square is put round it.
+                .frame(width: ProviderIcon.side, height: ProviderIcon.side)
                 .accessibilityLabel("More for \(account.email)")
             }
             .disabled(store.busy || store.signIn != nil)
@@ -664,17 +701,26 @@ private struct ProviderAccountSection: View {
         } else {
             caption = "Off. Sessions stay on the account in use until you choose Use now."
         }
-        return VStack(alignment: .leading, spacing: 4) {
-            Toggle(isOn: Binding(get: { on }, set: { value in Task { await store.setRotation(value) } })) {
-                Text("Switch accounts automatically").font(ConchTypography.font(size: 13, weight: .medium))
+        // A card row, as General's switches are (`DaemonPowerRow`, `LoginItemRow`): the words on the left, the switch at the
+        // card's right edge. It was a switch straight after its label, mid-row, in a card of its own padding and radius.
+        return OnboardingCard {
+            HStack(spacing: ConchSpace.x3) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Switch accounts automatically").font(ConchTypography.font(size: 12.5, weight: .medium))
+                        .foregroundStyle(SwapPalette.foreground)
+                    Text(caption).font(ConchTypography.font(size: 11)).foregroundStyle(SwapPalette.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: ConchSpace.x3)
+                Toggle("Switch accounts automatically", isOn: Binding(get: { on }, set: { value in Task { await store.setRotation(value) } }))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .disabled(store.busy || rotation?.installed != true)
             }
-            .toggleStyle(.switch).disabled(store.busy || rotation?.installed != true)
-            Text(caption).font(ConchTypography.font(size: 11)).foregroundStyle(SwapPalette.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, ConchSpace.x4)
+            .padding(.vertical, 11)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(SwapPalette.surface, in: RoundedRectangle(cornerRadius: 8))
     }
 
     /// Conch's own sign-ins, each a Claude or Codex folder of its own: the Codex accounts, and Claude's separate sign-ins.
@@ -696,11 +742,11 @@ private struct ProviderAccountSection: View {
     }
 
     private func accountRow(_ account: ClaudeAccountProfile, now: Date) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 Image(providerId == "codex" ? "AgentCodex" : "AgentClaude").resizable().scaledToFit().frame(width: 26, height: 26)
                 VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 7) {
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
                         Text(account.label).font(ConchTypography.font(size: 13, weight: .medium))
                         if let plan = account.subscription { Text(providerId == "codex" ? "ChatGPT \(plan.capitalized)" : plan.capitalized).font(ConchTypography.font(size: 10)).foregroundStyle(SwapPalette.secondaryText) }
                     }
@@ -719,7 +765,7 @@ private struct ProviderAccountSection: View {
                     }.disabled(store.busy || store.pendingLoginId == account.id)
                 }
                 Button { if expanded.contains(account.id) { expanded.remove(account.id) } else { expanded.insert(account.id) } } label: {
-                    Image(systemName: expanded.contains(account.id) ? "chevron.up" : "ellipsis").frame(width: 24, height: 24)
+                    ProviderIcon(symbol: expanded.contains(account.id) ? "chevron.up" : "ellipsis")
                 }.buttonStyle(.plain).accessibilityLabel("Details for \(account.label)")
             }
             if let usage = store.usage?.accounts.first(where: { $0.id == account.id }) {
@@ -737,7 +783,9 @@ private struct ProviderAccountSection: View {
                     Text(account.configDir).font(.system(size: 10, design: .monospaced)).textSelection(.enabled)
                 }.foregroundStyle(SwapPalette.secondaryText).padding(.top, 4)
             }
-        }.padding(.vertical, 18)
+        }
+        // The Claude list's rhythm (`listRow`): 14 above and below, 10 between a row's parts. These rows were 18 and 8.
+        .padding(.vertical, 14)
     }
 
     private var addForm: some View {
@@ -768,7 +816,10 @@ private struct ProviderAccountSection: View {
                     }
                 }.disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.busy)
             }
-        }.padding(16).background(SwapPalette.surface, in: RoundedRectangle(cornerRadius: 8))
+        }
+        .padding(ConchSpace.x4)
+        .background(ConchPalette.surface, in: RoundedRectangle(cornerRadius: ConchRadius.medium, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: ConchRadius.medium, style: .continuous).strokeBorder(ConchPalette.divider, lineWidth: 1))
     }
 
     private func feedback(_ text: String, isError: Bool) -> some View {

@@ -477,14 +477,14 @@ private struct ConchSettingRowView: View {
                 // main elements for each setting row against the right edge
                 // like normal settings." The slot is sized to the widest
                 // control so trailing alignment costs no dead space.
+                //
+                // The line is the card's above them (`OnboardingCard`, 16 in): the daemon's and the login's switches end
+                // there, and every switch on the page now ends on it. The reset slot comes BEFORE the control: after it,
+                // it put every control 32 points short of the margin and 16 short of the card's switches (2026-10-14).
                 HStack(alignment: .center, spacing: 10) {
                     if isPending {
                         ProgressView().controlSize(.small)
                     }
-
-                    settingControl
-                        .frame(width: 150, alignment: .trailing)
-                        .disabled(isReadOnly || isPending)
 
                     // An icon, not a word. "Reset" as a bordered button is the
                     // heaviest thing in the row and appears on exactly the rows
@@ -507,7 +507,12 @@ private struct ConchSettingRowView: View {
                         }
                     }
                     .frame(width: 22, height: 22)
+
+                    settingControl
+                        .frame(width: 150, alignment: .trailing)
+                        .disabled(isReadOnly || isPending)
                 }
+                .padding(.trailing, ConchSpace.x4)
                 .frame(minHeight: 34)
             }
 
@@ -947,9 +952,9 @@ final class SettingsRouter: ObservableObject {
 /// are listed down the side; and the one shown runs from beside the list to a readable width (`SettingsLayout`), with its
 /// scroller still at the window's edge.
 ///
-/// It stays dark, the whole window with it, while it shows (`SettingsAppearance`). Providers is drawn in claude-swap's dark
-/// palette (ClaudeAccountsView), so a Settings that followed a light system would put a dark block in a light page. One
-/// dark page is a place you went; a dark block in a light one looks broken.
+/// It follows the system appearance, as the rest of the window does (`SettingsAppearance.pinned` is nil). It stayed dark
+/// while Providers drew in claude-swap's fixed dark palette, which put a dark block in a light page; Providers draws from
+/// ConchPalette now (2026-10-14).
 struct ConchSettingsPage: View {
     @ObservedObject var router: SettingsRouter
 
@@ -1083,7 +1088,8 @@ private struct SettingsSectionList: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, ConchSpace.x3)
-        .padding(.top, SettingsLayout.inset)
+        // "Settings" sits on the section title's baseline across the rule (`SettingsLayout.listHeadingDrop`).
+        .padding(.top, SettingsLayout.inset + SettingsLayout.listHeadingDrop)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
@@ -1128,21 +1134,27 @@ struct SettingsSectionHeader<Trailing: View>: View {
     let subtitle: String
     @ViewBuilder var trailing: Trailing
 
+    /// The title's line: SF at `ConchType.title`'s 22 points sets a 26-point line.
+    static var titleLine: CGFloat { 26 }
+
     var body: some View {
-        // Top, not a baseline: a taller control beside the title would push the title down, off every other section's.
-        HStack(alignment: .top, spacing: ConchSpace.x3) {
-            VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 6) {
+            // The control is centred on the title's line, as Plugins & MCP's and Setup's are; it sat on its top, 0.75 of a
+            // point high. The line's height is fixed, so a taller control beside the title can't push the title down, off
+            // every other section's.
+            HStack(spacing: ConchSpace.x3) {
                 Text(title)
                     .font(ConchType.title)
                     .foregroundStyle(ConchPalette.textPrimary)
                     .accessibilityAddTraits(.isHeader)
-                Text(subtitle)
-                    .font(ConchType.secondary)
-                    .foregroundStyle(ConchPalette.textDim)
-                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                trailing
             }
-            Spacer(minLength: 0)
-            trailing
+            .frame(height: Self.titleLine)
+            Text(subtitle)
+                .font(ConchType.secondary)
+                .foregroundStyle(ConchPalette.textDim)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -1192,9 +1204,10 @@ struct SettingsHairline: View {
 /// On the window rather than `.preferredColorScheme`, whose going back to the system is SwiftUI's to get right: here the
 /// page sets it as it arrives and restores it as it leaves.
 struct SettingsAppearance: NSViewRepresentable {
-    /// Dark, while Providers draws in claude-swap's dark palette (ClaudeAccountsView). Nil follows the system, like the
-    /// rest of the window: the one line to change once Providers draws from ConchPalette.
-    static let pinned: NSAppearance.Name? = .darkAqua
+    /// Nil: Settings follows the system, like the rest of the window. It was dark while Providers drew in claude-swap's
+    /// fixed dark palette; Providers draws from ConchPalette now (ClaudeAccountsView, 2026-10-14). A name here pins the
+    /// window to it while Settings shows, and puts it back after.
+    static let pinned: NSAppearance.Name? = nil
 
     let name: NSAppearance.Name?
 
@@ -1242,21 +1255,27 @@ struct ConchEnvironmentsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: SettingsLayout.headerGap) {
                 SettingsSectionHeader(title: "Environments", subtitle: "Where your sessions run")
+                // Each block as Browser's are: its subheading, 12 points, its words in the secondary ink, then its controls.
                 VStack(alignment: .leading, spacing: 24) {
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 12) {
                         SettingsSubheading(title: "This Mac") {
                             Image(systemName: "laptopcomputer").font(.system(size: 14, weight: .regular))
                         }
                         Text("New sessions open here in Terminal with the account you choose. Resume keeps the original account and working folder.")
+                            .foregroundStyle(ConchPalette.textDim)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     SettingsHairline()
-                    RemoteMacPairingsView()
+                    // With a mark, so "Other Macs" starts where "This Mac" and "Codex cloud" do; it started 30 points left.
+                    RemoteMacPairingsView(mark: "display.2")
                     SettingsHairline()
                     VStack(alignment: .leading, spacing: 12) {
                         SettingsSubheading(title: "Codex cloud") {
                             Image("AgentCodex").resizable().scaledToFit()
                         }
                         Text("Browse your cloud environments and tasks in Codex’s terminal interface. Cloud environments belong to the selected OpenAI account.")
+                            .foregroundStyle(ConchPalette.textDim)
+                            .fixedSize(horizontal: false, vertical: true)
                         Picker("Account", selection: $accountId) {
                             if accounts.accounts.isEmpty { Text("Default").tag("default") }
                             ForEach(accounts.accounts) { account in

@@ -3,6 +3,9 @@ import QuickLookUI
 import SwiftUI
 
 struct RemoteMacPairingsView: View {
+    /// Its heading's mark, where the section's other headings have one (Environments), so its words start where theirs
+    /// do; nil where they have none (Phone app).
+    var mark: String?
     @EnvironmentObject private var remotes: RemoteMacStore
     @EnvironmentObject private var local: StateStore
     @State private var adding = false
@@ -14,7 +17,13 @@ struct RemoteMacPairingsView: View {
     var body: some View {
         // No rule above it: Environments and Phone app each put one where it sits.
         VStack(alignment: .leading, spacing: 12) {
-            SettingsSubheading(title: "Other Macs")
+            if let mark {
+                SettingsSubheading(title: "Other Macs") {
+                    Image(systemName: mark).font(.system(size: 13, weight: .regular))
+                }
+            } else {
+                SettingsSubheading(title: "Other Macs")
+            }
             Text("See sessions and send typed text on your LAN. Use the host and new six-digit code from the other Mac’s Phone app tab.")
                 .font(.callout).foregroundStyle(ConchPalette.textDim)
             ForEach(remotes.pairings) { pairing in

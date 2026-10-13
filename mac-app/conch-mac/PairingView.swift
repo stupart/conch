@@ -22,28 +22,38 @@ struct ConchPairingView: View {
             VStack(alignment: .leading, spacing: SettingsLayout.headerGap) {
                 SettingsSectionHeader(title: "Phone app", subtitle: "Pair conch on your iPhone with this Mac.")
 
-                RemoteMacPairingsView()
+                // Blocks with the page's hairline between them, 24 points either side, as Environments and Browser have.
+                // The Wi-Fi block's rule was its own, 20 points under the relay and 8 over its heading.
+                VStack(alignment: .leading, spacing: 24) {
+                    RemoteMacPairingsView()
 
-                SettingsHairline()
+                    SettingsHairline()
 
-                status
+                    VStack(alignment: .leading, spacing: SettingsLayout.headerGap) {
+                        status
 
-                if let pairing = store.pairing {
-                    if let relay = pairing.relay {
-                        relaySection(relay)
-                    } else {
-                        noRelaySection
+                        if let pairing = store.pairing {
+                            if let relay = pairing.relay {
+                                relaySection(relay)
+                            } else {
+                                noRelaySection
+                            }
+                        } else if store.isLoading {
+                            ProgressView().frame(maxWidth: .infinity)
+                        }
                     }
-                    lanSection(pairing)
-                } else if store.isLoading {
-                    ProgressView().frame(maxWidth: .infinity)
-                }
 
-                if let error = store.error {
-                    Text(error)
-                        .font(.callout)
-                        .foregroundStyle(ConchPalette.accent)
-                        .fixedSize(horizontal: false, vertical: true)
+                    if let pairing = store.pairing {
+                        SettingsHairline()
+                        lanSection(pairing)
+                    }
+
+                    if let error = store.error {
+                        Text(error)
+                            .font(.callout)
+                            .foregroundStyle(ConchPalette.accent)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
             .padding(SettingsLayout.inset)
@@ -123,7 +133,6 @@ struct ConchPairingView: View {
 
     private func lanSection(_ pairing: ConchPairingOpen) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            SettingsHairline()
             Text("Or on this Wi-Fi")
                 .font(ConchType.uiEmphasis)
                 .foregroundStyle(ConchPalette.textPrimary)
@@ -133,7 +142,8 @@ struct ConchPairingView: View {
                     .foregroundStyle(ConchPalette.textDim)
                     .textSelection(.enabled)
             }
-            HStack(spacing: 8) {
+            // On the code's baseline: centred on its 28-point line, the small words sat above it.
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(pairing.code)
                     .font(.system(size: 28, weight: .semibold, design: .monospaced))
                     .foregroundStyle(ConchPalette.textPrimary)

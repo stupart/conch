@@ -31,7 +31,7 @@ private struct BrowserProfilesBlock: View {
     @ObservedObject var store: ChromeImportStore
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             SettingsSubheading(title: "Profiles") {
                 Image(systemName: "person.2").font(.system(size: 13, weight: .regular))
             }
@@ -100,6 +100,7 @@ private struct ChromeImportBlock: View {
                 Image(systemName: "square.and.arrow.down").font(.system(size: 13, weight: .regular))
             }
             Text(Self.explanation)
+                .foregroundStyle(ConchPalette.textDim)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: ConchSpace.x3) {
                 Button(store.reports.isEmpty ? "Import logins from Chrome" : "Import again") {
