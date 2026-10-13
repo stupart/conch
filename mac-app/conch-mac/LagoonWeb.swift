@@ -252,6 +252,8 @@ final class LagoonWebHost: NSObject, WKNavigationDelegate, WKUIDelegate {
     }
 
     var isReady: Bool { pacer.isReady }
+    /// Whether the page can be seen now (`setVisibility`).
+    var isVisible: Bool { visibility.visible }
 
     // MARK: The web view
 
@@ -307,6 +309,13 @@ final class LagoonWebHost: NSObject, WKNavigationDelegate, WKUIDelegate {
     func offer(_ source: LagoonSnapshot.Source) {
         guard webView != nil, let ts = source.ts else { return }
         handle(pacer.offer(LagoonSnapshot(source, home: environment.home), ts: ts, now: Date()))
+    }
+
+    /// The same state with more of it known (a session's recorded conversation came in, `LagoonRecords`): handed over as a
+    /// newer snapshot is, though the store's `ts` didn't move.
+    func revise(_ source: LagoonSnapshot.Source) {
+        guard webView != nil, let ts = source.ts else { return }
+        handle(pacer.revise(LagoonSnapshot(source, home: environment.home), ts: ts, now: Date()))
     }
 
     /// `store.liveness`, as the page names it: `alive`, `checking`, `stalled` or `dead`.

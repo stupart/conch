@@ -537,6 +537,8 @@ private struct SessionLedger: View {
     /// Dismissed sessions start folded away, as the lab starts them (`showDismissed: false`).
     @State private var showsDismissed = false
     @State private var scroller = LedgerScroller()
+    /// A session the lagoon's panel is on, to bring into view once its folder is unfolded (`reveal`).
+    @State private var revealing: LedgerReveal?
 
     /// …except while an Undo is being offered: that button lives ON the dismissed row, so
     /// folding the group the instant you dismiss would take the undo with it.
@@ -767,6 +769,18 @@ private struct SessionLedger: View {
                             scroller.rowsChanged()
                             keepInView(keptInView, proxy, animated: false)
                         }
+                        // The lagoon's panel is on a session (`focusSession`, 2026-10-13): its row unfolded and in
+                        // view, though it may have been the selected one already. Tyler: "If I'm looking at the work
+                        // for one session it should show I'm in that session on the main sidebar."
+                        .onReceive(NotificationCenter.default.publisher(for: .revealSessionInSidebar)) { note in
+                            guard let id = note.object as? String else { return }
+                            reveal(id)
+                        }
+                        // Scrolled in the update that draws the unfolded folder, so its row is there to scroll to.
+                        .onChange(of: revealing) { _, request in
+                            guard let request else { return }
+                            keepInView(scrollTarget(for: request.id), proxy, animated: true)
+                        }
                         .onChange(of: rowMessages) { previous, current in
                             // A new word on a row ("Closing cleanly…") brings that row into view, once: the
                             // next word on the same row is the same target and is not scrolled to again.
@@ -855,10 +869,27 @@ private struct SessionLedger: View {
         } + [showsDismissedRows ? "dismissed open" : "dismissed folded"]
     }
 
+    /// The folder holding a session's row unfolded, and the row brought into view: a sub-agent's is its session's row,
+    /// which draws it. A dismissed session, or one the list doesn't hold, is left where it is.
+    private func reveal(_ sessionID: SessionRow.ID) {
+        guard let row = state?.rows.first(where: { $0.id == sessionID }) else { return }
+        let shownID = row.parentSessionId ?? row.id
+        if let folder = sessionFolders.first(where: { $0.sessionIDs.contains(shownID) }), collapsedFolders.contains(folder.id) {
+            collapsedFolders.remove(folder.id)
+        }
+        revealing = LedgerReveal(id: sessionID)
+    }
+
     private func keepInView(_ target: String?, _ proxy: ScrollViewProxy, animated: Bool) {
         guard let target, scrollTargets.contains(target) else { return }
         scroller.request(target, animated: animated && !reduceMotion, proxy: proxy)
     }
+}
+
+/// One request to bring a session's row into view: a new one each time, so the same session asked for twice scrolls twice.
+private struct LedgerReveal: Equatable {
+    let id: SessionRow.ID
+    let token = UUID()
 }
 
 /// The session list's scrolls, one at a time (2026-10-05).

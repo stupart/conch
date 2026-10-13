@@ -17,6 +17,9 @@ extension Notification.Name {
     /// ⌘0, Session ▸ Lagoon, and the title bar's switch: the lagoon, or back to the conversation. Posted, like ⌘1–⌘3
     /// (`setStage`), so the shortcut works whatever holds focus and the menu and the button are one path.
     static let showLagoon = Notification.Name("com.conch.mac.show-lagoon")
+    /// The lagoon's panel is on this session (its id is the object): the sidebar unfolds the folder that holds its row
+    /// and brings the row into view, even when it was already the selected one (`SessionLedger`).
+    static let revealSessionInSidebar = Notification.Name("com.conch.mac.reveal-session-in-sidebar")
 }
 
 enum LagoonFeature {
@@ -62,6 +65,11 @@ final class LagoonModel: ObservableObject {
     @Published private(set) var webGeneration = 0
     private(set) var host: LagoonWebHost?
     private let actions = LagoonStoreActions()
+    /// What conch's record store holds of the sessions the daemon published no conversation for (`LagoonRecords`), and
+    /// the one read of it in flight.
+    private var records = LagoonRecords()
+    private var recordRead: Task<Void, Never>?
+    private let recordClient = ConchSocketClient()
 
     /// The host, made the first time the lagoon is shown (making it makes no web view yet).
     func host(store: StateStore, workspace: WorkspaceModel) -> LagoonWebHost? {
@@ -70,7 +78,7 @@ final class LagoonModel: ObservableObject {
         if let host { return host }
         guard let root = LagoonFeature.bundleRoot else { return nil }
         let made = LagoonWebHost(bundleRoot: root, environment: .init(
-            source: { [weak store] in store?.state.map(LagoonSnapshot.Source.init) },
+            source: { [weak self, weak store] in store?.state.flatMap { self?.source($0) } },
             resolveLink: { LinkTarget.url(for: $0, cwd: $1) },
             flags: { LagoonActionFlags(defaultsValue: UserDefaults.standard.object(forKey: Lagoon.actionsKey)) },
             home: NSHomeDirectory(),
@@ -81,7 +89,83 @@ final class LagoonModel: ObservableObject {
         return made
     }
 
+    /// What the lagoon is sent of `state`: the store's state, with the record's conversation for each session the daemon
+    /// published none for.
+    func source(_ state: PublishedState) -> LagoonSnapshot.Source {
+        LagoonSnapshot.Source(state, recorded: records.conversations)
+    }
+
+    /// The store's state changed, or the lagoon was shown: hand the page the newest, and read from the record what it lacks.
+    func offer(_ state: PublishedState) {
+        host?.offer(source(state))
+        readRecords()
+    }
+
+    /// One session at a time, the one the window views first, and only while the lagoon can be seen: its newest pages in
+    /// the record, for a session the daemon published no conversation for (`LagoonRecords.wanted`). The page is handed the
+    /// snapshot again when that changed what it is sent.
+    private func readRecords() {
+        guard recordRead == nil, let host, host.isVisible, let state = actions.store?.state else { return }
+        let published = LagoonSnapshot.Source(state)
+        records.forget(missing: Set(published.rows.map(\.id)))
+        let now = Date()
+        guard let session = records.wanted(rows: published.rows, published: published.conversations, first: actions.workspace?.viewing, now: now).first,
+              let row = published.rows.first(where: { $0.id == session }) else { return }
+        let mark = LagoonRecords.mark(row)
+        let client = recordClient
+        recordRead = Task { @MainActor [weak self] in
+            let read = await Self.readRecord(session, client: client)
+            guard let self, !Task.isCancelled else { return }
+            self.recordRead = nil
+            if let items = read {
+                if self.records.store(session, mark: mark, page: items, at: Date()), let state = self.actions.store?.state {
+                    self.host?.revise(self.source(state))
+                }
+            } else {
+                self.records.failed(session, mark: mark, at: Date())
+            }
+            self.readRecords()
+        }
+    }
+
+    /// A session's newest recorded items, oldest first, read back a page at a time until there are enough messages
+    /// (`LagoonRecords.wantsOlder`); nil when the record didn't answer. A record that is off, or doesn't hold the session,
+    /// answered: nothing. A page further back that fails leaves what was read.
+    private static func readRecord(_ session: String, client: ConchSocketClient) async -> [HistoryItem]? {
+        var items: [HistoryItem] = []
+        var cursor: String?
+        var pages = 0
+        repeat {
+            let outcome = await client.request(ConchHistoryPageRequest(session: session, before: cursor, limit: LagoonRecords.pageLimit), timeout: 5)
+            var reply: ConchHistoryReply?
+            if case let .reply(data) = outcome { reply = try? JSONDecoder().decode(ConchHistoryReply.self, from: data) }
+            guard let page = reply?.page else {
+                if pages > 0 || reply?.kind == "history-off" || ["session-not-found", "ambiguous-session"].contains(reply?.code) { return items }
+                return nil
+            }
+            items = page.items + items
+            cursor = page.previousCursor
+            pages += 1
+        } while cursor != nil && !Task.isCancelled && LagoonRecords.wantsOlder(items, pagesRead: pages)
+        return items
+    }
+
+    /// The lagoon was let go or switched off: no reads for a page nobody sees.
+    private func stopReadingRecords() {
+        recordRead?.cancel()
+        recordRead = nil
+    }
+
+    /// The sidebar picked a session that was already picked: the camera glides to its crab (it may have wandered off).
     func focus(_ sessionId: String) {
+        host?.focus(sessionId)
+    }
+
+    /// The window's selection changed. On the lagoon the camera glides to that crab, unless the page picked it itself
+    /// (`focusSession`), when it is already there (`LagoonFocus`). Told whatever page shows, so a pick the page made and
+    /// the window then left is forgotten either way.
+    func selectionChanged(to sessionId: String?, onLagoon: Bool) {
+        guard actions.focus.selectionChanged(to: sessionId), onLagoon, let sessionId else { return }
         host?.focus(sessionId)
     }
 
@@ -99,18 +183,21 @@ final class LagoonModel: ObservableObject {
             log.info("page loaded")
         case .dropped:
             log.info("web view let go")
+            stopReadingRecords()
             webGeneration += 1
         }
     }
 }
 
 /// The lagoon's actions, on the app's own paths (spec §5). Phase B and C's are compiled and never reached in phase A:
-/// `LagoonIntentRouter` hands one here only when its name's flag is on in `conch.lagoon.actions`. Approve, its undo and
-/// a reply act with no flag (`LagoonIntent.byDefault`).
+/// `LagoonIntentRouter` hands one here only when its name's flag is on in `conch.lagoon.actions`. Approve, its undo, a
+/// reply, marking a result looked at and focusing a session act with no flag (`LagoonIntent.actsByDefault`).
 @MainActor
 final class LagoonStoreActions: LagoonActionSink {
     weak var store: StateStore?
     weak var workspace: WorkspaceModel?
+    /// Which session the page picked, so the selection it moves isn't sent back to it (`LagoonModel.selectionChanged`).
+    var focus = LagoonFocus()
 
     private func row(_ id: String) -> SessionRow? {
         store?.state?.rows.first { $0.id == id }
@@ -125,10 +212,13 @@ final class LagoonStoreActions: LagoonActionSink {
         return nil
     }
 
-    /// B: the crab was clicked. The sidebar highlights it; the page stays.
+    /// The page's panel opened on a session or moved to another, or its crab was clicked (by default since 2026-10-13):
+    /// the sidebar selects it and brings its row into view. The window stays on the lagoon, and the camera isn't sent
+    /// back to the crab the page is already on (`LagoonFocus`).
     func focusSession(_ sessionId: String) {
-        guard row(sessionId) != nil else { return }
-        workspace?.viewing = sessionId
+        guard let workspace, row(sessionId) != nil else { return }
+        if focus.pageFocused(sessionId, viewing: workspace.viewing) { workspace.viewing = sessionId }
+        NotificationCenter.default.post(name: .revealSessionInSidebar, object: sessionId)
     }
 
     /// B: the lagoon showed the work on its glass.
@@ -221,7 +311,7 @@ struct LagoonPane: View {
         .onAppear {
             shown = true
             report(host, shown: true)
-            if let state = store.state { host?.offer(LagoonSnapshot.Source(state)) }
+            if let state = store.state { lagoon.offer(state) }
             host?.setLiveness(LagoonFeature.name(store.liveness))
         }
         .onDisappear {
@@ -241,7 +331,7 @@ struct LagoonPane: View {
         // when its `ts` moved on, at most four a second.
         .onReceive(store.$state) { state in
             guard let state else { return }
-            host?.offer(LagoonSnapshot.Source(state))
+            lagoon.offer(state)
         }
         .onReceive(store.$liveness) { host?.setLiveness(LagoonFeature.name($0)) }
         .accessibilityElement(children: .contain)

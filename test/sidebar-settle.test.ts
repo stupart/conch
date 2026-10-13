@@ -229,9 +229,11 @@ describe("the session list's layout and scrolling, as the fix left them", () => 
       ".onChange(of: undoDismissal?.id) { _, _ in\n                            scroller.rowsChanged()"]) {
       expect(ledger).toContain(change);
     }
-    // Only a change of focus asks to ease; everything a dismiss, a restore or conch's words set off jumps.
-    expect(ledger.split("animated: true").length - 1).toBe(1);
+    // Only a change of focus asks to ease: the window's, or the lagoon's panel moving to a session (2026-10-13), which
+    // reveals its row; everything a dismiss, a restore or conch's words set off jumps.
+    expect(ledger.split("animated: true").length - 1).toBe(2);
     expect(ledger).toContain(".onChange(of: focusID) { _, _ in\n                            keepInView(keptInView, proxy, animated: true)");
+    expect(ledger).toContain("keepInView(scrollTarget(for: request.id), proxy, animated: true)");
   });
 
   test("the activity line is rewritten in place: no identity per text, no transition, no animation", () => {

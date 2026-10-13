@@ -437,9 +437,9 @@ describe.skipIf(!drawable)("the app's web view, over conch-lagoon://, with the s
     expect(compileError).toBe("");
     const ready = checks.get("ready")!;
     expect(ready.ok).toBe(true);
-    // `act`: the intents the app acts on in every phase, so the page treats them as live (2026-10-05): Approve, its Undo,
-    // and the reply bar.
-    expect(ready.url).toBe("conch-lagoon://lagoon/index.html?app=1&readonly=1&act=approve,unapprove,reply,viewed");
+    // `act`: the intents the app acts on in every phase, so the page treats them as live: Approve, its Undo, the reply bar
+    // and looking at a result (2026-10-05), and the sidebar following the panel (2026-10-13).
+    expect(ready.url).toBe("conch-lagoon://lagoon/index.html?app=1&readonly=1&act=approve,unapprove,reply,viewed,focusSession");
     expect(ready.readOnly).toBe(true);
     // A module script and a fetch, both over the scheme.
     expect(checks.get("update")!.hello).toBe("lagoon");
@@ -485,11 +485,12 @@ describe.skipIf(!drawable)("the app's web view, over conch-lagoon://, with the s
     expect(checks.get("post")!.status).toBe(405);
   });
 
-  test("phase A: every message checked and logged, only approve, unapprove and reply acted on; a frame can't speak for the page; no new windows", () => {
+  test("phase A: every message checked and logged, only approve, unapprove, reply and focusSession acted on; a frame can't speak for the page; no new windows", () => {
     const intents = checks.get("intents")!;
     // Approving a result and taking it back act with no flag set (2026-10-05, Tyler's decision), and so does a reply
-    // (2026-10-05, Tyler's go, replies only), from a read-only page too; focusing, pausing and the rest still log.
-    expect(intents.routed).toEqual(["focusSession:logged", "reply:acted", "pause:logged", "approve:acted", "unapprove:acted"]);
+    // (2026-10-05, Tyler's go, replies only) and focusing a session (2026-10-13: the sidebar follows the panel), from a
+    // read-only page too; pausing and the rest still log.
+    expect(intents.routed).toEqual(["focusSession:acted", "reply:acted", "pause:logged", "approve:acted", "unapprove:acted"]);
     const refused = intents.refused as string[];
     for (const reason of [
       "approve for a review its session doesn't hold",
@@ -501,10 +502,10 @@ describe.skipIf(!drawable)("the app's web view, over conch-lagoon://, with the s
     }
     // window.open is refused before WebKit asks, or when it asks; either way nothing else is.
     expect(refused.filter((r) => !r.startsWith("navigation: the lagoon never opens a window"))).toHaveLength(4);
-    expect(intents.sink).toEqual(["reply s-page hello", "approveReview s-page r-page", "unapproveReview s-page r-page"]);
+    expect(intents.sink).toEqual(["focusSession s-page", "reply s-page hello", "approveReview s-page r-page", "unapproveReview s-page r-page"]);
     expect(intents.noWindow).toBe(true);
     const navigation = checks.get("navigation")!;
-    expect(navigation.url).toBe("conch-lagoon://lagoon/index.html?app=1&readonly=1&act=approve,unapprove,reply,viewed");
+    expect(navigation.url).toBe("conch-lagoon://lagoon/index.html?app=1&readonly=1&act=approve,unapprove,reply,viewed,focusSession");
     expect(navigation.refused).toContain("navigation: the lagoon's page is only ever its own");
   });
 
@@ -525,8 +526,10 @@ describe.skipIf(!realBundle)("the real lagoon, from the brand repo's dist, in th
     const real = checks.get("real")!;
     expect(real.api).toEqual([1, "app", true]);
     // Read-only, but Approve, its Undo, the reply bar and marking a result looked at are live: the page read
-    // `act=approve,unapprove,reply,viewed` (brand repo d91d0c2).
-    expect(real.act).toEqual(["approve", "unapprove", "reply", "viewed"]);
+    // `act=approve,unapprove,reply,viewed` (brand repo d91d0c2). `focusSession` is live too once the page knows it (its
+    // v4.12i): a bundle built before that leaves it out, and the app acts on what it sends either way.
+    expect((real.act as string[]).slice(0, 4)).toEqual(["approve", "unapprove", "reply", "viewed"]);
+    expect((real.act as string[]).slice(4)).toEqual((real.act as string[]).length > 4 ? ["focusSession"] : []);
     expect(real.crabs).toBe((state.rows as unknown[]).length);
     expect(real.ids).toEqual(real.expectedIds);
     expect(real.refused).toEqual([]);

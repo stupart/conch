@@ -4,16 +4,20 @@ import Foundation
 /// anything sees it, then logged, then acted on only when its own flag says so.
 ///
 /// The rollout (spec §8) is per name, in `conch.lagoon.actions`:
-/// - phase A (2026-10-04, this): no flags. Every message is checked and logged, and nothing acts but the three below.
-/// - phase B: `focusSession` and `openReview` (look, and go to it): reversible, and nothing reaches an agent.
+/// - phase A (2026-10-04, this): no flags. Every message is checked and logged, and nothing acts but the four below.
+/// - phase B: `openReview` with `how: open` (go to it): reversible, and nothing reaches an agent.
 /// - phase C: `answer` and `pause`, which do reach one. Each is its own flag, so either can go back to logging.
-/// Three act by default, with no flag at all (`byDefault`), ahead of phases B and C, and whether the page is read-only
+/// Four act by default, with no flag at all (`byDefault`), ahead of phases B and C, and whether the page is read-only
 /// or not:
 /// - `approve` and `unapprove` (2026-10-05, Tyler's decision): the same store action as the review pane's Approve, and
 ///   only for a result whose agent asked for your yes, which is told `Approved: <label>.` once the 10 s undo window
 ///   closes (the daemon holds it; an undo inside the window cancels it).
 /// - `reply` (2026-10-05, Tyler's go, replies only): what you type to a session on the glass, sent exactly as the
 ///   composer sends it, through the same store action and delivery path. It was phase C's.
+/// - `focusSession` (2026-10-13, Tyler: "If I'm looking at the work for one session it should show I'm in that session
+///   on the main sidebar"): the page's panel opened on, or moved to, a session, or a crab was clicked. The sidebar
+///   selects that session and brings its row into view, and the window stays on the lagoon (`LagoonFocus`). It was phase
+///   B's: it changes only which row is highlighted, and nothing reaches an agent.
 /// `newSession` has no conch action yet and only ever logs. `ready` isn't an intent: it is the page saying it booted, and
 /// the app answers it with the latest snapshot whatever the flags say.
 public enum LagoonIntent {
@@ -22,17 +26,18 @@ public enum LagoonIntent {
     }
 
     /// The names that can act at all, by phase. Anything else is logged and never acted on.
-    public static let phaseB: Set<Name> = [.focusSession, .openReview]
+    public static let phaseB: Set<Name> = [.openReview]
     public static let phaseC: Set<Name> = [.answer, .pause]
-    /// The names that act with no flag set, in the order the page's `act=` names them: approving a result, taking it
-    /// back within 10 s, and replying to a session (2026-10-05).
-    public static let byDefaultInOrder: [Name] = [.approve, .unapprove, .reply]
+    /// The names that act with no flag set: approving a result, taking it back within 10 s, and replying to a session
+    /// (2026-10-05), and the sidebar following the panel (2026-10-13).
+    public static let byDefaultInOrder: [Name] = [.approve, .unapprove, .reply, .focusSession]
     public static let byDefault: Set<Name> = Set(byDefaultInOrder)
-    /// What the page's `act=` names, in its order: the names above, then `viewed`, which is `openReview` with `how:
-    /// viewed` (the lagoon showed a result on its glass) and acts by default too. Marking a result looked at is the same
-    /// as opening it in the app, and without it a result that asked nothing could never leave the lagoon's tideline
-    /// (2026-10-05, Tyler: "sure… sounds good directionally"). `openReview` with `how: open` stays phase B.
-    public static let actTokens: [String] = byDefaultInOrder.map(\.rawValue) + ["viewed"]
+    /// What the page's `act=` names, in its order (the order each went live): approve, unapprove and reply, then
+    /// `viewed`, which is `openReview` with `how: viewed` (the lagoon showed a result on its glass) and acts by default
+    /// too, then `focusSession` (the page's v4.12i reads it). Marking a result looked at is the same as opening it in the
+    /// app, and without it a result that asked nothing could never leave the lagoon's tideline (2026-10-05, Tyler: "sure…
+    /// sounds good directionally"). `openReview` with `how: open` stays phase B.
+    public static let actTokens: [String] = [Name.approve, .unapprove, .reply].map(\.rawValue) + ["viewed", Name.focusSession.rawValue]
 
     /// Whether this message acts with no flag set.
     public static func actsByDefault(_ message: Message) -> Bool {
@@ -191,7 +196,8 @@ public struct LagoonActionFlags: Equatable, Sendable {
 /// (LagoonPane.swift), onto StateStore and the workspace; a test hands in a recorder.
 @MainActor
 public protocol LagoonActionSink: AnyObject {
-    /// `workspace.viewing = id`, staying on the lagoon.
+    /// Select it in the sidebar and bring its row into view, staying on the lagoon, and without sending the camera back
+    /// to the crab the page is already on (`LagoonFocus`). Acts by default (`byDefault`).
     func focusSession(_ sessionId: String)
     /// `store.markReviewViewed(sessionId:review:)`.
     func markReviewViewed(sessionId: String, reviewId: String)
@@ -222,7 +228,8 @@ public enum LagoonRouting: Equatable, Sendable {
 @MainActor
 public enum LagoonIntentRouter {
     /// Every code path for phases B and C is here and compiled; each is reached only when that name's flag is on. With
-    /// every flag off (phase A), only `approve`, `unapprove` and `reply` reach the sink (`LagoonIntent.byDefault`).
+    /// every flag off (phase A), only `approve`, `unapprove`, `reply`, `focusSession` and `openReview` viewed reach the
+    /// sink (`LagoonIntent.actsByDefault`).
     public static func route(_ message: LagoonIntent.Message, flags: LagoonActionFlags, sink: LagoonActionSink?) -> LagoonRouting {
         if message.name == .ready { return .ready }
         guard LagoonIntent.actsByDefault(message) || flags.acts(message.name), let sink else { return .logged }

@@ -8,8 +8,12 @@ import ConchDesign
 /// The lagoon's reading of the app's own state (spec §4): `PublishedState` copied field for field into
 /// `LagoonSnapshot.Source`, which does the stripping. Nothing is decided here; a field the lagoon may not see is never
 /// copied, and one it may is copied as the daemon published it.
+///
+/// `recorded` is what conch's record store holds of the sessions the daemon published no conversation for, read as the
+/// app's own conversation pane reads them (`LagoonRecords`, 2026-10-13): a session's published window wins, and the record
+/// fills in for one without.
 extension LagoonSnapshot.Source {
-    init(_ state: PublishedState) {
+    init(_ state: PublishedState, recorded: [String: [Item]] = [:]) {
         self.init(
             ts: state.ts,
             paused: state.mode.paused,
@@ -17,7 +21,7 @@ extension LagoonSnapshot.Source {
             liveState: state.live.state,
             rows: state.rows.map(Row.init),
             // `conversations` only, as sanitize.mjs reads it: the single `conversation` of an older daemon isn't sent.
-            conversations: (state.conversations ?? [:]).mapValues { $0.items.map(Item.init) },
+            conversations: LagoonRecords.merged(published: (state.conversations ?? [:]).mapValues { $0.items.map(Item.init) }, recorded: recorded),
             dismissed: state.dismissed + state.dismissedRows.map(\.id),
             // The jar's count (2026-10-05): nil from a daemon too old to approve, sent as 0.
             seaGlass: state.seaGlass

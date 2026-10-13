@@ -40,6 +40,27 @@ final class LagoonPacerTests: XCTestCase {
         XCTAssertEqual(sent(pacer.offer("b", ts: 11, now: at(4))), "b")
     }
 
+    /// A session's recorded conversation came in (LagoonRecords): the same `ts`, more known, sent as a newer one is, paced
+    /// like any other, and not undone by an offer at the `ts` it revised.
+    func testARevisedSnapshotIsSentThoughItsTsDidntMove() {
+        var pacer = readyAndVisible()
+        XCTAssertEqual(sent(pacer.offer("a", ts: 10, now: at(1))), "a")
+        XCTAssertEqual(sent(pacer.revise("a + recorded", ts: 10, now: at(2))), "a + recorded")
+        XCTAssertNil(sent(pacer.offer("a again", ts: 10, now: at(3))), "the same ts, offered again, is not newer than its revision")
+        XCTAssertEqual(sent(pacer.offer("b", ts: 11, now: at(4))), "b")
+        // Inside the quarter second it waits, like any other.
+        XCTAssertEqual(try XCTUnwrap(wait(pacer.revise("b + recorded", ts: 11, now: at(4.1)))), 0.15, accuracy: 1e-6)
+        XCTAssertEqual(sent(pacer.tick(now: at(4.25))), "b + recorded")
+        // A revision built from a state older than the newest offered never goes back in time.
+        XCTAssertEqual(sent(pacer.offer("c", ts: 12, now: at(5))), "c")
+        XCTAssertEqual(sent(pacer.revise("late", ts: 11, now: at(6))), "late")
+        XCTAssertNil(sent(pacer.offer("c again", ts: 12, now: at(7))))
+        // Unseen, nothing: seen again, the revision.
+        _ = pacer.visible(false, now: at(8))
+        XCTAssertNil(sent(pacer.revise("hidden", ts: 12, now: at(9))))
+        XCTAssertEqual(sent(pacer.visible(true, now: at(10))), "hidden")
+    }
+
     func testCoalescedToFourASecondTheLatestWinning() {
         var pacer = readyAndVisible()
         XCTAssertEqual(sent(pacer.offer("1", ts: 1, now: at(1.00))), "1")
