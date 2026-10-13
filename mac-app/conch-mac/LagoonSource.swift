@@ -12,8 +12,11 @@ import ConchDesign
 /// `recorded` is what conch's record store holds of the sessions the daemon published no conversation for, read as the
 /// app's own conversation pane reads them (`LagoonRecords`, 2026-10-13): a session's published window wins, and the record
 /// fills in for one without.
+///
+/// `folderOrder` is the order Tyler dragged the sidebar's folders into (`SessionGrouping.orderKey`), so the lagoon's
+/// `folders` come in the sidebar's order (2026-10-13).
 extension LagoonSnapshot.Source {
-    init(_ state: PublishedState, recorded: [String: [Item]] = [:]) {
+    init(_ state: PublishedState, recorded: [String: [Item]] = [:], folderOrder: [String] = []) {
         self.init(
             ts: state.ts,
             paused: state.mode.paused,
@@ -24,7 +27,8 @@ extension LagoonSnapshot.Source {
             conversations: LagoonRecords.merged(published: (state.conversations ?? [:]).mapValues { $0.items.map(Item.init) }, recorded: recorded),
             dismissed: state.dismissed + state.dismissedRows.map(\.id),
             // The jar's count (2026-10-05): nil from a daemon too old to approve, sent as 0.
-            seaGlass: state.seaGlass
+            seaGlass: state.seaGlass,
+            folderOrder: folderOrder
         )
     }
 }

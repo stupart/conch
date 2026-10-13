@@ -162,6 +162,38 @@ final class SessionGroupingTests: XCTestCase {
     }
 
     /// A daemon that ever sent a parent cycle would hang the list rather than draw it.
+    // MARK: The Mac sidebar (`sidebar`): the rule the lagoon is sent too
+
+    private func session(_ id: String, cwd: String?, workDirs: [String]? = nil, parent: String? = nil, startedBy: String? = nil) -> SessionGrouping.Session {
+        SessionGrouping.Session(id: id, cwd: cwd, workDirs: workDirs, parentSessionId: parent, startedBySessionId: startedBy)
+    }
+
+    func testTheSidebarGroupsByTheWorkFolderElseWhereItStarted() {
+        XCTAssertEqual(SessionGrouping.workFolder(cwd: "/a", workDirs: ["/b", "/c"]), "/b")
+        XCTAssertEqual(SessionGrouping.workFolder(cwd: "/a", workDirs: []), "/a")
+        XCTAssertEqual(SessionGrouping.workFolder(cwd: "/a", workDirs: nil), "/a")
+        XCTAssertNil(SessionGrouping.workFolder(cwd: nil, workDirs: nil))
+        let grouped = SessionGrouping.sidebar([
+            session("a", cwd: "/Users/t", workDirs: ["/Users/t/Projects/lantern"]),
+            session("b", cwd: "/Users/t/Projects/lantern"),
+            session("c", cwd: "/Users/t/"),
+            session("d", cwd: "/tmp/other", parent: "c"),
+            session("e", cwd: "/Users/t/Projects/quay", startedBy: "a"),
+            session("f", cwd: nil),
+        ], home: "/Users/t", order: [])
+        XCTAssertEqual(grouped.map(\.name), ["lantern", "Home", ""])
+        XCTAssertEqual(grouped.map(\.sessionIDs), [["a", "b", "e"], ["c", "d"], ["f"]])
+    }
+
+    func testTheSidebarKeepsTheDraggedOrder() {
+        let sessions = [session("a", cwd: "/w/one"), session("b", cwd: "/w/two"), session("c", cwd: "/w/three")]
+        let stored = SessionGrouping.storedOrder("/w/three\n/w/gone\n/w/one")
+        XCTAssertEqual(stored, ["/w/three", "/w/gone", "/w/one"])
+        XCTAssertEqual(SessionGrouping.sidebar(sessions, home: "/Users/t", order: stored).map(\.name), ["three", "one", "two"])
+        XCTAssertEqual(SessionGrouping.storedOrder(""), [])
+        XCTAssertEqual(SessionGrouping.orderKey, "conch.folderOrder")
+    }
+
     func testAParentCycleDoesNotHang() {
         let grouped = folders([
             ("a", "/Users/t/Projects/conch", "b"),

@@ -30,6 +30,54 @@ public struct SessionFolder: Equatable, Sendable, Identifiable {
 }
 
 public enum SessionGrouping {
+    /// One session as the Mac sidebar groups it: the fields of its row the rule reads, and nothing else.
+    public struct Session: Equatable, Sendable {
+        public var id: String
+        public var cwd: String?
+        public var workDirs: [String]?
+        public var parentSessionId: String?
+        public var startedBySessionId: String?
+
+        public init(id: String, cwd: String?, workDirs: [String]?, parentSessionId: String?, startedBySessionId: String?) {
+            self.id = id
+            self.cwd = cwd
+            self.workDirs = workDirs
+            self.parentSessionId = parentSessionId
+            self.startedBySessionId = startedBySessionId
+        }
+    }
+
+    /// Where the Mac reader keeps the order Tyler dragged the folders into: their paths, newline-joined.
+    public static let orderKey = "conch.folderOrder"
+
+    /// That stored order, as paths.
+    public static func storedOrder(_ stored: String) -> [String] {
+        stored.split(separator: "\n").map(String.init)
+    }
+
+    /// Where a session's work is: the first folder its agent declared (`workDirs`), else where it started (`cwd`).
+    public static func workFolder(cwd: String?, workDirs: [String]?) -> String? {
+        workDirs?.first ?? cwd
+    }
+
+    /// What the Mac sidebar shows, in its order: each session in its work folder, a child (a subagent, or a session
+    /// another one started) under its parent's, the home folder named "Home" rather than the account's name, and the
+    /// folders in the order the reader dragged them into, then as they arrived. The sidebar draws these, and the lagoon
+    /// is sent their names (`LagoonSnapshot.folders`, 2026-10-13), so the two can never group a session differently.
+    public static func sidebar(_ sessions: [Session], home: String, order: [String]) -> [SessionFolder] {
+        let grouped = folders(for: sessions.map {
+            ($0.id, workFolder(cwd: $0.cwd, workDirs: $0.workDirs), $0.parentSessionId ?? $0.startedBySessionId)
+        })
+        .map { folder in
+            // A session started in the home folder headed the list with the account name — "tylerstupart" — which
+            // reads like a project and is not one. Seen on the live window, not in any test: every fixture used a
+            // project path.
+            guard folder.id == home else { return folder }
+            return SessionFolder(id: folder.id, name: "Home", sessionIDs: folder.sessionIDs)
+        }
+        return ordered(grouped, by: order)
+    }
+
     /// The rows, grouped by folder, in the order the daemon sent them.
     ///
     /// Order is first appearance rather than anything cleverer on purpose: the list is read

@@ -1259,7 +1259,11 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     /// Where the session's work is: the first folder its agent declared, else where it started.
     /// `cwd` stays what a relative link is relative to.
     // ponytail: one root; a tree per declared folder if a session ever names two.
-    var workFolder: String? { workDirs?.first ?? cwd }
+    var workFolder: String? { SessionGrouping.workFolder(cwd: cwd, workDirs: workDirs) }
+    /// What the sidebar groups it by (`SessionGrouping.sidebar`), and the lagoon with it.
+    var groupedAs: SessionGrouping.Session {
+        SessionGrouping.Session(id: id, cwd: cwd, workDirs: workDirs, parentSessionId: parentSessionId, startedBySessionId: startedBySessionId)
+    }
 
     private enum CodingKeys: String, CodingKey {
         case id

@@ -248,7 +248,8 @@ function fixtureState(work: string, home: string, rows = 0) {
       {
         id: "s-needs", label: long(140, "A very long session name "), status: "needs", at, needsResponse: true, detail: long(260),
         paused: true, muted: false, live: null, active: false, approval: { id: "ap-1", name: "Bash", summary: "rm -rf build", answerable: false },
-        cwd: "/srv/elsewhere",
+        // A folder whose name is longer than 60: the sidebar heads it, the lagoon is sent no name for it (never a cut one).
+        cwd: `/srv/${"far-away-".repeat(7)}`,
       },
       {
         id: "s-sub", label: "subagent", status: "working", at, needsResponse: false, paused: false, muted: false, live: null, active: false,
@@ -367,9 +368,12 @@ describe.skipIf(!crossCheckable)("the app's snapshot is what sanitize.mjs makes 
         : 'conch-lagoon://lagoon/review/' + encodeURIComponent(r.id) + '/' + encodeURIComponent(key);
       console.log(JSON.stringify({ out: sanitize(state, { openUrl }), never: NEVER }));
     `;
-    const run = Bun.spawnSync([node!, "--input-type=module", "-e", script, path], { env: { ...process.env, HOME: home }, stdout: "pipe", stderr: "pipe" });
-    expect(run.exitCode, run.stderr.toString()).toBe(0);
-    const { out: theirs, never } = JSON.parse(run.stdout.toString()) as { out: unknown; never: string[] };
+    const sanitize = (statePath: string) => {
+      const run = Bun.spawnSync([node!, "--input-type=module", "-e", script, statePath], { env: { ...process.env, HOME: home }, stdout: "pipe", stderr: "pipe" });
+      expect(run.exitCode, run.stderr.toString()).toBe(0);
+      return JSON.parse(run.stdout.toString()) as { out: Record<string, unknown>; never: string[] };
+    };
+    const { out: theirs, never } = sanitize(path);
     // The fields agreed with the brand repo on 2026-10-05 are in what the app sends, so the comparison below covers them.
     expect(ours.seaGlass).toBe(3);
     expect(ours.rows[0].reviews.map((one: { approvedAt?: number }) => one.approvedAt)).toEqual([undefined, 1_791_039_800_000 - 90, undefined, undefined]);
@@ -382,7 +386,35 @@ describe.skipIf(!crossCheckable)("the app's snapshot is what sanitize.mjs makes 
     const old = ours.rows.find((row: { id: string }) => row.id === "s-old");
     expect(old.reviews[0].asksApproval).toBeUndefined();
     expect(old.reviews[0].approvalLabel).toBeUndefined();
-    expect(ours).toEqual(theirs);
+    // The sidebar's folders (2026-10-13, agreed with the brand repo, its v4.12j): every row's, by the sidebar's own rule
+    // (`SessionGrouping.sidebar`), and the folders in its order. Here no folder was dragged, so in the order they arrived;
+    // the started session and the subagent sit in their parent's, the row with no folder in none, and a folder whose name
+    // is longer than 60 is no name at all.
+    expect(ours.folders).toEqual(["work", "Conch"]);
+    expect(Object.fromEntries(ours.rows.map((row: { id: string; folder?: string }) => [row.id, row.folder ?? null]))).toEqual({
+      "s-page": "work", "s-codex": "Conch", "s-needs": null, "s-sub": "Conch", "s-started": "work", "s-old": null,
+    });
+    // The bridge has no sidebar: sanitize.mjs passes on the names it is handed (`rows[].folder`, `folders`), by the same
+    // rule (`folderOf`: trimmed, 1 to 60 characters, never cut, once each). Handed the sidebar's names as they are, the
+    // long one included, it must make what the app makes.
+    const sidebarNames: Record<string, string> = {
+      "s-page": "work", "s-codex": "Conch", "s-needs": "far-away-".repeat(7), "s-sub": "Conch", "s-started": "work",
+    };
+    const fixture = fixtureState(work, home) as { rows: { id: string }[] };
+    const named = join(root, "cross-state-folders.json");
+    writeFileSync(named, JSON.stringify({
+      ...fixture,
+      folders: [" work ", "Conch", "far-away-".repeat(7), "work"],
+      rows: fixture.rows.map((row) => (sidebarNames[row.id] ? { ...row, folder: sidebarNames[row.id] } : row)),
+    }));
+    const { out: theirsNamed } = sanitize(named);
+    if (Object.hasOwn(theirsNamed, "folders")) {
+      expect(ours).toEqual(theirsNamed);
+    } else {
+      // A sanitize.mjs from before v4.12j drops what it doesn't know: compared without the two fields until it has them.
+      const without = { ...ours, folders: undefined, rows: ours.rows.map((row: Record<string, unknown>) => ({ ...row, folder: undefined })) };
+      expect(JSON.parse(JSON.stringify(without))).toEqual(theirs);
+    }
     // And none of NEVER at any depth (but as a session id under `conversations`).
     const keys = new Set<string>();
     const walk = (value: unknown, parent = "") => {

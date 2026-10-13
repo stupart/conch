@@ -24,6 +24,12 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
     /// The sea glass approving results has earned, ever (the daemon's `seaGlass`): always sent, 0 when none. The lagoon's
     /// jar shows it. Agreed with the brand repo on 2026-10-05 under this name, with `Review.approvedAt`.
     public var seaGlass: Int
+    /// The Mac sidebar's folders, by name, in its order: the order Tyler dragged them into, then as they arrived
+    /// (`SessionGrouping.sidebar`). Always sent, [] when none; a folder the sidebar draws no header for (no folder known),
+    /// or whose name is longer than 60 characters (`folderName`), isn't one, and a name appears once.
+    /// Agreed with the brand repo on 2026-10-13 under this name, with `Row.folder`: the page groups its sessions as the
+    /// sidebar does, rather than by a rule of its own.
+    public var folders: [String]
 
     public struct Mode: Encodable, Equatable, Sendable {
         public var paused: Bool
@@ -44,6 +50,10 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
         public var snippet: String?
         public var cwd: String?
         public var workDirs: [String]?
+        /// The name of the sidebar folder the row is drawn under, as `folders` names it (`folderName`); absent when the
+        /// sidebar draws it under no header, or its name is longer than 60. A subagent's, or a started session's, is its
+        /// parent's.
+        public var folder: String?
         /// `claude` or `codex`, resolved: the daemon publishes `backend` only on subagent rows.
         public var backend: String
         public var parentSessionId: String?
@@ -69,7 +79,7 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
         public var reviews: [Review]
 
         enum CodingKeys: String, CodingKey {
-            case id, label, status, needsResponse, detail, snippet, cwd, workDirs, backend, parentSessionId, startedBySessionId
+            case id, label, status, needsResponse, detail, snippet, cwd, workDirs, folder, backend, parentSessionId, startedBySessionId
             case context, model, effort, paused, pauseExempt, muted, live, active, waitingOnAgents, usageLimit, at, activity, approval, reviews
         }
 
@@ -83,6 +93,7 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
             try c.encodeIfPresent(snippet, forKey: .snippet)
             try c.encodeIfPresent(cwd, forKey: .cwd)
             try c.encodeIfPresent(workDirs, forKey: .workDirs)
+            try c.encodeIfPresent(folder, forKey: .folder)
             try c.encode(backend, forKey: .backend)
             try c.encodeIfPresent(parentSessionId, forKey: .parentSessionId)
             try c.encodeIfPresent(startedBySessionId, forKey: .startedBySessionId)
@@ -181,9 +192,12 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
         public var dismissed: [String]
         /// `seaGlass`, or nil from a daemon too old to approve (sent as 0).
         public var seaGlass: Int?
+        /// The order the reader dragged the sidebar's folders into, by path (`SessionGrouping.orderKey`); none for a
+        /// reader that never dragged one, or a host with no sidebar.
+        public var folderOrder: [String]
 
         public init(ts: Double?, paused: Bool, holding: Int, liveState: String?, rows: [Row], conversations: [String: [Item]], dismissed: [String],
-                    seaGlass: Int? = nil) {
+                    seaGlass: Int? = nil, folderOrder: [String] = []) {
             self.ts = ts
             self.paused = paused
             self.holding = holding
@@ -192,6 +206,7 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
             self.conversations = conversations
             self.dismissed = dismissed
             self.seaGlass = seaGlass
+            self.folderOrder = folderOrder
         }
 
         public struct Row: Equatable, Sendable {
@@ -225,6 +240,11 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
             public var approval: Approval?
             /// Everything it holds, oldest first (`reviews`, or `[review]` from an older daemon: `held`).
             public var reviews: [Review]
+
+            /// What the sidebar groups it by: its own folders, unstripped, and its parent.
+            public var groupedAs: SessionGrouping.Session {
+                SessionGrouping.Session(id: id, cwd: cwd, workDirs: workDirs, parentSessionId: parentSessionId, startedBySessionId: startedBySessionId)
+            }
 
             public init(id: String, label: String? = nil, status: String? = nil, needsResponse: Bool = false, detail: String? = nil,
                         snippet: String? = nil, cwd: String? = nil, workDirs: [String]? = nil, backend: String? = nil,
@@ -380,6 +400,13 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
         }
         func finite(_ number: Double?) -> Double? { number.flatMap { $0.isFinite ? $0 : nil } }
         let statuses: Set<String> = ["working", "waiting", "needs"]
+        // The sidebar's own folders (`SessionGrouping.sidebar`), from the rows' own paths, before `~` replaces home in
+        // them, and with the same home the sidebar names "Home".
+        let sidebar = SessionGrouping.sidebar(source.rows.map(\.groupedAs), home: home, order: source.folderOrder).filter { !$0.name.isEmpty }
+        var folderOf: [String: String] = [:]
+        for folder in sidebar {
+            for id in folder.sessionIDs where folderOf[id] == nil { folderOf[id] = Self.folderName(folder.name) }
+        }
 
         let rows = source.rows.map { r in
             let backendName = (r.backend.map { !$0.isEmpty && $0 != "conch" } ?? false) ? r.backend : r.providerId
@@ -392,6 +419,7 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
                 snippet: Self.cut(r.snippet, 160),
                 cwd: tilde(r.cwd),
                 workDirs: r.workDirs.map { $0.prefix(3).map { tilde($0)! } },
+                folder: folderOf[r.id],
                 backend: backendName == "codex" ? "codex" : "claude",
                 parentSessionId: Self.cut(r.parentSessionId, 120),
                 startedBySessionId: Self.cut(r.startedBySessionId, 120),
@@ -479,6 +507,18 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
         dismissed = source.dismissed.filter { seen.insert($0).inserted }
         // sanitize.mjs: a non-negative whole number, otherwise 0 (a count that isn't one never reaches the jar).
         seaGlass = max(0, source.seaGlass ?? 0)
+        var named = Set<String>()
+        folders = sidebar.compactMap { Self.folderName($0.name) }.filter { named.insert($0).inserted }
+    }
+
+    /// How long a folder's name may be (`rows[].folder`, `folders`).
+    public static let folderLimit = 60
+
+    /// sanitize.mjs `folderOf` (v4.12j): a folder's name trimmed, and only when it is 1 to 60 characters (counted as
+    /// JavaScript counts); a longer one is no name at all, never cut.
+    public static func folderName(_ name: String) -> String? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty && trimmed.utf16.count <= folderLimit ? trimmed : nil
     }
 
     /// How many of a session's recent messages the glass's conversation pane gets (sanitize.mjs `MESSAGES`).

@@ -29,14 +29,14 @@ function between(text: string, start: string, end: string): string {
 
 describe("every snapshot the page gets carries the record's conversations", () => {
   test("the published window wins and the record fills in, in the one place the source is built", () => {
-    expect(source).toContain("init(_ state: PublishedState, recorded: [String: [Item]] = [:]) {");
+    expect(source).toContain("init(_ state: PublishedState, recorded: [String: [Item]] = [:], folderOrder: [String] = []) {");
     expect(source).toContain("conversations: LagoonRecords.merged(published: (state.conversations ?? [:]).mapValues { $0.items.map(Item.init) }, recorded: recorded),");
   });
 
   test("the pane, the host's own reads and a revision all build it through LagoonModel.source", () => {
     expect(pane).toContain("source: { [weak self, weak store] in store?.state.flatMap { self?.source($0) } },");
     expect(between(pane, "func source(_ state: PublishedState) -> LagoonSnapshot.Source {", "\n    }\n"))
-      .toContain("LagoonSnapshot.Source(state, recorded: records.conversations)");
+      .toContain("recorded: records.conversations,");
     const view = between(pane, "struct LagoonPane: View {", "\nstruct LagoonWebContainer");
     expect(view).not.toContain("host?.offer(");
     expect(view.match(/lagoon\.offer\(state\)/g)?.length).toBe(2);
