@@ -640,7 +640,9 @@ extension PublishedState.BrowserRequest.Target {
 
 // MARK: - The pane
 
-/// A tab in the deliverables strip: a globe and the page's name, in the strip's own tab style, with a × on hover.
+/// A tab in the deliverables strip: a globe and the page's name, in the strip's own tab style. Under the pointer the globe
+/// becomes its ×, in the globe's own place, as Safari's tabs do: the tab keeps its width, so the tabs after it stay where
+/// they are. The × used to be added at its end, and every tab to its right moved 14 points as the pointer came over it.
 struct WorkbenchTabButton: View {
     let tab: Workbench.Tab
     let isSelected: Bool
@@ -651,42 +653,51 @@ struct WorkbenchTabButton: View {
 
     private var label: String { Workbench.label(title: tab.title, url: tab.url) }
 
+    /// The globe's place, and the ×'s: the globe at the strip's 10 points is 10 wide.
+    private static let mark: CGFloat = 10
+
     var body: some View {
-        HStack(spacing: 0) {
-            Button(action: open) {
-                HStack(spacing: 5) {
+        HStack(spacing: 5) {
+            ZStack {
+                if isHovered {
+                    Button(action: close) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(ConchPalette.textDim)
+                            .frame(width: Self.mark + 8, height: 24)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Close this tab")
+                    .accessibilityLabel("Close \(label)")
+                } else {
                     Image(systemName: "globe")
                         .font(.system(size: 10))
-                    Text(label)
-                        .font(ConchTypography.font(size: 11))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .frame(maxWidth: 180, alignment: .leading)
+                        .accessibilityHidden(true)
                 }
-                .foregroundStyle(isSelected ? ConchPalette.textPrimary : ConchPalette.textDim)
-                .padding(.leading, 8)
-                .padding(.trailing, isHovered ? 2 : 8)
-                .frame(height: 24)
-                .contentShape(Rectangle())
+            }
+            // Its own width whichever it shows, so nothing moves when it changes.
+            .frame(width: Self.mark)
+
+            Button(action: open) {
+                Text(label)
+                    .font(ConchTypography.font(size: 11))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: 180, alignment: .leading)
+                    .frame(height: 24)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help("\(label)\n\(tab.url)")
             .accessibilityLabel("\(label), browser tab")
-
-            if isHovered {
-                Button(action: close) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 8, weight: .semibold))
-                        .foregroundStyle(ConchPalette.textDim)
-                        .frame(width: 16, height: 16)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .padding(.trailing, 4)
-                .help("Close this tab")
-                .accessibilityLabel("Close \(label)")
-            }
         }
+        .foregroundStyle(isSelected ? ConchPalette.textPrimary : ConchPalette.textDim)
+        .padding(.horizontal, 8)
+        .frame(height: 24)
+        .contentShape(Rectangle())
+        // A click on the tab's padding or its globe opens it, as the whole tab did.
+        .onTapGesture(perform: open)
         .background(
             RoundedRectangle(cornerRadius: 6)
                 .fill(isSelected ? ConchPalette.selection : (isHovered ? ConchPalette.hover : .clear))
@@ -722,6 +733,8 @@ struct WorkbenchPane: View {
                 Image(systemName: page.url?.scheme == "https" ? "lock" : "globe")
                     .font(.system(size: 9.5))
                     .padding(.leading, 4)
+                    // 6 to the address, a filed page's own gap (ReviewContent's address line).
+                    .padding(.trailing, 2)
                 TextField("Address", text: $draft)
                     .textFieldStyle(.plain)
                     .font(ConchTypography.font(size: 11))
@@ -749,8 +762,11 @@ struct WorkbenchPane: View {
                 barButton("xmark", help: "Close this tab", action: close)
             }
             .foregroundStyle(ConchPalette.textDim)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
+            // A filed page's address line, to the point (ReviewContent): 26 tall, its first mark 15 in and its last 14
+            // from the pane's edges, so moving between a page tab and a filed page moves nothing. This bar was 32 tall,
+            // its marks 18 and 17 in: the page under it sat 6 points lower than a filed page's.
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(ConchPalette.raised)
 
