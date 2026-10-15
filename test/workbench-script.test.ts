@@ -318,6 +318,56 @@ describe("the Workbench's page script", () => {
     expect((await run(p, "click", { how: "auto", what: "Checkout now" })).error).toContain("not a ref from browser_read");
   });
 
+  /** 2026-10-16: the user watches an agent work, so the app marks what it is about to click or type into. */
+  test("locate answers only where a click or a type will land, and refuses a password field before anything is marked", async () => {
+    const p = page();
+    expect(await run(p, "locate", { how: "auto", what: "Sign in" })).toEqual({ box: [10, 10, 120, 24] });
+    expect(await run(p, "locate-field", { how: "auto", what: "Email" })).toEqual({ box: [10, 10, 120, 24] });
+    // A label's box is its field's: what will be typed into is what is marked.
+    p.email.size = { width: 300, height: 32 };
+    expect(await run(p, "locate-field", { how: "text", what: "Email" })).toEqual({ box: [10, 10, 300, 32] });
+    for (const what of ["Password", ".password-box", "#password"]) {
+      expect(await run(p, "locate-field", { how: "auto", what }), what).toEqual({ error: PASSWORD_REFUSAL });
+    }
+    expect((await run(p, "locate", { how: "selector", what: "#nothing" })).error).toBe('nothing on the page matches "#nothing"');
+    // Nothing was clicked, typed or read out on the way.
+    expect(p.signIn.clicks).toBe(0);
+    for (const field of [p.email, p.password]) expect(field.valueSets).toBe(0);
+    const wire = JSON.stringify(await run(p, "locate-field", { how: "auto", what: "Email" }));
+    expect(wire).not.toContain("tyler@example.com");
+  });
+
+  test("type fills its field in steps the user can watch, each heard as typing, and answers no value", async () => {
+    const p = page();
+    const timers: number[] = [];
+    p.window.setTimeout = (resolve: () => void, ms: number) => { timers.push(ms); resolve(); };
+    // What the field holds each time the page hears typing.
+    const seen: string[] = [];
+    const dispatch = p.email.dispatchEvent.bind(p.email);
+    p.email.dispatchEvent = (event: FakeEvent) => {
+      if (event.type === "input") seen.push(p.email.value);
+      return dispatch(event);
+    };
+    const typed = "agent-at-work@example.com";
+    expect(await run(p, "type", { how: "auto", what: "Email", text: typed })).toEqual({ typed: 'field "Email"' });
+    expect(p.email.valueSets).toBe(12);
+    expect(seen).toHaveLength(12);
+    expect(seen.at(-1)).toBe(typed);
+    for (const [index, value] of seen.entries()) {
+      expect(typed.startsWith(value), value).toBe(true);
+      if (index) expect(value.length).toBeGreaterThan(seen[index - 1]!.length);
+    }
+    expect(timers).toEqual(Array(11).fill(28));
+    expect(p.email.events).toEqual([...Array(11).fill("input"), "input", "change"]);
+    // A short word fills a character at a time; the swift constants are the script's own.
+    seen.length = 0;
+    await run(p, "type", { how: "auto", what: "Email", text: "hey" });
+    expect(seen).toEqual(["h", "he", "hey"]);
+    expect(swift).toContain("public static let fillSteps = 12");
+    expect(swift).toContain("public static let fillStepMs = 28");
+    expect(scriptSource()).toContain("const FILL = { steps: 12, ms: 28 };");
+  });
+
   test("a long page comes back cut to fit one answer, and says so", async () => {
     const p = page();
     p.body.own = "word ".repeat(40_000);

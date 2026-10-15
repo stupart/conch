@@ -8,7 +8,7 @@ import { AGENT_INSTRUCTIONS, renderAgentsMd, renderSkillMd } from "../src/agent-
 import { validateSocketTurnEvent } from "../src/control-server.ts";
 import { hookSessionFolders, stopReview } from "../src/hook.ts";
 import { repositoryRoots, reviewLinkScope, rootsHolding, transcriptFolder } from "../src/review-roots.ts";
-import { checkReviewLink } from "../src/snippet.ts";
+import { checkLocalFile, checkReviewLink } from "../src/snippet.ts";
 
 /**
  * A session's deliverable link may sit under any of its folders, not only the one it is in now
@@ -337,5 +337,45 @@ describe("the apps say why a link is missing", () => {
       .toContain("linkRefused = try? c.decodeIfPresent(String.self, forKey: .linkRefused)");
     expect(read("mobile/conch-ios/conch-ios/DeliverableSheet.swift"))
       .toContain('return .unavailable(review.linkRefused ?? "No link on this review.")');
+  });
+});
+
+/**
+ * An Atlas page's copy (atlas-copies.ts) is shown wherever the session works: a Markdown file in the copies folder
+ * passes the publish rule, and nothing else there does. Tyler, 2026-10-16: "are u showing me the atals pages in conch?"
+ */
+describe("Atlas pages' copies", () => {
+  test("a Markdown file in the copies folder passes from any session; another kind, a hidden one or a link out does not", async () => {
+    await onDisk(async (disk) => {
+      const saved = process.env.CONCH_ATLAS_COPIES;
+      const copies = join(disk, "home", "Documents", "conch-notes", "atlas");
+      process.env.CONCH_ATLAS_COPIES = copies;
+      try {
+        const put = (path: string, body = "# page") => {
+          mkdirSync(join(path, ".."), { recursive: true });
+          writeFileSync(path, body, { mode: 0o644 });
+          return path;
+        };
+        const page = put(join(copies, "projects", "acme", "plan.md"));
+        const long = put(join(copies, "projects", "acme", "notes.markdown"));
+        const text = put(join(copies, "projects", "acme", "notes.txt"));
+        const hidden = put(join(copies, "projects", ".drafts", "plan.md"));
+        const outside = put(join(disk, "elsewhere", "plan.md"));
+        symlinkSync(outside, join(copies, "projects", "acme", "linked.md"));
+        // The session works somewhere else entirely: no roots of its own hold the copies.
+        const work = join(disk, "work");
+        mkdirSync(work);
+        expect(await checkLocalFile(page, [work])).toEqual({ ok: true, real: realpathSync(page) });
+        expect(await checkLocalFile(long, [work])).toMatchObject({ ok: true });
+        expect(await checkReviewLink(page, work, [work])).toEqual({ ok: true, link: page });
+        for (const refused of [text, outside, join(copies, "projects", "acme", "linked.md")]) {
+          expect(await checkLocalFile(refused, [work]), refused).toMatchObject({ ok: false, why: expect.stringContaining("outside") });
+        }
+        expect(await checkLocalFile(hidden, [work])).toMatchObject({ ok: false, why: "it is a hidden file, in a hidden folder, or a key or certificate" });
+      } finally {
+        if (saved === undefined) delete process.env.CONCH_ATLAS_COPIES;
+        else process.env.CONCH_ATLAS_COPIES = saved;
+      }
+    });
   });
 });

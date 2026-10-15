@@ -6,14 +6,21 @@ import WebKit
 /// The Workbench, conch's in-app browser: the Mac app's half (src/browser-workbench.ts is the daemon's). Each tab the
 /// daemon publishes is a live web view here, made when the tab first appears and kept alive while the app runs, so
 /// switching tabs never reloads a page and an agent can drive one nobody is looking at. Shown, a page sits in the
-/// deliverables pane (`WorkbenchPane`), where Tyler clicks and types in it directly: that is taking over. Not shown, it is
+/// Workdesk (`WorkbenchPane`), where Tyler clicks and types in it directly: that is taking over. Not shown, it is
 /// parked in a window of its own off every screen, still drawing, so a read or a screenshot sees it as it is.
 ///
 /// An agent's command comes the way a page capture does (`PageCaptureRequests`): named on the sessions file, acked at
 /// once (the ack's reply carries what to type, which is never on the file), run against the page by `WorkbenchScript`,
 /// and answered over the socket.
 ///
+/// Tyler opens tabs too (`openTab`, the Workdesk's +), on a profile he picks while the tab is blank, and pauses agents
+/// in one (`setPaused`), which refuses their commands there. While an agent's command runs he sees it: the tab and its
+/// bar say Agent (`working`), its click or its field is marked on the page (`WorkbenchPage.mark`), and a tab he isn't
+/// looking at gets a dot (`actedIn`), or comes forward when it may (`agentActivity`, `Workbench.follows`).
+///
 /// Tyler, 2026-10-09: "Agents's pages should live as tabs in the deliverables plane just like the deliverables."
+/// 2026-10-16: "letting me sign-in in an in-conch browser session and letting agents use that browser in the app so i
+/// can watch them work".
 @MainActor
 final class WorkbenchStore: ObservableObject {
     static let shared = WorkbenchStore(socket: ConchSocketClient(environment: ProcessInfo.processInfo.environment))
@@ -24,11 +31,31 @@ final class WorkbenchStore: ObservableObject {
         let serial: Int
     }
 
+    /// An agent's command starting in a tab: for the pane to bring that tab forward, when it may (`Workbench.follows`).
+    struct AgentActivity: Equatable {
+        let tab: Workbench.Tab
+        let serial: Int
+    }
+
     /// Every open tab, oldest first, as the daemon publishes them, less any closed here and not yet gone from the file.
     @Published private(set) var tabs: [Workbench.Tab] = []
     /// Each profile's name, by id.
     @Published private(set) var profileNames: [String: String] = [:]
+    /// Every profile, the default first, for a blank tab's picker.
+    @Published private(set) var profiles: [WorkbenchProfileList.Profile] = []
     @Published private(set) var arrival: Arrival?
+    /// The tabs an agent's command is running in, or ended in within `Workbench.agentLinger`, and what it is doing.
+    @Published private(set) var working: [String: String] = [:]
+    /// Tabs an agent acted in while they weren't shown: each keeps its dot until it is.
+    @Published private(set) var actedIn: Set<String> = []
+    @Published private(set) var agentActivity: AgentActivity?
+    /// A tab whose address field takes the keyboard when it is shown: the one Tyler just opened.
+    @Published var focusAddress: String?
+
+    /// The browser tab the Workdesk shows now, as its pane says.
+    private(set) var shown: String?
+    /// When Tyler last touched the Workdesk: a click, a key or a scroll in a shown page, or a press in its strip.
+    private(set) var lastTouch: Date?
 
     private let socket: ConchSocketClient
     private var pages: [String: WorkbenchPage] = [:]
@@ -39,9 +66,44 @@ final class WorkbenchStore: ObservableObject {
     private var handled: Set<String> = []
     private var stores: [UUID: WKWebsiteDataStore] = [:]
     private var serial = 0
+    /// Pause agents, set here and not yet on the file: what the tab says meanwhile.
+    private var pausing: [String: Bool] = [:]
+    /// Commands under way per tab, and the linger before a tab's badge goes.
+    private var running: [String: Int] = [:]
+    private var lingering: [String: Task<Void, Never>] = [:]
+    private var touchMonitor: Any?
 
     init(socket: ConchSocketClient) {
         self.socket = socket
+        // Tyler's hand in a shown page, however it got there: what keeps an agent's work from taking the Workdesk from him.
+        touchMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown, .scrollWheel]) { [weak self] event in
+            MainActor.assumeIsolated { self?.noteTouch(event) }
+            return event
+        }
+    }
+
+    /// A press in the Workdesk's own controls (its strip, its bar).
+    func touched() {
+        lastTouch = Date()
+    }
+
+    private func noteTouch(_ event: NSEvent) {
+        for page in pages.values where page.isShown && page.webView.window === event.window {
+            if event.type == .keyDown {
+                guard let responder = event.window?.firstResponder as? NSView, responder.isDescendant(of: page.webView) else { continue }
+            } else {
+                let point = page.webView.convert(event.locationInWindow, from: nil)
+                guard page.webView.bounds.contains(point) else { continue }
+            }
+            touched()
+            return
+        }
+    }
+
+    /// The pane's word on which browser tab it shows: that tab's dot goes.
+    func show(_ id: String?) {
+        shown = id
+        if let id { actedIn.remove(id) }
     }
 
     func tabs(of sessionId: String) -> [Workbench.Tab] {
@@ -56,13 +118,28 @@ final class WorkbenchStore: ObservableObject {
     /// A daemon with no browser publishes no tabs at all, which says nothing, and closes nothing.
     func accept(_ snapshot: PublishedState) {
         guard let published = snapshot.browserTabs else { return }
-        profileNames = Dictionary((snapshot.browserProfiles ?? []).map { ($0.id, $0.name) }, uniquingKeysWith: { _, last in last })
-        let all = published.map(\.workbenchTab)
+        let listed = (snapshot.browserProfiles ?? []).map { WorkbenchProfileList.Profile(id: $0.id, name: $0.name) }
+        if listed != profiles { profiles = listed }
+        profileNames = Dictionary(listed.map { ($0.id, $0.name) }, uniquingKeysWith: { _, last in last })
+        // A pause the daemon has taken is its to say again; one it hasn't yet still shows as Tyler set it.
+        for (id, paused) in pausing where published.contains(where: { $0.id == id && ($0.paused == true) == paused }) || !published.contains(where: { $0.id == id }) {
+            pausing[id] = nil
+        }
+        let all = published.map(\.workbenchTab).map { tab in
+            pausing[tab.id].map { tab.with(paused: $0) } ?? tab
+        }
         let ids = Set(all.map(\.id))
         closed.formIntersection(ids)
+        actedIn.formIntersection(ids)
         for (id, page) in pages where !ids.contains(id) {
             page.close()
             pages[id] = nil
+        }
+        // A blank tab moved to another profile: its page is made again on that profile's store.
+        for tab in all {
+            guard let page = pages[tab.id], page.profile != tab.profile else { continue }
+            page.close()
+            pages[tab.id] = nil
         }
         for tab in all where pages[tab.id] == nil && !closed.contains(tab.id) {
             guard let store = dataStore(for: tab.profile) else { continue }
@@ -71,6 +148,7 @@ final class WorkbenchStore: ObservableObject {
                 Task { _ = await socket.request(event, timeout: 2) }
             }
         }
+        for tab in all { pages[tab.id]?.agentsPaused = tab.paused }
         let open = all.filter { !closed.contains($0.id) }
         if open != tabs { tabs = open }
         let arrived = Workbench.arrivals(open, known: known, now: Date())
@@ -84,12 +162,96 @@ final class WorkbenchStore: ObservableObject {
 
     /// Tyler's ×: the page goes now, and the daemon is told, which takes the tab off the file.
     func close(_ id: String) {
+        touched()
         closed.insert(id)
         pages[id]?.close()
         pages[id] = nil
         tabs.removeAll { $0.id == id }
         let socket = socket
         Task { _ = await socket.request(WorkbenchTabEvent(tab: id, closed: true), timeout: 2) }
+    }
+
+    /// The Workdesk's +: a tab of Tyler's own in a session, blank, on a profile, its address field waiting for him. Its id
+    /// once the tab is here (on the file), or why there is none.
+    func openTab(sessionId: String, profile: String) async -> Result<String, WorkbenchFailure> {
+        touched()
+        guard case let .reply(data) = await socket.request(WorkbenchTabOpen(sessionId: sessionId, profile: profile), timeout: 5) else {
+            return .failure(WorkbenchFailure(words: "conch's daemon didn't answer, so no tab was opened. Is it running?"))
+        }
+        guard let reply = try? JSONDecoder().decode(WorkbenchOpened.self, from: data) else {
+            return .failure(WorkbenchFailure(words: "conch's daemon is older than this app and can't open a tab for you yet; restart it"))
+        }
+        guard reply.kind == "browser-opened", let id = reply.tabId else {
+            return .failure(WorkbenchFailure(words: reply.error.map { "No tab was opened: \($0)" } ?? "conch's daemon is older than this app and can't open a tab for you yet; restart it"))
+        }
+        focusAddress = id
+        // On the file within a poll or two: the pane shows it as soon as it is there.
+        for _ in 0..<40 where !tabs.contains(where: { $0.id == id }) {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        return .success(id)
+    }
+
+    /// Pause agents in a tab, or let them back in: at once here (a command already on its way is refused too), and on
+    /// the daemon, which refuses theirs from now on.
+    func setPaused(_ id: String, _ paused: Bool) {
+        touched()
+        pausing[id] = paused
+        pages[id]?.agentsPaused = paused
+        tabs = tabs.map { $0.id == id ? $0.with(paused: paused) : $0 }
+        let socket = socket
+        Task { _ = await socket.request(WorkbenchTabEvent(tab: id, paused: paused), timeout: 2) }
+    }
+
+    /// A blank tab's profile, picked: the daemon moves it, and its page is made again on that profile's store.
+    func setProfile(_ id: String, profile: String) async -> WorkbenchFailure? {
+        touched()
+        guard case let .reply(data) = await socket.request(WorkbenchTabEvent(tab: id, profile: profile), timeout: 5),
+              let reply = try? JSONDecoder().decode(WorkbenchOpened.self, from: data)
+        else { return WorkbenchFailure(words: "conch's daemon didn't answer; the tab kept its profile") }
+        return reply.kind == "browser-error" ? WorkbenchFailure(words: reply.error ?? "the tab kept its profile") : nil
+    }
+
+    /// A new profile by name (`browser-profiles add`, as Settings › Browser makes one): its id, or why not.
+    func createProfile(named name: String) async -> Result<String, WorkbenchFailure> {
+        switch await ChromeImport.profiles("add", name: name) {
+        case let .profiles(_, created):
+            guard let created else { return .failure(WorkbenchFailure(words: "conch's daemon didn't say which profile it made")) }
+            return .success(created.id)
+        case let .refused(words):
+            return .failure(WorkbenchFailure(words: words))
+        case .needsUpdate:
+            return .failure(WorkbenchFailure(words: ChromeImportStore.needsUpdate))
+        case .unreachable:
+            return .failure(WorkbenchFailure(words: "conch's daemon isn't running, so no profile was made"))
+        }
+    }
+
+    /// An agent's command starting in a tab: its badge on, its dot when it isn't shown, and word for the pane to follow.
+    private func began(_ request: PublishedState.BrowserRequest) {
+        let id = request.tab
+        running[id, default: 0] += 1
+        lingering[id]?.cancel()
+        lingering[id] = nil
+        working[id] = Workbench.agentWords(op: request.op)
+        if id != shown { actedIn.insert(id) }
+        if let tab = tabs.first(where: { $0.id == id }) {
+            serial += 1
+            agentActivity = AgentActivity(tab: tab, serial: serial)
+        }
+    }
+
+    /// Its command done: the badge stays a moment, so a run of commands reads as one stretch of work.
+    private func ended(_ request: PublishedState.BrowserRequest) {
+        let id = request.tab
+        running[id] = max(0, (running[id] ?? 1) - 1)
+        guard running[id] == 0 else { return }
+        lingering[id] = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Workbench.agentLinger * 1_000_000_000))
+            guard let self, !Task.isCancelled, self.running[id] == 0 else { return }
+            self.working[id] = nil
+            self.lingering[id] = nil
+        }
     }
 
     /// The default store for the built-in profile; a store of its own, kept by WebKit, for any other.
@@ -124,9 +286,16 @@ final class WorkbenchStore: ObservableObject {
                     _ = await socket.request(WorkbenchAnswer(request: request.id, error: "that tab isn't open in conch's window"), timeout: 5)
                     return
                 }
+                // Tyler's hand got there first: a command already on its way when he paused agents is refused too.
+                if page.agentsPaused {
+                    _ = await socket.request(WorkbenchAnswer(request: request.id, error: Workbench.pausedRefusal(tab: request.tab)), timeout: 5)
+                    return
+                }
+                self.began(request)
                 let activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated], reason: "running a command an agent gave conch's browser")
                 let answer = await page.run(request, text: ack.text)
                 ProcessInfo.processInfo.endActivity(activity)
+                self.ended(request)
                 _ = await socket.request(answer, timeout: 5)
             }
         }
@@ -145,6 +314,13 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
 
     let id: String
     let webView: WKWebView
+    /// The profile whose store it was made on: a blank tab moved to another is made again (`WorkbenchStore.accept`).
+    let profile: String
+    /// Tyler paused agents in it: a command reaching it is refused, even one already queued.
+    var agentsPaused = false
+    /// Where an agent's command is landing now, marked over the page (`WorkbenchMarks`).
+    @Published private(set) var mark: WorkbenchMark?
+    private var markSerial = 0
     /// Where the page in front is (the newest window it opened, else itself) and what it is called.
     @Published private(set) var url: URL?
     @Published private(set) var title = ""
@@ -172,6 +348,8 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
 
     init(tab: Workbench.Tab, store: WKWebsiteDataStore, report: @escaping (WorkbenchTabEvent) -> Void) {
         id = tab.id
+        profile = tab.profile
+        agentsPaused = tab.paused
         self.report = report
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = store
@@ -254,6 +432,12 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
     }
 
     // MARK: Where it is shown
+
+    /// In the Workdesk now, not parked.
+    var isShown: Bool {
+        guard !isClosed, let superview = webView.superview else { return false }
+        return superview !== window.contentView
+    }
 
     /// Shown in the pane: the page moves into its view, at its size.
     func attach(to container: NSView) {
@@ -363,6 +547,8 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
     }
 
     private func execute(_ request: PublishedState.BrowserRequest, text: String?, deadline: Date) async -> WorkbenchAnswer {
+        // Paused while it waited its turn: Tyler's hand comes first.
+        if agentsPaused { return WorkbenchAnswer(request: request.id, error: Workbench.pausedRefusal(tab: id)) }
         // Its own deadline for a navigation a command sets off, inside the command's.
         let settleBy = min(deadline.addingTimeInterval(-1), Date().addingTimeInterval(10))
         switch request.op {
@@ -386,6 +572,8 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
             }
         case "click":
             guard let target = request.target?.pair else { return answer(request, error: "a click needs its target") }
+            // Where it will land, marked first, so Tyler sees the click happen where it happens.
+            await markTarget(target, kind: .click)
             let outcome = await script(front, op: "click", target: target, text: nil, submit: false)
             guard case let .success(value) = outcome else { return answer(request, error: outcome.message ?? "the click didn't happen") }
             await settle(until: settleBy)
@@ -393,7 +581,10 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
         case "type":
             guard let target = request.target?.pair else { return answer(request, error: "typing needs its target") }
             guard let text else { return answer(request, error: "conch's daemon didn't hand over what to type") }
+            // The field outlined while it fills, as typing looks (WorkbenchScript): never what is typed, in conch's words.
+            if let refused = await markTarget(target, kind: .type) { return answer(request, error: refused) }
             let outcome = await script(front, op: "type", target: target, text: text, submit: request.submit == true)
+            clearMark(after: 0.35)
             guard case let .success(value) = outcome else { return answer(request, error: outcome.message ?? "nothing was typed") }
             if request.submit == true { await settle(until: settleBy) }
             return answer(request, result: value)
@@ -401,6 +592,36 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
             return await screenshot(request)
         default:
             return answer(request, error: "conch's browser has no \(request.op)")
+        }
+    }
+
+    /// Mark where a command will land: the element scrolled into view and its box outlined, a click's spot rippling.
+    /// A password field is refused here, before anything is marked; anything else the page can't find is left for the
+    /// command itself to say.
+    @discardableResult
+    private func markTarget(_ target: (how: String, what: String), kind: WorkbenchMark.Kind) async -> String? {
+        let view = front
+        switch await script(view, op: kind == .type ? "locate-field" : "locate", target: target, text: nil, submit: false) {
+        case let .failure(message):
+            return message == WorkbenchScript.passwordRefusal ? message : nil
+        case let .success(value):
+            guard case let .array(numbers)? = value["box"] else { return nil }
+            let box = numbers.compactMap { if case let .number(number) = $0 { number } else { nil } }
+            guard let rect = Workbench.markRect(box: box, scale: Double(view.pageZoom * view.magnification)) else { return nil }
+            markSerial += 1
+            mark = WorkbenchMark(kind: kind, rect: rect, serial: markSerial)
+            // A beat for the mark to be seen before the page moves under it.
+            if kind == .click { try? await Task.sleep(nanoseconds: 160_000_000) }
+            return nil
+        }
+    }
+
+    private func clearMark(after seconds: Double) {
+        let serial = markSerial
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            guard let self, self.markSerial == serial else { return }
+            self.mark = nil
         }
     }
 
@@ -612,18 +833,42 @@ private struct WorkbenchAck: Decodable {
     let text: String?
 }
 
-/// A tab moved or closed under Tyler's own hand (`browser-tab-event`).
+/// A tab moved, closed or paused under Tyler's own hand, or a blank one moved to another profile (`browser-tab-event`).
 struct WorkbenchTabEvent: Encodable {
     let kind = "browser-tab-event"
     let tab: String
     var url: String?
     var title: String?
     var closed: Bool?
+    var paused: Bool?
+    var profile: String?
+}
+
+/// The Workdesk's +: a tab of Tyler's own in a session (`browser-tab-open`).
+struct WorkbenchTabOpen: Encodable {
+    let kind = "browser-tab-open"
+    let sessionId: String
+    let profile: String
+}
+
+/// The daemon's answer to a tab opened, or to a tab event: its id, or why not.
+private struct WorkbenchOpened: Decodable {
+    let kind: String
+    let tabId: String?
+    let error: String?
+}
+
+/// Why something Tyler asked of the browser didn't happen, in words to show him.
+struct WorkbenchFailure: Error, Equatable {
+    let words: String
 }
 
 extension PublishedState.BrowserTab {
     var workbenchTab: Workbench.Tab {
-        Workbench.Tab(id: id, sessionId: sessionId, url: url, title: title, profile: profile, openedAt: openedAt)
+        Workbench.Tab(
+            id: id, sessionId: sessionId, url: url, title: title, profile: profile, openedAt: openedAt,
+            openedByUser: opener == "user", paused: paused == true
+        )
     }
 }
 
@@ -640,151 +885,91 @@ extension PublishedState.BrowserRequest.Target {
 
 // MARK: - The pane
 
-/// A tab in the deliverables strip: a globe and the page's name, in the strip's own tab style. Under the pointer the globe
-/// becomes its ×, in the globe's own place, as Safari's tabs do: the tab keeps its width, so the tabs after it stay where
-/// they are. The × used to be added at its end, and every tab to its right moved 14 points as the pointer came over it.
-struct WorkbenchTabButton: View {
-    let tab: Workbench.Tab
-    let isSelected: Bool
-    let open: () -> Void
-    let close: () -> Void
-
-    @State private var isHovered = false
-
-    private var label: String { Workbench.label(title: tab.title, url: tab.url) }
-
-    /// The globe's place, and the ×'s: the globe at the strip's 10 points is 10 wide.
-    private static let mark: CGFloat = 10
-
-    var body: some View {
-        HStack(spacing: 5) {
-            ZStack {
-                if isHovered {
-                    Button(action: close) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 8, weight: .semibold))
-                            .foregroundStyle(ConchPalette.textDim)
-                            .frame(width: Self.mark + 8, height: 24)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("Close this tab")
-                    .accessibilityLabel("Close \(label)")
-                } else {
-                    Image(systemName: "globe")
-                        .font(.system(size: 10))
-                        .accessibilityHidden(true)
-                }
-            }
-            // Its own width whichever it shows, so nothing moves when it changes.
-            .frame(width: Self.mark)
-
-            Button(action: open) {
-                Text(label)
-                    .font(ConchTypography.font(size: 11))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth: 180, alignment: .leading)
-                    .frame(height: 24)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("\(label)\n\(tab.url)")
-            .accessibilityLabel("\(label), browser tab")
-        }
-        .foregroundStyle(isSelected ? ConchPalette.textPrimary : ConchPalette.textDim)
-        .padding(.horizontal, 8)
-        .frame(height: 24)
-        .contentShape(Rectangle())
-        // A click on the tab's padding or its globe opens it, as the whole tab did.
-        .onTapGesture(perform: open)
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(isSelected ? ConchPalette.selection : (isHovered ? ConchPalette.hover : .clear))
-        )
-        .onHover { isHovered = $0 }
-        .contextMenu {
-            Button("Close Tab", action: close)
-        }
-    }
-}
-
-/// A tab's live page, with a slim bar over it: back, forward, reload, the address (edit it and press Return to go),
-/// the profile it is signed in with when it isn't the default, Open in Browser, and close.
+/// A tab's live page, with its bar over it (ConchDesign `WorkbenchBar`): back, forward, reload, the address, the Agent
+/// badge while an agent's command runs, the profile (a picker while the tab is blank), Pause agents, Open in Browser and
+/// close. Over the page: where an agent's command lands (`WorkbenchMarks`), a blank tab's page, and why a load failed.
 struct WorkbenchPane: View {
     @ObservedObject var page: WorkbenchPage
-    /// The profile's name, shown when the tab isn't on the default.
-    let profile: String?
+    @ObservedObject var store: WorkbenchStore
+    let tab: Workbench.Tab
     /// Open in Browser, through the app's one door for links (`StateStore.openLink`), which says when it can't.
     let openInBrowser: (URL) -> Void
     let close: () -> Void
 
     @State private var draft = ""
     @FocusState private var editing: Bool
+    @State private var pickingProfile = false
+    @State private var problem: String?
+
+    private var profileName: String {
+        store.profileNames[tab.profile] ?? (tab.profile == Workbench.defaultProfile ? "Default" : tab.profile)
+    }
+
+    /// Blank, and never sent anywhere: its profile can still change, and its page says where to start.
+    private var isBlank: Bool { tab.isBlank && page.url == nil }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 4) {
-                barButton("chevron.left", help: "Back", enabled: page.canGoBack) { page.goBack() }
-                barButton("chevron.right", help: "Forward", enabled: page.canGoForward) { page.goForward() }
-                barButton(page.isLoading ? "xmark" : "arrow.clockwise", help: page.isLoading ? "Stop loading" : "Reload") {
-                    if page.isLoading { page.stop() } else { page.reload() }
-                }
-                Image(systemName: page.url?.scheme == "https" ? "lock" : "globe")
-                    .font(.system(size: 9.5))
-                    .padding(.leading, 4)
-                    // 6 to the address, a filed page's own gap (ReviewContent's address line).
-                    .padding(.trailing, 2)
-                TextField("Address", text: $draft)
-                    .textFieldStyle(.plain)
-                    .font(ConchTypography.font(size: 11))
-                    .lineLimit(1)
-                    .focused($editing)
-                    .onSubmit {
-                        if let url = Workbench.address(typed: draft) { page.navigate(to: url) }
-                        editing = false
-                    }
-                if let profile {
-                    Text(profile)
-                        .font(ConchTypography.font(size: 10, weight: .medium))
-                        .lineLimit(1)
-                        .padding(.horizontal, 6)
-                        .frame(height: 16)
-                        .background(Capsule().fill(ConchPalette.fill))
-                        .help("Signed in with the \(profile) profile")
-                }
-                if page.popupCount > 0 {
-                    barButton("xmark.rectangle", help: "Close the window this page opened") { page.closeTopPopup() }
-                }
-                barButton("safari", help: "Open in your browser", enabled: page.url != nil) {
-                    if let url = page.url { openInBrowser(url) }
-                }
-                barButton("xmark", help: "Close this tab", action: close)
-            }
-            .foregroundStyle(ConchPalette.textDim)
-            // A filed page's address line, to the point (ReviewContent): 26 tall, its first mark 15 in and its last 14
-            // from the pane's edges, so moving between a page tab and a filed page moves nothing. This bar was 32 tall,
-            // its marks 18 and 17 in: the page under it sat 6 points lower than a filed page's.
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(ConchPalette.raised)
+            WorkbenchBar(
+                facts: WorkbenchBar.Facts(
+                    canGoBack: page.canGoBack,
+                    canGoForward: page.canGoForward,
+                    isLoading: page.isLoading,
+                    isSecure: page.url?.scheme == "https",
+                    hasPage: page.url != nil,
+                    popupCount: page.popupCount,
+                    profileName: profileName,
+                    isDefaultProfile: tab.profile == Workbench.defaultProfile,
+                    canPickProfile: isBlank,
+                    agentWork: store.working[tab.id],
+                    paused: tab.paused
+                ),
+                draft: $draft,
+                editing: $editing,
+                pickingProfile: $pickingProfile,
+                profilePicker: AnyView(profilePicker),
+                actions: WorkbenchBar.Actions(
+                    back: { store.touched(); page.goBack() },
+                    forward: { store.touched(); page.goForward() },
+                    reloadOrStop: {
+                        store.touched()
+                        if page.isLoading { page.stop() } else { page.reload() }
+                    },
+                    go: { typed in
+                        store.touched()
+                        if let url = Workbench.address(typed: typed) { page.navigate(to: url) }
+                    },
+                    togglePause: { store.setPaused(tab.id, !tab.paused) },
+                    closePopup: { store.touched(); page.closeTopPopup() },
+                    openInBrowser: { if let url = page.url { openInBrowser(url) } },
+                    close: close
+                )
+            )
 
             Rectangle()
                 .fill(ConchPalette.divider)
                 .frame(height: 1)
 
             WorkbenchHost(page: page)
+                .overlay { WorkbenchMarks(mark: page.mark) }
+                .overlay {
+                    if isBlank { WorkbenchBlankPage(profileName: profileName) }
+                }
                 .overlay(alignment: .top) {
-                    if let failure = page.failure {
+                    if let failure = page.failure ?? problem {
                         HStack(spacing: 8) {
                             Image(systemName: "exclamationmark.triangle")
                             Text(failure)
                                 .font(ConchTypography.font(size: 11))
                                 .lineLimit(2)
                             Spacer(minLength: 0)
-                            Button("Retry") { page.reload() }
-                                .font(ConchTypography.font(size: 11))
+                            if page.failure != nil {
+                                Button("Retry") { page.reload() }
+                                    .font(ConchTypography.font(size: 11))
+                            } else {
+                                Button("OK") { problem = nil }
+                                    .font(ConchTypography.font(size: 11))
+                            }
                         }
                         .foregroundStyle(ConchPalette.textPrimary)
                         .padding(.horizontal, 12)
@@ -796,25 +981,63 @@ struct WorkbenchPane: View {
                 }
         }
         .background(ConchPalette.surface)
-        .onAppear { draft = page.url?.absoluteString ?? "" }
+        .onAppear {
+            draft = page.url?.absoluteString ?? ""
+            store.show(tab.id)
+            takeFocusIfAsked()
+        }
+        .onChange(of: store.focusAddress) { _, _ in takeFocusIfAsked() }
         // The field follows the page (a redirect, a link followed, an agent's command), unless Tyler is typing in it.
         .onChange(of: page.url) { _, url in
             if !editing { draft = url?.absoluteString ?? "" }
         }
+        .onChange(of: editing) { _, now in if now { store.touched() } }
     }
 
-    private func barButton(_ symbol: String, help: String, enabled: Bool = true, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 10, weight: .semibold))
-                .frame(width: 22, height: 22)
-                .contentShape(Rectangle())
+    /// The tab Tyler just opened: its address field takes the keyboard, once, a moment after it is on screen.
+    private func takeFocusIfAsked() {
+        guard store.focusAddress == tab.id else { return }
+        store.focusAddress = nil
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            editing = true
         }
-        .buttonStyle(.plain)
-        .disabled(!enabled)
-        .opacity(enabled ? 1 : 0.4)
-        .help(help)
-        .accessibilityLabel(help)
+    }
+
+    private var profilePicker: some View {
+        WorkbenchProfileList(
+            profiles: store.profiles.isEmpty ? [WorkbenchProfileList.Profile(id: Workbench.defaultProfile, name: "Default")] : store.profiles,
+            selected: tab.profile,
+            pick: { id in
+                pickingProfile = false
+                guard id != tab.profile else { return }
+                Task { @MainActor in
+                    UserDefaults.standard.set(id, forKey: WorkbenchNewTab.profileKey)
+                    problem = await store.setProfile(tab.id, profile: id)?.words
+                }
+            },
+            create: { name in
+                switch await store.createProfile(named: name) {
+                case let .failure(failure):
+                    return failure.words
+                case let .success(id):
+                    pickingProfile = false
+                    UserDefaults.standard.set(id, forKey: WorkbenchNewTab.profileKey)
+                    problem = await store.setProfile(tab.id, profile: id)?.words
+                    return nil
+                }
+            }
+        )
+    }
+}
+
+/// What a new tab of Tyler's opens on: the profile he picked last for one, else Default.
+enum WorkbenchNewTab {
+    static let profileKey = "conch.workbench.newTabProfile"
+
+    static func profile(among profiles: [WorkbenchProfileList.Profile]) -> String {
+        let picked = UserDefaults.standard.string(forKey: profileKey)
+        return profiles.contains(where: { $0.id == picked }) ? picked! : Workbench.defaultProfile
     }
 }
 

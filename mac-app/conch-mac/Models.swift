@@ -119,11 +119,16 @@ struct PublishedState: Decodable, Equatable, Sendable {
     struct BrowserTab: Decodable, Equatable, Sendable {
         let id: String
         let sessionId: String
+        /// Empty for a tab the user opened and hasn't sent anywhere yet.
         let url: String
         let title: String?
         let profile: String
         /// Epoch-ms.
         let openedAt: Double
+        /// "user" for a tab the user opened from the Workdesk's +; absent for an agent's.
+        let opener: String?
+        /// The user paused agents in it.
+        let paused: Bool?
     }
 
     /// A command an agent gave a tab (src/browser-workbench.ts `BrowserAppRequest`). What it types isn't here: it comes

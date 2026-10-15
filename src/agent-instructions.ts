@@ -46,24 +46,27 @@ export const AGENT_INSTRUCTIONS = {
    * What every session is told about publishing. 2026-10-05: it says what counts (a plan, a diff or PR, not only a
    * finished page) and to publish as you go, not only at the end; it used to say "a meaningful result", which read as
    * the final one. "Not after every edit" stays, so versions don't pile up.
+   *
+   * 2026-10-16: the pane beside the conversation is the Workdesk, of typed items (Tyler: "deliverable is a type,
+   * borwser is a type"), and agents are told to browse for the user in conch's browser so he can watch, to leave a
+   * sign-in to him, and to show an Atlas page that matters with `atlas_show` ("are u showing me the atals pages in
+   * conch?"). Said in the same 410-word budget: the detail is the skill's (docs/conch-control-skill.md).
    */
-  alwaysOn: `conch connects this session to the user’s Mac workspace, floating overlay, and iPhone.
+  alwaysOn: `conch shows this session in the user’s Mac app, floating overlay and iPhone. Its Mac app gives you a Workdesk of typed items beside the conversation: deliverables, browser tabs, files, shell, terminal. Show your work there: results with \`review_to_front\`, pages with \`browser_open\`.
 
-Whenever you produce something the user would look at (a page, screenshot, file, document, plan, diff or PR, build, app state), publish it with \`review_to_front\` as you go, not only at the end: a short summary and the best artifact link. Then tell the user where it landed from the result’s \`surfaces\`, not what you assume. When the thing to look at has no link (an app window, the Simulator, a terminal, a design), pass its \`kind\` and say where to look in the summary. For a written explanation, request a conversation scene (\`scene: {v: 1, target: {kind: "conversation"}}\`) and keep the complete explanation in your normal reply.
+Whenever you produce something the user would look at (a page, screenshot, file, document, plan, diff or PR, build, app state), publish it with \`review_to_front\` as you go, not only at the end: a short summary and the best artifact link. Tell the user where it landed from the result’s \`surfaces\`. With no link (an app window, the Simulator), pass its \`kind\` and say where to look. For a written explanation, use scene kind \`conversation\` and keep it in your reply.
 
 A link is an http(s) URL, or an absolute path to a file or a folder (shown as its file tree) under this session’s folders: where it started, where it is now, its git repository, \`conch_working_folders\`, or a temp folder (/tmp, or macOS’s per-user /var/folders/…/T), which conch copies when it files the link, so a cleaned temp folder can’t take it away. Never a hidden file, key or executable.
 
-To show part of a web page, use \`conch_capture\` rather than screenshotting a browser. \`open <url>\` lands in conch’s Workbench; \`CONCH_OPEN_EXTERNAL=1 open <url>\` uses the default browser.
+Browse for the user with conch’s \`browser_*\` tools so they can watch in the Workdesk; other browser tools are fine when they ask or the task needs them. At a sign-in, ask them to sign in in the tab; never type passwords. \`conch_capture\` shows part of a page. \`open <url>\` lands in the Workdesk; \`CONCH_OPEN_EXTERNAL=1 open <url>\` uses the default browser. Show an Atlas page you read or wrote that matters to the user with \`atlas_show\`.
 
-Publishing makes the result available without interrupting the user, who chooses when to open it. Do not open applications, rearrange windows, or start the microphone as a publication side effect. Publish again whenever it changes in a way worth seeing, not after every edit: the same link or \`key\` files the artifact's next version. \`conch_deliverables\` lists what you have published; \`review_remove\` takes back one that is wrong or obsolete.
+Publishing makes the result available without interrupting the user: open no apps, move no windows, start no microphone. Publish again whenever it changes in a way worth seeing, not after every edit: the same link or \`key\` files its next version. \`conch_deliverables\` lists yours; \`review_remove\` takes back a wrong one.
 
-Omit \`session\` when publishing. Never attribute work to another session or invent surface references.
+Omit \`session\` when publishing; never attribute work to another session. Working outside the folder this session started in? Say so once with \`conch_working_folders\`.
 
-If your work is in a folder other than the one this session started in, say so once with \`conch_working_folders\`; conch’s file tree and sidebar follow it.
+To control sessions, audio or settings when asked, load the \`conch-control\` skill and check IDs with \`conch_sessions\`; respect manual mode and report refusals.
 
-For user-requested session, audio, or settings control, load the \`conch-control\` skill, inspect current IDs with \`conch_sessions\`, and perform the requested action. Respect manual mode and report refusals.
-
-If publication is unavailable, leave the result in your reply and end it with one \`conch:review <summary> | <link>\` line (only the last counts, so link a folder for several things); do not retry under another session’s identity. A refused link is dropped and the summary kept; conch tells the user and you why.`,
+If you can't publish, end your reply with one \`conch:review <summary> | <link>\` line (only the last counts, so link a folder for several things). A refused link is dropped and the summary kept; conch tells the user and you why.`,
 
   /**
    * What the MCP server says in its `initialize` reply (`instructions`), which Claude Code puts in
@@ -118,22 +121,26 @@ If publication is unavailable, leave the result in your reply and end it with on
     review_remove:
       "Remove a deliverable you published that is wrong or obsolete: one filing by id, or every version of an artifact. Your own session only. A newer version already supersedes an older one, so remove only what should not be looked at.",
     conch_capture:
-      "Capture a web page, or one part of it, as a PNG drawn by conch's Mac app rather than a browser you drive: it loads the page at the viewport size, waits for it to settle (fonts, the images near the part, the layout no longer moving), scrolls the target (a selector or a quote) to the middle and captures it with a margin. Returns the file's path, its size in pixels, the target's box in them, the page's final URL and title, and whether it showed a sign-in screen; with mark, review_to_front marks round the target on the image; with publish, files it as your deliverable in the same call. Pages are drawn with the sign-ins of conch's own review pane, not your browser's, so a page behind a login needs the user to sign in there once. Needs conch's Mac app open; takes up to about 40 seconds.",
-    // The Workbench (browser-workbench.ts), 2026-10-11: conch's own browser, as tabs in the Mac app's deliverables pane.
+      "Capture a web page, or one part of it, as a PNG drawn by conch's Mac app rather than a browser you drive: it loads the page at the viewport size, waits for it to settle (fonts, the images near the part, the layout no longer moving), scrolls the target (a selector or a quote) to the middle and captures it with a margin. Returns the file's path, its size in pixels, the target's box in them, the page's final URL and title, and whether it showed a sign-in screen; with mark, review_to_front marks round the target on the image; with publish, files it as your deliverable in the same call. Pages are drawn with the sign-ins of conch's own review pane, not your browser's (the Default profile of conch's browser shares them), so a page behind a login needs the user to sign in there once: open it with browser_open and ask them to. Needs conch's Mac app open; takes up to about 40 seconds.",
+    // The Workbench (browser-workbench.ts), 2026-10-11: conch's own browser, as tabs in the Mac app's Workdesk. 2026-10-16: the
+    // user opens tabs there too (to sign in), and agents are told to browse in it so he can watch.
     browser_open:
-      "Open a page in conch's in-app browser: a live tab in conch's Mac app, beside your deliverables, that the user can watch and take over by clicking and typing in it. Tabs are signed in per account profile (profile names one, by name or id; Default shares the sign-ins of conch's review pane), so a page behind the user's login works once they have signed in there. Without tab it opens a new tab; with tab it goes to url in that tab. Returns the tab's id, URL and title. Use it when the user should see the page or sign in for you; you may still use other browser tools (Claude in Chrome, Playwright, computer use) when you prefer. Needs conch's Mac app open.",
+      "Open a page in conch's in-app browser: a live tab in the user's Workdesk in conch's Mac app, where the user can watch and take over by clicking and typing in it. Use it whenever you browse on the user's behalf, so they can see what you do; other browser tools (Claude in Chrome, Playwright, computer use) are for when they ask for them or the task needs them. Tabs are signed in per account profile (profile names one, by name or id; Default shares the sign-ins of conch's review pane), so a page behind the user's login works once they have signed in there. Without tab it opens a new tab; with tab it goes to url in that tab. Returns the tab's id, URL and title. Needs conch's Mac app open.",
     browser_read:
       "Read a tab of conch's in-app browser (your most recent when tab is omitted): its title and URL, its visible text (trimmed), its links and buttons each with a short ref for browser_click, and its form fields (label, name, type, value; never a password's or a hidden field's value). Refs last until the page changes: read again after it navigates.",
     browser_click:
-      "Click in a tab of conch's in-app browser, as the user would: target is a ref from browser_read, a CSS selector, or the visible text of a link or button (a string tries them in that order; {ref}, {selector} or {text} says which). Returns the page's URL and title afterwards. The user sees it happen.",
+      "Click in a tab of conch's in-app browser, as the user would: target is a ref from browser_read, a CSS selector, or the visible text of a link or button (a string tries them in that order; {ref}, {selector} or {text} says which). Returns the page's URL and title afterwards. The user sees it happen: conch marks where you clicked.",
     browser_type:
-      "Type into a field in a tab of conch's in-app browser: target is a ref from browser_read, a CSS selector or the field's visible label; submit presses Return. Agents don't type passwords: a password field is refused, so ask the user to sign in themselves in the tab.",
+      "Type into a field in a tab of conch's in-app browser: target is a ref from browser_read, a CSS selector or the field's visible label; submit presses Return. The user sees the field fill. Agents don't type passwords: a password field is refused. At a sign-in, ask the user to sign in themselves in the tab and to tell you when they're done.",
     browser_screenshot:
       "A PNG of what a tab of conch's in-app browser shows now (your most recent when tab is omitted), written to conch's capture folder. Returns its path and size, which review_to_front can publish. For one part of a page, conch_capture.",
     browser_tabs:
-      "List your session's tabs in conch's in-app browser: id, URL, title, profile, and which is current (the one a command naming no tab runs in).",
+      "List your session's tabs in conch's in-app browser: id, URL, title, profile, and which is current (the one a command naming no tab runs in). openedBy \"user\" marks a tab the user opened in the Workdesk, often to sign in for you: act in it once they say so. paused marks one they have taken over: your commands there are refused until they hand it back.",
     browser_close:
       "Close one of your session's tabs in conch's in-app browser, by id.",
+    // 2026-10-16, Tyler: "are u showing me the atals pages in conch? if not please do". Atlas has no web view of a page.
+    atlas_show:
+      "Show the user an Atlas wiki page in their Workdesk. Atlas has no web view of a page, so pass its Atlas path and the Markdown you read or wrote with your Atlas tools: conch saves it to ~/Documents/conch-notes/atlas/<path> and files it as a markdown deliverable keyed atlas:<path> (the same page again is its next version), with a summary naming the path. Use it whenever an Atlas page you read or changed matters to the user. conch never fetches Atlas itself. The result is review_to_front's, plus where the copy is.",
   },
 };
 

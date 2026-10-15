@@ -50,6 +50,11 @@ export function conchInvocation(execPath: string = stableExecPath()): string {
   return IS_COMPILED ? `"${execPath}"` : `"${execPath}" "${CLI_ENTRY}"`;
 }
 
+/** The same, unquoted, for a spawn: what is installed now, which an MCP server hands over to (mcp-handoff.ts). */
+export function conchArgv(execPath: string = stableExecPath()): string[] {
+  return IS_COMPILED ? [execPath] : [execPath, CLI_ENTRY];
+}
+
 /**
  * A command of conch's whose program has moved: gone from disk, or pinned inside one Homebrew Cellar version, which
  * the next upgrade deletes (`stableExecPath`). The program is the command's first quoted path, after any `NAME=value`

@@ -23,23 +23,43 @@ ambiguous, that is the thing to optimise for.
 
 ## Publishing results
 
-conch connects this session to the user’s Mac workspace, floating overlay, and iPhone.
+conch shows this session in the user’s Mac app, floating overlay and iPhone. Its Mac app gives you a Workdesk of typed items beside the conversation: deliverables, browser tabs, files, shell, terminal. Show your work there: results with `review_to_front`, pages with `browser_open`.
 
-Whenever you produce something the user would look at (a page, screenshot, file, document, plan, diff or PR, build, app state), publish it with `review_to_front` as you go, not only at the end: a short summary and the best artifact link. Then tell the user where it landed from the result’s `surfaces`, not what you assume. When the thing to look at has no link (an app window, the Simulator, a terminal, a design), pass its `kind` and say where to look in the summary. For a written explanation, request a conversation scene (`scene: {v: 1, target: {kind: "conversation"}}`) and keep the complete explanation in your normal reply.
+Whenever you produce something the user would look at (a page, screenshot, file, document, plan, diff or PR, build, app state), publish it with `review_to_front` as you go, not only at the end: a short summary and the best artifact link. Tell the user where it landed from the result’s `surfaces`. With no link (an app window, the Simulator), pass its `kind` and say where to look. For a written explanation, use scene kind `conversation` and keep it in your reply.
 
 A link is an http(s) URL, or an absolute path to a file or a folder (shown as its file tree) under this session’s folders: where it started, where it is now, its git repository, `conch_working_folders`, or a temp folder (/tmp, or macOS’s per-user /var/folders/…/T), which conch copies when it files the link, so a cleaned temp folder can’t take it away. Never a hidden file, key or executable.
 
-To show part of a web page, use `conch_capture` rather than screenshotting a browser. `open <url>` lands in conch’s Workbench; `CONCH_OPEN_EXTERNAL=1 open <url>` uses the default browser.
+Browse for the user with conch’s `browser_*` tools so they can watch in the Workdesk; other browser tools are fine when they ask or the task needs them. At a sign-in, ask them to sign in in the tab; never type passwords. `conch_capture` shows part of a page. `open <url>` lands in the Workdesk; `CONCH_OPEN_EXTERNAL=1 open <url>` uses the default browser. Show an Atlas page you read or wrote that matters to the user with `atlas_show`.
 
-Publishing makes the result available without interrupting the user, who chooses when to open it. Do not open applications, rearrange windows, or start the microphone as a publication side effect. Publish again whenever it changes in a way worth seeing, not after every edit: the same link or `key` files the artifact's next version. `conch_deliverables` lists what you have published; `review_remove` takes back one that is wrong or obsolete.
+Publishing makes the result available without interrupting the user: open no apps, move no windows, start no microphone. Publish again whenever it changes in a way worth seeing, not after every edit: the same link or `key` files its next version. `conch_deliverables` lists yours; `review_remove` takes back a wrong one.
 
-Omit `session` when publishing. Never attribute work to another session or invent surface references.
+Omit `session` when publishing; never attribute work to another session. Working outside the folder this session started in? Say so once with `conch_working_folders`.
 
-If your work is in a folder other than the one this session started in, say so once with `conch_working_folders`; conch’s file tree and sidebar follow it.
+To control sessions, audio or settings when asked, load the `conch-control` skill and check IDs with `conch_sessions`; respect manual mode and report refusals.
 
-For user-requested session, audio, or settings control, load the `conch-control` skill, inspect current IDs with `conch_sessions`, and perform the requested action. Respect manual mode and report refusals.
+If you can't publish, end your reply with one `conch:review <summary> | <link>` line (only the last counts, so link a folder for several things). A refused link is dropped and the summary kept; conch tells the user and you why.
 
-If publication is unavailable, leave the result in your reply and end it with one `conch:review <summary> | <link>` line (only the last counts, so link a folder for several things); do not retry under another session’s identity. A refused link is dropped and the summary kept; conch tells the user and you why.
+## The Workdesk
+
+Each session has a Workdesk in conch's Mac app: the pane beside the
+conversation, with a strip of tabs along its top. Every tab is an item of one
+type:
+
+- **deliverable**: something you published, with `review_to_front`,
+  `conch_capture`'s `publish` or `atlas_show`. One tab per artifact, with its
+  older versions under it.
+- **browser**: a live page in conch's browser. You open one with
+  `browser_open` (or `open <url>`); the user opens one with the strip's **+**,
+  often to sign in for you.
+- **files**: your working folder as a tree, with the files you changed marked.
+- **shell**: a shell in that folder, the user's to type in.
+- **terminal**: a button that brings your own terminal forward.
+
+Show your work there as you go: results with `review_to_front`, the pages you
+are working in with `browser_open`, an Atlas page with `atlas_show`. Nothing you
+add takes the pane from the user while they are using it: a new item waits as a
+tab, and a browser tab you act in comes forward only when the user is looking
+at your session and hasn't touched the Workdesk for a few seconds.
 
 ## If the conch tools aren't there
 
@@ -129,15 +149,16 @@ https://brew.sh rather than trying to install Homebrew yourself.
   live page a tap away. `warning` is there when either look was a sign-in page.
   Act on it, and tell the user what it means for them:
 
-  - `mac: "sign-in"`: the user sees a login page on the Mac too. Ask them to
-    open it in conch's window and sign in there once (the review pane browses,
-    with an address field), and conch sees it from then on. Or publish a picture
-    instead: `conch_capture` once they have signed in, or a screenshot.
+  - `mac: "sign-in"`: the user sees a login page on the Mac too. Open it with
+    `browser_open` (the Default profile shares the review pane's sign-ins) and
+    ask them to sign in in that tab of their Workdesk once, and conch sees it
+    from then on. Or publish a picture instead: `conch_capture` once they have
+    signed in, or a screenshot.
   - `mac: "page"` with `anonymous: "sign-in"`: fine on the Mac, and the phone
     shows the attached snapshot; opening the live page there asks for sign-in.
   - `mac: "unchecked"` with `anonymous: "sign-in"`: no snapshot (the Mac app
     isn't running, or couldn't draw it in time). Publish a capture or a
-    screenshot instead, or ask the user to sign in in conch's review pane.
+    screenshot instead, or ask the user to sign in in a tab of conch's browser.
 
   The check takes a few seconds, at most about 15, before the call returns. A
   page whose sign-in form is built by its scripts can read as `page` without
@@ -280,7 +301,9 @@ https://brew.sh rather than trying to install Homebrew yourself.
   started in, the one it is in now and the git repository around that (a
   worktree's own checkout too), any named with `conch_working_folders`, or a
   temp folder: `/tmp`, or the per-user one `$TMPDIR` names
-  (`/var/folders/…/T`), the same two whatever your own `$TMPDIR` says. A file
+  (`/var/folders/…/T`), the same two whatever your own `$TMPDIR` says. A
+  Markdown copy of an Atlas page under `~/Documents/conch-notes/atlas` passes
+  too, wherever you work (see *Show an Atlas page*). A file
   or folder in a temp folder is copied into conch's own store
   (`~/Library/Application Support/conch/deliverables`) when it is filed (a
   page or a markdown document brings the folder it is in), and filed
@@ -335,23 +358,49 @@ https://brew.sh rather than trying to install Homebrew yourself.
     screen is never filed.
 
   Pages are drawn with the sign-ins of **conch's own review pane**, not the
-  user's browser. A page behind a login (a Vercel preview, a dashboard) comes
-  back with `loginWall: true` and a picture of the sign-in screen: publish the
-  URL with `review_to_front` and ask the user to open it in conch's window and
-  sign in there once (the review pane browses, with an address field), then
-  capture again.
+  user's browser; the Default profile of conch's browser shares them. A page
+  behind a login (a Vercel preview, a dashboard) comes back with
+  `loginWall: true` and a picture of the sign-in screen: open the URL with
+  `browser_open` and ask the user to sign in in that tab once, then capture
+  again.
   conch's Mac app must be open; a capture takes a few seconds and at most about
   40, and conch draws at most three at a time.
 - **Use conch's browser** — `browser_open {url, profile?, tab?}` opens a page as
-  a live tab in conch's Mac app, beside your deliverables, where the user can
-  watch it and take over by clicking and typing in it. Use it when the user
-  should see the page or has to sign in for you; you may still use other
-  browser tools (Claude in Chrome, Playwright, computer use) when you prefer.
+  a live tab in the user's Workdesk, where they can watch it and take over by
+  clicking and typing in it.
+
+  **When.** Whenever you browse on the user's behalf (look something up on a
+  site, check a dashboard, fill in a form, test a deployed page), use these
+  tools, so they can see what you do. While a command of yours runs, the tab and
+  its address bar show an **Agent** badge, a click is marked where it lands, a
+  field visibly fills as you type into it, and the address bar follows where
+  you go; a tab they aren't looking at gets a dot. Other browser tools (Claude in
+  Chrome, Playwright, computer use) are for when the user asks for them or the
+  task needs them: an extension, devtools, a download, something conch's
+  browser can't do.
 
   - Tabs are your session's own, and need a verified `caller`. Each is signed in
     with a browser profile, one per account: `profile` names one by name or id,
     and `Default` (the default) shares the sign-ins of conch's review pane. A
-    tab keeps its profile.
+    tab keeps its profile. Tabs, the user's included, survive a restart of
+    conch: each reloads at its last address on its profile.
+  - **The user's tabs.** The user opens tabs too, with the Workdesk's **+**, on
+    a profile they pick, usually to sign in. Those are your session's as well:
+    `browser_tabs` lists them with `openedBy: "user"`, and a command naming no
+    tab runs in the one used or opened last (`current`). Act in one once they
+    say so.
+  - **Signing in is the user's.** When a page asks for a password, a one-time
+    code or a passkey, stop and ask, in one line: "Please sign in to Acme in
+    the Acme tab of your Workdesk (Work profile), then tell me." Name the
+    profile when it isn't Default, and wait for their word. Never type a
+    password (a password field refuses you), never ask them to tell you one, and
+    never go looking for one. Once they have signed in on a profile, every tab
+    on it is signed in, across restarts.
+  - **Pause agents.** The user can take a tab over: with *Pause agents in this
+    tab* on, every command of yours that reaches it, closing it included, fails
+    with "the user has taken over this tab (…)". Don't retry it. Say what you
+    were about to do, and carry on in a tab of your own or wait for them to hand
+    it back; `browser_tabs` marks it `paused`.
   - `browser_read {tab?}` returns the page's title, URL, visible text (trimmed),
     its links and buttons each with a short ref (`e12`), and its form fields
     (label, name, type and value; never a password's or a hidden field's value).
@@ -361,13 +410,25 @@ https://brew.sh rather than trying to install Homebrew yourself.
     field's label); a string is tried as each in that order, and `{ref}`,
     `{selector}` or `{text}` says which. Typing replaces what the field holds;
     `submit` presses Return.
-  - Agents don't type passwords: a password field is refused. Ask the user to
-    sign in themselves in the tab, then carry on.
   - `browser_screenshot {tab?}` writes a PNG of what the tab shows to conch's
     capture folder and returns its path, which `review_to_front` can publish.
-  - `browser_tabs` lists your tabs; a command naming no tab runs in the one you
-    used last (`current`). `browser_close {tab}` closes one.
+  - `browser_tabs` lists your tabs; `browser_close {tab}` closes one.
   - conch's Mac app must be open.
+- **Show an Atlas page** — `atlas_show {path, markdown, summary?}`. Atlas, the
+  user's wiki, has no web view of a page, so when an Atlas page you read or
+  wrote matters to the user (a plan you are working from, a decision you
+  recorded, a page they asked about), show it this way. Read or write it with
+  your Atlas tools, then pass its Atlas path and its Markdown. conch saves the
+  copy to `~/Documents/conch-notes/atlas/<path>` (`.md` added when the path has
+  no extension) and files it as a `markdown` deliverable keyed `atlas:<path>`,
+  so showing the same page again is its next version. The summary always names
+  the path: yours, with ` (Atlas: <path>)` added when it doesn't, or
+  `Atlas page <path>`. The result is `review_to_front`'s, plus `copy`, where the
+  file is. Atlas stays the source: conch never fetches Atlas, and never needs a
+  credential of it. Without the tool, do the same by hand: write the Markdown to
+  that path, then `review_to_front {summary, link, kind: "markdown", key:
+  "atlas:<path>"}`; a Markdown file in that folder passes the link rule wherever
+  you work.
 - **Auto / manual** — `conch_mode {action, session?, scope?}` uses `pause` for lossless manual mode and `resume` for auto read-and-listen mode. Without `session` or `scope` it switches only YOUR session; `session` names another one. Switching every session at once — the whole daemon, what the user's `p` key and `conch pause` do — needs `scope: "all"` explicitly, and only when the user asked for exactly that. A `resume` from an agent is refused while the user put conch in manual themselves (the `p` key, the Mac's toggle, `conch pause`) — only a person undoes a person's pause, and a `conch_speak` is held then too: not spoken and not queued, and its result carries `held` saying so.
 - **Rename** — `conch_rename {session, label}` gives a session a name the user actually uses ("call that one 'the api work'").
 - **Say where you work** — `conch_working_folders {folders}` names the folder(s) you are actually working in when they differ from where the session started; conch's file tree, file viewer and sidebar grouping follow them. Once is enough; say it again only if you move.
@@ -406,6 +467,8 @@ Do not retry the same call; do the alternative, or tell the user in one line.
 - `review_to_front` with a **scene** that is not `v: 1`, has an unknown kind or field, asks for `kind: "link"` with no link, has an `inspect` that is empty or over 200 characters, or carries `target.ref` — the refusal says which; fix the scene or omit it.
 - `review_to_front` with **marks** that don't fit *Marks* above: an unknown kind or field (a colour is one), numbers outside 0 to 1, geometry the kind doesn't take, a `selector` or `quote` with no link, an image that fails the link check, more than 12, or over 4096 bytes; or `units: "px"` with no `size` on a canvas, on an image conch can't read the size of, or reaching outside the picture. The refusal names the mark (`marks[2]`) and what to fix.
 - `conch_capture` with a `url` that is not an http(s) URL or a local `.html` file that passes the link rule, a `target` that is not exactly one of `selector` or `quote`, a `viewport` outside its limits, a `mark` without a `target`, or `publish` from a caller conch cannot verify. When it runs but can't capture, it fails with why: conch's Mac app isn't running (open it and try again), the page didn't load, the target **wasn't found** (the error names the page's title, its headings, whether it was a sign-in screen, and a picture of what conch saw), or it didn't finish in time.
+- A `browser_*` command that reaches a tab the user **paused agents in** — "the user has taken over this tab (…)": don't retry; say what you were doing and wait for them, or open a tab of your own.
+- `atlas_show` with a `path` that isn't an Atlas path (parts of letters, digits, `.`, `_` or `-`, none starting with a dot, no `..`), empty `markdown` or over 2 MB, or from a caller conch cannot verify; nothing is written then. A copy that is in the way and isn't a plain file (a symlink) fails with why, and is left alone.
 - A `session` name that **matches several sessions** — the refusal lists them by id and label; pass the id.
 - `conch_wake` / `conch_recite` **without `session`** when your caller is unverified — pass the session's id.
 - `conch_config` setting or unsetting a key that is **not on the list** above — the refusal names the `conch set <key> <value>` (or `conch unset <key>`) command the user can run themselves.

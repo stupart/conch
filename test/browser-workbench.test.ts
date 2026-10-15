@@ -18,6 +18,7 @@ import {
   BROWSER_TABS_PER_SESSION,
   BrowserWorkbench,
   browserTabsPath,
+  pausedRefusal,
   createBrowserService,
   decodeBrowserMessage,
   fileTabStore,
@@ -26,6 +27,7 @@ import {
   runBrowserCli,
   withBrowserState,
   type BrowserMessage,
+  type BrowserSend,
   type BrowserTab,
 } from "../src/browser-workbench.ts";
 import { decodeBrowserOpenRequest } from "../src/browser-open.ts";
@@ -150,6 +152,14 @@ describe("the control messages, checked field by field, and the phone's to send 
       .toEqual({ kind: "browser-tab-event", tab: "tab-1a2b3c4d", url: "https://acme.dev/", title: "Acme", closed: true });
     expect(decodeBrowserMessage({ kind: "page-capture" })).toBeNull();
     expect(decodeBrowserMessage("browser-open")).toBeNull();
+    // Tyler's own: a tab he opens, blank or at an address, and his hand on one (paused, or a blank one's profile).
+    expect(decodeBrowserMessage({ kind: "browser-tab-open", sessionId: "s1", profile: "default", extra: 1 }))
+      .toEqual({ kind: "browser-tab-open", sessionId: "s1", profile: "default" });
+    expect(decodeBrowserMessage({ kind: "browser-tab-open", sessionId: "s1", url: "" })).toEqual({ kind: "browser-tab-open", sessionId: "s1" });
+    expect(decodeBrowserMessage({ kind: "browser-tab-open", sessionId: "s1", url: "https://acme.dev/" }))
+      .toEqual({ kind: "browser-tab-open", sessionId: "s1", url: "https://acme.dev/" });
+    expect(decodeBrowserMessage({ kind: "browser-tab-event", tab: "tab-1a2b3c4d", paused: false, profile: WORK }))
+      .toEqual({ kind: "browser-tab-event", tab: "tab-1a2b3c4d", paused: false, profile: WORK });
   });
 
   test("a malformed one is refused with why", () => {
@@ -173,6 +183,10 @@ describe("the control messages, checked field by field, and the phone's to send 
     expect(refused({ kind: "browser-command", sessionId: "s1", op: "click", target: { ref: "e1", text: "x" } })).toContain("exactly one of");
     expect(refused({ kind: "browser-command", sessionId: "s1", op: "type", target: "Email", text: "x".repeat(4001) })).toContain("text must be up to");
     expect(refused({ kind: "browser-tab-event" })).toBe("a tab event names its tab");
+    expect(refused({ kind: "browser-tab-event", tab: "tab-1a2b3c4d", paused: "yes" })).toBe("paused must be true or false");
+    expect(refused({ kind: "browser-tab-event", tab: "tab-1a2b3c4d", profile: "a\nb" })).toBe("profile must name a profile");
+    expect(refused({ kind: "browser-tab-open" })).toBe("a new tab names its session");
+    expect(refused({ kind: "browser-tab-open", sessionId: "s1", url: "file:///etc/hosts" })).toBe("url must be an http(s) URL");
   });
 
   test("every kind is the Mac app's, the CLI's or an agent's on this Mac: a phone sends none, shaped or not", () => {
@@ -182,6 +196,7 @@ describe("the control messages, checked field by field, and the phone's to send 
       "browser-command": { sessionId: "s1", op: "read" },
       "browser-answer": { request: "r1", ack: true },
       "browser-tab-event": { tab: "tab-1a2b3c4d", closed: true },
+      "browser-tab-open": { sessionId: "s1" },
     };
     for (const kind of [...BROWSER_KINDS, "browser-open"]) {
       expect(isMacAppOnlyRequest({ kind, ...shaped[kind] }), kind).toBe(true);
@@ -235,7 +250,7 @@ describe("which session ran a process: walked up to the agent, as the MCP server
 });
 
 /** A control server with the Workbench behind it, as the daemon wires it, and a pretend Mac app reading the sessions file. */
-async function served(options: { appRunning?: () => boolean; ackMs?: number; timeoutMs?: number; binding?: CallerBinding; store?: string } = {}) {
+async function served(options: { appRunning?: () => boolean; ackMs?: number; timeoutMs?: number; binding?: CallerBinding; store?: string; live?: string[] } = {}) {
   const dir = mkdtempSync("/tmp/conch-wb-");
   const socketPath = join(dir, "s.sock");
   const folder = captureFolder(join(dir, "captures"));
@@ -267,6 +282,7 @@ async function served(options: { appRunning?: () => boolean; ackMs?: number; tim
     },
     publish: () => { published += 1; },
     ...(options.appRunning ? { appRunning: options.appRunning } : {}),
+    ...(options.live ? { liveSession: (id: string) => options.live!.includes(id) } : {}),
   });
   const server = createControlServer({
     socketPath,
@@ -572,6 +588,143 @@ describe("an agent's command, held open until the Mac app has run it", () => {
     } finally {
       await h.close();
     }
+  });
+});
+
+describe("Tyler's own tabs: opened from the Workdesk, shared with the session's agents, his to pause", () => {
+  test("the +: a blank tab of his in the session in view, which its agents see and act in", async () => {
+    const h = await served({ live: ["session-1"] });
+    try {
+      const opened = await h.exchange({ kind: "browser-tab-open", sessionId: "session-1" });
+      expect(opened).toEqual({ kind: "browser-opened", tabId: expect.stringMatching(/^tab-[0-9a-f]{8}$/), sessionId: "session-1" });
+      const [tab] = h.sessionsFile().browserTabs;
+      // Blank: the app focuses its address field. No command: nothing for the app to run.
+      expect(tab).toMatchObject({ id: opened.tabId, sessionId: "session-1", url: "", profile: "default", opener: "user" });
+      expect(h.sessionsFile().browserRequests).toBeUndefined();
+      // The session's agent sees it, says whose it is, and its next command naming no tab runs there.
+      expect(await h.command({ sessionId: "session-1", op: "tabs" })).toEqual({
+        ok: true,
+        reply: { kind: "browser-result", op: "tabs", tabs: [{ id: opened.tabId, url: "", profile: "default", profileName: "Default", current: true, openedBy: "user" }] },
+      });
+      // He signs in there and the page moves; the agent reads it where it is now.
+      expect(await h.exchange({ kind: "browser-tab-event", tab: opened.tabId, url: "https://acme.dev/dashboard", title: "Dashboard" })).toEqual({ kind: "browser-ack" });
+      const [read, { request }] = await Promise.all([
+        h.command({ sessionId: "session-1", op: "read" }),
+        h.app(() => ({ result: { url: "https://acme.dev/dashboard", title: "Dashboard", text: "Welcome back" } })),
+      ]);
+      expect(request.tab).toBe(opened.tabId);
+      expect(read).toMatchObject({ ok: true, reply: { kind: "browser-result", op: "read", tab: { id: opened.tabId, openedBy: "user" }, result: { text: "Welcome back" } } });
+      // Another session's agent can't reach it.
+      expect(await h.command({ sessionId: "session-2", op: "read", tab: opened.tabId }))
+        .toEqual({ ok: true, reply: { kind: "browser-error", error: `there's no tab ${opened.tabId} in this session; browser_tabs lists yours` } });
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("at an address and on a profile he picked; never for a session conch isn't showing", async () => {
+    const h = await served({ live: ["session-1"] });
+    try {
+      const work = await h.exchange({ kind: "browser-profiles", action: "add", name: "Work" });
+      const opened = await h.exchange({ kind: "browser-tab-open", sessionId: "session-1", url: "https://acme.dev/login", profile: "Work" });
+      expect(h.workbench.tab(opened.tabId)).toMatchObject({ url: "https://acme.dev/login", profile: work.created.id, opener: "user" });
+      expect(await h.exchange({ kind: "browser-tab-open", sessionId: "session-9" })).toEqual({ kind: "browser-error", error: "that session isn't one conch is showing now" });
+      expect(await h.exchange({ kind: "browser-tab-open", sessionId: "session-1", profile: "Personal" }))
+        .toEqual({ kind: "browser-error", error: 'there\'s no browser profile "Personal"; conch has "Default", "Work"' });
+      expect(h.workbench.tabsOf("session-9")).toEqual([]);
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("the profile picker moves a blank tab to another profile; once it has been somewhere, it keeps its own", async () => {
+    const h = await served({ live: ["session-1"] });
+    try {
+      const work = await h.exchange({ kind: "browser-profiles", action: "add", name: "Work" });
+      const { tabId } = await h.exchange({ kind: "browser-tab-open", sessionId: "session-1" });
+      expect(await h.exchange({ kind: "browser-tab-event", tab: tabId, profile: work.created.id })).toEqual({ kind: "browser-ack" });
+      expect(h.workbench.tab(tabId)?.profile).toBe(work.created.id);
+      expect(await h.exchange({ kind: "browser-tab-event", tab: tabId, profile: "Nobody" }))
+        .toEqual({ kind: "browser-error", error: 'there\'s no browser profile "Nobody"; conch has "Default", "Work"' });
+      await h.exchange({ kind: "browser-tab-event", tab: tabId, url: "https://acme.dev/" });
+      expect(await h.exchange({ kind: "browser-tab-event", tab: tabId, profile: "default" }))
+        .toEqual({ kind: "browser-error", error: "a tab keeps its profile once it has been somewhere; open a new tab for another" });
+      expect(h.workbench.tab(tabId)?.profile).toBe(work.created.id);
+      // An agent's tab always opened somewhere, so it never moves either.
+      const agents = h.workbench.open("session-1", "https://b.dev/", "default");
+      if (!agents.ok) throw new Error("tab");
+      expect((await h.exchange({ kind: "browser-tab-event", tab: agents.tab.id, profile: "Work" })).kind).toBe("browser-error");
+      // And an agent can't open a blank one.
+      expect(h.workbench.open("session-1", "", "default")).toEqual({ ok: false, error: "an agent's tab opens at an address" });
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("Pause agents: every command that reaches the tab is refused with why, until he turns it off", async () => {
+    const h = await served({ live: ["session-1"] });
+    try {
+      const { tabId } = await h.exchange({ kind: "browser-tab-open", sessionId: "session-1", url: "https://bank.example/" });
+      expect(await h.exchange({ kind: "browser-tab-event", tab: tabId, paused: true })).toEqual({ kind: "browser-ack" });
+      expect(h.sessionsFile().browserTabs[0]).toMatchObject({ id: tabId, paused: true });
+      const refused: BrowserSend = { ok: true, reply: { kind: "browser-error", error: pausedRefusal(tabId) } };
+      expect(pausedRefusal(tabId)).toStartWith(`the user has taken over this tab (${tabId})`);
+      // Named, or the one a command naming none runs in; reading, clicking, typing, going elsewhere and closing alike.
+      expect(await h.command({ sessionId: "session-1", op: "read", tab: tabId })).toEqual(refused);
+      expect(await h.command({ sessionId: "session-1", op: "read" })).toEqual(refused);
+      expect(await h.command({ sessionId: "session-1", op: "click", target: { text: "Transfer" } })).toEqual(refused);
+      expect(await h.command({ sessionId: "session-1", op: "type", tab: tabId, target: { auto: "Amount" }, text: "100" })).toEqual(refused);
+      expect(await h.command({ sessionId: "session-1", op: "screenshot" })).toEqual(refused);
+      expect(await h.command({ sessionId: "session-1", op: "open", tab: tabId, url: "https://elsewhere.example/" })).toEqual(refused);
+      expect(await h.command({ sessionId: "session-1", op: "close", tab: tabId })).toEqual(refused);
+      // Nothing was put on the file for the app to run.
+      expect(h.sessionsFile().browserRequests).toBeUndefined();
+      // The agent is told, and may still open a tab of its own.
+      expect(await h.command({ sessionId: "session-1", op: "tabs" })).toMatchObject({ ok: true, reply: { tabs: [{ id: tabId, paused: true, openedBy: "user" }] } });
+      const [own] = await Promise.all([
+        h.command({ sessionId: "session-1", op: "open", url: "https://docs.example/" }),
+        h.app(() => ({ result: { url: "https://docs.example/", title: "Docs" } })),
+      ]);
+      expect(own).toMatchObject({ ok: true, reply: { kind: "browser-result", op: "open" } });
+      // Handed back: the agent's command runs in it again.
+      expect(await h.exchange({ kind: "browser-tab-event", tab: tabId, paused: false })).toEqual({ kind: "browser-ack" });
+      expect(h.workbench.tab(tabId)?.paused).toBeUndefined();
+      const [again] = await Promise.all([
+        h.command({ sessionId: "session-1", op: "read", tab: tabId }),
+        h.app(() => ({ result: { url: "https://bank.example/", title: "Bank", text: "" } })),
+      ]);
+      expect(again).toMatchObject({ ok: true, reply: { kind: "browser-result", op: "read" } });
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("his tabs survive a restart, blank or paused, on their profile at their last address", () => {
+    const file = join(fresh("tabs"), "browser-tabs.json");
+    let now = 1_000_000;
+    const options = { publish: () => {}, folder: () => "/tmp", now: () => now, profiles: () => [{ ...DEFAULT_BROWSER_PROFILE }], store: fileTabStore(file) };
+    const before = new BrowserWorkbench(options);
+    const blank = before.open("session-1", "", WORK, "user");
+    const bank = before.open("session-1", "https://bank.example/", "default", "user");
+    if (!blank.ok || !bank.ok) throw new Error("tabs");
+    before.setPaused(bank.tab.id, true);
+    now += 1_000;
+    before.update(bank.tab.id, { url: "https://bank.example/accounts", title: "Accounts" });
+    const after = new BrowserWorkbench(options);
+    expect(after.tabs()).toEqual([
+      { id: blank.tab.id, sessionId: "session-1", url: "", profile: WORK, openedAt: 1_000_000, usedAt: 1_000_000, opener: "user", movedAt: 1_000_000 },
+      {
+        id: bank.tab.id, sessionId: "session-1", url: "https://bank.example/accounts", title: "Accounts", profile: "default",
+        openedAt: 1_000_000, usedAt: 1_000_000, opener: "user", paused: true, movedAt: 1_001_000,
+      },
+    ]);
+    // A tab he keeps using is kept though no agent has touched it for over a week; one nobody has is not.
+    now += 8 * 24 * 60 * 60 * 1000;
+    after.update(bank.tab.id, { url: "https://bank.example/statements" });
+    expect(new BrowserWorkbench(options).tabs().map((tab) => tab.id)).toEqual([bank.tab.id]);
+    // Blank is his alone: an agent's tab with no address on disk is no tab.
+    writeFileSync(file, JSON.stringify([{ id: "tab-00000001", sessionId: "s", url: "", profile: "default", usedAt: now, openedAt: now }]));
+    expect(new BrowserWorkbench(options).tabs()).toEqual([]);
   });
 });
 

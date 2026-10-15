@@ -15,8 +15,16 @@ import { ownCapture } from "./page-capture.ts";
 
 /**
  * The Workbench: conch's in-app browser. Live browser tabs an agent drives and Tyler watches, and takes over by clicking
- * in them, in the Mac app's deliverables pane (Tyler, 2026-10-09: "Agents's pages should live as tabs in the
- * deliverables plane just like the deliverables").
+ * in them, in the Mac app's Workdesk, the pane beside the conversation that was the deliverables pane (Tyler,
+ * 2026-10-09: "Agents's pages should live as tabs in the deliverables plane just like the deliverables"; 2026-10-16:
+ * "deliverable is a type, browser is a type").
+ *
+ * Tyler opens tabs too (2026-10-16: "letting me sign-in in an in-conch browser session and letting agents use that
+ * browser in the app so i can watch them work"): the Workdesk's + sends `browser-tab-open` for the session in view, and
+ * the tab is the session's like any other, so its agents see it in `browser_tabs` and act in it, signed in with its
+ * profile. "Pause agents" on a tab (`browser-tab-event` `paused`) refuses their commands there (`pausedRefusal`) until
+ * he turns it off. The daemon keeps every tab, his included, across restarts (`fileTabStore`), and the app reloads each
+ * at its last address on its profile when it first sees it.
  *
  * The daemon owns the tabs (which session's, what address, which profile) and the profiles (browser-profiles.ts); the
  * Mac app owns the pages, one live web view per tab, kept alive while it runs (Workbench.swift). An agent's command
@@ -64,7 +72,7 @@ const DAEMON_SLACK_MS = 5_000;
  * The kinds `decodeBrowserMessage` takes. `browser-open` is agent B's, decoded by its own `decodeBrowserOpenRequest`
  * (browser-open.ts) and answered by this service too (`createBrowserService`).
  */
-export const BROWSER_KINDS = ["browser-profiles", "browser-command", "browser-answer", "browser-tab-event"] as const;
+export const BROWSER_KINDS = ["browser-profiles", "browser-command", "browser-answer", "browser-tab-event", "browser-tab-open"] as const;
 /** How long `browser-open` gives the lookup of its caller: inside the 15 s the shim waits (`BROWSER_OPEN_REPLY_MS`). */
 export const BROWSER_OPEN_RESOLVE_MS = 8_000;
 export const BROWSER_OPS = ["open", "read", "click", "type", "screenshot", "tabs", "close"] as const;
@@ -75,13 +83,31 @@ export type BrowserAppOp = keyof typeof BROWSER_OP_MS;
 export interface BrowserTab {
   id: string;
   sessionId: string;
+  /** Where it is; "" for a tab Tyler opened and hasn't sent anywhere yet (its address field is waiting for him). */
   url: string;
   title?: string;
   profile: string;
   /** Epoch-ms it was opened: the app brings a tab this new to the front for the session in view. */
   openedAt: number;
-  /** Epoch-ms an agent last ran a command in it: a command naming no tab runs in its session's most recent. */
+  /**
+   * Epoch-ms an agent last ran a command in it, or Tyler opened it: a command naming no tab runs in its session's most
+   * recent, so the tab he just opened to sign in is the one an agent's next command reaches.
+   */
   usedAt: number;
+  /** Who opened it: "user" for Tyler's own, from the Workdesk's +; absent for an agent's (browser_open, `open`). */
+  opener?: "user";
+  /** Tyler paused agents in it: their commands there are refused (`pausedRefusal`) until he turns it off. */
+  paused?: true;
+  /** Epoch-ms the page last moved under anyone's hand (the app's report): with `usedAt`, what keeps a tab. */
+  movedAt?: number;
+}
+
+/**
+ * Said to an agent whose command reaches a tab Tyler paused agents in: the reason first, in the words he would use, then
+ * what to do. The Mac app refuses a command already on its way with the same words (ConchDesign `Workbench.pausedRefusal`).
+ */
+export function pausedRefusal(tab: string): string {
+  return `the user has taken over this tab (${tab}): Pause agents is on there, so conch won't run your commands in it. Ask them to hand it back, or open a tab of your own with browser_open`;
 }
 
 /** What a click or a type is aimed at: a ref from `read`, a CSS selector, visible text, or any of them (`auto`). */
@@ -122,7 +148,19 @@ export type BrowserMessage =
     submit?: boolean;
   }
   | { kind: "browser-answer"; request: string; ack?: true; error?: string; result?: Record<string, unknown> }
-  | { kind: "browser-tab-event"; tab: string; url?: string; title?: string; closed?: true };
+  | {
+    kind: "browser-tab-event";
+    tab: string;
+    url?: string;
+    title?: string;
+    closed?: true;
+    /** Tyler's "Pause agents in this tab", on or off. */
+    paused?: boolean;
+    /** A tab he opened and hasn't sent anywhere, moved to another profile (by id or name). */
+    profile?: string;
+  }
+  /** Tyler's + in the Workdesk: a tab of his own for a session, blank (its address field waiting) or at `url`. */
+  | { kind: "browser-tab-open"; sessionId: string; url?: string; profile?: string };
 
 /** A tab as an agent is told of it. */
 export interface BrowserTabView {
@@ -133,6 +171,10 @@ export interface BrowserTabView {
   profileName: string;
   /** The tab a command naming none runs in. */
   current?: true;
+  /** The user opened it themselves (to sign in, often): theirs to use, and yours to act in once they say so. */
+  openedBy?: "user";
+  /** The user paused agents in it: commands there are refused until they turn it off. */
+  paused?: true;
 }
 
 export type BrowserReply =
@@ -251,12 +293,32 @@ export function decodeBrowserMessage(value: unknown): BrowserMessage | { refused
     case "browser-tab-event": {
       if (!isBrowserTabId(value.tab)) return no("a tab event names its tab");
       const url = value.url === undefined ? undefined : webUrl(value.url);
+      if (value.paused !== undefined && typeof value.paused !== "boolean") return no("paused must be true or false");
+      if (value.profile !== undefined && !oneLine(value.profile, 80)) return no("profile must name a profile");
       return {
         kind: "browser-tab-event",
         tab: value.tab,
         ...(url ? { url } : {}),
         ...(typeof value.title === "string" ? { title: value.title } : {}),
         ...(value.closed === true ? { closed: true as const } : {}),
+        ...(typeof value.paused === "boolean" ? { paused: value.paused } : {}),
+        ...(typeof value.profile === "string" ? { profile: value.profile } : {}),
+      };
+    }
+    case "browser-tab-open": {
+      const sessionId = oneLine(value.sessionId, 256);
+      if (!sessionId) return no("a new tab names its session");
+      let url: string | null | undefined;
+      if (value.url !== undefined && value.url !== "") {
+        url = webUrl(value.url);
+        if (!url) return no("url must be an http(s) URL");
+      }
+      if (value.profile !== undefined && !oneLine(value.profile, 80)) return no("profile must name a profile");
+      return {
+        kind: "browser-tab-open",
+        sessionId,
+        ...(url ? { url } : {}),
+        ...(typeof value.profile === "string" ? { profile: value.profile } : {}),
       };
     }
   }
@@ -341,6 +403,11 @@ function pageAfter(value: Record<string, unknown>): Record<string, unknown> {
 
 export type BrowserOutcome = { ok: true; result: Record<string, unknown> } | { ok: false; error: string };
 
+/** When a tab was last of use to anyone: an agent's command, or its page moving (Tyler's hand, a redirect). */
+function lastTouched(tab: Pick<BrowserTab, "usedAt" | "movedAt">): number {
+  return Math.max(tab.usedAt, tab.movedAt ?? 0);
+}
+
 interface PendingCommand {
   request: BrowserAppRequest;
   /** What an agent types: handed over in the reply to the app's ack, never published. */
@@ -415,20 +482,38 @@ export class BrowserWorkbench {
     this.#tabs = this.#loaded(options.store?.load());
   }
 
-  /** Tabs from disk, each checked; a week unused, or past the caps, and it is gone. */
+  /**
+   * Tabs from disk, each checked; a week untouched, or past the caps, and it is gone. A tab Tyler opened keeps who opened
+   * it, whether he paused agents in it, and may be blank (he never sent it anywhere); an agent's always has an address.
+   */
   #loaded(value: unknown): BrowserTab[] {
     if (!Array.isArray(value)) return [];
     const now = this.#options.now();
     const tabs: BrowserTab[] = [];
+    const epoch = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : undefined);
     for (const entry of value) {
       if (!isRecord(entry) || !isBrowserTabId(entry.id) || tabs.some((tab) => tab.id === entry.id)) continue;
-      const url = webUrl(entry.url);
+      const opener = entry.opener === "user" ? "user" as const : undefined;
+      const url = webUrl(entry.url) ?? (opener && entry.url === "" ? "" : null);
       const sessionId = oneLine(entry.sessionId, 256);
-      const usedAt = typeof entry.usedAt === "number" && Number.isFinite(entry.usedAt) ? entry.usedAt : 0;
-      const openedAt = typeof entry.openedAt === "number" && Number.isFinite(entry.openedAt) ? entry.openedAt : usedAt;
-      if (!url || !sessionId || !isBrowserProfileId(entry.profile) || now - usedAt > BROWSER_TAB_KEPT_MS) continue;
-      if (tabs.filter((tab) => tab.sessionId === sessionId).length >= BROWSER_TABS_PER_SESSION) continue;
-      tabs.push({ id: entry.id, sessionId, url, ...(said(entry.title, 300) ? { title: said(entry.title, 300) } : {}), profile: entry.profile, openedAt, usedAt });
+      const usedAt = epoch(entry.usedAt) ?? 0;
+      const openedAt = epoch(entry.openedAt) ?? usedAt;
+      const movedAt = epoch(entry.movedAt);
+      const tab: BrowserTab = {
+        id: entry.id,
+        sessionId: sessionId ?? "",
+        url: url ?? "",
+        ...(said(entry.title, 300) ? { title: said(entry.title, 300) } : {}),
+        profile: typeof entry.profile === "string" ? entry.profile : "",
+        openedAt,
+        usedAt,
+        ...(opener ? { opener } : {}),
+        ...(entry.paused === true ? { paused: true as const } : {}),
+        ...(movedAt !== undefined ? { movedAt } : {}),
+      };
+      if (url === null || !sessionId || !isBrowserProfileId(entry.profile) || now - lastTouched(tab) > BROWSER_TAB_KEPT_MS) continue;
+      if (tabs.filter((kept) => kept.sessionId === sessionId).length >= BROWSER_TABS_PER_SESSION) continue;
+      tabs.push(tab);
       if (tabs.length >= BROWSER_TABS_MAX) break;
     }
     return tabs;
@@ -471,19 +556,53 @@ export class BrowserWorkbench {
     return this.tabsOf(sessionId).reduce<BrowserTab | undefined>((best, tab) => (!best || tab.usedAt >= best.usedAt ? tab : best), undefined);
   }
 
-  /** A new tab for a session, at an address, on a profile; refused past the caps. */
-  open(sessionId: string, url: string, profile: string): { ok: true; tab: BrowserTab } | { ok: false; error: string } {
+  /**
+   * A new tab for a session, at an address, on a profile; refused past the caps. Tyler's own (`opener` "user") may be
+   * blank, `url` "", for him to type an address into.
+   */
+  open(sessionId: string, url: string, profile: string, opener?: "user"): { ok: true; tab: BrowserTab } | { ok: false; error: string } {
     if (this.tabsOf(sessionId).length >= BROWSER_TABS_PER_SESSION) {
-      return { ok: false, error: `this session has ${BROWSER_TABS_PER_SESSION} tabs open; close one (browser_close) first` };
+      return {
+        ok: false,
+        error: opener
+          ? `this session has ${BROWSER_TABS_PER_SESSION} tabs open; close one first`
+          : `this session has ${BROWSER_TABS_PER_SESSION} tabs open; close one (browser_close) first`,
+      };
     }
     if (this.#tabs.length >= BROWSER_TABS_MAX) return { ok: false, error: `conch has ${BROWSER_TABS_MAX} browser tabs open; close some first` };
+    if (url === "" && opener !== "user") return { ok: false, error: "an agent's tab opens at an address" };
     let id: string;
     do id = `tab-${crypto.randomUUID().slice(0, 8)}`; while (this.tab(id));
     const now = this.#options.now();
-    const tab: BrowserTab = { id, sessionId, url, profile, openedAt: now, usedAt: now };
+    const tab: BrowserTab = { id, sessionId, url, profile, openedAt: now, usedAt: now, ...(opener ? { opener, movedAt: now } : {}) };
     this.#tabs.push(tab);
     this.#changed();
     return { ok: true, tab: { ...tab } };
+  }
+
+  /** Tyler's "Pause agents in this tab": on, his agents' commands there are refused; off, they run again. */
+  setPaused(id: string, paused: boolean): boolean {
+    const tab = this.tab(id);
+    if (!tab) return false;
+    if ((tab.paused === true) === paused) return true;
+    if (paused) tab.paused = true;
+    else delete tab.paused;
+    this.#changed();
+    return true;
+  }
+
+  /**
+   * A blank tab of Tyler's, moved to another profile before he sends it anywhere: the app makes its page again on that
+   * profile's store. A tab that has been somewhere keeps its profile, as an agent's does.
+   */
+  setProfile(id: string, profile: string): { ok: true } | { ok: false; error: string } {
+    const tab = this.tab(id);
+    if (!tab) return { ok: false, error: "no such tab" };
+    if (tab.profile === profile) return { ok: true };
+    if (tab.url !== "") return { ok: false, error: "a tab keeps its profile once it has been somewhere; open a new tab for another" };
+    tab.profile = profile;
+    this.#changed();
+    return { ok: true };
   }
 
   /** Take a tab away: the app closes its page when it is gone from the sessions file. */
@@ -504,6 +623,7 @@ export class BrowserWorkbench {
     const moved = (url && url !== tab.url) || (title !== undefined && title !== tab.title);
     if (url) tab.url = url;
     if (title !== undefined) tab.title = title;
+    if (moved) tab.movedAt = this.#options.now();
     if (used) tab.usedAt = this.#options.now();
     if (moved || used) this.#changed();
   }
@@ -511,16 +631,17 @@ export class BrowserWorkbench {
   /** Drop the tabs of sessions that ended a day ago and more: nobody can reach them from a row any more. */
   pruneEnded(live: ReadonlySet<string>): void {
     const now = this.#options.now();
-    const kept = this.#tabs.filter((tab) => live.has(tab.sessionId) || now - tab.usedAt < BROWSER_ENDED_TAB_MS);
+    const kept = this.#tabs.filter((tab) => live.has(tab.sessionId) || now - lastTouched(tab) < BROWSER_ENDED_TAB_MS);
     if (kept.length === this.#tabs.length) return;
     this.#tabs = kept;
     this.#changed();
   }
 
-  /** The Mac app's word that a tab moved or closed under Tyler's own hand. */
+  /** The Mac app's word that a tab moved, closed, or was paused under Tyler's own hand. A profile is the service's. */
   tabEvent(message: Extract<BrowserMessage, { kind: "browser-tab-event" }>): boolean {
     if (!this.tab(message.tab)) return false;
     if (message.closed) return this.close(message.tab);
+    if (message.paused !== undefined) this.setPaused(message.tab, message.paused);
     this.update(message.tab, message);
     return true;
   }
@@ -646,6 +767,8 @@ export interface BrowserServiceDependencies {
   publish(): void;
   /** Whether the Mac app has been heard from lately; absent, it is taken to be, and the ack decides. */
   appRunning?(): boolean;
+  /** Whether a session is one conch is showing now, for a tab Tyler opens in it; absent, any session is. */
+  liveSession?(sessionId: string): boolean;
   log?(line: string): void;
 }
 
@@ -666,6 +789,8 @@ export function createBrowserService(deps: BrowserServiceDependencies): BrowserS
       profile: tab.profile,
       profileName: profile?.name ?? tab.profile,
       ...(current && current.id === tab.id ? { current: true as const } : {}),
+      ...(tab.opener === "user" ? { openedBy: "user" as const } : {}),
+      ...(tab.paused ? { paused: true as const } : {}),
     };
   };
   const profileFor = (named: string | undefined): BrowserProfile | string => {
@@ -715,8 +840,29 @@ export function createBrowserService(deps: BrowserServiceDependencies): BrowserS
           if (!answered.ok) return fail(answered.error);
           return { kind: "browser-ack", ...(answered.text !== undefined ? { text: answered.text } : {}) };
         }
-        case "browser-tab-event":
+        case "browser-tab-event": {
+          // A blank tab of Tyler's moved to another profile first: refused whole when it can't be, so nothing in the
+          // event half-happens.
+          if (message.profile !== undefined && !message.closed) {
+            if (!workbench.tab(message.tab)) return fail("no such tab");
+            const profile = profileFor(message.profile);
+            if (typeof profile === "string") return fail(profile);
+            const moved = workbench.setProfile(message.tab, profile.id);
+            if (!moved.ok) return fail(moved.error);
+          }
           return workbench.tabEvent(message) ? { kind: "browser-ack" } : fail("no such tab");
+        }
+        case "browser-tab-open": {
+          // Tyler's +: a tab of his own in the session he is looking at, on the profile he picked, blank unless he gave
+          // an address. Its session's agents see it in browser_tabs and may act in it, as in any tab of theirs.
+          if (deps.liveSession && !deps.liveSession(message.sessionId)) return fail("that session isn't one conch is showing now");
+          const profile = profileFor(message.profile);
+          if (typeof profile === "string") return fail(profile);
+          const opened = workbench.open(message.sessionId, message.url ?? "", profile.id, "user");
+          if (!opened.ok) return fail(opened.error);
+          deps.log?.(`browser: ${opened.tab.id} opened by the user for ${message.sessionId} on profile ${profile.id}`);
+          return { kind: "browser-opened", tabId: opened.tab.id, sessionId: message.sessionId };
+        }
       }
     },
   };
@@ -731,6 +877,8 @@ export function createBrowserService(deps: BrowserServiceDependencies): BrowserS
       const current = workbench.current(sessionId);
       return { kind: "browser-result", op, tabs: workbench.tabsOf(sessionId).map((tab) => view(tab, current)) };
     }
+    // Tyler's hand on it: nothing an agent sends reaches a tab he paused agents in, closing it included.
+    if (own?.paused) return fail(pausedRefusal(own.id));
     if (op === "close") {
       workbench.close(own!.id);
       return { kind: "browser-result", op, result: { closed: own!.id } };
@@ -755,6 +903,7 @@ export function createBrowserService(deps: BrowserServiceDependencies): BrowserS
     }
     const tab = own ?? workbench.current(sessionId);
     if (!tab) return fail("this session has no browser tab yet; open one with browser_open");
+    if (tab.paused) return fail(pausedRefusal(tab.id));
     return run(tab, {
       op,
       ...(message.target ? { target: message.target } : {}),

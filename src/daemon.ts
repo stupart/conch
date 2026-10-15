@@ -148,6 +148,7 @@ import { accessCheckedLink, checkAnonymously, checkPageAccess, discardCapture, t
 import { captureFolderPath } from "./capture-folder.ts";
 import { addBrowserProfile, readBrowserProfiles } from "./browser-profiles.ts";
 import { BrowserWorkbench, createBrowserService, fileTabStore, withBrowserState } from "./browser-workbench.ts";
+import { MCP_TOOLSET } from "./mcp-toolset.ts";
 import { sessionForCallerPid } from "./caller-session.ts";
 import { CONCH_DATA } from "./config.ts";
 import {
@@ -1772,6 +1773,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     resolveCaller: (pid) => sessionForCallerPid(pid, { infos: [...panelSessions.values()], claudeDir: cfg.claudeDir }),
     publish: () => writeSessionsFile(),
     appRunning: macAppRunning,
+    // A tab Tyler opens with the Workdesk's + is for a session on screen now: a row the app was sent.
+    liveSession: (sessionId) => (lastPublishedPanelState?.rows ?? []).some((row) => row.id === sessionId),
     log,
   });
   // A session that ended a day ago and more takes its tabs with it; checked now and then, never on the publish path.
@@ -2178,10 +2181,12 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
    * The sessions file: the published state, the pages the Mac app is to draw for agents (`pageCaptures`), and the
    * Workbench's profiles, tabs and commands (`browserWorkbench`). Only this
    * Mac's app reads the file; the phone, and a second Mac through it, read `lastPublishedPanelState`, which never has them.
+   * And this build's MCP toolset (`mcpToolset`), which an MCP server of an older one reads to hand over (mcp-handoff.ts).
    */
   function writeSessionsFile(): void {
     if (lastPublishedPanelState) {
-      publishSessionsFile(withBrowserState(withCaptureRequests(lastPublishedPanelState, pageCaptures.requests()), browserWorkbench));
+      const state = { ...withBrowserState(withCaptureRequests(lastPublishedPanelState, pageCaptures.requests()), browserWorkbench), mcpToolset: MCP_TOOLSET };
+      publishSessionsFile(state);
     }
   }
 

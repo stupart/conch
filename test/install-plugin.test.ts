@@ -227,7 +227,7 @@ describe("plugin installer helpers", () => {
     expect(install.exitCode).toBe(0);
     expect(output).toContain("Claude Code: not-found");
     expect(output).toContain("Codex: not-found");
-    expect(output).toContain("MCP smoke test: passed — 23 tools");
+    expect(output).toContain("MCP smoke test: passed — 24 tools");
 
     const mcp = JSON.parse(
       readFileSync(

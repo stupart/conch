@@ -111,6 +111,17 @@ import {
   type BrowserTarget,
 } from "./browser-workbench.ts";
 import { appServerNoTerminal } from "./codex-threads.ts";
+import { ATLAS_MARKDOWN_MAX_BYTES, ATLAS_PATH_MAX, atlasCopiesFolder, atlasFiling, atlasPagePath, writeAtlasCopy } from "./atlas-copies.ts";
+import {
+  HANDOFF_FROM_ENV,
+  HANDOFF_PARENT_ENV,
+  handoffParentPid,
+  McpHandoff,
+  processParent,
+  streamLines,
+  type McpHandoffOptions,
+} from "./mcp-handoff.ts";
+import { MCP_TOOLSET } from "./mcp-toolset.ts";
 import { transcriptFormatFor } from "./agent-adapter.ts";
 import {
   HISTORY_CURSOR_MAX_BYTES, HISTORY_DEFAULT_LIMIT, HISTORY_ID_MAX_BYTES, HISTORY_MAX_LIMIT,
@@ -751,6 +762,33 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
         additionalProperties: false,
       },
     },
+    {
+      name: "atlas_show",
+      description: text.tools.atlas_show,
+      inputSchema: {
+        type: "object",
+        properties: {
+          path: {
+            type: "string",
+            minLength: 1,
+            maxLength: ATLAS_PATH_MAX,
+            description: "The page's Atlas path, as your Atlas tools name it: projects/conch/direction-2026-10-16.md, work/<org>/notes. .md is added to the copy's name when the path has none.",
+          },
+          markdown: {
+            type: "string",
+            minLength: 1,
+            description: "The page's Markdown, exactly as you read it or as you wrote it to Atlas. At most 2 MB.",
+          },
+          summary: {
+            type: "string",
+            minLength: 1,
+            description: "Optional. One line on what the page is and what to look at; conch adds the Atlas path when it isn't in it. Defaults to \"Atlas page <path>\".",
+          },
+        },
+        required: ["path", "markdown"],
+        additionalProperties: false,
+      },
+    },
   ] as const satisfies readonly McpToolDefinition[];
 }
 
@@ -834,6 +872,8 @@ export interface McpDependencies {
   capturePage?(socketPath: string, message: PageCaptureMessage, timeoutMs?: number): Promise<PageCaptureSend>;
   /** The browser tools' commands to the daemon, held open for their answer (`requestBrowser`). */
   browser?(socketPath: string, message: BrowserMessage, timeoutMs?: number): Promise<BrowserSend>;
+  /** `atlas_show`'s copy of a page, written into the copies folder (`writeAtlasCopy`); its absolute path. */
+  writeAtlasCopy?(file: string, markdown: string, folder: string): Promise<string>;
 }
 
 export const defaultMcpDependencies: McpDependencies = {
@@ -870,7 +910,7 @@ export const defaultMcpDependencies: McpDependencies = {
   },
   splitSentences,
   now: Date.now,
-  parentPid: () => process.ppid,
+  parentPid: () => sessionParentPid(),
   capturePage: requestPageCapture,
   browser: requestBrowser,
 };
@@ -1294,10 +1334,14 @@ async function capturePageUrl(raw: string, scope: LinkScope): Promise<string> {
   return absolute;
 }
 
-/** What a sign-in screen in place of the page means, and the one fix, said wherever conch saw one. */
+/**
+ * What a sign-in screen in place of the page means, and the one fix, said wherever conch saw one. 2026-10-16: the fix is
+ * a tab of conch's browser on the Default profile, which shares the review pane's store, so the user signs in where
+ * they watch the agent work, in the Workdesk.
+ */
 const CAPTURE_SIGN_IN_NOTE = "the page showed a sign-in screen, not the page itself. conch draws pages with the sign-ins of its"
-  + " own review pane, not your browser's: publish the URL with review_to_front and ask the user to open it in conch's"
-  + " window and sign in there once (the review pane browses, with an address field), then capture again";
+  + " own review pane, not your browser's: open the URL with browser_open (the Default profile shares them) and ask the"
+  + " user to sign in in that tab of their Workdesk once, then capture again";
 
 /** The daemon's answer as the agent reads it: the capture and what to do with it, or why there is none, in words. */
 function captureToolResult(reply: PageCaptureReply): Record<string, unknown> {
@@ -1414,7 +1458,7 @@ export function createMcpToolHandlers(
     return parsed.value;
   }
 
-  return {
+  const handlers: McpToolHandlers = {
     async conch_history(argumentsValue, meta) {
       const parsed = parseHistoryPageRequest(argumentsValue);
       if (!parsed.ok) throw new ToolInputError(parsed.err);
@@ -2133,6 +2177,39 @@ export function createMcpToolHandlers(
       return { closed: (reply.result?.closed as string | undefined) ?? undefined };
     },
 
+    // An Atlas page in the Workdesk (atlas-copies.ts): its copy saved where Tyler keeps them, and filed as a markdown
+    // deliverable keyed by its path, through review_to_front's own checks. conch never talks to Atlas.
+    async atlas_show(argumentsValue, meta) {
+      const { page, markdown, summary } = (() => {
+        try {
+          const args = toolArguments(argumentsValue);
+          allowOnly(args, ["path", "markdown", "summary"]);
+          const page = atlasPagePath(args.path);
+          if (!page.ok) throw new ToolInputError(page.reason);
+          const markdown = args.markdown;
+          if (typeof markdown !== "string" || !markdown.trim()) {
+            throw new ToolInputError("markdown must be the page's Markdown, as you read it or wrote it");
+          }
+          if (Buffer.byteLength(markdown, "utf8") > ATLAS_MARKDOWN_MAX_BYTES) {
+            throw new ToolInputError(`markdown is over ${ATLAS_MARKDOWN_MAX_BYTES / 1024 / 1024} MB; show the part that matters`);
+          }
+          const summary = optionalString(args, "summary");
+          if (summary !== undefined && !summary.trim()) throw new ToolInputError("summary must be a non-empty line");
+          return { page, markdown, summary };
+        } catch (error) {
+          throw new ToolInputError(`refused: ${errorMessage(error)}`);
+        }
+      })();
+      // Verified before anything is written: a copy is saved only for a session conch can file it for.
+      await verifiedCaller("show an Atlas page for any session", config, dependencies, meta);
+      const copy = await (dependencies.writeAtlasCopy ?? writeAtlasCopy)(page.file, markdown, atlasCopiesFolder()).catch((error): never => {
+        throw new Error(`failed: conch couldn't save the page's copy: ${errorMessage(error)}`);
+      });
+      const filing = atlasFiling(page.path, summary);
+      const filed = await handlers.review_to_front({ summary: filing.summary, link: copy, kind: "markdown", key: filing.key }, meta);
+      return { atlasPath: page.path, copy, ...(filed as Record<string, unknown>), source: "Atlas is the source; this is conch's copy of it" };
+    },
+
     // Anyone may ask, verified or not: it names what is on screen, and changes nothing.
     async conch_on_screen(argumentsValue) {
       allowOnly(toolArguments(argumentsValue), []);
@@ -2152,6 +2229,7 @@ export function createMcpToolHandlers(
       return { showing, ...(isRecord(row) && typeof row.label === "string" ? { label: row.label } : {}) };
     },
   };
+  return handlers;
 }
 
 export type JsonRpcId = string | number | null;
@@ -2243,7 +2321,8 @@ function historyRpcResult(id: JsonRpcId, result: unknown): JsonRpcResponse {
 export function initializeResult(params: unknown, text: AgentInstructions = AGENT_INSTRUCTIONS) {
   return {
     protocolVersion: negotiateProtocolVersion(isRecord(params) ? params.protocolVersion : undefined),
-    capabilities: { tools: {} },
+    // listChanged: a server that hands over to a newer conch's says so (mcp-handoff.ts).
+    capabilities: { tools: { listChanged: true } },
     serverInfo: { name: "conch", version: CONCH_VERSION },
     instructions: text.serverInstructions,
   };
@@ -2361,6 +2440,58 @@ export interface RunMcpServerOptions {
   /** Receives exactly one serialized object without its framing newline. */
   writeLine?(line: string): void | Promise<void>;
   diagnostic?(message: string): void;
+  /**
+   * Hand over to a newer conch's server when one is installed (mcp-handoff.ts): its options, less the lines this server
+   * writes. On by default for the real stdio server, off when `input` is given (tests) unless passed; false is off.
+   */
+  handoff?: Omit<McpHandoffOptions, "writeLine" | "diagnostic"> | false;
+}
+
+/** How often an idle server looks for a newer conch to hand over to, besides after each message. */
+export const MCP_HANDOFF_IDLE_CHECK_MS = 5 * 60_000;
+
+/** The real server's hand-off: the daemon's toolset off the sessions file, and a fresh `conch mcp` of what is installed. */
+function stdioHandoff(sessionsPath: string): Omit<McpHandoffOptions, "writeLine" | "diagnostic"> {
+  return {
+    ownToolset: MCP_TOOLSET,
+    async publishedToolset() {
+      const raw = await defaultMcpDependencies.readSessionsFile(sessionsPath);
+      const published = raw === null ? null : JSON.parse(raw) as unknown;
+      return isRecord(published) && typeof published.mcpToolset === "string" ? published.mcpToolset : undefined;
+    },
+    async spawn() {
+      const { conchArgv } = await import("./install.ts");
+      const fresh = Bun.spawn([...conchArgv(), "mcp"], {
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "inherit",
+        env: { ...process.env, [HANDOFF_FROM_ENV]: String(process.pid), [HANDOFF_PARENT_ENV]: String(sessionParentPid()) },
+      });
+      return {
+        write(line: string) {
+          // A fresh server that has gone takes nothing more; its going is `exited`'s to say.
+          try {
+            fresh.stdin.write(`${line}\n`);
+            void Promise.resolve(fresh.stdin.flush()).catch(() => {});
+          } catch {}
+        },
+        lines: streamLines(fresh.stdout),
+        exited: fresh.exited,
+        kill: () => fresh.kill(),
+      };
+    },
+    now: Date.now,
+  };
+}
+
+/**
+ * The session this server serves: its parent, or, for a server a hand-off started, the parent of the server that handed
+ * over (`handoffParentPid`, which checks it against the process table). Read once.
+ */
+let sessionParent: number | undefined;
+function sessionParentPid(): number {
+  sessionParent ??= handoffParentPid(process.env, process.ppid, processParent) ?? process.ppid;
+  return sessionParent;
 }
 
 /**
@@ -2389,20 +2520,39 @@ export async function runMcpServer(options: RunMcpServerOptions = {}): Promise<v
   const writeResponse = async (response: JsonRpcResponse | JsonRpcResponse[]): Promise<void> => {
     await writeLine(serializeJsonRpcLine(response));
   };
+  // A server a hand-off started is the installed conch already: it never hands over again, or each would start another.
+  const handoffOptions = options.handoff === false
+    ? undefined
+    : options.handoff ?? (options.input || process.env[HANDOFF_FROM_ENV] ? undefined : stdioHandoff(options.config?.sessionsPath ?? MCP_SESSIONS_FILE));
+  const handoff = handoffOptions ? new McpHandoff({ ...handoffOptions, writeLine, diagnostic }) : undefined;
   const processLine = async (line: string): Promise<void> => {
     if (!line.trim()) return;
     let message: unknown;
     try {
       message = parseJsonRpcLine(line);
     } catch {
+      if (handoff?.forward(line)) return;
       await writeResponse(jsonRpcError(null, -32700, "Parse error"));
       return;
     }
+    for (const one of Array.isArray(message) ? message : [message]) handoff?.observe(one);
+    // Handed over to a newer conch's server: every line is its to answer.
+    if (handoff?.forward(line)) return;
     const response = Array.isArray(message)
       ? await dispatchJsonRpcBatch(message, handlers)
       : await dispatchJsonRpc(message, handlers);
     if (response) await writeResponse(response);
   };
+  // One thing at a time, a line or a look for a newer conch, so a hand-off never starts while a call is half-answered.
+  let turn: Promise<void> = Promise.resolve();
+  const serially = (work: () => Promise<void>): Promise<void> =>
+    (turn = turn.then(work).catch((error) => diagnostic(`server failure: ${errorMessage(error)}`)));
+  const idleCheck = handoff ? setInterval(() => void serially(() => handoff.check()), MCP_HANDOFF_IDLE_CHECK_MS) : undefined;
+  idleCheck?.unref?.();
+  const handle = (line: string) => serially(async () => {
+    await processLine(line);
+    await handoff?.check();
+  });
 
   const reader = input.getReader();
   const decoder = new TextDecoder();
@@ -2417,14 +2567,16 @@ export async function runMcpServer(options: RunMcpServerOptions = {}): Promise<v
         if (newline === -1) break;
         const line = buffer.slice(0, newline).replace(/\r$/, "");
         buffer = buffer.slice(newline + 1);
-        await processLine(line);
+        await handle(line);
       }
     }
     buffer += decoder.decode();
-    if (buffer.trim()) await processLine(buffer.replace(/\r$/, ""));
+    if (buffer.trim()) await handle(buffer.replace(/\r$/, ""));
   } catch (error) {
     diagnostic(`stdio failure: ${errorMessage(error)}`);
   } finally {
+    clearInterval(idleCheck);
+    handoff?.close();
     reader.releaseLock();
   }
 }
