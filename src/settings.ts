@@ -321,7 +321,7 @@ export const SETTING_DESCRIPTORS = [
     parse: parseBoolean,
     bounds: null,
     apply: "live",
-    help: "open links from the sessions conch starts (open, $BROWSER) in conch's Workbench, not your default browser; on reaches sessions started after, off applies at once",
+    help: "open links from the sessions conch starts (open, $BROWSER) as a browser tab in that session's Workdesk, not your default browser; on reaches sessions started after, off applies at once",
   },
   {
     key: "keystroke-fallback",

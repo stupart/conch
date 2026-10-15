@@ -29,7 +29,7 @@ const lagoon = read("mac-app/conch-mac/LagoonPane.swift");
 describe("✓ Approve in the session bar", () => {
   test("after the pane toggles, before the session's actions, styled as a track", () => {
     const bar = between(dashboard, "private func sessionBar(for row: SessionRow) -> some View {", "private var approveControl: some View {");
-    const track = bar.indexOf('help: "The work and the exchange together (⌘2)"');
+    const track = bar.indexOf('help: "The Workdesk and the conversation together (⌘2)"');
     const approve = bar.indexOf("            approveControl\n");
     const actions = bar.indexOf('.help("Session actions")');
     expect(track).toBeGreaterThan(-1);

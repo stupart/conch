@@ -10,7 +10,7 @@ struct ConchBrowserSettingsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: SettingsLayout.headerGap) {
-                SettingsSectionHeader(title: "Browser", subtitle: "conch's own browser: its profiles, and your sign-ins from Chrome.")
+                SettingsSectionHeader(title: "Browser", subtitle: "conch's own browser, in each session's Workdesk: its profiles, and your sign-ins from Chrome.")
                 VStack(alignment: .leading, spacing: 24) {
                     BrowserProfilesBlock(store: store)
                     SettingsHairline()
@@ -50,7 +50,7 @@ private struct BrowserProfilesBlock: View {
             case let .failed(error):
                 Text(error).foregroundStyle(ConchPalette.statusNeeds).fixedSize(horizontal: false, vertical: true)
             case let .loaded(profiles):
-                Text("Each has its own sign-ins. Default is the one conch's browser opens with.")
+                Text("Each has its own sign-ins. Default is the one conch's browser opens with; a new tab's profile is picked in its address bar.")
                     .foregroundStyle(ConchPalette.textDim)
                     .fixedSize(horizontal: false, vertical: true)
                 OnboardingCard {

@@ -13,8 +13,13 @@ import Foundation
 ///   round it): `type` answers `passwordRefusal`, and the field is left as it was. Signing in is the person's, in the
 ///   tab, where they can see what they type into.
 ///
-/// Called by `callAsyncJavaScript` with `op` ("read", "click" or "type"), `how` ("ref", "selector", "text" or "auto"),
-/// `what`, `text` and `submit`. It answers an object; `{error}` when it can't do what was asked, saying why.
+/// Called by `callAsyncJavaScript` with `op` ("read", "click", "type", "locate" or "locate-field"), `how` ("ref",
+/// "selector", "text" or "auto"), `what`, `text` and `submit`. It answers an object; `{error}` when it can't do what was
+/// asked, saying why.
+///
+/// So the user can watch an agent work (2026-10-16): `locate` and `locate-field` find what a click or a type will land
+/// on, scroll it into view, and answer only its box, which the app marks over the page; and `type` fills a field in a
+/// few visible steps, as typing looks, never more than about a third of a second.
 public enum WorkbenchScript {
     /// The content world it runs in.
     public static let contentWorld = "conch-workbench"
@@ -28,10 +33,15 @@ public enum WorkbenchScript {
     public static let buttonsMax = 100
     public static let fieldsMax = 100
 
+    /// How a type fills its field: this many steps at most, this many milliseconds apart.
+    public static let fillSteps = 12
+    public static let fillStepMs = 28
+
     public static let page = #"""
     const W = window, D = document;
     const PASSWORD_REFUSAL = "agents don't type passwords; sign in yourself in the tab";
     const LIMITS = { text: 12000, links: 150, buttons: 100, fields: 100, hidden: 20, bytes: 45000 };
+    const FILL = { steps: 12, ms: 28 };
     const state = W.__conchWorkbench || (W.__conchWorkbench = { refs: new Map() });
     const fail = (message) => { throw { conchWorkbench: message }; };
     const fold = (value) => String(value == null ? "" : value).replace(/\s+/g, " ").trim();
@@ -198,15 +208,29 @@ public enum WorkbenchScript {
         return { clicked: describe(el) };
     };
 
-    const type = () => {
+    // The field a type is aimed at: a label, or something round the field, names the field it is for, or the first one
+    // inside it. A password field, however it was named, is refused here, before anything is marked or typed.
+    const fieldTarget = () => {
         let el = target(true);
-        // A label, or something round the field: the field it names, or the first one inside it.
         if (tag(el) === "label" && el.control) el = el.control;
         if (!editable(el) && !isPassword(el)) {
             const inside = el.querySelectorAll ? all("input, textarea, select", el).find((field) => typeOf(field) !== "hidden") : null;
             if (inside) el = inside;
         }
         if (isPassword(el)) fail(PASSWORD_REFUSAL);
+        return el;
+    };
+
+    // Where a click or a type will land, for the app to mark: scrolled into view, and its box. Nothing else about it.
+    const locate = (field) => {
+        const el = field ? fieldTarget() : target(false);
+        if (el.scrollIntoView) el.scrollIntoView({ block: "center", inline: "nearest" });
+        const box = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+        return { box: box ? [box.left, box.top, box.width, box.height] : [0, 0, 0, 0] };
+    };
+
+    const type = async () => {
+        const el = fieldTarget();
         if (!editable(el)) fail(describe(el) + " isn't a field you can type in");
         if (el.disabled || el.readOnly) fail(describe(el) + " is " + (el.disabled ? "disabled" : "read-only"));
         if (el.scrollIntoView) el.scrollIntoView({ block: "center", inline: "nearest" });
@@ -227,7 +251,15 @@ public enum WorkbenchScript {
             // The element's own setter, so a page that watches its fields (React) hears the change as typing.
             const prototype = kind === "textarea" ? W.HTMLTextAreaElement.prototype : W.HTMLInputElement.prototype;
             const property = Object.getOwnPropertyDescriptor(prototype, "value");
-            if (property && property.set) property.set.call(el, text); else el.value = text;
+            const put = (value) => { if (property && property.set) property.set.call(el, value); else el.value = value; };
+            // In steps the user can watch fill, each heard as typing; the whole of it lands last.
+            const steps = typeof W.setTimeout === "function" ? Math.min(text.length, FILL.steps) : 1;
+            for (let step = 1; step < steps; step++) {
+                put(text.slice(0, Math.ceil(text.length * step / steps)));
+                el.dispatchEvent(new W.Event("input", { bubbles: true, composed: true }));
+                await new Promise((resolve) => W.setTimeout(resolve, FILL.ms));
+            }
+            put(text);
         }
         el.dispatchEvent(new W.Event("input", { bubbles: true, composed: true }));
         el.dispatchEvent(new W.Event("change", { bubbles: true }));
@@ -245,7 +277,9 @@ public enum WorkbenchScript {
     try {
         if (op === "read") return read();
         if (op === "click") return click();
-        if (op === "type") return type();
+        if (op === "type") return await type();
+        if (op === "locate") return locate(false);
+        if (op === "locate-field") return locate(true);
         return { error: "conch's browser has no " + String(op) };
     } catch (thrown) {
         if (thrown && typeof thrown.conchWorkbench === "string") return { error: thrown.conchWorkbench };

@@ -147,7 +147,12 @@ public enum StageMode: String, Equatable, Sendable, Codable {
 ///
 /// Kept apart, every stage works on either content for free — the files beside the
 /// conversation, or filling the stage, with no new page and no new shortcut.
-public enum WorkPane: String, Equatable, Sendable, Codable {
+///
+/// The work half is the Workdesk (2026-10-16), and these are the TYPES of item it holds: each tab in its strip is one
+/// item of one type (`Workdesk.ItemType`). Tyler: "deliverable is a type, borwser is a type, we prob have other ones
+/// already too". A new type (an Atlas page with a view of its own, a design) is a new case here, with its name and mark
+/// in `Workdesk`, and its tab and pane in the app.
+public enum WorkPane: String, Equatable, Sendable, Codable, CaseIterable {
     /// What the session filed for you to look at.
     case deliverable
     /// The session's working folder, and what it changed in there.
@@ -170,6 +175,57 @@ public enum WorkPane: String, Equatable, Sendable, Codable {
     /// take over (`SessionPresentation.selectedBrowserTab` says which). Tyler, 2026-10-09: "Agents's pages should live
     /// as tabs in the deliverables plane just like the deliverables."
     case browser
+}
+
+/// The Workdesk: the pane beside the conversation, holding a session's work as typed items, a tab each in its strip. It
+/// was the deliverables pane until it held more than deliverables; the code still says `work`, `WorkPane` and
+/// `deliverableTabs` where it did, and the words the user reads say Workdesk.
+public enum Workdesk {
+    /// The pane's name, wherever the user reads it.
+    public static let name = "Workdesk"
+
+    /// An item's type: what the Workdesk shows when its tab is picked.
+    public typealias ItemType = WorkPane
+
+    /// What an item of a type is called, in help and accessibility.
+    public static func name(of type: ItemType) -> String {
+        switch type {
+        case .deliverable: "Deliverable"
+        case .browser: "Browser tab"
+        case .files: "Files"
+        case .shell: "Shell"
+        case .terminal: "Terminal"
+        }
+    }
+
+    /// Its mark in the strip (SF Symbols).
+    public static func symbol(of type: ItemType) -> String {
+        switch type {
+        case .deliverable: "doc.text"
+        case .browser: "globe"
+        case .files: "folder"
+        case .shell: "chevron.left.forwardslash.chevron.right"
+        case .terminal: "terminal"
+        }
+    }
+
+    /// The help for the strip's +: what a tab of your own is for.
+    public static let newTabHelp = "New browser tab: sign in, or browse alongside this session's agents"
+
+    /// Where conch keeps Atlas pages' copies, under the home folder (src/atlas-copies.ts `ATLAS_COPIES_PARTS`).
+    public static let atlasCopiesParts = ["Documents", "conch-notes", "atlas"]
+
+    /// The Atlas page a deliverable is a copy of, by its path in Atlas: a Markdown file under the copies folder (what
+    /// `atlas_show` files). Nil for anything else.
+    public static func atlasPage(link: String?, home: String) -> String? {
+        guard let link, link.hasPrefix("/") else { return nil }
+        let folder = ([home] + atlasCopiesParts).joined(separator: "/") + "/"
+        guard link.hasPrefix(folder) else { return nil }
+        let path = String(link.dropFirst(folder.count))
+        guard !path.isEmpty, path.lowercased().hasSuffix(".md") || path.lowercased().hasSuffix(".markdown"),
+              !path.split(separator: "/").contains(where: { $0.hasPrefix(".") }) else { return nil }
+        return path
+    }
 }
 
 /// What the workspace remembers about ONE session, so leaving it and coming back returns

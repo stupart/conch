@@ -1819,7 +1819,8 @@ private struct ConversationPane: View {
     @ObservedObject private var composerDrafts = ComposerDraftStore.shared
     /// Where the one input is: this window lays its composer out only while it is here (ComposerDock).
     @ObservedObject private var dock = ComposerDock.shared
-    /// The Workbench's tabs and pages (`WorkbenchStore`): its agents' live browser tabs, in this pane's strip.
+    /// The Workbench's tabs and pages (`WorkbenchStore`): live browser tabs, its agents' and Tyler's own, in the
+    /// Workdesk's strip.
     @ObservedObject private var workbench = WorkbenchStore.shared
     /// `.ib:hover` for the session-actions menu, which a `Menu` label does not get for free.
     @State private var isHoveringActions = false
@@ -1841,6 +1842,8 @@ private struct ConversationPane: View {
     /// A link in the fallback (AppKit) conversation renderer that would not
     /// open, shown under it in the OS's own words (A13).
     @State private var fallbackLinkFailure: String?
+    /// Why a browser tab Tyler asked for (the Workdesk's +) didn't open, in the daemon's words, under the session bar.
+    @State private var browserTabFailure: String?
     /// The address the deliverable pane is showing, published upward by it. The arrow and ⌘3
     /// both open THIS, so neither can send you back to a page you already left.
     @State private var deliverableAddress: String?
@@ -1969,6 +1972,42 @@ private struct ConversationPane: View {
         workspace.show(browserTab: tab.id, for: row.id)
     }
 
+    /// An agent's command in another of the session's browser tabs brings that tab forward only while Tyler is watching,
+    /// not working: the session is the one in view, the Workdesk shows one of its browser tabs, and he hasn't touched it
+    /// for a few seconds (`Workbench.follows`). Otherwise the tab gets its dot. The stage never moves: only a press does.
+    private func followAgent(_ activity: WorkbenchStore.AgentActivity?) {
+        // Only while the Workdesk is on screen: from the conversation alone nobody is watching it.
+        guard let activity, let row = focusedRow, stage(for: row) != .conversation else { return }
+        let shown = workPane(for: row) == .browser ? selectedBrowserTab?.id : nil
+        guard Workbench.follows(activity.tab, viewing: row.id, shown: shown, lastTouch: workbench.lastTouch, now: Date()) else { return }
+        workspace.show(browserTab: activity.tab.id, for: row.id)
+    }
+
+    /// Whether Tyler can open a tab of his own in a session: a session's, not a subagent's or the practice session's.
+    private func opensBrowserTabs(_ row: SessionRow) -> Bool {
+        row.parentSessionId == nil && row.id != TourCoach.practiceSessionId
+    }
+
+    /// The Workdesk's + (and New Browser Tab): a blank tab of Tyler's in this session, on the profile he picked last,
+    /// shown in the Workdesk with its address field waiting. A press, so from the conversation alone it opens the
+    /// Workdesk beside it, as ⌘2 does.
+    private func openBrowserTab(for row: SessionRow) {
+        let profile = WorkbenchNewTab.profile(among: workbench.profiles)
+        Task { @MainActor in
+            switch await workbench.openTab(sessionId: row.id, profile: profile) {
+            case let .success(id):
+                comparison = nil
+                browserTabFailure = nil
+                workspace.show(browserTab: id, for: row.id)
+                if stage(for: row) == .conversation {
+                    NotificationCenter.default.post(name: .setStage, object: StageMode.sideBySide)
+                }
+            case let .failure(failure):
+                browserTabFailure = failure.words
+            }
+        }
+    }
+
     /// Debug › Show Terminal Mirror, off by default (`ConchTerminalStrip`).
     @AppStorage(TerminalMirrorDebug.key) private var showTerminalMirror = false
 
@@ -2037,7 +2076,7 @@ private struct ConversationPane: View {
                             }
                     )
             )
-            .accessibilityLabel("Resize the split between the conversation and the work")
+            .accessibilityLabel("Resize the split between the conversation and the Workdesk")
     }
 
     /// More than one thing to choose between, so the strip is worth drawing.
@@ -2092,7 +2131,8 @@ private struct ConversationPane: View {
             // Keyed on the tab: each page is its own live web view, moved here while it is shown (`WorkbenchPane`).
             WorkbenchPane(
                 page: page,
-                profile: tab.profile == Workbench.defaultProfile ? nil : workbench.profileNames[tab.profile] ?? tab.profile,
+                store: workbench,
+                tab: tab,
                 openInBrowser: { url in
                     fallbackLinkFailure = nil
                     store.openLink(url.absoluteString, cwd: row.cwd, rowId: row.id) { fallbackLinkFailure = $0 }
@@ -2100,6 +2140,7 @@ private struct ConversationPane: View {
                 close: { workbench.close(tab.id) }
             )
             .id(tab.id)
+            .onDisappear { if workbench.shown == tab.id { workbench.show(nil) } }
         } else if workPane(for: row) == .files, let folder = workingFolder {
             WorkspaceFilesView(root: folder, rowID: row.id, changed: changedFiles(for: row))
         } else if workPane(for: row) == .shell, let folder = workingFolder {
@@ -2399,6 +2440,13 @@ private struct ConversationPane: View {
             openDeliverableInPlace()
         }
         .onChange(of: workbench.arrival) { _, arrival in bringBrowserTabForward(arrival) }
+        .onChange(of: workbench.agentActivity) { _, activity in followAgent(activity) }
+        // Under the session bar (52 tall), over whichever page the stage is on.
+        .overlay(alignment: .top) {
+            LinkFailureLine(message: $browserTabFailure)
+                .padding(.top, 60)
+                .padding(.horizontal, 14)
+        }
         // What ↵ approves, while the review pane has the keyboard (ContentView, `ReviewApproval.returnKey`).
         .onChange(of: approvalTarget, initial: true) { _, target in
             approvals.approvable = target
@@ -2596,7 +2644,7 @@ private struct ConversationPane: View {
                         label: "Side by side",
                         symbol: "rectangle.split.2x1",
                         isSelected: stage(for: row) == .sideBySide,
-                        help: "The work and the exchange together (⌘2)",
+                        help: "The Workdesk and the conversation together (⌘2)",
                         action: { workspace.show(stage: .sideBySide, for: row.id) }
                     )
                 }
@@ -2624,6 +2672,12 @@ private struct ConversationPane: View {
                     Button("What this session carries…") {
                         inspectingSession = row
                     }
+                    // A browser tab of Tyler's own in its Workdesk, to sign in or to watch its agents browse: the strip's
+                    // +, reachable from the conversation too.
+                    Button("New Browser Tab") {
+                        openBrowserTab(for: row)
+                    }
+                    .disabled(!opensBrowserTabs(row))
                     Divider()
                     // Picks up an updated Claude Code or Codex without retyping the command.
                     Button("Restart session…") {
@@ -2785,14 +2839,19 @@ private struct ConversationPane: View {
                 // everything after it was laid out where no one could see or click it.
                 ScrollView(.horizontal) {
                     HStack(spacing: 2) {
-                        // The agent's live pages, as tabs among its work (Tyler, 2026-10-09: "Agents's pages should
-                        // live as tabs in the deliverables plane just like the deliverables").
+                        // The live pages, the agent's and Tyler's own, as tabs among its work (Tyler, 2026-10-09:
+                        // "Agents's pages should live as tabs in the deliverables plane just like the deliverables").
+                        // An agent at work in one says so; one it acted in unseen has a dot (ConchDesign
+                        // `WorkbenchTabButton`).
                         let shownTab = workPane(for: row) == .browser ? selectedBrowserTab?.id : nil
                         ForEach(browserTabs) { tab in
                             WorkbenchTabButton(
                                 tab: tab,
                                 isSelected: tab.id == shownTab,
+                                agentWorking: workbench.working[tab.id] != nil,
+                                hasActivity: Workbench.showsActivity(tab.id, actedIn: workbench.actedIn, shown: shownTab),
                                 open: {
+                                    workbench.touched()
                                     comparison = nil
                                     workspace.show(browserTab: tab.id, for: row.id)
                                 },
@@ -2836,7 +2895,16 @@ private struct ConversationPane: View {
                     }
                 }
                 .scrollIndicators(.never)
+
+                // The +: a browser tab of Tyler's own, to sign in or browse beside the agents. Pinned at the end, outside
+                // the scroller, as a browser's is, so however many tabs there are it is never scrolled away.
+                if opensBrowserTabs(row) {
+                    WorkdeskNewTabButton { openBrowserTab(for: row) }
+                }
             }
+            // The strip is the Workdesk's, one item a tab (ConchDesign `Workdesk`), and says so to VoiceOver.
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(Workdesk.name)
             // 6 in, so the first tab's mark starts on the pane's left axis, 15 points in: where the session's name above it
             // starts (14.5), and a page's globe and the Workbench's back arrow below it. At 8 it started 2.5 points right
             // of the name. The right keeps 8, the header's.
