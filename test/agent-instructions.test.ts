@@ -150,6 +150,23 @@ describe("one source for the agent-facing instructions", () => {
     expect(told).toContain("Publish again whenever it changes in a way worth seeing, not after every edit");
   });
 
+  // 2026-10-16: the Workdesk, its typed items, where to show work, the browser to browse in, sign-ins, and Atlas pages.
+  test("the always-on text names the Workdesk and its items, and says how to show work there", () => {
+    const told = AGENT_INSTRUCTIONS.alwaysOn;
+    expect(told).toContain("a Workdesk of typed items beside the conversation: deliverables, browser tabs, files, shell, terminal");
+    expect(told).toContain("Show your work there: results with `review_to_front`, pages with `browser_open`.");
+    expect(told).toContain("Browse for the user with conch’s `browser_*` tools so they can watch in the Workdesk; other browser tools are fine when they ask or the task needs them.");
+    expect(told).toContain("At a sign-in, ask them to sign in in the tab; never type passwords.");
+    expect(told).toContain("Show an Atlas page you read or wrote that matters to the user with `atlas_show`.");
+    const skill = renderSkillMd();
+    expect(skill).toContain("## The Workdesk");
+    expect(skill).toContain("**Signing in is the user's.**");
+    expect(skill).toContain("**Pause agents.**");
+    expect(skill).toContain("- **Show an Atlas page** — `atlas_show {path, markdown, summary?}`");
+    expect(skill).toContain('key:\n  "atlas:<path>"}`');
+    expect(skill).toContain("conch never fetches Atlas");
+  });
+
   test("the skill's description says when to load it: something to look at, or the other sessions", () => {
     expect(AGENT_INSTRUCTIONS.skillDescription).toStartWith("Publish what the user should look at (a page, image, file, folder, build or app state) with review_to_front");
     expect(AGENT_INSTRUCTIONS.skillDescription).toContain("see or steer their other Claude Code and Codex sessions when asked");

@@ -111,6 +111,7 @@ import {
   type BrowserTarget,
 } from "./browser-workbench.ts";
 import { appServerNoTerminal } from "./codex-threads.ts";
+import { ATLAS_MARKDOWN_MAX_BYTES, ATLAS_PATH_MAX, atlasCopiesFolder, atlasFiling, atlasPagePath, writeAtlasCopy } from "./atlas-copies.ts";
 import { transcriptFormatFor } from "./agent-adapter.ts";
 import {
   HISTORY_CURSOR_MAX_BYTES, HISTORY_DEFAULT_LIMIT, HISTORY_ID_MAX_BYTES, HISTORY_MAX_LIMIT,
@@ -751,6 +752,33 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
         additionalProperties: false,
       },
     },
+    {
+      name: "atlas_show",
+      description: text.tools.atlas_show,
+      inputSchema: {
+        type: "object",
+        properties: {
+          path: {
+            type: "string",
+            minLength: 1,
+            maxLength: ATLAS_PATH_MAX,
+            description: "The page's Atlas path, as your Atlas tools name it: projects/conch/direction-2026-10-16.md, work/<org>/notes. .md is added to the copy's name when the path has none.",
+          },
+          markdown: {
+            type: "string",
+            minLength: 1,
+            description: "The page's Markdown, exactly as you read it or as you wrote it to Atlas. At most 2 MB.",
+          },
+          summary: {
+            type: "string",
+            minLength: 1,
+            description: "Optional. One line on what the page is and what to look at; conch adds the Atlas path when it isn't in it. Defaults to \"Atlas page <path>\".",
+          },
+        },
+        required: ["path", "markdown"],
+        additionalProperties: false,
+      },
+    },
   ] as const satisfies readonly McpToolDefinition[];
 }
 
@@ -834,6 +862,8 @@ export interface McpDependencies {
   capturePage?(socketPath: string, message: PageCaptureMessage, timeoutMs?: number): Promise<PageCaptureSend>;
   /** The browser tools' commands to the daemon, held open for their answer (`requestBrowser`). */
   browser?(socketPath: string, message: BrowserMessage, timeoutMs?: number): Promise<BrowserSend>;
+  /** `atlas_show`'s copy of a page, written into the copies folder (`writeAtlasCopy`); its absolute path. */
+  writeAtlasCopy?(file: string, markdown: string, folder: string): Promise<string>;
 }
 
 export const defaultMcpDependencies: McpDependencies = {
@@ -1294,10 +1324,14 @@ async function capturePageUrl(raw: string, scope: LinkScope): Promise<string> {
   return absolute;
 }
 
-/** What a sign-in screen in place of the page means, and the one fix, said wherever conch saw one. */
+/**
+ * What a sign-in screen in place of the page means, and the one fix, said wherever conch saw one. 2026-10-16: the fix is
+ * a tab of conch's browser on the Default profile, which shares the review pane's store, so the user signs in where
+ * they watch the agent work, in the Workdesk.
+ */
 const CAPTURE_SIGN_IN_NOTE = "the page showed a sign-in screen, not the page itself. conch draws pages with the sign-ins of its"
-  + " own review pane, not your browser's: publish the URL with review_to_front and ask the user to open it in conch's"
-  + " window and sign in there once (the review pane browses, with an address field), then capture again";
+  + " own review pane, not your browser's: open the URL with browser_open (the Default profile shares them) and ask the"
+  + " user to sign in in that tab of their Workdesk once, then capture again";
 
 /** The daemon's answer as the agent reads it: the capture and what to do with it, or why there is none, in words. */
 function captureToolResult(reply: PageCaptureReply): Record<string, unknown> {
@@ -1414,7 +1448,7 @@ export function createMcpToolHandlers(
     return parsed.value;
   }
 
-  return {
+  const handlers: McpToolHandlers = {
     async conch_history(argumentsValue, meta) {
       const parsed = parseHistoryPageRequest(argumentsValue);
       if (!parsed.ok) throw new ToolInputError(parsed.err);
@@ -2133,6 +2167,39 @@ export function createMcpToolHandlers(
       return { closed: (reply.result?.closed as string | undefined) ?? undefined };
     },
 
+    // An Atlas page in the Workdesk (atlas-copies.ts): its copy saved where Tyler keeps them, and filed as a markdown
+    // deliverable keyed by its path, through review_to_front's own checks. conch never talks to Atlas.
+    async atlas_show(argumentsValue, meta) {
+      const { page, markdown, summary } = (() => {
+        try {
+          const args = toolArguments(argumentsValue);
+          allowOnly(args, ["path", "markdown", "summary"]);
+          const page = atlasPagePath(args.path);
+          if (!page.ok) throw new ToolInputError(page.reason);
+          const markdown = args.markdown;
+          if (typeof markdown !== "string" || !markdown.trim()) {
+            throw new ToolInputError("markdown must be the page's Markdown, as you read it or wrote it");
+          }
+          if (Buffer.byteLength(markdown, "utf8") > ATLAS_MARKDOWN_MAX_BYTES) {
+            throw new ToolInputError(`markdown is over ${ATLAS_MARKDOWN_MAX_BYTES / 1024 / 1024} MB; show the part that matters`);
+          }
+          const summary = optionalString(args, "summary");
+          if (summary !== undefined && !summary.trim()) throw new ToolInputError("summary must be a non-empty line");
+          return { page, markdown, summary };
+        } catch (error) {
+          throw new ToolInputError(`refused: ${errorMessage(error)}`);
+        }
+      })();
+      // Verified before anything is written: a copy is saved only for a session conch can file it for.
+      await verifiedCaller("show an Atlas page for any session", config, dependencies, meta);
+      const copy = await (dependencies.writeAtlasCopy ?? writeAtlasCopy)(page.file, markdown, atlasCopiesFolder()).catch((error): never => {
+        throw new Error(`failed: conch couldn't save the page's copy: ${errorMessage(error)}`);
+      });
+      const filing = atlasFiling(page.path, summary);
+      const filed = await handlers.review_to_front({ summary: filing.summary, link: copy, kind: "markdown", key: filing.key }, meta);
+      return { atlasPath: page.path, copy, ...(filed as Record<string, unknown>), source: "Atlas is the source; this is conch's copy of it" };
+    },
+
     // Anyone may ask, verified or not: it names what is on screen, and changes nothing.
     async conch_on_screen(argumentsValue) {
       allowOnly(toolArguments(argumentsValue), []);
@@ -2152,6 +2219,7 @@ export function createMcpToolHandlers(
       return { showing, ...(isRecord(row) && typeof row.label === "string" ? { label: row.label } : {}) };
     },
   };
+  return handlers;
 }
 
 export type JsonRpcId = string | number | null;

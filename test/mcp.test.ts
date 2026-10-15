@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 import {
   chmod,
@@ -83,6 +83,7 @@ const TOOL_NAMES = [
   "browser_screenshot",
   "browser_tabs",
   "browser_close",
+  "atlas_show",
 ] as const satisfies readonly McpToolName[];
 
 const DEFERRED_TOOL_NAMES = [
@@ -384,6 +385,7 @@ function recordingHandlers(
     browser_screenshot: handler("browser_screenshot"),
     browser_tabs: handler("browser_tabs"),
     browser_close: handler("browser_close"),
+    atlas_show: handler("atlas_show"),
   };
 }
 
@@ -525,8 +527,8 @@ describe("MCP tool discovery", () => {
 
     expect(response?.id).toBe(11);
     expect(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).toEqual([...TOOL_NAMES]);
-    expect(result.tools).toHaveLength(23);
-    expect(new Set(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).size).toBe(23);
+    expect(result.tools).toHaveLength(24);
+    expect(new Set(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).size).toBe(24);
     for (const deferred of DEFERRED_TOOL_NAMES) {
       expect(result.tools.some((tool: unknown) => isRecord(tool) && tool.name === deferred)).toBe(false);
     }
@@ -555,6 +557,7 @@ describe("MCP tool discovery", () => {
       browser_screenshot: ["tab"],
       browser_tabs: [],
       browser_close: ["tab"],
+      atlas_show: ["path", "markdown", "summary"],
     };
     const expectedRequired: Record<McpToolName, string[]> = {
       conch_sessions: [],
@@ -582,6 +585,7 @@ describe("MCP tool discovery", () => {
       browser_screenshot: [],
       browser_tabs: [],
       browser_close: ["tab"],
+      atlas_show: ["path", "markdown"],
     };
 
     for (const tool of result.tools) {
@@ -2602,7 +2606,7 @@ describe("conch_capture", () => {
     });
     const result = JSON.parse(toolText(await callTool(handlers, "conch_capture", { url: "https://acme.vercel.app", publish: { summary: "x" } })));
     expect(result).toMatchObject({ outcome: "captured", loginWall: true, clipped: true, unsettled: true });
-    expect(result.note).toContain("open it in conch's window and sign in there once");
+    expect(result.note).toContain("open the URL with browser_open (the Default profile shares them) and ask the user to sign in in that tab of their Workdesk once");
     expect(result.note).toContain("then capture again");
     expect(result.note).toContain("its own review pane, not your browser's");
     expect(result.note).toContain("wasn't filed");
@@ -2895,11 +2899,104 @@ describe("the browser tools", () => {
     expect(open).toContain("conch's in-app browser");
     expect(open).toContain("the user can watch and take over");
     expect(open).toContain("signed in per account profile");
-    expect(open).toContain("you may still use other browser tools (Claude in Chrome, Playwright, computer use) when you prefer");
+    // 2026-10-16: browse for the user where they can watch; other browsers when they ask or the task needs them.
+    expect(open).toContain("Use it whenever you browse on the user's behalf, so they can see what you do");
+    expect(open).toContain("other browser tools (Claude in Chrome, Playwright, computer use) are for when they ask for them or the task needs them");
+    expect(open).toContain("the user's Workdesk");
+    expect(AGENT_INSTRUCTIONS.tools.browser_type).toContain("At a sign-in, ask the user to sign in themselves in the tab");
+    expect(AGENT_INSTRUCTIONS.tools.browser_tabs).toContain('openedBy "user" marks a tab the user opened in the Workdesk');
+    expect(AGENT_INSTRUCTIONS.tools.browser_tabs).toContain("paused marks one they have taken over");
     expect(AGENT_INSTRUCTIONS.tools.browser_read).toContain("never a password's or a hidden field's value");
     expect(AGENT_INSTRUCTIONS.tools.browser_type).toContain("Agents don't type passwords");
     for (const name of ["browser_open", "browser_read", "browser_click", "browser_type", "browser_screenshot", "browser_tabs", "browser_close"] as const) {
       expect(AGENT_INSTRUCTIONS.tools[name]).toContain("conch's in-app browser");
     }
+  });
+});
+
+/**
+ * Atlas pages in the Workdesk (atlas-copies.ts). Tyler, 2026-10-16: "are u showing me the atals pages in conch?". Atlas has
+ * no web view of a page, so `atlas_show` saves the Markdown the agent read or wrote where Tyler keeps copies, and files it
+ * as a markdown deliverable keyed by the page's path, through review_to_front's own checks.
+ */
+describe("atlas_show", () => {
+  const config = { claudeDir: "/virtual/claude", socketPath: "/virtual/conch.sock" };
+  async function withCopies(run: (folder: string) => Promise<void>) {
+    const folder = mkdtempSync(join(tmpdir(), "conch-atlas-copies-"));
+    const saved = process.env.CONCH_ATLAS_COPIES;
+    process.env.CONCH_ATLAS_COPIES = folder;
+    try {
+      await run(folder);
+    } finally {
+      if (saved === undefined) delete process.env.CONCH_ATLAS_COPIES;
+      else process.env.CONCH_ATLAS_COPIES = saved;
+      rmSync(folder, { recursive: true, force: true });
+    }
+  }
+
+  test("saves the page's copy where the copies live and files it as a markdown deliverable keyed by its path", async () => {
+    await withCopies(async (folder) => {
+      const h = fakeHarness({ parentPid: 4321 });
+      const handlers = createMcpToolHandlers(config, h.dependencies);
+      const markdown = "# Plan\n\n- ship the Workdesk\n";
+      const result = JSON.parse(toolText(await callTool(handlers, "atlas_show", { path: "projects/acme/plan", markdown })));
+      const copy = join(folder, "projects/acme/plan.md");
+      expect(readFileSync(copy, "utf8")).toBe(markdown);
+      expect(result).toMatchObject({
+        atlasPath: "projects/acme/plan",
+        copy,
+        outcome: "accepted",
+        sessionId: "session-123",
+        kind: "markdown",
+        summary: "Atlas page projects/acme/plan",
+        source: "Atlas is the source; this is conch's copy of it",
+      });
+      expect(h.calls.daemon).toHaveLength(1);
+      const event = h.calls.daemon[0]!.event;
+      expect(event).toMatchObject({ type: "review-published", sessionId: "session-123" });
+      expect(event.review).toEqual({ summary: "Atlas page projects/acme/plan", link: copy, kind: "markdown", key: "atlas:projects/acme/plan" });
+
+      // Again, with what changed: the same artifact's next version, the summary still naming the page.
+      await callTool(handlers, "atlas_show", { path: "/projects/acme/plan/", markdown: "# Plan v2\n", summary: "The plan, with the browser work done" });
+      expect(readFileSync(copy, "utf8")).toBe("# Plan v2\n");
+      expect(h.calls.daemon[1]!.event.review).toMatchObject({
+        summary: "The plan, with the browser work done (Atlas: projects/acme/plan)",
+        key: "atlas:projects/acme/plan",
+      });
+      // A path with its own .md keeps it, and a summary that names it is left as it is.
+      await callTool(handlers, "atlas_show", { path: "projects/acme/direction-2026-10-16.md", markdown: "# Direction\n", summary: "projects/acme/direction-2026-10-16.md, revised" });
+      expect(readFileSync(join(folder, "projects/acme/direction-2026-10-16.md"), "utf8")).toBe("# Direction\n");
+      expect(h.calls.daemon[2]!.event.review).toMatchObject({ summary: "projects/acme/direction-2026-10-16.md, revised", key: "atlas:projects/acme/direction-2026-10-16.md" });
+    });
+  });
+
+  test("a path that could leave the folder or hide in it, no Markdown, or an unverified caller: refused, nothing written", async () => {
+    await withCopies(async (folder) => {
+      const h = fakeHarness({ parentPid: 4321 });
+      const handlers = createMcpToolHandlers(config, h.dependencies);
+      const refusal = async (args: Record<string, unknown>, parent?: number) =>
+        toolText(await callTool(parent ? createMcpToolHandlers(config, fakeHarness({ parentPid: parent }).dependencies) : handlers, "atlas_show", args));
+      for (const path of ["../outside", "projects/../../x", "projects/.hidden", ".git/config", "projects//x", "a b/c", ""]) {
+        expect(await refusal({ path, markdown: "# x" }), path).toStartWith("refused: path must be");
+      }
+      expect(await refusal({ path: "projects/x" })).toBe('refused: markdown must be the page\'s Markdown, as you read it or wrote it');
+      expect(await refusal({ path: "projects/x", markdown: "   " })).toBe("refused: markdown must be the page's Markdown, as you read it or wrote it");
+      expect(await refusal({ path: "projects/x", markdown: "# x", extra: true })).toBe('refused: unknown argument "extra"');
+      expect(await refusal({ path: "projects/x", markdown: "# x" }, 999_999)).toStartWith("refused: conch cannot verify which session is calling");
+      expect(readdirSync(folder)).toEqual([]);
+      expect(h.calls.daemon).toEqual([]);
+    });
+  });
+
+  test("a copy in the way that isn't a plain file is left alone and said", async () => {
+    await withCopies(async (folder) => {
+      mkdirSync(join(folder, "projects"), { recursive: true });
+      symlinkSync("/etc/hosts", join(folder, "projects/hosts.md"));
+      const h = fakeHarness({ parentPid: 4321 });
+      const text = toolText(await callTool(createMcpToolHandlers(config, h.dependencies), "atlas_show", { path: "projects/hosts.md", markdown: "# mine" }));
+      expect(text).toStartWith("failed: conch couldn't save the page's copy:");
+      expect(text).toContain("isn't a plain file");
+      expect(h.calls.daemon).toEqual([]);
+    });
   });
 });

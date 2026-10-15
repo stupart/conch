@@ -7,6 +7,7 @@ import { selectWindowBranch, type WindowIdentity } from "./conversation.ts";
 import { checkFocusShape, FOCUS_MAX, inferDeliverableKind, isPackagePath } from "./deliverables.ts";
 import { describeTempFolders, tempFolders } from "./temp-folders.ts";
 import { servedStoreFolders } from "./conch-store.ts";
+import { atlasCopiesFolder, isMarkdownName } from "./atlas-copies.ts";
 
 const BARE_URL = /(?:<)?\bhttps?:\/\/[^\s<>"'`]+(?:>)?/gi;
 const FILESYSTEM_PATH = /(^|[\s([{'":=])((?:(?:~?|\.\.?)\/|[A-Za-z0-9_.-]+\/)[^\s)\]}>,"'`]+)/g;
@@ -1324,7 +1325,9 @@ async function isKeynoteDeck(real: string): Promise<boolean> {
  * once disagreed and a publication said "accepted" was dropped. Or conch's own two stores
  * (conch-store.ts, under `~/Library/Application Support/conch`), where `conch_capture` keeps the pages it
  * drew and conch keeps its copies of deliverables that sat in a temp folder: only conch writes
- * there, and it outlives the temp folders' sweeps. It must not be hidden or sit in a hidden folder
+ * there, and it outlives the temp folders' sweeps. Or a Markdown file in the folder of Atlas pages'
+ * copies (atlas-copies.ts, `~/Documents/conch-notes/atlas`), which is how an agent shows the user a
+ * wiki page wherever it works: Markdown alone, so nothing else kept there is sent anywhere. It must not be hidden or sit in a hidden folder
  * (~/.ssh, ~/.config, ~/.codex, ~/.claude, .env, .git), and it must not be a key or certificate.
  * `.worktrees` is the one hidden folder allowed: a repo's worktrees live there. All of it is
  * judged on the real path, so a symlink can't launder its target.
@@ -1340,7 +1343,9 @@ export async function checkLocalFile(
     return { ok: false, reason: SAFE_REVIEW_LINK, why };
   }
   const allowed = await Promise.all([...roots, ...tempFolders(), ...servedStoreFolders()].map((root) => realpath(root).catch(() => null)));
-  if (!allowed.some((root) => root && real.startsWith(root.endsWith("/") ? root : `${root}/`))) {
+  const atlas = isMarkdownName(real) ? await realpath(atlasCopiesFolder()).catch(() => null) : null;
+  const holds = (root: string | null) => root !== null && real.startsWith(root.endsWith("/") ? root : `${root}/`);
+  if (!allowed.some(holds) && !holds(atlas)) {
     const where = sessionFolders(roots);
     return {
       ok: false,
