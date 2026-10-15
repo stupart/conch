@@ -2826,7 +2826,11 @@ private struct ConversationPane: View {
                                 remove: (state?.features?.deliverables ?? 0) >= 2
                                     ? { store.removeDeliverable(sessionId: row.id, artifact: group.id) }
                                     : nil,
-                                compare: { pair in startComparing(pair, in: row) }
+                                compare: { pair in startComparing(pair, in: row) },
+                                cwd: row.cwd,
+                                revealInFinder: { path in
+                                    store.openLink(path, cwd: row.cwd, rowId: row.id, reveal: true, onFailure: { _ in })
+                                }
                             )
                         }
                     }
@@ -3264,8 +3268,15 @@ private struct DeliverableTab: View {
     let remove: (() -> Void)?
     /// Compare two of its versions in the pane (`DeliverableCompareView`).
     let compare: (VersionPair) -> Void
+    /// The session's folder: a link filed relative to it is copied and revealed from there.
+    let cwd: String?
+    /// Show a file in Finder, through the app's one door for links (`openLink(_:reveal:)`).
+    let revealInFinder: (String) -> Void
 
     @State private var isHovered = false
+
+    /// Where the version the tab stands for is, for the menu's Copy and Reveal.
+    private var location: DeliverableLocation? { DeliverableLocation.of(current.link, cwd: cwd) }
 
     /// Unread belongs to the ARTIFACT, and the artifact's news is its newest filing. Six
     /// unviewed versions of one page are one piece of news, not six dots; and once the newest
@@ -3392,9 +3403,21 @@ private struct DeliverableTab: View {
                 .fill(isSelected ? ConchPalette.selection : (isHovered ? ConchPalette.hover : .clear))
         )
         .onHover { isHovered = $0 }
-        // Tyler had a deliverable removed by hand-editing reviews.json: nothing in the app could.
+        // Tyler had a deliverable removed by hand-editing reviews.json: nothing in the app could. And its path, to hand to
+        // another session or app (2026-10-16, Tyler: "we should prob add a right click option to the tabs to like copy
+        // path"): a file's absolute path, a web link as it is, and a file shown in Finder.
         .contextMenu {
+            if let location {
+                Button(location.isFile ? "Copy Path" : "Copy Link") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(location.text, forType: .string)
+                }
+                if location.isFile {
+                    Button("Reveal in Finder") { revealInFinder(location.text) }
+                }
+            }
             if let remove {
+                if location != nil { Divider() }
                 Button("Remove", role: .destructive, action: remove)
             }
         }
