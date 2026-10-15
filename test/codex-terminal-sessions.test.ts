@@ -45,8 +45,27 @@ test("the open log database scopes terminals to the actual Codex account; failur
   try {
     expect([...await probeCodexTerminalSessions(home, probe, 501)]).toEqual([[THREAD, 12]]);
     expect(calls[1]).toEqual(["lsof", "-a", "-p", "11,12", "-F", "pn", "--", db]);
+    // A failed probe proves nothing: what the last good one found stands while its process lives (2026-10-15, a live
+    // Codex session logged "Codex row has no pid" five times on a loaded Mac).
     opened = null;
-    expect((await probeCodexTerminalSessions(home, probe, 501)).size).toBe(0);
-    expect((await probeCodexTerminalSessions(home, async () => null, 501)).size).toBe(0);
+    expect([...await probeCodexTerminalSessions(home, probe, 501, () => true)]).toEqual([[THREAD, 12]]);
+    expect([...await probeCodexTerminalSessions(home, async () => null, 501, () => true)]).toEqual([[THREAD, 12]]);
+    // Not once its process is gone, nor two minutes on.
+    expect((await probeCodexTerminalSessions(home, async () => null, 501, () => false)).size).toBe(0);
+    expect((await probeCodexTerminalSessions(home, async () => null, 501, () => true, () => Date.now() + 121_000)).size).toBe(0);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("a probe that succeeds and finds no session drops it at once", async () => {
+  const home = mkdtempSync(join(tmpdir(), "conch-terminal-gone-"));
+  const db = join(home, "logs_2.sqlite"); writeFileSync(db, "");
+  let table = `12 501 ttys002 S+ codex resume ${THREAD}`;
+  const probe = async (argv: string[]) => (argv[0] === "ps" ? table : `p12\nn${db}\n`);
+  try {
+    expect([...await probeCodexTerminalSessions(home, probe, 501, () => true)]).toEqual([[THREAD, 12]]);
+    // Out of its terminal's foreground (a child holds it): no route, whatever was known.
+    table = `12 501 ttys002 S codex resume ${THREAD}`;
+    expect((await probeCodexTerminalSessions(home, probe, 501, () => true)).size).toBe(0);
+    expect((await probeCodexTerminalSessions(home, async () => null, 501, () => true)).size).toBe(0);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
