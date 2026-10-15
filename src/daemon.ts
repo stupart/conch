@@ -1772,6 +1772,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     resolveCaller: (pid) => sessionForCallerPid(pid, { infos: [...panelSessions.values()], claudeDir: cfg.claudeDir }),
     publish: () => writeSessionsFile(),
     appRunning: macAppRunning,
+    // A tab Tyler opens with the Workdesk's + is for a session on screen now: a row the app was sent.
+    liveSession: (sessionId) => (lastPublishedPanelState?.rows ?? []).some((row) => row.id === sessionId),
     log,
   });
   // A session that ended a day ago and more takes its tabs with it; checked now and then, never on the publish path.
