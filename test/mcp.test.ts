@@ -781,7 +781,8 @@ describe("MCP dispatch", () => {
 
     expect(rpcResult(response)).toEqual({
       protocolVersion: MCP_PROTOCOL_VERSION,
-      capabilities: { tools: {} },
+      // listChanged: it can hand over to a newer conch and say so (mcp-handoff.ts).
+      capabilities: { tools: { listChanged: true } },
       serverInfo: { name: "conch", version: CONCH_VERSION },
       instructions: AGENT_INSTRUCTIONS.serverInstructions,
     });
