@@ -127,7 +127,11 @@ struct PairingView: View {
                 // introducing itself as something other than the thing they
                 // launched. Rounded to match how iOS masks the icon, so it
                 // reads as the same object.
-                Image("ConchMark")
+                //
+                // The icon's own art (`SetupIcon`, as setup shows it), not the
+                // conch-shell photo that replaced the emoji: since the icon became
+                // the hermit crab, that photo was a different shell again.
+                Image("SetupIcon")
                     .resizable()
                     .aspectRatio(contentMode: .fill)
                     .frame(width: 64, height: 64)

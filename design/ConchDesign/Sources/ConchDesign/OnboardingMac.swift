@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 // The Mac's setup window: a rail of the steps on the left, with the downloads under them, and one step at a time on the
 // right. Every view here is drawn from data (Onboarding.swift, OnboardingParts.swift) and acts through closures, so the
@@ -205,7 +208,9 @@ struct StepMark: View {
     }
 }
 
-/// The app's icon at a size, with the corners and the lift an icon has in the Dock. The mark stands in when there is none.
+/// The app's icon at a size, with the corners and the lift an icon has in the Dock. With none handed in (a preview), the
+/// running app's own icon on the Mac, a plain tile on the phone: never the menu bar's spiral, which stood in here once
+/// and read as an old app icon beside the hermit crab everyone else sees.
 public struct AppIconView: View {
     let size: CGFloat
     var lifted = false
@@ -222,10 +227,11 @@ public struct AppIconView: View {
             if let icon {
                 icon.resizable().interpolation(.high).aspectRatio(contentMode: .fill)
             } else {
-                ZStack {
-                    Rectangle().fill(ConchColor.surface)
-                    ConchMarkView().frame(width: size * 0.6, height: size * 0.6)
-                }
+                #if os(macOS)
+                Image(nsImage: NSApplication.shared.applicationIconImage).resizable().interpolation(.high).aspectRatio(contentMode: .fill)
+                #else
+                Rectangle().fill(ConchColor.surface)
+                #endif
             }
         }
         .frame(width: size, height: size)
