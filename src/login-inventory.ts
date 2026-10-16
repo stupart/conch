@@ -920,7 +920,7 @@ export function browserProfileLogin(profile: BrowserProfile, signIns: BrowserPro
   const { sites } = signIns;
   if (sites.length === 0) return { ...base, state: "signed-out", checkedAt: signIns.checkedAt, detail: `${what} · not signed in to any site` };
   const count = `${sites.length} ${sites.length === 1 ? "site" : "sites"}`;
-  const named = sites.slice(0, SITES_NAMED).map((site) => site.untilQuit ? `${site.domain} (until conch quits)` : site.domain);
+  const named = sites.slice(0, SITES_NAMED).map((site) => site.domain);
   const more = sites.length > SITES_NAMED ? ` +${sites.length - SITES_NAMED} more` : "";
   // A detail is short and never token-shaped on the wire (`identity`): a list that isn't is said as its count.
   const detail = identity(`${count}: ${named.join(", ")}${more}`, TEXT_MAX) ?? count;

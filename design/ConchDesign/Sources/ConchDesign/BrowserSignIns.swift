@@ -11,9 +11,10 @@ import Foundation
 ///
 /// WebKit can't say which cookies are a sign-in, so it is told by name, the way a person reading the list would:
 /// `session`, `auth`, `token`, `login`, `remember`, Google's `SID` family and the like, but never consent, CSRF, analytics
-/// or a CDN's bot check. A site counts when one of them is still good. A sign-in kept only in a cookie that ends when the
-/// app quits counts too, marked `untilQuit`, so the list says it won't outlast a relaunch; but only by a strong name
-/// (`auth`, `token`, …), since a framework gives every visitor a session cookie (`Strength`).
+/// or a CDN's bot check. A site counts when one of them is still good. A session cookie (one with no expiry) counts only
+/// by a strong name (`auth`, `token`, …), since a framework gives every visitor a session cookie (`Strength`). WebKit
+/// keeps session cookies across a relaunch of conch (measured 2026-10-16: one set before a deploy was sent after it), so
+/// a session sign-in lasts as long as any other until the site ends it.
 /// A site that keeps its sign-in in local storage rather than a cookie isn't seen.
 public enum BrowserSignIns {
     /// A cookie, as much as is needed to tell a sign-in: never its value.
@@ -33,38 +34,34 @@ public enum BrowserSignIns {
 
     /// A site the profile is signed in to.
     public struct Site: Codable, Equatable, Sendable, Identifiable {
-        /// The site as a person names it: `mobbin.com`, `google.com`, `bbc.co.uk`.
+        /// The site as a person names it: `mobbin.com`, `google.com`, `bbc.co.uk`, `acme-git-main.vercel.app`.
         public let domain: String
-        /// Its sign-in is only in cookies that end when conch quits: gone after a relaunch.
-        public let untilQuit: Bool
 
         public var id: String { domain }
 
-        public init(domain: String, untilQuit: Bool = false) {
+        public init(domain: String) {
             self.domain = domain
-            self.untilQuit = untilQuit
         }
     }
 
     /// The sites, alphabetical, from a profile's cookies.
     public static func sites(from cookies: [Cookie], now: Date) -> [Site] {
-        var lasting = Set<String>()
-        var untilQuit = Set<String>()
+        var signedIn = Set<String>()
         for cookie in cookies {
             guard let strength = signIn(cookie.name), let site = site(ofCookieDomain: cookie.domain) else { continue }
             if let expires = cookie.expires {
-                if expires > now { lasting.insert(site) }
+                if expires > now { signedIn.insert(site) }
             } else if strength == .strong {
-                untilQuit.insert(site)
+                signedIn.insert(site)
             }
         }
-        return lasting.union(untilQuit).sorted().map { Site(domain: $0, untilQuit: !lasting.contains($0)) }
+        return signedIn.sorted().map { Site(domain: $0) }
     }
 
     // MARK: Telling a sign-in by its name
 
-    /// How surely a cookie's name says sign-in. A `session` cookie that ends when the app quits is as often a visitor's
-    /// (a framework's session id, which every visitor gets) as a sign-in, so only a strong name counts for one of those.
+    /// How surely a cookie's name says sign-in. A `session` cookie with no expiry is as often a visitor's (a framework's
+    /// session id, which every visitor gets) as a sign-in, so only a strong name counts for one of those.
     public enum Strength: Equatable, Sendable {
         case strong
         case weak
@@ -115,8 +112,18 @@ public enum BrowserSignIns {
     /// Second-level names under a country's domain that are a registry, not a site: `co.uk`, `com.au`, `ac.jp`.
     private static let registrySecondLevels: Set<String> = ["co", "com", "net", "org", "gov", "edu", "ac", "ne", "or", "go", "gv", "ltd", "plc", "nhs", "sch"]
 
-    /// The site a cookie's domain belongs to: its last two labels, or three under a country's registry (`bbc.co.uk`).
-    /// Nil for an IP address, a single label (`localhost`) or anything that isn't a host name.
+    /// Hosting platforms whose every subdomain is someone else's site, as the Public Suffix List has them: a Vercel
+    /// preview's sign-in (its deployment protection) is that preview's, not every `vercel.app`'s. src/browser-profiles.ts
+    /// keeps the same list.
+    static let hostingSuffixes: Set<String> = [
+        "vercel.app", "netlify.app", "github.io", "pages.dev", "workers.dev", "herokuapp.com", "fly.dev", "web.app",
+        "firebaseapp.com", "onrender.com", "up.railway.app", "azurewebsites.net", "cloudfront.net", "amplifyapp.com",
+        "ngrok.io", "ngrok.app", "ngrok-free.app", "supabase.co", "deno.dev", "myshopify.com", "wixsite.com", "webflow.io",
+    ]
+
+    /// The site a cookie's domain belongs to: its last two labels, three under a country's registry (`bbc.co.uk`), or one
+    /// more than a hosting platform's suffix (`acme-git-main.vercel.app`). Nil for an IP address, a single label
+    /// (`localhost`) or anything that isn't a host name.
     public static func site(ofCookieDomain domain: String) -> String? {
         var host = domain.lowercased().trimmingCharacters(in: .whitespaces)
         while host.hasPrefix(".") { host.removeFirst() }
@@ -125,6 +132,10 @@ public enum BrowserSignIns {
         guard labels.count >= 2, labels.allSatisfy(isLabel) else { return nil }
         // An IPv4 address is four numbers; a site's top-level domain is never one.
         if labels.last!.allSatisfy(\.isNumber) { return nil }
+        for suffix in hostingSuffixes where host == suffix || host.hasSuffix("." + suffix) {
+            let count = suffix.split(separator: ".").count + 1
+            return labels.count >= count ? labels.suffix(count).joined(separator: ".") : host
+        }
         let count = labels.count >= 3 && labels.last!.count == 2 && registrySecondLevels.contains(labels[labels.count - 2]) ? 3 : 2
         return labels.suffix(count).joined(separator: ".")
     }
