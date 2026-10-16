@@ -6,7 +6,9 @@ import {
   DEFAULT_BROWSER_PROFILE,
   findBrowserProfile,
   isBrowserProfileId,
+  siteOfHost,
   type BrowserProfile,
+  type BrowserProfileSignIns,
 } from "./browser-profiles.ts";
 import type { CallerBinding } from "./caller-session.ts";
 import { ControlFrameReader, encodeControlFrame } from "./control-framing.ts";
@@ -175,6 +177,13 @@ export interface BrowserTabView {
   openedBy?: "user";
   /** The user paused agents in it: commands there are refused until they turn it off. */
   paused?: true;
+  /**
+   * Whether the tab's profile is signed in to the site it is on, as conch's Mac app last read the profile's cookies
+   * (`browser-sign-ins.json`); absent when it can't say (no report yet, a blank tab, an address that isn't a site).
+   */
+  signedIn?: boolean;
+  /** Not signed in to it here, but these profiles are: open the page again with browser_open's profile set to one. */
+  signedInOn?: string[];
 }
 
 export type BrowserReply =
@@ -769,6 +778,8 @@ export interface BrowserServiceDependencies {
   appRunning?(): boolean;
   /** Whether a session is one conch is showing now, for a tab Tyler opens in it; absent, any session is. */
   liveSession?(sessionId: string): boolean;
+  /** Each profile's signed-in sites, as the Mac app last reported them (`cachedBrowserSignIns`); absent, never said. */
+  signIns?(): Map<string, BrowserProfileSignIns>;
   log?(line: string): void;
 }
 
@@ -791,7 +802,30 @@ export function createBrowserService(deps: BrowserServiceDependencies): BrowserS
       ...(current && current.id === tab.id ? { current: true as const } : {}),
       ...(tab.opener === "user" ? { openedBy: "user" as const } : {}),
       ...(tab.paused ? { paused: true as const } : {}),
+      ...signedIn(tab),
     };
+  };
+  /** Whether the tab's profile is signed in to its site, and which others are when it isn't. Site names only. */
+  const signedIn = (tab: BrowserTab): Pick<BrowserTabView, "signedIn" | "signedInOn"> => {
+    if (!deps.signIns) return {};
+    let site: string | undefined;
+    try {
+      site = siteOfHost(new URL(tab.url).hostname);
+    } catch {
+      return {};
+    }
+    if (!site) return {};
+    let report: Map<string, BrowserProfileSignIns>;
+    try {
+      report = deps.signIns();
+    } catch {
+      return {};
+    }
+    const has = (id: string) => report.get(id)?.sites.some((known) => known.domain === site) === true;
+    if (!report.has(tab.profile)) return {};
+    if (has(tab.profile)) return { signedIn: true };
+    const elsewhere = deps.profiles().filter((other) => other.id !== tab.profile && has(other.id)).map((other) => other.name);
+    return { signedIn: false, ...(elsewhere.length ? { signedInOn: elsewhere } : {}) };
   };
   const profileFor = (named: string | undefined): BrowserProfile | string => {
     const profiles = deps.profiles();

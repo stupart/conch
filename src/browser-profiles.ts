@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { conchHome } from "./home.ts";
 
@@ -178,4 +178,43 @@ export function readBrowserSignIns(file: string = browserSignInsPath()): Map<str
     found.set(id.toLowerCase(), { sites: kept, checkedAt });
   }
   return found;
+}
+
+/** Second-level names under a country's domain that are a registry, not a site: `co.uk`, `com.au`, `ac.jp`. */
+const REGISTRY_SECOND_LEVELS = new Set(["co", "com", "net", "org", "gov", "edu", "ac", "ne", "or", "go", "gv", "ltd", "plc", "nhs", "sch"]);
+const LABEL = /^[a-z0-9_-]{1,63}$/;
+
+/**
+ * The site a host belongs to, as the Mac app names them (ConchDesign `BrowserSignIns.site(ofCookieDomain:)`, which this
+ * must agree with): its last two labels, or three under a country's registry (`bbc.co.uk`). Undefined for an IP address,
+ * a single label (`localhost`) or anything that isn't a host name.
+ */
+export function siteOfHost(host: string): string | undefined {
+  const labels = host.trim().toLowerCase().replace(/^\.+/, "").replace(/\.+$/, "").split(".");
+  if (labels.length < 2 || !labels.every((label) => LABEL.test(label))) return undefined;
+  if (/^[0-9]+$/.test(labels.at(-1)!)) return undefined;
+  const count = labels.length >= 3 && labels.at(-1)!.length === 2 && REGISTRY_SECOND_LEVELS.has(labels.at(-2)!) ? 3 : 2;
+  return labels.slice(-count).join(".");
+}
+
+/** The report, read again only when the file has changed: asked on every tab an agent is told of. */
+export function cachedBrowserSignIns(file: () => string = browserSignInsPath): () => Map<string, BrowserProfileSignIns> {
+  let seen: { path: string; mtimeMs: number; size: number } | undefined;
+  let report = new Map<string, BrowserProfileSignIns>();
+  return () => {
+    const path = file();
+    let stat: { mtimeMs: number; size: number } | undefined;
+    try {
+      stat = statSync(path);
+    } catch {
+      seen = undefined;
+      report = new Map();
+      return report;
+    }
+    if (!seen || seen.path !== path || seen.mtimeMs !== stat.mtimeMs || seen.size !== stat.size) {
+      report = readBrowserSignIns(path);
+      seen = { path, mtimeMs: stat.mtimeMs, size: stat.size };
+    }
+    return report;
+  };
 }

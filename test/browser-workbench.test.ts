@@ -6,11 +6,14 @@ import { join } from "node:path";
 import {
   addBrowserProfile,
   browserProfilesPath,
+  cachedBrowserSignIns,
   checkBrowserProfileName,
   DEFAULT_BROWSER_PROFILE,
   findBrowserProfile,
   readBrowserProfiles,
+  siteOfHost,
   type BrowserProfile,
+  type BrowserProfileSignIns,
 } from "../src/browser-profiles.ts";
 import {
   BROWSER_APP_DOWN,
@@ -250,7 +253,7 @@ describe("which session ran a process: walked up to the agent, as the MCP server
 });
 
 /** A control server with the Workbench behind it, as the daemon wires it, and a pretend Mac app reading the sessions file. */
-async function served(options: { appRunning?: () => boolean; ackMs?: number; timeoutMs?: number; binding?: CallerBinding; store?: string; live?: string[] } = {}) {
+async function served(options: { appRunning?: () => boolean; ackMs?: number; timeoutMs?: number; binding?: CallerBinding; store?: string; live?: string[]; signIns?: () => Map<string, BrowserProfileSignIns> } = {}) {
   const dir = mkdtempSync("/tmp/conch-wb-");
   const socketPath = join(dir, "s.sock");
   const folder = captureFolder(join(dir, "captures"));
@@ -283,6 +286,7 @@ async function served(options: { appRunning?: () => boolean; ackMs?: number; tim
     publish: () => { published += 1; },
     ...(options.appRunning ? { appRunning: options.appRunning } : {}),
     ...(options.live ? { liveSession: (id: string) => options.live!.includes(id) } : {}),
+    ...(options.signIns ? { signIns: options.signIns } : {}),
   });
   const server = createControlServer({
     socketPath,
@@ -806,5 +810,64 @@ describe("the daemon's wiring", () => {
     const root = join(import.meta.dir, "..");
     expect(readFileSync(join(root, "mac-app/conch-mac/StateStore.swift"), "utf8")).toContain("WorkbenchStore.shared.accept(snapshot)");
     expect(readFileSync(join(root, "mac-app/conch-mac/RemoteMacStore.swift"), "utf8")).not.toContain("browser");
+  });
+});
+
+describe("which sites a profile is signed in to", () => {
+  test("a host's site, as the Mac app names them (BrowserSignInsTests has the same cases)", () => {
+    expect(siteOfHost(".mobbin.com")).toBe("mobbin.com");
+    expect(siteOfHost("accounts.google.com")).toBe("google.com");
+    expect(siteOfHost("WWW.GitHub.com.")).toBe("github.com");
+    expect(siteOfHost(".bbc.co.uk")).toBe("bbc.co.uk");
+    expect(siteOfHost("my.bank.com.au")).toBe("bank.com.au");
+    expect(siteOfHost("app.vercel.app")).toBe("vercel.app");
+    for (const host of ["localhost", "127.0.0.1", "", "a..b.com", "evil.com/path"]) expect(siteOfHost(host)).toBeUndefined();
+  });
+
+  test("the report is read again only when the file changes", () => {
+    const dir = mkdtempSync(join(tmpdir(), "conch-sign-ins-"));
+    try {
+      const file = join(dir, "browser-sign-ins.json");
+      const read = cachedBrowserSignIns(() => file);
+      expect(read().size).toBe(0);
+      writeFileSync(file, JSON.stringify({ profiles: { default: { checkedAt: 5, sites: [{ domain: "mobbin.com" }] } } }));
+      const first = read();
+      expect(first.get("default")?.sites).toEqual([{ domain: "mobbin.com", untilQuit: false }]);
+      expect(read()).toBe(first);
+      writeFileSync(file, JSON.stringify({ profiles: { default: { checkedAt: 6, sites: [] } } }));
+      expect(read().get("default")).toEqual({ checkedAt: 6, sites: [] });
+      rmSync(file);
+      expect(read().size).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("agents are told whether a tab's profile is signed in to its site, and which profiles are when it isn't", async () => {
+    let report = new Map<string, BrowserProfileSignIns>();
+    const h = await served({ signIns: () => report });
+    try {
+      const added = await requestBrowser(h.socketPath, { kind: "browser-profiles", action: "add", name: "Work" }, 5_000);
+      if (!added.ok || added.reply.kind !== "browser-profiles" || !added.reply.created) throw new Error("profile");
+      const work = added.reply.created.id;
+      const mobbin = h.workbench.open("session-1", "https://mobbin.com/discover", "default");
+      const github = h.workbench.open("session-1", "https://github.com/stupart", "default");
+      const blank = h.workbench.open("session-1", "", "default", "user");
+      if (!mobbin.ok || !github.ok || !blank.ok) throw new Error("tabs");
+      const tabs = async () => {
+        const sent = await h.command({ sessionId: "session-1", op: "tabs" });
+        if (!sent.ok || sent.reply.kind !== "browser-result") throw new Error("tabs");
+        return sent.reply.tabs ?? [];
+      };
+      // No report yet: nothing is said either way.
+      expect((await tabs()).map((tab) => [tab.signedIn, tab.signedInOn])).toEqual([[undefined, undefined], [undefined, undefined], [undefined, undefined]]);
+      report = new Map([
+        ["default", { checkedAt: 5, sites: [{ domain: "mobbin.com", untilQuit: false }] }],
+        [work, { checkedAt: 5, sites: [{ domain: "github.com", untilQuit: false }] }],
+      ]);
+      expect((await tabs()).map((tab) => [tab.signedIn, tab.signedInOn])).toEqual([[true, undefined], [false, ["Work"]], [undefined, undefined]]);
+    } finally {
+      await h.close();
+    }
   });
 });
