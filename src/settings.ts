@@ -44,6 +44,7 @@ export const SETTING_KEYS = [
   "typing-grace",
   "away-after",
   "barge-threshold",
+  "vocabulary",
   "voice-speed",
   "keystroke-fallback",
   "bypass-permissions",
@@ -86,6 +87,7 @@ export type SettingField =
   | "typingGraceSecs"
   | "awayAfterSecs"
   | "bargeThresholdPct"
+  | "vocabulary"
   | "ttsSpeed"
   | "keystrokeFallback"
   | "phoneEnabled"
@@ -186,6 +188,14 @@ function parseRelayURL(raw: unknown): ParseResult<string> {
   }
 }
 
+/** Comma-separated names for dictation; bounded because it rides every transcription. */
+function parseVocabulary(raw: unknown): ParseResult<string> {
+  if (typeof raw !== "string") return { ok: false, err: "expected comma-separated words" };
+  const value = raw.split(/[,\n]/).map((term) => term.replace(/\s+/g, " ").trim()).filter(Boolean).join(", ");
+  if (value.length > 500) return { ok: false, err: "expected at most 500 characters of comma-separated words" };
+  return { ok: true, value };
+}
+
 function numberParser(bounds: SettingBounds, description: string): (raw: unknown) => ParseResult<number> {
   return (raw) => {
     if (typeof raw !== "number" && typeof raw !== "string") {
@@ -281,6 +291,17 @@ export const SETTING_DESCRIPTORS = [
     bounds: percentage,
     apply: "live",
     help: "mic level that interrupts speech; 0 disables barge-in",
+  },
+  {
+    key: "vocabulary",
+    field: "vocabulary",
+    env: "CONCH_VOCABULARY",
+    kind: "string",
+    default: "",
+    parse: parseVocabulary,
+    bounds: null,
+    apply: "live",
+    help: "names and terms dictation should spell as written, comma-separated (conch adds Claude Code, Codex, conch and your open projects' folder names)",
   },
   {
     key: "voice-speed",

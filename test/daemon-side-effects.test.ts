@@ -544,6 +544,9 @@ describe("7. a dead daemon's sox is reaped", () => {
     expect(isConchSox("/opt/homebrew/bin/" + ARGV)).toBe(true);
     expect(isConchSox(soxCaptureArgs({ micGainDb: 6, endSilenceSecs: 3.5, endThresholdPct: 2 }, "/tmp/conch-diag-1-2/normal.raw", 2).join(" "))).toBe(true);
     expect(isConchSox("sox -d -q -r 16000 -c 1 -b 16 -e signed-integer -t raw /tmp/other.raw silence -l 1 0.15 2% 1 3.5 2%")).toBe(false);
+    // A daemon from before the pre-roll may have left its recorder behind.
+    expect(isConchSox("sox -d -q -r 16000 -c 1 -b 16 -e signed-integer -t raw /tmp/conch-normal-1-2.raw silence -l 1 0.15 2% 1 3.5 2%")).toBe(true);
+    expect(isConchSox("sox -d -q -r 16000 -c 1 -b 16 -e signed-integer -t raw /tmp/conch-normal-1-2.raw gain 6 silence -l 1 0.15 2% 1 3.5 2%")).toBe(true);
     expect(isConchSox("sox song.mp3 out.wav")).toBe(false);
     expect(isConchSox("whisper-server --port 8642")).toBe(false);
   });

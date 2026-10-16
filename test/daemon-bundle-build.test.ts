@@ -200,6 +200,8 @@ describe("the app carries seashell's speech engine", () => {
     expect(readFileSync(join(notices, "whisper.cpp", "LICENSE"), "utf8")).toStartWith("MIT License");
     expect(readFileSync(join(notices, "sox", "LICENSE.GPL"), "utf8")).toContain("GNU GENERAL PUBLIC LICENSE");
     expect(readFileSync(join(notices, "sox", "sox-14.4.2.tar.gz"), "utf8")).toBe("source");
+    // The binary is built with this patch, so it ships with the source too.
+    expect(readFileSync(join(notices, "sox", "sox-14.4.2-silence-leave-reset.patch"), "utf8")).toContain("+++ b/src/silence.c");
     expect(readFileSync(join(notices, "silero-vad", "LICENSE"), "utf8")).toStartWith("MIT License");
   });
 
