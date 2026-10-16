@@ -119,7 +119,11 @@ final class WorkbenchStore: ObservableObject {
     func accept(_ snapshot: PublishedState) {
         guard let published = snapshot.browserTabs else { return }
         let listed = (snapshot.browserProfiles ?? []).map { WorkbenchProfileList.Profile(id: $0.id, name: $0.name) }
-        if listed != profiles { profiles = listed }
+        if listed != profiles {
+            profiles = listed
+            // Which sites each is signed in to, kept from now on (Settings › Browser, and the logins inventory's report).
+            BrowserSignInsStore.shared.keep(only: listed.isEmpty ? [Workbench.defaultProfile] : listed.map(\.id))
+        }
         profileNames = Dictionary(listed.map { ($0.id, $0.name) }, uniquingKeysWith: { _, last in last })
         // A pause the daemon has taken is its to say again; one it hasn't yet still shows as Tyler set it.
         for (id, paused) in pausing where published.contains(where: { $0.id == id && ($0.paused == true) == paused }) || !published.contains(where: { $0.id == id }) {

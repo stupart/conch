@@ -120,3 +120,62 @@ export function findBrowserProfile(profiles: readonly BrowserProfile[], named: s
   return profiles.find((profile) => profile.id === wanted.toLowerCase())
     ?? profiles.find((profile) => profile.name.toLowerCase() === wanted.toLowerCase());
 }
+
+/**
+ * Which sites each profile is signed in to, as the Mac app last read them from the profile's cookie names (ConchDesign
+ * `BrowserSignIns`; the app writes `browser-sign-ins.json` beside this file as they change). Site names and a time only:
+ * no cookie, and nothing a cookie holds, is ever in it.
+ */
+export interface BrowserSignInSite {
+  /** `mobbin.com`, `bbc.co.uk`. */
+  domain: string;
+  /** Its sign-in ends when conch quits. */
+  untilQuit: boolean;
+}
+
+export interface BrowserProfileSignIns {
+  sites: BrowserSignInSite[];
+  /** Epoch ms the app read them. */
+  checkedAt: number;
+}
+
+export function browserSignInsPath(): string {
+  return join(dirname(browserProfilesPath()), "browser-sign-ins.json");
+}
+
+/** More than anyone is signed in to; a longer list is cut, not refused. */
+export const BROWSER_SIGN_IN_SITES_MAX = 500;
+const SITE = /^(?=.{3,253}$)[a-z0-9_-]+(\.[a-z0-9_-]+)+$/;
+
+/**
+ * The report, by profile id. A file that isn't there or can't be read is no report (every profile's sign-ins unknown),
+ * and anything in it that isn't a profile id, a site name or a time is skipped.
+ */
+export function readBrowserSignIns(file: string = browserSignInsPath()): Map<string, BrowserProfileSignIns> {
+  const found = new Map<string, BrowserProfileSignIns>();
+  let data: unknown;
+  try {
+    if (!existsSync(file)) return found;
+    data = JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    return found;
+  }
+  const profiles = data && typeof data === "object" ? (data as Record<string, unknown>).profiles : undefined;
+  if (!profiles || typeof profiles !== "object" || Array.isArray(profiles)) return found;
+  for (const [id, entry] of Object.entries(profiles as Record<string, unknown>)) {
+    if (!isBrowserProfileId(id.toLowerCase()) || !entry || typeof entry !== "object") continue;
+    const { sites, checkedAt } = entry as Record<string, unknown>;
+    if (!Array.isArray(sites) || typeof checkedAt !== "number" || !Number.isFinite(checkedAt) || checkedAt <= 0) continue;
+    const kept: BrowserSignInSite[] = [];
+    const seen = new Set<string>();
+    for (const site of sites) {
+      if (kept.length >= BROWSER_SIGN_IN_SITES_MAX) break;
+      const domain = site && typeof site === "object" ? (site as Record<string, unknown>).domain : undefined;
+      if (typeof domain !== "string" || !SITE.test(domain) || seen.has(domain)) continue;
+      seen.add(domain);
+      kept.push({ domain, untilQuit: (site as Record<string, unknown>).untilQuit === true });
+    }
+    found.set(id.toLowerCase(), { sites: kept, checkedAt });
+  }
+  return found;
+}
