@@ -572,7 +572,8 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
             }
         case "click":
             guard let target = request.target?.pair else { return answer(request, error: "a click needs its target") }
-            // Where it will land, marked first, so Tyler sees the click happen where it happens.
+            // Where it will land, marked first, so Tyler sees the click happen where it happens: the click is sent
+            // `WorkbenchMarkMotion.clickLead` after the mark goes down, as its ripple starts.
             await markTarget(target, kind: .click)
             let outcome = await script(front, op: "click", target: target, text: nil, submit: false)
             guard case let .success(value) = outcome else { return answer(request, error: outcome.message ?? "the click didn't happen") }
@@ -584,7 +585,8 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
             // The field outlined while it fills, as typing looks (WorkbenchScript): never what is typed, in conch's words.
             if let refused = await markTarget(target, kind: .type) { return answer(request, error: refused) }
             let outcome = await script(front, op: "type", target: target, text: text, submit: request.submit == true)
-            clearMark(after: 0.35)
+            await remeasureMark(target)
+            endMark(after: WorkbenchMarkMotion.typeHold)
             guard case let .success(value) = outcome else { return answer(request, error: outcome.message ?? "nothing was typed") }
             if request.submit == true { await settle(until: settleBy) }
             return answer(request, result: value)
@@ -597,31 +599,62 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
 
     /// Mark where a command will land: the element scrolled into view and its box outlined, a click's spot rippling.
     /// A password field is refused here, before anything is marked; anything else the page can't find is left for the
-    /// command itself to say.
+    /// command itself to say. A click waits out its lead here, for the eye to get to the mark before the page moves.
     @discardableResult
     private func markTarget(_ target: (how: String, what: String), kind: WorkbenchMark.Kind) async -> String? {
         let view = front
-        switch await script(view, op: kind == .type ? "locate-field" : "locate", target: target, text: nil, submit: false) {
-        case let .failure(message):
-            return message == WorkbenchScript.passwordRefusal ? message : nil
-        case let .success(value):
-            guard case let .array(numbers)? = value["box"] else { return nil }
-            let box = numbers.compactMap { if case let .number(number) = $0 { number } else { nil } }
-            guard let rect = Workbench.markRect(box: box, scale: Double(view.pageZoom * view.magnification)) else { return nil }
+        switch await locate(target, kind: kind, in: view) {
+        case let .failure(failure):
+            return failure.words == WorkbenchScript.passwordRefusal ? failure.words : nil
+        case let .success(rect):
+            guard let rect else { return nil }
             markSerial += 1
             mark = WorkbenchMark(kind: kind, rect: rect, serial: markSerial)
-            // A beat for the mark to be seen before the page moves under it.
-            if kind == .click { try? await Task.sleep(nanoseconds: 160_000_000) }
+            markedAt = view.bounds.size
+            if kind == .click {
+                // The lead, watched: a page moved into the Workdesk part way through (measured in a harness: a tab
+                // parked at 1280 wide, shown in a 700-wide pane, put its mark 290 points off) is measured again at once.
+                for _ in 0..<6 {
+                    try? await Task.sleep(nanoseconds: UInt64(WorkbenchMarkMotion.clickLead / 6 * 1_000_000_000))
+                    await remeasureMark(target)
+                }
+            }
             return nil
         }
     }
 
-    private func clearMark(after seconds: Double) {
+    /// The box of what a command lands on, in the view's points: nil when the page has no box for it.
+    private func locate(_ target: (how: String, what: String), kind: WorkbenchMark.Kind, in view: WKWebView) async -> Result<CGRect?, WorkbenchFailure> {
+        switch await script(view, op: kind == .type ? "locate-field" : "locate", target: target, text: nil, submit: false) {
+        case let .failure(message):
+            return .failure(WorkbenchFailure(words: message))
+        case let .success(value):
+            guard case let .array(numbers)? = value["box"] else { return .success(nil) }
+            let box = numbers.compactMap { if case let .number(number) = $0 { number } else { nil } }
+            return .success(Workbench.markRect(box: box, scale: Double(view.pageZoom * view.magnification)))
+        }
+    }
+
+    /// The page's size when its mark was measured: a tab brought forward for this very command is moved into the Workdesk
+    /// on SwiftUI's next pass, at the pane's size, so a box measured on the parked page can be somewhere else by then.
+    private var markedAt: CGSize?
+
+    /// The mark moved to where its element is now, when the page was resized under it (`markedAt`). Its motion goes on.
+    private func remeasureMark(_ target: (how: String, what: String)) async {
+        let view = front
+        guard let live = mark, let markedAt, markedAt != view.bounds.size else { return }
+        self.markedAt = view.bounds.size
+        guard case let .success(rect?) = await locate(target, kind: live.kind, in: view), mark?.serial == live.serial else { return }
+        mark = WorkbenchMark(kind: live.kind, rect: rect, serial: live.serial, at: live.at, endedAt: live.endedAt)
+    }
+
+    /// A type's mark, its typing done: its outline stays `seconds` on the filled field, then fades (`WorkbenchMarkMotion`).
+    private func endMark(after seconds: Double) {
         let serial = markSerial
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-            guard let self, self.markSerial == serial else { return }
-            self.mark = nil
+            guard let self, self.markSerial == serial, let mark = self.mark else { return }
+            self.mark = mark.ended()
         }
     }
 
@@ -920,6 +953,7 @@ struct WorkbenchPane: View {
                     popupCount: page.popupCount,
                     profileName: profileName,
                     isDefaultProfile: tab.profile == Workbench.defaultProfile,
+                    profileCount: store.profiles.count,
                     canPickProfile: isBlank,
                     agentWork: store.working[tab.id],
                     paused: tab.paused
@@ -994,13 +1028,19 @@ struct WorkbenchPane: View {
         .onChange(of: editing) { _, now in if now { store.touched() } }
     }
 
-    /// The tab Tyler just opened: its address field takes the keyboard, once, a moment after it is on screen.
+    /// The tab Tyler just opened: its address field takes the keyboard, once, a moment after it is on screen, with its
+    /// caret showing. He saw a new tab whose field took his typing but showed no caret (2026-10-16), so it looked
+    /// unfocused: the field editor is told to draw its caret and restart its blink, and the bar rings the field.
     private func takeFocusIfAsked() {
         guard store.focusAddress == tab.id else { return }
         store.focusAddress = nil
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 120_000_000)
             editing = true
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            if let editor = NSApp.keyWindow?.firstResponder as? NSTextView, editor.isFieldEditor {
+                editor.updateInsertionPointStateAndRestartTimer(true)
+            }
         }
     }
 

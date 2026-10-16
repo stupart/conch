@@ -111,7 +111,7 @@ describe("the Terminal button brings the real terminal forward, and does nothing
     expect(at(tabs(), "FilesTab(")).toBeLessThan(at(tabs(), "ShellTab("));
     expect(at(tabs(), "ShellTab(")).toBeLessThan(at(tabs(), "TerminalButton {"));
     expect(at(tabs(), "TerminalButton {")).toBeLessThan(at(tabs(), "TerminalMirrorTab("));
-    expect(at(tabs(), "TerminalMirrorTab(")).toBeLessThan(at(tabs(), "ScrollView(.horizontal)"));
+    expect(at(tabs(), "TerminalMirrorTab(")).toBeLessThan(at(tabs(), "WorkdeskTabRun("));
   });
 
   test("a remote Mac's session is drawn without a strip, so without either", () => {

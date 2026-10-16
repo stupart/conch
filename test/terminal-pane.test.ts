@@ -126,7 +126,7 @@ describe("the shell is a content of the work half, beside the folder", () => {
     const tabs = section(pane, "private func deliverableTabs(", ".padding(.vertical, 5)");
     // Both are the PLACE the session works; the filed work scrolls on the far side of the rule.
     expect(at(tabs, "FilesTab(")).toBeLessThan(at(tabs, "ShellTab("));
-    expect(at(tabs, "ShellTab(")).toBeLessThan(at(tabs, "ScrollView(.horizontal)"));
+    expect(at(tabs, "ShellTab(")).toBeLessThan(at(tabs, "WorkdeskTabRun("));
     expect(pane).toContain("action: { workspace.show(work: .shell, for: row.id) }");
     const shellTab = section(pane, "private struct ShellTab: View {", "\n}\n");
     expect(shellTab).toContain('Text("Shell")');

@@ -1,7 +1,8 @@
 #!/bin/bash
 # Generate both apps' icons from the one source image.
 #
-#   assets/conch-icon-1024.png  ->  the iOS asset catalog
+#   assets/conch-icon-1024.png  ->  the iOS asset catalog (the icon, and SetupIcon:
+#                                   the icon's art inside the app, on setup and pairing)
 #                               ->  mac-app/conch-mac/Assets.xcassets
 #
 # One source, regenerated rather than hand-maintained, so the phone and the Mac
@@ -24,6 +25,9 @@ echo "==> iOS"
 IOS_SET="$REPO_ROOT/mobile/conch-ios/conch-ios/Assets.xcassets/AppIcon.appiconset"
 mkdir -p "$IOS_SET"
 cp "$SOURCE" "$IOS_SET/icon-1024.png"
+# The phone shows its own icon inside the app (setup's screens, the pairing screen) at
+# 132 pt, 3x. Made here too, so it can't fall behind the icon, as the old placeholder did.
+sips -Z 396 "$SOURCE" --out "$REPO_ROOT/mobile/conch-ios/conch-ios/Assets.xcassets/SetupIcon.imageset/setup-icon@3x.png" >/dev/null
 
 echo "==> macOS"
 MAC_SET="$REPO_ROOT/mac-app/conch-mac/Assets.xcassets/AppIcon.appiconset"

@@ -126,7 +126,8 @@ private enum Scene {
             address: dashboard.url,
             page: AnyView(DashboardPage()),
             mark: WorkbenchMark(kind: .click, rect: exportButton, serial: 1),
-            progress: 0.32
+            // Just after the click lands: the outline held, the ripple starting out from the point.
+            since: WorkbenchMarkMotion.clickLead + 0.08
         )
     }
 
@@ -137,7 +138,7 @@ private enum Scene {
             address: signup.url,
             page: AnyView(SignupPage(typed: "jordan@northw")),
             mark: WorkbenchMark(kind: .type, rect: emailField, serial: 1),
-            progress: 0.5
+            since: 0.2
         )
     }
 
@@ -148,7 +149,7 @@ private enum Scene {
             address: bank.url,
             page: AnyView(BankPage()),
             mark: nil,
-            progress: 0
+            since: 0
         )
     }
 
@@ -160,7 +161,7 @@ private enum Scene {
                 address: "",
                 page: AnyView(WorkbenchBlankPage(profileName: "Default")),
                 mark: nil,
-                progress: 0,
+                since: 0,
                 newTabHovered: true
             )
             // The picker as the chip opens it: a popover can't be drawn offscreen, so its content in a popover's card,
@@ -188,7 +189,7 @@ private enum Scene {
         address: String,
         page: AnyView,
         mark: WorkbenchMark?,
-        progress: Double,
+        since: Double,
         newTabHovered: Bool = false
     ) -> some View {
         VStack(spacing: 0) {
@@ -196,20 +197,17 @@ private enum Scene {
                 PlaceTab(symbol: "folder", name: "Files")
                 PlaceTab(symbol: "chevron.left.forwardslash.chevron.right", name: "Shell")
                 Rectangle().fill(ConchColor.hairline).frame(width: 1, height: 14).padding(.horizontal, 2)
-                // The filed work scrolls, as the app's strip does: each tab at its own width.
-                ScrollView(.horizontal) {
-                    HStack(spacing: 2) {
-                        ForEach(tabs, id: \.0.id) { tab, selected, working, activity in
-                            WorkbenchTabButton(tab: tab, isSelected: selected, agentWorking: working, hasActivity: activity, open: {}, close: {})
-                        }
-                        DeliverableStandIn(summary: "Pricing page, second pass", age: "4m")
+                // The filed work scrolls in the strip's own run, as the app's does: each tab at its own width.
+                WorkdeskTabRun(shown: tabs.first(where: \.1).map { AnyHashable($0.0.id) }, newTab: {}, newTabHovered: newTabHovered) {
+                    ForEach(tabs, id: \.0.id) { tab, selected, working, activity in
+                        WorkbenchTabButton(tab: tab, isSelected: selected, agentWorking: working, hasActivity: activity, open: {}, close: {})
+                            .workdeskTab(tab.id)
                     }
+                    DeliverableStandIn(summary: "Pricing page, second pass", age: "4m")
                 }
-                .scrollIndicators(.never)
-                WorkdeskNewTabButton(isHovered: newTabHovered) {}
             }
             .padding(.leading, 6)
-            .padding(.trailing, 8)
+            .padding(.trailing, 6)
             .padding(.vertical, 5)
             .background(ConchColor.surface)
             Rectangle().fill(ConchColor.hairline).frame(height: 1)
@@ -217,7 +215,7 @@ private enum Scene {
             Rectangle().fill(ConchColor.hairline).frame(height: 1)
             ZStack(alignment: .topLeading) {
                 page
-                if let mark { WorkbenchMarkView(mark: mark, progress: progress) }
+                if let mark { WorkbenchMarkView(mark: mark, since: since) }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .clipped()

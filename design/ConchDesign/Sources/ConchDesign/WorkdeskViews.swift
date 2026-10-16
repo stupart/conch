@@ -27,6 +27,18 @@ enum WorkbenchCapsule {
     static let inset: CGFloat = 7
 }
 
+/// A field in the Workdesk, drawn by conch rather than AppKit's bezel, so its edges sit on the column it is in (the
+/// bezel drew 1 point outside it on both sides) and its border can be read (the bezel measured 1.23:1 in light, 1.10:1
+/// in dark). The command palette's field, a step firmer: a 1-point line of the secondary text colour, firmer again while
+/// it has the keyboard, at a tab's 6-point corner.
+enum WorkdeskField {
+    static let radius: CGFloat = 6
+    /// Resting: 1.57:1 in light, 1.58:1 in dark, measured.
+    static let border = AnyShapeStyle(ConchColor.textSecondary.opacity(0.3))
+    /// With the keyboard, and the address field's ring: 2.43:1 in light, 2.75:1 in dark.
+    static let focused = AnyShapeStyle(ConchColor.textSecondary.opacity(0.55))
+}
+
 // MARK: - The strip
 
 /// A browser tab in the Workdesk's strip: a globe and the page's name, in the strip's own tab style. Under the pointer
@@ -134,9 +146,14 @@ public struct WorkbenchTabButton: View {
 }
 
 /// The strip's +: a browser tab of the user's own for the session in view, to sign in or to browse alongside its agents.
+/// It wears its capsule at rest, a tab's height and corner, so it reads as the strip's one button whatever the tabs
+/// beside it are doing: before, the capsule was hover's alone, and a full strip ran its last tab into the bare +.
 public struct WorkdeskNewTabButton: View {
     let action: () -> Void
     @State private var isHovered: Bool
+
+    /// A tab's height, square. With the strip's 6-point inset its centre is 18 from the edge, the bar's close button's axis.
+    public static let side: CGFloat = 24
 
     public init(isHovered: Bool = false, action: @escaping () -> Void) {
         _isHovered = State(initialValue: isHovered)
@@ -148,11 +165,10 @@ public struct WorkdeskNewTabButton: View {
             Image(systemName: "plus")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(isHovered ? ConchColor.textPrimary : ConchColor.textSecondary)
-                // 20 wide: with the strip's 8-point inset its centre is 18 from the edge, the bar's close button's axis.
-                .frame(width: 20, height: 24)
+                .frame(width: Self.side, height: Self.side)
                 .background(
                     RoundedRectangle(cornerRadius: 6)
-                        .fill(isHovered ? AnyShapeStyle(ConchColor.rowHover) : AnyShapeStyle(Color.clear))
+                        .fill(isHovered ? ConchColor.rowSelected : ConchColor.fill)
                 )
                 .contentShape(Rectangle())
         }
@@ -160,6 +176,123 @@ public struct WorkdeskNewTabButton: View {
         .onHover { isHovered = $0 }
         .help(Workdesk.newTabHelp)
         .accessibilityLabel("New browser tab")
+    }
+}
+
+/// The strip's run of tabs after its places (Files, Shell): the browser tabs and the filed work, any number of them. They
+/// scroll; an edge with more beyond it fades, by as much as there is out of sight, so a tab cut there dissolves rather
+/// than stopping mid-letter; the one shown is kept in view, clear of the fade, as it changes (a tab just opened, an
+/// agent's tab coming forward); and they end a fixed gutter before the + (`WorkdeskNewTabButton`), which sits outside the
+/// scroll at the strip's end, so however many there are it is never scrolled away or run into.
+///
+/// Tyler's strip, full, 2026-10-16: the last tab was cut mid-letter against the + ("…in light anc"), and a tab he had
+/// just opened could be out of sight. Each tab names itself with `workdeskTab(_:)`, by the id `shown` uses.
+public struct WorkdeskTabRun<Content: View>: View {
+    let shown: AnyHashable?
+    let newTab: (() -> Void)?
+    let newTabHovered: Bool
+    let content: Content
+
+    /// How far an edge fades at its fullest: about the last word of a tab.
+    public static var fade: CGFloat { 28 }
+    /// Between the run's end and the +: room for the fade to finish before the button starts.
+    public static var gutter: CGFloat { 6 }
+
+    @State private var extent = RunExtent()
+
+    public init(shown: AnyHashable?, newTab: (() -> Void)? = nil, newTabHovered: Bool = false, @ViewBuilder content: () -> Content) {
+        self.shown = shown
+        self.newTab = newTab
+        self.newTabHovered = newTabHovered
+        self.content = content()
+    }
+
+    public var body: some View {
+        HStack(spacing: 0) {
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal) {
+                    HStack(spacing: 2) { content }
+                        // Where the content is against the scroller's visible bounds: it moves as it scrolls.
+                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .scrollView) } action: { frame in extent.content = frame }
+                }
+                .scrollIndicators(.never)
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in extent.visible = width }
+                .mask(RunFadeMask(leading: extent.leadingFade, trailing: extent.trailingFade))
+                .onAppear { reveal(in: proxy, animated: false) }
+                .onChange(of: shown) { _, _ in reveal(in: proxy, animated: true) }
+            }
+            if let newTab {
+                WorkdeskNewTabButton(isHovered: newTabHovered, action: newTab)
+                    .padding(.leading, Self.gutter)
+            }
+        }
+    }
+
+    /// The shown tab into view, with the fade's width to spare on either side, after the layout that brought it has
+    /// settled: a tab that only just arrived has no frame to scroll to before then.
+    private func reveal(in proxy: ScrollViewProxy, animated: Bool) {
+        guard let shown else { return }
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation(.easeOut(duration: 0.22)) { proxy.scrollTo(RunReveal(id: shown)) }
+            } else {
+                proxy.scrollTo(RunReveal(id: shown))
+            }
+        }
+    }
+}
+
+extension View {
+    /// A tab in a `WorkdeskTabRun`, by the id the run's `shown` names it with: what the run scrolls to. Its target reaches
+    /// a fade's width past the tab on either side, so a tab scrolled to clears the fade instead of stopping under it.
+    public func workdeskTab(_ id: AnyHashable) -> some View {
+        background(alignment: .center) {
+            Color.clear
+                .padding(.horizontal, -WorkdeskTabRun<EmptyView>.fade)
+                .id(RunReveal(id: id))
+                .accessibilityHidden(true)
+        }
+    }
+}
+
+/// What a tab is scrolled to by (`workdeskTab`), apart from any id the tab has of its own.
+private struct RunReveal: Hashable {
+    let id: AnyHashable
+}
+
+/// Where the run's content is in its scroller, and how wide the scroller shows: the fades follow from the two.
+struct RunExtent: Equatable {
+    var content: CGRect = .zero
+    var visible: CGFloat = 0
+
+    /// Each edge fades by the share of a fade's width that is scrolled past it, so a fade comes in and goes as the
+    /// content reaches the edge rather than snapping on and off.
+    var leadingFade: CGFloat { min(max(-content.minX, 0), WorkdeskTabRun<EmptyView>.fade) / WorkdeskTabRun<EmptyView>.fade }
+    var trailingFade: CGFloat { min(max(content.maxX - visible, 0), WorkdeskTabRun<EmptyView>.fade) / WorkdeskTabRun<EmptyView>.fade }
+}
+
+/// Opaque in the middle, each edge running out over `WorkdeskTabRun.fade` to as little as its strength leaves.
+private struct RunFadeMask: View {
+    let leading: CGFloat
+    let trailing: CGFloat
+
+    var body: some View {
+        HStack(spacing: 0) {
+            LinearGradient(stops: Self.stops(leading).reversed().map { Gradient.Stop(color: $0.color, location: 1 - $0.location) }, startPoint: .leading, endPoint: .trailing)
+                .frame(width: WorkdeskTabRun<EmptyView>.fade)
+            Rectangle()
+            LinearGradient(stops: Self.stops(trailing), startPoint: .leading, endPoint: .trailing)
+                .frame(width: WorkdeskTabRun<EmptyView>.fade)
+        }
+    }
+
+    /// From opaque to `1 - strength`, eased so the words thin out before they go rather than at an even rate.
+    static func stops(_ strength: CGFloat) -> [Gradient.Stop] {
+        let floor = 1 - strength
+        return [0, 0.35, 0.7, 1].map { location in
+            let eased = location * location * (3 - 2 * location)
+            return Gradient.Stop(color: .black.opacity(1 - (1 - floor) * eased), location: location)
+        }
     }
 }
 
@@ -229,14 +362,22 @@ public struct WorkbenchBar: View {
         public var isSecure: Bool
         public var hasPage: Bool
         public var popupCount: Int
-        /// The profile's name, and whether it is the built-in one (shown only when it isn't, or while it can change).
+        /// The profile's name, and whether it is the built-in one.
         public var profileName: String
         public var isDefaultProfile: Bool
+        /// How many profiles the user has, Default included: with only Default, every tab signs in the same way and a
+        /// loaded tab's bar says nothing about it.
+        public var profileCount: Int
         /// A blank tab of the user's: its profile can still change.
         public var canPickProfile: Bool
         /// What an agent is doing in it now (`Workbench.agentWords`), or nil.
         public var agentWork: String?
         public var paused: Bool
+
+        /// A loaded tab names its profile whenever there is more than one to be signed in with, Default included: that
+        /// is when "which sign-ins is this?" has an answer worth reading. With Default alone the label would say the same
+        /// word on every tab, so it says nothing.
+        public var namesProfile: Bool { !canPickProfile && (profileCount > 1 || !isDefaultProfile) }
 
         public init(
             canGoBack: Bool = false,
@@ -247,6 +388,7 @@ public struct WorkbenchBar: View {
             popupCount: Int = 0,
             profileName: String = "Default",
             isDefaultProfile: Bool = true,
+            profileCount: Int = 1,
             canPickProfile: Bool = false,
             agentWork: String? = nil,
             paused: Bool = false
@@ -259,6 +401,7 @@ public struct WorkbenchBar: View {
             self.popupCount = popupCount
             self.profileName = profileName
             self.isDefaultProfile = isDefaultProfile
+            self.profileCount = profileCount
             self.canPickProfile = canPickProfile
             self.agentWork = agentWork
             self.paused = paused
@@ -325,6 +468,34 @@ public struct WorkbenchBar: View {
             barButton("chevron.left", help: "Back", enabled: facts.canGoBack, action: actions.back)
             barButton("chevron.right", help: "Forward", enabled: facts.canGoForward, action: actions.forward)
             barButton(facts.isLoading ? "xmark" : "arrow.clockwise", help: facts.isLoading ? "Stop loading" : "Reload", action: actions.reloadOrStop)
+            address
+            if let work = facts.agentWork {
+                WorkdeskAgentBadge(size: .bar, words: work)
+                    .transition(.opacity)
+            }
+            profileChip
+            pauseControl
+            if facts.popupCount > 0 {
+                barButton("xmark.rectangle", help: "Close the window this page opened", action: actions.closePopup)
+            }
+            barButton("safari", help: "Open in your browser", enabled: facts.hasPage, action: actions.openInBrowser)
+            barButton("xmark", help: "Close this tab", action: actions.close)
+        }
+        .foregroundStyle(ConchColor.textSecondary)
+        // A filed page's address line, to the point (ReviewContent): 26 tall, its first mark 15 in and its last 14 from
+        // the pane's edges, so moving between a page tab and a filed page moves nothing.
+        .padding(.horizontal, 7)
+        .padding(.vertical, 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ConchColor.surfaceRaised)
+    }
+
+    /// Where the tab is, and where it goes when edited: the lock or globe and the field. With the keyboard it is ringed as
+    /// a field, so a new tab's waiting field reads as waiting before anything is typed (Tyler saw neither a caret nor a
+    /// ring there, and it looked unfocused). The ring is drawn behind, outside the layout, so nothing moves when it comes
+    /// and goes.
+    private var address: some View {
+        HStack(spacing: 4) {
             Image(systemName: facts.isSecure ? "lock" : "globe")
                 .font(.system(size: 9.5))
                 // A slot of its own width, so the address starts at one place whichever mark it is.
@@ -354,29 +525,27 @@ public struct WorkbenchBar: View {
                     }
                 }
                 .accessibilityLabel("Address")
-            if let work = facts.agentWork {
-                WorkdeskAgentBadge(size: .bar, words: work)
-                    .transition(.opacity)
-            }
-            profileChip
-            pauseControl
-            if facts.popupCount > 0 {
-                barButton("xmark.rectangle", help: "Close the window this page opened", action: actions.closePopup)
-            }
-            barButton("safari", help: "Open in your browser", enabled: facts.hasPage, action: actions.openInBrowser)
-            barButton("xmark", help: "Close this tab", action: actions.close)
+                // Room before the ring's right side, so a long address's last letter is never on its line.
+                .padding(.trailing, 4)
         }
-        .foregroundStyle(ConchColor.textSecondary)
-        // A filed page's address line, to the point (ReviewContent): 26 tall, its first mark 15 in and its last 14 from
-        // the pane's edges, so moving between a page tab and a filed page moves nothing.
-        .padding(.horizontal, 7)
-        .padding(.vertical, 2)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ConchColor.surfaceRaised)
+        .background {
+            if editing.wrappedValue {
+                RoundedRectangle(cornerRadius: WorkdeskField.radius, style: .continuous)
+                    .fill(ConchColor.surface)
+                    .overlay(RoundedRectangle(cornerRadius: WorkdeskField.radius, style: .continuous).strokeBorder(WorkdeskField.focused, lineWidth: 1))
+                    .frame(height: WorkbenchBar.ringHeight)
+                    // 2 out past the field's group on the left, so the globe has 6 inside the ring, a field's inset.
+                    .padding(.leading, -2)
+                    .allowsHitTesting(false)
+            }
+        }
     }
 
-    /// The profile it is signed in with: a picker while the tab is blank, a label otherwise, and only when it isn't the
-    /// built-in one.
+    /// The address ring's height: inside the bar's 22-point row with a point to spare above and below.
+    static let ringHeight: CGFloat = 20
+
+    /// The profile it is signed in with: a picker while the tab is blank; once it has gone somewhere, a quiet label beside
+    /// Pause agents (`Facts.namesProfile`), since a loaded tab's profile can't change.
     @ViewBuilder
     private var profileChip: some View {
         if facts.canPickProfile {
@@ -398,14 +567,26 @@ public struct WorkbenchBar: View {
             .help("The profile this tab signs in with: each has its own sign-ins")
             .accessibilityLabel("Profile: \(facts.profileName). Change")
             .popover(isPresented: $pickingProfile, arrowEdge: .bottom) { profilePicker }
-        } else if !facts.isDefaultProfile {
-            Text(facts.profileName)
-                .font(.system(size: 10, weight: .medium))
-                .lineLimit(1)
-                .padding(.horizontal, WorkbenchCapsule.inset)
-                .frame(height: WorkbenchCapsule.height)
-                .background(Capsule().fill(ConchColor.fill))
-                .help("Signed in with the \(facts.profileName) profile")
+        } else if facts.namesProfile {
+            // Quiet: no capsule, which in this bar means a control, and the tertiary text colour, under the address's.
+            HStack(spacing: 3) {
+                Image(systemName: "person.crop.circle")
+                    .font(.system(size: 9.5))
+                Text(facts.profileName)
+                    .font(.system(size: 10, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .foregroundStyle(ConchColor.textTertiary)
+            .frame(maxWidth: 140)
+            .fixedSize(horizontal: true, vertical: false)
+            .frame(height: WorkbenchCapsule.height)
+            // 5 more before Pause agents' 22-point target: the label's last letter sits 16.5 from the hand, the gap
+            // between the hand, Open in Browser and close, so the row keeps one rhythm.
+            .padding(.trailing, 5)
+            .help("Signed in with \(facts.profileName)")
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Signed in with \(facts.profileName)")
         }
     }
 
@@ -438,6 +619,9 @@ public struct WorkbenchBar: View {
         .accessibilityAddTraits(facts.paused ? .isSelected : [])
     }
 
+    /// Dimmed when it can't act by SwiftUI's own disabled plain button, as the app's other plain buttons are (the
+    /// composer's, the conversation's): 2.24:1 in light, 2.70:1 in dark. It used to dim itself to 40% on top of that,
+    /// which came out at 20% (1.34:1), too faint to read as a control.
     private func barButton(_ symbol: String, help: String, enabled: Bool = true, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
@@ -447,7 +631,6 @@ public struct WorkbenchBar: View {
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
-        .opacity(enabled ? 1 : 0.4)
         .help(help)
         .accessibilityLabel(help)
     }
@@ -480,6 +663,8 @@ public struct WorkbenchProfileList: View {
     @State private var working = false
     @State private var hovered: String?
     @FocusState private var nameFocused: Bool
+    /// The name field takes the keyboard when it appears; a test's picture of it at rest turns this off.
+    var focusesName = true
 
     public init(
         profiles: [Profile],
@@ -579,11 +764,21 @@ public struct WorkbenchProfileList: View {
 
     private var newProfile: some View {
         VStack(alignment: .leading, spacing: 6) {
+            // conch's field, not AppKit's bezel: the bezel drew a point outside the column on both sides, at 1.23:1.
             TextField("Profile name, e.g. Work", text: $draft)
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.plain)
                 .font(.system(size: 12))
                 .focused($nameFocused)
                 .onSubmit(make)
+                // Asked for as it appears: set with `naming` in the same press, the field wasn't there yet to take it.
+                .onAppear { if focusesName { nameFocused = true } }
+                .padding(.horizontal, 7)
+                .frame(height: 24)
+                .background(RoundedRectangle(cornerRadius: WorkdeskField.radius, style: .continuous).fill(ConchColor.surface))
+                .overlay(
+                    RoundedRectangle(cornerRadius: WorkdeskField.radius, style: .continuous)
+                        .strokeBorder(nameFocused ? WorkdeskField.focused : WorkdeskField.border, lineWidth: 1)
+                )
             if let problem {
                 Text(problem)
                     .font(.system(size: 10.5))
@@ -624,7 +819,7 @@ public struct WorkbenchProfileList: View {
 
 // MARK: - Where an agent clicks and types
 
-/// A mark over the page where an agent's command lands: the element's box, in the view's points.
+/// A mark over the page where an agent's command lands: the element's box, in the view's points, and when it went down.
 public struct WorkbenchMark: Equatable, Sendable {
     public enum Kind: Sendable { case click, type }
 
@@ -632,31 +827,148 @@ public struct WorkbenchMark: Equatable, Sendable {
     public let rect: CGRect
     /// A new mark each time, even on the same element.
     public let serial: Int
+    /// When it went down: its motion is timed from here, so a pane shown part way through draws it part way through, and
+    /// one shown after never replays it.
+    public let at: Date
+    /// When a type's command was done with: its outline goes from here. A click's plays out on its own.
+    public let endedAt: Date?
 
-    public init(kind: Kind, rect: CGRect, serial: Int) {
+    public init(kind: Kind, rect: CGRect, serial: Int, at: Date = Date(), endedAt: Date? = nil) {
         self.kind = kind
         self.rect = rect
         self.serial = serial
+        self.at = at
+        self.endedAt = endedAt
+    }
+
+    /// The same mark, its command done with.
+    public func ended(at time: Date = Date()) -> WorkbenchMark {
+        WorkbenchMark(kind: kind, rect: rect, serial: serial, at: at, endedAt: time)
     }
 
     /// Where a click lands: the middle of the box, where the page's click was sent.
     public var point: CGPoint { CGPoint(x: rect.midX, y: rect.midY) }
 }
 
-/// One frame of a mark, `progress` 0 to 1: a click's ring grows out from where it landed and fades, with the element's
-/// outline; a type's outline holds while the field fills.
+/// How a mark moves, as a function of time, so what is drawn live (`WorkbenchMarks`) and what a test draws at a moment are
+/// the same frame. Timed to be followed by someone watching without feeling slow, against WebKit in a harness:
+///
+/// - A click: the outline and the point come in (80 ms), and the click is sent `clickLead` after the mark goes down, long
+///   enough for an eye drawn by it to get there (a saccade takes about 200 ms to start). The ripple starts as the click
+///   lands, not as the mark goes down: before, it was a third grown when the click was sent. The outline holds through the
+///   click and goes with the ripple; all of it is gone by 0.69 s.
+/// - A type: the outline and its tint come in, hold while the field fills, stay `typeHold` on the finished field, then
+///   fade (`fadeOut`). Before, it came on at once and was dropped in a frame.
+public enum WorkbenchMarkMotion {
+    /// From a click's mark going down to the click being sent.
+    public static let clickLead: TimeInterval = 0.24
+    /// The ripple out from where the click landed, until it is gone.
+    public static let ripple: TimeInterval = 0.45
+    /// A mark comes in over this, rather than appearing in a frame.
+    public static let fadeIn: TimeInterval = 0.08
+    /// A type's outline stays this long on the filled field, then goes over `fadeOut`.
+    public static let typeHold: TimeInterval = 0.3
+    public static let fadeOut: TimeInterval = 0.2
+    /// A type whose end never came (its command ran out of time): its mark goes anyway.
+    public static let typeLimit: TimeInterval = 8
+
+    /// One frame: how strongly each part is drawn, and the ripple's size.
+    public struct Look: Equatable, Sendable {
+        /// The element's outline and its tint.
+        public var outline: Double
+        /// The point a click lands on, and its size against its rest.
+        public var point: Double
+        public var pointScale: Double
+        /// The ripple: across, in points, and how strongly.
+        public var ring: Double
+        public var ringOpacity: Double
+
+        public static let none = Look(outline: 0, point: 0, pointScale: 1, ring: 0, ringOpacity: 0)
+
+        public var isVisible: Bool { outline > 0.001 || point > 0.001 || ringOpacity > 0.001 }
+    }
+
+    /// The ripple's size: from the point's own to this across.
+    public static let ringStart: Double = 12
+    public static let ringEnd: Double = 52
+
+    /// The frame `since` seconds after the mark went down, a type's command having ended `ended` seconds after it did.
+    public static func look(_ kind: WorkbenchMark.Kind, since t: TimeInterval, ended: TimeInterval? = nil, reduceMotion: Bool = false) -> Look {
+        guard t >= 0 else { return .none }
+        let arriving = smooth(t / fadeIn)
+        switch kind {
+        case .click:
+            let end = clickLead + ripple
+            guard t < end else { return .none }
+            let landed = t - clickLead
+            if reduceMotion {
+                // Still: the outline and the point, there and then gone, no ripple.
+                let leaving = 1 - smooth((t - (end - fadeOut)) / fadeOut)
+                return Look(outline: min(arriving, leaving), point: min(arriving, leaving), pointScale: 1, ring: 0, ringOpacity: 0)
+            }
+            // The outline holds through the click, then goes with the ripple.
+            let outline = min(arriving, 1 - smooth((landed - 0.12) / (ripple - 0.12)))
+            // The point settles in, gives a little as the click lands, and goes in the first half of the ripple.
+            let settle = 0.6 + 0.4 * easeOut(t / fadeIn)
+            let press = landed < 0 ? 1 : 1 - 0.25 * sin(.pi * min(landed / 0.12, 1))
+            let point = landed < 0 ? arriving : 1 - smooth(landed / (ripple * 0.55))
+            guard landed >= 0 else {
+                return Look(outline: outline, point: point, pointScale: settle, ring: 0, ringOpacity: 0)
+            }
+            let grown = easeOut(landed / ripple)
+            return Look(outline: outline, point: point, pointScale: press, ring: ringStart + (ringEnd - ringStart) * grown, ringOpacity: 1 - smooth(landed / ripple))
+        case .type:
+            let ending = ended ?? typeLimit
+            let leaving = 1 - smooth((t - ending) / fadeOut)
+            let outline = reduceMotion ? (t < ending + fadeOut / 2 ? 1 : 0) : min(arriving, leaving)
+            return outline > 0 ? Look(outline: outline, point: 0, pointScale: 1, ring: 0, ringOpacity: 0) : .none
+        }
+    }
+
+    /// The frame for a mark at a moment.
+    public static func look(_ mark: WorkbenchMark, at date: Date, reduceMotion: Bool = false) -> Look {
+        look(mark.kind, since: date.timeIntervalSince(mark.at), ended: mark.endedAt?.timeIntervalSince(mark.at), reduceMotion: reduceMotion)
+    }
+
+    /// When nothing is left of a mark to draw.
+    public static func end(of mark: WorkbenchMark) -> Date {
+        switch mark.kind {
+        case .click: return mark.at.addingTimeInterval(clickLead + ripple)
+        case .type: return (mark.endedAt ?? mark.at.addingTimeInterval(typeLimit)).addingTimeInterval(fadeOut)
+        }
+    }
+
+    /// 0 to 1, easing in and out: for a fade.
+    static func smooth(_ x: Double) -> Double {
+        let t = min(max(x, 0), 1)
+        return t * t * (3 - 2 * t)
+    }
+
+    /// 0 to 1, fast then settling: for growth.
+    static func easeOut(_ x: Double) -> Double {
+        let t = min(max(x, 0), 1)
+        return 1 - (1 - t) * (1 - t) * (1 - t)
+    }
+}
+
+/// One frame of a mark (`WorkbenchMarkMotion.Look`): the element outlined and lightly tinted; for a click, the point it
+/// lands on and the ripple out from it. Blue with a white halo, so it reads on any page.
 public struct WorkbenchMarkView: View {
     let mark: WorkbenchMark
-    let progress: Double
+    let look: WorkbenchMarkMotion.Look
 
-    public init(mark: WorkbenchMark, progress: Double) {
+    public init(mark: WorkbenchMark, look: WorkbenchMarkMotion.Look) {
         self.mark = mark
-        self.progress = min(max(progress, 0), 1)
+        self.look = look
+    }
+
+    /// The frame `since` seconds after the mark went down.
+    public init(mark: WorkbenchMark, since: TimeInterval) {
+        self.mark = mark
+        look = WorkbenchMarkMotion.look(mark.kind, since: since, ended: mark.endedAt?.timeIntervalSince(mark.at))
     }
 
     public var body: some View {
-        // Full strength while the click lands, then gone; a type's holds while the field fills.
-        let outline = mark.kind == .type ? 1 - max(0, progress - 0.85) / 0.15 : (progress < 0.5 ? 1 : 1 - (progress - 0.5) / 0.5)
         ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 5, style: .continuous)
                 .stroke(WorkdeskInk.halo, lineWidth: 4)
@@ -664,21 +976,21 @@ public struct WorkbenchMarkView: View {
                 .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(WorkdeskInk.pageTint))
                 .frame(width: mark.rect.width + 8, height: mark.rect.height + 8)
                 .position(x: mark.rect.midX, y: mark.rect.midY)
-                .opacity(outline)
+                .opacity(look.outline)
             if mark.kind == .click {
-                let ring = 12 + 40 * progress
                 Circle()
                     .stroke(WorkdeskInk.halo, lineWidth: 4.5)
                     .overlay(Circle().stroke(WorkdeskInk.pageMark, lineWidth: 2.5))
-                    .frame(width: ring, height: ring)
+                    .frame(width: look.ring, height: look.ring)
                     .position(mark.point)
-                    .opacity(1 - progress)
+                    .opacity(look.ringOpacity)
                 Circle()
                     .fill(WorkdeskInk.pageMark)
                     .overlay(Circle().stroke(WorkdeskInk.halo, lineWidth: 1))
                     .frame(width: 10, height: 10)
+                    .scaleEffect(look.pointScale)
                     .position(mark.point)
-                    .opacity(1 - progress * progress)
+                    .opacity(look.point)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -687,13 +999,15 @@ public struct WorkbenchMarkView: View {
     }
 }
 
-/// The marks, live: each new one plays once (a click about three quarters of a second, a type's outline until its
-/// command is done), and none is left behind. Never takes a click: the page beneath is the user's.
+/// The marks, live: each drawn from `WorkbenchMarkMotion` on the display's clock while it has anything to show, and not
+/// at all once it is over, so a finished mark costs nothing and a pane shown again never replays one. Never takes a
+/// click: the page beneath is the user's.
 public struct WorkbenchMarks: View {
     let mark: WorkbenchMark?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var progress: Double = 1
+    /// The last mark whose motion is over.
+    @State private var over: WorkbenchMark?
 
     public init(mark: WorkbenchMark?) {
         self.mark = mark
@@ -701,20 +1015,20 @@ public struct WorkbenchMarks: View {
 
     public var body: some View {
         ZStack {
-            if let mark {
-                WorkbenchMarkView(mark: mark, progress: progress)
+            if let mark, mark != over {
+                TimelineView(.animation) { context in
+                    WorkbenchMarkView(mark: mark, look: WorkbenchMarkMotion.look(mark, at: context.date, reduceMotion: reduceMotion))
+                }
             }
         }
         .allowsHitTesting(false)
-        // Not on appearing: a pane shown again never replays a mark that already played.
-        .onChange(of: mark?.serial) { _, _ in
+        // Its clock stops when the mark is over, and starts again for a new one or for a type's end.
+        .task(id: mark) {
             guard let mark else { return }
-            progress = mark.kind == .type ? 0.3 : 0
-            let duration = reduceMotion ? 0.01 : (mark.kind == .type ? 1.2 : 0.75)
-            withAnimation(.easeOut(duration: duration)) { progress = mark.kind == .type ? 0.85 : 1 }
-        }
-        .onChange(of: mark == nil) { _, cleared in
-            if cleared { progress = 1 }
+            let wait = WorkbenchMarkMotion.end(of: mark).timeIntervalSinceNow
+            if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+            guard !Task.isCancelled else { return }
+            over = mark
         }
     }
 }

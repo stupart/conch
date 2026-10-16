@@ -19,7 +19,8 @@ import Foundation
 ///
 /// So the user can watch an agent work (2026-10-16): `locate` and `locate-field` find what a click or a type will land
 /// on, scroll it into view, and answer only its box, which the app marks over the page; and `type` fills a field in a
-/// few visible steps, as typing looks, never more than about a third of a second.
+/// few visible steps, as typing looks, never more than about a third of a second. Every scroll into view is instant,
+/// even on a page that asks for smooth scrolling, so the box answered is where the element is, not where it was.
 public enum WorkbenchScript {
     /// The content world it runs in.
     public static let contentWorld = "conch-workbench"
@@ -67,6 +68,9 @@ public enum WorkbenchScript {
         return !style || (style.visibility !== "hidden" && style.display !== "none");
     };
     const all = (selector, root) => Array.from((root || D).querySelectorAll(selector));
+    // Into view at once, whatever the page's own scroll-behavior: a page that scrolls smoothly would still be on its
+    // way when the box is measured, and the mark would land where the element was (58 to 891 points off, measured).
+    const reveal = (el) => { if (el.scrollIntoView) el.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" }); };
     const LINKS = "a[href]";
     const BUTTONS = 'button, [role="button"], input[type="submit"], input[type="button"], input[type="reset"], input[type="image"], summary';
     const FIELDS = 'input, textarea, select, [contenteditable="true"], [contenteditable=""]';
@@ -195,7 +199,7 @@ public enum WorkbenchScript {
 
     const click = () => {
         const el = target(false);
-        if (el.scrollIntoView) el.scrollIntoView({ block: "center", inline: "nearest" });
+        reveal(el);
         const box = el.getBoundingClientRect ? el.getBoundingClientRect() : { left: 0, top: 0, width: 0, height: 0 };
         const at = { bubbles: true, cancelable: true, composed: true, view: W, button: 0, buttons: 1, clientX: box.left + box.width / 2, clientY: box.top + box.height / 2 };
         const Pointer = W.PointerEvent || W.MouseEvent;
@@ -224,7 +228,7 @@ public enum WorkbenchScript {
     // Where a click or a type will land, for the app to mark: scrolled into view, and its box. Nothing else about it.
     const locate = (field) => {
         const el = field ? fieldTarget() : target(false);
-        if (el.scrollIntoView) el.scrollIntoView({ block: "center", inline: "nearest" });
+        reveal(el);
         const box = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
         return { box: box ? [box.left, box.top, box.width, box.height] : [0, 0, 0, 0] };
     };
@@ -233,7 +237,7 @@ public enum WorkbenchScript {
         const el = fieldTarget();
         if (!editable(el)) fail(describe(el) + " isn't a field you can type in");
         if (el.disabled || el.readOnly) fail(describe(el) + " is " + (el.disabled ? "disabled" : "read-only"));
-        if (el.scrollIntoView) el.scrollIntoView({ block: "center", inline: "nearest" });
+        reveal(el);
         if (el.focus) el.focus();
         const kind = typeOf(el);
         if (kind === "select") {

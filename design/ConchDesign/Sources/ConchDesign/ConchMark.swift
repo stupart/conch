@@ -4,7 +4,9 @@ import AppKit
 #endif
 
 /// The conch mark: six scallops around one inner turn, for the menu bar only. Everywhere else the voice
-/// is a `VoiceGlyph`.
+/// is a `VoiceGlyph`, and the app is its icon, the hermit crab: this is not the app's icon, and nothing
+/// shows it as one (onboarding once used it as a stand-in). It stays the menu bar's monochrome template
+/// mark until the brand adopts one to replace it; none was, checked 2026-10-16.
 ///
 /// Built from conch-design/icon/README.md and checked against conch-mark.svg point for point (to 0.001).
 /// On a 24-unit grid centred at (12, 12), angle θ clockwise from the top:

@@ -2837,69 +2837,71 @@ private struct ConversationPane: View {
                 // The filed work scrolls, because there can be any number of it. It used to be a
                 // plain row that simply ran out of pane: the sixth tab reached the edge and
                 // everything after it was laid out where no one could see or click it.
-                ScrollView(.horizontal) {
-                    HStack(spacing: 2) {
-                        // The live pages, the agent's and Tyler's own, as tabs among its work (Tyler, 2026-10-09:
-                        // "Agents's pages should live as tabs in the deliverables plane just like the deliverables").
-                        // An agent at work in one says so; one it acted in unseen has a dot (ConchDesign
-                        // `WorkbenchTabButton`).
-                        let shownTab = workPane(for: row) == .browser ? selectedBrowserTab?.id : nil
-                        ForEach(browserTabs) { tab in
-                            WorkbenchTabButton(
-                                tab: tab,
-                                isSelected: tab.id == shownTab,
-                                agentWorking: workbench.working[tab.id] != nil,
-                                hasActivity: Workbench.showsActivity(tab.id, actedIn: workbench.actedIn, shown: shownTab),
-                                open: {
-                                    workbench.touched()
-                                    comparison = nil
-                                    workspace.show(browserTab: tab.id, for: row.id)
-                                },
-                                close: { workbench.close(tab.id) }
-                            )
-                        }
-                        ForEach(deliverableGroups) { group in
-                            let versions = group.versions.compactMap { byID[$0] }
-                            DeliverableTab(
-                                versions: versions,
-                                current: byID[group.shown(picked: picked)] ?? versions[0],
-                                isSelected: shown.map(group.versions.contains) ?? false,
-                                now: timeline.date,
-                                open: { item in
-                                    // A version opened from the strip is a look at that one: any comparison ends.
-                                    comparison = nil
-                                    workspace.show(work: .deliverable, for: row.id)
-                                    workspace.select(deliverable: item.id, for: row.id)
-                                    // Looking at it is what marks it, and only the daemon's copy
-                                    // makes that survive a relaunch and reach the phone. The
-                                    // version actually opened is the one marked — never the whole
-                                    // group — so `markReviewViewed`'s rules hold as they are: no
-                                    // restamping, and no id the session does not hold.
-                                    if item.viewedAt == nil, state?.features?.viewedState != nil {
-                                        store.markReviewViewed(sessionId: row.id, review: item.id)
-                                    }
-                                },
-                                // The whole artifact, every version: the tab is the artifact. The
-                                // group's id is the daemon's artifact, which is what it removes by.
-                                // Only a daemon that can remove one is offered the item.
-                                remove: (state?.features?.deliverables ?? 0) >= 2
-                                    ? { store.removeDeliverable(sessionId: row.id, artifact: group.id) }
-                                    : nil,
-                                compare: { pair in startComparing(pair, in: row) },
-                                cwd: row.cwd,
-                                revealInFinder: { path in
-                                    store.openLink(path, cwd: row.cwd, rowId: row.id, reveal: true, onFailure: { _ in })
-                                }
-                            )
-                        }
+                //
+                // ConchDesign's `WorkdeskTabRun`: an edge with more beyond it fades, the tab shown is kept in view
+                // (one just opened included), and the + ends the run outside the scroll, a fixed gutter on, as a
+                // browser's is, so however many tabs there are it is never scrolled away or run into (2026-10-16:
+                // a full strip cut its last tab mid-letter against the +).
+                let shownTab = workPane(for: row) == .browser ? selectedBrowserTab?.id : nil
+                let shownGroup = shown.flatMap { id in deliverableGroups.first { $0.versions.contains(id) }?.id }
+                WorkdeskTabRun(
+                    shown: shownTab.map { AnyHashable("browser:" + $0) } ?? shownGroup.map { AnyHashable("deliverable:" + $0) },
+                    newTab: opensBrowserTabs(row) ? { openBrowserTab(for: row) } : nil
+                ) {
+                    // The live pages, the agent's and Tyler's own, as tabs among its work (Tyler, 2026-10-09:
+                    // "Agents's pages should live as tabs in the deliverables plane just like the deliverables").
+                    // An agent at work in one says so; one it acted in unseen has a dot (ConchDesign
+                    // `WorkbenchTabButton`).
+                    ForEach(browserTabs) { tab in
+                        WorkbenchTabButton(
+                            tab: tab,
+                            isSelected: tab.id == shownTab,
+                            agentWorking: workbench.working[tab.id] != nil,
+                            hasActivity: Workbench.showsActivity(tab.id, actedIn: workbench.actedIn, shown: shownTab),
+                            open: {
+                                workbench.touched()
+                                comparison = nil
+                                workspace.show(browserTab: tab.id, for: row.id)
+                            },
+                            close: { workbench.close(tab.id) }
+                        )
+                        .workdeskTab("browser:" + tab.id)
                     }
-                }
-                .scrollIndicators(.never)
-
-                // The +: a browser tab of Tyler's own, to sign in or browse beside the agents. Pinned at the end, outside
-                // the scroller, as a browser's is, so however many tabs there are it is never scrolled away.
-                if opensBrowserTabs(row) {
-                    WorkdeskNewTabButton { openBrowserTab(for: row) }
+                    ForEach(deliverableGroups) { group in
+                        let versions = group.versions.compactMap { byID[$0] }
+                        DeliverableTab(
+                            versions: versions,
+                            current: byID[group.shown(picked: picked)] ?? versions[0],
+                            isSelected: shown.map(group.versions.contains) ?? false,
+                            now: timeline.date,
+                            open: { item in
+                                // A version opened from the strip is a look at that one: any comparison ends.
+                                comparison = nil
+                                workspace.show(work: .deliverable, for: row.id)
+                                workspace.select(deliverable: item.id, for: row.id)
+                                // Looking at it is what marks it, and only the daemon's copy
+                                // makes that survive a relaunch and reach the phone. The
+                                // version actually opened is the one marked — never the whole
+                                // group — so `markReviewViewed`'s rules hold as they are: no
+                                // restamping, and no id the session does not hold.
+                                if item.viewedAt == nil, state?.features?.viewedState != nil {
+                                    store.markReviewViewed(sessionId: row.id, review: item.id)
+                                }
+                            },
+                            // The whole artifact, every version: the tab is the artifact. The
+                            // group's id is the daemon's artifact, which is what it removes by.
+                            // Only a daemon that can remove one is offered the item.
+                            remove: (state?.features?.deliverables ?? 0) >= 2
+                                ? { store.removeDeliverable(sessionId: row.id, artifact: group.id) }
+                                : nil,
+                            compare: { pair in startComparing(pair, in: row) },
+                            cwd: row.cwd,
+                            revealInFinder: { path in
+                                store.openLink(path, cwd: row.cwd, rowId: row.id, reveal: true, onFailure: { _ in })
+                            }
+                        )
+                        .workdeskTab("deliverable:" + group.id)
+                    }
                 }
             }
             // The strip is the Workdesk's, one item a tab (ConchDesign `Workdesk`), and says so to VoiceOver.
@@ -2907,9 +2909,10 @@ private struct ConversationPane: View {
             .accessibilityLabel(Workdesk.name)
             // 6 in, so the first tab's mark starts on the pane's left axis, 15 points in: where the session's name above it
             // starts (14.5), and a page's globe and the Workbench's back arrow below it. At 8 it started 2.5 points right
-            // of the name. The right keeps 8, the header's.
+            // of the name. The right keeps 8, the header's, but for the +: its 24-point square 6 in puts its centre 18
+            // from the edge, on the Workbench bar's close button below it.
             .padding(.leading, 6)
-            .padding(.trailing, 8)
+            .padding(.trailing, opensBrowserTabs(row) ? 6 : 8)
             .padding(.vertical, 5)
         }
     }
