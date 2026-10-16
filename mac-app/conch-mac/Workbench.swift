@@ -311,7 +311,7 @@ final class WorkbenchStore: ObservableObject {
 final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     /// The same Safari user agent as Claude's sign-in sheet (`ClaudeSignInWebView`): Google's sign-in turns away
     /// browsers it takes for embedded ones, and this is Safari's engine.
-    static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
+    static let userAgent = SafariUserAgent.current
     /// A page never shown yet is laid out at a laptop's browser window.
     static let parkedSize = CGSize(width: 1280, height: 860)
     private static let world = WKContentWorld.world(name: WorkbenchScript.contentWorld)

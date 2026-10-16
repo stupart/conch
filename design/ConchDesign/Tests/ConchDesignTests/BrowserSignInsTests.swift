@@ -103,3 +103,23 @@ final class BrowserSignInsTests: XCTestCase {
         XCTAssertEqual(json["version"] as? Int, 1)
     }
 }
+
+final class SafariUserAgentTests: XCTestCase {
+    func testTheVersionIsSafarisMajorAndMinor() {
+        XCTAssertEqual(SafariUserAgent.version("26.6.2"), "26.6")
+        XCTAssertEqual(SafariUserAgent.version("26"), "26.0")
+        XCTAssertEqual(SafariUserAgent.version("18.3"), "18.3")
+        XCTAssertEqual(SafariUserAgent.version(nil), "18.0")
+        XCTAssertEqual(SafariUserAgent.version(""), "18.0")
+        XCTAssertEqual(SafariUserAgent.version("beta"), "18.0")
+        XCTAssertEqual(SafariUserAgent.version("26.x"), "26.0")
+    }
+
+    func testTheAgentIsSafarisShape() {
+        XCTAssertEqual(
+            SafariUserAgent.string(safariVersion: "26.6.2"),
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.6 Safari/605.1.15"
+        )
+        XCTAssertTrue(SafariUserAgent.current.hasSuffix("Safari/605.1.15"))
+    }
+}
