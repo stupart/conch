@@ -558,7 +558,8 @@ describe("browser profiles' sign-ins", () => {
           default: {
             checkedAt: 1_792_195_200_000,
             sites: [
-              { domain: "mobbin.com", untilQuit: false },
+              { domain: "mobbin.com" },
+              // An older app's report also said untilQuit: read, and left out.
               { domain: "bank.example", untilQuit: true },
               { domain: "mobbin.com" },
               { domain: "Not A Site" },
@@ -577,7 +578,7 @@ describe("browser profiles' sign-ins", () => {
       expect([...report.keys()]).toEqual(["default", vercel]);
       expect(report.get("default")).toEqual({
         checkedAt: 1_792_195_200_000,
-        sites: [{ domain: "mobbin.com", untilQuit: false }, { domain: "bank.example", untilQuit: true }],
+        sites: [{ domain: "mobbin.com" }, { domain: "bank.example" }],
       });
       expect(report.get(vercel)).toEqual({ checkedAt: 5, sites: [] });
     } finally {
@@ -593,11 +594,11 @@ describe("browser profiles' sign-ins", () => {
     });
     expect(browserProfileLogin({ id: vercel, name: "vercel/acme" }, { checkedAt: 5, sites: [] }, 7))
       .toMatchObject({ id: `browser-profile:${vercel}`, state: "signed-out", checkedAt: 5, detail: "its own cookies · not signed in to any site" });
-    const sites = ["github.com", "google.com", "mobbin.com", "vercel.com", "linear.app", "figma.com"].map((domain) => ({ domain, untilQuit: false }));
-    expect(browserProfileLogin(profile, { checkedAt: 5, sites: [...sites.slice(0, 1), { domain: "bank.example", untilQuit: true }] }, 7))
-      .toMatchObject({ state: "signed-in", checkedAt: 5, detail: "2 sites: github.com, bank.example (until conch quits)" });
+    const sites = ["github.com", "google.com", "mobbin.com", "vercel.com", "linear.app", "figma.com"].map((domain) => ({ domain }));
+    expect(browserProfileLogin(profile, { checkedAt: 5, sites: [...sites.slice(0, 1), { domain: "bank.example" }] }, 7))
+      .toMatchObject({ state: "signed-in", checkedAt: 5, detail: "2 sites: github.com, bank.example" });
     expect(browserProfileLogin(profile, { checkedAt: 5, sites }, 7).detail).toBe("6 sites: github.com, google.com, mobbin.com, vercel.com +2 more");
-    expect(browserProfileLogin(profile, { checkedAt: 5, sites: [{ domain: "a".repeat(45) + ".example", untilQuit: false }] }, 7).detail).toBe("1 site");
+    expect(browserProfileLogin(profile, { checkedAt: 5, sites: [{ domain: "a".repeat(45) + ".example" }] }, 7).detail).toBe("1 site");
     expect(browserProfileLogin(profile, { checkedAt: 5, sites }, 7).account).toBeUndefined();
   });
 
@@ -605,7 +606,7 @@ describe("browser profiles' sign-ins", () => {
     const sources = loginSources({
       probes: [], cli: { dirs: [], executable: () => false }, claudeAccounts: () => [], codexAccounts: () => [],
       browserProfiles: () => [{ id: "default", name: "Default" }, { id: vercel, name: "vercel/acme" }],
-      browserSignIns: () => new Map([["default", { checkedAt: 5, sites: [{ domain: "mobbin.com", untilQuit: false }] }]]),
+      browserSignIns: () => new Map([["default", { checkedAt: 5, sites: [{ domain: "mobbin.com" }] }]]),
       now: () => 7,
     });
     const rows = await sources.find((source) => source.key === "browser-profiles")!.run(false);

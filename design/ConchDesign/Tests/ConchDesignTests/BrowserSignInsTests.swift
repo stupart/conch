@@ -45,7 +45,6 @@ final class BrowserSignInsTests: XCTestCase {
             cookie("_gid", ".example.com", expires: later),
         ]
         XCTAssertEqual(BrowserSignIns.sites(from: cookies, now: now).map(\.domain), ["github.com", "google.com", "mobbin.com"])
-        XCTAssertTrue(BrowserSignIns.sites(from: cookies, now: now).allSatisfy { !$0.untilQuit })
     }
 
     func testAnExpiredSignInDoesntCount() {
@@ -53,23 +52,23 @@ final class BrowserSignInsTests: XCTestCase {
         XCTAssertEqual(BrowserSignIns.sites(from: cookies, now: now), [])
     }
 
-    func testASignInUntilQuitIsMarked() {
+    func testASessionSignInCountsOnlyByAStrongName() {
         let cookies = [
-            // A bank's sign-in that ends with the app: strong name, no expiry.
+            // A bank's sign-in with no expiry: strong name.
             cookie("auth_token", "secure.bank.example", expires: nil),
             // A framework's session cookie every visitor gets: not a sign-in on its own.
             cookie("_store_session", "shop.example", expires: nil),
             cookie("PHPSESSID", "forum.example", expires: nil),
         ]
-        XCTAssertEqual(BrowserSignIns.sites(from: cookies, now: now), [BrowserSignIns.Site(domain: "bank.example", untilQuit: true)])
+        XCTAssertEqual(BrowserSignIns.sites(from: cookies, now: now), [BrowserSignIns.Site(domain: "bank.example")])
     }
 
-    func testALastingCookieOutranksOneUntilQuit() {
+    func testOneSiteFromItsHosts() {
         let cookies = [
             cookie("auth_token", "app.example.com", expires: nil),
             cookie("remember_me", ".example.com", expires: later),
         ]
-        XCTAssertEqual(BrowserSignIns.sites(from: cookies, now: now), [BrowserSignIns.Site(domain: "example.com", untilQuit: false)])
+        XCTAssertEqual(BrowserSignIns.sites(from: cookies, now: now), [BrowserSignIns.Site(domain: "example.com")])
     }
 
     func testSiteOfACookieDomain() {
@@ -78,7 +77,13 @@ final class BrowserSignInsTests: XCTestCase {
         XCTAssertEqual(BrowserSignIns.site(ofCookieDomain: "WWW.GitHub.com."), "github.com")
         XCTAssertEqual(BrowserSignIns.site(ofCookieDomain: ".bbc.co.uk"), "bbc.co.uk")
         XCTAssertEqual(BrowserSignIns.site(ofCookieDomain: "my.bank.com.au"), "bank.com.au")
-        XCTAssertEqual(BrowserSignIns.site(ofCookieDomain: "app.vercel.app"), "vercel.app")
+        // A hosting platform's subdomains are each their own site.
+        XCTAssertEqual(BrowserSignIns.site(ofCookieDomain: "acme-git-main-team.vercel.app"), "acme-git-main-team.vercel.app")
+        XCTAssertEqual(BrowserSignIns.site(ofCookieDomain: ".stupart.github.io"), "stupart.github.io")
+        XCTAssertEqual(BrowserSignIns.site(ofCookieDomain: "api.acme.up.railway.app"), "acme.up.railway.app")
+        XCTAssertEqual(BrowserSignIns.site(ofCookieDomain: "vercel.app"), "vercel.app")
+        XCTAssertEqual(BrowserSignIns.site(ofCookieDomain: "vercel.com"), "vercel.com")
+        XCTAssertEqual(BrowserSignIns.site(ofCookieDomain: "notvercel.app"), "notvercel.app")
         XCTAssertNil(BrowserSignIns.site(ofCookieDomain: "localhost"))
         XCTAssertNil(BrowserSignIns.site(ofCookieDomain: "127.0.0.1"))
         XCTAssertNil(BrowserSignIns.site(ofCookieDomain: ""))
@@ -95,7 +100,7 @@ final class BrowserSignInsTests: XCTestCase {
 
     func testTheReportRoundTrips() throws {
         let report = BrowserSignIns.Report(profiles: [
-            "default": .init(sites: [.init(domain: "mobbin.com"), .init(domain: "bank.example", untilQuit: true)], checkedAt: 1_792_195_200_000),
+            "default": .init(sites: [.init(domain: "mobbin.com"), .init(domain: "bank.example")], checkedAt: 1_792_195_200_000),
         ])
         let data = try JSONEncoder().encode(report)
         XCTAssertEqual(try JSONDecoder().decode(BrowserSignIns.Report.self, from: data), report)

@@ -820,7 +820,12 @@ describe("which sites a profile is signed in to", () => {
     expect(siteOfHost("WWW.GitHub.com.")).toBe("github.com");
     expect(siteOfHost(".bbc.co.uk")).toBe("bbc.co.uk");
     expect(siteOfHost("my.bank.com.au")).toBe("bank.com.au");
-    expect(siteOfHost("app.vercel.app")).toBe("vercel.app");
+    expect(siteOfHost("acme-git-main-team.vercel.app")).toBe("acme-git-main-team.vercel.app");
+    expect(siteOfHost(".stupart.github.io")).toBe("stupart.github.io");
+    expect(siteOfHost("api.acme.up.railway.app")).toBe("acme.up.railway.app");
+    expect(siteOfHost("vercel.app")).toBe("vercel.app");
+    expect(siteOfHost("vercel.com")).toBe("vercel.com");
+    expect(siteOfHost("notvercel.app")).toBe("notvercel.app");
     for (const host of ["localhost", "127.0.0.1", "", "a..b.com", "evil.com/path"]) expect(siteOfHost(host)).toBeUndefined();
   });
 
@@ -832,7 +837,7 @@ describe("which sites a profile is signed in to", () => {
       expect(read().size).toBe(0);
       writeFileSync(file, JSON.stringify({ profiles: { default: { checkedAt: 5, sites: [{ domain: "mobbin.com" }] } } }));
       const first = read();
-      expect(first.get("default")?.sites).toEqual([{ domain: "mobbin.com", untilQuit: false }]);
+      expect(first.get("default")?.sites).toEqual([{ domain: "mobbin.com" }]);
       expect(read()).toBe(first);
       writeFileSync(file, JSON.stringify({ profiles: { default: { checkedAt: 6, sites: [] } } }));
       expect(read().get("default")).toEqual({ checkedAt: 6, sites: [] });
@@ -862,8 +867,8 @@ describe("which sites a profile is signed in to", () => {
       // No report yet: nothing is said either way.
       expect((await tabs()).map((tab) => [tab.signedIn, tab.signedInOn])).toEqual([[undefined, undefined], [undefined, undefined], [undefined, undefined]]);
       report = new Map([
-        ["default", { checkedAt: 5, sites: [{ domain: "mobbin.com", untilQuit: false }] }],
-        [work, { checkedAt: 5, sites: [{ domain: "github.com", untilQuit: false }] }],
+        ["default", { checkedAt: 5, sites: [{ domain: "mobbin.com" }] }],
+        [work, { checkedAt: 5, sites: [{ domain: "github.com" }] }],
       ]);
       expect((await tabs()).map((tab) => [tab.signedIn, tab.signedInOn])).toEqual([[true, undefined], [false, ["Work"]], [undefined, undefined]]);
     } finally {

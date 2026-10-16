@@ -127,10 +127,8 @@ export function findBrowserProfile(profiles: readonly BrowserProfile[], named: s
  * no cookie, and nothing a cookie holds, is ever in it.
  */
 export interface BrowserSignInSite {
-  /** `mobbin.com`, `bbc.co.uk`. */
+  /** `mobbin.com`, `bbc.co.uk`, `acme-git-main.vercel.app`. */
   domain: string;
-  /** Its sign-in ends when conch quits. */
-  untilQuit: boolean;
 }
 
 export interface BrowserProfileSignIns {
@@ -173,7 +171,7 @@ export function readBrowserSignIns(file: string = browserSignInsPath()): Map<str
       const domain = site && typeof site === "object" ? (site as Record<string, unknown>).domain : undefined;
       if (typeof domain !== "string" || !SITE.test(domain) || seen.has(domain)) continue;
       seen.add(domain);
-      kept.push({ domain, untilQuit: (site as Record<string, unknown>).untilQuit === true });
+      kept.push({ domain });
     }
     found.set(id.toLowerCase(), { sites: kept, checkedAt });
   }
@@ -182,17 +180,30 @@ export function readBrowserSignIns(file: string = browserSignInsPath()): Map<str
 
 /** Second-level names under a country's domain that are a registry, not a site: `co.uk`, `com.au`, `ac.jp`. */
 const REGISTRY_SECOND_LEVELS = new Set(["co", "com", "net", "org", "gov", "edu", "ac", "ne", "or", "go", "gv", "ltd", "plc", "nhs", "sch"]);
+/** Hosting platforms whose every subdomain is someone else's site (ConchDesign `BrowserSignIns.hostingSuffixes`). */
+const HOSTING_SUFFIXES = [
+  "vercel.app", "netlify.app", "github.io", "pages.dev", "workers.dev", "herokuapp.com", "fly.dev", "web.app",
+  "firebaseapp.com", "onrender.com", "up.railway.app", "azurewebsites.net", "cloudfront.net", "amplifyapp.com",
+  "ngrok.io", "ngrok.app", "ngrok-free.app", "supabase.co", "deno.dev", "myshopify.com", "wixsite.com", "webflow.io",
+];
 const LABEL = /^[a-z0-9_-]{1,63}$/;
 
 /**
  * The site a host belongs to, as the Mac app names them (ConchDesign `BrowserSignIns.site(ofCookieDomain:)`, which this
- * must agree with): its last two labels, or three under a country's registry (`bbc.co.uk`). Undefined for an IP address,
- * a single label (`localhost`) or anything that isn't a host name.
+ * must agree with): its last two labels, three under a country's registry (`bbc.co.uk`), or one more than a hosting
+ * platform's suffix (`acme-git-main.vercel.app`). Undefined for an IP address, a single label (`localhost`) or anything
+ * that isn't a host name.
  */
 export function siteOfHost(host: string): string | undefined {
-  const labels = host.trim().toLowerCase().replace(/^\.+/, "").replace(/\.+$/, "").split(".");
+  const name = host.trim().toLowerCase().replace(/^\.+/, "").replace(/\.+$/, "");
+  const labels = name.split(".");
   if (labels.length < 2 || !labels.every((label) => LABEL.test(label))) return undefined;
   if (/^[0-9]+$/.test(labels.at(-1)!)) return undefined;
+  const hosting = HOSTING_SUFFIXES.find((suffix) => name === suffix || name.endsWith(`.${suffix}`));
+  if (hosting) {
+    const count = hosting.split(".").length + 1;
+    return labels.length >= count ? labels.slice(-count).join(".") : name;
+  }
   const count = labels.length >= 3 && labels.at(-1)!.length === 2 && REGISTRY_SECOND_LEVELS.has(labels.at(-2)!) ? 3 : 2;
   return labels.slice(-count).join(".");
 }

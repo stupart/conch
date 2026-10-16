@@ -148,12 +148,6 @@ private struct BrowserProfileRow: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .textSelection(.enabled)
-            if site.untilQuit {
-                Text("until conch quits")
-                    .font(ConchTypography.font(size: 10.5))
-                    .foregroundStyle(ConchPalette.textDim)
-                    .help("This site's sign-in ends when conch quits, so you'll sign in again after a relaunch.")
-            }
             Spacer(minLength: ConchSpace.x3)
             if signIns.signingOut.contains(BrowserSignInsStore.key(profile: profile.id, site: site.domain)) {
                 ProgressView().controlSize(.small)
