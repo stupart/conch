@@ -87,8 +87,10 @@ describe("the work half can hold the files or a deliverable", () => {
    */
   test("the folder is pinned ahead of the deliverables, which scroll", () => {
     const tabs = section(pane, "private func deliverableTabs(", ".padding(.vertical, 5)");
-    expect(tabs).toContain("ScrollView(.horizontal)");
-    expect(at(tabs, "FilesTab(")).toBeLessThan(at(tabs, "ScrollView(.horizontal)"));
+    // The run that scrolls is ConchDesign's `WorkdeskTabRun` (2026-10-16), a horizontal scroller with its fades.
+    expect(tabs).toContain("WorkdeskTabRun(");
+    expect(swift("design/ConchDesign/Sources/ConchDesign/WorkdeskViews.swift")).toContain("ScrollView(.horizontal)");
+    expect(at(tabs, "FilesTab(")).toBeLessThan(at(tabs, "WorkdeskTabRun("));
     // The scroller claims the remaining width, so the strip no longer needs a spacer to push
     // the tabs left — and a spacer here would fight it for room.
     expect(tabs).not.toContain("Spacer(minLength: 0)");

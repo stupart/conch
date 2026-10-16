@@ -31,10 +31,11 @@ const workspace = read("design/ConchDesign/Sources/ConchDesign/Workspace.swift")
 describe("the user's own tab: the Workdesk's +", () => {
   test("the strip ends in a +, outside the scroller, for a session's own Workdesk; the session menu has it too", () => {
     const strip = between(dashboard, "private func deliverableTabs(for row: SessionRow) -> some View {", "private func conversationBody(for row: SessionRow?) -> some View {");
-    const scroller = strip.indexOf(".scrollIndicators(.never)");
-    const plus = strip.indexOf("WorkdeskNewTabButton { openBrowserTab(for: row) }");
-    expect(plus).toBeGreaterThan(scroller);
-    expect(strip).toContain("if opensBrowserTabs(row) {");
+    // The run of tabs is ConchDesign's: it ends in the +, after the scroller, a fixed gutter on (2026-10-16).
+    expect(strip).toContain("newTab: opensBrowserTabs(row) ? { openBrowserTab(for: row) } : nil");
+    const run = between(views, "public struct WorkdeskTabRun<Content: View>: View {", "extension View {");
+    expect(run.indexOf("WorkdeskNewTabButton(isHovered: newTabHovered, action: newTab)")).toBeGreaterThan(run.indexOf(".scrollIndicators(.never)"));
+    expect(run).toContain(".padding(.leading, Self.gutter)");
     const menu = between(dashboard, "private func sessionBar(for row: SessionRow) -> some View {", "private var approveControl: some View {");
     expect(menu).toContain('Button("New Browser Tab") {\n                        openBrowserTab(for: row)\n                    }');
     // Never a subagent's or the practice session's.
@@ -60,6 +61,8 @@ describe("the user's own tab: the Workdesk's +", () => {
   test("a blank tab's address field takes the keyboard, and its profile can be picked or made", () => {
     const pane = between(workbench, "struct WorkbenchPane: View {", "enum WorkbenchNewTab {");
     expect(pane).toContain("canPickProfile: isBlank");
+    // A loaded tab names its profile when there is more than one to be signed in with (ConchDesign `Facts.namesProfile`).
+    expect(pane).toContain("profileCount: store.profiles.count,");
     expect(pane).toContain("private var isBlank: Bool { tab.isBlank && page.url == nil }");
     expect(pane).toContain("if isBlank { WorkbenchBlankPage(profileName: profileName) }");
     expect(pane).toContain("guard store.focusAddress == tab.id else { return }");
@@ -124,7 +127,7 @@ describe("watching an agent work", () => {
     expect(type.indexOf("await markTarget(target, kind: .type)")).toBeLessThan(type.indexOf('op: "type"'));
     // A password field is refused before anything is marked or typed.
     expect(type).toContain("if let refused = await markTarget(target, kind: .type) { return answer(request, error: refused) }");
-    const mark = between(workbench, "private func markTarget(", "private func clearMark(");
+    const mark = between(workbench, "private func markTarget(", "private func endMark(");
     expect(mark).toContain('op: kind == .type ? "locate-field" : "locate"');
     expect(mark).toContain("Workbench.markRect(box: box, scale: Double(view.pageZoom * view.magnification))");
     expect(between(workbench, "struct WorkbenchPane: View {", "enum WorkbenchNewTab {")).toContain(".overlay { WorkbenchMarks(mark: page.mark) }");

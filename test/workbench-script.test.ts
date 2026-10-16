@@ -130,7 +130,8 @@ class FakeElement {
   dispatchEvent(event: FakeEvent): boolean { this.events.push(event.type); return !event.defaultPrevented; }
   click() { this.clicks += 1; this.events.push("click"); }
   focus() { this.focused = true; }
-  scrollIntoView() {}
+  scrolls: unknown[] = [];
+  scrollIntoView(options?: unknown) { this.scrolls.push(options); }
 }
 
 /** Fields named by a <label for>: the label's words are theirs. */
@@ -335,6 +336,21 @@ describe("the Workbench's page script", () => {
     for (const field of [p.email, p.password]) expect(field.valueSets).toBe(0);
     const wire = JSON.stringify(await run(p, "locate-field", { how: "auto", what: "Email" }));
     expect(wire).not.toContain("tyler@example.com");
+  });
+
+  /**
+   * 2026-10-16, run in real WebKit: on a page whose CSS asks for smooth scrolling, a plain scrollIntoView was still on its
+   * way when the box was measured, so the mark landed where the element had been: 58 points off for a button in view,
+   * 891 for one below the fold, drawn off the screen altogether. Every scroll the script makes is instant.
+   */
+  test("it brings what it works on into view at once, whatever the page's own scroll-behavior", async () => {
+    const instant = { block: "center", inline: "nearest", behavior: "instant" };
+    for (const [op, what, element] of [["locate", "Sign in", "signIn"], ["click", "Sign in", "signIn"], ["locate-field", "Email", "email"], ["type", "Email", "email"]] as const) {
+      const p = page();
+      await run(p, op, { how: "auto", what, text: "a" });
+      expect(p[element].scrolls, op).toEqual([instant]);
+    }
+    expect(scriptSource()).not.toMatch(/scrollIntoView\(\{(?![^}]*behavior: "instant")/);
   });
 
   test("type fills its field in steps the user can watch, each heard as typing, and answers no value", async () => {
