@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { accountCapabilities } from "./account-tools.ts";
 import type { AgentCapabilityEntity } from "./agent-capabilities.ts";
-import { readBrowserProfiles, type BrowserProfile } from "./browser-profiles.ts";
+import { readBrowserProfiles, readBrowserSignIns, type BrowserProfile, type BrowserProfileSignIns } from "./browser-profiles.ts";
 import { cachedClaudeAccountStatus, defaultClaudeDir, readClaudeAccounts, type ClaudeAccount, type ClaudeAccountStatus } from "./claude-accounts.ts";
 import { cachedCodexAccount, defaultCodexDir, readCodexAccounts, type CodexAccountStatus } from "./codex-accounts.ts";
 import { CONTROL_FRAME_MAX_BYTES } from "./control-framing.ts";
@@ -814,6 +814,8 @@ export interface LoginSourceDeps {
   capabilities?(backend: Backend, account: ClaudeAccount, cwd?: string): readonly AgentCapabilityEntity[];
   needsAuth?(configDir: string): Map<string, number>;
   browserProfiles?(): BrowserProfile[];
+  /** What the Mac app last read of each browser profile's sign-ins, by profile id. */
+  browserSignIns?(): Map<string, BrowserProfileSignIns>;
   projects?(): LoginProject[];
   probes?: readonly CliProbe[];
   cli?: CliProbeDeps;
@@ -885,21 +887,44 @@ export function loginSources(deps: LoginSourceDeps = {}): LoginSource[] {
     key: "browser-profiles",
     run: async () => {
       const at = now();
-      return (deps.browserProfiles ?? (() => readBrowserProfiles()))().map((profile) => ({
-        id: `browser-profile:${profile.id}`,
-        kind: "browser-profile" as const,
-        tool: profile.name,
-        installed: true,
-        state: "unknown" as const,
-        ...(profile.id === "default" ? { scope: "default" } : {}),
-        checkedAt: at,
-        detail: profile.id === "default"
-          ? "conch's own browser and review pane; who it's signed in as stays in its cookies"
-          : "its own cookies; who it's signed in as stays in them",
-      }));
+      let signIns = new Map<string, BrowserProfileSignIns>();
+      try {
+        signIns = (deps.browserSignIns ?? (() => readBrowserSignIns()))();
+      } catch { /* no report: who each is signed in to stays unknown */ }
+      return (deps.browserProfiles ?? (() => readBrowserProfiles()))().map((profile) => browserProfileLogin(profile, signIns.get(profile.id), at));
     },
   });
   return sources;
+}
+
+/** How many sites a browser profile's row names before it counts the rest. */
+const SITES_NAMED = 4;
+
+/**
+ * A browser profile's row. With the Mac app's report of its sign-ins (`browser-sign-ins.json`), the sites it is signed in
+ * to, told from cookie names there; without one, unknown, as WebKit's cookies are the app's alone.
+ */
+export function browserProfileLogin(profile: BrowserProfile, signIns: BrowserProfileSignIns | undefined, at: number): LoginRecord {
+  const what = profile.id === "default" ? "conch's own browser and review pane" : "its own cookies";
+  const base = {
+    id: `browser-profile:${profile.id}`,
+    kind: "browser-profile" as const,
+    tool: profile.name,
+    installed: true,
+    ...(profile.id === "default" ? { scope: "default" } : {}),
+  };
+  if (!signIns) {
+    const unknown = profile.id === "default" ? "who it's signed in as stays in its cookies" : "who it's signed in as stays in them";
+    return { ...base, state: "unknown", checkedAt: at, detail: `${what}; ${unknown}` };
+  }
+  const { sites } = signIns;
+  if (sites.length === 0) return { ...base, state: "signed-out", checkedAt: signIns.checkedAt, detail: `${what} · not signed in to any site` };
+  const count = `${sites.length} ${sites.length === 1 ? "site" : "sites"}`;
+  const named = sites.slice(0, SITES_NAMED).map((site) => site.untilQuit ? `${site.domain} (until conch quits)` : site.domain);
+  const more = sites.length > SITES_NAMED ? ` +${sites.length - SITES_NAMED} more` : "";
+  // A detail is short and never token-shaped on the wire (`identity`): a list that isn't is said as its count.
+  const detail = identity(`${count}: ${named.join(", ")}${more}`, TEXT_MAX) ?? count;
+  return { ...base, state: "signed-in", checkedAt: signIns.checkedAt, detail };
 }
 
 /** Up to `limit` at once, results in the order given. */

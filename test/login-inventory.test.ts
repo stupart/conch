@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { accountCapabilities } from "../src/account-tools.ts";
 import { applyRuntimeControlMessage, createControlServer, type ControlServer } from "../src/control-server.ts";
+import { readBrowserSignIns } from "../src/browser-profiles.ts";
 import {
   agentLogin,
   awsSkip,
+  browserProfileLogin,
   capabilityLogins,
   CLI_PROBES,
   createLoginInventory,
@@ -537,5 +539,79 @@ describe("`conch logins`", () => {
     expect(text).toMatch(/npm\s+—\s+signed out/);
     expect(text).toMatch(/linear\s+Claude Code · Default · user · http\s+—\s+signed out\s+asked to sign in/);
     expect(text).not.toContain("wrangler  ");
+  });
+});
+
+describe("browser profiles' sign-ins", () => {
+  const vercel = "0f3c1a2b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
+
+  test("the Mac app's report is read for site names and times, and nothing else", () => {
+    const dir = mkdtempSync(join(tmpdir(), "conch-sign-ins-"));
+    try {
+      const file = join(dir, "browser-sign-ins.json");
+      expect(readBrowserSignIns(file).size).toBe(0);
+      writeFileSync(file, "{ not json");
+      expect(readBrowserSignIns(file).size).toBe(0);
+      writeFileSync(file, JSON.stringify({
+        version: 1,
+        profiles: {
+          default: {
+            checkedAt: 1_792_195_200_000,
+            sites: [
+              { domain: "mobbin.com", untilQuit: false },
+              { domain: "bank.example", untilQuit: true },
+              { domain: "mobbin.com" },
+              { domain: "Not A Site" },
+              { domain: "localhost" },
+              { domain: "x.com; rm -rf /" },
+              { value: "a cookie's value is never here" },
+              "github.com",
+            ],
+          },
+          [vercel.toUpperCase()]: { checkedAt: 5, sites: [] },
+          "not-a-profile": { checkedAt: 5, sites: [{ domain: "evil.example" }] },
+          "11111111-2222-4333-8444-555555555555": { checkedAt: "yesterday", sites: [] },
+        },
+      }));
+      const report = readBrowserSignIns(file);
+      expect([...report.keys()]).toEqual(["default", vercel]);
+      expect(report.get("default")).toEqual({
+        checkedAt: 1_792_195_200_000,
+        sites: [{ domain: "mobbin.com", untilQuit: false }, { domain: "bank.example", untilQuit: true }],
+      });
+      expect(report.get(vercel)).toEqual({ checkedAt: 5, sites: [] });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a profile's row: its sites when the app has said, unknown when it hasn't", () => {
+    const profile = { id: "default", name: "Default" };
+    expect(browserProfileLogin(profile, undefined, 7)).toEqual({
+      id: "browser-profile:default", kind: "browser-profile", tool: "Default", installed: true, scope: "default", state: "unknown", checkedAt: 7,
+      detail: "conch's own browser and review pane; who it's signed in as stays in its cookies",
+    });
+    expect(browserProfileLogin({ id: vercel, name: "vercel/acme" }, { checkedAt: 5, sites: [] }, 7))
+      .toMatchObject({ id: `browser-profile:${vercel}`, state: "signed-out", checkedAt: 5, detail: "its own cookies · not signed in to any site" });
+    const sites = ["github.com", "google.com", "mobbin.com", "vercel.com", "linear.app", "figma.com"].map((domain) => ({ domain, untilQuit: false }));
+    expect(browserProfileLogin(profile, { checkedAt: 5, sites: [...sites.slice(0, 1), { domain: "bank.example", untilQuit: true }] }, 7))
+      .toMatchObject({ state: "signed-in", checkedAt: 5, detail: "2 sites: github.com, bank.example (until conch quits)" });
+    expect(browserProfileLogin(profile, { checkedAt: 5, sites }, 7).detail).toBe("6 sites: github.com, google.com, mobbin.com, vercel.com +2 more");
+    expect(browserProfileLogin(profile, { checkedAt: 5, sites: [{ domain: "a".repeat(45) + ".example", untilQuit: false }] }, 7).detail).toBe("1 site");
+    expect(browserProfileLogin(profile, { checkedAt: 5, sites }, 7).account).toBeUndefined();
+  });
+
+  test("the browser profiles' source joins the report to the profiles", async () => {
+    const sources = loginSources({
+      probes: [], cli: { dirs: [], executable: () => false }, claudeAccounts: () => [], codexAccounts: () => [],
+      browserProfiles: () => [{ id: "default", name: "Default" }, { id: vercel, name: "vercel/acme" }],
+      browserSignIns: () => new Map([["default", { checkedAt: 5, sites: [{ domain: "mobbin.com", untilQuit: false }] }]]),
+      now: () => 7,
+    });
+    const rows = await sources.find((source) => source.key === "browser-profiles")!.run(false);
+    expect(rows.map(({ tool, state, detail }) => ({ tool, state, detail }))).toEqual([
+      { tool: "Default", state: "signed-in", detail: "1 site: mobbin.com" },
+      { tool: "vercel/acme", state: "unknown", detail: "its own cookies; who it's signed in as stays in them" },
+    ]);
   });
 });

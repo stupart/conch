@@ -2131,7 +2131,14 @@ export function createMcpToolHandlers(
         const profile = optionalString(args, "profile");
         return { op: "open", url, ...(profile ? { profile: profile.trim() } : {}) };
       });
-      return { tab: reply.tab?.id, ...reply.result, profile: reply.tab?.profileName };
+      const signedIn = reply.tab?.signedIn;
+      return {
+        tab: reply.tab?.id,
+        ...reply.result,
+        profile: reply.tab?.profileName,
+        ...(signedIn === undefined ? {} : { signedIn }),
+        ...(reply.tab?.signedInOn ? { signedInOn: reply.tab.signedInOn } : {}),
+      };
     },
 
     async browser_read(argumentsValue, meta) {

@@ -119,7 +119,11 @@ final class WorkbenchStore: ObservableObject {
     func accept(_ snapshot: PublishedState) {
         guard let published = snapshot.browserTabs else { return }
         let listed = (snapshot.browserProfiles ?? []).map { WorkbenchProfileList.Profile(id: $0.id, name: $0.name) }
-        if listed != profiles { profiles = listed }
+        if listed != profiles {
+            profiles = listed
+            // Which sites each is signed in to, kept from now on (Settings › Browser, and the logins inventory's report).
+            BrowserSignInsStore.shared.keep(only: listed.isEmpty ? [Workbench.defaultProfile] : listed.map(\.id))
+        }
         profileNames = Dictionary(listed.map { ($0.id, $0.name) }, uniquingKeysWith: { _, last in last })
         // A pause the daemon has taken is its to say again; one it hasn't yet still shows as Tyler set it.
         for (id, paused) in pausing where published.contains(where: { $0.id == id && ($0.paused == true) == paused }) || !published.contains(where: { $0.id == id }) {
@@ -307,7 +311,7 @@ final class WorkbenchStore: ObservableObject {
 final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     /// The same Safari user agent as Claude's sign-in sheet (`ClaudeSignInWebView`): Google's sign-in turns away
     /// browsers it takes for embedded ones, and this is Safari's engine.
-    static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
+    static let userAgent = SafariUserAgent.current
     /// A page never shown yet is laid out at a laptop's browser window.
     static let parkedSize = CGSize(width: 1280, height: 860)
     private static let world = WKContentWorld.world(name: WorkbenchScript.contentWorld)

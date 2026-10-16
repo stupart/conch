@@ -146,7 +146,7 @@ import { createPreviewRequester, previewFolder, PreviewLimiter, WindowPreviews, 
 import { captureFolder, createPageCaptureService, PageCaptures, pruneCaptures, withCaptureRequests } from "./page-capture.ts";
 import { accessCheckedLink, checkAnonymously, checkPageAccess, discardCapture, type AccessCheck } from "./page-access.ts";
 import { captureFolderPath } from "./capture-folder.ts";
-import { addBrowserProfile, readBrowserProfiles } from "./browser-profiles.ts";
+import { addBrowserProfile, cachedBrowserSignIns, readBrowserProfiles } from "./browser-profiles.ts";
 import { BrowserWorkbench, createBrowserService, fileTabStore, withBrowserState } from "./browser-workbench.ts";
 import { MCP_TOOLSET } from "./mcp-toolset.ts";
 import { sessionForCallerPid } from "./caller-session.ts";
@@ -1775,6 +1775,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     appRunning: macAppRunning,
     // A tab Tyler opens with the Workdesk's + is for a session on screen now: a row the app was sent.
     liveSession: (sessionId) => (lastPublishedPanelState?.rows ?? []).some((row) => row.id === sessionId),
+    // Which sites each profile is signed in to, as the Mac app reports them: agents are told with each tab.
+    signIns: cachedBrowserSignIns(),
     log,
   });
   // A session that ended a day ago and more takes its tabs with it; checked now and then, never on the publish path.
