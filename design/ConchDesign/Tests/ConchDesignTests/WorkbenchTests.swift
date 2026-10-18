@@ -123,21 +123,88 @@ final class WorkbenchTests: XCTestCase {
         XCTAssertTrue(words.contains("open a tab of your own with browser_open"))
     }
 
-    /// An agent's work brings its tab forward only while the user watches: the session in view, another of its browser
-    /// tabs shown, and the Workdesk untouched for a few seconds. Never from a deliverable, files or shell, never another
-    /// session's, never a paused tab, never the one already shown.
-    func testAnAgentsWorkTakesTheWorkdeskOnlyFromSomeoneWatchingAnotherOfItsTabs() {
+    /// An agent's work brings its tab forward only while the user watches: the session in view, the Workdesk on screen
+    /// showing another of its browser tabs or a deliverable, and untouched for a few seconds. Never the files, the shell
+    /// or the terminal, never from the conversation alone, never another session's, never a paused tab, never the one
+    /// already shown.
+    func testAnAgentsWorkTakesTheWorkdeskOnlyFromSomeoneWatching() {
         let now = Date(timeIntervalSince1970: 1_000)
         let working = tab("b", session: "s1")
-        XCTAssertTrue(Workbench.follows(working, viewing: "s1", shown: "a", lastTouch: nil, now: now))
-        XCTAssertTrue(Workbench.follows(working, viewing: "s1", shown: "a", lastTouch: now.addingTimeInterval(-Workbench.followQuiet), now: now))
-        XCTAssertFalse(Workbench.follows(working, viewing: "s1", shown: "a", lastTouch: now.addingTimeInterval(-1), now: now), "touched a second ago")
-        XCTAssertFalse(Workbench.follows(working, viewing: "s1", shown: nil, lastTouch: nil, now: now), "a deliverable, files or shell is shown")
-        XCTAssertFalse(Workbench.follows(working, viewing: "s1", shown: "b", lastTouch: nil, now: now), "already shown")
-        XCTAssertFalse(Workbench.follows(working, viewing: "s2", shown: "a", lastTouch: nil, now: now), "another session's")
-        XCTAssertFalse(Workbench.follows(working, viewing: nil, shown: "a", lastTouch: nil, now: now))
-        XCTAssertFalse(Workbench.follows(working.with(paused: true), viewing: "s1", shown: "a", lastTouch: nil, now: now))
+        XCTAssertTrue(Workbench.follows(working, viewing: "s1", front: .browser("a"), lastTouch: nil, now: now))
+        XCTAssertTrue(Workbench.follows(working, viewing: "s1", front: .browser("a"), lastTouch: now.addingTimeInterval(-Workbench.followQuiet), now: now))
+        XCTAssertFalse(Workbench.follows(working, viewing: "s1", front: .browser("a"), lastTouch: now.addingTimeInterval(-1), now: now), "touched a second ago")
+        XCTAssertFalse(Workbench.follows(working, viewing: "s1", front: .place, lastTouch: nil, now: now), "the files, the shell or the terminal")
+        XCTAssertFalse(Workbench.follows(working, viewing: "s1", front: nil, lastTouch: nil, now: now), "the conversation alone: the stage never moves for it")
+        XCTAssertFalse(Workbench.follows(working, viewing: "s1", front: .browser("b"), lastTouch: nil, now: now), "already shown")
+        XCTAssertFalse(Workbench.follows(working, viewing: "s2", front: .browser("a"), lastTouch: nil, now: now), "another session's")
+        XCTAssertFalse(Workbench.follows(working, viewing: nil, front: .browser("a"), lastTouch: nil, now: now))
+        XCTAssertFalse(Workbench.follows(working.with(paused: true), viewing: "s1", front: .browser("a"), lastTouch: nil, now: now))
         XCTAssertEqual(Workbench.followQuiet, 5)
+    }
+
+    /// 2026-10-18: over a deliverable too, once the user has left the Workdesk alone for a few seconds, unless the
+    /// deliverable was put in front of him (filed, or opened) within `deliverableHold`. Settings › Browser's "Bring the
+    /// agent's tab forward" turns it all off.
+    func testAnAgentsWorkComesOverADeliverableUnlessItWasJustShown() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let working = tab("b", session: "s1")
+        XCTAssertTrue(Workbench.follows(working, viewing: "s1", front: .deliverable, lastTouch: nil, now: now))
+        XCTAssertTrue(Workbench.follows(working, viewing: "s1", front: .deliverable, lastTouch: nil, deliverableSince: now.addingTimeInterval(-Workbench.deliverableHold), now: now))
+        XCTAssertFalse(Workbench.follows(working, viewing: "s1", front: .deliverable, lastTouch: nil, deliverableSince: now.addingTimeInterval(-29), now: now), "filed or opened 29 s ago")
+        XCTAssertFalse(Workbench.follows(working, viewing: "s1", front: .deliverable, lastTouch: now.addingTimeInterval(-2), deliverableSince: now.addingTimeInterval(-300), now: now), "reading it: touched 2 s ago")
+        XCTAssertFalse(Workbench.follows(working, viewing: "s1", front: .browser("a"), lastTouch: nil, enabled: false, now: now), "following turned off")
+        XCTAssertFalse(Workbench.follows(working, viewing: "s1", front: .deliverable, lastTouch: nil, enabled: false, now: now))
+        // A tab in front that needs the user is his until he answers it.
+        XCTAssertFalse(Workbench.follows(working, viewing: "s1", front: .browser("a"), frontNeedsYou: true, lastTouch: nil, now: now))
+        XCTAssertEqual(Workbench.deliverableHold, 30)
+        XCTAssertEqual(Workbench.followSettingKey, "conch.workbench.followAgent")
+    }
+
+    /// A tab whose agent asked the user to act in it takes the stage: over anything the Workdesk shows, and from the
+    /// conversation alone by opening the Workdesk beside it, whatever the follow setting says. Not while the user's hand
+    /// is on the Workdesk (or, with it off screen, typing): then it waits until he has been quiet for `followQuiet`.
+    func testATabThatNeedsTheUserTakesTheStageWhenHesQuiet() {
+        let now = Date(timeIntervalSince1970: 20_000)
+        let asked = tab("b", session: "s1").with(ask: Workbench.Tab.Ask(reason: "Sign in to Swatchbook", at: 19_999_000))
+        for front: Workbench.Front in [.browser("a"), .deliverable, .place] {
+            XCTAssertEqual(Workbench.summons(asked, viewing: "s1", front: front, lastTouch: nil, lastTyped: nil, now: now), .bringForward(opensStage: false), "\(front)")
+            // Typing in the composer doesn't hold it while the Workdesk is on screen: nothing under his hands moves.
+            XCTAssertEqual(Workbench.summons(asked, viewing: "s1", front: front, lastTouch: nil, lastTyped: now, now: now), .bringForward(opensStage: false))
+        }
+        XCTAssertEqual(Workbench.summons(asked, viewing: "s1", front: nil, lastTouch: nil, lastTyped: nil, now: now), .bringForward(opensStage: true), "from the conversation alone")
+        XCTAssertEqual(Workbench.summons(asked, viewing: "s1", front: .deliverable, lastTouch: now.addingTimeInterval(-2), lastTyped: nil, now: now), .wait(until: now.addingTimeInterval(3)))
+        XCTAssertEqual(Workbench.summons(asked, viewing: "s1", front: nil, lastTouch: nil, lastTyped: now.addingTimeInterval(-1), now: now), .wait(until: now.addingTimeInterval(4)), "typing with the Workdesk off screen")
+        XCTAssertEqual(Workbench.summons(asked, viewing: "s1", front: .deliverable, lastTouch: now.addingTimeInterval(-5), lastTyped: nil, now: now), .bringForward(opensStage: false))
+        XCTAssertEqual(Workbench.summons(asked, viewing: "s1", front: .browser("b"), lastTouch: nil, lastTyped: nil, now: now), .stay, "already in front")
+        XCTAssertEqual(Workbench.summons(asked, viewing: "s2", front: .deliverable, lastTouch: nil, lastTyped: nil, now: now), .stay, "another session's: its row says so")
+        XCTAssertEqual(Workbench.summons(tab("b", session: "s1"), viewing: "s1", front: .deliverable, lastTouch: nil, lastTyped: nil, now: now), .stay, "nothing asked")
+        // Paused or not: the user holds the tab, and the agent asks him in it.
+        XCTAssertEqual(Workbench.summons(asked.with(paused: true), viewing: "s1", front: .deliverable, lastTouch: nil, lastTyped: nil, now: now), .bringForward(opensStage: false))
+    }
+
+    /// The session's newest ask is the one in front; each ask is brought forward once, by its key.
+    func testTheNewestAskOfASessionIsTheOneThatNeedsTheUser() {
+        let first = tab("a", session: "s1").with(ask: Workbench.Tab.Ask(reason: "Sign in", at: 5))
+        let second = tab("b", session: "s1").with(ask: Workbench.Tab.Ask(reason: "Approve the consent screen", at: 9))
+        let other = tab("c", session: "s2").with(ask: Workbench.Tab.Ask(reason: "Sign in", at: 12))
+        let tabs = [first, second, tab("d", session: "s1"), other]
+        XCTAssertEqual(Workbench.asking(in: tabs, session: "s1")?.id, "b")
+        XCTAssertEqual(Workbench.asking(in: tabs, session: "s2")?.id, "c")
+        XCTAssertNil(Workbench.asking(in: tabs, session: "s3"))
+        XCTAssertNil(Workbench.asking(in: tabs, session: nil))
+        XCTAssertEqual(second.askKey, "b@9")
+        XCTAssertNil(tab("d", session: "s1").askKey)
+        XCTAssertNotEqual(first.askKey, first.with(ask: Workbench.Tab.Ask(reason: "Sign in", at: 6)).askKey, "asked again is a new ask")
+        // Done hides it at once; pausing keeps it.
+        XCTAssertNil(second.with(ask: nil).ask)
+        XCTAssertEqual(second.with(paused: true).ask, second.ask)
+        XCTAssertEqual(second.with(ask: nil), tab("b", session: "s1"))
+    }
+
+    func testWhatTheTabTheRowAndThePasskeyNoticeSay() {
+        XCTAssertEqual(Workbench.askWords(agent: "Claude", reason: "Sign in to Swatchbook"), "Claude needs you · Sign in to Swatchbook")
+        XCTAssertEqual(Workbench.rowAskLine(reason: "Sign in to Swatchbook"), "Browser tab: Sign in to Swatchbook")
+        XCTAssertEqual(Workbench.passkeyWords, "Passkeys don't work in conch's browser yet · choose your password or another way to sign in")
     }
 
     func testATabAnAgentActedInHasItsDotUntilItIsShown() {

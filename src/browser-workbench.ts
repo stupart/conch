@@ -65,6 +65,10 @@ export const BROWSER_READ_TEXT_MAX = 12_000;
 export const BROWSER_READ_LINKS_MAX = 150;
 export const BROWSER_READ_BUTTONS_MAX = 100;
 export const BROWSER_READ_FIELDS_MAX = 100;
+/** The longest an agent's `browser_ask` reason may be: one short line, as the Workdesk shows it ("Sign in to Mobbin"). */
+export const BROWSER_ASK_REASON_MAX = 80;
+/** How often the daemon reads the sign-ins report again while an ask waits on a sign-in (`checkAsks`). */
+export const BROWSER_ASK_CHECK_MS = 2_000;
 
 /** The app's own deadline for each command, from the request; the daemon waits a few seconds past it. */
 export const BROWSER_OP_MS = { open: 30_000, read: 12_000, click: 15_000, type: 12_000, screenshot: 15_000 } as const;
@@ -77,7 +81,7 @@ const DAEMON_SLACK_MS = 5_000;
 export const BROWSER_KINDS = ["browser-profiles", "browser-command", "browser-answer", "browser-tab-event", "browser-tab-open"] as const;
 /** How long `browser-open` gives the lookup of its caller: inside the 15 s the shim waits (`BROWSER_OPEN_REPLY_MS`). */
 export const BROWSER_OPEN_RESOLVE_MS = 8_000;
-export const BROWSER_OPS = ["open", "read", "click", "type", "screenshot", "tabs", "close"] as const;
+export const BROWSER_OPS = ["open", "read", "click", "type", "screenshot", "tabs", "close", "ask"] as const;
 export type BrowserOp = (typeof BROWSER_OPS)[number];
 /** The commands the app runs against a page. */
 export type BrowserAppOp = keyof typeof BROWSER_OP_MS;
@@ -102,6 +106,47 @@ export interface BrowserTab {
   paused?: true;
   /** Epoch-ms the page last moved under anyone's hand (the app's report): with `usedAt`, what keeps a tab. */
   movedAt?: number;
+  /** Its agent asked the user to act in it (`browser_ask`): waiting until answered, then kept for the agent to read. */
+  ask?: BrowserAsk;
+}
+
+/**
+ * An agent's request that the user do something in a tab, in one short line ("Sign in to Mobbin"). Tyler, 2026-10-18,
+ * after an agent asked him to sign in to Mobbin in a tab of his Workdesk: "the tab didn't get any sort of emphasis and
+ * it was all the way on the left so i missed it". While it waits, the tab says "Needs you", comes forward in the Mac
+ * app (a direct request may take the stage), and the session's row says it needs him; the strip under its address bar
+ * has Done. It is answered by Done, or by conch seeing the tab's profile sign in to the site it was asked on, and its
+ * agent is told either way (`askAnsweredMessage`). The tab closing takes it with it; the agent's own click, type or open
+ * there withdraws it, since the agent is acting in the tab again.
+ */
+export interface BrowserAsk {
+  reason: string;
+  /** Epoch-ms it was asked. */
+  at: number;
+  /**
+   * The site the tab was on when it was asked, and whether its profile was signed in there then (absent: conch couldn't
+   * say). A sign-in seen there since answers it; a profile already signed in there never does, so Done is the answer.
+   */
+  site?: string;
+  signedIn?: boolean;
+  /** Answered: the user's Done, or a sign-in conch saw. */
+  done?: { at: number; by: BrowserAskAnswer };
+}
+
+export type BrowserAskAnswer = "user" | "sign-in";
+
+/** A tab as the sessions file carries it: its ask only while it waits, and only what the Mac app shows of it. */
+export type PublishedBrowserTab = Omit<BrowserTab, "ask"> & { ask?: { reason: string; at: number } };
+
+/**
+ * What the agent is told when the user has answered its ask: the composer's own send, as Approve's `Approved: …` is
+ * (review-approval.ts), so an agent that ended its turn to wait hears it as the user's word.
+ */
+export function askAnsweredMessage(tab: Pick<BrowserTab, "id">, ask: Pick<BrowserAsk, "reason" | "site">, by: BrowserAskAnswer): string {
+  const reason = ask.reason.trim().replace(/[.!?…]+$/, "");
+  return by === "user"
+    ? `Done: ${reason} (conch's browser, ${tab.id}).`
+    : `Signed in to ${ask.site ?? "the site"}: ${reason} (conch's browser, ${tab.id}).`;
 }
 
 /**
@@ -148,6 +193,8 @@ export type BrowserMessage =
     target?: BrowserTarget;
     text?: string;
     submit?: boolean;
+    /** ask: what the user is asked to do in the tab, one short line. */
+    reason?: string;
   }
   | { kind: "browser-answer"; request: string; ack?: true; error?: string; result?: Record<string, unknown> }
   | {
@@ -160,6 +207,8 @@ export type BrowserMessage =
     paused?: boolean;
     /** A tab he opened and hasn't sent anywhere, moved to another profile (by id or name). */
     profile?: string;
+    /** His Done on the strip under its address bar: what its agent asked of him there is done. */
+    askDone?: true;
   }
   /** Tyler's + in the Workdesk: a tab of his own for a session, blank (its address field waiting) or at `url`. */
   | { kind: "browser-tab-open"; sessionId: string; url?: string; profile?: string };
@@ -184,6 +233,8 @@ export interface BrowserTabView {
   signedIn?: boolean;
   /** Not signed in to it here, but these profiles are: open the page again with browser_open's profile set to one. */
   signedInOn?: string[];
+  /** Your last `browser_ask` in it, and whether the user has answered it (Done, or a sign-in conch saw). */
+  ask?: { reason: string; askedAt: string; state: "waiting" | "done" | "signed-in"; answeredAt?: string };
 }
 
 export type BrowserReply =
@@ -219,6 +270,14 @@ export const isBrowserTabId = (value: unknown): value is string => typeof value 
 
 function oneLine(value: unknown, max: number): string | null {
   return typeof value === "string" && value.trim() && value.length <= max && !CONTROL.test(value) ? value : null;
+}
+
+/** An ask's reason: one printable line of 1 to `BROWSER_ASK_REASON_MAX` characters, trimmed. */
+export function askReason(value: unknown): { reason: string } | { error: string } {
+  const reason = typeof value === "string" ? oneLine(value.trim(), BROWSER_ASK_REASON_MAX) : null;
+  return reason
+    ? { reason }
+    : { error: `reason must be one short line of 1 to ${BROWSER_ASK_REASON_MAX} printable characters, saying what the user is to do in the tab ("Sign in to Mobbin")` };
 }
 
 /** `target`: a string (any of ref, selector or text), or exactly one of `{ref}`, `{selector}`, `{text}`. */
@@ -277,6 +336,12 @@ export function decodeBrowserMessage(value: unknown): BrowserMessage | { refused
         if (value.submit !== undefined && typeof value.submit !== "boolean") return no("submit must be true or false");
         text = value.text;
       }
+      let reason: string | undefined;
+      if (op === "ask") {
+        const parsed = askReason(value.reason);
+        if ("error" in parsed) return no(parsed.error);
+        reason = parsed.reason;
+      }
       return {
         kind: "browser-command",
         sessionId,
@@ -287,6 +352,7 @@ export function decodeBrowserMessage(value: unknown): BrowserMessage | { refused
         ...(target ? { target } : {}),
         ...(text !== undefined ? { text } : {}),
         ...(op === "type" && value.submit === true ? { submit: true } : {}),
+        ...(reason !== undefined ? { reason } : {}),
       };
     }
     case "browser-answer": {
@@ -312,6 +378,7 @@ export function decodeBrowserMessage(value: unknown): BrowserMessage | { refused
         ...(value.closed === true ? { closed: true as const } : {}),
         ...(typeof value.paused === "boolean" ? { paused: value.paused } : {}),
         ...(typeof value.profile === "string" ? { profile: value.profile } : {}),
+        ...(value.askDone === true ? { askDone: true as const } : {}),
       };
     }
     case "browser-tab-open": {
@@ -417,6 +484,26 @@ function lastTouched(tab: Pick<BrowserTab, "usedAt" | "movedAt">): number {
   return Math.max(tab.usedAt, tab.movedAt ?? 0);
 }
 
+const SITE = /^[a-z0-9_-]{1,63}(\.[a-z0-9_-]{1,63})+$/;
+
+/** An ask read back from disk, each field checked; undefined for anything that isn't one. */
+function loadedAsk(value: unknown): BrowserAsk | undefined {
+  if (!isRecord(value)) return undefined;
+  const parsed = askReason(value.reason);
+  if ("error" in parsed || typeof value.at !== "number" || !Number.isFinite(value.at)) return undefined;
+  const done = isRecord(value.done) && typeof value.done.at === "number" && Number.isFinite(value.done.at)
+    && (value.done.by === "user" || value.done.by === "sign-in")
+    ? { at: value.done.at, by: value.done.by as BrowserAskAnswer }
+    : undefined;
+  return {
+    reason: parsed.reason,
+    at: value.at,
+    ...(typeof value.site === "string" && SITE.test(value.site) ? { site: value.site } : {}),
+    ...(typeof value.signedIn === "boolean" ? { signedIn: value.signedIn } : {}),
+    ...(done ? { done } : {}),
+  };
+}
+
 interface PendingCommand {
   request: BrowserAppRequest;
   /** What an agent types: handed over in the reply to the app's ack, never published. */
@@ -508,6 +595,7 @@ export class BrowserWorkbench {
       const usedAt = epoch(entry.usedAt) ?? 0;
       const openedAt = epoch(entry.openedAt) ?? usedAt;
       const movedAt = epoch(entry.movedAt);
+      const ask = loadedAsk(entry.ask);
       const tab: BrowserTab = {
         id: entry.id,
         sessionId: sessionId ?? "",
@@ -519,6 +607,7 @@ export class BrowserWorkbench {
         ...(opener ? { opener } : {}),
         ...(entry.paused === true ? { paused: true as const } : {}),
         ...(movedAt !== undefined ? { movedAt } : {}),
+        ...(ask ? { ask } : {}),
       };
       if (url === null || !sessionId || !isBrowserProfileId(entry.profile) || now - lastTouched(tab) > BROWSER_TAB_KEPT_MS) continue;
       if (tabs.filter((kept) => kept.sessionId === sessionId).length >= BROWSER_TABS_PER_SESSION) continue;
@@ -537,12 +626,15 @@ export class BrowserWorkbench {
     this.#options.publish();
   }
 
-  /** What the sessions file carries: the profiles and the tabs always (so the app knows this daemon has a browser), and the commands waiting. */
-  published(): { browserProfiles: BrowserProfile[]; browserTabs: BrowserTab[]; browserRequests?: BrowserAppRequest[] } {
+  /**
+   * What the sessions file carries: the profiles and the tabs always (so the app knows this daemon has a browser), and
+   * the commands waiting. A tab's ask only while it waits, as its reason and when: what the Workdesk shows.
+   */
+  published(): { browserProfiles: BrowserProfile[]; browserTabs: PublishedBrowserTab[]; browserRequests?: BrowserAppRequest[] } {
     const requests = [...this.#pending.values()].map((pending) => pending.request);
     return {
       browserProfiles: this.#options.profiles(),
-      browserTabs: this.#tabs.map((tab) => ({ ...tab })),
+      browserTabs: this.#tabs.map(({ ask, ...tab }) => ({ ...tab, ...(ask && !ask.done ? { ask: { reason: ask.reason, at: ask.at } } : {}) })),
       ...(requests.length ? { browserRequests: requests } : {}),
     };
   }
@@ -612,6 +704,46 @@ export class BrowserWorkbench {
     tab.profile = profile;
     this.#changed();
     return { ok: true };
+  }
+
+  /**
+   * Its agent asks the user to do something in a tab (`browser_ask`): the reason, when, and the site and sign-in it was
+   * asked on, which say whether a sign-in seen later answers it. A new ask replaces the last, answered or not.
+   */
+  askUser(id: string, reason: string, on: { site?: string; signedIn?: boolean } = {}): BrowserAsk | undefined {
+    const tab = this.tab(id);
+    if (!tab) return undefined;
+    tab.ask = {
+      reason,
+      at: this.#options.now(),
+      ...(on.site ? { site: on.site } : {}),
+      ...(on.signedIn !== undefined ? { signedIn: on.signedIn } : {}),
+    };
+    this.#changed();
+    return { ...tab.ask };
+  }
+
+  /** The ask waiting in a tab, answered: by the user's Done, or by a sign-in conch saw. Undefined when none waited. */
+  answerAsk(id: string, by: BrowserAskAnswer): BrowserAsk | undefined {
+    const ask = this.tab(id)?.ask;
+    if (!ask || ask.done) return undefined;
+    ask.done = { at: this.#options.now(), by };
+    this.#changed();
+    return { ...ask };
+  }
+
+  /** The agent acting in the tab again (its click, type or open): its waiting ask is withdrawn, nobody told. */
+  withdrawAsk(id: string): boolean {
+    const tab = this.tab(id);
+    if (!tab?.ask || tab.ask.done) return false;
+    delete tab.ask;
+    this.#changed();
+    return true;
+  }
+
+  /** The tabs whose ask still waits, oldest first. */
+  asking(): BrowserTab[] {
+    return this.#tabs.filter((tab) => tab.ask && !tab.ask.done).map((tab) => ({ ...tab, ask: { ...tab.ask! } }));
   }
 
   /** Take a tab away: the app closes its page when it is gone from the sessions file. */
@@ -780,11 +912,22 @@ export interface BrowserServiceDependencies {
   liveSession?(sessionId: string): boolean;
   /** Each profile's signed-in sites, as the Mac app last reported them (`cachedBrowserSignIns`); absent, never said. */
   signIns?(): Map<string, BrowserProfileSignIns>;
+  /**
+   * Say something to a session's agent as the user's own word: the composer's send (`inject`), as Approve's message
+   * goes. How an agent waiting on its `browser_ask` hears it was answered; absent, it reads it on browser_tabs alone.
+   */
+  tell?(sessionId: string, text: string): void;
   log?(line: string): void;
 }
 
 export interface BrowserService {
   handle(message: BrowserMessage): Promise<BrowserReply>;
+  /**
+   * The asks waiting on a sign-in, against the sign-ins report: one whose tab's profile is now signed in to the site it
+   * was asked on is answered, and its agent told. Cheap when nothing waits; the daemon calls it every
+   * `BROWSER_ASK_CHECK_MS`.
+   */
+  checkAsks(): void;
 }
 
 /** Every Workbench kind, answered: the profiles, agent B's `open`, an agent's command, the app's answers and its tabs' news. */
@@ -803,17 +946,49 @@ export function createBrowserService(deps: BrowserServiceDependencies): BrowserS
       ...(tab.opener === "user" ? { openedBy: "user" as const } : {}),
       ...(tab.paused ? { paused: true as const } : {}),
       ...signedIn(tab),
+      ...(tab.ask ? { ask: askView(tab.ask) } : {}),
     };
+  };
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const askView = (ask: BrowserAsk): NonNullable<BrowserTabView["ask"]> => ({
+    reason: ask.reason,
+    askedAt: iso(ask.at),
+    state: !ask.done ? "waiting" : ask.done.by === "user" ? "done" : "signed-in",
+    ...(ask.done ? { answeredAt: iso(ask.done.at) } : {}),
+  });
+  /** The site a tab is on, as the sign-ins report names sites; undefined for a blank tab or an address that isn't a site. */
+  const siteOf = (tab: Pick<BrowserTab, "url">): string | undefined => {
+    try {
+      return siteOfHost(new URL(tab.url).hostname);
+    } catch {
+      return undefined;
+    }
+  };
+  /** Whether a profile is signed in to a site, by the report; undefined when there is no report for the profile. */
+  const signedInTo = (profile: string, site: string): boolean | undefined => {
+    if (!deps.signIns) return undefined;
+    let report: Map<string, BrowserProfileSignIns>;
+    try {
+      report = deps.signIns();
+    } catch {
+      return undefined;
+    }
+    const sites = report.get(profile)?.sites;
+    return sites ? sites.some((known) => known.domain === site) : undefined;
+  };
+  /** An ask answered: its agent told, as the user's word, and the log says so. */
+  const answered = (tab: BrowserTab, ask: BrowserAsk, by: BrowserAskAnswer) => {
+    deps.log?.(`browser: ${tab.id}'s ask ("${ask.reason}") answered by ${by === "user" ? "the user's Done" : `a sign-in to ${ask.site}`}`);
+    try {
+      deps.tell?.(tab.sessionId, askAnsweredMessage(tab, ask, by));
+    } catch (error) {
+      deps.log?.(`browser: couldn't tell ${tab.sessionId} its ask was answered: ${error instanceof Error ? error.message : String(error)}`);
+    }
   };
   /** Whether the tab's profile is signed in to its site, and which others are when it isn't. Site names only. */
   const signedIn = (tab: BrowserTab): Pick<BrowserTabView, "signedIn" | "signedInOn"> => {
     if (!deps.signIns) return {};
-    let site: string | undefined;
-    try {
-      site = siteOfHost(new URL(tab.url).hostname);
-    } catch {
-      return {};
-    }
+    const site = siteOf(tab);
     if (!site) return {};
     let report: Map<string, BrowserProfileSignIns>;
     try {
@@ -835,6 +1010,16 @@ export function createBrowserService(deps: BrowserServiceDependencies): BrowserS
   };
 
   return {
+    checkAsks() {
+      if (!deps.signIns) return;
+      const waiting = workbench.asking().filter((tab) => tab.ask!.site && tab.ask!.signedIn !== true);
+      for (const tab of waiting) {
+        if (signedInTo(tab.profile, tab.ask!.site!) !== true) continue;
+        const ask = workbench.answerAsk(tab.id, "sign-in");
+        if (ask) answered(tab, ask, "sign-in");
+      }
+    },
+
     async handle(message) {
       switch (message.kind) {
         case "browser-profiles": {
@@ -884,6 +1069,14 @@ export function createBrowserService(deps: BrowserServiceDependencies): BrowserS
             const moved = workbench.setProfile(message.tab, profile.id);
             if (!moved.ok) return fail(moved.error);
           }
+          // His Done on what its agent asked of him there: answered, and the agent told. A second press, or one on an
+          // ask already answered by a sign-in, says nothing again.
+          if (message.askDone && !message.closed) {
+            const tab = workbench.tab(message.tab);
+            if (!tab) return fail("no such tab");
+            const ask = workbench.answerAsk(tab.id, "user");
+            if (ask) answered(tab, ask, "user");
+          }
           return workbench.tabEvent(message) ? { kind: "browser-ack" } : fail("no such tab");
         }
         case "browser-tab-open": {
@@ -911,6 +1104,26 @@ export function createBrowserService(deps: BrowserServiceDependencies): BrowserS
       const current = workbench.current(sessionId);
       return { kind: "browser-result", op, tabs: workbench.tabsOf(sessionId).map((tab) => view(tab, current)) };
     }
+    if (op === "ask") {
+      // A word to the user, not a command in the page: it reaches a tab they paused agents in too, since they hold it.
+      const tab = own ?? workbench.current(sessionId);
+      if (!tab) return fail("this session has no browser tab yet; open one with browser_open, then ask in it");
+      const site = siteOf(tab);
+      const signedIn = site ? signedInTo(tab.profile, site) : undefined;
+      workbench.askUser(tab.id, message.reason!, { ...(site ? { site } : {}), ...(signedIn !== undefined ? { signedIn } : {}) });
+      deps.log?.(`browser: ${tab.id} asks the user: "${message.reason}"`);
+      const now = workbench.tab(tab.id) ?? tab;
+      return {
+        kind: "browser-result",
+        op,
+        tab: view(now, workbench.current(sessionId)),
+        result: {
+          asked: message.reason!,
+          ...(deps.appRunning && !deps.appRunning() ? { appClosed: true } : {}),
+          ...(site && signedIn !== true ? { answersOnSignIn: site } : {}),
+        },
+      };
+    }
     // Tyler's hand on it: nothing an agent sends reaches a tab he paused agents in, closing it included.
     if (own?.paused) return fail(pausedRefusal(own.id));
     if (op === "close") {
@@ -924,6 +1137,7 @@ export function createBrowserService(deps: BrowserServiceDependencies): BrowserS
         if (named && named.id !== own.profile) {
           return fail(`tab ${own.id} is on another profile; a tab keeps its profile, so open a new tab for ${named.name}`);
         }
+        workbench.withdrawAsk(own.id);
         return run(own, { op: "open", url: message.url! });
       }
       if (deps.appRunning && !deps.appRunning()) return fail(BROWSER_APP_DOWN);
@@ -938,6 +1152,8 @@ export function createBrowserService(deps: BrowserServiceDependencies): BrowserS
     const tab = own ?? workbench.current(sessionId);
     if (!tab) return fail("this session has no browser tab yet; open one with browser_open");
     if (tab.paused) return fail(pausedRefusal(tab.id));
+    // Acting in the tab again, it no longer waits on the user there. Reading it or looking at it isn't acting.
+    if (op === "click" || op === "type") workbench.withdrawAsk(tab.id);
     return run(tab, {
       op,
       ...(message.target ? { target: message.target } : {}),

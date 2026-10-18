@@ -156,11 +156,13 @@ describe("one source for the agent-facing instructions", () => {
     expect(told).toContain("a Workdesk of typed items beside the conversation: deliverables, browser tabs, files, shell, terminal");
     expect(told).toContain("Show your work there: results with `review_to_front`, pages with `browser_open`.");
     expect(told).toContain("Browse for the user with conch’s `browser_*` tools so they can watch in the Workdesk; other browser tools are fine when they ask or the task needs them.");
-    expect(told).toContain("At a sign-in, ask them to sign in in the tab; never type passwords.");
+    expect(told).toContain("At a sign-in, ask them to sign in in the tab with `browser_ask`; never type passwords.");
     expect(told).toContain("Show an Atlas page you read or wrote that matters to the user with `atlas_show`.");
     const skill = renderSkillMd();
     expect(skill).toContain("## The Workdesk");
     expect(skill).toContain("**Signing in is the user's.**");
+    expect(skill).toContain("stop and ask in the tab itself: `browser_ask {tab?,\n    reason}`");
+    expect(skill).toContain("Passkeys don't work in conch's browser yet");
     expect(skill).toContain("**Pause agents.**");
     expect(skill).toContain("- **Show an Atlas page** — `atlas_show {path, markdown, summary?}`");
     expect(skill).toContain('key:\n  "atlas:<path>"}`');

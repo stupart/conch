@@ -68,8 +68,8 @@ interface SmokeResult {
   error?: string;
 }
 
-/** conch_* and review_* (16), the Workdesk browser's browser_* (7), and atlas_show (1). */
-const EXPECTED_MCP_TOOL_COUNT = 24;
+/** conch_* and review_* (16), the Workdesk browser's browser_* (8), and atlas_show (1). */
+const EXPECTED_MCP_TOOL_COUNT = 25;
 
 // These static text imports are bundled into `bun build --compile` releases.
 // A Homebrew install has no source checkout to copy from, so the installer

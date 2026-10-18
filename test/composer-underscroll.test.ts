@@ -72,8 +72,9 @@ describe("the composer floats over the transcript", () => {
     expect(split).toMatch(/ZStack\(alignment: \.bottom\) \{\s*conversationBody\(for: reviewRow\)\s*if cardOverConversation \{\s*floatingComposer\(for: reviewRow\)\s*\}\s*\}\s*\.frame\(width: conversationWidth\)/);
     // Without room (the split dragged nearly shut), it floats over the stage and the work ends
     // above it, as before: the card must not leave with a column that has gone.
+    // The Workdesk's touch area (2026-10-18) sits on the work half itself, above the room left for the card.
     expect(split).toMatch(
-      /workContent\(for: reviewRow\)\s*\.frame\(maxWidth: \.infinity, maxHeight: \.infinity\)\s*\.padding\(\.bottom, cardOverConversation \? 0 : composerHeight\)/,
+      /workContent\(for: reviewRow\)\s*\.frame\(maxWidth: \.infinity, maxHeight: \.infinity\)\s*(?:\.background\(WorkdeskTouchArea\(store: workbench\)\)\s*)?\.padding\(\.bottom, cardOverConversation \? 0 : composerHeight\)/,
     );
     expect(split).toMatch(/if !cardOverConversation \{\s*floatingComposer\(for: reviewRow\)\s*\}/);
   });
