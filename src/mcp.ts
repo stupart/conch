@@ -12,6 +12,7 @@ import {
   type ProviderRenameResult,
 } from "./provider-rename.ts";
 import {
+  AmbiguousSessionError,
   findSessionByName,
   findTranscript,
   registrySnapshot,
@@ -26,6 +27,7 @@ import {
   getSettingDescriptor,
   parseSetting,
   sendControlMessage,
+  SETTING_KEYS,
   type ConfigAck,
   type ConfigSnapshot,
   type ControlMessage,
@@ -38,6 +40,7 @@ import { publishForVerdict, REVIEW_VERDICT_TIMEOUT_MS, type PublishReply } from 
 import { isPageAccess } from "./page-access.ts";
 import { MARK_PIXELS_MAX, MARK_UNITS, scenePixelsToFractions } from "./mark-pixels.ts";
 import { RelabelHints, type LabelSource } from "./label-drift.ts";
+import { backendOfClient, McpCallLog, type McpCaller, type McpCallObservation, type McpCallOutcome } from "./mcp-usage.ts";
 
 /** A session works in a few folders, not a filesystem. */
 const WORKING_FOLDERS_MAX = 8;
@@ -819,6 +822,30 @@ const BROWSER_TARGET_SCHEMA = {
 
 export const MCP_TOOLS = buildMcpTools();
 
+/**
+ * The tools' own words — their names, argument names, enum values, setting keys. An argument holding one of these is
+ * not the user's text, so the call log leaves it in an error message rather than scrubbing "url" out of "url must be…".
+ */
+export function mcpToolVocabulary(tools: readonly McpToolDefinition[] = MCP_TOOLS): Set<string> {
+  const words = new Set<string>([...SETTING_KEYS, ...AGENT_TUNABLE_SETTINGS]);
+  const walk = (schema: JsonSchema | undefined) => {
+    if (!schema) return;
+    for (const value of schema.enum ?? []) if (typeof value === "string") words.add(value);
+    if (typeof schema.const === "string") words.add(schema.const);
+    for (const [name, child] of Object.entries(schema.properties ?? {})) {
+      words.add(name);
+      walk(child);
+    }
+    for (const child of schema.anyOf ?? []) walk(child);
+    walk(schema.items);
+  };
+  for (const tool of tools) {
+    words.add(tool.name);
+    walk(tool.inputSchema);
+  }
+  return words;
+}
+
 export type McpToolName = (typeof MCP_TOOLS)[number]["name"];
 /** `meta` is the call's `params._meta`, which a Codex client fills with the calling thread. */
 export type McpToolHandler = (argumentsValue: unknown, meta?: unknown) => Promise<unknown>;
@@ -915,11 +942,37 @@ export const defaultMcpDependencies: McpDependencies = {
   browser: requestBrowser,
 };
 
+type ErrorOutcome = Exclude<McpCallOutcome, "ok">;
+
+/**
+ * An error the agent is told as a refusal or a bad argument rather than conch breaking. `outcome` is only what the call
+ * log counts it as (mcp-usage.ts): `input-error`, fix the arguments; `refused`, conch understood and declined — the
+ * caller unverified, another session's, not an agent's to change — so the same arguments could succeed from elsewhere
+ * or later. A pre-flight that says every error as `refused: …` keeps each one's own (`asRefusal`), which is how a
+ * broken registry read there still counts as `failed`.
+ */
 class ToolInputError extends Error {
-  constructor(message: string) {
+  constructor(message: string, readonly outcome: ErrorOutcome = "input-error") {
     super(message);
     this.name = "ToolInputError";
   }
+}
+
+/** A refusal, as the call log counts it. */
+const refusal = (message: string) => new ToolInputError(message, "refused");
+
+/** Any error said as a refusal (`refused: …`), as the browser, capture and publish pre-flights say theirs. */
+function asRefusal(error: unknown): ToolInputError {
+  const said = errorMessage(error);
+  return new ToolInputError(said.startsWith("refused:") ? said : `refused: ${said}`, callOutcome(error));
+}
+
+/** How a call that threw ended, for the call log. */
+export function callOutcome(error: unknown): ErrorOutcome {
+  if (error instanceof ToolInputError) return error.outcome;
+  // A name that matches several sessions is the agent's to narrow.
+  if (error instanceof AmbiguousSessionError) return "input-error";
+  return "failed";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1071,7 +1124,7 @@ async function resolveSession(
   dependencies: McpDependencies,
 ): Promise<SessionInfo> {
   const session = await dependencies.findSessionByName(config.claudeDir, query.trim());
-  if (!session) throw new Error(`no live session matching "${query.trim()}"`);
+  if (!session) throw new ToolInputError(`no live session matching "${query.trim()}"`);
   return session;
 }
 
@@ -1146,6 +1199,37 @@ function codexCallingThread(meta: unknown): string | undefined {
   return isRecord(turn) && typeof turn.thread_id === "string" && turn.thread_id ? turn.thread_id : undefined;
 }
 
+/**
+ * Who a call came from, for the call log: the session `callerBinding` verifies and its backend, else the thread a Codex
+ * client names. Asked after the call is answered and kept for `ttlMs`, so the log costs at most one registry read a
+ * minute; a /clear inside that minute is logged under the session it left.
+ */
+export function mcpCallCaller(
+  config: () => McpRuntimeConfig,
+  dependencies: McpDependencies = defaultMcpDependencies,
+  ttlMs = 60_000,
+): (meta: unknown) => Promise<McpCaller> {
+  const cache = new Map<string, { at: number; caller: Promise<McpCaller> }>();
+  return (meta) => {
+    const thread = codexCallingThread(meta);
+    const claimed: McpCaller = thread ? { session: thread, backend: "codex" } : {};
+    const key = thread ?? "";
+    const now = dependencies.now();
+    const hit = cache.get(key);
+    if (hit && now - hit.at < ttlMs) return hit.caller;
+    const caller = (async (): Promise<McpCaller> => {
+      const binding = await callerBinding(config(), dependencies, meta);
+      return binding.status === "verified"
+        ? { session: binding.session.sessionId, backend: binding.session.backend ?? "claude" }
+        : claimed;
+    })().catch(() => claimed);
+    cache.set(key, { at: now, caller });
+    // An app-server's threads come and go; the oldest goes first.
+    if (cache.size > 64) cache.delete(cache.keys().next().value!);
+    return caller;
+  };
+}
+
 /** Your own session, for a tool whose `session` was omitted; refused when conch can't verify it. */
 async function ownSession(
   tool: string,
@@ -1155,7 +1239,7 @@ async function ownSession(
 ): Promise<SessionInfo> {
   const binding = await callerBinding(config, dependencies, meta);
   if (binding.status === "verified") return binding.session;
-  throw new ToolInputError(
+  throw refusal(
     `${tool} without \`session\` means your own session, and conch cannot verify which session is`
       + ` calling: ${binding.reason}. Pass \`session\` with an id from conch_sessions.`,
   );
@@ -1179,7 +1263,7 @@ async function requiredReviewSession(
   const named = typeof value === "string" ? value.trim() : "";
   const binding = await callerBinding(config, dependencies, meta);
   if (binding.status !== "verified") {
-    throw new ToolInputError(
+    throw refusal(
       `conch cannot verify which session is calling (${binding.reason}), so it will not attribute`
         + " a publication to any session, including one you name. Leave the result in your reply,"
         + " or end your final reply with its own line: `conch:review <one-line summary> | <link-or-path>`.",
@@ -1190,7 +1274,7 @@ async function requiredReviewSession(
   // Naming yourself is fine; a name that is anyone else, or not only you, is not.
   const requested = await dependencies.findSessionByName(config.claudeDir, named).catch(() => null);
   if (requested?.sessionId === caller.sessionId) return caller;
-  throw new ToolInputError(
+  throw refusal(
     `a session can only surface its own work — you are "`
       + `${dependencies.sessionLabel(caller, caller.cwd)}" (${caller.sessionId}), and "${named}" `
       + (requested ? `is "${dependencies.sessionLabel(requested, requested.cwd)}"` : "does not name you alone")
@@ -1207,7 +1291,7 @@ async function verifiedCaller(
 ): Promise<SessionInfo> {
   const binding = await callerBinding(config, dependencies, meta);
   if (binding.status === "verified") return binding.session;
-  throw new ToolInputError(`refused: conch cannot verify which session is calling (${binding.reason}), so it will not ${what}`);
+  throw refusal(`refused: conch cannot verify which session is calling (${binding.reason}), so it will not ${what}`);
 }
 
 /** One held filing as the daemon publishes it (`rows[].reviews`), read defensively: the file is not ours. */
@@ -1423,8 +1507,7 @@ export function createMcpToolHandlers(
       const session = await verifiedCaller(`use conch's browser for any session (${tool} tabs are their session's own)`, config, dependencies, meta);
       return { kind: "browser-command", sessionId: session.sessionId, ...command, ...(tab ? { tab } : {}) } as BrowserMessage;
     })().catch((error) => {
-      const said = errorMessage(error);
-      throw new ToolInputError(said.startsWith("refused:") ? said : `refused: ${said}`);
+      throw asRefusal(error);
     });
     const sent = await (dependencies.browser ?? requestBrowser)(config.socketPath, message, BROWSER_REPLY_MS);
     if (!sent.ok) {
@@ -1441,7 +1524,7 @@ export function createMcpToolHandlers(
     if (request.session === "self") {
       const binding = await callerBinding(config, dependencies, meta);
       if (binding.status !== "verified") {
-        throw new ToolInputError("conch cannot verify which session is calling; pass an explicit recorded session ID or exact live ID from conch_sessions");
+        throw refusal("conch cannot verify which session is calling; pass an explicit recorded session ID or exact live ID from conch_sessions");
       }
       // The daemon maps this exact live/window ID to its indexed record. No transcript read here.
       request = { ...request, session: binding.session.sessionId };
@@ -1569,7 +1652,7 @@ export function createMcpToolHandlers(
         );
       }
       if (dependencies.now() < speakingUntil) {
-        throw new ToolInputError(
+        throw refusal(
           "already speaking for this session — wait for it to finish, or put "
             + "the words in your reply instead.",
         );
@@ -1623,7 +1706,7 @@ export function createMcpToolHandlers(
       // setSessionPaused, never to the global flip.
       const binding = query ? undefined : await callerBinding(config, dependencies, meta);
       if (binding?.status === "unverified") {
-        throw new ToolInputError(
+        throw refusal(
           `${action} needs a session and this server has no calling session it can verify`
             + ` (${binding.reason}) — pass \`session\` to name one, or \`scope: "all"\` to switch every `
             + `session (which the user can also do with \`conch ${action}\`)`,
@@ -1699,7 +1782,7 @@ export function createMcpToolHandlers(
       // session gets to say.
       const binding = await callerBinding(config, dependencies, meta);
       if (binding.status !== "verified") {
-        throw new ToolInputError(
+        throw refusal(
           `refused: conch cannot verify which session is calling (${binding.reason}), so it will not record where any session works`,
         );
       }
@@ -1743,7 +1826,7 @@ export function createMcpToolHandlers(
         && !(AGENT_TUNABLE_SETTINGS as readonly unknown[]).includes(argumentsObject.key)
       ) {
         const key = String(argumentsObject.key);
-        throw new ToolInputError(
+        throw refusal(
           `"${key}" is not a setting an agent may change; agents may set only `
             + `${AGENT_TUNABLE_SETTINGS.join(", ")}. Ask the user to run `
             + `\`conch ${shouldUnset ? `unset ${key}` : `set ${key} <value>`}\` themselves.`,
@@ -1953,7 +2036,7 @@ export function createMcpToolHandlers(
           transcriptPath,
         };
       })().catch((error) => {
-        throw new ToolInputError(`refused: ${errorMessage(error)}`);
+        throw asRefusal(error);
       });
       const label = dependencies.sessionLabel(session, session.cwd);
       const at = dependencies.now();
@@ -1996,7 +2079,7 @@ export function createMcpToolHandlers(
       if (reply.kind === "down") throw new Error("failed: conch daemon is not running, so nothing was published");
       const verdict = reply.kind === "verdict" ? reply.verdict : undefined;
       if (verdict?.kind === "review-refused") {
-        throw new ToolInputError(`refused: conch's daemon did not file it: ${verdict.reason}`);
+        throw refusal(`refused: conch's daemon did not file it: ${verdict.reason}`);
       }
       // Offered once per label, and only for a label the agent's side chose (label-drift.ts).
       const relabel = dependencies.labelSource
@@ -2075,7 +2158,7 @@ export function createMcpToolHandlers(
         // needs no verified caller: an unverified one is checked against the folder this server started in.
         const binding = await callerBinding(config, dependencies, meta);
         if (publish && binding.status !== "verified") {
-          throw new ToolInputError(
+          throw refusal(
             `conch cannot verify which session is calling (${binding.reason}), so it will not file a capture as any`
               + " session's deliverable. Capture without publish, and leave the picture's path in your reply.",
           );
@@ -2112,7 +2195,7 @@ export function createMcpToolHandlers(
         };
         return { message };
       })().catch((error) => {
-        throw new ToolInputError(`refused: ${errorMessage(error)}`);
+        throw asRefusal(error);
       });
       const sent = await (dependencies.capturePage ?? requestPageCapture)(config.socketPath, message, CAPTURE_REPLY_MS);
       if (!sent.ok) {
@@ -2204,7 +2287,7 @@ export function createMcpToolHandlers(
           if (summary !== undefined && !summary.trim()) throw new ToolInputError("summary must be a non-empty line");
           return { page, markdown, summary };
         } catch (error) {
-          throw new ToolInputError(`refused: ${errorMessage(error)}`);
+          throw asRefusal(error);
         }
       })();
       // Verified before anything is written: a copy is saved only for a session conch can file it for.
@@ -2335,16 +2418,41 @@ export function initializeResult(params: unknown, text: AgentInstructions = AGEN
   };
 }
 
+/** Told about every tools/call once it has its answer (the call log, mcp-usage.ts). Must return at once. */
+export type McpCallObserver = (call: McpCallObservation) => void;
+
+/**
+ * How a call that returned ended: ok, except the answers that are a refusal or an error said as a value — a history
+ * reply's code (history.ts), a wake or recite whose audio this Mac has yielded (`audioWhere`), and speech the user's
+ * manual mode drops (`speechHeld`) — so the agent reads them as a result but the log counts what happened.
+ */
+function resultOutcome(value: unknown): { outcome: McpCallOutcome; error?: string } {
+  if (!isRecord(value)) return { outcome: "ok" };
+  if (typeof value.audio === "string" && value.audio.startsWith("refused:")) return { outcome: "refused", error: value.audio };
+  if (typeof value.held === "string" && value.held) return { outcome: "refused", error: value.held };
+  if (value.kind === "history-off") return { outcome: "refused", error: "history is off" };
+  if (value.kind !== "history-error" || typeof value.code !== "string") return { outcome: "ok" };
+  const error = `${value.code}: ${typeof value.error === "string" ? value.error : ""}`;
+  if (value.code === "unauthorized") return { outcome: "refused", error };
+  const input = ["invalid-request", "session-not-found", "ambiguous-session", "item-not-found", "invalid-cursor", "stale-cursor", "stale-item"];
+  return { outcome: input.includes(value.code) ? "input-error" : "failed", error };
+}
+
 /**
  * Dispatch one already-parsed JSON-RPC message. All failures are converted to
  * JSON-RPC errors or MCP isError tool results; this function never rejects.
+ * `observe` hears each tools/call, unknown tools and bad arguments included, and cannot break one.
  */
 export async function dispatchJsonRpc(
   message: unknown,
   handlers: McpToolHandlers,
+  observe?: McpCallObserver,
 ): Promise<JsonRpcResponse | null> {
   let requestId: JsonRpcId = null;
   let shouldReply = true;
+  const tell = (call: McpCallObservation) => {
+    try { observe?.(call); } catch {}
+  };
   try {
     if (!isRecord(message) || message.jsonrpc !== "2.0" || typeof message.method !== "string") {
       return jsonRpcError(null, -32600, "Invalid Request");
@@ -2376,7 +2484,11 @@ export async function dispatchJsonRpc(
             : null;
         }
         const name = message.params.name;
+        const meta = message.params._meta;
+        const ts = Date.now();
+        const started = performance.now();
         if (!Object.hasOwn(handlers, name)) {
+          tell({ ts, tool: name, ms: 0, outcome: "input-error", error: "unknown tool", meta });
           return shouldReply
             ? jsonRpcError(requestId, -32602, `Unknown tool "${name}"`)
             : null;
@@ -2385,12 +2497,14 @@ export async function dispatchJsonRpc(
           ? message.params.arguments
           : {};
         if (!isRecord(argumentsValue)) {
+          tell({ ts, tool: name, ms: 0, outcome: "input-error", error: "Tool arguments must be an object", meta });
           return shouldReply
             ? jsonRpcError(requestId, -32602, "Tool arguments must be an object")
             : null;
         }
         try {
-          const value = await handlers[name as McpToolName](argumentsValue, message.params._meta);
+          const value = await handlers[name as McpToolName](argumentsValue, meta);
+          tell({ ts, tool: name, ms: performance.now() - started, ...resultOutcome(value), arguments: argumentsValue, meta });
           if (name === "conch_history" || name === "conch_item") {
             if (!shouldReply) return null;
             // A text content block escapes the JSON again. Budget the final UTF-8 wire frame.
@@ -2400,6 +2514,7 @@ export async function dispatchJsonRpc(
             ? jsonRpcResult(requestId, toolResult(value))
             : null;
         } catch (error) {
+          tell({ ts, tool: name, ms: performance.now() - started, outcome: callOutcome(error), error: errorMessage(error), arguments: argumentsValue, meta });
           if (name === "conch_history" || name === "conch_item") {
             return shouldReply ? historyRpcResult(requestId, toolError(error)) : null;
           }
@@ -2429,11 +2544,12 @@ export async function dispatchJsonRpc(
 export async function dispatchJsonRpcBatch(
   messages: readonly unknown[],
   handlers: McpToolHandlers,
+  observe?: McpCallObserver,
 ): Promise<JsonRpcResponse | JsonRpcResponse[] | null> {
   if (!messages.length) return jsonRpcError(null, -32600, "Invalid Request");
   const responses: JsonRpcResponse[] = [];
   for (const message of messages) {
-    const response = await dispatchJsonRpc(message, handlers);
+    const response = await dispatchJsonRpc(message, handlers, observe);
     if (response) responses.push(response);
   }
   return responses.length ? responses : null;
@@ -2452,6 +2568,8 @@ export interface RunMcpServerOptions {
    * writes. On by default for the real stdio server, off when `input` is given (tests) unless passed; false is off.
    */
   handoff?: Omit<McpHandoffOptions, "writeLine" | "diagnostic"> | false;
+  /** The per-call log (mcp-usage.ts); on by default, at `mcpUsagePath()`; false is off. */
+  callLog?: McpCallLog | false;
 }
 
 /** How often an idle server looks for a newer conch to hand over to, besides after each message. */
@@ -2506,14 +2624,21 @@ function sessionParentPid(): number {
  * all local diagnostics go to stderr.
  */
 export async function runMcpServer(options: RunMcpServerOptions = {}): Promise<void> {
-  let handlers = options.handlers;
-  if (!handlers) {
-    const loaded: Config | McpRuntimeConfig = options.config ?? loadConfig();
-    handlers = createMcpToolHandlers(
-      loaded,
-      options.dependencies ?? defaultMcpDependencies,
-    );
-  }
+  let loaded: Config | McpRuntimeConfig | undefined = options.config;
+  const runtimeConfig = () => (loaded ??= loadConfig());
+  const handlers = options.handlers ?? createMcpToolHandlers(
+    runtimeConfig(),
+    options.dependencies ?? defaultMcpDependencies,
+  );
+  // Which agent this server serves, as its `initialize` said: the backend of a call whose session conch can't tell.
+  let clientBackend: ReturnType<typeof backendOfClient>;
+  const callLog = options.callLog === false
+    ? undefined
+    : options.callLog ?? new McpCallLog({
+      caller: mcpCallCaller(runtimeConfig, options.dependencies ?? defaultMcpDependencies),
+      backendHint: () => clientBackend,
+      vocabulary: mcpToolVocabulary(),
+    });
   const input = options.input ?? Bun.stdin.stream();
   const writeLine = options.writeLine
     ?? ((line: string) => {
@@ -2542,12 +2667,17 @@ export async function runMcpServer(options: RunMcpServerOptions = {}): Promise<v
       await writeResponse(jsonRpcError(null, -32700, "Parse error"));
       return;
     }
-    for (const one of Array.isArray(message) ? message : [message]) handoff?.observe(one);
+    for (const one of Array.isArray(message) ? message : [message]) {
+      handoff?.observe(one);
+      if (isRecord(one) && one.method === "initialize" && isRecord(one.params) && isRecord(one.params.clientInfo)) {
+        clientBackend = backendOfClient(one.params.clientInfo.name) ?? clientBackend;
+      }
+    }
     // Handed over to a newer conch's server: every line is its to answer.
     if (handoff?.forward(line)) return;
     const response = Array.isArray(message)
-      ? await dispatchJsonRpcBatch(message, handlers)
-      : await dispatchJsonRpc(message, handlers);
+      ? await dispatchJsonRpcBatch(message, handlers, callLog?.observe)
+      : await dispatchJsonRpc(message, handlers, callLog?.observe);
     if (response) await writeResponse(response);
   };
   // One thing at a time, a line or a look for a newer conch, so a hand-off never starts while a call is half-answered.
@@ -2585,5 +2715,7 @@ export async function runMcpServer(options: RunMcpServerOptions = {}): Promise<v
     clearInterval(idleCheck);
     handoff?.close();
     reader.releaseLock();
+    // The last calls' lines, before `conch mcp` exits with stdin.
+    await callLog?.flush();
   }
 }

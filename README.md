@@ -158,6 +158,7 @@ conch is local-first. It has no server and no account of its own.
 | `conch voices [setup]` / `conch voice <session> [voice]` | Audition the voices, or set them up now / show or pin a session's voice |
 | `conch settings` / `get <key>` / `set <key> <value>` / `unset <key>` | List, read, change or reset a setting ([docs/configuration.md](docs/configuration.md)) |
 | `conch pair` | Connect the iPhone app |
+| `conch mcp-usage [--since 7d] [--session <id>] [--by-session] [--json]` | How agents use conch's MCP tools: calls, sessions, errors (bad input, refused, failed), p50/p90 ms and the top errors per tool, from `~/.config/conch/mcp-usage.jsonl` |
 | `conch logins [--refresh] [--json]` | Which CLIs, agents, MCP servers, plugins and browser profiles this Mac has, and who each is signed in as (read only; also Settings → Logins) |
 | `conch install --codex` | Wire conch's Codex hooks |
 | `conch install-plugin` / `uninstall-plugin` | Install or remove the conch plugin for Claude Code and Codex |

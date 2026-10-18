@@ -59,7 +59,7 @@ Optional / manual setup:
   conch service [install|off] | uninstall [--models]  manage or remove the install
   conch install-plugin | uninstall-plugin | config-toggle <agent> <plugin|mcp-server> <id> <on|off> [--scope user|project] [--project <dir>] [--preview] | config-rollback <file>  the conch plugin · a next-session switch in the agent's own file · undo it
   conch install [--codex] | pair | browser | logins [--refresh] [--json]   wire hooks · connect the iPhone app · conch's in-app browser (its profiles, a page as a tab) · which CLIs, agents, MCP servers and plugins are signed in, as whom
-  conch doctor | help-session | version | parity <session>   live checks | a Claude session that knows conch | version | debug: conch beside the session's terminal in one picture, PASS/FAIL on the last message sent (parity --help)
+  conch doctor | help-session | version | parity <session> | mcp-usage [--since 7d]   live checks | a Claude session that knows conch | version | debug: conch beside the session's terminal in one picture, PASS/FAIL on the last message sent (parity --help) | how agents use conch's MCP tools: calls, errors, p50/p90 ms (mcp-usage --help)
 
 Internal entrypoints: conch hook | codex-hook | daemon | mcp | browse <url> [--profile <name>] (open, in sessions conch starts)
 `;
@@ -668,6 +668,14 @@ switch (command) {
   case "service":
     await runService(cfg, rest[0] === "off" ? "off" : "install");
     break;
+  case "mcp-usage": {
+    // Every MCP tool call, one line each, as `conch mcp` logged it (mcp-usage.ts): which tools agents use, how they fail.
+    const { runMcpUsageCli } = await import("./mcp-usage.ts");
+    const { code, lines } = runMcpUsageCli(rest);
+    for (const line of lines) (code === 0 ? console.log : console.error)(line);
+    if (code) process.exitCode = code;
+    break;
+  }
   case "dictations": {
     // The dictations handed back to the apps lately, newest first, in full: a recording whose words never reached a
     // draft can be read back here (`recent-dictations.jsonl`, status.ts).
