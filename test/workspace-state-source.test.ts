@@ -141,8 +141,13 @@ describe("new work does not replace what you are reading", () => {
     // the perspective bar, and opening the artifact from its inline preview — which stages it
     // BESIDE the conversation now rather than in front of it. One door (`show(stage:)`),
     // because a page that can be set two ways can be set two ways at once.
+    // And one that isn't a press but a direct request (2026-10-18): a browser tab whose agent asked Tyler to act in it
+    // may open the Workdesk beside the conversation, once, when he isn't typing (`summonAsk`, ConchDesign
+    // `Workbench.summons`). New work still never does.
     const changes = pane.match(/workspace\.show\(stage: \.\w+, for: row\.id\)/g) ?? [];
-    expect(changes).toHaveLength(3);
+    expect(changes).toHaveLength(4);
+    const summon = pane.slice(pane.indexOf("private func summonAsk() {"), pane.indexOf("\n    }\n", pane.indexOf("private func summonAsk() {")));
+    expect(summon).toContain("if opensStage { workspace.show(stage: .sideBySide, for: row.id) }");
     expect(pane).toContain('action: { workspace.show(stage: .conversation, for: row.id) }');
     expect(pane).toContain('action: { workspace.show(stage: .sideBySide, for: row.id) }');
     // The third page is GONE as a destination — filling the conch window was never leaving it.

@@ -1666,13 +1666,15 @@ final class StateStore: ObservableObject {
         )
         if state?.hasSamePresentation(as: next) != true {
             state = next
-            updateDockBadge(for: next.rows)
+            updateDockBadge(for: next.rows, asking: Set((next.browserTabs ?? []).filter { $0.ask != nil }.map(\.sessionId)))
         }
     }
 
-    private func updateDockBadge(for rows: [SessionRow]) {
+    /// Sessions that need Tyler or have work for him: a question, a deliverable, or a browser tab its agent asked him to
+    /// act in (`browser_ask`), as the sidebar's rows say.
+    private func updateDockBadge(for rows: [SessionRow], asking: Set<String> = []) {
         let nextCount = rows.count { row in
-            row.status == .needs || row.status == .review
+            row.status == .needs || row.status == .review || asking.contains(row.id)
         }
         guard nextCount != dockBadgeCount else { return }
 

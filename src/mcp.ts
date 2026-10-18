@@ -111,10 +111,12 @@ import {
 } from "./page-capture.ts";
 import { sessionOfProcess, unverified, type CallerBinding } from "./caller-session.ts";
 import {
+  BROWSER_ASK_REASON_MAX,
   BROWSER_REPLY_MS,
   BROWSER_TARGET_MAX,
   BROWSER_TEXT_MAX,
   BROWSER_URL_MAX,
+  askReason,
   isBrowserTabId,
   parseBrowserTarget,
   requestBrowser,
@@ -813,6 +815,24 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
       inputSchema: {
         type: "object",
         properties: {},
+        additionalProperties: false,
+      },
+    },
+    {
+      name: "browser_ask",
+      description: text.tools.browser_ask,
+      inputSchema: {
+        type: "object",
+        properties: {
+          tab: { ...BROWSER_TAB_SCHEMA, description: "Optional. The tab to ask in: one of your tab ids (browser_tabs); your most recent tab when omitted." },
+          reason: {
+            type: "string",
+            minLength: 1,
+            maxLength: BROWSER_ASK_REASON_MAX,
+            description: `What the user is to do in the tab, as one short line they read on it: "Sign in to Mobbin", "Approve the Google consent screen". At most ${BROWSER_ASK_REASON_MAX} characters.`,
+          },
+        },
+        required: ["reason"],
         additionalProperties: false,
       },
     },
@@ -1536,11 +1556,11 @@ async function capturePageUrl(raw: string, scope: LinkScope): Promise<string> {
 /**
  * What a sign-in screen in place of the page means, and the one fix, said wherever conch saw one. 2026-10-16: the fix is
  * a tab of conch's browser on the Default profile, which shares the review pane's store, so the user signs in where
- * they watch the agent work, in the Workdesk.
+ * they watch the agent work, in the Workdesk. 2026-10-18: asked in the tab itself (`browser_ask`), so it can't be missed.
  */
 const CAPTURE_SIGN_IN_NOTE = "the page showed a sign-in screen, not the page itself. conch draws pages with the sign-ins of its"
   + " own review pane, not your browser's: open the URL with browser_open (the Default profile shares them) and ask the"
-  + " user to sign in in that tab of their Workdesk once, then capture again";
+  + " user to sign in in that tab of their Workdesk once (browser_ask), then capture again";
 
 /** The daemon's answer as the agent reads it: the capture and what to do with it, or why there is none, in words. */
 function captureToolResult(reply: PageCaptureReply): Record<string, unknown> {
@@ -2479,6 +2499,20 @@ export function createMcpToolHandlers(
     async browser_tabs(argumentsValue, meta) {
       const reply = await browserCommand("browser_tabs", argumentsValue, meta, [], () => ({ op: "tabs" }));
       return { tabs: reply.tabs ?? [] };
+    },
+
+    async browser_ask(argumentsValue, meta) {
+      const reply = await browserCommand("browser_ask", argumentsValue, meta, ["tab", "reason"], (args) => {
+        const parsed = askReason(args.reason);
+        if ("error" in parsed) throw new ToolInputError(parsed.error);
+        return { op: "ask", reason: parsed.reason };
+      });
+      const site = reply.result?.answersOnSignIn as string | undefined;
+      const notes = [
+        ...(reply.result?.appClosed ? ["conch's Mac app isn't open, so the user sees it when they open it"] : []),
+        `wait for them: when they press Done${site ? `, or conch sees this tab's profile sign in to ${site}` : ""}, you get a message saying so, and browser_tabs shows it; your own click, type or open in the tab withdraws it`,
+      ];
+      return { tab: reply.tab?.id, asked: reply.result?.asked, note: notes.join("; ") };
     },
 
     async browser_close(argumentsValue, meta) {

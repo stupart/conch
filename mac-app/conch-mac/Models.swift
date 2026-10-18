@@ -129,6 +129,44 @@ struct PublishedState: Decodable, Equatable, Sendable {
         let opener: String?
         /// The user paused agents in it.
         let paused: Bool?
+        /// What its agent asked the user to do in it (`browser_ask`), while that waits.
+        let ask: Ask?
+
+        struct Ask: Decodable, Equatable, Sendable {
+            let reason: String
+            /// Epoch-ms.
+            let at: Double
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case id, sessionId, url, title, profile, openedAt, opener, paused, ask
+        }
+
+        init(id: String, sessionId: String, url: String, title: String?, profile: String, openedAt: Double, opener: String?, paused: Bool?, ask: Ask? = nil) {
+            self.id = id
+            self.sessionId = sessionId
+            self.url = url
+            self.title = title
+            self.profile = profile
+            self.openedAt = openedAt
+            self.opener = opener
+            self.paused = paused
+            self.ask = ask
+        }
+
+        /// Its ask read on its own: one this app can't read leaves the tab as it is, never drops it.
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(String.self, forKey: .id)
+            sessionId = try container.decode(String.self, forKey: .sessionId)
+            url = try container.decode(String.self, forKey: .url)
+            title = try container.decodeIfPresent(String.self, forKey: .title)
+            profile = try container.decode(String.self, forKey: .profile)
+            openedAt = try container.decode(Double.self, forKey: .openedAt)
+            opener = try container.decodeIfPresent(String.self, forKey: .opener)
+            paused = try container.decodeIfPresent(Bool.self, forKey: .paused)
+            ask = (try? container.decodeIfPresent(Ask.self, forKey: .ask)) ?? nil
+        }
     }
 
     /// A command an agent gave a tab (src/browser-workbench.ts `BrowserAppRequest`). What it types isn't here: it comes
@@ -1477,6 +1515,25 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
 }
 
 extension SessionRow {
+    /// This row as one that needs Tyler while its agent's ask waits in one of its browser tabs (`browser_ask`, `reason`):
+    /// the needs status every row that asks something of him has, so the sidebar draws it as it draws a question the
+    /// session is blocked on (the mark, the bold name, the second line), with the ask as what it is blocked on. A question
+    /// of its own keeps its words. Itself when nothing is asked.
+    func needingYou(in reason: String?) -> SessionRow {
+        guard let reason else { return self }
+        return SessionRow(
+            id: id, label: label, backend: backend, accountLabel: accountLabel, claudeAccountId: claudeAccountId,
+            codexAccountId: codexAccountId, execution: execution, context: context, usageLimit: usageLimit, settings: settings,
+            status: .needs, at: at, needsResponse: true,
+            detail: (status == .needs ? detail : nil) ?? Workbench.rowAskLine(reason: reason),
+            review: review, reviews: reviews, paused: paused, pauseExempt: pauseExempt, live: live, active: active,
+            snippet: snippet, transcriptPath: transcriptPath, voice: voice, prioritized: prioritized, navSelected: navSelected,
+            revealable: revealable, noTerminal: noTerminal, messageRoute: messageRoute, attachable: attachable,
+            waitingOnAgents: waitingOnAgents, approval: approval, parentSessionId: parentSessionId,
+            startedBySessionId: startedBySessionId, cwd: cwd, workDirs: workDirs, activity: activity
+        )
+    }
+
     /// What a working agent is doing right now (`rows[].activity`): its running step, or its words from the last minute.
     struct Activity: Decodable, Equatable, Sendable {
         let text: String

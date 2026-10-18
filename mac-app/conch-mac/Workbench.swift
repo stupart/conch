@@ -18,6 +18,11 @@ import WebKit
 /// bar say Agent (`working`), its click or its field is marked on the page (`WorkbenchPage.mark`), and a tab he isn't
 /// looking at gets a dot (`actedIn`), or comes forward when it may (`agentActivity`, `Workbench.follows`).
 ///
+/// An agent asks him to act in a tab (`browser_ask`, the tab's `ask`): the tab says Needs you and takes the stage when
+/// it may (`Workbench.summons`), and his Done there (`answer`) tells the daemon, which tells the agent. Whether he is
+/// using the Workdesk is his hand in it anywhere, its strip and every pane (`watch`, `WorkdeskTouchArea`), and whether he
+/// is typing (`lastTyped`). A page that asks for a passkey is heard (`WorkbenchPasskeys`) and says so under its bar.
+///
 /// Tyler, 2026-10-09: "Agents's pages should live as tabs in the deliverables plane just like the deliverables."
 /// 2026-10-16: "letting me sign-in in an in-conch browser session and letting agents use that browser in the app so i
 /// can watch them work".
@@ -54,8 +59,12 @@ final class WorkbenchStore: ObservableObject {
 
     /// The browser tab the Workdesk shows now, as its pane says.
     private(set) var shown: String?
-    /// When Tyler last touched the Workdesk: a click, a key or a scroll in a shown page, or a press in its strip.
+    /// When Tyler last touched the Workdesk: a click, a key or a scroll anywhere in it (a shown page, a deliverable, the
+    /// files, the shell, its strip), or a press of its controls.
     private(set) var lastTouch: Date?
+    /// When Tyler last typed in conch's windows, anywhere: a tab that needs him doesn't open the Workdesk beside the
+    /// conversation while he is typing there, which would move the composer under his hands (`Workbench.summons`).
+    private(set) var lastTyped: Date?
 
     private let socket: ConchSocketClient
     private var pages: [String: WorkbenchPage] = [:]
@@ -68,6 +77,10 @@ final class WorkbenchStore: ObservableObject {
     private var serial = 0
     /// Pause agents, set here and not yet on the file: what the tab says meanwhile.
     private var pausing: [String: Bool] = [:]
+    /// Done pressed here on an ask still on the file, by its key: the tab says answered meanwhile.
+    private var answering: Set<String> = []
+    /// The Workdesk's own views, its strip and its pane: a click, a key or a scroll in one is a touch (`WorkdeskTouchArea`).
+    private var areas: [WeakView] = []
     /// Commands under way per tab, and the linger before a tab's badge goes.
     private var running: [String: Int] = [:]
     private var lingering: [String: Task<Void, Never>] = [:]
@@ -88,9 +101,11 @@ final class WorkbenchStore: ObservableObject {
     }
 
     private func noteTouch(_ event: NSEvent) {
-        for page in pages.values where page.isShown && page.webView.window === event.window {
+        guard let window = event.window, !(window is WorkbenchParkingWindow) else { return }
+        if event.type == .keyDown { lastTyped = Date() }
+        for page in pages.values where page.isShown && page.webView.window === window {
             if event.type == .keyDown {
-                guard let responder = event.window?.firstResponder as? NSView, responder.isDescendant(of: page.webView) else { continue }
+                guard let responder = window.firstResponder as? NSView, responder.isDescendant(of: page.webView) else { continue }
             } else {
                 let point = page.webView.convert(event.locationInWindow, from: nil)
                 guard page.webView.bounds.contains(point) else { continue }
@@ -98,6 +113,28 @@ final class WorkbenchStore: ObservableObject {
             touched()
             return
         }
+        // Anywhere else in the Workdesk: a deliverable he is reading or scrolling, the files, the shell he types in, the
+        // strip. A key counts where the view with the keyboard sits in it.
+        areas.removeAll { $0.view == nil }
+        for area in areas {
+            guard let view = area.view, view.window === window else { continue }
+            let bounds = view.convert(view.bounds, to: nil)
+            if event.type == .keyDown {
+                guard let responder = window.firstResponder as? NSView, responder.window === window else { continue }
+                let frame = responder.convert(responder.bounds, to: nil)
+                guard bounds.contains(CGPoint(x: frame.midX, y: frame.midY)) else { continue }
+            } else {
+                guard bounds.contains(event.locationInWindow) else { continue }
+            }
+            touched()
+            return
+        }
+    }
+
+    /// One of the Workdesk's own views, watched for Tyler's hand while it is on screen.
+    func watch(_ view: NSView) {
+        areas.removeAll { $0.view == nil || $0.view === view }
+        areas.append(WeakView(view: view))
     }
 
     /// The pane's word on which browser tab it shows: that tab's dot goes.
@@ -129,8 +166,11 @@ final class WorkbenchStore: ObservableObject {
         for (id, paused) in pausing where published.contains(where: { $0.id == id && ($0.paused == true) == paused }) || !published.contains(where: { $0.id == id }) {
             pausing[id] = nil
         }
+        // So is a Done: once the ask he answered is off the file, there is nothing to hide.
+        answering.formIntersection(published.compactMap(\.workbenchTab.askKey))
         let all = published.map(\.workbenchTab).map { tab in
-            pausing[tab.id].map { tab.with(paused: $0) } ?? tab
+            let tab = pausing[tab.id].map { tab.with(paused: $0) } ?? tab
+            return tab.askKey.map(answering.contains) == true ? tab.with(ask: nil) : tab
         }
         let ids = Set(all.map(\.id))
         closed.formIntersection(ids)
@@ -205,6 +245,17 @@ final class WorkbenchStore: ObservableObject {
         tabs = tabs.map { $0.id == id ? $0.with(paused: paused) : $0 }
         let socket = socket
         Task { _ = await socket.request(WorkbenchTabEvent(tab: id, paused: paused), timeout: 2) }
+    }
+
+    /// Tyler's Done on what a tab's agent asked of him there: answered here at once, and the daemon told, which tells the
+    /// agent and takes the ask off the file.
+    func answer(_ tab: Workbench.Tab) {
+        guard let key = tab.askKey else { return }
+        touched()
+        answering.insert(key)
+        tabs = tabs.map { $0.id == tab.id ? $0.with(ask: nil) : $0 }
+        let socket = socket
+        Task { _ = await socket.request(WorkbenchTabEvent(tab: tab.id, askDone: true), timeout: 2) }
     }
 
     /// A blank tab's profile, picked: the daemon moves it, and its page is made again on that profile's store.
@@ -334,6 +385,12 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
     @Published private(set) var popupCount = 0
     /// Why the last load didn't, when it didn't: said over the page.
     @Published private(set) var failure: String?
+    /// When the page asked for a passkey, which conch's browser can't give (`WorkbenchPasskeys`): said under the bar until
+    /// Tyler dismisses it or the page goes to another site.
+    @Published private(set) var passkeyAsked: Date?
+    /// The site the page was on when it asked.
+    private var passkeySite: String?
+    private let messages = WorkbenchMessages()
 
     /// Windows the page opened (a "Continue with Google"), each a real web view over it, so `window.opener` works.
     private var popups: [WKWebView] = []
@@ -358,6 +415,13 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = store
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        // The passkey watcher: the page's half in its own world, conch's half and the handler in conch's alone, so the
+        // page's window gains nothing. The windows it opens are made with this configuration, so they have it too.
+        let event = WorkbenchPasskeys.eventName()
+        let content = configuration.userContentController
+        content.addUserScript(WKUserScript(source: WorkbenchPasskeys.pageScript(event: event), injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page))
+        content.addUserScript(WKUserScript(source: WorkbenchPasskeys.listenerScript(event: event), injectionTime: .atDocumentStart, forMainFrameOnly: false, in: Self.world))
+        content.add(messages, contentWorld: Self.world, name: WorkbenchPasskeys.messageHandler)
         // An agent's click on "Continue with Google" has to be able to open its window.
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         webView = WKWebView(frame: CGRect(origin: .zero, size: Self.parkedSize), configuration: configuration)
@@ -371,6 +435,7 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
         window.animationBehavior = .none
         window.contentView = NSView(frame: CGRect(origin: .zero, size: Self.parkedSize))
         super.init()
+        messages.page = self
         Self.prepare(webView, delegate: self)
         webView.allowsBackForwardNavigationGestures = true
         webView.allowsMagnification = true
@@ -422,6 +487,8 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
         if canGoBack != view.canGoBack { canGoBack = view.canGoBack }
         if canGoForward != view.canGoForward { canGoForward = view.canGoForward }
         if popupCount != popups.count { popupCount = popups.count }
+        // Signed in another way and gone on, or gone somewhere else: the passkey line has said what it had to.
+        if passkeyAsked != nil, Self.site(of: view.url) != passkeySite { passkeyAsked = nil }
         reporting?.cancel()
         reporting = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 500_000_000)
@@ -470,6 +537,7 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
     func close() {
         guard !isClosed else { return }
         isClosed = true
+        webView.configuration.userContentController.removeAllScriptMessageHandlers()
         reporting?.cancel()
         queue?.cancel()
         observations.forEach { $0.invalidate() }
@@ -484,6 +552,24 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
         window.orderOut(nil)
         window.contentView = nil
         window.close()
+    }
+
+    // MARK: Passkeys
+
+    /// The page asked for a passkey (`WorkbenchPasskeys`): said under the bar, against the site it was on.
+    fileprivate func heardPasskey(in view: WKWebView?) {
+        guard !isClosed else { return }
+        passkeySite = Self.site(of: (view ?? front).url)
+        passkeyAsked = Date()
+    }
+
+    /// The passkey line's ×.
+    func dismissPasskeys() {
+        passkeyAsked = nil
+    }
+
+    private static func site(of url: URL?) -> String? {
+        url?.host.flatMap(BrowserSignIns.site(ofCookieDomain:))
     }
 
     // MARK: Tyler's controls
@@ -799,6 +885,23 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
     }
 }
 
+/// A page's messages from conch's own world: what the passkey watcher hears. Held by WebKit's content controller, so it
+/// holds its page weakly.
+private final class WorkbenchMessages: NSObject, WKScriptMessageHandler {
+    weak var page: WorkbenchPage?
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard WorkbenchPasskeys.attempt(message.body) != nil else { return }
+        let view = message.webView
+        MainActor.assumeIsolated { page?.heardPasskey(in: view) }
+    }
+}
+
+/// A view held without keeping it alive: the Workdesk's areas come and go with SwiftUI.
+struct WeakView {
+    weak var view: NSView?
+}
+
 /// True the first time it is asked, and never again.
 @MainActor
 private final class WorkbenchOnce {
@@ -879,6 +982,8 @@ struct WorkbenchTabEvent: Encodable {
     var closed: Bool?
     var paused: Bool?
     var profile: String?
+    /// His Done on what its agent asked of him there.
+    var askDone: Bool?
 }
 
 /// The Workdesk's +: a tab of Tyler's own in a session (`browser-tab-open`).
@@ -904,7 +1009,8 @@ extension PublishedState.BrowserTab {
     var workbenchTab: Workbench.Tab {
         Workbench.Tab(
             id: id, sessionId: sessionId, url: url, title: title, profile: profile, openedAt: openedAt,
-            openedByUser: opener == "user", paused: paused == true
+            openedByUser: opener == "user", paused: paused == true,
+            ask: ask.map { Workbench.Tab.Ask(reason: $0.reason, at: $0.at) }
         )
     }
 }
@@ -929,6 +1035,8 @@ struct WorkbenchPane: View {
     @ObservedObject var page: WorkbenchPage
     @ObservedObject var store: WorkbenchStore
     let tab: Workbench.Tab
+    /// Who asks, when the tab needs Tyler: its session's agent, Claude or Codex.
+    let agent: String
     /// Open in Browser, through the app's one door for links (`StateStore.openLink`), which says when it can't.
     let openInBrowser: (URL) -> Void
     let close: () -> Void
@@ -987,6 +1095,24 @@ struct WorkbenchPane: View {
             Rectangle()
                 .fill(ConchPalette.divider)
                 .frame(height: 1)
+
+            // Under the bar, a line the tab says to Tyler: its agent needs him here, with Done; the page asked for a
+            // passkey this browser can't give, with its ×.
+            if let ask = tab.ask {
+                WorkbenchNotice(.needsYou(agent: agent, reason: ask.reason)) { store.answer(tab) }
+                Rectangle()
+                    .fill(ConchPalette.divider)
+                    .frame(height: 1)
+            }
+            if page.passkeyAsked != nil {
+                WorkbenchNotice(.passkeys) {
+                    store.touched()
+                    page.dismissPasskeys()
+                }
+                Rectangle()
+                    .fill(ConchPalette.divider)
+                    .frame(height: 1)
+            }
 
             WorkbenchHost(page: page)
                 .overlay { WorkbenchMarks(mark: page.mark) }
@@ -1117,4 +1243,22 @@ private struct WorkbenchHost: NSViewRepresentable {
         coordinator.page?.park(from: container)
         coordinator.page = nil
     }
+}
+
+/// One of the Workdesk's own areas (its strip, its pane), for Tyler's hand in it to count as touching it
+/// (`WorkbenchStore.watch`). Never takes a click: it is only where the area is.
+struct WorkdeskTouchArea: NSViewRepresentable {
+    let store: WorkbenchStore
+
+    final class AreaView: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = AreaView()
+        store.watch(view)
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {}
 }

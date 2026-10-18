@@ -16,6 +16,7 @@ import {
   type BrowserProfileSignIns,
 } from "../src/browser-profiles.ts";
 import {
+  askAnsweredMessage,
   BROWSER_APP_DOWN,
   BROWSER_KINDS,
   BROWSER_TABS_PER_SESSION,
@@ -163,6 +164,13 @@ describe("the control messages, checked field by field, and the phone's to send 
       .toEqual({ kind: "browser-tab-open", sessionId: "s1", url: "https://acme.dev/" });
     expect(decodeBrowserMessage({ kind: "browser-tab-event", tab: "tab-1a2b3c4d", paused: false, profile: WORK }))
       .toEqual({ kind: "browser-tab-event", tab: "tab-1a2b3c4d", paused: false, profile: WORK });
+    // An agent's ask, its reason trimmed; and Tyler's Done on it.
+    expect(decodeBrowserMessage({ kind: "browser-command", sessionId: "s1", op: "ask", tab: "tab-1a2b3c4d", reason: " Sign in to Mobbin " }))
+      .toEqual({ kind: "browser-command", sessionId: "s1", op: "ask", tab: "tab-1a2b3c4d", reason: "Sign in to Mobbin" });
+    expect(decodeBrowserMessage({ kind: "browser-tab-event", tab: "tab-1a2b3c4d", askDone: true }))
+      .toEqual({ kind: "browser-tab-event", tab: "tab-1a2b3c4d", askDone: true });
+    expect(decodeBrowserMessage({ kind: "browser-tab-event", tab: "tab-1a2b3c4d", askDone: "yes" }))
+      .toEqual({ kind: "browser-tab-event", tab: "tab-1a2b3c4d" });
   });
 
   test("a malformed one is refused with why", () => {
@@ -185,6 +193,9 @@ describe("the control messages, checked field by field, and the phone's to send 
     expect(refused({ kind: "browser-command", sessionId: "s1", op: "read", tab: "../x" })).toBe("tab must be a tab's id");
     expect(refused({ kind: "browser-command", sessionId: "s1", op: "click", target: { ref: "e1", text: "x" } })).toContain("exactly one of");
     expect(refused({ kind: "browser-command", sessionId: "s1", op: "type", target: "Email", text: "x".repeat(4001) })).toContain("text must be up to");
+    for (const reason of [undefined, "", "  ", "x".repeat(81), "two\nlines", 7]) {
+      expect(refused({ kind: "browser-command", sessionId: "s1", op: "ask", reason }), String(reason)).toContain("reason must be one short line of 1 to 80 printable characters");
+    }
     expect(refused({ kind: "browser-tab-event" })).toBe("a tab event names its tab");
     expect(refused({ kind: "browser-tab-event", tab: "tab-1a2b3c4d", paused: "yes" })).toBe("paused must be true or false");
     expect(refused({ kind: "browser-tab-event", tab: "tab-1a2b3c4d", profile: "a\nb" })).toBe("profile must name a profile");
@@ -253,7 +264,7 @@ describe("which session ran a process: walked up to the agent, as the MCP server
 });
 
 /** A control server with the Workbench behind it, as the daemon wires it, and a pretend Mac app reading the sessions file. */
-async function served(options: { appRunning?: () => boolean; ackMs?: number; timeoutMs?: number; binding?: CallerBinding; store?: string; live?: string[]; signIns?: () => Map<string, BrowserProfileSignIns> } = {}) {
+async function served(options: { appRunning?: () => boolean; ackMs?: number; timeoutMs?: number; binding?: CallerBinding; store?: string; live?: string[]; signIns?: () => Map<string, BrowserProfileSignIns>; tell?: (sessionId: string, text: string) => void } = {}) {
   const dir = mkdtempSync("/tmp/conch-wb-");
   const socketPath = join(dir, "s.sock");
   const folder = captureFolder(join(dir, "captures"));
@@ -287,6 +298,7 @@ async function served(options: { appRunning?: () => boolean; ackMs?: number; tim
     ...(options.appRunning ? { appRunning: options.appRunning } : {}),
     ...(options.live ? { liveSession: (id: string) => options.live!.includes(id) } : {}),
     ...(options.signIns ? { signIns: options.signIns } : {}),
+    ...(options.tell ? { tell: options.tell } : {}),
   });
   const server = createControlServer({
     socketPath,
@@ -320,7 +332,7 @@ async function served(options: { appRunning?: () => boolean; ackMs?: number; tim
   const command = (message: Omit<Extract<BrowserMessage, { kind: "browser-command" }>, "kind">) =>
     requestBrowser(socketPath, { kind: "browser-command", ...message } as BrowserMessage, 8_000);
   return {
-    socketPath, folder, workbench, exchange, app, command, sessionsFile, callers, profilesFile,
+    socketPath, folder, workbench, service, exchange, app, command, sessionsFile, callers, profilesFile,
     published: () => published,
     close: async () => { await server.close(); rmSync(dir, { recursive: true, force: true }); },
   };
@@ -767,6 +779,170 @@ describe("the tabs themselves", () => {
   test("published beside the rows on the sessions file: profiles and tabs always, commands while they wait", () => {
     const workbench = new BrowserWorkbench(options());
     expect(withBrowserState({ v: 1, rows: [] }, workbench)).toEqual({ v: 1, rows: [], browserProfiles: [{ id: "default", name: "Default" }], browserTabs: [] });
+  });
+});
+
+/**
+ * An agent asking the user to act in a tab (`browser_ask`). Tyler, 2026-10-18, after an agent asked him in words to sign
+ * in to Mobbin: "the tab didn't get any sort of emphasis and it was all the way on the left so i missed it". The ask is
+ * the tab's own, on the sessions file while it waits (the Mac app's Needs you); Done, or a sign-in conch sees, answers it
+ * and the agent is told; the agent's own click, type or open withdraws it; the tab closing takes it.
+ */
+describe("browser_ask: the user asked to act in a tab, and the agent told when they have", () => {
+  const mobbin = (signedIn: boolean) => new Map<string, BrowserProfileSignIns>([["default", { checkedAt: 5, sites: signedIn ? [{ domain: "mobbin.com" }] : [] }]]);
+  const tabsOf = async (h: Awaited<ReturnType<typeof served>>) => {
+    const sent = await h.command({ sessionId: "session-1", op: "tabs" });
+    if (!sent.ok || sent.reply.kind !== "browser-result") throw new Error("tabs");
+    return sent.reply.tabs ?? [];
+  };
+
+  test("the tab carries it on the sessions file while it waits; Done answers it, once, and the agent hears it", async () => {
+    const told: Array<[string, string]> = [];
+    const h = await served({ signIns: () => mobbin(false), tell: (session, text) => told.push([session, text]) });
+    try {
+      const opened = h.workbench.open("session-1", "https://mobbin.com/login", "default");
+      if (!opened.ok) throw new Error("tab");
+      const before = Date.now();
+      const asked = await h.command({ sessionId: "session-1", op: "ask", reason: "Sign in to Mobbin" });
+      expect(asked).toMatchObject({ ok: true, reply: { kind: "browser-result", op: "ask", tab: { id: opened.tab.id }, result: { asked: "Sign in to Mobbin", answersOnSignIn: "mobbin.com" } } });
+      // Nothing for the app to run in the page: only what the Workdesk shows, the reason and when.
+      expect(h.sessionsFile().browserRequests).toBeUndefined();
+      const [published] = h.sessionsFile().browserTabs;
+      expect(published.ask).toEqual({ reason: "Sign in to Mobbin", at: expect.any(Number) });
+      expect(published.ask.at).toBeGreaterThanOrEqual(before);
+      expect(Object.keys(published.ask)).toEqual(["reason", "at"]);
+      const [waiting] = await tabsOf(h);
+      expect(waiting!.ask).toEqual({ reason: "Sign in to Mobbin", askedAt: new Date(published.ask.at).toISOString(), state: "waiting" });
+
+      expect(await h.exchange({ kind: "browser-tab-event", tab: opened.tab.id, askDone: true })).toEqual({ kind: "browser-ack" });
+      expect(told).toEqual([["session-1", `Done: Sign in to Mobbin (conch's browser, ${opened.tab.id}).`]]);
+      expect(h.sessionsFile().browserTabs[0].ask).toBeUndefined();
+      const [done] = await tabsOf(h);
+      expect(done!.ask).toMatchObject({ reason: "Sign in to Mobbin", state: "done", answeredAt: expect.any(String) });
+      // A second press, or a sign-in after, says nothing again.
+      expect(await h.exchange({ kind: "browser-tab-event", tab: opened.tab.id, askDone: true })).toEqual({ kind: "browser-ack" });
+      h.service.checkAsks();
+      expect(told).toHaveLength(1);
+      expect(await h.exchange({ kind: "browser-tab-event", tab: "tab-00000000", askDone: true })).toEqual({ kind: "browser-error", error: "no such tab" });
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("a sign-in conch sees answers it; a profile already signed in there leaves it to Done", async () => {
+    let report = mobbin(false);
+    const told: Array<[string, string]> = [];
+    const h = await served({ signIns: () => report, tell: (session, text) => told.push([session, text]) });
+    try {
+      const login = h.workbench.open("session-1", "https://mobbin.com/login", "default");
+      const already = h.workbench.open("session-1", "https://app.mobbin.com/settings", "default");
+      if (!login.ok || !already.ok) throw new Error("tabs");
+      await h.command({ sessionId: "session-1", op: "ask", tab: login.tab.id, reason: "Sign in to Mobbin." });
+      h.service.checkAsks();
+      expect(told).toEqual([]);
+      report = mobbin(true);
+      // Asked where the profile is signed in already: no sign-in can answer it, so it waits on Done.
+      const settings = await h.command({ sessionId: "session-1", op: "ask", tab: already.tab.id, reason: "Turn on two-factor" });
+      expect(settings).toMatchObject({ ok: true, reply: { result: { asked: "Turn on two-factor" } } });
+      if (!settings.ok || settings.reply.kind !== "browser-result") throw new Error("ask");
+      expect(settings.reply.result).not.toHaveProperty("answersOnSignIn");
+      h.service.checkAsks();
+      expect(told).toEqual([["session-1", `Signed in to mobbin.com: Sign in to Mobbin (conch's browser, ${login.tab.id}).`]]);
+      const tabs = await tabsOf(h);
+      expect(tabs.map((tab) => tab.ask?.state)).toEqual(["signed-in", "waiting"]);
+      expect(h.sessionsFile().browserTabs.map((tab: BrowserTab) => tab.ask?.reason)).toEqual([undefined, "Turn on two-factor"]);
+      h.service.checkAsks();
+      expect(told).toHaveLength(1);
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("the agent's own click, type or open withdraws it, and nobody is told; a read doesn't; closing the tab takes it", async () => {
+    const told: string[] = [];
+    const h = await served({ tell: (_, text) => told.push(text) });
+    try {
+      const opened = h.workbench.open("session-1", "https://acme.dev/login", "default");
+      if (!opened.ok) throw new Error("tab");
+      await h.command({ sessionId: "session-1", op: "ask", reason: "Pick the workspace" });
+      await Promise.all([h.command({ sessionId: "session-1", op: "read" }), h.app(() => ({ result: { url: "https://acme.dev/login", title: "Acme" } }))]);
+      expect(h.sessionsFile().browserTabs[0].ask).toMatchObject({ reason: "Pick the workspace" });
+      await Promise.all([h.command({ sessionId: "session-1", op: "click", target: { text: "Acme Inc" } }), h.app(() => ({ result: { url: "https://acme.dev/home", title: "Home" } }))]);
+      expect(h.sessionsFile().browserTabs[0].ask).toBeUndefined();
+      expect((await tabsOf(h))[0]).not.toHaveProperty("ask");
+      expect(told).toEqual([]);
+      // A new ask replaces the last; the tab closing takes it with it.
+      await h.command({ sessionId: "session-1", op: "ask", reason: "Sign in" });
+      await h.command({ sessionId: "session-1", op: "ask", reason: "Sign in again" });
+      expect(h.sessionsFile().browserTabs[0].ask.reason).toBe("Sign in again");
+      expect(await h.exchange({ kind: "browser-tab-event", tab: opened.tab.id, closed: true })).toEqual({ kind: "browser-ack" });
+      expect(h.sessionsFile().browserTabs).toEqual([]);
+      expect(h.workbench.asking()).toEqual([]);
+      expect(told).toEqual([]);
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("a tab the user paused agents in can still be asked in: it is a word to them, not a command in the page", async () => {
+    const h = await served({ appRunning: () => false });
+    try {
+      expect(await h.command({ sessionId: "session-1", op: "ask", reason: "Sign in" }))
+        .toEqual({ ok: true, reply: { kind: "browser-error", error: "this session has no browser tab yet; open one with browser_open, then ask in it" } });
+      const opened = h.workbench.open("session-1", "", "default", "user");
+      if (!opened.ok) throw new Error("tab");
+      h.workbench.setPaused(opened.tab.id, true);
+      const asked = await h.command({ sessionId: "session-1", op: "ask", reason: "Open your bank and sign in" });
+      // With the app closed, the agent hears the user sees it when they open it; a blank tab has no site to sign in to.
+      expect(asked).toMatchObject({ ok: true, reply: { kind: "browser-result", op: "ask", result: { asked: "Open your bank and sign in", appClosed: true } } });
+      if (!asked.ok || asked.reply.kind !== "browser-result") throw new Error("ask");
+      expect(asked.reply.result).not.toHaveProperty("answersOnSignIn");
+      expect(await h.command({ sessionId: "session-2", op: "ask", tab: opened.tab.id, reason: "Sign in" }))
+        .toEqual({ ok: true, reply: { kind: "browser-error", error: `there's no tab ${opened.tab.id} in this session; browser_tabs lists yours` } });
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("an ask survives a restart, waiting or answered; a malformed one on disk is dropped, never the tab", () => {
+    const file = join(fresh("asks"), "browser-tabs.json");
+    let now = 2_000_000;
+    const options = { publish: () => {}, folder: () => "/tmp", now: () => now, profiles: () => [{ ...DEFAULT_BROWSER_PROFILE }], store: fileTabStore(file) };
+    const before = new BrowserWorkbench(options);
+    const a = before.open("session-1", "https://mobbin.com/login", "default");
+    const b = before.open("session-1", "https://acme.dev/", "default");
+    if (!a.ok || !b.ok) throw new Error("tabs");
+    before.askUser(a.tab.id, "Sign in to Mobbin", { site: "mobbin.com", signedIn: false });
+    before.askUser(b.tab.id, "Approve the consent screen");
+    now += 1_000;
+    expect(before.answerAsk(b.tab.id, "user")).toEqual({ reason: "Approve the consent screen", at: 2_000_000, done: { at: 2_001_000, by: "user" } });
+    expect(before.answerAsk(b.tab.id, "user")).toBeUndefined();
+    const after = new BrowserWorkbench(options);
+    expect(after.tabs().map((tab) => tab.ask)).toEqual([
+      { reason: "Sign in to Mobbin", at: 2_000_000, site: "mobbin.com", signedIn: false },
+      { reason: "Approve the consent screen", at: 2_000_000, done: { at: 2_001_000, by: "user" } },
+    ]);
+    expect(after.asking().map((tab) => tab.id)).toEqual([a.tab.id]);
+    const saved = JSON.parse(readFileSync(file, "utf8"));
+    saved[0].ask = { reason: "x".repeat(200), at: 1 };
+    saved[1].ask = { reason: "Fine", at: 5, site: "../etc", signedIn: "no", done: { at: "soon", by: "agent" } };
+    writeFileSync(file, JSON.stringify(saved));
+    expect(new BrowserWorkbench(options).tabs().map((tab) => tab.ask)).toEqual([undefined, { reason: "Fine", at: 5 }]);
+  });
+
+  test("what the agent is told, in the user's words", () => {
+    expect(askAnsweredMessage({ id: "tab-1a2b3c4d" }, { reason: "Sign in to Mobbin." }, "user")).toBe("Done: Sign in to Mobbin (conch's browser, tab-1a2b3c4d).");
+    expect(askAnsweredMessage({ id: "tab-1a2b3c4d" }, { reason: "Sign in to Mobbin", site: "mobbin.com" }, "sign-in"))
+      .toBe("Signed in to mobbin.com: Sign in to Mobbin (conch's browser, tab-1a2b3c4d).");
+  });
+
+  test("the daemon tells the agent as Approve does, and looks at the sign-ins while an ask waits", () => {
+    const daemon = readFileSync(join(import.meta.dir, "..", "src/daemon.ts"), "utf8");
+    const wiring = daemon.slice(daemon.indexOf("const browser = createBrowserService({"), daemon.indexOf("// A session that ended a day ago"));
+    expect(wiring).toContain("tell: (sessionId, text) => {");
+    expect(wiring).toContain("enqueue(approvedInjectEvent({");
+    expect(wiring).toContain("setInterval(() => browser.checkAsks(), BROWSER_ASK_CHECK_MS)");
+    expect(daemon).toContain("clearInterval(browserAsks);");
   });
 });
 
