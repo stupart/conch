@@ -19,12 +19,20 @@ final class BrowserSignInsStore: NSObject, ObservableObject, WKHTTPCookieStoreOb
 
     /// A busy page sets cookies all the time: a profile is read again once they have been still this long.
     private static let settle: UInt64 = 2_000_000_000
+    /// …or this long after they started changing, however busy the page. A page that never stops (a YouTube player in
+    /// the review pane sets cookies every few seconds) put every read off for two days, sign-ins included (2026-10-18).
+    private static let longestWait: TimeInterval = 10
+    /// And once in a while regardless, so a change WebKit didn't report is caught up with.
+    private static let everyWhile: UInt64 = 10 * 60 * 1_000_000_000
     /// The report is written when what it says changes, and at least this often while a profile's cookies do.
     private static let rewriteAfter: TimeInterval = 5 * 60
 
     private var stores: [String: WKWebsiteDataStore] = [:]
     private var cookieStores: [String: WKHTTPCookieStore] = [:]
     private var reads: [String: Task<Void, Never>] = [:]
+    /// When each profile's cookies started changing, while a read waits for them to settle.
+    private var waitingSince: [String: Date] = [:]
+    private var sweep: Task<Void, Never>?
     private var checkedAt: [String: Date] = [:]
     private var written: (report: BrowserSignIns.Report, at: Date)?
     private let reportURL: URL
@@ -48,6 +56,13 @@ final class BrowserSignInsStore: NSObject, ObservableObject, WKHTTPCookieStoreOb
         cookieStores[profile] = cookies
         cookies.add(self)
         read(profile, after: 0)
+        sweep = sweep ?? Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: Self.everyWhile)
+                guard let self else { return }
+                for profile in self.cookieStores.keys where self.reads[profile] == nil { self.read(profile, after: 0) }
+            }
+        }
     }
 
     /// The daemon's whole list of profiles: each is watched, and one that is gone is dropped from the list and the
@@ -60,6 +75,7 @@ final class BrowserSignInsStore: NSObject, ObservableObject, WKHTTPCookieStoreOb
             stores[profile] = nil
             cookieStores[profile] = nil
             reads[profile] = nil
+            waitingSince[profile] = nil
             checkedAt[profile] = nil
             sites[profile] = nil
         }
@@ -76,10 +92,16 @@ final class BrowserSignInsStore: NSObject, ObservableObject, WKHTTPCookieStoreOb
     }
 
     private func read(_ profile: String, after delay: UInt64) {
+        let now = Date()
+        // Waited long enough: the read already set stands, rather than being put off again.
+        if let since = waitingSince[profile], now.timeIntervalSince(since) >= Self.longestWait, reads[profile] != nil { return }
+        if waitingSince[profile] == nil { waitingSince[profile] = now }
         reads[profile]?.cancel()
         reads[profile] = Task { @MainActor [weak self] in
             if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
             guard let self, !Task.isCancelled, let cookies = self.cookieStores[profile] else { return }
+            self.waitingSince[profile] = nil
+            self.reads[profile] = nil
             let found = await cookies.allCookies()
             guard !Task.isCancelled, self.cookieStores[profile] != nil else { return }
             let named = found.map { BrowserSignIns.Cookie(name: $0.name, domain: $0.domain, expires: $0.expiresDate) }
