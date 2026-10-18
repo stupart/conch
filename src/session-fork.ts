@@ -1,6 +1,7 @@
 import type { PanelSessionState } from "./panel.ts";
 import { restartRequest } from "./session-lifecycle.ts";
 import type { SessionInfo } from "./sessions.ts";
+import type { TabAgentState } from "./agent-alive.ts";
 
 /**
  * Forking a session from conch (2026-10-09, Tyler: "we should make it easier to fork sessions in app and have them bring
@@ -18,6 +19,8 @@ export interface PendingFork {
   label: string;
   /** When it was asked for (epoch ms). */
   at: number;
+  /** The label asked for it (`conch_fork`'s `label`); else it is "<label> · fork". */
+  forkLabel?: string;
 }
 
 /** How long a fork waits to be seen before conch stops looking for it. */
@@ -99,4 +102,65 @@ export function inheritedState(
     review: reviews.find((review) => review.id === parent.review?.id) ?? reviews.at(-1)!,
     ...(parent.versions ? { versions: { ...parent.versions } } : {}),
   };
+}
+
+/**
+ * How long a fork an agent asked for (`conch_fork`, the `wait` of a `session-fork`) is waited on before conch answers
+ * that it is running but not yet seen. Under the MCP call's own budget (`CONCH_FORK_REPLY_MS` in mcp.ts), which is under
+ * Codex's 60 s tool timeout.
+ */
+export const FORK_WAIT_MS = 25_000;
+
+/** How long a tab running nothing is given, before conch has seen its agent in it, to count as gone: a slow Terminal's first look. */
+export const FORK_START_GRACE_MS = 6_000;
+
+export interface ForkStartWatch {
+  /** Settles when `adoptForks` has seen the fork as a session of its own. */
+  adopted: Promise<{ forkId: string; label: string }>;
+  /** What its tab is running now (`tabAgentState`); "unknown" when it has no tab (conch's background host). */
+  state(): Promise<TabAgentState>;
+  /** What its tab shows, once the agent has gone. */
+  lastWords(): Promise<string | undefined>;
+  /** Ask for a registry read, so `adoptForks` looks again. */
+  look(): void;
+  /** Where it runs, in words: "Terminal (ttys012)". */
+  where: string;
+  sleep(ms: number): Promise<void>;
+  now(): number;
+}
+
+/**
+ * Wait for a fork an agent asked for: its id once conch has adopted it; that it is running, and where, when it is
+ * alive but not yet seen by the deadline; or an error with what its tab said when the agent exited. The 18 Oct
+ * failure: `conch start --resume … --fork-session` said "opened" for a Claude Code that had died at once under the
+ * wrong profile, and the agent told the user the fork was open.
+ */
+export async function awaitForkStart(
+  watch: ForkStartWatch,
+  options: { withinMs?: number; graceMs?: number; everyMs?: number } = {},
+): Promise<{ forkId: string; label: string } | { running: string }> {
+  const { withinMs = FORK_WAIT_MS, graceMs = FORK_START_GRACE_MS, everyMs = 1_000 } = options;
+  const started = watch.now();
+  let adopted: { forkId: string; label: string } | undefined;
+  void watch.adopted.then((value) => { adopted = value; }, () => {});
+  let seenRunning = false;
+  const gone = async (how: string): Promise<never> => {
+    const words = await watch.lastWords().catch(() => undefined);
+    throw new Error(`${how}, in ${watch.where}${words ? `. Its tab shows:\n${words}` : ""}`);
+  };
+  for (;;) {
+    await Promise.race([watch.adopted.catch(() => {}), watch.sleep(everyMs)]);
+    if (adopted) return adopted;
+    const waited = watch.now() - started;
+    const state = await watch.state();
+    if (state === "running") seenRunning = true;
+    // Gone stays gone; a moment's grace only for a tab whose agent conch has not seen yet.
+    if (state === "gone" && (seenRunning || waited >= graceMs)) await gone("the fork's agent exited as soon as it started");
+    if (waited >= withinMs) {
+      // Still only its shell: the command never ran (a folder that has gone, a shell that stopped on an error).
+      if (state === "starting" && !seenRunning) await gone("the fork's tab never started its agent");
+      return { running: watch.where };
+    }
+    watch.look();
+  }
 }

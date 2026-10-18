@@ -103,6 +103,33 @@ must survive between snapshots has to be carried forward explicitly. The
 dictation `id`, the sticky artifact, the `transcriptPrefix` — all of them exist
 because a naive publisher would drop or re-apply them.
 
+**Stale MCP tools (`rows[].toolsStale`, sessions file only).** A session keeps
+the conch MCP tools its server loaded when it started; a server started since
+15 Oct can hand over to a newer conch's (`mcp-handoff.ts`), an older one never
+can. Each `conch mcp` server writes what it has to
+`~/.config/conch/mcp-servers/<pid>.json` (`McpServerReport`: its toolset
+fingerprint, tool names, whether it can hand over, the session pid it serves)
+and removes it on exit. Once a minute the daemon reads those reports and the
+`conch mcp` processes (`ps`; a server too old to report is judged by when it
+started) and puts `toolsStale` on the row of each live session whose server
+can't get this build's tools (`mcp-servers.ts` `toolsStaleFor`):
+
+```json
+"toolsStale": {
+  "missing": ["browser_open", "atlas_show", "conch_fork"],
+  "basis": "estimated",
+  "serverStartedAt": "2026-09-22T12:14:19.000Z",
+  "why": "its conch MCP server started 2026-09-22, before a running server could take a newer conch's tools (2026-10-15)",
+  "fix": "restart this session (close it and resume it) to get conch's current tools"
+}
+```
+
+`basis` is `reported` when the server said which tools it has, `estimated`
+for an older one. A server that can still hand over gets seven minutes after a
+daemon start to do it before its session is marked. `conch sessions` and the
+`conch_sessions` tool show it; the Mac app doesn't yet (a "restart to get
+conch's new tools" offer, one by one or for all, is the plan).
+
 ## 4. The two agents, read completely differently
 
 - **Claude Code** pushes: hooks fire `conch hook` as a short-lived process on

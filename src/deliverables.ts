@@ -200,3 +200,59 @@ export function deliverableFacts(review: {
 export function isDeliverableKind(value: unknown): value is DeliverableKind {
   return DELIVERABLE_KINDS.some((kind) => kind === value);
 }
+
+/**
+ * What agents call a kind that isn't one, and what conch files it as: a kind, or "infer", the link's own kind (a URL is
+ * url, a local .html file a page). 2026-10-18 review: two of review_to_front's five refusals in three weeks were
+ * `kind: "link"` and `kind: "web"`, Codex agents' guesses at a name; refusing them cost a publish, so they are read.
+ */
+export const DELIVERABLE_KIND_ALIASES: Readonly<Record<string, DeliverableKind | "infer">> = {
+  link: "infer", web: "infer", website: "infer", site: "infer", webpage: "infer", "web-page": "infer", file: "infer", auto: "infer",
+  html: "page", "local-page": "page",
+  localhost: "url", "dev-server": "url", preview: "url", live: "url", "live-url": "url",
+  md: "markdown", doc: "document", docs: "document", docx: "document", keynote: "document", slides: "document", deck: "document", word: "document",
+  dir: "folder", directory: "folder", tree: "folder", repo: "folder",
+  png: "image", jpg: "image", jpeg: "image", screenshot: "image", picture: "image", photo: "image", img: "image", capture: "image",
+  mp4: "video", mov: "video", movie: "video", recording: "video", screencast: "video",
+  mp3: "audio", wav: "audio", sound: "audio",
+  txt: "text", log: "text", diff: "text", plain: "text",
+  figma: "design", sketch: "design",
+  ios: "simulator", iphone: "simulator", "ios-simulator": "simulator",
+  window: "app", "mac-app": "app",
+  shell: "terminal", tty: "terminal",
+};
+
+function editDistance(a: string, b: string): number {
+  const row = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i += 1) {
+    let previous = row[0]!;
+    row[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const kept = row[j]!;
+      row[j] = Math.min(row[j]! + 1, row[j - 1]! + 1, previous + (a[i - 1] === b[j - 1] ? 0 : 1));
+      previous = kept;
+    }
+  }
+  return row[b.length]!;
+}
+
+/**
+ * An agent's `kind`, read: a kind as it is; an alias as what it stands for (`DELIVERABLE_KIND_ALIASES`), with the word
+ * it was given; anything else refused with the kind it is closest to, when one is close.
+ */
+export function readDeliverableKind(given: string):
+  | { ok: true; kind?: DeliverableKind; alias?: string }
+  | { ok: false; reason: string } {
+  const word = given.trim().toLowerCase();
+  if (isDeliverableKind(word)) return { ok: true, kind: word };
+  const alias = DELIVERABLE_KIND_ALIASES[word];
+  if (alias) return alias === "infer" ? { ok: true, alias: given } : { ok: true, kind: alias, alias: given };
+  const near = DELIVERABLE_KINDS
+    .map((kind) => ({ kind, distance: editDistance(word, kind) }))
+    .sort((a, b) => a.distance - b.distance)[0]!;
+  const hint = near.distance <= Math.max(1, Math.floor(near.kind.length / 3)) ? ` Did you mean "${near.kind}"?` : "";
+  return {
+    ok: false,
+    reason: `kind "${given}" isn't a kind.${hint} kind must be one of ${DELIVERABLE_KINDS.join(", ")}; or leave it out, and conch reads it off the link (a URL is url, a .html file page)`,
+  };
+}

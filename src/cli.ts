@@ -617,8 +617,13 @@ switch (command) {
   }
   case "sessions": {
     const { listSessions, sessionLabel } = await import("./sessions.ts");
+    const { staleToolsByRow } = await import("./mcp-sessions.ts");
+    const { MCP_SESSIONS_FILE } = await import("./mcp.ts");
+    // The daemon marks a session whose conch MCP server can't get its current tools (mcp-servers.ts).
+    const stale = staleToolsByRow(await Bun.file(MCP_SESSIONS_FILE).text().catch(() => null));
     for (const s of await listSessions(cfg.claudeDir)) {
-      console.log(`${sessionLabel(s, s.cwd).padEnd(30)} ${s.cwd ?? ""}  pid=${s.pid}`);
+      const tools = stale.get(s.sessionId);
+      console.log(`${sessionLabel(s, s.cwd).padEnd(30)} ${s.cwd ?? ""}  pid=${s.pid}${tools ? `  tools out of date (missing ${tools.missing.join(", ")}): restart it` : ""}`);
     }
     break;
   }
@@ -827,16 +832,49 @@ switch (command) {
       console.error(error instanceof Error ? error.message : String(error));
       process.exit(1);
     }
+    const adapter = adapterFor(request.backend);
+    if (request.backend === "claude") {
+      // The new tab's login shell never had this process's CLAUDE_CONFIG_DIR (an agent's own profile, when an agent runs
+      // this), so a start names its profile instead: the account holding a resumed conversation (resume-account.ts), and
+      // conch's accounts read as a fresh shell would, with Default the real ~/.claude, as the daemon reads them.
+      const callerConfigDir = process.env.CLAUDE_CONFIG_DIR;
+      delete process.env.CLAUDE_CONFIG_DIR;
+      const { defaultResumeLookup, resumeAccountFor } = await import("./resume-account.ts");
+      const resolved = resumeAccountFor(request, defaultResumeLookup(callerConfigDir));
+      if (!resolved.ok) {
+        console.error(`[conch] not started: ${resolved.error}`);
+        process.exit(1);
+      }
+      request = resolved.request;
+      if (resolved.said) console.log(`[conch] ${resolved.said}`);
+    }
+    let started: { tty?: string } | { backgroundId: string };
     try {
       // The persisted default; the request's own toggle, when given, wins.
-      await (request.host === "background" ? startBackgroundSession : startTerminalSession)({ bypassPermissions: cfg.bypassPermissions, ...request });
+      started = await (request.host === "background" ? startBackgroundSession : startTerminalSession)({ bypassPermissions: cfg.bypassPermissions, ...request });
     } catch (error) {
       // A refused flag pair, a missing binary, a folder that is not there: one
       // line, the way the parse errors above print, rather than a stack trace.
       console.error(error instanceof Error ? error.message : String(error));
       process.exit(1);
     }
-    console.log(`[conch] opened ${adapterFor(request.backend).displayName} ${request.host === "background" ? "in the background" : "in Terminal"}, in ${request.cwd ?? "~"}`);
+    const where = request.cwd ?? "~";
+    if ("backgroundId" in started) {
+      console.log(`[conch] started ${adapter.displayName} in the background (${started.backgroundId}), in ${where}`);
+      break;
+    }
+    if (!started.tty) {
+      console.log(`[conch] asked Terminal to open ${adapter.displayName}, in ${where}; conch couldn't read which tab, so check that it started`);
+      break;
+    }
+    // "Opened" only once the agent is up: Terminal taking the command is not the agent starting (agent-alive.ts).
+    const { confirmAgentStarted, terminalTabWatch } = await import("./agent-alive.ts");
+    const up = await confirmAgentStarted(terminalTabWatch(started.tty, adapter.executable));
+    if (!up.ok) {
+      console.error(`[conch] ${adapter.displayName} ${up.why}, in Terminal (${started.tty}), in ${where}${up.lastWords ? `. Its tab shows:\n${up.lastWords}` : ""}`);
+      process.exit(1);
+    }
+    console.log(`[conch] opened ${adapter.displayName} in Terminal (${started.tty}), running, in ${where}`);
     break;
   }
   case "browse": {

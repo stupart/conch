@@ -1,8 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import type { TabAgentState } from "../src/agent-alive.ts";
+import { applyRuntimeControlMessage } from "../src/control-server.ts";
 import type { PanelSessionState, SessionReview } from "../src/panel.ts";
-import { forkRequest, inheritedState, pendingForkFor, type PendingFork } from "../src/session-fork.ts";
+import { awaitForkStart, forkRequest, inheritedState, pendingForkFor, type PendingFork } from "../src/session-fork.ts";
 import { terminalSessionCommand } from "../src/session-lifecycle.ts";
-import { validateControlMessage } from "../src/settings.ts";
+import { validateControlMessage, validateControlResponse } from "../src/settings.ts";
 
 // 2026-10-09, Tyler: "we should make it easier to fork sessions in app and have them bring over a snapshot of the current
 // conch plugin review / deliverables that the last session had when u fork. (just did a bunch of forks but had to do it
@@ -84,5 +88,103 @@ describe("the fork holds its parent's deliverables", () => {
     expect(inheritedState(parent, own, "x", 42)).toMatchObject({ label: "Landing page hero · fork", status: "working", at: 9 });
     expect(inheritedState({ label: "x", status: "waiting", at: 1 }, undefined, "x", 42)).toBeUndefined();
     expect(inheritedState(undefined, undefined, "x", 42)).toBeUndefined();
+  });
+});
+
+/**
+ * 2026-10-18 review: an agent asked to fork had no conch tool for it, ran `conch start --resume … --fork-session`, was told
+ * "opened" for a Claude Code that died at once, and told Tyler the fork was open. An agent's fork (`conch_fork`) goes
+ * through the daemon's own and waits until conch has seen it running, or says why it didn't start.
+ */
+describe("an agent's fork, waited on", () => {
+  test("the request may carry the fork's label and ask to wait; the reply names the fork once it is seen", async () => {
+    expect(validateControlMessage({ kind: "session-fork", sessionId: ID, label: "  Marketing pass ", wait: true }))
+      .toEqual({ ok: true, value: { kind: "session-fork", sessionId: ID, label: "Marketing pass", wait: true } });
+    expect(validateControlMessage({ kind: "session-fork", sessionId: ID, wait: false }).ok).toBe(false);
+    expect(validateControlMessage({ kind: "session-fork", sessionId: ID, label: 7 }).ok).toBe(false);
+    expect(validateControlResponse({ kind: "session-forked", sessionId: ID, forkId: "99999999-2222-4333-8444-555555555555", label: "Marketing pass" }))
+      .toEqual({ ok: true, value: { kind: "session-forked", sessionId: ID, forkId: "99999999-2222-4333-8444-555555555555", label: "Marketing pass" } });
+    expect(validateControlResponse({ kind: "session-forked", sessionId: ID, running: "Terminal (ttys012)" }))
+      .toEqual({ ok: true, value: { kind: "session-forked", sessionId: ID, running: "Terminal (ttys012)" } });
+    expect(validateControlResponse({ kind: "session-forked", sessionId: ID, running: 3 }).ok).toBe(false);
+
+    const asked: unknown[] = [];
+    const reply = await applyRuntimeControlMessage({ kind: "session-fork", sessionId: ID, label: "Marketing pass", wait: true }, {
+      listResumable: () => ({ sessions: [], complete: true }) as never,
+      start: () => undefined,
+      close: () => undefined,
+      report: () => undefined,
+      async fork(sessionId, options) {
+        asked.push({ sessionId, options });
+        return { notCarriedOver: [], forkId: "fork-1", label: "Marketing pass" };
+      },
+    });
+    expect(asked).toEqual([{ sessionId: ID, options: { label: "Marketing pass", wait: true } }]);
+    expect(reply).toEqual({ kind: "session-forked", sessionId: ID, forkId: "fork-1", label: "Marketing pass" });
+  });
+
+  /** A watch on a fake clock: each sleep moves it on, and the tab says what `states` says at that time. */
+  function watch(states: (at: number) => TabAgentState, adoptAt?: number, words = "No conversation found with session ID: 162f2800") {
+    let clock = 0;
+    let adopt: ((seen: { forkId: string; label: string }) => void) | undefined;
+    const adopted = new Promise<{ forkId: string; label: string }>((resolve) => { adopt = resolve; });
+    const looks: number[] = [];
+    return {
+      looks,
+      watch: {
+        adopted,
+        state: async () => states(clock),
+        lastWords: async () => words,
+        look: () => looks.push(clock),
+        where: "Terminal (ttys012)",
+        async sleep(ms: number) {
+          clock += ms;
+          if (adoptAt !== undefined && clock >= adoptAt) adopt?.({ forkId: "fork-1", label: "Landing page hero · fork" });
+        },
+        now: () => clock,
+      },
+    };
+  }
+
+  test("adopted: the fork's id and label", async () => {
+    const { watch: w, looks } = watch(() => "running", 3_000);
+    expect(await awaitForkStart(w)).toEqual({ forkId: "fork-1", label: "Landing page hero · fork" });
+    // It asked for registry reads while it waited, so adoption isn't left to the 20 s timer.
+    expect(looks.length).toBeGreaterThan(0);
+  });
+
+  test("the agent exits at once: the error says so, with what its tab showed", async () => {
+    const { watch: w } = watch((at) => (at < 2_000 ? "running" : "gone"));
+    await expect(awaitForkStart(w)).rejects.toThrow(
+      "the fork's agent exited as soon as it started, in Terminal (ttys012). Its tab shows:\nNo conversation found with session ID: 162f2800",
+    );
+  });
+
+  test("a tab gone before conch saw its agent gets a moment's grace, then counts", async () => {
+    const { watch: w } = watch(() => "gone");
+    const started = Date.now();
+    await expect(awaitForkStart(w, { graceMs: 6_000 })).rejects.toThrow("exited as soon as it started");
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  test("running but not yet seen by the deadline: where it runs, not an error", async () => {
+    const { watch: w } = watch(() => "running");
+    expect(await awaitForkStart(w, { withinMs: 10_000 })).toEqual({ running: "Terminal (ttys012)" });
+  });
+
+  test("a tab still at its shell when the wait runs out never started its agent", async () => {
+    const { watch: w } = watch(() => "starting", undefined, "cd: no such file or directory: /Users/alex/gone");
+    await expect(awaitForkStart(w, { withinMs: 10_000 })).rejects.toThrow("the fork's tab never started its agent, in Terminal (ttys012). Its tab shows:\ncd: no such file");
+  });
+
+  test("the daemon's fork waits on these, and adoption tells the waiter its label", () => {
+    const daemon = readFileSync(join(import.meta.dir, "..", "src", "daemon.ts"), "utf8");
+    const fork = daemon.slice(daemon.indexOf("const forkLiveSession = async ("), daemon.indexOf("const adoptForks = async"));
+    expect(fork).toContain("await awaitForkStart({");
+    expect(fork).toContain("tabAgentState(await terminalTabCommands(tty), executable)");
+    expect(fork).toContain("lastTabLines(await readTerminalTab(tty))");
+    const adopt = daemon.slice(daemon.indexOf("const adoptForks = async"));
+    expect(adopt).toContain("match.forkLabel ?? `${match.label} · fork`");
+    expect(adopt).toContain("forkWaiters.get(match)?.({ forkId: session.sessionId, label: forkLabel });");
   });
 });

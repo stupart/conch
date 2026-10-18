@@ -68,6 +68,7 @@ const TOOL_NAMES = [
   "conch_rename",
   "conch_config",
   "conch_transcript_tail",
+  "conch_fork",
   "review_to_front",
   "conch_history",
   "conch_item",
@@ -187,7 +188,7 @@ interface FakeCalls {
   providerRenames: Array<{ sessionId: string; label: string }>;
   workingFolders: Array<{ sessionId: string; folders: readonly string[] }>;
   daemon: Array<{ socketPath: string; event: TurnEvent }>;
-  control: Array<{ socketPath: string; message: ControlMessage | HistoryRequest }>;
+  control: Array<{ socketPath: string; message: Parameters<McpDependencies["sendControlMessage"]>[1] }>;
   marks: string[];
   assistantReads: string[];
   sentenceSplits: string[];
@@ -313,6 +314,12 @@ function fakeHarness(options: FakeOptions = {}): {
           },
         };
       }
+      if (message.kind === "session-fork") {
+        return {
+          ok: true,
+          response: { kind: "session-forked", sessionId: message.sessionId, forkId: "fork-1", label: message.label ?? "Build label · fork" },
+        };
+      }
       if (message.kind === "get-config") {
         return {
           ok: true,
@@ -371,6 +378,7 @@ function recordingHandlers(
     conch_rename: handler("conch_rename"),
     conch_config: handler("conch_config"),
     conch_transcript_tail: handler("conch_transcript_tail"),
+    conch_fork: handler("conch_fork"),
     review_to_front: handler("review_to_front"),
     conch_history: handler("conch_history"),
     conch_item: handler("conch_item"),
@@ -529,21 +537,22 @@ describe("MCP tool discovery", () => {
 
     expect(response?.id).toBe(11);
     expect(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).toEqual([...TOOL_NAMES]);
-    expect(result.tools).toHaveLength(25);
-    expect(new Set(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).size).toBe(25);
+    expect(result.tools).toHaveLength(TOOL_NAMES.length);
+    expect(new Set(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).size).toBe(TOOL_NAMES.length);
     for (const deferred of DEFERRED_TOOL_NAMES) {
       expect(result.tools.some((tool: unknown) => isRecord(tool) && tool.name === deferred)).toBe(false);
     }
 
     const expectedProperties: Record<McpToolName, string[]> = {
-      conch_sessions: [],
+      conch_sessions: ["session", "detail"],
       conch_wake: ["session"],
       conch_recite: ["session"],
       conch_speak: ["text", "voice"],
       conch_mode: ["action", "session", "scope"],
       conch_rename: ["session", "label"],
       conch_config: ["key", "value", "unset"],
-      conch_transcript_tail: ["session", "sentences"],
+      conch_transcript_tail: ["session", "sentences", "since", "wait"],
+      conch_fork: ["session", "label"],
       review_to_front: ["summary", "link", "kind", "focus", "key", "session", "approval", "scene"],
       conch_history: ["session", "branch", "before", "limit"],
       conch_item: ["session", "item", "bodyCursor"],
@@ -571,6 +580,7 @@ describe("MCP tool discovery", () => {
       conch_rename: ["session", "label"],
       conch_config: [],
       conch_transcript_tail: ["session"],
+      conch_fork: [],
       // session is optional now: it defaults to the CALLING session.
       review_to_front: ["summary"],
       conch_history: ["session"],
@@ -767,7 +777,7 @@ describe("schemas state what the handlers enforce", () => {
     // 2026-10-05: when and why to publish first, then what to pass and what the result means; the mechanics it used to
     // carry are in the parameters and the skill (agent-instructions.test.ts pins where).
     expect(MCP_TOOLS.find((tool) => tool.name === "review_to_front")!.description).toBe(
-      "Publish whenever you produce something the user would look at (a page, screenshot, file, document, plan, diff or PR, build, app state), as you go, not only at the end. It’s one call, it doesn’t interrupt them, and it’s how they follow your work from conch’s Mac app and their phone. Pass a one-line summary of what it is and what to check, and the best single artifact as link (a URL, or a path to a file or folder) with its kind; with nothing to link (an app window, the Simulator), say where to look in the summary. Publishing the same link or key again adds its next version, not a second entry. It opens nothing and doesn’t end your turn: the user’s click on the pill brings it forward. The result says where it landed (surfaces) and any warning or relabel to act on; tell the user from that, not from what you assume.",
+      "Publish whenever you produce something the user would look at (a page, screenshot, file, document, plan, diff or PR, build, app state), as you go, not only at the end. It’s one call, it doesn’t interrupt them, and it’s how they follow your work from conch’s Mac app and their phone. Pass a one-line summary (at most 200 characters) of what it is and what to check, and the best single artifact as link (a URL, or a path to a file or folder) with its kind; with nothing to link (an app window, the Simulator), say where to look in the summary. Publishing the same link or key again adds its next version, not a second entry. It opens nothing and doesn’t end your turn: the user’s click on the pill brings it forward. The result says where it landed (surfaces) and any warning or relabel to act on; tell the user from that, not from what you assume.",
     );
     // Claude Code cuts a tool description past 2048 characters (CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH, 2.1.280).
     for (const tool of MCP_TOOLS) expect(tool.description.length).toBeLessThan(2048);
@@ -911,38 +921,31 @@ describe("real MCP tool handlers with injected dependencies", () => {
     expect(Object.keys(defaultMcpDependencies)).not.toContain("openLink");
   });
 
-  test("sessions returns the published file unchanged, plus the caller's binding", async () => {
+  test("sessions answers one small entry per session from the published file, never the file itself", async () => {
+    const now = 1_234_567;
     const published = {
       v: 1,
-      ts: 99,
+      ts: now - 5_000,
       mode: { muted: true, paused: false, holding: 0 },
-      live: {
-        state: "muted",
-        label: "",
-        partial: "live words",
-        transcriptPrefix: "committed words",
-        reading: { text: "reply in progress", spokenChars: 7 },
-      },
+      live: { state: "muted", label: "", partial: "live words" },
       reply: { sessionId: "active", text: "reply in progress", spokenChars: 7 },
-      preview: { sessionId: "parked", text: "parked reply", spokenChars: 0 },
-      rows: [{
-        id: "active",
-        label: "Active",
-        status: "working",
-        at: 123,
-        transcriptPath: "/virtual/active.jsonl",
-        voice: "af_heart",
-        prioritized: true,
-        navSelected: true,
-        needsResponse: false,
-        paused: false,
-        muted: false,
-        live: "speaking",
-        active: true,
-      }],
+      rows: [
+        {
+          id: "active", label: "Active", status: "working", at: 1_200_000, transcriptPath: "/virtual/active.jsonl",
+          execution: { providerId: "claude" }, accountLabel: "Blueprint", claudeAccountId: "acct-1", cwd: "/work/active",
+          voice: "af_heart", needsResponse: false, paused: false, muted: false, live: "speaking", active: true,
+          reviews: [{ id: "r1", summary: "a long deliverable ".repeat(40) }],
+          toolsStale: { missing: ["browser_open", "conch_fork"], basis: "reported" },
+        },
+        { id: "codex-1", label: "Orchestrator", status: "waiting", at: 1_100_000, backend: "codex", cwd: "/work/codex",
+          needsResponse: false, paused: false, muted: false, live: null, active: false },
+        { id: "agent-a1", label: "explore", status: "working", parentSessionId: "active", backend: "claude",
+          needsResponse: false, paused: false, muted: false, live: null, active: false },
+      ],
       dismissed: [],
+      conversations: { active: { items: new Array(500).fill({ kind: "assistant", text: "words ".repeat(50) }) } },
       futureField: { preserved: true },
-    } satisfies McpPublishedState & { futureField: { preserved: boolean } };
+    };
     const h = fakeHarness({ sessionsFile: JSON.stringify(published) });
     const handlers = createMcpToolHandlers({
       claudeDir: "/virtual/claude",
@@ -950,19 +953,67 @@ describe("real MCP tool handlers with injected dependencies", () => {
       sessionsPath: "/virtual/conch-sessions.json",
     }, h.dependencies);
 
-    const response = await callTool(handlers, "conch_sessions", {});
-
-    expect(JSON.parse(toolText(response))).toEqual({
-      ...published,
+    const reply = toolText(await callTool(handlers, "conch_sessions", {}));
+    const state = JSON.parse(reply);
+    expect(state).toEqual({
       caller: { status: "unverified", reason: expect.stringContaining("is not a live session conch knows") },
+      mode: { paused: false, muted: true },
+      sessions: [
+        {
+          id: "active", label: "Active", backend: "claude", status: "working", cwd: "/work/active", account: "Blueprint",
+          lastActivity: new Date(1_200_000).toISOString(), alive: true, agents: 1,
+          toolsStale: { missing: ["browser_open", "conch_fork"], basis: "reported" },
+        },
+        {
+          id: "codex-1", label: "Orchestrator", backend: "codex", status: "waiting", cwd: "/work/codex",
+          lastActivity: new Date(1_100_000).toISOString(), alive: true,
+        },
+      ],
+      total: 2,
+      more: expect.stringContaining("detail: true"),
     });
+    // The rest of the published state stays where it is.
+    for (const left of ["conversations", "futureField", "reply", "live", "rows", "reviews", "transcriptPath"]) expect(reply).not.toContain(`"${left}"`);
     expect(h.calls.sessionsFiles).toEqual(["/virtual/conch-sessions.json"]);
-    // Read once, for the binding; the rows are the daemon's.
-    expect(h.calls.registries).toEqual(["/virtual/claude"]);
     expect(h.calls.daemon).toEqual([]);
+
+    // Narrowed by part of a label, and one session in full with detail.
+    expect(JSON.parse(toolText(await callTool(handlers, "conch_sessions", { session: "orch" }))).sessions.map((one: { id: string }) => one.id))
+      .toEqual(["codex-1"]);
+    const full = JSON.parse(toolText(await callTool(handlers, "conch_sessions", { session: "active", detail: true })));
+    expect(full.session).toMatchObject({ id: "active", transcriptPath: "/virtual/active.jsonl", voice: "af_heart" });
+    expect(full.session.reviews).toHaveLength(1);
+    expect(toolText(await callTool(handlers, "conch_sessions", { detail: true }))).toContain("pass session with its id or label too");
+    expect(toolText(await callTool(handlers, "conch_sessions", { session: "nothing-like-it", detail: true }))).toContain("no session's id or label matches");
+    expect(JSON.parse(toolText(await callTool(handlers, "conch_sessions", { session: "nothing-like-it" }))).note).toContain("omit session to list them all");
   });
 
-  test("sessions falls back to a deterministic PublishedState from the injected registry", async () => {
+  test("sessions never answers more than 20 KB: the least recently active are left out, and it says so", async () => {
+    const rows = Array.from({ length: 400 }, (_, index) => ({
+      id: `session-${String(index).padStart(4, "0")}-${"x".repeat(20)}`, label: `Session ${index} ${"label ".repeat(8)}`,
+      status: "waiting", at: 1_000_000 + index, cwd: `/work/${"deep/".repeat(10)}${index}`, accountLabel: "Default",
+    }));
+    const h = fakeHarness({ sessionsFile: JSON.stringify({ v: 1, ts: 1_234_000, rows }) });
+    const handlers = createMcpToolHandlers({ claudeDir: "/virtual/claude", socketPath: "/virtual/conch.sock" }, h.dependencies);
+    const reply = toolText(await callTool(handlers, "conch_sessions", {}));
+    expect(reply.length).toBeLessThanOrEqual(20_000);
+    const state = JSON.parse(reply);
+    expect(state.total).toBe(400);
+    expect(state.truncated).toContain(`most recently active of 400`);
+    expect(state.sessions[0].id).toStartWith("session-0399");
+
+    // One session's full row is held to the same cap: its oldest deliverables go first.
+    const heavy = { id: "heavy", label: "Heavy", status: "working", reviews: Array.from({ length: 200 }, (_, index) => ({ id: `r${index}`, summary: "s".repeat(200) })) };
+    const one = createMcpToolHandlers({ claudeDir: "/virtual/claude", socketPath: "/virtual/conch.sock" },
+      fakeHarness({ sessionsFile: JSON.stringify({ v: 1, ts: 1_234_000, rows: [heavy] }) }).dependencies);
+    const detail = toolText(await callTool(one, "conch_sessions", { session: "heavy", detail: true }));
+    expect(detail.length).toBeLessThanOrEqual(20_000);
+    const parsed = JSON.parse(detail);
+    expect(parsed.trimmed).toContain("newest deliverables of 200");
+    expect(parsed.session.reviews.at(-1).id).toBe("r199");
+  });
+
+  test("sessions falls back to the injected registry, in the same short entries", async () => {
     const h = fakeHarness({ sessionsFile: "{ malformed" });
     const handlers = createMcpToolHandlers({
       claudeDir: "/virtual/claude",
@@ -972,26 +1023,13 @@ describe("real MCP tool handlers with injected dependencies", () => {
     const response = await callTool(handlers, "conch_sessions", {});
 
     expect(JSON.parse(toolText(response))).toEqual({
-      v: 1,
-      ts: 1_234_567,
-      mode: { muted: false, paused: false, holding: 0 },
-      live: { state: "idle", label: "" },
-      rows: [{
-        id: "session-123",
-        label: "Build label",
-        cwd: "/work/build",
-        status: "waiting",
-        needsResponse: false,
-        paused: false,
-        muted: false,
-        live: null,
-        active: false,
-      }],
-      dismissed: [],
-      dismissedRows: [],
       caller: { status: "unverified", reason: expect.any(String) },
+      mode: { paused: false, muted: false },
+      source: "the registry: conch's daemon is not running",
+      sessions: [{ id: "session-123", label: "Build label", backend: "claude", status: "waiting", cwd: "/work/build", alive: true }],
+      total: 1,
+      more: expect.any(String),
     });
-    expect(h.calls.registries).toEqual(["/virtual/claude", "/virtual/claude"]);
   });
 
   test("wake, recite, speak, and mode send exact TurnEvents through the fake daemon seam", async () => {
@@ -1171,6 +1209,8 @@ describe("real MCP tool handlers with injected dependencies", () => {
     expect(JSON.parse(toolText(tail))).toEqual({
       sessionId: "session-123",
       label: "Build label",
+      status: "waiting",
+      cursor: expect.stringMatching(/^t1\.[0-9a-f]{16}$/),
       text: "Second! Third? Fourth.",
     });
     expect(h.calls.assistantReads).toEqual(["/virtual/session-123.jsonl"]);
@@ -2027,7 +2067,8 @@ describe("caller binding: which session is calling, and what that allows", () =>
     const { handlers } = harness([alpha, beta], 4321);
     const state = JSON.parse(toolText(await callTool(handlers, "conch_sessions", {})));
     expect(state.caller).toEqual({ status: "verified", sessionId: "session-a", label: "Alpha" });
-    expect(state.rows.map((row: { id: string }) => row.id)).toEqual(["session-a", "session-b"]);
+    expect(state.sessions.map((row: { id: string }) => row.id).sort()).toEqual(["session-a", "session-b"]);
+    expect(state.sessions.find((row: { id: string }) => row.id === "session-a").you).toBe(true);
   });
 
   test("a parent no row carries is unverified, with the reason", async () => {
@@ -2652,7 +2693,7 @@ describe("conch_capture", () => {
     const h = fakeHarness({ parentPid: 4321, sessionsFile: JSON.stringify(published) });
     const state = JSON.parse(toolText(await callTool(createMcpToolHandlers(runtime, h.dependencies), "conch_sessions", {})));
     expect(state).not.toHaveProperty("captureRequests");
-    expect(state.rows).toEqual([]);
+    expect(state.sessions).toEqual([]);
   });
 });
 

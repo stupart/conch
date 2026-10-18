@@ -1,4 +1,4 @@
-import { stat } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { AudioControl } from "./audio-holder.ts";
 import { audioTimeoutMs } from "./audio-watchdog.ts";
@@ -33,6 +33,7 @@ import {
   type ControlMessage,
   type ControlResponse,
   type ControlResult,
+  type RuntimeControlMessage,
   type SettingKey,
 } from "./settings.ts";
 import { AGENT_INSTRUCTIONS, MAX_SPEAK_CHARS, type AgentInstructions } from "./agent-instructions.ts";
@@ -41,9 +42,18 @@ import { isPageAccess } from "./page-access.ts";
 import { MARK_PIXELS_MAX, MARK_UNITS, scenePixelsToFractions } from "./mark-pixels.ts";
 import { RelabelHints, type LabelSource } from "./label-drift.ts";
 import { backendOfClient, McpCallLog, type McpCaller, type McpCallObservation, type McpCallOutcome } from "./mcp-usage.ts";
+import { compactSessionList, detailedSession, rowMatches, type SessionsView } from "./mcp-sessions.ts";
+import { assistantTail, TAIL_WAIT_MAX_S, waitForTail, type AssistantTail } from "./transcript-tail.ts";
 
 /** A session works in a few folders, not a filesystem. */
 const WORKING_FOLDERS_MAX = 8;
+
+/**
+ * How long `conch_fork` waits for the daemon: its Terminal or background start, then up to `FORK_WAIT_MS` (25 s,
+ * session-fork.ts, not imported so this server stays light) for the fork to be seen running. Under Codex's 60 s tool
+ * timeout.
+ */
+export const CONCH_FORK_REPLY_MS = 45_000;
 import {
   checkLocalFile,
   checkReviewLink,
@@ -77,6 +87,7 @@ import {
   folderRefusal,
   isDeliverableKind,
   LINKLESS_DELIVERABLE_KINDS,
+  readDeliverableKind,
 } from "./deliverables.ts";
 import { reviewIdentity } from "./records-receipts.ts";
 import { reviewLinkScope, transcriptFolder, type LinkScope } from "./review-roots.ts";
@@ -127,6 +138,7 @@ import {
   type McpHandoffOptions,
 } from "./mcp-handoff.ts";
 import { MCP_TOOLSET } from "./mcp-toolset.ts";
+import { mcpServersDir, removeMcpServerReport, writeMcpServerReport, type McpServerReport } from "./mcp-servers.ts";
 import { transcriptFormatFor } from "./agent-adapter.ts";
 import {
   HISTORY_CURSOR_MAX_BYTES, HISTORY_DEFAULT_LIMIT, HISTORY_ID_MAX_BYTES, HISTORY_MAX_LIMIT,
@@ -275,7 +287,18 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
       description: text.tools.conch_sessions,
       inputSchema: {
         type: "object",
-        properties: {},
+        properties: {
+          session: {
+            type: "string",
+            minLength: 1,
+            description: "Optional. Only the sessions this names: an id, the first 4+ characters of one, or part of a label (any case).",
+          },
+          detail: {
+            type: "boolean",
+            default: false,
+            description: "Optional, with session naming exactly one: that session's full row (its deliverables, last line, settings, context), instead of the short entry.",
+          },
+        },
         additionalProperties: false,
       },
     },
@@ -404,8 +427,40 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
             minimum: 1,
             default: 3,
           },
+          since: {
+            type: "string",
+            minLength: 1,
+            description: "Optional. The cursor an earlier call returned: the reply says unchanged, \"no new text\", instead of the same words again.",
+          },
+          wait: {
+            type: "number",
+            minimum: 0,
+            maximum: TAIL_WAIT_MAX_S,
+            description: `Optional. Seconds (at most ${TAIL_WAIT_MAX_S}) to wait for text newer than since (or than what the session shows now), returning as soon as there is some. Your other conch calls wait behind it.`,
+          },
         },
         required: ["session"],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: "conch_fork",
+      description: text.tools.conch_fork,
+      inputSchema: {
+        type: "object",
+        properties: {
+          session: {
+            type: "string",
+            minLength: 1,
+            description: "Optional. The live session to fork, by id or label; your own verified session when omitted.",
+          },
+          label: {
+            type: "string",
+            minLength: 1,
+            maxLength: 80,
+            description: "Optional. The fork's label in conch, e.g. \"Marketing pass\"; else \"<its label> · fork\".",
+          },
+        },
         additionalProperties: false,
       },
     },
@@ -415,7 +470,13 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
       inputSchema: {
         type: "object",
         properties: {
-          summary: { type: "string", minLength: 1 },
+          // 2026-10-18 review: 153 of 919 accepted summaries (16.6%) were cut at 200 characters, and the schema said only "one-line".
+          summary: {
+            type: "string",
+            minLength: 1,
+            maxLength: REVIEW_SUMMARY_MAX,
+            description: `One line, at most ${REVIEW_SUMMARY_MAX} characters: what it is and what to check. Longer is cut at ${REVIEW_SUMMARY_MAX} (the result's summaryTruncated says so); the detail belongs in your reply.`,
+          },
           // 2026-10-05: what a link may be and what the result says about it moved here from the tool's description,
           // which now says when to publish (`REVIEW_TO_FRONT_DESCRIPTION_MAX` in agent-instructions.ts says why).
           link: {
@@ -670,7 +731,7 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
             type: "object",
             description: "Optional. File the capture as your deliverable (kind image, with the mark) in one step, as review_to_front would: summary is its one line, key names the artifact (defaults to the page and the target, so capturing the same part again is its next version). Not filed when the page showed a sign-in screen.",
             properties: {
-              summary: { type: "string", minLength: 1 },
+              summary: { type: "string", minLength: 1, maxLength: REVIEW_SUMMARY_MAX, description: `One line, at most ${REVIEW_SUMMARY_MAX} characters.` },
               key: { type: "string", minLength: 1, maxLength: ARTIFACT_KEY_MAX },
             },
             required: ["summary"],
@@ -904,7 +965,7 @@ export interface McpDependencies {
   labelSource?(session: Readonly<SessionInfo>): LabelSource;
   sendControlMessage(
     socketPath: string,
-    message: ControlMessage | HistoryRequest,
+    message: ControlMessage | HistoryRequest | Extract<RuntimeControlMessage, { kind: "session-fork" }>,
     timeoutMs?: number,
   ): Promise<ControlResult>;
   getSettingDescriptor: typeof getSettingDescriptor;
@@ -921,6 +982,10 @@ export interface McpDependencies {
   browser?(socketPath: string, message: BrowserMessage, timeoutMs?: number): Promise<BrowserSend>;
   /** `atlas_show`'s copy of a page, written into the copies folder (`writeAtlasCopy`); its absolute path. */
   writeAtlasCopy?(file: string, markdown: string, folder: string): Promise<string>;
+  /** A session's newest assistant text and its id (`assistantTail`); absent, `lastAssistantText` is read and has no id. */
+  assistantTail?(transcriptPath: string, session: Readonly<SessionInfo>): Promise<AssistantTail>;
+  /** How a waiting `conch_transcript_tail` sleeps between reads; Bun.sleep when absent. */
+  sleep?(ms: number): Promise<void>;
 }
 
 export const defaultMcpDependencies: McpDependencies = {
@@ -954,6 +1019,15 @@ export const defaultMcpDependencies: McpDependencies = {
       { window: session },
     );
     return lastAssistantReply(conversation);
+  },
+  // The same loader and window, for the tail's cursor: the newest assistant item, mid-turn too (transcript-tail.ts).
+  async assistantTail(transcriptPath, session) {
+    return assistantTail(await readConversationTail(
+      transcriptPath,
+      session.sessionId,
+      transcriptFormatFor(transcriptPath),
+      { window: session },
+    ));
   },
   splitSentences,
   now: Date.now,
@@ -1008,11 +1082,37 @@ function toolArguments(value: unknown): Record<string, unknown> {
 function allowOnly(
   argumentsValue: Readonly<Record<string, unknown>>,
   allowed: readonly string[],
+  /** What to use instead of a name agents guess, said with the refusal. */
+  instead: Readonly<Record<string, string>> = {},
 ): void {
   const allowedKeys = new Set(allowed);
   const extra = Object.keys(argumentsValue).find((key) => !allowedKeys.has(key));
-  if (extra) throw new ToolInputError(`unknown argument "${extra}"`);
+  if (extra) {
+    throw new ToolInputError(Object.hasOwn(instead, extra) ? `unknown argument "${extra}": use ${instead[extra]}` : `unknown argument "${extra}"`);
+  }
 }
+
+/**
+ * Names agents give review_to_front's arguments that it doesn't take, and the one it does. 2026-10-18 review: a Codex
+ * agent passed `artifactKey`, was told only "unknown argument", and moved on without publishing.
+ */
+export const REVIEW_ARGUMENTS_INSTEAD: Readonly<Record<string, string>> = {
+  artifactKey: "key (it names the artifact: the same key again files its next version)",
+  artifactId: "key (it names the artifact: the same key again files its next version)",
+  artifact: "key (it names the artifact: the same key again files its next version)",
+  url: "link (a URL, or a path to a file or folder)",
+  path: "link (a URL, or a path to a file or folder)",
+  file: "link (a URL, or a path to a file or folder)",
+  href: "link (a URL, or a path to a file or folder)",
+  title: "summary (one line, at most 200 characters)",
+  description: "summary (one line, at most 200 characters)",
+  message: "summary (one line, at most 200 characters)",
+  text: "summary (one line, at most 200 characters)",
+  type: "kind",
+  files: "focus (paths inside a folder link)",
+  paths: "focus (paths inside a folder link)",
+  sessionId: "session, or leave it out: it is your own session",
+};
 
 function requiredString(
   argumentsValue: Readonly<Record<string, unknown>>,
@@ -1394,6 +1494,21 @@ function snapshotControlResult(result: ControlResult): ConfigSnapshot {
   return response.snapshot;
 }
 
+/**
+ * A link refused for being hidden, with the way to show it anyway: a copy in /tmp, which conch files as its own copy. Not
+ * for a key or certificate, which should not be shown at all. 2026-10-18 review: a hidden-folder refusal left the agent
+ * with nothing to try.
+ */
+async function hiddenLinkHint(reason: string, path: string): Promise<string> {
+  if (!/is a hidden (?:file|folder)/.test(reason) || /\.(pem|key|p8|p12|pfx|keychain|keychain-db)$/i.test(path)) return reason;
+  const real = await realpath(path).catch(() => path);
+  const hidden = real.split("/").some((part) => part.startsWith(".") && part !== ".worktrees" && part !== "." && part !== "..");
+  if (!hidden) return reason;
+  return `${reason}. To show it, copy it to /tmp first (cp -R ${shellWord(real)} /tmp/) and link the copy: conch files a temp folder's file as its own copy`;
+}
+
+const shellWord = (value: string) => (/^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, "'\\''")}'`);
+
 /** `conch_capture`'s `publish`: a summary as review_to_front takes one, and a key by its rule. */
 function capturePublishArguments(value: unknown): { summary: string; key?: string } {
   if (!isRecord(value)) throw new ToolInputError("publish must be {summary, key?}");
@@ -1574,9 +1689,16 @@ export function createMcpToolHandlers(
       return readHistory({ kind: "history-item", ...parsed.value }, meta);
     },
 
+    // One small entry per session, never the published state itself (mcp-sessions.ts says why).
     async conch_sessions(argumentsValue, meta) {
       const argumentsObject = toolArguments(argumentsValue);
-      allowOnly(argumentsObject, []);
+      allowOnly(argumentsObject, ["session", "detail"]);
+      const query = optionalString(argumentsObject, "session")?.trim();
+      if (Object.hasOwn(argumentsObject, "detail") && typeof argumentsObject.detail !== "boolean") {
+        throw new ToolInputError("detail must be true or false");
+      }
+      const detail = argumentsObject.detail === true;
+      if (detail && !query) throw new ToolInputError("detail shows one session in full: pass session with its id or label too");
       const binding = await callerBinding(config, dependencies, meta);
       const caller = binding.status === "verified"
         ? {
@@ -1585,23 +1707,85 @@ export function createMcpToolHandlers(
           label: dependencies.sessionLabel(binding.session, binding.session.cwd),
         }
         : binding;
+      const snapshot = await dependencies.registrySnapshot(config.claudeDir).catch(() => null);
 
+      let published: Record<string, unknown> | undefined;
       try {
         const raw = await dependencies.readSessionsFile(sessionsPath);
-        if (raw !== null) {
-          const parsed: unknown = JSON.parse(raw);
-          if (!isRecord(parsed)) throw new Error("published state is not a JSON object");
-          // The pages the Mac app is drawing for agents (page-capture.ts) are the app's to-do list, not session state.
-          const { captureRequests: _drawing, ...state } = parsed;
-          return { ...(state as unknown as PublishedState), caller };
-        }
+        const parsed: unknown = raw === null ? null : JSON.parse(raw);
+        if (isRecord(parsed) && Array.isArray(parsed.rows)) published = parsed;
       } catch {
         // The daemon snapshot is advisory. A missing, unreadable, or malformed file
         // falls through to Claude's registry so the plugin remains useful.
       }
+      const state = published ?? publishedStateFromRegistry(snapshot, dependencies) as unknown as Record<string, unknown>;
+      const view: SessionsView = {
+        rows: state.rows as unknown[],
+        ...(published && typeof published.ts === "number" ? { publishedAt: published.ts } : {}),
+        ...(snapshot ? { liveIds: snapshot.liveIds } : {}),
+        ...(binding.status === "verified" ? { callerId: binding.session.sessionId } : {}),
+        now: dependencies.now(),
+      };
+      const mode = isRecord(state.mode) ? { paused: state.mode.paused === true, muted: state.mode.muted === true } : undefined;
+      const extra = { caller, ...(mode ? { mode } : {}), ...(published ? {} : { source: "the registry: conch's daemon is not running" }) };
+      if (!detail) return compactSessionList(view, query, extra);
+      const rows = view.rows.filter((row): row is Record<string, unknown> => isRecord(row) && typeof row.id === "string");
+      const exact = rows.filter((row) => row.id === query);
+      const matches = exact.length ? exact : rows.filter((row) => rowMatches(row, query!));
+      if (matches.length !== 1) {
+        throw new ToolInputError(matches.length
+          ? `"${query}" names ${matches.length} sessions (${matches.slice(0, 6).map((row) => `${String(row.label ?? row.id)} ${String(row.id)}`).join("; ")}); pass one id for detail`
+          : `no session's id or label matches "${query}"`);
+      }
+      return detailedSession(matches[0]!, extra);
+    },
+
+    // The daemon's own fork (session-fork.ts, `forkLiveSession`): the account, folder and flags carry over, and the answer
+    // waits until conch has seen the fork running, or says why it didn't start.
+    async conch_fork(argumentsValue, meta) {
+      const argumentsObject = toolArguments(argumentsValue);
+      allowOnly(argumentsObject, ["session", "label"]);
+      const query = optionalString(argumentsObject, "session");
+      const label = optionalString(argumentsObject, "label")?.trim();
+      if (label !== undefined && label.length > 80) throw new ToolInputError("label must be at most 80 characters");
+      const session = query
+        ? await resolveSession(query, config, dependencies)
+        : await ownSession("conch_fork", config, dependencies, meta);
+      const from = { sessionId: session.sessionId, label: dependencies.sessionLabel(session, session.cwd) };
+      const result = await dependencies.sendControlMessage(
+        config.socketPath,
+        { kind: "session-fork", sessionId: session.sessionId, ...(label ? { label } : {}), wait: true },
+        CONCH_FORK_REPLY_MS,
+      );
+      if (!result.ok) {
+        throw new Error(result.reason === "daemon-down"
+          ? "failed: conch daemon is not running, so nothing was forked"
+          : `failed: conch's daemon didn't answer the fork in time${result.diagnostic ? ` (${result.diagnostic})` : ""}. It may still have started: check conch_sessions before forking again`);
+      }
+      let response: ControlResponse;
+      try {
+        response = unwrapControlResult(result);
+      } catch (error) {
+        throw new Error(`failed: the fork didn't start: ${errorMessage(error)}`);
+      }
+      if (response.kind !== "session-forked") throw new Error("ack-unknown: daemon reply did not match the fork request");
+      const dropped = response.notCarriedOver?.length ? { notCarriedOver: response.notCarriedOver } : {};
+      if (response.forkId) {
+        return {
+          outcome: "forked",
+          from,
+          forkId: response.forkId,
+          ...(response.label ? { label: response.label } : {}),
+          ...dropped,
+          note: "conch sees the fork running, under the same account and in the same folder, holding the original's deliverables; it is a session of its own in conch's Mac app and phone",
+        };
+      }
       return {
-        ...publishedStateFromRegistry(await dependencies.registrySnapshot(config.claudeDir), dependencies),
-        caller,
+        outcome: "started",
+        from,
+        running: response.running ?? "a new window",
+        ...dropped,
+        note: "the fork's agent is running, but hasn't yet given conch an id it can see (Claude Code may wait for its first message); it appears in conch_sessions once it has. Don't fork again",
       };
     },
 
@@ -1904,9 +2088,10 @@ export function createMcpToolHandlers(
       };
     },
 
+    // A cursor, and a wait, so a session waiting on another doesn't poll (transcript-tail.ts says why).
     async conch_transcript_tail(argumentsValue) {
       const argumentsObject = toolArguments(argumentsValue);
-      allowOnly(argumentsObject, ["session", "sentences"]);
+      allowOnly(argumentsObject, ["session", "sentences", "since", "wait"]);
       const query = requiredString(argumentsObject, "session");
       const countValue = argumentsObject.sentences ?? 3;
       if (
@@ -1916,22 +2101,52 @@ export function createMcpToolHandlers(
       ) {
         throw new ToolInputError("sentences must be an integer at least 1");
       }
+      const since = optionalString(argumentsObject, "since")?.trim();
+      const waitValue = argumentsObject.wait ?? 0;
+      if (typeof waitValue !== "number" || !Number.isFinite(waitValue) || waitValue < 0 || waitValue > TAIL_WAIT_MAX_S) {
+        throw new ToolInputError(`wait must be 0 to ${TAIL_WAIT_MAX_S} seconds`);
+      }
       const session = await resolveSession(query, config, dependencies);
       const transcriptPath = dependencies.findTranscript(
         config.claudeDir,
         session.sessionId,
       );
+      const label = dependencies.sessionLabel(session, session.cwd);
       if (!transcriptPath) {
         throw new Error(
-          `transcript not found for "${dependencies.sessionLabel(session, session.cwd)}"`,
+          `transcript not found for "${label}"`,
         );
       }
-      const text = await dependencies.lastAssistantText(transcriptPath, session);
+      const read = async (): Promise<AssistantTail> => dependencies.assistantTail
+        ? dependencies.assistantTail(transcriptPath, session)
+        : { text: await dependencies.lastAssistantText(transcriptPath, session), midTurn: false };
+      const { tail, cursor, waitedMs, unchanged } = await waitForTail(read, {
+        ...(since ? { since } : {}),
+        waitMs: waitValue * 1000,
+        sleep: dependencies.sleep ?? Bun.sleep,
+        now: dependencies.now,
+      });
+      // Its status as it is now: a wait may have outlived the one it had when the call came.
+      const current = waitedMs > 0 ? await dependencies.findSessionByName(config.claudeDir, session.sessionId).catch(() => null) ?? session : session;
       // Which session answered, since a name can resolve to one you didn't spell out.
-      return {
+      const said = {
         sessionId: session.sessionId,
-        label: dependencies.sessionLabel(session, session.cwd),
-        text: dependencies.splitSentences(text).slice(-countValue).join(" "),
+        label,
+        status: reconcileStatus(current, undefined, dependencies.now()),
+        cursor,
+        ...(waitValue > 0 ? { waitedSeconds: Math.round(waitedMs / 100) / 10 } : {}),
+      };
+      if (unchanged) {
+        const how = since !== undefined ? "since your cursor" : "since this call came";
+        return { ...said, unchanged: true, note: `no new text ${how}${waitValue > 0 ? `, after waiting ${said.waitedSeconds} s` : ""}` };
+      }
+      if (!tail.text) {
+        return { ...said, note: `no reply text yet: "${label}" has written none in its transcript's recent entries (it may be mid-turn, in tool calls)` };
+      }
+      return {
+        ...said,
+        text: dependencies.splitSentences(tail.text).slice(-countValue).join(" "),
+        ...(tail.midTurn ? { midTurn: true, note: "it has moved on since (a tool call, or a new prompt): this is its newest text, from before that" } : {}),
       };
     },
 
@@ -1991,9 +2206,9 @@ export function createMcpToolHandlers(
     async review_to_front(argumentsValue, meta) {
       // Filed, refused or failed, and each says which. A refusal names its reason: this server's,
       // before anything reaches the daemon, or the daemon's own, which it used to only log.
-      const { summary, truncatedFrom, link, scene, kind, key, focus, approval, session, transcriptPath } = await (async () => {
+      const { summary, truncatedFrom, link, scene, kind, key, focus, approval, kindAlias, session, transcriptPath } = await (async () => {
         const argumentsObject = toolArguments(argumentsValue);
-        allowOnly(argumentsObject, ["summary", "link", "kind", "key", "session", "scene", "focus", "approval"]);
+        allowOnly(argumentsObject, ["summary", "link", "kind", "key", "session", "scene", "focus", "approval"], REVIEW_ARGUMENTS_INSTEAD);
         const cleaned = sanitizeReviewSummary(requiredString(argumentsObject, "summary"), Infinity);
         if (!cleaned) throw new ToolInputError("summary must be a non-empty string");
         // Marks measured in pixels become fractions first (mark-pixels.ts): everything after this, the
@@ -2004,10 +2219,14 @@ export function createMcpToolHandlers(
           ? checkReviewScene(pixels.scene, Object.hasOwn(argumentsObject, "link"))
           : undefined;
         if (scene && !scene.ok) throw new ToolInputError(scene.reason);
-        const kind = optionalString(argumentsObject, "kind");
-        if (kind !== undefined && !isDeliverableKind(kind)) {
-          throw new ToolInputError(`kind must be one of ${DELIVERABLE_KINDS.join(", ")}`);
-        }
+        // A kind, an alias agents use for one ("link", "web"), or refused with the nearest kind (deliverables.ts).
+        const rawKind = optionalString(argumentsObject, "kind");
+        const readKind = rawKind === undefined ? undefined : readDeliverableKind(rawKind);
+        if (readKind && !readKind.ok) throw new ToolInputError(readKind.reason);
+        const kind = readKind?.ok ? readKind.kind : undefined;
+        const kindAlias = readKind?.ok && readKind.alias !== undefined
+          ? { given: readKind.alias, used: kind ?? "the link's own kind" }
+          : undefined;
         const kindRefusal = kind && deliverableKindRefusal(kind, Object.hasOwn(argumentsObject, "link"));
         if (kindRefusal) throw new ToolInputError(kindRefusal);
         const rawKey = optionalString(argumentsObject, "key");
@@ -2034,7 +2253,7 @@ export function createMcpToolHandlers(
         // the raw relative string reached the Mac app, which resolved it against its own cwd
         // and previewed a missing file.
         const checked = rawLink === undefined ? undefined : await checkReviewLink(rawLink, scope.cwd, scope.roots);
-        if (checked && !checked.ok) throw new ToolInputError(checked.reason);
+        if (checked && !checked.ok) throw new ToolInputError(await hiddenLinkHint(checked.reason, resolve(scope.cwd, rawLink!.trim())));
         const hasFocus = Object.hasOwn(argumentsObject, "focus");
         const mismatch = folderRefusal({ kind, isFolder: checked?.ok === true && checked.folder === true, hasFocus });
         if (mismatch) throw new ToolInputError(mismatch);
@@ -2052,6 +2271,7 @@ export function createMcpToolHandlers(
           key,
           focus: focus?.ok ? focus.focus : undefined,
           approval: asked?.ok ? asked.approval : undefined,
+          kindAlias,
           session,
           transcriptPath,
         };
@@ -2114,6 +2334,8 @@ export function createMcpToolHandlers(
         ...(truncatedFrom === undefined
           ? {}
           : { summaryTruncated: { from: truncatedFrom, to: REVIEW_SUMMARY_MAX } }),
+        // An alias conch read as a kind: the next call can say it as one.
+        ...(kindAlias ? { kindAlias } : {}),
         ...(relabel ? { relabel } : {}),
       };
       if (verdict) {
@@ -2443,12 +2665,15 @@ function historyRpcResult(id: JsonRpcId, result: unknown): JsonRpcResponse {
  * only from a skill it had to think of loading.
  */
 export function initializeResult(params: unknown, text: AgentInstructions = AGENT_INSTRUCTIONS) {
+  const client = isRecord(params) && isRecord(params.clientInfo) ? params.clientInfo.name : undefined;
   return {
     protocolVersion: negotiateProtocolVersion(isRecord(params) ? params.protocolVersion : undefined),
     // listChanged: a server that hands over to a newer conch's says so (mcp-handoff.ts).
     capabilities: { tools: { listChanged: true } },
     serverInfo: { name: "conch", version: CONCH_VERSION },
-    instructions: text.serverInstructions,
+    // Not to Codex (2026-10-18 review): it showed the instructions in front of every conch tool's own description, so a
+    // skim of its tool list read 25 identical entries, and it carries the same words always-on from the plugin's AGENTS.md.
+    ...(backendOfClient(client) === "codex" ? {} : { instructions: text.serverInstructions }),
   };
 }
 
@@ -2604,6 +2829,11 @@ export interface RunMcpServerOptions {
   handoff?: Omit<McpHandoffOptions, "writeLine" | "diagnostic"> | false;
   /** The per-call log (mcp-usage.ts); on by default, at `mcpUsagePath()`; false is off. */
   callLog?: McpCallLog | false;
+  /**
+   * This server's report of its tools to the daemon (mcp-servers.ts), in `dir`: on by default for the real stdio server,
+   * off when `input` is given (tests) unless passed; false is off.
+   */
+  report?: { dir?: string; pid?: number; sessionPid?: number } | false;
 }
 
 /** How often an idle server looks for a newer conch to hand over to, besides after each message. */
@@ -2691,6 +2921,24 @@ export async function runMcpServer(options: RunMcpServerOptions = {}): Promise<v
     ? undefined
     : options.handoff ?? (options.input || process.env[HANDOFF_FROM_ENV] ? undefined : stdioHandoff(options.config?.sessionsPath ?? MCP_SESSIONS_FILE));
   const handoff = handoffOptions ? new McpHandoff({ ...handoffOptions, writeLine, diagnostic }) : undefined;
+  // What this server has, for the daemon to tell which sessions can't get conch's current tools (mcp-servers.ts).
+  const reportOptions = options.report === false ? undefined : options.report ?? (options.input ? undefined : {});
+  const report = reportOptions
+    ? {
+      dir: reportOptions.dir ?? mcpServersDir(),
+      body: {
+        v: 1 as const,
+        pid: reportOptions.pid ?? process.pid,
+        sessionPid: reportOptions.sessionPid ?? sessionParentPid(),
+        toolset: MCP_TOOLSET,
+        tools: MCP_TOOLS.map((tool) => tool.name),
+        handoff: handoff !== undefined,
+        version: CONCH_VERSION,
+        startedAt: Date.now(),
+      } satisfies McpServerReport as McpServerReport,
+    }
+    : undefined;
+  if (report) writeMcpServerReport(report.body, report.dir);
   const processLine = async (line: string): Promise<void> => {
     if (!line.trim()) return;
     let message: unknown;
@@ -2705,6 +2953,7 @@ export async function runMcpServer(options: RunMcpServerOptions = {}): Promise<v
       handoff?.observe(one);
       if (isRecord(one) && one.method === "initialize" && isRecord(one.params) && isRecord(one.params.clientInfo)) {
         clientBackend = backendOfClient(one.params.clientInfo.name) ?? clientBackend;
+        if (report && clientBackend) writeMcpServerReport({ ...report.body, client: clientBackend }, report.dir);
       }
     }
     // Handed over to a newer conch's server: every line is its to answer.
@@ -2748,6 +2997,7 @@ export async function runMcpServer(options: RunMcpServerOptions = {}): Promise<v
   } finally {
     clearInterval(idleCheck);
     handoff?.close();
+    if (report) removeMcpServerReport(report.body.pid, report.dir);
     reader.releaseLock();
     // The last calls' lines, before `conch mcp` exits with stdin.
     await callLog?.flush();

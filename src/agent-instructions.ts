@@ -28,8 +28,26 @@ export const MAX_SPEAK_CHARS = 600;
  * The longest the server's `instructions` may be. Claude Code cuts them at 2048 characters
  * (`CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH`, 2.1.280) and adds "… [truncated]"; well under that,
  * so every line of it arrives, and short enough to sit in every session's context for nothing.
+ * 2026-10-19: 500 became 1,200 for the ToolSearch line (`serverInstructions` says why).
  */
-export const SERVER_INSTRUCTIONS_MAX = 500;
+export const SERVER_INSTRUCTIONS_MAX = 1_200;
+
+/** The cut Claude Code makes to a server's instructions (2.1.280); `SERVER_INSTRUCTIONS_MAX` stays well under it. */
+export const CLAUDE_CODE_INSTRUCTIONS_CUT = 2_048;
+
+/** A conch tool as a Claude Code session names it: the plugin's server is `conch` in the plugin `conch`. */
+export const claudeCodeToolName = (tool: string) => `mcp__plugin_conch_conch__${tool}`;
+
+/**
+ * The tools a Claude Code session should load in one ToolSearch call before it browses or shoots a page. 2026-10-18
+ * review: no Claude Code agent ever loaded conch_capture or browser_* through ToolSearch (61 loads of review_to_front),
+ * and they wrote 686 Playwright screenshot scripts instead, 112 of them with conch_capture right there; Claude in
+ * Chrome's instructions give a one-line `select:` preload, and 19 of the browser-related ToolSearch calls were that
+ * exact line.
+ */
+export const TOOLSEARCH_PRELOAD = [
+  "review_to_front", "conch_capture", "browser_open", "browser_read", "browser_click", "browser_type", "browser_screenshot",
+] as const;
 
 /**
  * The longest `review_to_front`'s own description may be. 2026-10-05: Tyler asked whether anything in the MCP made
@@ -77,7 +95,9 @@ If you can't publish, end your reply with one \`conch:review <summary> | <link>\
    * go, not only at the end, as the always-on text and `review_to_front` now do.
    */
   serverInstructions:
-    "This session is watched by conch: the user follows it from conch’s Mac app and their iPhone, often away from the desk. Whenever there is something to look at (a page, image, file, folder, build or app state), as you go and not only at the end, publish it with review_to_front instead of only mentioning a path, then tell them where it landed from the result’s surfaces. A file in /tmp or macOS’s /var/folders/…/T is copied into conch. Load the conch-control skill (conch:conch-control) for details.",
+    "This session is watched by conch: the user follows it from conch’s Mac app and their iPhone, often away from the desk. Whenever there is something to look at (a page, image, file, folder, build or app state), as you go and not only at the end, publish it with review_to_front instead of only mentioning a path, then tell them where it landed from the result’s surfaces. A file in /tmp or macOS’s /var/folders/…/T is copied into conch. Load the conch-control skill (conch:conch-control) for details."
+    + ` If conch's tools are deferred, load them in one ToolSearch call before you publish, browse or screenshot a page, with query "select:${TOOLSEARCH_PRELOAD.map(claudeCodeToolName).join(",")}".`
+    + " For a picture of a page or one part of it, use conch_capture rather than writing a Playwright screenshot script; to click through a page and check it, browser_*. To fork a session, conch_fork.",
 
   /** The skill's frontmatter description, which Claude Code carries always-on. */
   skillDescription:
@@ -88,8 +108,9 @@ If you can't publish, end your reply with one \`conch:review <summary> | <link>\
     "If you have no `conch_*` tools, the conch plugin is not loaded in this session. Say so, and check whether it is installed and enabled (`claude plugin list`) before suggesting anything; do not reinstall or restart on your own. When it is missing, `conch install-plugin` is the person's to run.",
 
   tools: {
+    // 2026-10-18 review: it returned the whole published state, 272K-455K characters, too large for every Claude Code call.
     conch_sessions:
-      "Read live session state and IDs, and `caller`: whether conch verified which session you are. This is not complete conversation history.",
+      "List the live sessions, one short entry each: id, label, backend, status (working, waiting, needs), folder, account, last activity, whether it is alive, and toolsStale when its conch tools are out of date. `caller` says whether conch verified which session you are. session narrows the list; with detail: true, one session's full row. Not conversation history: conch_transcript_tail reads a session's latest reply.",
     conch_wake:
       "At the user’s request, open the microphone addressed to a session. Defaults to your verified session. Does not stage a scene.",
     conch_recite:
@@ -102,12 +123,17 @@ If you can't publish, end your reply with one \`conch:review <summary> | <link>\
       "Persist the user-requested display label for a session. Prefer its ID; ambiguous names are refused.",
     conch_config:
       "Read settings or change a user-requested supported voice or timing setting. Changes affect the running daemon.",
+    // 2026-10-18 review: one Codex thread polled it 33 times to wait on a session, and 18 replies were "".
     conch_transcript_tail:
-      "Read the last sentences of a live session’s latest assistant reply. Does not retrieve full history or verify tool results.",
+      "Read the last sentences of a live session’s latest assistant reply, with its status and a cursor. To wait for a session, pass the cursor back as since with wait (seconds): the call returns when it has new text, or says there is none, rather than you polling. Does not retrieve full history or verify tool results.",
+    // 2026-10-18 review: an agent asked to fork ran `conch start --resume … --fork-session`, which started Claude Code under
+    // the wrong account; conch said "opened", the fork had died at once, and the agent told Tyler it was open.
+    conch_fork:
+      "Fork a live session at the user's request: the same conversation again as a new session beside it, under the same account, in the same folder and with the same flags, holding its deliverables, as the Fork in conch's Mac app does. Your own session unless session names another; label names the fork. Returns once conch sees the fork running (its id and label), or the error that stopped it: say a fork is open only when this says so. Use it rather than `conch start --resume`.",
     // 2026-10-05: when and why first, then what to pass, then what the result means; the mechanics are in the
     // parameters (mcp.ts) and the skill (`REVIEW_TO_FRONT_DESCRIPTION_MAX` says why).
     review_to_front:
-      "Publish whenever you produce something the user would look at (a page, screenshot, file, document, plan, diff or PR, build, app state), as you go, not only at the end. It’s one call, it doesn’t interrupt them, and it’s how they follow your work from conch’s Mac app and their phone. Pass a one-line summary of what it is and what to check, and the best single artifact as link (a URL, or a path to a file or folder) with its kind; with nothing to link (an app window, the Simulator), say where to look in the summary. Publishing the same link or key again adds its next version, not a second entry. It opens nothing and doesn’t end your turn: the user’s click on the pill brings it forward. The result says where it landed (surfaces) and any warning or relabel to act on; tell the user from that, not from what you assume.",
+      "Publish whenever you produce something the user would look at (a page, screenshot, file, document, plan, diff or PR, build, app state), as you go, not only at the end. It’s one call, it doesn’t interrupt them, and it’s how they follow your work from conch’s Mac app and their phone. Pass a one-line summary (at most 200 characters) of what it is and what to check, and the best single artifact as link (a URL, or a path to a file or folder) with its kind; with nothing to link (an app window, the Simulator), say where to look in the summary. Publishing the same link or key again adds its next version, not a second entry. It opens nothing and doesn’t end your turn: the user’s click on the pill brings it forward. The result says where it landed (surfaces) and any warning or relabel to act on; tell the user from that, not from what you assume.",
     conch_history:
       "Read a page of recorded session history, including coverage and continuation cursors.",
     conch_item:

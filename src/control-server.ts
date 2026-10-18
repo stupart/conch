@@ -374,7 +374,7 @@ export interface RuntimeControlDispatchOptions {
   /** Resolves to the flags a restart did not carry over; nothing for a plain close. */
   close(sessionId: string, restart?: boolean): void | Promise<void | { notCarriedOver: string[] }>;
   /** The same conversation again as a new session beside this one, holding its deliverables (daemon `forkLiveSession`). */
-  fork?(sessionId: string): Promise<{ notCarriedOver: string[] }>;
+  fork?(sessionId: string, options?: { label?: string; wait?: boolean }): Promise<{ notCarriedOver: string[]; forkId?: string; label?: string; running?: string }>;
   report(message: Extract<RuntimeControlMessage, { kind: "app-error" }>): void | Promise<void>;
   /** Where the agents' config files live and how they are written; absent means the real homes (B3). */
   configWrite?: { homes?: ConfigWriteHomes; io?: ConfigWriteIo };
@@ -505,11 +505,17 @@ export async function applyRuntimeControlMessage(
     }
     if (message.kind === "session-fork") {
       if (!options.fork) throw new Error("this daemon can't fork sessions");
-      const forked = await options.fork(message.sessionId);
+      const forked = await options.fork(message.sessionId, {
+        ...(message.label ? { label: message.label } : {}),
+        ...(message.wait ? { wait: true } : {}),
+      });
       return {
         kind: "session-forked",
         sessionId: message.sessionId,
         ...(forked.notCarriedOver.length ? { notCarriedOver: forked.notCarriedOver } : {}),
+        ...(forked.forkId ? { forkId: forked.forkId } : {}),
+        ...(forked.label ? { label: forked.label } : {}),
+        ...(forked.running ? { running: forked.running } : {}),
       };
     }
     if (message.kind === "session-close") {
