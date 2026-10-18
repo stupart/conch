@@ -139,16 +139,93 @@ describe("watching an agent work", () => {
     expect(dashboard).toContain("hasActivity: Workbench.showsActivity(tab.id, actedIn: workbench.actedIn, shown: shownTab),");
     expect(between(workbench, "private func began(_ request: PublishedState.BrowserRequest) {", "\n    }\n")).toContain("if id != shown { actedIn.insert(id) }");
     const follow = between(dashboard, "private func followAgent(_ activity: WorkbenchStore.AgentActivity?) {", "\n    }\n");
-    expect(follow).toContain("Workbench.follows(activity.tab, viewing: row.id, shown: shown, lastTouch: workbench.lastTouch, now: Date())");
-    expect(follow).toContain("let shown = workPane(for: row) == .browser ? selectedBrowserTab?.id : nil");
-    // Only while the Workdesk is on screen, and it never moves the stage itself.
-    expect(follow).toContain("stage(for: row) != .conversation");
+    // 2026-10-18: over a deliverable too, unless one was just put in front of him; never over a tab that needs him; and
+    // only with Settings › Browser's "Bring the agent's tab forward" on.
+    expect(follow).toContain("activity.tab, viewing: row.id, front: workdeskFront(for: row), frontNeedsYou: frontNeedsYou(for: row),");
+    expect(follow).toContain("lastTouch: workbench.lastTouch, deliverableSince: deliverableSince(for: row), enabled: followsAgent, now: Date()");
+    // Only while the Workdesk is on screen (no front from the conversation alone), and it never moves the stage itself.
+    expect(between(dashboard, "private func workdeskFront(for row: SessionRow) -> Workbench.Front? {", "\n    }\n")).toContain("guard hasWorkPane, stage(for: row) != .conversation else { return nil }");
     expect(follow).not.toContain("show(stage:");
     expect(follow).not.toContain("setStage");
     expect(dashboard).toContain(".onChange(of: workbench.agentActivity) { _, activity in followAgent(activity) }");
-    // What counts as Tyler touching the Workdesk: his hand in a shown page, and its own controls.
+    expect(dashboard).toContain("@AppStorage(Workbench.followSettingKey) private var followsAgent = true");
+    expect(between(dashboard, "private func bringBrowserTabForward(_ arrival: WorkbenchStore.Arrival?) {", "\n    }\n")).toContain("guard followsAgent || tab.openedByUser, !frontNeedsYou(for: row) else { return }");
+    // A deliverable is put in front by its filing or by his opening it, whichever is later.
+    const since = between(dashboard, "private func deliverableSince(for row: SessionRow) -> Date? {", "\n    }\n");
+    expect(since).toContain("review.reviewedAt.map { Date(timeIntervalSince1970: $0 / 1000) }");
+    expect(dashboard).toContain(".onChange(of: shownDeliverableKey, initial: true) { _, key in");
+    // What counts as Tyler touching the Workdesk: his hand in a shown page, anywhere else in it, and its own controls.
     expect(workbench).toContain("NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown, .scrollWheel])");
-    expect(between(workbench, "private func noteTouch(_ event: NSEvent) {", "\n    }\n")).toContain("page.isShown && page.webView.window === event.window");
+    const touch = between(workbench, "private func noteTouch(_ event: NSEvent) {", "func watch(_ view: NSView) {");
+    expect(touch).toContain("page.isShown && page.webView.window === window");
+    expect(touch).toContain("for area in areas {");
+    expect(touch).toContain("if event.type == .keyDown { lastTyped = Date() }");
+    // The areas: the strip, and the work half in either stage.
+    expect(dashboard.match(/\.background\(WorkdeskTouchArea\(store: workbench\)\)/g)).toHaveLength(3);
+    expect(between(workbench, "struct WorkdeskTouchArea: NSViewRepresentable {", "func makeNSView")).toContain("override func hitTest(_ point: NSPoint) -> NSView? { nil }");
+  });
+});
+
+/**
+ * An agent asks the user to act in a tab (2026-10-18). Tyler, after missing one: "the tab didn't get any sort of emphasis
+ * and it was all the way on the left so i missed it. also ... showing automatically the tab in conch the agent is using?"
+ */
+describe("a tab that needs the user", () => {
+  test("its ask comes off the sessions file into the tab, leniently: one the app can't read never drops the tab", () => {
+    const tab = between(models, "struct BrowserTab: Decodable, Equatable, Sendable {", "struct BrowserRequest: Decodable");
+    expect(tab).toContain("ask = (try? container.decodeIfPresent(Ask.self, forKey: .ask)) ?? nil");
+    expect(workbench).toContain("ask: ask.map { Workbench.Tab.Ask(reason: $0.reason, at: $0.at) }");
+  });
+
+  test("it takes the stage once, by the summons rule, waiting while his hand is on the Workdesk", () => {
+    const summon = between(dashboard, "private func summonAsk() {", "\n    }\n\n");
+    expect(summon).toContain("switch Workbench.summons(tab, viewing: row.id, front: workdeskFront(for: row), lastTouch: workbench.lastTouch, lastTyped: workbench.lastTyped, now: Date()) {");
+    expect(summon).toContain("!presentedAsks.contains(key)");
+    expect(summon).toContain("workspace.show(browserTab: tab.id, for: row.id)");
+    expect(summon).toContain("askTick &+= 1");
+    expect(dashboard).toContain(".onChange(of: askSignature, initial: true) { _, _ in summonAsk() }");
+    expect(dashboard).toContain(".onChange(of: askTick) { _, _ in summonAsk() }");
+  });
+
+  test("the strip scrolls it into view and says Needs you; under its bar, who asks and what, with Done", () => {
+    const strip = between(dashboard, "private func deliverableTabs(for row: SessionRow) -> some View {", "private func conversationBody(for row: SessionRow?) -> some View {");
+    expect(strip).toContain('attention: Workbench.asking(in: browserTabs, session: row.id).map { AnyHashable("browser:" + $0.id) },');
+    const run = between(views, "public struct WorkdeskTabRun<Content: View>: View {", "extension View {");
+    expect(run).toContain(".onChange(of: attention) { _, now in reveal(now, in: proxy, animated: true) }");
+    expect(between(views, "public struct WorkbenchTabButton: View {", "public struct WorkdeskNewTabButton: View {")).toContain("if tab.ask != nil {\n                WorkdeskNeedsYouPill()");
+    const pane = between(workbench, "struct WorkbenchPane: View {", "enum WorkbenchNewTab {");
+    expect(pane).toContain("WorkbenchNotice(.needsYou(agent: agent, reason: ask.reason)) { store.answer(tab) }");
+    expect(dashboard).toContain("agent: AgentBadge.name(for: row.backend),");
+    // Done: hidden at once, and the daemon told, which tells the agent.
+    const answer = between(workbench, "func answer(_ tab: Workbench.Tab) {", "\n    }\n");
+    expect(answer).toContain("tabs = tabs.map { $0.id == tab.id ? $0.with(ask: nil) : $0 }");
+    expect(answer).toContain("WorkbenchTabEvent(tab: tab.id, askDone: true)");
+  });
+
+  test("its session's row is drawn as one that needs him, and the Dock counts it", () => {
+    expect(dashboard).toContain("row: row.needingYou(in: browserAsks[row.id]),");
+    const needing = between(models, "func needingYou(in reason: String?) -> SessionRow {", "\n    }\n");
+    expect(needing).toContain("status: .needs, at: at, needsResponse: true,");
+    expect(needing).toContain("detail: (status == .needs ? detail : nil) ?? Workbench.rowAskLine(reason: reason),");
+    expect(code("mac-app/conch-mac/StateStore.swift")).toContain("row.status == .needs || row.status == .review || asking.contains(row.id)");
+  });
+
+  test("Settings › Browser turns following off; a tab that needs him comes forward regardless", () => {
+    const settings = code("mac-app/conch-mac/BrowserSettingsView.swift");
+    expect(settings).toContain("@AppStorage(Workbench.followSettingKey) private var follows = true");
+    expect(settings).toContain('Text("Bring the agent\'s tab forward")');
+    // The summons never reads the setting.
+    expect(between(dashboard, "private func summonAsk() {", "\n    }\n\n")).not.toContain("followsAgent");
+  });
+
+  test("a page that asks for a passkey is heard in conch's world alone, and said under the bar", () => {
+    const page = between(workbench, "init(tab: Workbench.Tab, store: WKWebsiteDataStore, report: @escaping (WorkbenchTabEvent) -> Void) {", "super.init()");
+    expect(page).toContain("WKUserScript(source: WorkbenchPasskeys.pageScript(event: event), injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page)");
+    expect(page).toContain("WKUserScript(source: WorkbenchPasskeys.listenerScript(event: event), injectionTime: .atDocumentStart, forMainFrameOnly: false, in: Self.world)");
+    expect(page).toContain("content.add(messages, contentWorld: Self.world, name: WorkbenchPasskeys.messageHandler)");
+    expect(workbench).not.toMatch(/add\(messages, contentWorld: \.page/);
+    expect(between(workbench, "struct WorkbenchPane: View {", "enum WorkbenchNewTab {")).toContain("WorkbenchNotice(.passkeys) {");
+    expect(between(workbench, "private func sync() {", "\n    }\n")).toContain("if passkeyAsked != nil, Self.site(of: view.url) != passkeySite { passkeyAsked = nil }");
   });
 });
 

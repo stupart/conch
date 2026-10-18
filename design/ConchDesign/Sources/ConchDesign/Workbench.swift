@@ -11,6 +11,12 @@ import CoreGraphics
 /// 2026-10-16: "letting me sign-in in an in-conch browser session and letting agents use that browser in the app so i
 /// can watch them work": he opens tabs too (`Tab.openedByUser`), watches an agent's commands land (`agentWords`,
 /// `markRect`), a tab it works in comes forward only by `follows`, and he can pause agents in a tab (`pausedRefusal`).
+///
+/// 2026-10-18, after an agent asked him in words to sign in to Mobbin in a tab: "the tab didn't get any sort of emphasis
+/// and it was all the way on the left so i missed it. also a thing we can improve and / or showing automatically the tab
+/// in conch the agent is using?" So an agent can ask him to act in a tab (`Tab.ask`, `browser_ask`), which then takes
+/// the stage (`summons`) and says so on the tab, under its address bar and on the session's row; and an agent's work
+/// comes forward over a deliverable too, unless one was just put in front of him (`follows`, `deliverableHold`).
 public enum Workbench {
     /// The built-in profile: `WKWebsiteDataStore.default()`, the store the review pane and `conch_capture` draw with,
     /// so a sign-in made in either is a sign-in here.
@@ -45,6 +51,22 @@ public enum Workbench {
         public let openedByUser: Bool
         /// The user paused agents in it: their commands there are refused.
         public let paused: Bool
+        /// What its agent asked the user to do in it (`browser_ask`), while that waits: the tab needs them.
+        public let ask: Ask?
+
+        /// An agent's request that the user act in a tab (src/browser-workbench.ts `BrowserAsk`), as the sessions file
+        /// carries it while it waits.
+        public struct Ask: Equatable, Sendable {
+            /// One short line: "Sign in to Mobbin".
+            public let reason: String
+            /// Epoch-ms it was asked.
+            public let at: Double
+
+            public init(reason: String, at: Double) {
+                self.reason = reason
+                self.at = at
+            }
+        }
 
         public init(
             id: String,
@@ -54,7 +76,8 @@ public enum Workbench {
             profile: String = Workbench.defaultProfile,
             openedAt: Double = 0,
             openedByUser: Bool = false,
-            paused: Bool = false
+            paused: Bool = false,
+            ask: Ask? = nil
         ) {
             self.id = id
             self.sessionId = sessionId
@@ -64,14 +87,23 @@ public enum Workbench {
             self.openedAt = openedAt
             self.openedByUser = openedByUser
             self.paused = paused
+            self.ask = ask
         }
 
         /// Never sent anywhere: its address field is waiting, and its profile can still change.
         public var isBlank: Bool { url.isEmpty }
 
+        /// Its ask, once: the same tab asked again is a new ask, brought forward again.
+        public var askKey: String? { ask.map { "\(id)@\(Int64($0.at))" } }
+
         /// The same tab, paused or not: what the Workdesk shows the moment the user turns Pause agents on or off.
         public func with(paused: Bool) -> Tab {
-            Tab(id: id, sessionId: sessionId, url: url, title: title, profile: profile, openedAt: openedAt, openedByUser: openedByUser, paused: paused)
+            Tab(id: id, sessionId: sessionId, url: url, title: title, profile: profile, openedAt: openedAt, openedByUser: openedByUser, paused: paused, ask: ask)
+        }
+
+        /// The same tab with its ask, or answered: what the Workdesk shows the moment the user presses Done.
+        public func with(ask: Ask?) -> Tab {
+            Tab(id: id, sessionId: sessionId, url: url, title: title, profile: profile, openedAt: openedAt, openedByUser: openedByUser, paused: paused, ask: ask)
         }
     }
 
@@ -86,14 +118,91 @@ public enum Workbench {
     /// sees the work move.
     public static let followQuiet: TimeInterval = 5
 
-    /// Whether an agent's command in `tab` brings it to the front of the Workdesk: only for the session in view, only in
-    /// place of another of its browser tabs (`shown`, nil while the Workdesk shows a deliverable, the files or the shell,
-    /// which it never takes), and only when the user hasn't touched the Workdesk for `followQuiet`. The stage never moves
-    /// (only a press does); otherwise the tab gets its dot (`showsActivity`).
-    public static func follows(_ tab: Tab, viewing: String?, shown: String?, lastTouch: Date?, now: Date) -> Bool {
-        guard tab.sessionId == viewing, let shown, tab.id != shown, !tab.paused else { return false }
-        guard let lastTouch else { return true }
-        return now.timeIntervalSince(lastTouch) >= followQuiet
+    /// How long a deliverable just put in front of the user (published, or opened) keeps the Workdesk from an agent's
+    /// browsing: a result he was just shown isn't yanked away for a page.
+    public static let deliverableHold: TimeInterval = 30
+
+    /// Settings › Browser's "Bring the agent's tab forward" (on unless turned off): whether an agent's work in a tab comes
+    /// forward by itself. A tab that needs the user always does (`summons`).
+    public static let followSettingKey = "conch.workbench.followAgent"
+
+    /// What the Workdesk has in front, as far as an agent's tab coming forward goes.
+    public enum Front: Equatable, Sendable {
+        /// One of the session's browser tabs, by id.
+        case browser(String)
+        /// A deliverable, or two versions of one compared.
+        case deliverable
+        /// The session's files, its shell or its terminal: places the user works in, never taken by an agent's work.
+        case place
+    }
+
+    /// Whether an agent's command in `tab` brings it to the front of the Workdesk: only with following on (`enabled`),
+    /// only for the session in view while the Workdesk is on screen (`front`, nil from the conversation alone: the stage
+    /// never moves for this, only a press does), in place of another of its browser tabs or a deliverable (never the
+    /// files, the shell or the terminal), and only when the user hasn't touched the Workdesk for `followQuiet`. A
+    /// deliverable keeps the Workdesk for `deliverableHold` after it was put in front of him (`deliverableSince`: its
+    /// filing, or his opening it, whichever is later). A tab in front that needs the user (`frontNeedsYou`) is his until
+    /// he answers it: nothing passive takes it. Otherwise the tab gets its dot (`showsActivity`).
+    public static func follows(_ tab: Tab, viewing: String?, front: Front?, frontNeedsYou: Bool = false, lastTouch: Date?, deliverableSince: Date? = nil, enabled: Bool = true, now: Date) -> Bool {
+        guard enabled, tab.sessionId == viewing, !tab.paused, !frontNeedsYou, let front else { return false }
+        switch front {
+        case let .browser(shown):
+            guard shown != tab.id else { return false }
+        case .deliverable:
+            if let deliverableSince, now.timeIntervalSince(deliverableSince) < deliverableHold { return false }
+        case .place:
+            return false
+        }
+        return quiet(since: lastTouch, now: now)
+    }
+
+    /// What a tab that needs the user (`Tab.ask`) does to the Workdesk of the session in view.
+    public enum Summons: Equatable, Sendable {
+        /// Nothing: another session's, nothing asked, or already in front.
+        case stay
+        /// The user touched the Workdesk (or, with it off screen, typed) a moment ago: it waits until he has been quiet
+        /// for `followQuiet`, then asks again.
+        case wait(until: Date)
+        /// To the front of the Workdesk, over whatever it shows; with the Workdesk off screen, the stage opens beside the
+        /// conversation to show it.
+        case bringForward(opensStage: Bool)
+    }
+
+    /// A direct request may take the stage: a tab whose agent asked the user to act in it comes to the front of the
+    /// Workdesk over anything (a deliverable, the files, the shell), and from the conversation alone opens the Workdesk
+    /// beside it, whatever "Bring the agent's tab forward" says. Unless the user touched the Workdesk within `followQuiet`
+    /// (`lastTouch`), or, while it is off screen, typed (`lastTyped`: the stage moving would move the composer under his
+    /// hands): then it waits until he has been quiet that long. `front` is nil while the Workdesk is off screen.
+    public static func summons(_ tab: Tab, viewing: String?, front: Front?, lastTouch: Date?, lastTyped: Date?, now: Date) -> Summons {
+        guard tab.ask != nil, tab.sessionId == viewing, front != .browser(tab.id) else { return .stay }
+        let touched = [lastTouch, front == nil ? lastTyped : nil].compactMap { $0 }.max()
+        if let touched, !quiet(since: touched, now: now) { return .wait(until: touched.addingTimeInterval(followQuiet)) }
+        return .bringForward(opensStage: front == nil)
+    }
+
+    /// The tab of a session that needs the user: its newest ask.
+    public static func asking(in tabs: [Tab], session: String?) -> Tab? {
+        guard let session else { return nil }
+        return tabs.filter { $0.sessionId == session && $0.ask != nil }.max { ($0.ask?.at ?? 0) < ($1.ask?.at ?? 0) }
+    }
+
+    /// The strip under a tab's address bar while its ask waits: who asks, then what.
+    public static func askWords(agent: String, reason: String) -> String {
+        "\(agent) needs you · \(reason)"
+    }
+
+    /// The session row's second line while one of its tabs needs the user: where, then what.
+    public static func rowAskLine(reason: String) -> String {
+        "Browser tab: \(reason)"
+    }
+
+    /// Said under a tab's address bar when its page asked for a passkey, which conch's browser can't give it
+    /// (`WorkbenchPasskeys`): WebKit lets only browsers Apple has approved use passkeys.
+    public static let passkeyWords = "Passkeys don't work in conch's browser yet · choose your password or another way to sign in"
+
+    private static func quiet(since touched: Date?, now: Date) -> Bool {
+        guard let touched else { return true }
+        return now.timeIntervalSince(touched) >= followQuiet
     }
 
     /// A tab an agent acted in that isn't the one shown carries a dot until it is looked at.

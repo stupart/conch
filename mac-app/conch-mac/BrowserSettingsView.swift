@@ -10,8 +10,10 @@ struct ConchBrowserSettingsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: SettingsLayout.headerGap) {
-                SettingsSectionHeader(title: "Browser", subtitle: "conch's own browser, in each session's Workdesk: its profiles, and your sign-ins from Chrome.")
+                SettingsSectionHeader(title: "Browser", subtitle: "conch's own browser, in each session's Workdesk: how it follows agents, its profiles, and your sign-ins from Chrome.")
                 VStack(alignment: .leading, spacing: 24) {
+                    BrowserFollowBlock()
+                    SettingsHairline()
                     BrowserProfilesBlock(store: store)
                     SettingsHairline()
                     ChromeImportBlock(store: store)
@@ -23,6 +25,41 @@ struct ConchBrowserSettingsView: View {
         }
         .background(ConchPalette.bg)
         .task { await store.refresh() }
+    }
+}
+
+/// Whether an agent's work in a browser tab comes forward in the Workdesk by itself (`Workbench.follows`), on unless
+/// turned off. A tab whose agent asked Tyler to act in it comes forward whatever this says (`Workbench.summons`).
+private struct BrowserFollowBlock: View {
+    @AppStorage(Workbench.followSettingKey) private var follows = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SettingsSubheading(title: "In the Workdesk") {
+                Image(systemName: "rectangle.righthalf.inset.filled").font(.system(size: 13, weight: .regular))
+            }
+            OnboardingCard {
+                HStack(spacing: ConchSpace.x3) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Bring the agent's tab forward")
+                            .font(ConchTypography.font(size: 12.5, weight: .medium))
+                            .foregroundStyle(ConchPalette.textPrimary)
+                        Text("When an agent works in a browser tab and you've left the Workdesk alone for a few seconds, its tab comes to the front, over a deliverable unless one just arrived. A tab that needs you always comes forward.")
+                            .font(ConchTypography.font(size: 11))
+                            .foregroundStyle(ConchPalette.textDim)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: ConchSpace.x3)
+                    Toggle("", isOn: $follows)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .accessibilityLabel("Bring the agent's tab forward")
+                }
+                .padding(.horizontal, ConchSpace.x4)
+                .padding(.vertical, 11)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
     }
 }
 

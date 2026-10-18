@@ -659,7 +659,10 @@ private struct SessionLedger: View {
                                         ForEach(folderRows.filter { $0.parentSessionId == nil }, id: \.id) { row in
                                           VStack(alignment: .leading, spacing: 0) {
                                             DashboardRow(
-                                                row: row,
+                                                // A session one of whose browser tabs needs Tyler is drawn as one that
+                                                // needs him (`SessionRow.needingYou`): its mark, its bold name, the ask
+                                                // as what it is blocked on.
+                                                row: row.needingYou(in: browserAsks[row.id]),
                                                 now: timeline.date,
                                                 isSelected: selectedSessionID == row.id,
                                                 isFollowing: selectedSessionID == nil && focusID == row.id,
@@ -853,9 +856,21 @@ private struct SessionLedger: View {
     /// start and stop work, about once a second, and a scroll is not animated across one (`LedgerScroller`).
     private var rowShape: [String] {
         guard let state else { return [] }
+        let asks = browserAsks
         return state.rows.map { row in
-            "\(row.id) \(row.activity?.text.isEmpty == false) \(row.status == .needs) \(rowMessages[row.id] != nil)"
+            "\(row.id) \(row.activity?.text.isEmpty == false) \(row.status == .needs) \(rowMessages[row.id] != nil) \(asks[row.id] != nil)"
         } + [showsDismissedRows ? "dismissed open" : "dismissed folded"]
+    }
+
+    /// What each session's agent asked Tyler to do in one of its browser tabs, while that waits (`Workbench.asking`): its
+    /// row needs him.
+    private var browserAsks: [String: String] {
+        let tabs = (state?.browserTabs ?? []).map(\.workbenchTab)
+        var asks: [String: String] = [:]
+        for session in Set(tabs.filter { $0.ask != nil }.map(\.sessionId)) {
+            asks[session] = Workbench.asking(in: tabs, session: session)?.ask?.reason
+        }
+        return asks
     }
 
     /// The folder holding a session's row unfolded, and the row brought into view: a sub-agent's is its session's row,
@@ -1966,21 +1981,105 @@ private struct ConversationPane: View {
     }
 
     /// A tab its agent just opened comes to the front of the work half when its session is the one in view; another
-    /// session's arrives quietly on its row (`Workbench.front`). The stage stays where it is: only a press moves it.
+    /// session's arrives quietly on its row (`Workbench.front`). The stage stays where it is: only a press moves it. With
+    /// Settings › Browser's "Bring the agent's tab forward" off, it arrives quietly in the strip, as another session's does.
     private func bringBrowserTabForward(_ arrival: WorkbenchStore.Arrival?) {
         guard let arrival, let row = focusedRow, let tab = Workbench.front(of: arrival.tabs, viewing: row.id) else { return }
+        guard followsAgent || tab.openedByUser, !frontNeedsYou(for: row) else { return }
         workspace.show(browserTab: tab.id, for: row.id)
     }
 
     /// An agent's command in another of the session's browser tabs brings that tab forward only while Tyler is watching,
-    /// not working: the session is the one in view, the Workdesk shows one of its browser tabs, and he hasn't touched it
-    /// for a few seconds (`Workbench.follows`). Otherwise the tab gets its dot. The stage never moves: only a press does.
+    /// not working: the session is the one in view, the Workdesk on screen shows another of its browser tabs or a
+    /// deliverable, and he hasn't touched it for a few seconds; a deliverable just put in front of him keeps it for half a
+    /// minute (`Workbench.follows`). Otherwise the tab gets its dot. The stage never moves: only a press does, or a tab that
+    /// needs him (`summonAsk`). Settings › Browser can turn it off.
     private func followAgent(_ activity: WorkbenchStore.AgentActivity?) {
-        // Only while the Workdesk is on screen: from the conversation alone nobody is watching it.
-        guard let activity, let row = focusedRow, stage(for: row) != .conversation else { return }
-        let shown = workPane(for: row) == .browser ? selectedBrowserTab?.id : nil
-        guard Workbench.follows(activity.tab, viewing: row.id, shown: shown, lastTouch: workbench.lastTouch, now: Date()) else { return }
+        guard let activity, let row = focusedRow else { return }
+        guard Workbench.follows(
+            activity.tab, viewing: row.id, front: workdeskFront(for: row), frontNeedsYou: frontNeedsYou(for: row),
+            lastTouch: workbench.lastTouch, deliverableSince: deliverableSince(for: row), enabled: followsAgent, now: Date()
+        ) else { return }
         workspace.show(browserTab: activity.tab.id, for: row.id)
+    }
+
+    /// The tab in front is one whose agent asked Tyler to act in it: his until he answers it.
+    private func frontNeedsYou(for row: SessionRow) -> Bool {
+        workdeskFront(for: row) != nil && workPane(for: row) == .browser && selectedBrowserTab?.ask != nil
+    }
+
+    /// Settings › Browser's "Bring the agent's tab forward" (`Workbench.followSettingKey`), on unless he turned it off.
+    @AppStorage(Workbench.followSettingKey) private var followsAgent = true
+    /// Asks already brought forward, by key: each comes forward once, so going back to what he was reading isn't undone.
+    @State private var presentedAsks: Set<String> = []
+    /// An ask waiting for Tyler to be quiet: the wait, and its tick, which asks again on the view as it is then.
+    @State private var askRetry: Task<Void, Never>?
+    @State private var askTick = 0
+    /// The deliverable the Workdesk last put in front of Tyler, and when: filed, opened, or come back to.
+    @State private var deliverableShownAt: ShownDeliverable?
+
+    struct ShownDeliverable: Equatable {
+        let row: String
+        let id: String
+        let at: Date
+    }
+
+    /// What the Workdesk has in front, for an agent's tab coming forward: nil while it is off screen (the conversation
+    /// alone, or nothing to show).
+    private func workdeskFront(for row: SessionRow) -> Workbench.Front? {
+        guard hasWorkPane, stage(for: row) != .conversation else { return nil }
+        switch workPane(for: row) {
+        case .browser: return selectedBrowserTab.map { .browser($0.id) } ?? .place
+        case .deliverable: return .deliverable
+        case .files, .shell, .terminal: return .place
+        }
+    }
+
+    /// When the deliverable in front was put there: its filing, or Tyler's opening it, whichever is later.
+    private func deliverableSince(for row: SessionRow) -> Date? {
+        guard let review = selectedReview else { return nil }
+        let filed = review.reviewedAt.map { Date(timeIntervalSince1970: $0 / 1000) }
+        let opened = deliverableShownAt.flatMap { $0.row == row.id && $0.id == review.id ? $0.at : nil }
+        return [filed, opened].compactMap { $0 }.max()
+    }
+
+    /// The deliverable on screen, by session and id, or nil: when it changes to one, that one was just put in front.
+    private var shownDeliverableKey: String? {
+        guard let row = focusedRow, workdeskFront(for: row) == .deliverable, let review = selectedReview else { return nil }
+        return "\(row.id)\n\(review.id)"
+    }
+
+    /// The session in view's tab that needs Tyler, by its ask: what `summonAsk` answers to.
+    private var askSignature: String {
+        let tab = Workbench.asking(in: browserTabs, session: focusedRow?.id)
+        return "\(focusedRow?.id ?? "")\n\(tab?.askKey ?? "")"
+    }
+
+    /// A tab whose agent asked Tyler to act in it takes the stage, once: to the front of the Workdesk over whatever it
+    /// shows, opening it beside the conversation when it is off screen. With his hand on the Workdesk (or, with it off
+    /// screen, typing), it waits until he has been quiet a few seconds (`Workbench.summons`). Asked again on the session
+    /// coming into view, so a request made while he was elsewhere comes forward when he gets there.
+    private func summonAsk() {
+        askRetry?.cancel()
+        askRetry = nil
+        presentedAsks.formIntersection(workbench.tabs.compactMap(\.askKey))
+        guard let row = focusedRow, let tab = Workbench.asking(in: browserTabs, session: row.id), let key = tab.askKey,
+              !presentedAsks.contains(key) else { return }
+        switch Workbench.summons(tab, viewing: row.id, front: workdeskFront(for: row), lastTouch: workbench.lastTouch, lastTyped: workbench.lastTyped, now: Date()) {
+        case .stay:
+            // In front already: seen.
+            presentedAsks.insert(key)
+        case let .wait(until):
+            askRetry = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(max(0.05, until.timeIntervalSinceNow) * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                askTick &+= 1
+            }
+        case let .bringForward(opensStage):
+            presentedAsks.insert(key)
+            workspace.show(browserTab: tab.id, for: row.id)
+            if opensStage { workspace.show(stage: .sideBySide, for: row.id) }
+        }
     }
 
     /// Whether Tyler can open a tab of his own in a session: a session's, not a subagent's or the practice session's.
@@ -2133,6 +2232,7 @@ private struct ConversationPane: View {
                 page: page,
                 store: workbench,
                 tab: tab,
+                agent: AgentBadge.name(for: row.backend),
                 openInBrowser: { url in
                     fallbackLinkFailure = nil
                     store.openLink(url.absoluteString, cwd: row.cwd, rowId: row.id) { fallbackLinkFailure = $0 }
@@ -2321,6 +2421,7 @@ private struct ConversationPane: View {
 
                     if hasWorkTabs(for: reviewRow) {
                         deliverableTabs(for: reviewRow)
+                            .background(WorkdeskTouchArea(store: workbench))
 
                         Rectangle()
                             .fill(ConchPalette.divider)
@@ -2366,8 +2467,11 @@ private struct ConversationPane: View {
 
                                     splitResizer(in: split.size.width)
 
+                                    // Tyler's hand anywhere in it, not under the card, keeps an agent's tab from taking it
+                                    // (`WorkbenchStore.watch`).
                                     workContent(for: reviewRow)
                                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                        .background(WorkdeskTouchArea(store: workbench))
                                         .padding(.bottom, cardOverConversation ? 0 : composerHeight)
                                 }
 
@@ -2378,6 +2482,7 @@ private struct ConversationPane: View {
                         }
                     } else {
                         workContent(for: reviewRow)
+                            .background(WorkdeskTouchArea(store: workbench))
 
                         Spacer(minLength: 0)
 
@@ -2441,6 +2546,16 @@ private struct ConversationPane: View {
         }
         .onChange(of: workbench.arrival) { _, arrival in bringBrowserTabForward(arrival) }
         .onChange(of: workbench.agentActivity) { _, activity in followAgent(activity) }
+        // A tab that needs Tyler, asked for while its session is in view or found when it comes into view.
+        .onChange(of: askSignature, initial: true) { _, _ in summonAsk() }
+        .onChange(of: askTick) { _, _ in summonAsk() }
+        // A deliverable put in front of him, by its filing or his opening it: an agent's browsing leaves it be a while.
+        .onChange(of: shownDeliverableKey, initial: true) { _, key in
+            guard let key else { return }
+            let parts = key.components(separatedBy: "\n")
+            deliverableShownAt = ShownDeliverable(row: parts[0], id: parts.count > 1 ? parts[1] : "", at: Date())
+        }
+        .onDisappear { askRetry?.cancel() }
         // Under the session bar (52 tall), over whichever page the stage is on.
         .overlay(alignment: .top) {
             LinkFailureLine(message: $browserTabFailure)
@@ -2846,6 +2961,9 @@ private struct ConversationPane: View {
                 let shownGroup = shown.flatMap { id in deliverableGroups.first { $0.versions.contains(id) }?.id }
                 WorkdeskTabRun(
                     shown: shownTab.map { AnyHashable("browser:" + $0) } ?? shownGroup.map { AnyHashable("deliverable:" + $0) },
+                    // A tab that needs Tyler is scrolled into view, shown or not (2026-10-18: "it was all the way on the
+                    // left so i missed it").
+                    attention: Workbench.asking(in: browserTabs, session: row.id).map { AnyHashable("browser:" + $0.id) },
                     newTab: opensBrowserTabs(row) ? { openBrowserTab(for: row) } : nil
                 ) {
                     // The live pages, the agent's and Tyler's own, as tabs among its work (Tyler, 2026-10-09:

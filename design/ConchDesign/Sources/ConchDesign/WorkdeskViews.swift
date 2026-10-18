@@ -19,6 +19,15 @@ enum WorkdeskInk {
     static let pageMark = Color(.sRGB, red: 10 / 255, green: 132 / 255, blue: 1, opacity: 1)
     static let pageTint = Color(.sRGB, red: 10 / 255, green: 132 / 255, blue: 1, opacity: 0.1)
     static let halo = Color.white.opacity(0.9)
+
+    /// A tab that needs the user: the "Needs you" pill, solid in conch's attention colour (`ConchColor.attention`, what the
+    /// sidebar's needs mark is drawn in), its words white in light (5.3:1) and the dark text colour in dark (6.0:1), where
+    /// the attention colour is light enough that white would read at 2.8:1.
+    static let needsYou = ConchColor.attention
+    static let needsYouWords = ConchColorToken("needsYouWords", .init(0xFFFFFF), .init(0x1D1D1F))
+    /// The strip under its address bar: the bar's own surface with a wash of the attention colour, enough to be told
+    /// from the bar at a glance and quiet enough that its words read as text, not as an alarm.
+    static let noticeWash = ConchColorToken("noticeWash", .init(0xCA321B, alpha: 0.09), .init(0xFF6A55, alpha: 0.14))
 }
 
 /// The bar's capsules (the Agent badge, the profile chip, Agents paused): one height and one inset.
@@ -44,7 +53,8 @@ enum WorkdeskField {
 /// A browser tab in the Workdesk's strip: a globe and the page's name, in the strip's own tab style. Under the pointer
 /// the globe becomes its ×, in the globe's own place, as Safari's tabs do, so the tabs after it stay where they are.
 /// While an agent's command runs in it the Agent badge follows its name; a tab an agent acted in that isn't shown has a
-/// dot; a tab the user paused agents in shows a raised hand in place of the globe.
+/// dot; a tab the user paused agents in shows a raised hand in place of the globe; and a tab whose agent asked the user to
+/// act in it (`Tab.ask`) says "Needs you", over any of those.
 public struct WorkbenchTabButton: View {
     let tab: Workbench.Tab
     let isSelected: Bool
@@ -79,8 +89,8 @@ public struct WorkbenchTabButton: View {
     private static let mark: CGFloat = 10
 
     private var accessibility: String {
-        [label, "browser tab", tab.openedByUser ? "opened by you" : nil, agentWorking ? "an agent is working in it" : nil,
-         hasActivity ? "new agent activity" : nil, tab.paused ? "agents paused" : nil]
+        [label, "browser tab", tab.ask.map { "needs you: \($0.reason)" }, tab.openedByUser ? "opened by you" : nil,
+         agentWorking ? "an agent is working in it" : nil, hasActivity ? "new agent activity" : nil, tab.paused ? "agents paused" : nil]
             .compactMap { $0 }
             .joined(separator: ", ")
     }
@@ -118,10 +128,14 @@ public struct WorkbenchTabButton: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(tab.isBlank ? "New tab" : "\(label)\n\(tab.url)")
+            .help(tab.ask.map { "Needs you: \($0.reason)\n\(tab.url)" } ?? (tab.isBlank ? "New tab" : "\(label)\n\(tab.url)"))
             .accessibilityLabel(accessibility)
 
-            if agentWorking {
+            // What it asks of the user outranks what its agent is doing in it: that is news, this is a request.
+            if tab.ask != nil {
+                WorkdeskNeedsYouPill()
+                    .transition(.opacity)
+            } else if agentWorking {
                 WorkdeskAgentBadge(size: .tab)
                     .transition(.opacity)
             } else if hasActivity {
@@ -189,6 +203,9 @@ public struct WorkdeskNewTabButton: View {
 /// just opened could be out of sight. Each tab names itself with `workdeskTab(_:)`, by the id `shown` uses.
 public struct WorkdeskTabRun<Content: View>: View {
     let shown: AnyHashable?
+    /// A tab that needs the user (`Tab.ask`): scrolled into view as it comes, shown or not, so a request is never out
+    /// of sight at the far end of a full strip (Tyler, 2026-10-18: "it was all the way on the left so i missed it").
+    let attention: AnyHashable?
     let newTab: (() -> Void)?
     let newTabHovered: Bool
     let content: Content
@@ -200,8 +217,9 @@ public struct WorkdeskTabRun<Content: View>: View {
 
     @State private var extent = RunExtent()
 
-    public init(shown: AnyHashable?, newTab: (() -> Void)? = nil, newTabHovered: Bool = false, @ViewBuilder content: () -> Content) {
+    public init(shown: AnyHashable?, attention: AnyHashable? = nil, newTab: (() -> Void)? = nil, newTabHovered: Bool = false, @ViewBuilder content: () -> Content) {
         self.shown = shown
+        self.attention = attention
         self.newTab = newTab
         self.newTabHovered = newTabHovered
         self.content = content()
@@ -218,8 +236,9 @@ public struct WorkdeskTabRun<Content: View>: View {
                 .scrollIndicators(.never)
                 .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in extent.visible = width }
                 .mask(RunFadeMask(leading: extent.leadingFade, trailing: extent.trailingFade))
-                .onAppear { reveal(in: proxy, animated: false) }
-                .onChange(of: shown) { _, _ in reveal(in: proxy, animated: true) }
+                .onAppear { reveal(attention ?? shown, in: proxy, animated: false) }
+                .onChange(of: shown) { _, now in reveal(now, in: proxy, animated: true) }
+                .onChange(of: attention) { _, now in reveal(now, in: proxy, animated: true) }
             }
             if let newTab {
                 WorkdeskNewTabButton(isHovered: newTabHovered, action: newTab)
@@ -228,15 +247,15 @@ public struct WorkdeskTabRun<Content: View>: View {
         }
     }
 
-    /// The shown tab into view, with the fade's width to spare on either side, after the layout that brought it has
-    /// settled: a tab that only just arrived has no frame to scroll to before then.
-    private func reveal(in proxy: ScrollViewProxy, animated: Bool) {
-        guard let shown else { return }
+    /// A tab into view (the one shown, or one that needs the user), with the fade's width to spare on either side, after
+    /// the layout that brought it has settled: a tab that only just arrived has no frame to scroll to before then.
+    private func reveal(_ tab: AnyHashable?, in proxy: ScrollViewProxy, animated: Bool) {
+        guard let tab else { return }
         DispatchQueue.main.async {
             if animated {
-                withAnimation(.easeOut(duration: 0.22)) { proxy.scrollTo(RunReveal(id: shown)) }
+                withAnimation(.easeOut(duration: 0.22)) { proxy.scrollTo(RunReveal(id: tab)) }
             } else {
-                proxy.scrollTo(RunReveal(id: shown))
+                proxy.scrollTo(RunReveal(id: tab))
             }
         }
     }
@@ -346,6 +365,26 @@ public struct WorkdeskActivityDot: View {
             .fill(WorkdeskInk.mark)
             .frame(width: 6, height: 6)
             .accessibilityLabel("New agent activity")
+    }
+}
+
+/// "Needs you", on a tab whose agent asked the user to act in it: the tab badge's size and shape (15 tall, a capsule),
+/// solid in conch's attention colour, so it is the strip's one loud thing until it is answered.
+public struct WorkdeskNeedsYouPill: View {
+    public static let words = "Needs you"
+
+    public init() {}
+
+    public var body: some View {
+        Text(Self.words)
+            .font(.system(size: 9.5, weight: .semibold))
+            .foregroundStyle(WorkdeskInk.needsYouWords)
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 6)
+            .frame(height: 15)
+            .background(Capsule().fill(WorkdeskInk.needsYou))
+            .accessibilityHidden(true)
     }
 }
 
@@ -633,6 +672,142 @@ public struct WorkbenchBar: View {
         .disabled(!enabled)
         .help(help)
         .accessibilityLabel(help)
+    }
+}
+
+// MARK: - Under the address bar
+
+/// A strip under a tab's address bar, a line the tab says to the user: its agent needs them there (with Done), or the page
+/// asked for a passkey conch's browser can't give (with its ×). Its mark starts on the pane's left axis, 15 in, where the
+/// strip's first mark and the bar's back arrow start, and its control ends on the bar's last column, 14 from the right,
+/// where the close × ends; so the strip reads as the bar's own, a line further down.
+public struct WorkbenchNotice: View {
+    public enum Kind: Equatable, Sendable {
+        /// `agent` asked the user to `reason` in this tab (`browser_ask`).
+        case needsYou(agent: String, reason: String)
+        /// The page asked for a passkey (`WorkbenchPasskeys`).
+        case passkeys
+    }
+
+    let kind: Kind
+    /// Done, or the ×.
+    let action: () -> Void
+    @State private var isHovered: Bool
+
+    /// Tall enough for the Done capsule with 5 above and below; a second line, when the pane is narrow, grows it.
+    public static let height: CGFloat = 30
+    /// Where either mark's ink ends.
+    static let markEnd: CGFloat = 26.5
+
+    /// Where the mark's image starts, so its ink starts 15 in: each symbol's image has a little room of its own before its
+    /// ink, measured (the circle a point, the key a point and a half).
+    private var markInset: CGFloat {
+        switch kind {
+        case .needsYou: 14
+        case .passkeys: 13.5
+        }
+    }
+
+    public init(_ kind: Kind, isHovered: Bool = false, action: @escaping () -> Void) {
+        self.kind = kind
+        _isHovered = State(initialValue: isHovered)
+        self.action = action
+    }
+
+    public var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(markStyle)
+                // Both marks' ink is 11.5 wide, 15 to 26.5: a slot that ends there starts the words at one place in
+                // either strip, 7 after it, so two strips stacked line up.
+                .frame(width: Self.markEnd - markInset, alignment: .leading)
+                .accessibilityHidden(true)
+            words
+                .font(.system(size: 11))
+                .foregroundStyle(ConchColor.textPrimary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 7)
+            control
+        }
+        .padding(.leading, markInset)
+        .padding(.trailing, 7)
+        .frame(minHeight: Self.height)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            ZStack {
+                Rectangle().fill(ConchColor.surfaceRaised)
+                if case .needsYou = kind { Rectangle().fill(WorkdeskInk.noticeWash) }
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private var symbol: String {
+        switch kind {
+        case .needsYou: "exclamationmark.circle.fill"
+        case .passkeys: "person.badge.key"
+        }
+    }
+
+    private var markStyle: AnyShapeStyle {
+        switch kind {
+        case .needsYou: AnyShapeStyle(ConchColor.attention)
+        case .passkeys: AnyShapeStyle(ConchColor.textSecondary)
+        }
+    }
+
+    @ViewBuilder
+    private var words: some View {
+        switch kind {
+        case let .needsYou(agent, reason):
+            (Text(verbatim: "\(agent) needs you").fontWeight(.semibold) + Text(verbatim: " · \(reason)"))
+                .accessibilityLabel(Workbench.askWords(agent: agent, reason: reason))
+        case .passkeys:
+            // The same shape: what happened, then what to do.
+            let parts = Workbench.passkeyWords.components(separatedBy: " · ")
+            (Text(verbatim: parts[0]).fontWeight(.semibold) + Text(verbatim: parts.count > 1 ? " · " + parts[1...].joined(separator: " · ") : ""))
+                .accessibilityLabel(Workbench.passkeyWords)
+        }
+    }
+
+    @ViewBuilder
+    private var control: some View {
+        switch kind {
+        case .needsYou:
+            // Its right edge on the bar's close × (14 from the pane's edge), so the two line up down the bar's last column.
+            Button(action: action) {
+                Text("Done")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(ConchColor.textPrimary)
+                    .padding(.horizontal, 10)
+                    .frame(height: 20)
+                    .background(Capsule().fill(isHovered ? AnyShapeStyle(ConchColor.fillSelected) : AnyShapeStyle(ConchColor.surface)))
+                    .overlay(Capsule().strokeBorder(ConchColor.hairlineStrong, lineWidth: 1))
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .onHover { isHovered = $0 }
+            .padding(.trailing, 7)
+            .help("Done: tell the agent, and clear this")
+            .accessibilityLabel("Done")
+            .accessibilityHint("Tells the agent you've done it")
+        case .passkeys:
+            // The bar's close button itself, under it: its 22-point target on its axis, 18 from the pane's edge.
+            Button(action: action) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(isHovered ? ConchColor.textPrimary : ConchColor.textSecondary)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .onHover { isHovered = $0 }
+            .help("Dismiss")
+            .accessibilityLabel("Dismiss")
+        }
     }
 }
 
