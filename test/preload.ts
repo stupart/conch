@@ -106,6 +106,11 @@ if (!process.env.CONCH_DICTATIONS_FILE) {
 if (!process.env.CONCH_REVIEWS_FILE) {
   process.env.CONCH_REVIEWS_FILE = join(process.env.CONCH_LOG_FILE, "..", "reviews.json");
 }
+// Every tools/call a test drives through `runMcpServer` is logged (mcp-usage.ts); the live file is Tyler's record of
+// how agents use conch, not the suite's.
+if (!process.env.CONCH_MCP_USAGE_FILE) {
+  process.env.CONCH_MCP_USAGE_FILE = join(process.env.CONCH_LOG_FILE, "..", "mcp-usage.jsonl");
+}
 
 // Nothing below this line runs if a path escaped: the whole run fails here,
 // naming it, rather than a test quietly rewriting Tyler's live hooks.
