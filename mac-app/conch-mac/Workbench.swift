@@ -86,6 +86,10 @@ final class WorkbenchStore: ObservableObject {
     private var lingering: [String: Task<Void, Never>] = [:]
     private var touchMonitor: Any?
 
+    /// When this app started: pages wait for the dashboard window until `pagesWaitForWindow` after it (`accept`).
+    private let launchedAt = Date()
+    static let pagesWaitForWindow: TimeInterval = 8
+
     init(socket: ConchSocketClient) {
         self.socket = socket
         // Tyler's hand in a shown page, however it got there: what keeps an agent's work from taking the Workdesk from him.
@@ -185,7 +189,11 @@ final class WorkbenchStore: ObservableObject {
             page.close()
             pages[tab.id] = nil
         }
-        for tab in all where pages[tab.id] == nil && !closed.contains(tab.id) {
+        // A page's parking window is on screen (invisibly) from the moment it's made, and macOS counts it as a visible
+        // window: a background launch then never built conch's own, and no Dock click would (2026-10-12, 2026-10-18).
+        // So pages wait for the dashboard window, or a few seconds when it doesn't come (closed, or a launch without it).
+        let dashboardFirst = ReviewNotifications.shared.reviewWindow == nil && Date().timeIntervalSince(launchedAt) < Self.pagesWaitForWindow
+        for tab in all where pages[tab.id] == nil && !closed.contains(tab.id) && !dashboardFirst {
             guard let store = dataStore(for: tab.profile) else { continue }
             let socket = socket
             pages[tab.id] = WorkbenchPage(tab: tab, store: store) { event in

@@ -230,12 +230,18 @@ test("the menu bar watcher attaches again after the delay, and says so once if i
   );
 });
 
-// M3: the panels are visible windows, so a Dock click must look for a window that can be main, or it
-// would think conch is already showing and never bring the dashboard back.
-test("M3: a Dock click still reopens the dashboard while the floating panels are showing", () => {
+// M3: the panels are visible windows, so a Dock click must look for the dashboard itself, or it would think conch is
+// already showing and never bring the dashboard back. 2026-10-18: a browser page's parking window (visible, and other
+// helpers that can be main) answered for it the same way; only the registered dashboard counts, and with none SwiftUI
+// is asked for one, since AppKit opens an untitled window only when nothing at all is visible.
+test("M3: a Dock click still reopens the dashboard while the floating panels or parked pages are showing", () => {
   const app = readFileSync(join(import.meta.dir, "..", "mac-app/conch-mac/ConchMacApp.swift"), "utf8");
-  expect(app).toContain("if hasVisibleWindows, sender.windows.contains(where: { $0.isVisible && $0.canBecomeMain }) { return true }");
-  expect(app).not.toContain("if hasVisibleWindows { return true }");
+  const reopen = app.slice(app.indexOf("func applicationShouldHandleReopen("), app.indexOf("func userNotificationCenter("));
+  expect(reopen).toContain("if let dashboard = ReviewNotifications.shared.reviewWindow, sender.windows.contains(where: { $0 === dashboard }) {");
+  expect(reopen).toContain("dashboard.makeKeyAndOrderFront(nil)");
+  expect(reopen).toContain("if hasVisibleWindows, let opens = sender.delegate?.applicationOpenUntitledFile {");
+  expect(reopen).not.toContain("canBecomeMain");
+  expect(reopen).not.toContain("if hasVisibleWindows { return true }");
 });
 
 /**
