@@ -38,6 +38,10 @@ struct CapabilityInspectorView: View {
     var onToggled: (() -> Void)? = nil
     /// Restarts the session onto the installed version; nil where conch can't (no terminal).
     var onRestart: (() -> Void)? = nil
+    /// The conch tools its MCP server can't get (`rows[].toolsStale`), and the restart that brings them; nil when it has
+    /// them, and the restart nil where conch can't restart it.
+    var toolsStale: ToolsStale? = nil
+    var onRestartForTools: (() -> Void)? = nil
     @State private var expanded: Set<String> = []
     @State private var modelDraft = ""
     @State private var modelResult: String?
@@ -185,6 +189,12 @@ struct CapabilityInspectorView: View {
                             .controlSize(.small)
                     }
                 }
+            }
+            // conch's own tools, which a session keeps from when it started: what it lacks, in plain words, and the
+            // restart that brings them. The session's header says the same in one line; this is where to look for the
+            // reason (the tooltip has every tool by name and why a running session can't take them).
+            if let toolsStale {
+                InspectorToolsRow(toolsStale, restart: onRestartForTools)
             }
             if let capabilities, !capabilities.complete {
                 // Deliberately does not name a cause. Incompleteness also
@@ -748,6 +758,11 @@ struct ConfigTogglePreview: View {
     }
 }
 
+/// The session menu's Restart session… confirmation, said the same wherever a restart asks first.
+enum SessionRestartWords {
+    static let confirmation = "conch closes it cleanly, then resumes the same conversation in a new Terminal window with the options it was started with. A turn in progress stops."
+}
+
 /// The inspector as a sheet, owning its own fetch.
 ///
 /// Split out of `DashboardView` because inlining it there defeated Swift's
@@ -766,6 +781,12 @@ struct CapabilityInspectorSheet: View {
     @State private var isLoading = true
     /// Bumped after a switch is written, so the inventory is re-read rather than assumed.
     @State private var reloads = 0
+    /// A session at work, asked about before its tools restart stops its turn.
+    @State private var confirmingToolsRestart = false
+
+    /// The row as it is now: the sheet stays open while the daemon republishes, and whether it is out of date or idle
+    /// is a question about now.
+    private var live: SessionRow { store.state?.rows.first { $0.id == row.id } ?? row }
 
     var body: some View {
         CapabilityInspectorView(
@@ -780,8 +801,27 @@ struct CapabilityInspectorSheet: View {
             onRestart: row.noTerminal == nil ? {
                 store.closeSession(row, restart: true)
                 onDone()
+            } : nil,
+            toolsStale: live.parentSessionId == nil ? live.toolsStale : nil,
+            // As the header's line does: at once when it is idle, after the session menu's question when it is at work.
+            onRestartForTools: live.canRestart ? {
+                if live.isIdleForRestart {
+                    store.closeSession(live, restart: true)
+                    onDone()
+                } else {
+                    confirmingToolsRestart = true
+                }
             } : nil
         )
+        .alert("Restart \(row.label)?", isPresented: $confirmingToolsRestart) {
+            Button("Cancel", role: .cancel) {}
+            Button("Restart") {
+                store.closeSession(live, restart: true)
+                onDone()
+            }
+        } message: {
+            Text(SessionRestartWords.confirmation)
+        }
         .frame(width: 620, height: 560)
         .overlay(alignment: .topTrailing) {
             Button("Done", action: onDone)

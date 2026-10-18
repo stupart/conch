@@ -126,9 +126,15 @@ can't get this build's tools (`mcp-servers.ts` `toolsStaleFor`):
 
 `basis` is `reported` when the server said which tools it has, `estimated`
 for an older one. A server that can still hand over gets seven minutes after a
-daemon start to do it before its session is marked. `conch sessions` and the
-`conch_sessions` tool show it; the Mac app doesn't yet (a "restart to get
-conch's new tools" offer, one by one or for all, is the plan).
+daemon start to do it before its session is marked, and a session conch closes
+or restarts loses its mark at once (the next look judges its new process).
+`conch sessions` and the `conch_sessions` tool show it. The Mac app says it in
+one line under the session's header ("conch's tools are out of date · missing
+the browser tools, fork and Atlas pages", ConchDesign `SessionToolsNotice`) with
+Restart, the session menu's restart that keeps the conversation: at once when
+the session is idle, after the menu's confirmation when it's at work. "What
+this session carries" has the same row, and Settings › General restarts every
+idle one at once after naming them. The sidebar doesn't mark them.
 
 ## 4. The two agents, read completely differently
 

@@ -2867,6 +2867,9 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     }
     // A background job is stopped by id (claude stop), window or not.
     await closeSession(session);
+    // Its out-of-date tools were its old process's: the app's Restart must not come back offering itself before the next
+    // look (`refreshToolsStale`, once a minute) judges the new one.
+    if (toolsStale.delete(sessionId)) publishedStateWriter.request();
     void renderSessionPanel();
     if (!relaunch) return;
     try {

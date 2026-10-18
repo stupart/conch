@@ -2414,6 +2414,7 @@ private struct ConversationPane: View {
             if let reviewRow = focusedRow, hasWorkPane, stage(for: reviewRow) != .conversation {
                 VStack(spacing: 0) {
                     sessionBar(for: reviewRow)
+                    toolsNotice(for: reviewRow)
 
                     Rectangle()
                         .fill(ConchPalette.divider)
@@ -2497,8 +2498,14 @@ private struct ConversationPane: View {
                         // §3: only once the transcript has scrolled. A rule under a header
                         // with nothing above it is just a line. The deliverable pages keep
                         // theirs unconditionally — there a pane IS open, which is the spec's
-                        // other reason for drawing it.
-                        if transcriptScrolled {
+                        // other reason for drawing it. So does the tools line: the header has a
+                        // second line then, and the rule says where the header ends.
+                        if showsToolsNotice(row) {
+                            toolsNotice(for: row)
+                            Rectangle()
+                                .fill(ConchPalette.divider)
+                                .frame(height: 1)
+                        } else if transcriptScrolled {
                             Rectangle()
                                 .fill(ConchPalette.divider)
                                 .frame(height: 1)
@@ -2556,10 +2563,10 @@ private struct ConversationPane: View {
             deliverableShownAt = ShownDeliverable(row: parts[0], id: parts.count > 1 ? parts[1] : "", at: Date())
         }
         .onDisappear { askRetry?.cancel() }
-        // Under the session bar (52 tall), over whichever page the stage is on.
+        // Under the session bar (52 tall) and its tools line when it has one, over whichever page the stage is on.
         .overlay(alignment: .top) {
             LinkFailureLine(message: $browserTabFailure)
-                .padding(.top, 60)
+                .padding(.top, 60 + (showsToolsNotice(focusedRow) ? SessionToolsNotice.height : 0))
                 .padding(.horizontal, 14)
         }
         // What ↵ approves, while the review pane has the keyboard (ContentView, `ReviewApproval.returnKey`).
@@ -2629,7 +2636,7 @@ private struct ConversationPane: View {
                 store.closeSession(row, restart: true)
             }
         } message: {
-            Text("conch closes it cleanly, then resumes the same conversation in a new Terminal window with the options it was started with. A turn in progress stops.")
+            Text(SessionRestartWords.confirmation)
         }
         .sheet(item: $inspectingSession) { row in
             CapabilityInspectorSheet(row: row, expandAll: debugExpandInspector) {
@@ -2649,6 +2656,37 @@ private struct ConversationPane: View {
             inspectingSession = target.isEmpty
                 ? selectedRow ?? rows.first
                 : rows.first { $0.id == target || $0.id.hasPrefix(target) || $0.label == target }
+        }
+    }
+
+    /// Whether the session's header has the tools line under it: a top-level session whose conch MCP server can't get
+    /// conch's current tools (`rows[].toolsStale`).
+    private func showsToolsNotice(_ row: SessionRow?) -> Bool {
+        guard let row else { return false }
+        return row.parentSessionId == nil && row.toolsStale != nil
+    }
+
+    /// "conch's tools are out of date · missing the browser tools, fork and Atlas pages", with Restart, under the header
+    /// (ConchDesign `SessionToolsNotice`). Restart is the session menu's Restart session: it keeps the conversation.
+    @ViewBuilder
+    private func toolsNotice(for row: SessionRow) -> some View {
+        if showsToolsNotice(row), let stale = row.toolsStale {
+            SessionToolsNotice(
+                stale,
+                isRestarting: store.isRestarting(row.id),
+                restart: row.canRestart ? { restartForTools(row) } : nil
+            )
+        }
+    }
+
+    /// At once for an idle session: its turn is over and nothing of it is running, so a restart loses nothing, and the
+    /// line already says it keeps the conversation. A session at work (or waiting on its agents, or on an answer) gets
+    /// the session menu's confirmation first, because a turn in progress stops.
+    private func restartForTools(_ row: SessionRow) {
+        if row.isIdleForRestart {
+            store.closeSession(row, restart: true)
+        } else {
+            sessionPendingRestart = row
         }
     }
 
