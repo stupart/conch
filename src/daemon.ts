@@ -148,8 +148,7 @@ import { accessCheckedLink, checkAnonymously, checkPageAccess, discardCapture, t
 import { captureFolderPath } from "./capture-folder.ts";
 import { addBrowserProfile, cachedBrowserSignIns, readBrowserProfiles } from "./browser-profiles.ts";
 import { BrowserWorkbench, createBrowserService, fileTabStore, withBrowserState } from "./browser-workbench.ts";
-import { MCP_TOOL_NAMES, MCP_TOOLSET } from "./mcp-toolset.ts";
-import { listMcpServerProcesses, readMcpServerReports, toolsStaleFor, withToolsStale, type ToolsStale } from "./mcp-servers.ts";
+import { MCP_TOOLSET } from "./mcp-toolset.ts";
 import { sessionForCallerPid } from "./caller-session.ts";
 import { CONCH_DATA } from "./config.ts";
 import {
@@ -160,6 +159,8 @@ import {
 import type { PendingApproval } from "./approval.ts";
 import { awaitForkStart, FORK_ADOPT_WITHIN_MS, forkRequest, inheritedState, pendingForkFor, type PendingFork } from "./session-fork.ts";
 import { lastTabLines, tabAgentState, terminalTabCommands } from "./agent-alive.ts";
+import { MCP_TOOL_NAMES } from "./mcp-toolset.ts";
+import { listMcpServerProcesses, readMcpServerReports, toolsStaleFor, withToolsStale, type ToolsStale } from "./mcp-servers.ts";
 import { readSwapDashboard } from "./claude-swap.ts";
 import {
   addSignedInAccountToRotation, cancelAddingAccount, defaultLoginEmail, finishAddingAccount, installClaudeSwap, listedEmails,
