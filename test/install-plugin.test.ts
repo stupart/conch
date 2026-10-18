@@ -6,7 +6,7 @@ import {
   rmSync,
 } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { renderAgentsMd, renderSkillMd } from "../src/agent-instructions.ts";
+import { AGENT_INSTRUCTIONS, renderAgentsMd, renderSkillMd } from "../src/agent-instructions.ts";
 import {
   buildInstallCommands,
   buildMcpInvocation,
@@ -227,7 +227,7 @@ describe("plugin installer helpers", () => {
     expect(install.exitCode).toBe(0);
     expect(output).toContain("Claude Code: not-found");
     expect(output).toContain("Codex: not-found");
-    expect(output).toContain("MCP smoke test: passed — 24 tools");
+    expect(output).toContain(`MCP smoke test: passed — ${Object.keys(AGENT_INSTRUCTIONS.tools).length} tools`);
 
     const mcp = JSON.parse(
       readFileSync(

@@ -31,6 +31,12 @@ export interface StartSessionRequest {
   codexAccountId?: string;
   /** Explicit local conversation handoff; credentials stay in their own profile. */
   claudeSourceAccountId?: string;
+  /**
+   * A Claude profile folder that isn't one of conch's accounts: the CLAUDE_CONFIG_DIR of the agent that ran
+   * `conch start --resume`, when its conversation is there (resume-account.ts). Set by the CLI, never accepted from a
+   * wire request.
+   */
+  claudeConfigDir?: string;
   /** Daemon-owned snapshot, never accepted from a wire request. */
   claudeHandoff?: { transcriptPath: string; sessionId: string };
   resumeSessionId?: string;
@@ -275,7 +281,9 @@ export function terminalSessionCommand(request: StartSessionRequest): string {
   const adapter = adapterFor(request.backend);
   const account = claudeAccountForLaunch(request);
   const codexAccount = codexAccountForLaunch(request);
-  const profile = account ? claudeProfileCommandPrefix(account, request.claudeHandoff || request.host === "background" ? true : undefined) : codexAccount ? codexProfileCommandPrefix(codexAccount, request.host === "background" ? true : undefined) : "";
+  const profile = account ? claudeProfileCommandPrefix(account, request.claudeHandoff || request.host === "background" ? true : undefined)
+    : request.claudeConfigDir ? claudeAccountCommandPrefix(request.claudeConfigDir, false)
+    : codexAccount ? codexProfileCommandPrefix(codexAccount, request.host === "background" ? true : undefined) : "";
   // `open` and $BROWSER into conch's Workbench while `browser-open-in-conch` is on (browser-open.ts): after the
   // profile's own `env` options, or an `env` of their own.
   const browser = sessionBrowserAssignments(request.backend);

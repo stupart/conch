@@ -185,7 +185,7 @@ describe("how a call ended", () => {
 
   test("input-error: an unknown argument, an unknown tool, arguments that aren't an object, a session nobody has", async () => {
     expect((await observed(handlers(), "conch_on_screen", { nope: 1 })).call).toMatchObject({ outcome: "input-error", error: "unknown argument \"nope\"" });
-    expect((await observed(handlers(), "conch_fork", {})).call).toMatchObject({ tool: "conch_fork", outcome: "input-error", error: "unknown tool" });
+    expect((await observed(handlers(), "conch_spawn", {})).call).toMatchObject({ tool: "conch_spawn", outcome: "input-error", error: "unknown tool" });
     expect((await observed(handlers(), "conch_on_screen", "text")).call).toMatchObject({ outcome: "input-error" });
     expect((await observed(handlers(), "conch_wake", { session: "Nobody" })).call).toMatchObject({ outcome: "input-error" });
     expect(callOutcome(new AmbiguousSessionError("Build", [{ sessionId: "a", label: "Build" }, { sessionId: "b", label: "Build" }]))).toBe("input-error");

@@ -11,6 +11,9 @@ export function toolsetFingerprint(tools: Iterable<{ name: string; description: 
   return createHash("sha256").update(JSON.stringify(sorted)).digest("hex").slice(0, 16);
 }
 
+/** This build's tools, by name, in order: `AGENT_INSTRUCTIONS.tools`' (a test holds mcp.ts to that). */
+export const MCP_TOOL_NAMES: readonly string[] = Object.keys(AGENT_INSTRUCTIONS.tools);
+
 /** This build's: its tools are `AGENT_INSTRUCTIONS.tools`' names, each described by it (a test holds mcp.ts to that). */
 export const MCP_TOOLSET = toolsetFingerprint(
   Object.entries(AGENT_INSTRUCTIONS.tools).map(([name, description]) => ({ name, description })),

@@ -16,7 +16,7 @@ import pluginReadmeSource from "../plugin/README.md" with { type: "text" };
 import claudePluginManifestSource from "../plugin/plugins/conch/.claude-plugin/plugin.json" with { type: "text" };
 import codexPluginManifestSource from "../plugin/plugins/conch/.codex-plugin/plugin.json" with { type: "text" };
 import conchControlProseSource from "../docs/conch-control-skill.md" with { type: "text" };
-import { renderAgentsMd, renderSkillMd } from "./agent-instructions.ts";
+import { AGENT_INSTRUCTIONS, renderAgentsMd, renderSkillMd } from "./agent-instructions.ts";
 
 export interface PluginCommands {
   claude: string[][];
@@ -68,8 +68,8 @@ interface SmokeResult {
   error?: string;
 }
 
-/** conch_* and review_* (16), the Workdesk browser's browser_* (7), and atlas_show (1). */
-const EXPECTED_MCP_TOOL_COUNT = 24;
+/** Every tool this build describes (`AGENT_INSTRUCTIONS.tools`, which a test holds mcp.ts's list to). */
+const EXPECTED_MCP_TOOL_COUNT = Object.keys(AGENT_INSTRUCTIONS.tools).length;
 
 // These static text imports are bundled into `bun build --compile` releases.
 // A Homebrew install has no source checkout to copy from, so the installer

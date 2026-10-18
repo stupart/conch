@@ -33,6 +33,7 @@
  */
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { SERVER_INSTRUCTIONS_MAX } from "../src/agent-instructions.ts";
 import { createPhoneBridgeApplication } from "../src/phone-bridge.ts";
 import { publishForVerdict } from "../src/review-verdict.ts";
 import { darwinUserTempDir, inTempFolder } from "../src/temp-folders.ts";
@@ -301,7 +302,7 @@ try {
   const init = await mcp.request("initialize", { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "e2e", version: "1" } });
   check(init.result?.protocolVersion === "2025-06-18", `initialize: a 2025-11-25 client is answered 2025-06-18 (got ${init.result?.protocolVersion})`);
   const instructions: string = init.result?.instructions ?? "";
-  check(instructions.startsWith("This session is watched by conch") && instructions.length <= 500,
+  check(instructions.startsWith("This session is watched by conch") && instructions.length <= SERVER_INSTRUCTIONS_MAX,
     `initialize carries instructions (${instructions.length} chars): "${instructions.slice(0, 60)}…"`);
   mcp.server.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
   const listed = await mcp.request("tools/list", {});

@@ -121,7 +121,7 @@ import {
   stopSoxProcess,
 } from "./listen.ts";
 import { createNarration, NARRATION_QUIET_WITHIN_MS } from "./narration.ts";
-import { INJECT_DEBUG_LOG, readSessionScreen, revealSessionWindow, withUIHold } from "./inject.ts";
+import { INJECT_DEBUG_LOG, readSessionScreen, readTerminalTab, revealSessionWindow, withUIHold } from "./inject.ts";
 import { createTerminalMirror } from "./terminal-mirror.ts";
 import { openSessionApp } from "./session-app-open.ts";
 import { adapterFor, transcriptFormatFor } from "./agent-adapter.ts";
@@ -148,7 +148,8 @@ import { accessCheckedLink, checkAnonymously, checkPageAccess, discardCapture, t
 import { captureFolderPath } from "./capture-folder.ts";
 import { addBrowserProfile, cachedBrowserSignIns, readBrowserProfiles } from "./browser-profiles.ts";
 import { BrowserWorkbench, createBrowserService, fileTabStore, withBrowserState } from "./browser-workbench.ts";
-import { MCP_TOOLSET } from "./mcp-toolset.ts";
+import { MCP_TOOL_NAMES, MCP_TOOLSET } from "./mcp-toolset.ts";
+import { listMcpServerProcesses, readMcpServerReports, toolsStaleFor, withToolsStale, type ToolsStale } from "./mcp-servers.ts";
 import { sessionForCallerPid } from "./caller-session.ts";
 import { CONCH_DATA } from "./config.ts";
 import {
@@ -157,7 +158,8 @@ import {
   withHeldQuestion,
 } from "./conversation.ts";
 import type { PendingApproval } from "./approval.ts";
-import { FORK_ADOPT_WITHIN_MS, forkRequest, inheritedState, pendingForkFor, type PendingFork } from "./session-fork.ts";
+import { awaitForkStart, FORK_ADOPT_WITHIN_MS, forkRequest, inheritedState, pendingForkFor, type PendingFork } from "./session-fork.ts";
+import { lastTabLines, tabAgentState, terminalTabCommands } from "./agent-alive.ts";
 import { readSwapDashboard } from "./claude-swap.ts";
 import {
   addSignedInAccountToRotation, cancelAddingAccount, defaultLoginEmail, finishAddingAccount, installClaudeSwap, listedEmails,
@@ -675,7 +677,7 @@ let reportLaunchError: (message: string, state: Record<string, unknown>) => void
  * waited on it (2026-10-05, Tyler: "trying to start a new session (background session with claude account) and it
  * didn't start … and the modal didn't close").
  */
-async function launchSession(request: StartSessionRequest): Promise<void | { backgroundId: string }> {
+async function launchSession(request: StartSessionRequest): Promise<void | { backgroundId?: string; tty?: string }> {
   const codexAccount = codexAccountForLaunch(request);
   if (codexAccount) await runCodexInstall(codexAccount.configDir);
   const account = claudeAccountForLaunch(request);
@@ -693,6 +695,8 @@ async function launchSession(request: StartSessionRequest): Promise<void | { bac
     return { backgroundId };
   }
   const { tty } = await startTerminalSession(request);
+  // The tab it opened, for a fork an agent waits on (`forkLiveSession`); every other caller reads only a background id.
+  const opened = tty ? { tty } : undefined;
   if (request.trustFolder === true && adapterFor(request.backend).trustTypedAtLaunch && tty) {
     void acceptClaudeTrust(tty).then((outcome) => {
       log(`trust prompt in ${tty}: ${outcome}`);
@@ -701,6 +705,7 @@ async function launchSession(request: StartSessionRequest): Promise<void | { bac
       }
     }, (error) => log(`trust prompt in ${tty}: could not be watched (${(error as Error).message})`));
   }
+  return opened;
 }
 
 /** Build the external document with daemon-owned voice and priority resolution. */
@@ -2183,14 +2188,42 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
    * The sessions file: the published state, the pages the Mac app is to draw for agents (`pageCaptures`), and the
    * Workbench's profiles, tabs and commands (`browserWorkbench`). Only this
    * Mac's app reads the file; the phone, and a second Mac through it, read `lastPublishedPanelState`, which never has them.
-   * And this build's MCP toolset (`mcpToolset`), which an MCP server of an older one reads to hand over (mcp-handoff.ts).
+   * And this build's MCP toolset (`mcpToolset`), which an MCP server of an older one reads to hand over (mcp-handoff.ts),
+   * and on each row whose session's MCP server can't get it, `toolsStale` (`refreshToolsStale`).
    */
   function writeSessionsFile(): void {
     if (lastPublishedPanelState) {
       const state = { ...withBrowserState(withCaptureRequests(lastPublishedPanelState, pageCaptures.requests()), browserWorkbench), mcpToolset: MCP_TOOLSET };
-      publishSessionsFile(state);
+      publishSessionsFile(withToolsStale(state, toolsStale));
     }
   }
+
+  /**
+   * Which live sessions' conch MCP servers can't get this build's tools (mcp-servers.ts), from the servers' own reports
+   * and the `conch mcp` processes: once a minute, a `ps` and a small folder read. Only the sessions file carries it.
+   */
+  let toolsStale = new Map<string, ToolsStale>();
+  const toolsWatchedSince = Date.now();
+  async function refreshToolsStale(): Promise<void> {
+    const reports = readMcpServerReports();
+    const processes = await listMcpServerProcesses();
+    const now = Date.now();
+    const next = new Map<string, ToolsStale>();
+    for (const session of panelSessions.values()) {
+      const stale = toolsStaleFor({
+        sessionPid: session.pid, reports, processes, currentTools: MCP_TOOL_NAMES, currentToolset: MCP_TOOLSET, now, since: toolsWatchedSince,
+      });
+      if (stale) next.set(session.sessionId, stale);
+    }
+    if (JSON.stringify([...next]) === JSON.stringify([...toolsStale])) return;
+    const newly = [...next.keys()].filter((id) => !toolsStale.has(id));
+    toolsStale = next;
+    if (newly.length) log(`conch tools out of date in ${newly.length} session${newly.length === 1 ? "" : "s"}: ${newly.map((id) => labelForSessionId(id)).join(", ")}`);
+    publishedStateWriter.request();
+  }
+  const toolsStaleTimer = setInterval(() => void refreshToolsStale().catch(() => {}), 60_000);
+  toolsStaleTimer.unref?.();
+  setTimeout(() => void refreshToolsStale().catch(() => {}), 15_000).unref?.();
 
   const publishedStateWriter = createPublishThrottle(() => {
     breadcrumb("published state: writing the sessions file");
@@ -2830,7 +2863,10 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
    * same folder, account and flags, on the same host), and the original keeps running. The fork's id is Claude Code's to
    * choose, so it is adopted when it appears (`adoptForks`).
    */
-  const forkLiveSession = async (sessionId: string): Promise<{ notCarriedOver: string[] }> => {
+  const forkLiveSession = async (
+    sessionId: string,
+    options: { label?: string; wait?: boolean } = {},
+  ): Promise<{ notCarriedOver: string[]; forkId?: string; label?: string; running?: string }> => {
     const session = panelSessions.get(sessionId);
     if (!session) throw new Error("session is not live");
     if (!session.pid && !session.jobId) throw new Error(session.noTerminal ?? "session has no routable pid");
@@ -2847,18 +2883,55 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     if (session.cwd && adapterFor(session.backend).folderTrusted(session.cwd) === false) fork.request.trustFolder = true;
     terminalSessionCommand(fork.request); // throws on anything invalid, before anything starts
     const label = labelForSessionId(sessionId);
-    const pending: PendingFork = { parentId: sessionId, conversationId: fork.request.resumeSessionId!, label, at: Date.now() };
+    const pending: PendingFork = {
+      parentId: sessionId, conversationId: fork.request.resumeSessionId!, label, at: Date.now(),
+      ...(options.label ? { forkLabel: options.label } : {}),
+    };
+    // An agent's fork (`conch_fork`) is answered once it is seen running, or with why it isn't: `adoptForks` settles this.
+    const adopted = options.wait
+      ? new Promise<{ forkId: string; label: string }>((resolve) => forkWaiters.set(pending, resolve))
+      : undefined;
     pendingForks.push(pending);
+    let launched: Awaited<ReturnType<typeof launchSession>>;
     try {
-      await launchSession(fork.request);
+      launched = await launchSession(fork.request);
     } catch (error) {
       pendingForks.splice(pendingForks.indexOf(pending), 1);
+      forkWaiters.delete(pending);
       throw error;
     }
     log(`forked "${label}"${fork.notCarriedOver.length ? ` without ${fork.notCarriedOver.join(", ")}` : ""}`);
     void renderSessionPanel();
-    return { notCarriedOver: fork.notCarriedOver };
+    if (!adopted) return { notCarriedOver: fork.notCarriedOver };
+    const tty = launched?.tty;
+    const executable = adapterFor(fork.request.backend).executable;
+    let lastLook = Date.now();
+    try {
+      const seen = await awaitForkStart({
+        adopted,
+        state: async () => tty ? tabAgentState(await terminalTabCommands(tty), executable) : "unknown",
+        lastWords: async () => tty ? lastTabLines(await readTerminalTab(tty)) : undefined,
+        // A registry read every few seconds besides the sessions folder's own watch, so adoption isn't left to the 20 s timer.
+        look: () => {
+          if (Date.now() - lastLook < 3_000) return;
+          lastLook = Date.now();
+          void renderSessionPanel();
+        },
+        where: tty ? `Terminal (${tty})` : launched?.backgroundId ? `conch's background host (${launched.backgroundId})` : "a new window",
+        sleep: (ms) => Bun.sleep(ms),
+        now: Date.now,
+      });
+      return { notCarriedOver: fork.notCarriedOver, ...seen };
+    } catch (error) {
+      pendingForks.splice(pendingForks.indexOf(pending), 1);
+      log(`the fork of "${label}" didn't start: ${(error as Error).message.split("\n")[0]}`);
+      throw error;
+    } finally {
+      forkWaiters.delete(pending);
+    }
   };
+  /** The forks an agent is waiting on (`forkLiveSession`'s `wait`), told by `adoptForks` when theirs appears. */
+  const forkWaiters = new Map<PendingFork, (seen: { forkId: string; label: string }) => void>();
   /**
    * A fork that has appeared (`pendingForkFor`): it gets its parent's deliverables as they were (`inheritedState`) and,
    * while it still reads as its parent, a label that tells the two apart.
@@ -2882,10 +2955,13 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
           ledger.saveReviews();
         }
         const current = labelForSessionId(session.sessionId);
-        if (current === match.label) {
-          const renamed = renameSessionLabel(session.sessionId, current, `${match.label} · fork`);
+        let forkLabel = current;
+        if (current === match.label || match.forkLabel) {
+          const renamed = renameSessionLabel(session.sessionId, current, match.forkLabel ?? `${match.label} · fork`);
           relabelRuntimeSession(session.sessionId, current, renamed.label);
+          forkLabel = renamed.label;
         }
+        forkWaiters.get(match)?.({ forkId: session.sessionId, label: forkLabel });
         const held = state?.reviews?.length ?? 0;
         log(`adopted the fork of "${match.label}"${held ? `, holding its ${held} deliverable${held === 1 ? "" : "s"}` : ""}`);
         void renderSessionPanel();

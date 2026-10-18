@@ -18,15 +18,16 @@ existing command surface as tools a Claude Code session can call to BECOME conch
 
 ## Shared data model (plugin ⇄ future mobile websocket)
 
-G2's `PublishedState` IS the shared model — the plugin's `conch_sessions` output, the `/tmp` file,
-and the future websocket "state" frame are the same object. Additions: G5's `review` field folded
+G2's `PublishedState` IS the shared model — the `/tmp` file and the future websocket "state" frame
+are the same object. (The plugin's `conch_sessions` returned it too until 2026-10-19, 272K–455K
+characters a call; it now answers one short entry per session, and `detail: true` for one row.) Additions: G5's `review` field folded
 into the row, plus `cwd` (mobile + spawn need it). Types: see design recon (SessionStatus,
 ReviewRequest, SessionRow, PublishedState, ConchFrame envelope).
 
 ## Tool set
 
 SAFE tools (this scaffold — map to EXISTING socket sends / imports, no protocol change, non-destructive):
-- `conch_sessions` — read `/tmp/conch-sessions.json`; fallback `registrySnapshot`
+- `conch_sessions { session?, detail? }` — read `/tmp/conch-sessions.json`, one short entry per session; fallback `registrySnapshot`
 - `conch_wake { session? }` — TurnEvent `wake`
 - `conch_recite { session? }` — TurnEvent `recite` + transcriptPath/mark
 - `conch_speak { text, voice? }` — TurnEvent `speak`

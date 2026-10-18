@@ -5,8 +5,10 @@ import {
   AGENT_INSTRUCTIONS,
   renderAgentsMd,
   renderSkillMd,
+  CLAUDE_CODE_INSTRUCTIONS_CUT,
   REVIEW_TO_FRONT_DESCRIPTION_MAX,
   SERVER_INSTRUCTIONS_MAX,
+  TOOLSEARCH_PRELOAD,
   type AgentInstructions,
 } from "../src/agent-instructions.ts";
 import { renderHelpSessionClaudeMd } from "../src/help-session.ts";
@@ -71,7 +73,8 @@ describe("one source for the agent-facing instructions", () => {
    */
   test("the server's instructions say conch is watching, what to do about it, and where the rest is, in a short budget", () => {
     const told = AGENT_INSTRUCTIONS.serverInstructions;
-    expect(SERVER_INSTRUCTIONS_MAX).toBeLessThanOrEqual(500);
+    // Well under Claude Code's cut, which would end it in "… [truncated]" and lose the ToolSearch line.
+    expect(SERVER_INSTRUCTIONS_MAX).toBeLessThanOrEqual(CLAUDE_CODE_INSTRUCTIONS_CUT - 500);
     expect(told.length).toBeLessThanOrEqual(SERVER_INSTRUCTIONS_MAX);
     expect(told).toStartWith("This session is watched by conch");
     expect(told).toContain("publish it with review_to_front instead of only mentioning a path");
@@ -84,6 +87,32 @@ describe("one source for the agent-facing instructions", () => {
     // 2026-10-05: as the work goes, not only for the final result.
     expect(told).toContain("Whenever there is something to look at");
     expect(told).toContain("as you go and not only at the end");
+  });
+
+  /**
+   * 2026-10-18 review: no Claude Code agent loaded conch_capture or browser_* through ToolSearch in three weeks, and they
+   * wrote 686 Playwright screenshot scripts, 112 with conch_capture in their tool list. Claude in Chrome's instructions
+   * give a one-line `select:` preload that agents copy; conch's now do too, with Claude Code's own names for the tools.
+   */
+  test("the server's instructions give Claude Code one ToolSearch line for conch's page tools, and say conch_capture over a script", () => {
+    const told = AGENT_INSTRUCTIONS.serverInstructions;
+    const select = /query "select:([^"]+)"/.exec(told)?.[1];
+    expect(select?.split(",")).toEqual(TOOLSEARCH_PRELOAD.map((tool) => `mcp__plugin_conch_conch__${tool}`));
+    for (const tool of TOOLSEARCH_PRELOAD) expect(MCP_TOOLS.some((one) => one.name === tool)).toBe(true);
+    expect(TOOLSEARCH_PRELOAD).toContain("conch_capture");
+    expect(told).toContain("in one ToolSearch call");
+    expect(told).toContain("use conch_capture rather than writing a Playwright screenshot script");
+    expect(told).toContain("To fork a session, conch_fork.");
+  });
+
+  // 2026-10-18 review: Codex put the instructions in front of each tool's own description, so its 25 tools read alike.
+  test("a Codex client gets no server instructions, since AGENTS.md carries them; Claude Code and an unnamed client do", () => {
+    const codex = initializeResult({ protocolVersion: "2025-06-18", clientInfo: { name: "codex-mcp-client", version: "0.163.0" } });
+    expect(codex).not.toHaveProperty("instructions");
+    expect(codex.serverInfo.name).toBe("conch");
+    expect(initializeResult({ clientInfo: { name: "claude-code" } }).instructions).toBe(AGENT_INSTRUCTIONS.serverInstructions);
+    expect(initializeResult({}).instructions).toBe(AGENT_INSTRUCTIONS.serverInstructions);
+    expect(renderAgentsMd()).toContain("publish it with `review_to_front` as you go");
   });
 
   /**

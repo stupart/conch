@@ -979,7 +979,11 @@ export type RuntimeControlMessage =
   }
   /** `restart`: close it, then resume the same conversation with the same start flags. */
   | { kind: "session-close"; sessionId: string; restart?: true }
-  | { kind: "session-fork"; sessionId: string }
+  /**
+   * `label`: the fork's own label (else "<label> · fork"). `wait`: answer once conch has seen the fork running
+   * (`conch_fork`), or with why it didn't start, rather than as soon as its Terminal window opened (the Mac app's).
+   */
+  | { kind: "session-fork"; sessionId: string; label?: string; wait?: true }
   | {
     kind: "app-error";
     source: "ios" | "mac";
@@ -1128,7 +1132,11 @@ export type RuntimeControlResponse =
   }
   /** `notCarriedOver`: flags on the old command line a restart could not validate, so did not replay. */
   | { kind: "session-closed"; sessionId: string; restarted?: true; notCarriedOver?: string[] }
-  | { kind: "session-forked"; sessionId: string; notCarriedOver?: string[] }
+  /**
+   * With `wait`: `forkId` once conch has adopted the fork as a session of its own, else `running`, where it is running
+   * though Claude Code hasn't given it an id conch can see yet (a Terminal tty, or conch's background host).
+   */
+  | { kind: "session-forked"; sessionId: string; notCarriedOver?: string[]; forkId?: string; label?: string; running?: string }
   | { kind: "app-error-ack" }
   | {
     kind: "config-toggle";
@@ -1470,7 +1478,14 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
   if (value.kind === "session-fork") {
     const sessionId = validateSessionId(value.sessionId);
     if (!sessionId.ok) return sessionId;
-    return { ok: true, value: { kind: "session-fork", sessionId: sessionId.value } };
+    let label: string | undefined;
+    if (value.label !== undefined) {
+      const validated = validateSessionLabel(value.label);
+      if (!validated.ok) return validated;
+      label = validated.value;
+    }
+    if (value.wait !== undefined && value.wait !== true) return { ok: false, err: "wait must be true when present" };
+    return { ok: true, value: { kind: "session-fork", sessionId: sessionId.value, ...(label ? { label } : {}), ...(value.wait ? { wait: true as const } : {}) } };
   }
   if (value.kind === "session-start") {
     if (value.host !== undefined && value.host !== "terminal" && value.host !== "background") return { ok: false, err: "Session host must be terminal or background" };
@@ -1900,6 +1915,33 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
         sessionId: sessionId.value,
         ...(value.restarted === true ? { restarted: true as const } : {}),
         ...(dropped?.length ? { notCarriedOver: dropped } : {}),
+      },
+    };
+  }
+  if (value.kind === "session-forked") {
+    const sessionId = validateSessionId(value.sessionId);
+    if (!sessionId.ok) return { ok: false, err: `invalid session forked response: ${sessionId.err}` };
+    const dropped = value.notCarriedOver;
+    if (dropped !== undefined && (!Array.isArray(dropped) || dropped.length > 32
+      || !dropped.every((flag) => typeof flag === "string" && flag.length > 0 && flag.length <= 120))) {
+      return { ok: false, err: "invalid session forked response: notCarriedOver" };
+    }
+    const forkId = value.forkId === undefined ? undefined : validateSessionId(value.forkId);
+    if (forkId && !forkId.ok) return { ok: false, err: `invalid session forked response: ${forkId.err}` };
+    for (const key of ["label", "running"] as const) {
+      if (value[key] !== undefined && (typeof value[key] !== "string" || (value[key] as string).length > 4_096)) {
+        return { ok: false, err: `invalid session forked response: ${key}` };
+      }
+    }
+    return {
+      ok: true,
+      value: {
+        kind: "session-forked",
+        sessionId: sessionId.value,
+        ...(dropped?.length ? { notCarriedOver: dropped } : {}),
+        ...(forkId?.ok ? { forkId: forkId.value } : {}),
+        ...(typeof value.label === "string" ? { label: value.label } : {}),
+        ...(typeof value.running === "string" ? { running: value.running } : {}),
       },
     };
   }
