@@ -196,6 +196,21 @@ if [[ -n "$WAS_RUNNING" ]]; then
   # its window back, still without taking focus.
   sleep 2
   relaunch || true
+  # …and it didn't always (2026-10-18: no window, and a Dock click made none). If there is still no window, quit it and
+  # open it in the foreground, which has always made one: a stolen focus beats a conch with nothing to show.
+  has_window() { swift "$SCRIPT_DIR/conch-window.swift" 2>/dev/null; }
+  for _ in $(seq 1 10); do has_window && break; sleep 1; done
+  if ! has_window; then
+    echo "conch.app came back without its window — opening it again in the foreground"
+    for pid in $(pgrep -f "$INSTALLED_APP_PATH/Contents/MacOS/" || true); do
+      osascript -e 'with timeout of 15 seconds' -e 'tell application id "ai.blueprintstudio.conch" to quit' -e 'end timeout' >/dev/null 2>&1 || kill "$pid" 2>/dev/null || true
+      for _ in $(seq 1 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.2; done
+    done
+    env -i HOME="$HOME" USER="${USER:-$(id -un)}" LOGNAME="${LOGNAME:-${USER:-$(id -un)}}" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+      open -a "$INSTALLED_APP_PATH" || true
+    for _ in $(seq 1 15); do has_window && break; sleep 1; done
+    has_window || echo "warning: conch.app still has no window; open it from /Applications" >&2
+  fi
 fi
 
 if [[ -d "$INSTALLED_APP_PATH/Contents/Resources/Lagoon" ]]; then
