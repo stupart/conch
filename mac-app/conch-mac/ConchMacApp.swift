@@ -172,17 +172,23 @@ private final class ConchAppDelegate: NSObject,
     /// would bring it back; `open -a` just activated an app with zero windows.
     /// Found because the app photographed itself and reported "no visible
     /// window (of 0 total)".
+    ///
+    /// Only the dashboard counts (`ReviewNotifications.reviewWindow`, which the window registers itself). Any window
+    /// that could be main, or any visible one, used to: conch's own helpers (a browser page's invisible parking window,
+    /// on screen so WebKit keeps drawing it) answered for it, and conch stayed running with no window that a Dock click
+    /// or `open` could bring back (2026-10-18). With no dashboard, SwiftUI is asked for one directly, since AppKit's own
+    /// "open an untitled window" only runs when no window at all is visible.
     func applicationShouldHandleReopen(
         _ sender: NSApplication,
         hasVisibleWindows: Bool
     ) -> Bool {
-        // The floating panels (M3) are visible windows too, but not the conch
-        // window: only a window that can be main counts as one to show.
-        if hasVisibleWindows, sender.windows.contains(where: { $0.isVisible && $0.canBecomeMain }) { return true }
-        // Prefer restoring the real window; only ask AppKit to rebuild the
-        // scene if there is genuinely nothing to raise.
-        if let existing = sender.windows.first(where: { $0.canBecomeMain }) {
-            existing.makeKeyAndOrderFront(nil)
+        if let dashboard = ReviewNotifications.shared.reviewWindow, sender.windows.contains(where: { $0 === dashboard }) {
+            if dashboard.isMiniaturized { dashboard.deminiaturize(nil) }
+            dashboard.makeKeyAndOrderFront(nil)
+            return false
+        }
+        if hasVisibleWindows, let opens = sender.delegate?.applicationOpenUntitledFile {
+            _ = opens(sender)
             return false
         }
         return true
