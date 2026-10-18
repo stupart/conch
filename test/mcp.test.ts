@@ -82,6 +82,7 @@ const TOOL_NAMES = [
   "browser_type",
   "browser_screenshot",
   "browser_tabs",
+  "browser_ask",
   "browser_close",
   "atlas_show",
 ] as const satisfies readonly McpToolName[];
@@ -384,6 +385,7 @@ function recordingHandlers(
     browser_type: handler("browser_type"),
     browser_screenshot: handler("browser_screenshot"),
     browser_tabs: handler("browser_tabs"),
+    browser_ask: handler("browser_ask"),
     browser_close: handler("browser_close"),
     atlas_show: handler("atlas_show"),
   };
@@ -527,8 +529,8 @@ describe("MCP tool discovery", () => {
 
     expect(response?.id).toBe(11);
     expect(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).toEqual([...TOOL_NAMES]);
-    expect(result.tools).toHaveLength(24);
-    expect(new Set(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).size).toBe(24);
+    expect(result.tools).toHaveLength(25);
+    expect(new Set(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).size).toBe(25);
     for (const deferred of DEFERRED_TOOL_NAMES) {
       expect(result.tools.some((tool: unknown) => isRecord(tool) && tool.name === deferred)).toBe(false);
     }
@@ -556,6 +558,7 @@ describe("MCP tool discovery", () => {
       browser_type: ["tab", "target", "text", "submit"],
       browser_screenshot: ["tab"],
       browser_tabs: [],
+      browser_ask: ["tab", "reason"],
       browser_close: ["tab"],
       atlas_show: ["path", "markdown", "summary"],
     };
@@ -584,6 +587,7 @@ describe("MCP tool discovery", () => {
       browser_type: ["target", "text"],
       browser_screenshot: [],
       browser_tabs: [],
+      browser_ask: ["reason"],
       browser_close: ["tab"],
       atlas_show: ["path", "markdown"],
     };
@@ -2841,6 +2845,7 @@ describe("the browser tools", () => {
       const op = (message as { op: string }).op;
       if (op === "tabs") return { ok: true, reply: { kind: "browser-result", op: "tabs", tabs: [tab] } };
       if (op === "close") return { ok: true, reply: { kind: "browser-result", op: "close", result: { closed: tab.id } } };
+      if (op === "ask") return ok(op, { result: { asked: (message as { reason: string }).reason, answersOnSignIn: "mobbin.com" } });
       return ok(op, { result: op === "screenshot" ? { path: "/caps/x.png", width: 10, height: 10, url: tab.url, title: tab.title } : { url: tab.url, title: tab.title } });
     });
     const call = async (name: McpToolName, args: Record<string, unknown>) => JSON.parse(toolText(await callTool(handlers, name, args)));
@@ -2852,6 +2857,11 @@ describe("the browser tools", () => {
     await call("browser_type", { target: { selector: "#email" }, text: "agent@example.com", submit: true });
     expect(await call("browser_screenshot", {})).toEqual({ tab: tab.id, path: "/caps/x.png", width: 10, height: 10, url: tab.url, title: tab.title });
     expect(await call("browser_tabs", {})).toEqual({ tabs: [tab] });
+    expect(await call("browser_ask", { reason: "  Sign in to Mobbin " })).toEqual({
+      tab: tab.id,
+      asked: "Sign in to Mobbin",
+      note: "wait for them: when they press Done, or conch sees this tab's profile sign in to mobbin.com, you get a message saying so, and browser_tabs shows it; your own click, type or open in the tab withdraws it",
+    });
     expect(await call("browser_close", { tab: tab.id })).toEqual({ closed: tab.id });
     expect(sent).toEqual([
       { kind: "browser-command", sessionId: "session-123", op: "open", url: "https://acme.dev/pricing", profile: "Work" },
@@ -2861,8 +2871,26 @@ describe("the browser tools", () => {
       { kind: "browser-command", sessionId: "session-123", op: "type", target: { selector: "#email" }, text: "agent@example.com", submit: true },
       { kind: "browser-command", sessionId: "session-123", op: "screenshot" },
       { kind: "browser-command", sessionId: "session-123", op: "tabs" },
+      { kind: "browser-command", sessionId: "session-123", op: "ask", reason: "Sign in to Mobbin" },
       { kind: "browser-command", sessionId: "session-123", op: "close", tab: tab.id },
     ]);
+  });
+
+  test("browser_ask: a reason is one short line; with the Mac app closed it says when the user will see it", async () => {
+    const { handlers, sent } = browserHarness((message) => ok("ask", { result: { asked: (message as { reason: string }).reason, appClosed: true } }));
+    const said = async (args: Record<string, unknown>) => toolText(await callTool(handlers, "browser_ask", args));
+    const refused = 'refused: reason must be one short line of 1 to 80 printable characters, saying what the user is to do in the tab ("Sign in to Mobbin")';
+    for (const reason of [undefined, "", "   ", "x".repeat(81), "Sign in\nto Mobbin", 42]) {
+      expect(await said(reason === undefined ? {} : { reason })).toBe(refused);
+    }
+    expect(await said({ reason: "Sign in", target: "x" })).toBe('refused: unknown argument "target"');
+    expect(sent).toEqual([]);
+    expect(JSON.parse(await said({ tab: tab.id, reason: "Pass the captcha" }))).toEqual({
+      tab: tab.id,
+      asked: "Pass the captcha",
+      note: "conch's Mac app isn't open, so the user sees it when they open it; wait for them: when they press Done, you get a message saying so, and browser_tabs shows it; your own click, type or open in the tab withdraws it",
+    });
+    expect(sent).toEqual([{ kind: "browser-command", sessionId: "session-123", op: "ask", reason: "Pass the captcha", tab: tab.id }]);
   });
 
   test("an unverified caller is refused before anything is sent: a tab is its session's", async () => {
@@ -2904,12 +2932,19 @@ describe("the browser tools", () => {
     expect(open).toContain("Use it whenever you browse on the user's behalf, so they can see what you do");
     expect(open).toContain("other browser tools (Claude in Chrome, Playwright, computer use) are for when they ask for them or the task needs them");
     expect(open).toContain("the user's Workdesk");
-    expect(AGENT_INSTRUCTIONS.tools.browser_type).toContain("At a sign-in, ask the user to sign in themselves in the tab");
+    expect(AGENT_INSTRUCTIONS.tools.browser_type).toContain("At a sign-in, ask the user to sign in themselves in the tab, with browser_ask");
+    // 2026-10-18: the ask is the tab's own, so the user sees it where they act on it, and the agent hears the answer.
+    const ask = AGENT_INSTRUCTIONS.tools.browser_ask;
+    expect(ask).toContain("that only they should do: sign in, pass a captcha, approve a consent screen, pick an account");
+    expect(ask).toContain("conch marks the tab Needs you, brings it to the front of their Workdesk and shows their session as needing them");
+    expect(ask).toContain("when they press Done, or conch sees the tab's profile sign in to the site you asked on, you get a message saying so");
+    expect(AGENT_INSTRUCTIONS.tools.browser_open).toContain("ask the user to sign in in the tab with browser_ask");
+    expect(AGENT_INSTRUCTIONS.tools.browser_tabs).toContain("ask is your last browser_ask there");
     expect(AGENT_INSTRUCTIONS.tools.browser_tabs).toContain('openedBy "user" marks a tab the user opened in the Workdesk');
     expect(AGENT_INSTRUCTIONS.tools.browser_tabs).toContain("paused marks one they have taken over");
     expect(AGENT_INSTRUCTIONS.tools.browser_read).toContain("never a password's or a hidden field's value");
     expect(AGENT_INSTRUCTIONS.tools.browser_type).toContain("Agents don't type passwords");
-    for (const name of ["browser_open", "browser_read", "browser_click", "browser_type", "browser_screenshot", "browser_tabs", "browser_close"] as const) {
+    for (const name of ["browser_open", "browser_read", "browser_click", "browser_type", "browser_screenshot", "browser_tabs", "browser_ask", "browser_close"] as const) {
       expect(AGENT_INSTRUCTIONS.tools[name]).toContain("conch's in-app browser");
     }
   });

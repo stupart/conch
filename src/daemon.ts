@@ -147,7 +147,7 @@ import { captureFolder, createPageCaptureService, PageCaptures, pruneCaptures, w
 import { accessCheckedLink, checkAnonymously, checkPageAccess, discardCapture, type AccessCheck } from "./page-access.ts";
 import { captureFolderPath } from "./capture-folder.ts";
 import { addBrowserProfile, cachedBrowserSignIns, readBrowserProfiles } from "./browser-profiles.ts";
-import { BrowserWorkbench, createBrowserService, fileTabStore, withBrowserState } from "./browser-workbench.ts";
+import { BROWSER_ASK_CHECK_MS, BrowserWorkbench, createBrowserService, fileTabStore, withBrowserState } from "./browser-workbench.ts";
 import { MCP_TOOLSET } from "./mcp-toolset.ts";
 import { sessionForCallerPid } from "./caller-session.ts";
 import { CONCH_DATA } from "./config.ts";
@@ -1777,8 +1777,32 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     liveSession: (sessionId) => (lastPublishedPanelState?.rows ?? []).some((row) => row.id === sessionId),
     // Which sites each profile is signed in to, as the Mac app reports them: agents are told with each tab.
     signIns: cachedBrowserSignIns(),
+    // An agent's browser_ask answered (Tyler's Done, or a sign-in seen): said to it as Approve's message is, the
+    // composer's own send, so an agent that ended its turn to wait hears it as his word.
+    tell: (sessionId, text) => {
+      const session = panelSessions.get(sessionId);
+      const label = labelForSessionId(sessionId);
+      if (!session || dismissedSessionIds.has(sessionId)) {
+        log(`browser: "${label}" was answered in its tab, but its session ${session ? "is dismissed" : "has ended"}, so its agent wasn't told`);
+        return;
+      }
+      const sent = enqueue(approvedInjectEvent({
+        sessionId: session.sessionId,
+        cwd: session.cwd,
+        pid: session.pid,
+        transcriptPath: session.transcriptPath ?? findTranscript(cfg.claudeDir, session.sessionId),
+      }, label, text));
+      void Promise.resolve(sent).then((outcome) => {
+        const how = outcome === true ? "delivered" : outcome === "staged" ? "left in its input box"
+          : typeof outcome === "object" && outcome && "reason" in outcome && outcome.reason ? `not delivered (${outcome.reason})` : "not delivered";
+        log(`browser: told "${label}" its ask was answered: ${how}`);
+      });
+    },
     log,
   });
+  // An ask waiting on a sign-in is answered when the Mac app's report says the tab's profile signed in to its site.
+  const browserAsks = setInterval(() => browser.checkAsks(), BROWSER_ASK_CHECK_MS);
+  browserAsks.unref?.();
   // A session that ended a day ago and more takes its tabs with it; checked now and then, never on the publish path.
   const browserPrune = setInterval(() => {
     breadcrumb("timer: browser tabs");
@@ -3776,6 +3800,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     shuttingDown = true;
     rotation.stop();
     clearInterval(browserPrune);
+    clearInterval(browserAsks);
     // The practice session and its card go with the daemon: nothing of it is left for the next one.
     practice?.stop("conch is closing");
     // An approval inside its undo window reaches nobody now: said in the log (review-approval.ts).

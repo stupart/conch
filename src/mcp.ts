@@ -97,10 +97,12 @@ import {
 } from "./page-capture.ts";
 import { sessionOfProcess, unverified, type CallerBinding } from "./caller-session.ts";
 import {
+  BROWSER_ASK_REASON_MAX,
   BROWSER_REPLY_MS,
   BROWSER_TARGET_MAX,
   BROWSER_TEXT_MAX,
   BROWSER_URL_MAX,
+  askReason,
   isBrowserTabId,
   parseBrowserTarget,
   requestBrowser,
@@ -749,6 +751,24 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
       inputSchema: {
         type: "object",
         properties: {},
+        additionalProperties: false,
+      },
+    },
+    {
+      name: "browser_ask",
+      description: text.tools.browser_ask,
+      inputSchema: {
+        type: "object",
+        properties: {
+          tab: { ...BROWSER_TAB_SCHEMA, description: "Optional. The tab to ask in: one of your tab ids (browser_tabs); your most recent tab when omitted." },
+          reason: {
+            type: "string",
+            minLength: 1,
+            maxLength: BROWSER_ASK_REASON_MAX,
+            description: `What the user is to do in the tab, as one short line they read on it: "Sign in to Mobbin", "Approve the Google consent screen". At most ${BROWSER_ASK_REASON_MAX} characters.`,
+          },
+        },
+        required: ["reason"],
         additionalProperties: false,
       },
     },
@@ -2174,6 +2194,20 @@ export function createMcpToolHandlers(
     async browser_tabs(argumentsValue, meta) {
       const reply = await browserCommand("browser_tabs", argumentsValue, meta, [], () => ({ op: "tabs" }));
       return { tabs: reply.tabs ?? [] };
+    },
+
+    async browser_ask(argumentsValue, meta) {
+      const reply = await browserCommand("browser_ask", argumentsValue, meta, ["tab", "reason"], (args) => {
+        const parsed = askReason(args.reason);
+        if ("error" in parsed) throw new ToolInputError(parsed.error);
+        return { op: "ask", reason: parsed.reason };
+      });
+      const site = reply.result?.answersOnSignIn as string | undefined;
+      const notes = [
+        ...(reply.result?.appClosed ? ["conch's Mac app isn't open, so the user sees it when they open it"] : []),
+        `wait for them: when they press Done${site ? `, or conch sees this tab's profile sign in to ${site}` : ""}, you get a message saying so, and browser_tabs shows it; your own click, type or open in the tab withdraws it`,
+      ];
+      return { tab: reply.tab?.id, asked: reply.result?.asked, note: notes.join("; ") };
     },
 
     async browser_close(argumentsValue, meta) {
