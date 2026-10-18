@@ -381,6 +381,8 @@ public struct WorkdeskNeedsYouPill: View {
             .foregroundStyle(WorkdeskInk.needsYouWords)
             .lineLimit(1)
             .fixedSize()
+            // Its capitals centred in the pill: set as they come they sat half a point high (measured).
+            .offset(y: 0.5)
             .padding(.horizontal, 6)
             .frame(height: 15)
             .background(Capsule().fill(WorkdeskInk.needsYou))
@@ -696,6 +698,10 @@ public struct WorkbenchNotice: View {
 
     /// Tall enough for the Done capsule with 5 above and below; a second line, when the pane is narrow, grows it.
     public static let height: CGFloat = 30
+    static let doneHeight: CGFloat = 20
+    /// Done's shape: round-ended, half a point short of a capsule. A stroked `Capsule`, or a rounded rectangle of exactly
+    /// half its height, drew a stray flat a point outside each end, 10 points tall (measured in a render, 2026-10-18).
+    static let doneShape = RoundedRectangle(cornerRadius: doneHeight / 2 - 0.5)
     /// Where either mark's ink ends.
     static let markEnd: CGFloat = 26.5
 
@@ -783,10 +789,10 @@ public struct WorkbenchNotice: View {
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(ConchColor.textPrimary)
                     .padding(.horizontal, 10)
-                    .frame(height: 20)
-                    .background(Capsule().fill(isHovered ? AnyShapeStyle(ConchColor.fillSelected) : AnyShapeStyle(ConchColor.surface)))
-                    .overlay(Capsule().strokeBorder(ConchColor.hairlineStrong, lineWidth: 1))
-                    .contentShape(Capsule())
+                    .frame(height: Self.doneHeight)
+                    .background(Self.doneShape.fill(isHovered ? AnyShapeStyle(ConchColor.fillSelected) : AnyShapeStyle(ConchColor.surface)))
+                    .overlay(Self.doneShape.strokeBorder(ConchColor.hairlineStrong, lineWidth: 1))
+                    .contentShape(Self.doneShape)
             }
             .buttonStyle(.plain)
             .onHover { isHovered = $0 }

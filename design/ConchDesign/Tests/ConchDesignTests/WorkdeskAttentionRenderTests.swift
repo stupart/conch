@@ -85,6 +85,12 @@ final class WorkdeskAttentionRenderTests: XCTestCase {
                 // Centred top to bottom in its 30 points: as much above Done's capsule as below.
                 let capsule = try XCTUnwrap(shot.verticalSpan(x: done.upperBound - 12, y: top, top + AskScene.notice, notMatching: wash, tolerance: 6), label)
                 XCTAssertEqual(capsule.lowerBound - top, top + AskScene.notice - capsule.upperBound, accuracy: 0.75, "Done centred in the strip, \(label)")
+                // Nothing outside its border: its fill starts a point (the border) in from its outermost ink at either end. A
+                // stroked capsule drew a stray flat half a point outside each end, putting the fill a point and a half in.
+                let fill = shot.color(done.lowerBound + 4, top + 15)
+                let inside = try XCTUnwrap(shot.span(x: done.lowerBound, done.upperBound, y: top + 15, where: { diff($0, fill) <= 6 }), "Done's fill, \(label)")
+                XCTAssertLessThanOrEqual(inside.lowerBound - done.lowerBound, 1.25, "Done's left end, \(label)")
+                XCTAssertLessThanOrEqual(done.upperBound - inside.upperBound, 1.25, "Done's right end, \(label)")
             }
         }
     }
@@ -131,11 +137,14 @@ final class WorkdeskAttentionRenderTests: XCTestCase {
         for dark in [false, true] {
             let label = dark ? "dark" : "light"
             let shot = try picture(
+                // As the pane lays them out (Workbench.swift `WorkbenchPane`): a hairline after each.
                 VStack(spacing: 0) {
                     WorkbenchNotice(.needsYou(agent: "Claude", reason: "Pick the Fieldnotes workspace"), action: {})
+                    Rectangle().fill(ConchColor.hairline).frame(height: 1)
                     WorkbenchNotice(.passkeys, action: {})
+                    Rectangle().fill(ConchColor.hairline).frame(height: 1)
                 },
-                size: CGSize(width: 860, height: WorkbenchNotice.height * 2), dark: dark, name: "after-strips-stacked-860"
+                size: CGSize(width: 860, height: WorkbenchNotice.height * 2 + 2), dark: dark, name: "after-strips-stacked-860"
             )
             func starts(_ y: CGFloat) throws -> [CGFloat] {
                 let ground = shot.color(700, y - 12)
@@ -145,7 +154,7 @@ final class WorkdeskAttentionRenderTests: XCTestCase {
                 return [mark.lowerBound, mark.upperBound, word.lowerBound]
             }
             let top = try starts(WorkbenchNotice.height / 2)
-            let bottom = try starts(WorkbenchNotice.height * 1.5)
+            let bottom = try starts(WorkbenchNotice.height * 1.5 + 1)
             for (a, b) in zip(top, bottom) { XCTAssertEqual(a, b, accuracy: 0.6, "stacked, \(label): \(top) and \(bottom)") }
         }
     }

@@ -1357,11 +1357,11 @@ async function capturePageUrl(raw: string, scope: LinkScope): Promise<string> {
 /**
  * What a sign-in screen in place of the page means, and the one fix, said wherever conch saw one. 2026-10-16: the fix is
  * a tab of conch's browser on the Default profile, which shares the review pane's store, so the user signs in where
- * they watch the agent work, in the Workdesk.
+ * they watch the agent work, in the Workdesk. 2026-10-18: asked in the tab itself (`browser_ask`), so it can't be missed.
  */
 const CAPTURE_SIGN_IN_NOTE = "the page showed a sign-in screen, not the page itself. conch draws pages with the sign-ins of its"
   + " own review pane, not your browser's: open the URL with browser_open (the Default profile shares them) and ask the"
-  + " user to sign in in that tab of their Workdesk once, then capture again";
+  + " user to sign in in that tab of their Workdesk once (browser_ask), then capture again";
 
 /** The daemon's answer as the agent reads it: the capture and what to do with it, or why there is none, in words. */
 function captureToolResult(reply: PageCaptureReply): Record<string, unknown> {
