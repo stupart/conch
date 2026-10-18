@@ -51,5 +51,20 @@ test("a relaunch tolerates conch being reopened by something else, and brings it
   expect(block).toContain('running || { echo "error: conch.app didn\'t relaunch; open it from /Applications" >&2; exit 1; }');
   // Then reopened, which brings the window back without taking focus.
   expect(block.lastIndexOf("relaunch || true")).toBeGreaterThan(block.indexOf("sleep 2"));
-  expect(script).not.toMatch(/open -a "\$INSTALLED_APP_PATH"/);
+});
+
+// 2026-10-18: the background reopen made no window, and neither did a Dock click; quitting and opening in the
+// foreground did. Focus is taken then and only then: a deploy with its window never takes it.
+test("a relaunch that leaves conch without its window opens it in the foreground, and only then", () => {
+  const script = readFileSync(join(import.meta.dir, "../scripts/build-app.sh"), "utf8");
+  const fallback = script.indexOf("if ! has_window; then");
+  expect(fallback).toBeGreaterThan(script.indexOf("relaunch || true"));
+  expect(script).toContain('has_window() { swift "$SCRIPT_DIR/conch-window.swift" 2>/dev/null; }');
+  // The one foreground open is inside that branch.
+  const foreground = [...script.matchAll(/open -a "\$INSTALLED_APP_PATH"/g)].map((match) => match.index ?? -1);
+  expect(foreground.length).toBe(1);
+  expect(foreground[0]).toBeGreaterThan(fallback);
+  expect(foreground[0]).toBeLessThan(script.indexOf("\nfi\n", fallback));
+  // It never fails the deploy: a warning, not an exit.
+  expect(script).toContain('has_window || echo "warning: conch.app still has no window; open it from /Applications" >&2');
 });
