@@ -48,6 +48,8 @@ const expected = {
   "typing-grace": ["typingGraceSecs", "CONCH_TYPING_GRACE_SECS", "live", 2],
   "away-after": ["awayAfterSecs", "CONCH_AWAY_AFTER_SECS", "live", 300],
   "barge-threshold": ["bargeThresholdPct", "CONCH_BARGE_THRESHOLD_PCT", "live", 0],
+  // Empty: conch's own names and the open projects' folders still reach whisper (vocabulary.ts).
+  "vocabulary": ["vocabulary", "CONCH_VOCABULARY", "live", ""],
   "voice-speed": ["ttsSpeed", "CONCH_TTS_SPEED", "live", 1.35],
   // Ships ON, and the hosts no longer export CONCH_KEYSTROKE_FALLBACK over it,
   // so this default is the one the file can actually override (A17).
@@ -89,10 +91,10 @@ const expected = {
 } as const;
 
 describe("settings registry", () => {
-  test("contains exactly the 35 curated, default-bearing knobs", () => {
+  test("contains exactly the 36 curated, default-bearing knobs", () => {
     const keys = [...SETTING_REGISTRY.keys()];
     expect(keys.sort()).toEqual(Object.keys(expected).sort());
-    expect(SETTING_DESCRIPTORS).toHaveLength(35);
+    expect(SETTING_DESCRIPTORS).toHaveLength(36);
     for (const [key, [field, env, apply, defaultValue]] of Object.entries(expected)) {
       const descriptor = SETTING_REGISTRY.get(key);
       expect(descriptor).toMatchObject({ field, env, apply, default: defaultValue });

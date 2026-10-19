@@ -80,6 +80,8 @@ export interface Config {
    * below voice-at-desk. 0 disables barge-in (gaps only).
    */
   bargeThresholdPct: number;
+  /** Comma-separated names whisper should spell as written (vocabulary.ts). */
+  vocabulary: string;
   /** sentences per read-aloud / "continue" chunk */
   continueSentences: number;
   /** audible tink/blip when the mic opens/closes */
@@ -206,6 +208,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     // back-to-back (when barging is off, a 0.6s floor re-appears in the loop)
     gapSecs: zeroable(env.CONCH_GAP_SECS, 0),
     bargeThresholdPct: settings["barge-threshold"].value as number, // 0 disables; tune above speaker bleed to opt in
+    vocabulary: settings["vocabulary"].value as string,
 
     continueSentences: num(env.CONCH_CONTINUE_SENTENCES, 6), // bigger chunks = fewer inter-chunk pauses
     micCues: settings["mic-cues"].value as boolean,

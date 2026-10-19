@@ -48,6 +48,7 @@ vad="$RESOURCES/models/ggml-silero-v6.2.0.bin"
 [[ -f "$vad" ]] || fail "$vad is missing"
 echo "$VAD_SHA256  $vad" | shasum -a 256 -c - >/dev/null || fail "$vad is not the pinned VAD model"
 for notice in ThirdParty/whisper.cpp/LICENSE ThirdParty/sox/LICENSE.GPL ThirdParty/sox/sox-14.4.2.tar.gz \
+  ThirdParty/sox/sox-14.4.2-silence-leave-reset.patch \
   ThirdParty/silero-vad/LICENSE ThirdParty/bun/LICENSE.md ThirdParty/tmux/NOTICE ThirdParty/tmux/COPYING \
   ThirdParty/tmux/LICENSE.compat ThirdParty/tmux/LICENSE.libevent ThirdParty/tmux/COPYING.jemalloc \
   ThirdParty/tmux/LICENSE.utf8proc.md; do

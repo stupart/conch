@@ -98,6 +98,7 @@ mkdir -p "$notices/whisper.cpp" "$notices/sox" "$notices/silero-vad"
 install -m 0644 "$REPO_ROOT/mac-app/third-party/whisper.cpp/LICENSE" "$REPO_ROOT/mac-app/third-party/whisper.cpp/NOTICE" "$notices/whisper.cpp/"
 install -m 0644 "$REPO_ROOT/mac-app/third-party/sox/COPYING" "$REPO_ROOT/mac-app/third-party/sox/LICENSE.GPL" \
   "$REPO_ROOT/mac-app/third-party/sox/LICENSE.LGPL" "$REPO_ROOT/mac-app/third-party/sox/NOTICE" \
+  "$REPO_ROOT/mac-app/third-party/sox/sox-14.4.2-silence-leave-reset.patch" \
   "${sources[0]}/$SOX_TARBALL" "$notices/sox/"
 install -m 0644 "$REPO_ROOT/mac-app/third-party/silero-vad/LICENSE" "$REPO_ROOT/mac-app/third-party/silero-vad/NOTICE" "$notices/silero-vad/"
 
