@@ -884,6 +884,13 @@ final class StateStore: ObservableObject {
         }
     }
 
+    /// What a row says from the moment a restart is asked for until the daemon answers. Restarts queue behind each other
+    /// (`sessionLifecycleTask`), so Settings' "Restart idle sessions" shows it on each one it has yet to reach too.
+    static let restartingMessage = "Restarting…"
+
+    /// conch is restarting it: the tools line's Restart says "Restarting…" and can't be pressed again.
+    func isRestarting(_ id: SessionRow.ID) -> Bool { rowMessages[id] == Self.restartingMessage }
+
     /// A lifecycle close is intentionally distinct from interrupt: interrupt
     /// stops one turn, while this asks the agent to exit normally and preserve
     /// the resumable transcript.
@@ -892,7 +899,7 @@ final class StateStore: ObservableObject {
     /// with the flags it was started with, so an updated Claude Code or Codex
     /// takes effect without retyping the command.
     func closeSession(_ row: SessionRow, restart: Bool = false) {
-        rowMessages[row.id] = restart ? "Restarting…" : "Closing cleanly…"
+        rowMessages[row.id] = restart ? Self.restartingMessage : "Closing cleanly…"
         let socketClient = socketClient
         let previous = sessionLifecycleTask
         sessionLifecycleTask = Task { @MainActor [weak self] in

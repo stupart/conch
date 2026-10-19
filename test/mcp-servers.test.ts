@@ -162,4 +162,12 @@ describe("which sessions can't get the current tools", () => {
     expect(daemon).toContain("publishSessionsFile(withToolsStale(state, toolsStale));");
     expect(daemon).toContain("const toolsStaleTimer = setInterval(() => void refreshToolsStale().catch(() => {}), 60_000);");
   });
+
+  test("a session conch closes or restarts loses its verdict at once, so the app's Restart doesn't come back for it", () => {
+    // The verdict was about the process that just exited; the next look judges the one a restart resumes it in.
+    const daemon = readFileSync(join(import.meta.dir, "..", "src", "daemon.ts"), "utf8");
+    const close = daemon.slice(daemon.indexOf("const closeLiveSession = async"), daemon.indexOf("if (!relaunch) return;"));
+    expect(close).toContain("await closeSession(session);\n");
+    expect(close.indexOf("if (toolsStale.delete(sessionId)) publishedStateWriter.request();")).toBeGreaterThan(close.indexOf("await closeSession(session);"));
+  });
 });

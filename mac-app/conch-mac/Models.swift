@@ -1298,6 +1298,27 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     /// What its agent is doing right now, while it works on its own turn: the sidebar's second line
     /// (src/live-activity.ts; `SidebarActivity`). Older daemons never send it.
     let activity: Activity?
+    /// Its conch MCP server can't get conch's current tools, and which it lacks (src/mcp-servers.ts): the line under its
+    /// header with Restart (`SessionToolsNotice`). Only the sessions file carries it; older daemons never send it.
+    let toolsStale: ToolsStale?
+
+    /// Its turn is over and nothing of it is still running or waiting on an answer, so a restart loses nothing
+    /// (`ToolsStaleRestart.isIdle`): the tools line's Restart restarts it at once, and Settings' "Restart idle sessions"
+    /// takes it. Anything else gets the session menu's confirmation first.
+    var isIdleForRestart: Bool {
+        let name: String? = switch status {
+        case .working: "working"
+        case .waiting: "waiting"
+        case .needs: "needs"
+        case .review: "review"
+        case .unknown, nil: nil
+        }
+        return ToolsStaleRestart.isIdle(status: name, waitingOnAgents: waitingOnAgents, approvalPending: approval != nil)
+    }
+
+    /// conch can restart it, keeping its conversation: a top-level session with a terminal to type into (the session
+    /// menu's Restart session… has the same rule).
+    var canRestart: Bool { parentSessionId == nil && noTerminal == nil }
 
     /// Where the session's work is: the first folder its agent declared, else where it started.
     /// `cwd` stays what a relative link is relative to.
@@ -1344,6 +1365,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         case cwd
         case workDirs
         case activity
+        case toolsStale
     }
 
     init(
@@ -1382,7 +1404,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         startedBySessionId: String? = nil,
         cwd: String? = nil,
         workDirs: [String]? = nil,
-        activity: Activity? = nil
+        activity: Activity? = nil,
+        toolsStale: ToolsStale? = nil
     ) {
         self.id = id
         self.label = label
@@ -1420,6 +1443,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         self.cwd = cwd
         self.workDirs = workDirs
         self.activity = activity
+        self.toolsStale = toolsStale
     }
 
     init(from decoder: Decoder) throws {
@@ -1470,6 +1494,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         workDirs = try? container.decodeIfPresent([String].self, forKey: .workDirs)
         // A line this build can't read is no line, never a row that fails.
         activity = try? container.decodeIfPresent(Activity.self, forKey: .activity)
+        // The same: a verdict this build can't read, or one naming nothing, is no line.
+        toolsStale = try? container.decodeIfPresent(ToolsStale.self, forKey: .toolsStale)
     }
 
     func replacingLabel(with label: String) -> SessionRow {
@@ -1509,7 +1535,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             startedBySessionId: startedBySessionId,
             cwd: cwd,
             workDirs: workDirs,
-            activity: activity
+            activity: activity,
+            toolsStale: toolsStale
         )
     }
 }
@@ -1530,7 +1557,7 @@ extension SessionRow {
             snippet: snippet, transcriptPath: transcriptPath, voice: voice, prioritized: prioritized, navSelected: navSelected,
             revealable: revealable, noTerminal: noTerminal, messageRoute: messageRoute, attachable: attachable,
             waitingOnAgents: waitingOnAgents, approval: approval, parentSessionId: parentSessionId,
-            startedBySessionId: startedBySessionId, cwd: cwd, workDirs: workDirs, activity: activity
+            startedBySessionId: startedBySessionId, cwd: cwd, workDirs: workDirs, activity: activity, toolsStale: toolsStale
         )
     }
 

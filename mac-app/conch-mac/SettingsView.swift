@@ -42,6 +42,8 @@ struct ConchSettingsView: View {
                     LoginItemRow()
                 }
 
+                StaleToolsCard()
+
                 content
             }
             .padding(SettingsLayout.inset)
@@ -844,6 +846,52 @@ private struct DaemonPowerRow: View {
         case "launchd": return "Running — started by the launchd service"
         case "terminal": return "Running — started from a terminal (pid \(identity.pid))"
         default: return "Running — started by another copy of this app (pid \(identity.pid))"
+        }
+    }
+}
+
+/// The sessions whose conch tools are out of date (`rows[].toolsStale`), and the idle ones restarted in one go, each
+/// keeping its conversation (2026-10-19). Only while there are any. Each session's header says it too, with its own
+/// Restart; this is for the many at once, which is how they go out of date: every session started before a conch with new
+/// tools. One at work is never restarted from here, and the confirmation names every one that is.
+private struct StaleToolsCard: View {
+    @EnvironmentObject private var store: StateStore
+    /// The sessions the confirmation names, as they were when Restart Idle Sessions… was pressed.
+    @State private var pending: [SessionRow] = []
+    @State private var confirming = false
+
+    /// Out of date, split into the idle ones conch can restart now and the rest; one already restarting is neither.
+    private var groups: (idle: [SessionRow], other: [SessionRow]) {
+        let rows = (store.state?.rows ?? []).filter { $0.parentSessionId == nil && !store.isRestarting($0.id) }
+        let split = ToolsStaleRestart.split(rows.map {
+            ToolsStaleRestart.Session(id: $0.id, label: $0.label, stale: $0.toolsStale != nil, isIdle: $0.isIdleForRestart, canRestart: $0.canRestart)
+        })
+        let byID = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return (split.idle.compactMap { byID[$0.id] }, split.other.compactMap { byID[$0.id] })
+    }
+
+    var body: some View {
+        let groups = groups
+        if !groups.idle.isEmpty || !groups.other.isEmpty {
+            let confirmation = ToolsStaleRestart.confirmation(idle: pending.map(\.label), leftAlone: max(0, groups.idle.count + groups.other.count - pending.count))
+            OnboardingCard {
+                StaleToolsSettingsRow(idle: groups.idle.count, other: groups.other.count) {
+                    pending = groups.idle
+                    confirming = true
+                }
+            }
+            .padding(.top, 12)
+            .alert(confirmation.title, isPresented: $confirming) {
+                Button("Cancel", role: .cancel) { pending = [] }
+                Button(pending.count == 1 ? "Restart" : "Restart \(pending.count)") {
+                    // Each still idle and still out of date now: one that started a turn since the question is left alone.
+                    let now = Set(self.groups.idle.map(\.id))
+                    pending.filter { now.contains($0.id) }.forEach { store.closeSession($0, restart: true) }
+                    pending = []
+                }
+            } message: {
+                Text(confirmation.message)
+            }
         }
     }
 }
