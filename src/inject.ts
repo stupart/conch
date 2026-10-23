@@ -553,13 +553,14 @@ export async function readSessionScreen(sessionPid: number | undefined): Promise
   }
 }
 
-/** What the Terminal tab on this tty (`ttys012`) shows now, read without touching focus. */
-export async function readTerminalTab(tty: string): Promise<string | null> {
+/** What the Terminal tab on this tty (`ttys012`) shows now, read without touching focus. `osa` is a caller's own leash on
+ * Terminal: a close reads the tab inside its own time budget, not the 15 s a busy Terminal is otherwise given. */
+export async function readTerminalTab(tty: string, osa: OsaRunner = runOsa): Promise<string | null> {
   if (!/^ttys?\d+$/.test(tty)) return null;
   try {
     // By index (terminal-tab.ts): `contents of` a loop variable would be AppleScript's own dereference of it, not the
     // tab's text.
-    const shown = await runOsa([`${terminalTabLookup(tty)}
+    const shown = await osa([`${terminalTabLookup(tty)}
 if conchTab = 0 then return "conch:notfound"
 tell application "Terminal" to return contents of tab conchTab of window id conchWindow`]);
     return shown.timedOut || shown.exitCode !== 0 || shown.text.trim() === "conch:notfound" ? null : shown.text;
