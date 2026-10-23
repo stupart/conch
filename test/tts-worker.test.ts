@@ -38,6 +38,11 @@ function makeHarness(options: {
   wedgeFlush?: boolean;
   malformedReady?: boolean;
   log?: (message: string) => void;
+  /** More of the mock's flags: --slow-ms, --ready-delay-ms. */
+  flags?: string[];
+  now?: () => number;
+  healthCheckMs?: number;
+  startupTimeoutMs?: number;
 } = {}): WorkerHarness {
   if (!PYTHON) throw new Error("python3 is required for the TTS worker protocol test");
   const root = mkdtempSync(join(tmpdir(), "conch-tts-worker-test-"));
@@ -83,6 +88,7 @@ function makeHarness(options: {
   };
   const command = [PYTHON, "-u", MOCK_WORKER, "--model", MODEL, "--record", recordPath];
   if (options.malformedReady) command.push("--malformed-ready");
+  command.push(...(options.flags ?? []));
   const worker = new ManagedTtsWorker({
     enabled: true,
     model: MODEL,
@@ -90,11 +96,13 @@ function makeHarness(options: {
     speed: 1.35,
     command,
     spawn,
-    startupTimeoutMs: 2_000,
+    startupTimeoutMs: options.startupTimeoutMs ?? 2_000,
     retryDelaysMs: [0],
     periodicRetryMs: 1_000,
     outputDir: root,
     log: options.log ?? (() => {}),
+    ...(options.now ? { now: options.now } : {}),
+    ...(options.healthCheckMs ? { healthCheckMs: options.healthCheckMs } : {}),
   });
   const harness = { worker, root, recordPath, pids, exits, kills };
   harnesses.push(harness);
@@ -422,6 +430,102 @@ describe("Kokoro by mode (D1)", () => {
     await waitUntil(() => busy.worker.snapshot().status === "unloaded", 3_000);
     expect(busy.pids).toHaveLength(2);
     expect(busy.kills.map((kill) => kill.pid).sort()).toEqual([...busy.pids].sort());
+  });
+});
+
+/**
+ * A Mac asleep, for a test: wall-clock that leaps a quarter of an hour on every look while `asleep` is set, the way
+ * the worker's timers see it when they fire on the wake (awake-time.ts).
+ */
+function sleepyClock() {
+  let offset = 0;
+  const clock = {
+    asleep: false,
+    now: () => {
+      if (clock.asleep) offset += 15 * 60_000;
+      return Date.now() + offset;
+    },
+  };
+  return clock;
+}
+
+describe("a sleeping Mac is not a hung worker (2026-10-23)", () => {
+  // Overnight, in manual mode: "kokoro worker hard restart: synthesis timeout" in the same second as "phone relay:
+  // process was suspended for 974s", every half hour; then startups killed across the next sleep, then `say`.
+
+  test("a line the Mac slept through is answered, not timed out and restarted", async () => {
+    const clock = sleepyClock();
+    const logs: string[] = [];
+    // Each line takes 300 ms; its budget is 100 ms awake.
+    const harness = makeHarness({ flags: ["--slow-ms", "300"], now: clock.now, log: (line) => { logs.push(line); } });
+    expect(await harness.worker.start()).toBeTrue();
+    const pid = harness.worker.snapshot().pid;
+
+    clock.asleep = true;
+    const slept = request(harness.worker, "started just before the Mac slept", 100);
+    await Bun.sleep(320);
+    clock.asleep = false;
+    const result = await slept;
+    expect(result.samples).toBeGreaterThan(0);
+    rmSync(result.path, { force: true });
+    expect(harness.worker.snapshot()).toMatchObject({ status: "ready", pid, hardRestarts: 0, spawnAttempts: 1 });
+    expect(logs.filter((line) => line.includes("hard restart"))).toEqual([]);
+
+    // Awake, the same budget still catches the same slowness: the watchdog is not switched off, only told the time.
+    await expect(request(harness.worker, "awake and too slow", 100)).rejects.toBeInstanceOf(TtsWorkerTimeoutError);
+    expect(logs).toContain("kokoro worker hard restart: synthesis timeout");
+  });
+
+  test("a startup the Mac slept through comes up, rather than being killed and retried into `say`", async () => {
+    const clock = sleepyClock();
+    const sleeping = makeHarness({ flags: ["--ready-delay-ms", "300"], startupTimeoutMs: 100, now: clock.now });
+    clock.asleep = true;
+    const started = sleeping.worker.start();
+    await Bun.sleep(320);
+    clock.asleep = false;
+    expect(await started).toBeTrue();
+    expect(sleeping.worker.snapshot()).toMatchObject({ status: "ready", spawnAttempts: 1 });
+    expect(sleeping.kills).toEqual([]);
+
+    // Awake, a load slower than its budget is still killed.
+    const awake = makeHarness({ flags: ["--ready-delay-ms", "300"], startupTimeoutMs: 100 });
+    expect(await awake.worker.start()).toBeFalse();
+    expect(awake.kills).toContainEqual({ pid: awake.pids[0]!, signal: "SIGKILL" });
+  });
+
+  test("a health check never starts in the tick a sleep ends, only after a whole interval awake since", async () => {
+    const clock = sleepyClock();
+    const harness = makeHarness({ healthCheckMs: 40, now: clock.now });
+    expect(await harness.worker.start()).toBeTrue();
+    // DarkWakes: every tick comes back late, so nothing starts that the next sleep would cut in half.
+    clock.asleep = true;
+    await Bun.sleep(250);
+    expect(harness.worker.snapshot().requests).toBe(0);
+    // Awake for good: the first check waits an interval from the wake, then runs, and its WAV is deleted unplayed.
+    clock.asleep = false;
+    await waitUntil(() => harness.worker.snapshot().requests >= 1, 2_000);
+    expect(harness.worker.snapshot()).toMatchObject({ status: "ready", hardRestarts: 0, spawnAttempts: 1 });
+    await Bun.sleep(30);
+    expect(readdirSync(harness.root).filter((name) => name.endsWith(".wav"))).toEqual([]);
+  });
+
+  test("manual mode (D1): a voice kept warm is not health-checked; auto mode checks it again", async () => {
+    const harness = makeHarness({ healthCheckMs: 30 });
+    harness.worker.setHealthChecks(false);
+    expect(await harness.worker.start()).toBeTrue();
+    await Bun.sleep(200);
+    expect(harness.worker.snapshot().requests).toBe(0);
+    expect(harness.worker.isReady()).toBeTrue();
+
+    harness.worker.setHealthChecks(true);
+    await waitUntil(() => harness.worker.snapshot().requests >= 1, 2_000);
+
+    // And off again stops the next one: the count holds.
+    harness.worker.setHealthChecks(false);
+    await Bun.sleep(30);
+    const count = harness.worker.snapshot().requests;
+    await Bun.sleep(200);
+    expect(harness.worker.snapshot().requests).toBe(count);
   });
 });
 
