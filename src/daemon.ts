@@ -1301,8 +1301,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   // background with the uv the app carries when missing or wrong), or a legacy
   // mlx-audio tool that can import Kokoro. Until then `say` speaks. The worker
   // reports every start that fails and every one that comes up warm, and asks
-  // itself for a tiny line when idle, so voiceEnv heals whatever breaks later
-  // (voice-heal.ts), not only what was broken at start.
+  // itself for a tiny line when idle in auto mode, so voiceEnv heals whatever
+  // breaks later (voice-heal.ts), not only what was broken at start.
   let voiceEnv: VoiceEnvManager | null = null;
   let naturalVoices: NaturalVoicesStatus | undefined;
   const ttsWorker = new ManagedTtsWorker({
@@ -1380,8 +1380,15 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   const KOKORO_KEEP_IN_MANUAL_MIN_BYTES = 16 * 1024 ** 3;
   const keepVoiceLoaded = (paused: boolean): boolean =>
     cfg.speak && (!paused || totalmem() >= KOKORO_KEEP_IN_MANUAL_MIN_BYTES);
+  // 2026-10-23, Tyler: "why has Kokoro been working if voice has been off? does it compute it anyways?" It did: the
+  // voice kept for him in manual mode synthesised "Ready." every ten minutes all night, for nobody. The health check is
+  // there so a turn's announcement never finds a wedged worker. In manual mode nothing is announced; a recite that
+  // found one would lose one line's timeout (SYNTH_ATTEMPT_TIMEOUT_MS, 4 s) before `say` read it, and a worker that
+  // dies is restarted either way. So it checks only while something will be spoken unasked.
+  const kokoroHealthByMode = (paused: boolean): void => ttsWorker.setHealthChecks(cfg.speak && !paused);
   const kokoroByMode = (paused: boolean, graceMs = KOKORO_MANUAL_GRACE_MS): void => {
     const keep = keepVoiceLoaded(paused);
+    kokoroHealthByMode(paused);
     for (const engine of [ttsWorker, ttsSupervisor]) {
       if (!keep) engine?.unloadAfter(graceMs, cfg.speak ? "unloaded — manual mode; reloads in auto mode" : "unloaded — Read replies aloud is off");
       else engine?.prewarm(paused ? "manual mode, kept for what you ask to hear" : "auto mode");
@@ -4335,6 +4342,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   }
   // D1: a daemon booting in manual mode loads Kokoro only if it keeps it there (keepVoiceLoaded); auto mode will.
   if (pause.paused && !keepVoiceLoaded(true)) kokoroByMode(true, 0);
+  kokoroHealthByMode(pause.paused);
   if (cfg.ttsEngine === "worker") {
     // Checking the environment, building it on a first run, loading and the
     // first Metal/G2P warmup all take time. None of it holds the turn queue:
