@@ -48,7 +48,7 @@ type Probe = typeof probeCommand;
 /**
  * The last routes a probe confirmed, per Codex home. A probe that fails (`ps` or `lsof` past its time on a loaded Mac)
  * proves nothing either way, and treating it as "no terminal" made a live Codex session unsendable: Tyler's
- * "atals and nura" logged "Codex row has no pid" five times in an afternoon while its process sat on ttys006 the whole
+ * "notes and research" logged "Codex row has no pid" five times in an afternoon while its process sat on ttys006 the whole
  * time (2026-10-15). So a failed probe answers with what the last good one found, for as long as that process is alive
  * and for at most `KEEP_CONFIRMED_MS`. A probe that succeeds and doesn't find a session still drops it at once.
  */
@@ -69,12 +69,36 @@ function lastConfirmed(codexHome: string, alive: (pid: number) => boolean, now: 
   return result;
 }
 
+/**
+ * Each process's unix sockets, from `lsof -U -F pdn`: the socket's own address (`d`), and, when it is connected, its
+ * peer's (`n->0x…`). A client and the server it is connected to name the same socket from either end.
+ */
+export function unixSockets(answer: string): Map<number, { own: Set<string>; peers: Set<string> }> {
+  const sockets = new Map<number, { own: Set<string>; peers: Set<string> }>();
+  let current: { own: Set<string>; peers: Set<string> } | undefined;
+  for (const line of answer.split("\n")) {
+    if (/^p\d+$/.test(line)) sockets.set(Number(line.slice(1)), current = { own: new Set(), peers: new Set() });
+    else if (current && /^d0x[0-9a-f]+$/i.test(line)) current.own.add(line.slice(1).toLowerCase());
+    else if (current && /^n->0x[0-9a-f]+$/i.test(line)) current.peers.add(line.slice(3).toLowerCase());
+  }
+  return sockets;
+}
+
+/**
+ * `servers` is each thread an app-server holds, with that server's pid. A TUI attached to the shared daemon need not
+ * have the log database open: "notes and research" (`codex yolo resume`, ttys006, in the foreground) had none open on
+ * 2026-10-23, its last log row nearly two hours old, while its socket was connected to the daemon holding its thread.
+ * So conch called it "hosted by codex app-server … no terminal to type into", and nothing conch sent could reach it.
+ * The socket is the better proof: a TUI connected to the very process that holds its thread's lock in this home
+ * belongs to this home, and is that thread's window.
+ */
 export async function probeCodexTerminalSessions(
   codexHome: string,
   probe: Probe = probeCommand,
   uid = process.getuid?.(),
   alive: (pid: number) => boolean = processAlive,
   now: () => number = Date.now,
+  servers: ReadonlyMap<string, number> = new Map(),
 ): Promise<Map<string, number>> {
   const result = new Map<string, number>();
   if (uid === undefined) return result;
@@ -112,18 +136,44 @@ export async function probeCodexTerminalSessions(
     const pid = options.filter(pid => matched.has(pid)).sort((a, b) => a - b)[0];
     if (pid) result.set(thread, pid);
   }
+  const unproven = [...candidates].filter(([thread]) => !result.has(thread) && servers.has(thread));
+  if (unproven.length) {
+    const asked = [...new Set([...unproven.flatMap(([, options]) => options), ...unproven.map(([thread]) => servers.get(thread)!)])];
+    const answer = await probe(["lsof", "-a", "-U", "-p", asked.join(","), "-F", "pdn"], [0, 1], PROBE_WAIT_MS);
+    if (answer === null) {
+      // The same rule as the log database's probe: unknown, so what the last good probe proved stands.
+      const known = lastConfirmed(codexHome, alive, now());
+      for (const [thread, options] of unproven) {
+        const pid = known.get(thread);
+        if (pid !== undefined && options.includes(pid)) result.set(thread, pid);
+      }
+      return result;
+    }
+    const sockets = unixSockets(answer);
+    for (const [thread, options] of unproven) {
+      const server = sockets.get(servers.get(thread)!)?.own;
+      const pid = options
+        .filter(pid => [...sockets.get(pid)?.peers ?? []].some(peer => server?.has(peer)))
+        .sort((a, b) => a - b)[0];
+      if (pid) result.set(thread, pid);
+    }
+  }
   confirmed.set(codexHome, { at: now(), routes: result });
   return result;
 }
 
 // Rendering polls faster than ps/lsof should run. Coalesce readers and expire
 // quickly so closing/backgrounding a terminal doesn't leave a sticky route.
-const snapshots = new Map<string, { expires: number; result: Promise<Map<string, number>> }>();
-export function readCodexTerminalSessions(codexHome: string): Promise<Map<string, number>> {
+const snapshots = new Map<string, { key: string; expires: number; result: Promise<Map<string, number>> }>();
+export function readCodexTerminalSessions(
+  codexHome: string,
+  servers: ReadonlyMap<string, number> = new Map(),
+): Promise<Map<string, number>> {
+  const key = [...servers].map(([thread, pid]) => `${thread}:${pid}`).sort().join(",");
   const cached = snapshots.get(codexHome);
-  if (cached && cached.expires > Date.now()) return cached.result;
+  if (cached && cached.key === key && cached.expires > Date.now()) return cached.result;
   if (snapshots.size > 32) snapshots.clear();
-  const result = probeCodexTerminalSessions(codexHome);
-  snapshots.set(codexHome, { expires: Date.now() + 5_000, result });
+  const result = probeCodexTerminalSessions(codexHome, probeCommand, process.getuid?.(), processAlive, Date.now, servers);
+  snapshots.set(codexHome, { key, expires: Date.now() + 5_000, result });
   return result;
 }
