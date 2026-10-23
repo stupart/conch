@@ -27,6 +27,8 @@ export interface WatchdogOptions {
   onTimeout?: () => void;
   timeoutAction?: "aborted" | "cancelled" | "killed";
   warn?: WatchdogWarning;
+  /** Arms the deadline and returns its canceller: a plain setTimeout when absent. awake-time.ts's skips time asleep. */
+  deadline?: (fire: () => void, ms: number) => () => void;
 }
 
 /**
@@ -60,19 +62,19 @@ export function awaitWithWatchdog<T>(work: PromiseLike<T>, options: WatchdogOpti
   const timeoutMs = Math.max(1, Math.ceil(options.timeoutMs));
   return new Promise((resolve, reject) => {
     let settled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let clearDeadline: (() => void) | undefined;
 
     const finish = (result: WatchdogResult<T>): void => {
       if (settled) return;
       settled = true;
-      if (timer) clearTimeout(timer);
+      clearDeadline?.();
       options.signal?.removeEventListener("abort", cancel);
       resolve(result);
     };
     const fail = (error: unknown): void => {
       if (settled) return;
       settled = true;
-      if (timer) clearTimeout(timer);
+      clearDeadline?.();
       options.signal?.removeEventListener("abort", cancel);
       reject(error);
     };
@@ -88,14 +90,20 @@ export function awaitWithWatchdog<T>(work: PromiseLike<T>, options: WatchdogOpti
     if (options.signal?.aborted) cancel();
     else options.signal?.addEventListener("abort", cancel, { once: true });
     if (settled) return;
-    timer = setTimeout(() => {
+    const expire = (): void => {
       safely(options.onTimeout);
       const action = options.timeoutAction ?? "cancelled";
       safely(() => (options.warn ?? console.warn)(
         `⚠ ${options.operation} timed out after ${durationLabel(options.warningTimeoutMs ?? timeoutMs)} — ${action}, moving on`,
       ));
       finish({ status: "timed-out" });
-    }, timeoutMs);
+    };
+    if (options.deadline) {
+      clearDeadline = options.deadline(expire, timeoutMs);
+    } else {
+      const timer = setTimeout(expire, timeoutMs);
+      clearDeadline = () => clearTimeout(timer);
+    }
   });
 }
 

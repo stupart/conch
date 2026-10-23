@@ -28,6 +28,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fail-synth", action="store_true")
     # Each line takes this long: long enough for another request to arrive while it runs.
     parser.add_argument("--slow-ms", type=int, default=0)
+    # The model takes this long to load before the ready frame, as Kokoro's does.
+    parser.add_argument("--ready-delay-ms", type=int, default=0)
     return parser.parse_args()
 
 
@@ -57,6 +59,8 @@ def hang() -> None:
 
 def run() -> int:
     args = parse_args()
+    if args.ready_delay_ms:
+        time.sleep(args.ready_delay_ms / 1000)
     emit(
         {
             "type": "ready",
