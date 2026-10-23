@@ -86,58 +86,116 @@ test("a directory that does not exist is skipped, not fatal", async () => {
 
 // ── watching transcript CONTENT, not just liveness ────────────────────────────
 
-test("the watch set is re-armed only when it changes", () => {
+/** A hand-driven scheduler for `watchChangingPaths`: each `turn()` is one turn of the event loop. */
+function turns() {
+  const queued: Array<() => void> = [];
+  return {
+    schedule: (step: () => void) => { queued.push(step); },
+    queued,
+    turn: () => queued.shift()?.(),
+    drain: () => {
+      let count = 0;
+      while (queued.length) { queued.shift()!(); count++; }
+      return count;
+    },
+  };
+}
+
+test("the watch set changes only the paths that came or went", () => {
   const { watchFn, listeners, closed } = fakeWatch();
-  const watch = watchChangingPaths(() => {}, { watchFn, exists: () => true });
+  const loop = turns();
+  const watch = watchChangingPaths(() => {}, { watchFn, exists: () => true, schedule: loop.schedule });
 
   watch.update(["/a.jsonl", "/b.jsonl"]);
+  loop.drain();
   expect(listeners.length).toBe(2);
 
   // Same set, different order: nothing is torn down and rebuilt.
   watch.update(["/b.jsonl", "/a.jsonl"]);
+  expect(loop.drain()).toBe(0);
   expect(listeners.length).toBe(2);
   expect(closed).toEqual([false, false]);
 
-  // A session closes: the old watchers go, the new set is armed.
+  // A session closes: its watcher goes, the other stays.
   watch.update(["/a.jsonl"]);
-  expect(closed[0]).toBe(true);
-  expect(closed[1]).toBe(true);
-  expect(listeners.length).toBe(3);
+  loop.drain();
+  expect(closed).toEqual([false, true]);
+  expect(listeners.length).toBe(2);
   watch.stop();
 });
 
-test("a transcript that does not exist yet is retried, not cached as armed", () => {
-  const { watchFn, listeners } = fakeWatch();
-  const present = new Set(["/there.jsonl"]);
-  const watch = watchChangingPaths(() => {}, { watchFn, exists: (p) => present.has(p) });
+/**
+ * The 10-19 to 10-23 freeze. Every watch() and close() blocks the daemon's thread (0–2 s each on Tyler's Mac), and a
+ * changed set used to close and reopen all of them in the render: 18 live transcripts, 6–17 s. A session or sub-agent
+ * starting must cost its own watcher, and no turn of the loop may do more than one.
+ */
+test("a session starting among eighteen costs one watch, on a turn of its own", () => {
+  const { watchFn, listeners, closed } = fakeWatch();
+  const loop = turns();
+  const watch = watchChangingPaths(() => {}, { watchFn, exists: () => true, schedule: loop.schedule });
+  const live = Array.from({ length: 18 }, (_, i) => `/s${i}.jsonl`);
 
-  // A session can register before its first line lands. The missing path must
-  // not be cached as armed, or it would never be watched at all.
+  watch.update(live);
+  expect(listeners.length).toBe(0); // nothing in the caller's turn
+  for (let i = 1; i <= live.length; i++) {
+    loop.turn();
+    expect(listeners.length).toBe(i); // one per turn, never a batch
+  }
+  expect(loop.queued.length).toBe(0);
+
+  watch.update([...live, "/new.jsonl"]);
+  expect(loop.drain()).toBe(1);
+  expect(listeners.length).toBe(19);
+  expect(closed.filter(Boolean).length).toBe(0); // no one else's watcher was touched
+
+  watch.update(live.slice(1).concat("/new.jsonl"));
+  expect(loop.drain()).toBe(1);
+  expect(listeners.length).toBe(19);
+  expect(closed.filter(Boolean).length).toBe(1);
+  watch.stop();
+});
+
+test("a transcript that does not exist yet is retried, without re-arming the rest", () => {
+  const { watchFn, listeners, closed } = fakeWatch();
+  const loop = turns();
+  const present = new Set(["/there.jsonl"]);
+  const watch = watchChangingPaths(() => {}, { watchFn, exists: (p) => present.has(p), schedule: loop.schedule });
+
+  // A session can register before its first line lands (a sub-agent's meta file
+  // before its transcript). The missing path must not be cached as armed, or it
+  // would never be watched at all.
   watch.update(["/there.jsonl", "/pending.jsonl"]);
+  loop.drain();
   expect(listeners.length).toBe(1); // only the one that exists
 
   watch.update(["/there.jsonl", "/pending.jsonl"]);
-  expect(listeners.length).toBe(2); // retried, still missing, still not cached
+  loop.drain();
+  expect(listeners.length).toBe(1); // retried, still missing, and the other left alone
+  expect(closed).toEqual([false]);
 
   present.add("/pending.jsonl");
   watch.update(["/there.jsonl", "/pending.jsonl"]);
-  expect(listeners.length).toBe(4); // both armed now
+  loop.drain();
+  expect(listeners.length).toBe(2); // both watched now
 
-  const before = listeners.length;
   watch.update(["/there.jsonl", "/pending.jsonl"]);
-  expect(listeners.length).toBe(before); // complete arm is cached
+  expect(loop.drain()).toBe(0); // complete: nothing left to do
+  expect(closed).toEqual([false, false]);
   watch.stop();
 });
 
 test("an append to a watched transcript reaches the renderer", async () => {
   const { watchFn, listeners } = fakeWatch();
+  const loop = turns();
   let renders = 0;
   const watch = watchChangingPaths(() => renders++, {
     debounceMs: 5,
     watchFn,
     exists: () => true,
+    schedule: loop.schedule,
   });
   watch.update(["/live.jsonl"]);
+  loop.drain();
 
   listeners[0]!(); // the agent appended a message mid-turn
   await Bun.sleep(25);
@@ -145,12 +203,30 @@ test("an append to a watched transcript reaches the renderer", async () => {
   watch.stop();
 });
 
+test("a watcher waiting its turn to close renders nothing for its session", async () => {
+  const { watchFn, listeners } = fakeWatch();
+  const loop = turns();
+  let renders = 0;
+  const watch = watchChangingPaths(() => renders++, { debounceMs: 5, watchFn, exists: () => true, schedule: loop.schedule });
+  watch.update(["/gone.jsonl"]);
+  loop.drain();
+
+  watch.update([]); // its session ended; the close is queued, not done
+  listeners[0]!();
+  await Bun.sleep(25);
+  expect(renders).toBe(0);
+  watch.stop();
+});
+
 test("stopping closes the transcript watchers", () => {
   const { watchFn, closed } = fakeWatch();
-  const watch = watchChangingPaths(() => {}, { watchFn, exists: () => true });
-  watch.update(["/a.jsonl"]);
+  const loop = turns();
+  const watch = watchChangingPaths(() => {}, { watchFn, exists: () => true, schedule: loop.schedule });
+  watch.update(["/a.jsonl", "/b.jsonl"]);
+  loop.drain();
   watch.stop();
-  expect(closed[0]).toBe(true);
+  expect(loop.drain()).toBe(2);
+  expect(closed).toEqual([true, true]);
 });
 
 /**

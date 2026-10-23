@@ -1,4 +1,6 @@
 import { existsSync, watch, type FSWatcher } from "node:fs";
+import { basename } from "node:path";
+import { breadcrumb } from "./loop-watchdog.ts";
 
 /**
  * Notice a session opening or closing when it happens, not on the next tick.
@@ -74,35 +76,107 @@ export function watchSessionSources(
  * looking at it. Pointing this watch at the live transcripts turns each of those
  * appends into the render conch was already doing on a timer.
  *
- * Re-arming wholesale on a changed set, rather than diffing it: the set changes
- * when a session opens or closes, which is rare, and a handful of watchers cost
- * nothing to replace. A path that does not exist yet cannot be watched, so an
- * incomplete arm is not cached — the next update tries it again.
+ * Changed one path at a time, one watcher per turn of the event loop. It used to
+ * re-arm wholesale — close every watcher and open them all again — on the theory
+ * that a handful of watchers cost nothing to replace. They don't: Bun's `watch()`
+ * and `close()` run on the calling thread, and on Tyler's Mac (fseventsd at 96%
+ * CPU after 56 days up) each took anywhere from nothing to 2 s. Re-arming 18 idle
+ * files measured 1.9–9.4 s, and re-arming the 18 live transcripts on a changed
+ * set 6–17 s. The set changes whenever a session or a background sub-agent starts
+ * or finishes, and any path not there yet (a sub-agent's meta file lands before
+ * its transcript) left the arm incomplete, so every render re-armed the lot until
+ * it appeared. That was the daemon's 5–13 s freeze from 10-19 on (70 of the 75
+ * stalls in the log by 10-23), named "records: handing the indexer its
+ * priorities" only because that breadcrumb is set just before this runs. Now a
+ * session opening costs one `watch()`, one closing costs one `close()`, a missing
+ * path costs an `existsSync` until it appears, and none of them shares a turn
+ * with the render or with each other, so the heartbeat gets in between.
  */
 export function watchChangingPaths(
   onChange: () => void,
-  options: { debounceMs?: number; watchFn?: typeof watch; exists?: (path: string) => boolean } = {},
+  options: {
+    debounceMs?: number;
+    watchFn?: typeof watch;
+    exists?: (path: string) => boolean;
+    /** Runs one watch or close on a later turn of the event loop. Tests step it by hand. */
+    schedule?: (step: () => void) => void;
+  } = {},
 ): { update: (paths: readonly string[]) => void; stop: () => void } {
+  const debounceMs = options.debounceMs ?? 150;
+  const watchFn = options.watchFn ?? watch;
   const exists = options.exists ?? existsSync;
-  let stop: (() => void) | undefined;
-  let armed: string | null = null;
+  const schedule = options.schedule ?? ((step: () => void) => { setTimeout(step, 0).unref?.(); });
+  const watchers = new Map<string, FSWatcher>();
+  let wanted = new Set<string>();
+  // Wanted, but not watchable on this pass: not there yet (a session registers
+  // before its first line lands), or the watch threw. Each update tries again.
+  let skipped = new Set<string>();
+  let scheduled = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const fire = (): void => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = undefined;
+      onChange();
+    }, debounceMs);
+    timer.unref?.();
+  };
+  const pending = (): boolean => [...wanted].some((path) => !watchers.has(path) && !skipped.has(path))
+    || [...watchers.keys()].some((path) => !wanted.has(path));
+  const next = (): void => {
+    if (scheduled || !pending()) return;
+    scheduled = true;
+    schedule(step);
+  };
+  function step(): void {
+    scheduled = false;
+    for (const path of wanted) {
+      if (watchers.has(path) || skipped.has(path)) continue;
+      if (!exists(path)) {
+        skipped.add(path);
+        continue;
+      }
+      breadcrumb(`watch: watching ${basename(path)}`);
+      try {
+        // A watcher whose path has left the set stays open until its own turn to
+        // close comes; it must not render for a session that is gone.
+        const watcher = watchFn(path, () => { if (wanted.has(path)) fire(); });
+        // A file removed while watched raises on the watcher, and an unhandled
+        // 'error' on an EventEmitter takes the daemon down with it.
+        watcher.on?.("error", () => {});
+        watcher.unref?.();
+        watchers.set(path, watcher);
+      } catch {
+        skipped.add(path);
+      }
+      return next();
+    }
+    for (const [path, watcher] of watchers) {
+      if (wanted.has(path)) continue;
+      breadcrumb(`watch: releasing ${basename(path)}`);
+      watchers.delete(path);
+      try {
+        watcher.close();
+      } catch {}
+      return next();
+    }
+  }
+
   return {
     update(paths: readonly string[]): void {
-      const wanted = [...new Set(paths)].sort();
-      const key = wanted.join("\n");
-      if (armed === key) return;
-      const live = wanted.filter((path) => exists(path));
-      stop?.();
-      stop = watchSessionSources(live, onChange, options);
-      // Only a complete arm is cached. A transcript whose session registered
-      // before its first line landed is picked up on the next render instead of
-      // never being watched at all.
-      armed = live.length === wanted.length ? key : null;
+      wanted = new Set(paths);
+      skipped = new Set();
+      next();
     },
+    // Released the same way, a turn each: shutdown has 5 s before the app's
+    // SIGKILL, and closing 18 watchers at once measured up to 6.7 s.
     stop(): void {
-      stop?.();
-      stop = undefined;
-      armed = null;
+      wanted = new Set();
+      skipped = new Set();
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+      next();
     },
   };
 }
