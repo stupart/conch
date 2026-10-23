@@ -4,7 +4,9 @@ A shared Codex app-server can host terminal and desktop sessions simultaneously.
 Its writer-lock PID identifies the server, not the user's window. Discovery first
 looks for a foreground Codex TUI explicitly running `resume <thread UUID>`
 (including `codex yolo resume`). The TUI must belong to the current user and have
-the matching account's log database open. That terminal gets the PID and the
+the matching account's log database open, or be connected over a unix socket to
+the app-server holding that thread's lock (a TUI attached to the shared daemon
+can sit idle with no log database open). That terminal gets the PID and the
 normal terminal delivery/focus controls, even if a desktop copy also exists.
 Picker/`--last` launches and ambiguous command lines are not guessed from cwd.
 

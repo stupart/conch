@@ -6,7 +6,9 @@ import { join } from "node:path";
 import type { CodexSessionEntry } from "../src/codex-sessions.ts";
 import { buildPanelModel, buildPanelRows, buildPublishedState } from "../src/panel.ts";
 import { registrySnapshot, sessionLabel, subagentSessions, type SessionInfo } from "../src/sessions.ts";
+import { shouldReportMissingCodexPid } from "../src/daemon.ts";
 import {
+  cachedLockProbe,
   codexThreadDbPaths,
   codexThreadLabel,
   codexThreadStatus,
@@ -894,6 +896,45 @@ describe("where keystrokes for a Codex thread may go: its lock's holder", () => 
       const [row] = (await readCodexThreads({ codexHome: home, now: NOW, lockProbe: () => null })).entries as CodexRow[];
       expect(row).toMatchObject({ sessionId: "t1", pid: 0 });
       expect(row!.noTerminal).toBeUndefined();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("a maintenance wake's failed lock probe neither strips the row's reason nor reports it (2026-10-23)", async () => {
+    // "notes and research": its TUI attached to the shared daemon, which held its lock. Every DarkWake's `lsof` ran out of
+    // time, the row came back with no pid and no reason, and the daemon filed "Codex row has no pid" again — 230 times.
+    const home = realCodexHome({ threads: [{ id: "atlas", name: "notes and research" }], locks: ["atlas"] });
+    try {
+      const table = processTable(home, [
+        { pid: 6163, args: "codex app-server --listen unix:// --analytics-default-enabled --managed-daemon", holds: ["atlas"] },
+      ]);
+      let lsof: string | null = table.lockProbe();
+      const servers: Array<[string, number][]> = [];
+      let attached = false;
+      const options = {
+        codexHome: home, now: NOW,
+        processArgs: table.processArgs,
+        lockProbe: cachedLockProbe(() => lsof, { ttlMs: 0, alive: () => true }),
+        terminalSessions: async (_home: string, held: ReadonlyMap<string, number>) => {
+          servers.push([...held]);
+          return new Map(attached ? [["atlas", 48984]] : []);
+        },
+        appThreads: async () => new Set<string>(),
+      };
+      const reported = new Set<string>();
+      const pass = async () => {
+        const [row] = (await readCodexThreads(options)).entries as CodexRow[];
+        return { row: row!, report: shouldReportMissingCodexPid({ ...row!, backend: "codex" }, reported) };
+      };
+      const hosted = { pid: 0, noTerminal: expect.stringContaining("(pid 6163)") };
+      expect(await pass()).toEqual({ row: expect.objectContaining(hosted), report: false });
+      lsof = null;
+      for (let wake = 0; wake < 3; wake++) expect(await pass()).toEqual({ row: expect.objectContaining(hosted), report: false });
+      // The terminal probe is told which server holds the thread, so it can find the TUI connected to it.
+      expect(servers.at(-1)).toEqual([["atlas", 6163]]);
+      attached = true;
+      expect((await pass()).row).toMatchObject({ pid: 48984 });
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
