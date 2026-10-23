@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { AGENT_INSTRUCTIONS, renderAgentsMd, renderSkillMd } from "../src/agent-instructions.ts";
 import {
   buildInstallCommands,
@@ -14,6 +16,7 @@ import {
   buildUninstallCommands,
   materializeEmbeddedPlugin,
   materializePlugin,
+  repairPluginPrograms,
 } from "../src/plugin-install.ts";
 
 const roots: string[] = [];
@@ -238,6 +241,68 @@ describe("plugin installer helpers", () => {
     expect(mcp.mcpServers.conch.command).toEndWith("/conch");
     expect(mcp.mcpServers.conch.args).toEqual(["mcp"]);
   }, 15_000);
+});
+
+describe("a Homebrew upgrade of bun", () => {
+  const cellarBun = "/opt/homebrew/Cellar/bun/1.4.2/bin/bun";
+  const linkedBun = "/opt/homebrew/bin/bun";
+  const exists = (path: string) => path === linkedBun;
+  const declaration = (command: string) => ({ mcpServers: { conch: { command, args: ["run", "/x/src/cli.ts", "mcp"] } } });
+
+  function writeJson(path: string, value: unknown): void {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
+  }
+
+  test("every agent's copy of the plugin is pointed at the bun Homebrew keeps", async () => {
+    const root = mkdtempSync("/tmp/conch-plugin-repair-test-");
+    roots.push(root);
+    const configDir = join(root, "config");
+    const claudeDir = join(root, "claude");
+    const codexDir = join(root, "codex");
+    const dist = join(configDir, "plugin-dist", "plugins", "conch");
+    const claudeCopy = join(claudeDir, "plugins", "cache", "conch", "conch", "0.3.0");
+    const codexCopy = join(codexDir, "plugins", "cache", "conch-local", "conch", "0.3.0");
+    const other = join(claudeDir, "plugins", "cache", "elsewhere", "other", "1.0.0");
+    for (const dir of [dist, claudeCopy, codexCopy, other]) {
+      writeJson(join(dir, ".mcp.json"), declaration(cellarBun));
+      writeJson(join(dir, ".codex-mcp.json"), declaration(cellarBun));
+    }
+    writeJson(join(claudeDir, "plugins", "installed_plugins.json"), {
+      plugins: {
+        "conch@conch": [{ installPath: claudeCopy, version: "0.3.0" }, { installPath: claudeCopy, version: "0.3.0" }],
+        "other@elsewhere": [{ installPath: other, version: "1.0.0" }],
+      },
+    });
+
+    const repaired = await repairPluginPrograms({ claudeDirs: [claudeDir], codexDir }, { CONCH_CONFIG_DIR: configDir }, exists);
+
+    expect(repaired).toBe(6);
+    for (const dir of [dist, claudeCopy, codexCopy]) {
+      for (const name of [".mcp.json", ".codex-mcp.json"]) {
+        const config = JSON.parse(readFileSync(join(dir, name), "utf8"));
+        expect(config.mcpServers.conch).toEqual({ command: linkedBun, args: ["run", "/x/src/cli.ts", "mcp"] });
+      }
+    }
+    // Only conch's own plugin, and a second run finds nothing left to do.
+    expect(JSON.parse(readFileSync(join(other, ".mcp.json"), "utf8")).mcpServers.conch.command).toBe(cellarBun);
+    expect(await repairPluginPrograms({ claudeDirs: [claudeDir], codexDir }, { CONCH_CONFIG_DIR: configDir }, exists)).toBe(0);
+  });
+
+  test("a bun with no Homebrew link to move to is left as it is", async () => {
+    const root = mkdtempSync("/tmp/conch-plugin-repair-test-");
+    roots.push(root);
+    const configDir = join(root, "config");
+    const dist = join(configDir, "plugin-dist", "plugins", "conch");
+    writeJson(join(dist, ".mcp.json"), declaration("/Users/t/.bun/bin/bun"));
+    writeJson(join(dist, ".codex-mcp.json"), declaration("/usr/local/Cellar/bun/1.4.2/bin/bun"));
+
+    const repaired = await repairPluginPrograms({ claudeDirs: [join(root, "no-claude")], codexDir: join(root, "no-codex") }, { CONCH_CONFIG_DIR: configDir }, exists);
+
+    expect(repaired).toBe(0);
+    expect(JSON.parse(readFileSync(join(dist, ".mcp.json"), "utf8")).mcpServers.conch.command).toBe("/Users/t/.bun/bin/bun");
+    expect(JSON.parse(readFileSync(join(dist, ".codex-mcp.json"), "utf8")).mcpServers.conch.command).toBe("/usr/local/Cellar/bun/1.4.2/bin/bun");
+  });
 });
 
 describe("the two install paths ship the same prose", () => {

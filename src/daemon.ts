@@ -378,7 +378,7 @@ import { createSetup, loginShellHas, MIC_CHECK_QUIET_WITHIN_MS, runInstallerInLo
 import { createPractice, practiceGate, PRACTICE_LABEL, PRACTICE_SESSION_ID, type Practice } from "./practice.ts";
 import { resolveAgentBinaries } from "./doctor-checks.ts";
 import { codexHooksAreWiredAt, isConchHookCommand, runCodexInstall, runInstall } from "./install.ts";
-import { pluginInstalledFor, runInstallPlugin } from "./plugin-install.ts";
+import { pluginInstalledFor, repairPluginPrograms, runInstallPlugin } from "./plugin-install.ts";
 
 /**
  * The turn-based voice loop.
@@ -643,7 +643,9 @@ export function shouldReportMissingCodexPid(
 /**
  * Every account's conch hooks and status line, pointed at a bun that still exists (`repairConchHooks`,
  * `repairAccountUsage`). A Homebrew upgrade deletes the bun they named, and every prompt in that account then failed
- * with "UserPromptSubmit hook error" while conch heard nothing from it (2026-10-03). Repair only, never add.
+ * with "UserPromptSubmit hook error" while conch heard nothing from it (2026-10-03). The plugin's MCP server too, in
+ * every agent's copy (`repairPluginPrograms`): the same upgrade left new sessions without conch's tools (2026-10-23).
+ * Repair only, never add.
  */
 async function repairHookPrograms(): Promise<void> {
   let accounts: ReturnType<typeof readClaudeAccounts>;
@@ -660,6 +662,12 @@ async function repairHookPrograms(): Promise<void> {
     } catch (error) {
       log(`could not repair conch's hooks in ${account.label}: ${(error as Error).message}`);
     }
+  }
+  try {
+    const plugin = await repairPluginPrograms({ claudeDirs: accounts.map((account) => account.configDir), codexDir: join(conchHome(), ".codex") });
+    if (plugin) log(`repaired conch's MCP server in ${plugin} plugin file${plugin === 1 ? "" : "s"}: its bun had moved`);
+  } catch (error) {
+    log(`could not repair conch's plugin: ${(error as Error).message}`);
   }
 }
 
