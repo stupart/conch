@@ -2578,7 +2578,10 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       panelAgents = new Map(nested.map((agent) => [agent.sessionId, agent]));
       // This snapshot passed the reconciler's current() check; indexing never uses the eight-row preview cap.
       prioritizeRecords([...panelSessions.values(), ...nested], navSelectedId ?? nextActiveSessionId);
-      // Re-arms only when the set of live transcripts changes; see session-watch.ts.
+      // Its own breadcrumb: without one, five days of freezes in the watchers below were logged as the indexer's
+      // ("records: handing the indexer its priorities", 10-19 to 10-23; session-watch.ts).
+      breadcrumb("panel: watching the live transcripts");
+      // Changes only the paths that came or went, a watcher per turn; see session-watch.ts.
       accountSourcesWatch.update([
         ...readClaudeAccounts(cfg.claudeDir).flatMap(account => [account.configDir, join(account.configDir, "sessions")]),
         ...readCodexAccounts().flatMap(account => [account.configDir, join(account.configDir, "thread-writer-locks")]),
