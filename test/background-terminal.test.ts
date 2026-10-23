@@ -162,7 +162,7 @@ describe("close on a background job", () => {
   test("the daemon closes through closeSession, letting a job past the no-pid refusal", () => {
     const body = between(read("src/daemon.ts"), "const closeLiveSession = async", "const sessionActions");
     expect(body).toContain("if (!session.pid && !session.jobId) {");
-    expect(body).toContain("await closeSession(session);");
+    expect(body).toContain("await closeSession(session, { restart });");
     expect(body).not.toContain("closeTerminalSession(");
   });
 });

@@ -167,7 +167,7 @@ describe("which sessions can't get the current tools", () => {
     // The verdict was about the process that just exited; the next look judges the one a restart resumes it in.
     const daemon = readFileSync(join(import.meta.dir, "..", "src", "daemon.ts"), "utf8");
     const close = daemon.slice(daemon.indexOf("const closeLiveSession = async"), daemon.indexOf("if (!relaunch) return;"));
-    expect(close).toContain("await closeSession(session);\n");
-    expect(close.indexOf("if (toolsStale.delete(sessionId)) publishedStateWriter.request();")).toBeGreaterThan(close.indexOf("await closeSession(session);"));
+    expect(close).toContain("await closeSession(session, { restart });\n");
+    expect(close.indexOf("if (toolsStale.delete(sessionId)) publishedStateWriter.request();")).toBeGreaterThan(close.indexOf("await closeSession(session, { restart });"));
   });
 });

@@ -203,7 +203,7 @@ describe("Codex sessions blocked on a permission ask", () => {
   function rollout(...lines: string[]): string {
     const dir = mkdtempSync(join(tmpdir(), "conch-codex-approval-"));
     homes.push(dir);
-    const path = join(dir, "rollout-2026-09-19T19-00-38-01a0b8e5.jsonl");
+    const path = join(dir, "rollout-2026-09-19T19-00-38-5e5e5e06.jsonl");
     writeFileSync(path, lines.join("\n") + "\n");
     return path;
   }

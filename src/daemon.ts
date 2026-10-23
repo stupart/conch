@@ -741,7 +741,7 @@ export function injectTimeoutFor(line: string): number {
     if (kind === "inject") return 25_000;
     // A truthful close waits for the agent pid to disappear after Ctrl-D; the
     // bridge must not invent a failure while that clean shutdown is in flight.
-    // Its timed steps take up to 35.3 s on a slow Terminal (`CLOSE_TIMED_STEPS_MS`),
+    // Its timed steps take up to 39.3 s on a slow Terminal (`CLOSE_TIMED_STEPS_MS`),
     // plus the lookups before them; the Mac app waits as long (`sessionCloseTimeout`).
     // A restart then opens a Terminal window, which a start alone gets 8s for.
     if (kind === "session-close") return JSON.parse(line)?.restart === true ? 55_000 : 45_000;
@@ -2865,8 +2865,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       }
       terminalSessionCommand(relaunch.request); // throws on anything invalid, before the close
     }
-    // A background job is stopped by id (claude stop), window or not.
-    await closeSession(session);
+    // A background job is stopped by id (claude stop), window or not. `restart` only words what a second press would do.
+    await closeSession(session, { restart });
     // Its out-of-date tools were its old process's: the app's Restart must not come back offering itself before the next
     // look (`refreshToolsStale`, once a minute) judges the new one.
     if (toolsStale.delete(sessionId)) publishedStateWriter.request();

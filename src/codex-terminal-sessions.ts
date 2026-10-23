@@ -48,7 +48,7 @@ type Probe = typeof probeCommand;
 /**
  * The last routes a probe confirmed, per Codex home. A probe that fails (`ps` or `lsof` past its time on a loaded Mac)
  * proves nothing either way, and treating it as "no terminal" made a live Codex session unsendable: Tyler's
- * "atals and nura" logged "Codex row has no pid" five times in an afternoon while its process sat on ttys006 the whole
+ * "notes and research" logged "Codex row has no pid" five times in an afternoon while its process sat on ttys006 the whole
  * time (2026-10-15). So a failed probe answers with what the last good one found, for as long as that process is alive
  * and for at most `KEEP_CONFIRMED_MS`. A probe that succeeds and doesn't find a session still drops it at once.
  */
