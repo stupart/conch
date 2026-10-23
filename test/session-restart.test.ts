@@ -124,7 +124,7 @@ describe("the restart request on the wire", () => {
   // The phone's answer comes through this budget: shorter than the close itself, and a close that worked
   // reads on the phone as "The Mac didn't confirm a clean session exit." The Mac app's own is the same 45 s.
   test("a close's budget outlasts the close's own timed steps, with room for the lookups before them", () => {
-    expect(CLOSE_TIMED_STEPS_MS).toBe(35_300);
+    expect(CLOSE_TIMED_STEPS_MS).toBe(39_300);
     expect(injectTimeoutFor(JSON.stringify({ kind: "session-close" }))).toBeGreaterThanOrEqual(CLOSE_TIMED_STEPS_MS + 5_000);
   });
 });
@@ -137,7 +137,7 @@ describe("the daemon's restart path, as source", () => {
   test("everything that can refuse runs before the close", () => {
     expect(at).toBeGreaterThan(-1);
     expect(body.length).toBeGreaterThan(800);
-    const close = body.indexOf("await closeSession(session);");
+    const close = body.indexOf("await closeSession(session, { restart });");
     expect(close).toBeGreaterThan(-1);
     for (const guard of [
       "if (session.jobId) {",

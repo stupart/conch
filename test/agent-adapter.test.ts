@@ -76,6 +76,7 @@ describe("a third backend is one row", () => {
     exitKeystrokes: 1,
     questionKeys: null,
     inputBoxText: null,
+    exitBlocker: null,
     trustTypedAtLaunch: false,
     resumeArgs: (id) => ` --continue ${id}`,
     forkArgs: null,
