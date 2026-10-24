@@ -685,22 +685,27 @@ function installedPluginDirs(
   env: Readonly<Record<string, string | undefined>>,
 ): string[] {
   const dirs = new Set([join(pluginDistDir(env), "plugins", "conch")]);
-  for (const claudeDir of homes.claudeDirs) {
-    try {
-      const ledger = JSON.parse(readFileSync(join(claudeDir, "plugins", "installed_plugins.json"), "utf8")) as { plugins?: Record<string, unknown> };
-      for (const [id, installs] of Object.entries(ledger.plugins ?? {})) {
-        if (!id.startsWith("conch@") || !Array.isArray(installs)) continue;
-        for (const install of installs) if (typeof install?.installPath === "string") dirs.add(install.installPath);
-      }
-    } catch {
-      // No ledger, or one that can't be read: that account has no copy to repair.
-    }
-  }
+  for (const claudeDir of homes.claudeDirs) for (const dir of claudePluginCopies(claudeDir)) dirs.add(dir);
   const codexCache = join(homes.codexDir, "plugins", "cache");
   for (const marketplace of safeReaddir(codexCache)) {
     for (const version of safeReaddir(join(codexCache, marketplace, "conch"))) dirs.add(join(codexCache, marketplace, "conch", version));
   }
   return [...dirs];
+}
+
+/** The copies of conch's plugin one Claude account runs: its ledger's `installPath`s for `conch@…`. */
+function claudePluginCopies(claudeDir: string): string[] {
+  const dirs: string[] = [];
+  try {
+    const ledger = JSON.parse(readFileSync(join(claudeDir, "plugins", "installed_plugins.json"), "utf8")) as { plugins?: Record<string, unknown> };
+    for (const [id, installs] of Object.entries(ledger.plugins ?? {})) {
+      if (!id.startsWith("conch@") || !Array.isArray(installs)) continue;
+      for (const install of installs) if (typeof install?.installPath === "string") dirs.push(install.installPath);
+    }
+  } catch {
+    // No ledger, or one that can't be read: that account has no copy.
+  }
+  return dirs;
 }
 
 function safeReaddir(dir: string): string[] {
@@ -742,6 +747,41 @@ export async function repairPluginPrograms(
     }
   }
   return repaired;
+}
+
+/**
+ * Whether the conch plugin a Claude account runs could start its MCP server now: every installed copy's `.mcp.json`
+ * names a program that is there (a bare name, on PATH), and each absolute path among its arguments is there too, with
+ * `${CLAUDE_PLUGIN_ROOT}` read as the copy's own folder. What `/reload-plugins` would start in a session whose server
+ * failed (mcp-repair.ts): conch only types it when this says the server can start, so a reload that could only fail
+ * again is never typed. Read only.
+ */
+export function conchPluginServerRunnable(
+  claudeDir: string,
+  exists: (path: string) => boolean = existsSync,
+  onPath: (command: string) => boolean = (command) => Bun.which(command) !== null,
+): { ok: true } | { ok: false; why: string } {
+  const copies = claudePluginCopies(claudeDir);
+  if (!copies.length) return { ok: false, why: "conch's plugin isn't installed in this account" };
+  for (const dir of copies) {
+    const path = join(dir, ".mcp.json");
+    let server: { command?: unknown; args?: unknown } | undefined;
+    try {
+      server = (JSON.parse(readFileSync(path, "utf8")) as { mcpServers?: Record<string, { command?: unknown; args?: unknown }> }).mcpServers?.conch;
+    } catch {
+      return { ok: false, why: `${path} can't be read` };
+    }
+    if (typeof server?.command !== "string" || !server.command) return { ok: false, why: `${path} names no program for conch's server` };
+    const expand = (value: string) => value.replaceAll("${CLAUDE_PLUGIN_ROOT}", dir);
+    const command = expand(server.command);
+    if (command.includes("/") ? !exists(command) : !onPath(command)) return { ok: false, why: `${command} isn't there` };
+    for (const arg of Array.isArray(server.args) ? server.args : []) {
+      if (typeof arg !== "string") continue;
+      const value = expand(arg);
+      if (value.startsWith("/") && !exists(value)) return { ok: false, why: `${value} isn't there` };
+    }
+  }
+  return { ok: true };
 }
 
 /**

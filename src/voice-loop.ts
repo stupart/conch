@@ -361,7 +361,7 @@ export async function lastReplyFor(
 /** Seconds since the user last touched keyboard or mouse (macOS HID idle time). */
 /** Seconds since the last keyboard/mouse/trackpad event, or `null` if the HID probe
  *  couldn't be read — callers must fail SAFE (don't gate / don't auto-silence) on null. */
-async function idleSeconds(): Promise<number | null> {
+export async function idleSeconds(): Promise<number | null> {
   try {
     const proc = Bun.spawn(["ioreg", "-c", "IOHIDSystem"], { stdout: "pipe", stderr: "ignore" });
     const out = await new Response(proc.stdout).text();
