@@ -93,6 +93,14 @@ public enum SidebarRowText {
         return present(startedBy).map { SecondLine(text: "started by \($0)", kind: .startedBy) }
     }
 
+    /// What a parked row is blocked on (`rows[].parked`, src/parked-jobs.ts, 2026-10-24): a Claude Code background agent
+    /// that Claude Code stopped when it asked you something, so nothing else will ever announce it. It says so before its
+    /// question, on the Mac's second line and the phone's summary alike; a reply or Open brings it back.
+    public static func parked(_ question: String?) -> String {
+        guard let question = present(question) else { return "Parked · waiting on you" }
+        return "Parked · \(question)"
+    }
+
     /// The whole name, then what the row knows beyond it, one per line.
     public static func tooltip(name: String, snippet: String?, startedBy: String?) -> String {
         var lines = [name]

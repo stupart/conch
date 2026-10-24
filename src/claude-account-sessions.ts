@@ -2,16 +2,25 @@ import { windowKey, processParentTable } from "./window-key.ts";
 import { readClaudeAccounts, type ClaudeAccount } from "./claude-accounts.ts";
 import { findTranscript, registrySnapshot, codexRegistrySnapshot, withStartedBy, type RegistrySnapshot } from "./sessions.ts";
 import { readResumableSessionsResult, type ReadResumableSessionsOptions, type ResumableSessionsRead } from "./resumable.ts";
+import { parkedSessions, type ParkedSessionsOptions } from "./parked-jobs.ts";
 
 /** Read each provider root once, retaining the account that owns its sessions.
  * The optional Codex list preserves the legacy default-only reader for callers. */
-export async function accountRegistrySnapshot(defaultDir: string, accounts = readClaudeAccounts(defaultDir), codexAccounts?: ClaudeAccount[]): Promise<RegistrySnapshot | null> {
+export async function accountRegistrySnapshot(
+  defaultDir: string,
+  accounts = readClaudeAccounts(defaultDir),
+  codexAccounts?: ClaudeAccount[],
+  parkedOptions?: ParkedSessionsOptions,
+): Promise<RegistrySnapshot | null> {
   const combined: RegistrySnapshot = { infos: [], liveIds: new Set(), complete: true };
   let available = false;
+  /** Accounts whose registry could be read: only there can a job be known not to be running. */
+  const read: ClaudeAccount[] = [];
   for (const account of accounts) {
     const snapshot = await registrySnapshot(account.configDir, { skipCodex: codexAccounts !== undefined || account.id !== "default", processParents: async () => null });
     if (!snapshot) { combined.complete = false; continue; }
     available = true;
+    read.push(account);
     combined.complete &&= snapshot.complete;
     for (const id of snapshot.liveIds) combined.liveIds.add(id);
     combined.infos.push(...snapshot.infos.map((session) => session.backend === "codex" ? session : {
@@ -38,6 +47,14 @@ export async function accountRegistrySnapshot(defaultDir: string, accounts = rea
     combined.liveIds.add(sessionId);
     return { ...info, sessionId, agentSessionId: info.agentSessionId ?? info.sessionId };
   }).filter((info): info is NonNullable<typeof info> => info !== undefined);
+  // Background agents Claude Code stopped while they wait on you (parked-jobs.ts, 2026-10-24): no registry above
+  // lists them, so without this they left every conch surface the moment they asked. After the live rows, which win:
+  // a parked row is only ever a conversation nothing runs. Its id is live too, for what "has this closed?" asks — it
+  // hasn't, a reply brings it back — and so a dismissal or a held turn isn't pruned while it waits.
+  for (const parked of parkedSessions(read, combined, parkedOptions)) {
+    combined.infos.push(parked);
+    combined.liveIds.add(parked.sessionId);
+  }
   if (combined.infos.filter(info => info.pid).length >= 2) {
     const parents = await processParentTable();
     if (parents) combined.infos = withStartedBy(combined.infos, parents);

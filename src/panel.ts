@@ -134,6 +134,8 @@ export interface PanelRowModel {
   messageRoute?: "codex-app";
   /** A background job with no window attached: "Open in Terminal" can attach one. */
   attachable?: boolean;
+  /** A background job Claude Code stopped while it waits on you (parked-jobs.ts); a reply or Open brings it back. */
+  parked?: true;
   /** The folder the session runs in; what a relative link in its prose is relative to. */
   cwd?: string;
   /** The folder(s) its agent said it actually works in, when not `cwd`: what the file tree and the sidebar follow. */
@@ -334,6 +336,13 @@ export interface PublishedSessionRow {
   messageRoute?: "codex-app";
   /** A Claude Code background job with no window attached; an app can offer "Open in Terminal". Older apps ignore it. */
   attachable?: boolean;
+  /**
+   * A Claude Code background agent parked waiting on you: Claude Code stopped its process when it asked, and `detail`
+   * is what it asked (parked-jobs.ts). Its status is `needs`; it is `attachable`, and a send to it brings it back
+   * before the words go in, so it carries no `noTerminal`. Once back it is the same row, live, without this. Older
+   * apps show it as any row that needs you.
+   */
+  parked?: true;
   /** Same as `PanelRowModel.waitingOnAgents`. Absent means false; older apps show plain working. */
   waitingOnAgents?: true;
   /**
@@ -760,6 +769,7 @@ export function buildPublishedState(
         ...(row.noTerminal ? { noTerminal: row.noTerminal } : {}),
         ...(row.messageRoute ? { messageRoute: row.messageRoute } : {}),
         ...(row.attachable ? { attachable: true as const } : {}),
+        ...(row.parked ? { parked: true as const } : {}),
         ...(row.waitingOnAgents ? { waitingOnAgents: true as const } : {}),
         ...(approval
           ? {
@@ -915,8 +925,9 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
           : {}),
         status,
         ...(visibleState?.at !== undefined ? { at: visibleState.at } : {}),
-        ...(status === "needs" && latched?.detail
-          ? { detail: latched.detail }
+        // A parked job's question is its own record's, newer than any latch from when it last ran.
+        ...(status === "needs" && (session.parked?.needs ?? latched?.detail)
+          ? { detail: session.parked?.needs ?? latched!.detail! }
           : review
             ? { detail: review.summary }
             : {}),
@@ -935,6 +946,7 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
         ...(session.noTerminal ? { noTerminal: session.noTerminal } : {}),
         ...(session.messageRoute ? { messageRoute: session.messageRoute } : {}),
         ...(session.jobId && !session.pid ? { attachable: true } : {}),
+        ...(session.parked ? { parked: true as const } : {}),
         ...(session.cwd ? { cwd: session.cwd } : {}),
         ...(session.workDirs ? { workDirs: session.workDirs } : {}),
       };
@@ -1643,7 +1655,7 @@ export function registryToPanel(status: string | undefined): SessionStatus | nul
  * wins outright, whatever the latch says.
  */
 export function reconcileStatus(
-  session: Pick<SessionInfo, "status" | "statusUpdatedAt" | "backend" | "parentSessionId">,
+  session: Pick<SessionInfo, "status" | "statusUpdatedAt" | "backend" | "parentSessionId" | "parked">,
   latched: LatchedState | undefined,
   now: number,
 ): SessionStatus | null {
@@ -1661,10 +1673,15 @@ export function reconcileStatus(
 export const LATCH_GRACE_MS = 5_000;
 
 function reconcilePanelState(
-  session: Pick<SessionInfo, "status" | "statusUpdatedAt" | "backend" | "parentSessionId">,
+  session: Pick<SessionInfo, "status" | "statusUpdatedAt" | "backend" | "parentSessionId" | "parked">,
   latched: LatchedState | undefined,
   now: number,
 ): { status: SessionStatus; at?: number } | null {
+  // A parked job (parked-jobs.ts) is asking you something, and has no process to say anything newer: needs you,
+  // since it parked, whatever a latch from when it last ran says. A live session's prose question reads `idle` and
+  // shows as waiting ("needs vs waiting asks the same of you", below); a parked one is shown as needing you because
+  // nothing else will ever announce it, and the apps draw a needs row's question under its name.
+  if (session.parked) return { status: "needs", at: session.parked.since };
   const reg = registryToPanel(session.status);
   const regAt = session.statusUpdatedAt ?? 0;
   // Past the grace, Claude Code's registry corrects any disagreeing latch, a

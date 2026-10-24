@@ -1089,7 +1089,7 @@ private struct DashboardRow: View {
             return review.summary
         }
         if row.status == .needs {
-            return row.detail ?? ""
+            return row.parked ? SidebarRowText.parked(row.detail) : row.detail ?? ""
         }
         // Why a row has no terminal: a closed or app-server Codex thread, or
         // a background job no window is attached to.
@@ -1125,7 +1125,7 @@ private struct DashboardRow: View {
         guard !isRenaming else { return nil }
         return SidebarRowText.secondLine(
             message: rowMessage,
-            blockedOn: row.status == .needs ? row.detail : nil,
+            blockedOn: row.status == .needs ? (row.parked ? SidebarRowText.parked(row.detail) : row.detail) : nil,
             activity: activity,
             startedBy: startedByLabel
         )

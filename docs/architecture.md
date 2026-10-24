@@ -209,6 +209,30 @@ is never engageable: no pid, no pane, never the active session. A finished
 subagent has no row, but the block that started it still names it, so the Mac
 opens its transcript from there.
 
+**Claude Code's background jobs are a fourth, and a parked one has no process
+at all.** A `claude --bg` agent runs under Claude Code's own daemon
+(`claude daemon run` → `--bg-pty-host` → the job) with a `kind: "bg"` registry
+entry carrying its `jobId`; its row's pid is the window attached to it
+(`claude attach <jobId>`, found from `ps`, `attachedWindow`), else 0 with
+`attachable`, and the apps' "Open in Terminal" attaches one. When a job stops
+to ask you something, Claude Code marks it `blocked` in
+`<config>/jobs/<shortId>/state.json` (with `needs`, what it asks) and stops its
+process, so it leaves the registry. Until 2026-10-24 it left conch with it: two
+agents waited three days on Tyler with nothing showing them. Now
+`parked-jobs.ts` reads each account's jobs folder on the refresh (relisted when
+the folder's mtime moves, a record reparsed when its own does), and a job that
+is `blocked`, has no live row, registry entry or roster entry, and changed in
+the last two weeks becomes a row under its conversation's id, the id its live
+row has once attached, so the two are one row: `parked: true`, status `needs`,
+its question as `detail`, pid 0, `attachable`, no `noTerminal`. Its id counts as
+live, so a dismissal holds. Open attaches it in Terminal; a send to it (typed,
+phone, or spoken after a wake) first runs `claude attach <jobId>` in a hidden
+`conch-attach-<jobId>` window on conch's own tmux server, waits up to a minute
+for the row to come back live and its input box to show, and then goes in as
+any send does. The daemon logs `brought back parked "<label>" for a reply …`
+or `could not bring back parked "<label>" …`; one that couldn't be brought back
+types nothing and goes back to the draft with the reason.
+
 **Where the two agents differ, the difference is a table row (E8).**
 `src/agent-adapter.ts` holds one `AgentAdapter` per agent: the executable and
 how it spells resume, the flag that skips its permission prompts, whether trust

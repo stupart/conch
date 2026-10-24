@@ -146,6 +146,14 @@ export interface SessionInfo {
    * Only the process tree needs it (C15).
    */
   agentPid?: number;
+  /**
+   * A background job Claude Code stopped while it waits on you (parked-jobs.ts):
+   * no process and no registry entry, only its job record, which says since
+   * when (epoch ms) and what it is asking (`needs`). Its row is the one its
+   * live row will be once it is attached. Not `parkedJobId`, which is a live
+   * window parked on a job.
+   */
+  parked?: { since: number; needs?: string };
 }
 
 /**
@@ -518,7 +526,7 @@ function startedAt(entry: any): number {
  * A generated title never displaces a registry name: the name a person typed
  * outranks the one a model wrote, whichever is more recent.
  */
-function currentName(info: SessionInfo, claudeDir: string): SessionInfo {
+export function currentName(info: SessionInfo, claudeDir: string): SessionInfo {
   const path = info.transcriptPath
     ?? liveTranscriptPath(claudeDir, info.cwd, info.sessionId);
   if (!path) return info;
@@ -1098,7 +1106,8 @@ export async function subagentSessions(
   parent: SessionInfo,
   transcriptPath: string | undefined,
 ): Promise<SessionInfo[]> {
-  if (!transcriptPath || parent.parentSessionId) return [];
+  // A parked job's process is stopped, so nothing it launched is still running, whatever its transcript last said.
+  if (!transcriptPath || parent.parentSessionId || parent.parked) return [];
   return adapterFor(parent.backend).subagentSessions(parent, transcriptPath);
 }
 

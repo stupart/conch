@@ -42,6 +42,8 @@ export interface CompactSession {
   agents?: number;
   /** Its conch MCP server can't get conch's current tools; restarting the session gives them. */
   toolsStale?: PublishedToolsStale;
+  /** A background agent Claude Code stopped while it waits on its user: no process until a reply or Open brings it back. */
+  parked?: true;
 }
 
 export interface SessionsView {
@@ -92,6 +94,7 @@ export function compactSession(row: Record<string, unknown>, view: SessionsView,
     ...(view.callerId !== undefined && parseWindowKey(id).sessionId === parseWindowKey(view.callerId).sessionId ? { you: true as const } : {}),
     ...(agents ? { agents } : {}),
     ...(stale ? { toolsStale: stale } : {}),
+    ...(row.parked === true ? { parked: true as const } : {}),
   };
 }
 

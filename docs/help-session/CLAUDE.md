@@ -96,6 +96,13 @@ that one rule is what keeps the loop from hearing itself.
   and the daemon types `/reload-plugins` into it once it is idle with an empty
   prompt (a Terminal window only once the Mac has been left alone), logging
   `reloaded conch's tools in …`. `/mcp reconnect` does not fix it; a restart does.
+- **A background agent vanished from the list** — Claude Code stops a
+  background agent's process when it asks you something (`state: "blocked"`
+  in `~/.claude/jobs/<shortId>/state.json`, or the account's own `jobs/`).
+  conch shows it as a *parked* row for two weeks ("Parked · <its question>",
+  `parked: true` in `/tmp/conch-sessions.json`); Open attaches it in Terminal,
+  and a reply attaches it in a hidden `conch-attach-<shortId>` tmux window
+  first (`brought back parked …` in the log). `claude agents --all` lists them.
 - **Two `conch` on PATH** — a brew install and a linked checkout; the app and
   the daemon end up on different versions. `conch doctor` names both; keep one.
 - **`conch` says "nothing to attach to"** — the app is hosting the daemon, so

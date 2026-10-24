@@ -718,6 +718,33 @@ describe("theater renderer lifecycle", () => {
     expect(frame).not.toContain("…");
   });
 
+  // A background agent Claude Code parked when it asked (parked-jobs.ts, 2026-10-24) says so before its question.
+  test("a parked agent's row says it is parked before its question", () => {
+    const { io, writes } = recordingIO({ columns: 120, rows: 7 });
+    const renderer = createTheaterRenderer(io);
+    renderer.enter();
+    renderer.panel(sampleModel({
+      panelOpen: false,
+      live: { state: "idle", label: "", partial: "" },
+      rows: [{
+        sessionId: "parked",
+        label: "Type scale",
+        status: "needs",
+        detail: "go on the critic?",
+        parked: true,
+        attachable: true,
+        paused: false,
+        muted: false,
+        liveGlyph: null,
+        active: false,
+        navSelected: false,
+      }],
+    }));
+    const plain = writes.at(-1)!.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+    expect(plain).toContain("needs a response");
+    expect(plain).toContain("(parked · go on the critic?)");
+  });
+
   test("default ledger omits shortcut indices while keeping review text and right-aligned ages", () => {
     const now = Date.now();
     const { io, writes } = recordingIO({ columns: 120, rows: 8 });

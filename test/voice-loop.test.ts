@@ -179,6 +179,8 @@ interface Options {
   /** A real terminal in place of the recording one, and real waits: the end-to-end tests over tmux. */
   terminal?: VoiceLoopDeps["terminal"];
   realTime?: boolean;
+  /** Brings a parked background agent back before a send (parked-jobs.ts); absent means none is. */
+  bringBackParked?: VoiceLoopDeps["bringBackParked"];
 }
 
 function harness(options: Options = {}) {
@@ -309,6 +311,7 @@ function harness(options: Options = {}) {
     ...(options.processConversation ? { processConversation: options.processConversation } : {}),
     ...(options.promptSubmittedBy ? { promptSubmittedBy: options.promptSubmittedBy } : {}),
     ...(options.liveSessionIds ? { liveSessionIds: options.liveSessionIds } : {}),
+    ...(options.bringBackParked ? { bringBackParked: options.bringBackParked } : {}),
     terminal: options.terminal ?? {
       injectText: async (_cfg, pid, text, beforeInject) => {
         texts.push(text);
@@ -3940,6 +3943,71 @@ describe("a question known only from Claude Code's PermissionRequest hook", () =
     await h.voice.handle(accepted(h, needs(path)));
     await h.voice.handle(accepted(h, turnEnd({ type: "working", transcriptPath: path, eventAt: 2 })));
     expect(h.voice.heldQuestionFor("s1")).toBeNull();
+  });
+});
+
+/**
+ * A background agent Claude Code stopped while it waits on you (parked-jobs.ts, 2026-10-24): its row carries pid 0
+ * until something attaches it, and nothing was typed anywhere. A reply now brings it back first — the daemon attaches
+ * it out of sight and waits for its row to be live — and then goes in as any send does, at the window it came back
+ * in. One that can't be brought back types nothing and goes back to the draft with the reason.
+ */
+describe("a reply to a parked background agent", () => {
+  const parkedRow = {
+    sessionId: "s1", pid: 0, jobId: "5e5e5e03", kind: "bg", status: "idle",
+    parked: { since: 1, needs: "confirm: start onboarding walkthrough or next step?" },
+  } as SessionInfo;
+  const liveRow = { sessionId: "s1", pid: 42934, jobId: "5e5e5e03", kind: "bg", status: "idle" } as SessionInfo;
+  /** The daemon's `ParkedJobAttacher.forDelivery`, over a row that comes back as `liveRow`. */
+  function attacher() {
+    let row = parkedRow;
+    const asked: TurnEvent[] = [];
+    return {
+      row: () => row,
+      asked,
+      bringBack: async (event: TurnEvent): Promise<TurnEvent> => {
+        asked.push(event);
+        if (!row.parked) return event;
+        row = liveRow;
+        return { ...event, pid: liveRow.pid };
+      },
+    };
+  }
+
+  test("a typed or phone send brings it back, then is typed at the window it came back in", async () => {
+    const parked = attacher();
+    const h = harness({ window: parked.row, bringBackParked: parked.bringBack });
+    expect(await h.voice.handle(inject("yea start on the onboarding walkthrough", { pid: 0 }))).toBe(true);
+    expect(parked.asked[0]).toMatchObject({ type: "inject", sessionId: "s1", pid: 0 });
+    expect(h.texts).toEqual(["yea start on the onboarding walkthrough"]);
+    expect(h.textPids).toEqual([42934]);
+    expect(h.clipboard).toEqual([]);
+  });
+
+  test("one that can't be brought back types nothing, and the words go back to the draft with why", async () => {
+    const reason = "couldn't bring the parked session back: it didn't come back within 60 seconds. Open it in Terminal and send again";
+    const h = harness({ window: () => parkedRow, bringBackParked: async () => { throw new Error(reason); } });
+    expect(await h.voice.handle(inject("go on the critic", { pid: 0 }))).toEqual({ delivered: false, reason });
+    expect(h.texts).toEqual([]);
+    expect(h.keys).toEqual([]);
+    expect(h.clipboard).toEqual([]);
+    expect(getLiveState().dictated).toEqual({ text: "go on the critic", id: expect.any(Number), sessionId: "s1" });
+    expect(h.said).toEqual(["Couldn't bring alpha back. Your words are in the draft."]);
+    const [operation, message, sessionId] = h.errors[0] as [string, string, string];
+    expect([operation, sessionId]).toEqual(["inject", "s1"]);
+    expect(message).toContain(reason);
+  });
+
+  test("a reply spoken after a wake is brought back before it is typed", async () => {
+    const parked = attacher();
+    const h = harness({ heard: [["ship 485"]], window: parked.row, bringBackParked: parked.bringBack });
+    const run = h.voice.handle(wake({ pid: 0 }));
+    await waitFor("the mic", () => h.sessions.length > 0);
+    h.voice.stop("spacebar");
+    await run;
+    expect(parked.asked[0]).toMatchObject({ type: "wake", sessionId: "s1" });
+    expect(h.texts).toEqual(["ship 485"]);
+    expect(h.textPids).toEqual([42934]);
   });
 });
 
