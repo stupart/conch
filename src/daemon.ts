@@ -52,6 +52,7 @@ export {
 } from "./control-server.ts";
 import {
   createVoiceLoop,
+  idleSeconds,
   lastReplyFor,
   shouldHandleTurnAudibly,
   type AudioSink,
@@ -121,7 +122,7 @@ import {
   stopSoxProcess,
 } from "./listen.ts";
 import { createNarration, NARRATION_QUIET_WITHIN_MS } from "./narration.ts";
-import { INJECT_DEBUG_LOG, readSessionScreen, readTerminalTab, revealSessionWindow, withUIHold } from "./inject.ts";
+import { findTmuxPane, INJECT_DEBUG_LOG, readSessionScreen, readTerminalTab, revealSessionWindow, withUIHold } from "./inject.ts";
 import { createTerminalMirror } from "./terminal-mirror.ts";
 import { openSessionApp } from "./session-app-open.ts";
 import { adapterFor, transcriptFormatFor } from "./agent-adapter.ts";
@@ -161,6 +162,10 @@ import { awaitForkStart, FORK_ADOPT_WITHIN_MS, forkRequest, inheritedState, pend
 import { lastTabLines, tabAgentState, terminalTabCommands } from "./agent-alive.ts";
 import { MCP_TOOL_NAMES } from "./mcp-toolset.ts";
 import { listMcpServerProcesses, readMcpServerReports, toolsStaleFor, withToolsStale, type ToolsStale } from "./mcp-servers.ts";
+import {
+  conchMcpFailureFor, failedServerStale, hasConchMcpServer, mcpFailureWords, RELOAD_PLUGINS, RELOAD_VERIFY_MS, repairBlocker,
+  routeBlocker, submitSlashCommand, waitForServer, type McpConnectionFailure, type McpRepairAttempt,
+} from "./mcp-repair.ts";
 import { readSwapDashboard } from "./claude-swap.ts";
 import {
   addSignedInAccountToRotation, cancelAddingAccount, defaultLoginEmail, finishAddingAccount, installClaudeSwap, listedEmails,
@@ -378,7 +383,7 @@ import { createSetup, loginShellHas, MIC_CHECK_QUIET_WITHIN_MS, runInstallerInLo
 import { createPractice, practiceGate, PRACTICE_LABEL, PRACTICE_SESSION_ID, type Practice } from "./practice.ts";
 import { resolveAgentBinaries } from "./doctor-checks.ts";
 import { codexHooksAreWiredAt, isConchHookCommand, runCodexInstall, runInstall } from "./install.ts";
-import { pluginInstalledFor, repairPluginPrograms, runInstallPlugin } from "./plugin-install.ts";
+import { conchPluginServerRunnable, pluginInstalledFor, repairPluginPrograms, runInstallPlugin } from "./plugin-install.ts";
 
 /**
  * The turn-based voice loop.
@@ -2241,25 +2246,123 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   /**
    * Which live sessions' conch MCP servers can't get this build's tools (mcp-servers.ts), from the servers' own reports
    * and the `conch mcp` processes: once a minute, a `ps` and a small folder read. Only the sessions file carries it.
+   *
+   * The same look finds a session with no conch server at all whose server failed to start (mcp-repair.ts): its row
+   * gets a `failed` verdict, and conch types `/reload-plugins` into it when that is safe (`repairFailedMcpServers`).
    */
   let toolsStale = new Map<string, ToolsStale>();
   const toolsWatchedSince = Date.now();
+  /** The sessions whose conch server failed to start, by session id, as the last look found them. */
+  let mcpFailures = new Map<string, McpConnectionFailure>();
+  /**
+   * What conch did about each failure, by its log file (one per session process): a reload is typed once per failure,
+   * never once a minute. Memory only: a daemon restart may type it once more, no more often than that.
+   */
+  const mcpRepairAttempts = new Map<string, McpRepairAttempt>();
+  let mcpRepairing = false;
   async function refreshToolsStale(): Promise<void> {
     const reports = readMcpServerReports();
     const processes = await listMcpServerProcesses();
     const now = Date.now();
     const next = new Map<string, ToolsStale>();
+    const failures = new Map<string, McpConnectionFailure>();
     for (const session of panelSessions.values()) {
       const stale = toolsStaleFor({
         sessionPid: session.pid, reports, processes, currentTools: MCP_TOOL_NAMES, currentToolset: MCP_TOOLSET, now, since: toolsWatchedSince,
       });
-      if (stale) next.set(session.sessionId, stale);
+      if (stale) {
+        next.set(session.sessionId, stale);
+        continue;
+      }
+      const failure = conchMcpFailureFor(session, reports, processes);
+      if (!failure) continue;
+      failures.set(session.sessionId, failure);
+      next.set(session.sessionId, failedServerStale(failure, MCP_TOOL_NAMES, mcpRepairAttempts.get(failure.file)));
     }
+    for (const [id, failure] of failures) {
+      if (mcpFailures.get(id)?.file !== failure.file) log(`conch's MCP server failed to start in "${labelForSessionId(id)}" (${mcpFailureWords(failure.error)})`);
+    }
+    mcpFailures = failures;
+    if (failures.size) void repairFailedMcpServers();
     if (JSON.stringify([...next]) === JSON.stringify([...toolsStale])) return;
-    const newly = [...next.keys()].filter((id) => !toolsStale.has(id));
+    const newly = [...next.keys()].filter((id) => !toolsStale.has(id) && !failures.has(id));
     toolsStale = next;
     if (newly.length) log(`conch tools out of date in ${newly.length} session${newly.length === 1 ? "" : "s"}: ${newly.map((id) => labelForSessionId(id)).join(", ")}`);
     publishedStateWriter.request();
+  }
+
+  /** Each failed server the last look found, one at a time; a look that comes while they run leaves them to it. */
+  async function repairFailedMcpServers(): Promise<void> {
+    if (mcpRepairing) return;
+    mcpRepairing = true;
+    try {
+      for (const [sessionId, failure] of mcpFailures) {
+        await repairFailedMcpServer(sessionId, failure).catch((error) => log(`could not reload conch's tools in "${labelForSessionId(sessionId)}": ${error}`));
+      }
+    } finally {
+      mcpRepairing = false;
+    }
+  }
+
+  /**
+   * Type `/reload-plugins` into a session whose conch MCP server failed to start, and check a server came of it
+   * (mcp-repair.ts). Only once per failure; only once the plugin's program is there, or the reload would fail the same
+   * way; only into a session at rest whose prompt is empty, never mid-turn or over words someone typed; and into a
+   * Terminal window, which has to come to the front for it, only while nobody is using the Mac. Anything that stops it
+   * short of typing leaves it for the next look, and the row goes on saying what's missing and how to fix it.
+   */
+  async function repairFailedMcpServer(sessionId: string, failure: McpConnectionFailure): Promise<void> {
+    const session = panelSessions.get(sessionId);
+    if (!session) return;
+    const blocked = repairBlocker({
+      attempted: mcpRepairAttempts.has(failure.file),
+      dismissed: dismissedSessionIds.has(sessionId),
+      runnable: conchPluginServerRunnable(session.claudeConfigDir ?? cfg.claudeDir),
+      status: lastPanelModel?.rows.find((row) => row.sessionId === sessionId)?.status,
+    });
+    if (blocked) return;
+    const pid = session.pid;
+    const route = !pid ? null : (await findTmuxPane(pid)) ? "tmux" : "terminal";
+    if (routeBlocker({ route, keystrokeFallback: cfg.keystrokeFallback, idleSeconds: route === "terminal" ? await idleSeconds() : null })) return;
+    // Out of the voice loop's way: a reply being heard goes in first.
+    if (!pid || voice.capturing()) return;
+    // A minute is long enough for someone to have typed the reload themselves.
+    const pids = [session.pid, session.agentPid].filter((one): one is number => typeof one === "number" && one > 0);
+    const serving = async () => hasConchMcpServer(pids, readMcpServerReports(), await listMcpServerProcesses());
+    if (await serving() !== false) return;
+    const label = labelForSessionId(sessionId);
+    const words = mcpFailureWords(failure.error);
+    const delivered = (result: { via: string }) => result.via === "tmux" || result.via === "osascript-focused";
+    const typed = await withUIHold((ui) => submitSlashCommand(RELOAD_PLUGINS, {
+      read: () => readSessionScreen(pid),
+      press: async (keys) => delivered(await ui.keys(cfg, pid, keys)),
+      // Typed and NOT submitted: the prompt must hold exactly this before Enter.
+      type: async (text) => delivered(await ui.text({ ...cfg, autoSubmit: false }, pid, text, { clipboardFallback: false })),
+      sleep: (ms) => Bun.sleep(ms),
+    })).catch((error) => ({ ok: false as const, reason: error instanceof Error ? error.message : String(error), typed: true }));
+    if (!typed.ok && !typed.typed) return;
+    const settle = (attempt: McpRepairAttempt): void => {
+      mcpRepairAttempts.set(failure.file, attempt);
+      if (attempt.ok) {
+        toolsStale.delete(sessionId);
+        mcpFailures.delete(sessionId);
+      } else {
+        toolsStale.set(sessionId, failedServerStale(failure, MCP_TOOL_NAMES, attempt));
+        recordDaemonError("mcp-repair", `Could not start conch's MCP server again in "${label}": ${attempt.reason}`, sessionId, { log: failure.file, error: failure.error });
+      }
+      publishedStateWriter.request();
+    };
+    if (!typed.ok) {
+      log(`could not reload conch's tools in "${label}": ${typed.reason}`);
+      return settle({ at: Date.now(), ok: false, reason: typed.reason });
+    }
+    if (await waitForServer(async () => await serving() === true)) {
+      log(`reloaded conch's tools in "${label}": its MCP server had failed to start (${words})`);
+      return settle({ at: Date.now(), ok: true });
+    }
+    const reason = `no conch MCP server appeared within ${Math.round(RELOAD_VERIFY_MS / 1000)}s of ${RELOAD_PLUGINS}`;
+    log(`typed ${RELOAD_PLUGINS} in "${label}", but ${reason}; it stays without conch's tools`);
+    settle({ at: Date.now(), ok: false, reason });
   }
   const toolsStaleTimer = setInterval(() => void refreshToolsStale().catch(() => {}), 60_000);
   toolsStaleTimer.unref?.();

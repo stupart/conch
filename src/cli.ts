@@ -619,11 +619,15 @@ switch (command) {
     const { listSessions, sessionLabel } = await import("./sessions.ts");
     const { staleToolsByRow } = await import("./mcp-sessions.ts");
     const { MCP_SESSIONS_FILE } = await import("./mcp.ts");
-    // The daemon marks a session whose conch MCP server can't get its current tools (mcp-servers.ts).
+    // The daemon marks a session whose conch MCP server can't get its current tools (mcp-servers.ts), or never started
+    // (mcp-repair.ts: then it has none, and every name would say nothing).
     const stale = staleToolsByRow(await Bun.file(MCP_SESSIONS_FILE).text().catch(() => null));
     for (const s of await listSessions(cfg.claudeDir)) {
       const tools = stale.get(s.sessionId);
-      console.log(`${sessionLabel(s, s.cwd).padEnd(30)} ${s.cwd ?? ""}  pid=${s.pid}${tools ? `  tools out of date (missing ${tools.missing.join(", ")}): restart it` : ""}`);
+      const note = !tools ? ""
+        : tools.basis === "failed" ? `  conch's tools didn't load: ${typeof tools.why === "string" ? tools.why : "its conch MCP server failed to start"}; type /reload-plugins in it, or restart it`
+        : `  tools out of date (missing ${tools.missing.join(", ")}): restart it`;
+      console.log(`${sessionLabel(s, s.cwd).padEnd(30)} ${s.cwd ?? ""}  pid=${s.pid}${note}`);
     }
     break;
   }

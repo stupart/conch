@@ -90,6 +90,12 @@ that one rule is what keeps the loop from hearing itself.
 - **The app runs days-old daemon code after a rebuild** — an adopted daemon
   survives an app rebuild. Quit the app fully so it stops the daemon it hosts;
   never kill it by pattern.
+- **A session has none of conch's tools** — its conch MCP server failed to
+  start (a Homebrew upgrade deleting the bun the plugin named did it on
+  2026-10-23). Its row's `toolsStale` says `basis: "failed"` with the error,
+  and the daemon types `/reload-plugins` into it once it is idle with an empty
+  prompt (a Terminal window only once the Mac has been left alone), logging
+  `reloaded conch's tools in …`. `/mcp reconnect` does not fix it; a restart does.
 - **Two `conch` on PATH** — a brew install and a linked checkout; the app and
   the daemon end up on different versions. `conch doctor` names both; keep one.
 - **`conch` says "nothing to attach to"** — the app is hosting the daemon, so

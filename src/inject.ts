@@ -729,7 +729,7 @@ async function writeClipboard(text: string): Promise<void> {
  * The tmux pane whose shell is an ancestor of the session's pid, named with its server (`qualifyPane`): conch's
  * own server first, where its background sessions run, then the user's default one.
  */
-async function findTmuxPane(sessionPid: number): Promise<string | null> {
+export async function findTmuxPane(sessionPid: number): Promise<string | null> {
   let ancestors: Set<number> | undefined;
   for (const server of tmuxServers()) {
     let panes: Array<{ pid: number; id: string }>;

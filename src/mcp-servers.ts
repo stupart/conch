@@ -38,10 +38,15 @@ export interface McpServerReport {
 /** What the daemon puts on a session's row: the tools it is missing, and why it won't get them without a restart. */
 export interface ToolsStale {
   missing: string[];
-  /** reported: its server said which tools it has. estimated: a server too old to say, judged by when it started. */
-  basis: "reported" | "estimated";
-  /** When its conch MCP server started, ISO 8601. */
-  serverStartedAt: string;
+  /**
+   * reported: its server said which tools it has. estimated: a server too old to say, judged by when it started.
+   * failed: its server never started, so it has none of them (mcp-repair.ts).
+   */
+  basis: "reported" | "estimated" | "failed";
+  /** When its conch MCP server started, ISO 8601; absent when it never did. */
+  serverStartedAt?: string;
+  /** When its conch MCP server last failed to start, ISO 8601 (basis `failed`). */
+  failedAt?: string;
   why: string;
   fix: string;
 }

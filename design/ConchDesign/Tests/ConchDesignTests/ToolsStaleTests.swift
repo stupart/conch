@@ -100,6 +100,25 @@ final class ToolsStaleTests: XCTestCase {
                        "no reason, no empty line")
     }
 
+    /// A server that never started (src/mcp-repair.ts) has none of the tools, so the line says it didn't load rather than
+    /// listing all of them as out of date, and the tooltip offers `/reload-plugins` beside Restart.
+    func testAServerThatNeverStartedSaysSo() throws {
+        let stale = try decode("""
+        {"missing": ["conch_sessions", "conch_wake", "browser_open", "conch_fork", "atlas_show"], "basis": "failed",
+         "failedAt": "2026-10-23T20:25:19.635Z",
+         "why": "its conch MCP server failed to start (ENOENT: no such file or directory, posix_spawn 'stdio')",
+         "fix": "type /reload-plugins in this session, or restart it (close it and resume it), to start conch's MCP server again"}
+        """)
+        XCTAssertTrue(stale.serverFailed)
+        XCTAssertNil(stale.serverStartedAt)
+        XCTAssertEqual(ToolsStaleWords.line(stale), "conch's tools didn't load · its MCP server failed to start")
+        let help = ToolsStaleWords.help(stale, canRestart: true)
+        XCTAssertTrue(help.contains("\nIts conch MCP server failed to start (ENOENT: no such file or directory, posix_spawn 'stdio').\n"), help)
+        XCTAssertTrue(help.hasSuffix("Or type /reload-plugins in it, which starts the server again without a restart."), help)
+        XCTAssertFalse(ToolsStale(missing: ["atlas_show"], basis: "estimated").serverFailed)
+        XCTAssertEqual(ToolsStaleWords.line(ToolsStale(missing: ["atlas_show"], basis: "reported")), "conch's tools are out of date · missing Atlas pages")
+    }
+
     // MARK: - Restart
 
     /// Idle is a finished turn with nothing still running and nothing waiting on an answer: one click restarts it.

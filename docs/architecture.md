@@ -136,6 +136,42 @@ the session is idle, after the menu's confirmation when it's at work. "What
 this session carries" has the same row, and Settings › General restarts every
 idle one at once after naming them. The sidebar doesn't mark them.
 
+**A conch MCP server that never started (`basis: "failed"`,
+`mcp-repair.ts`).** A session with no conch server at all used to get no mark:
+on 2026-10-23 Homebrew deleted the bun conch's plugin named, and two sessions
+started then had none of conch's tools while their rows said nothing. The same
+once-a-minute look now reads that session's own Claude Code log for conch's
+server (`~/Library/Caches/claude-cli-nodejs/<project slug>/mcp-logs-plugin-conch-conch/<ISO time>.jsonl`:
+one file per session process, appended to by every reconnect and reload, so
+only its tail and only the newest connection count) and, when it ends in
+`Connection failed …`, marks the row:
+
+```json
+"toolsStale": {
+  "missing": ["conch_sessions", "…every current tool…"],
+  "basis": "failed",
+  "failedAt": "2026-10-23T20:25:19.635Z",
+  "why": "its conch MCP server failed to start (ENOENT: no such file or directory, posix_spawn 'stdio')",
+  "fix": "type /reload-plugins in this session, or restart it (close it and resume it), to start conch's MCP server again"
+}
+```
+
+Then it repairs it: `/mcp reconnect` reuses the config loaded at start and
+fails the same way, but `/reload-plugins` reads the plugin again and starts a
+fresh server. conch types it, the way it opens `/model` (typed, checked to be
+exactly that in the prompt, then Enter; anything else is backspaced away),
+only when the account's plugin copy names a program that is there now
+(`conchPluginServerRunnable`), the row is `waiting`, the screen shows an empty
+prompt and no turn, conch's mic isn't listening, and the session isn't
+dismissed. A tmux session takes it where it is; a Terminal window has to come
+to the front for it, so only after the Mac has been left alone for two
+minutes. One attempt per log file (per session process); a server must appear
+within 20 s (a report or a `conch mcp` child), and the daemon log says
+`reloaded conch's tools in "<label>": its MCP server had failed to start (…)`.
+An attempt that didn't bring it back is recorded in `errors.jsonl` and added to
+`why`, and is not tried again. The Mac app says "conch's tools didn't load ·
+its MCP server failed to start" in the same places, with Restart.
+
 ## 4. The two agents, read completely differently
 
 - **Claude Code** pushes: hooks fire `conch hook` as a short-lived process on
