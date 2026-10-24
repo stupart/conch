@@ -94,7 +94,8 @@ describe("the details move", () => {
   test("only conch's word, the question it is blocked on, what a working agent is doing, or its starter earn a second line", () => {
     const secondLine = section(row, "private var secondLine: SidebarRowText.SecondLine? {", "\n    }\n");
     expect(secondLine).toContain("message: rowMessage,");
-    expect(secondLine).toContain("blockedOn: row.status == .needs ? row.detail : nil,");
+    // A parked background agent's question says "Parked" first (parked-jobs.ts, `SidebarRowText.parked`).
+    expect(secondLine).toContain("blockedOn: row.status == .needs ? (row.parked ? SidebarRowText.parked(row.detail) : row.detail) : nil,");
     expect(secondLine).toContain("activity: activity,");
     expect(secondLine).toContain("startedBy: startedByLabel");
     expect(code(secondLine)).not.toContain("review");

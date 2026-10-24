@@ -477,6 +477,13 @@ export interface VoiceLoopDeps {
    * (`processConversation`). Optional: without it, a send watches only the session it addressed.
    */
   processConversation?(pid: number): Promise<{ sessionId: string; parkedJobId?: string } | undefined>;
+  /**
+   * A background agent Claude Code stopped while it waits on you (parked-jobs.ts) has nothing to type into until it is
+   * attached. Called before words go to a session: the event re-routed to the window brought up for it when its row is
+   * parked, the event as it was when not; throws, with a sentence the apps show, when it couldn't be brought back.
+   * Optional so a test that doesn't give it never attaches anything.
+   */
+  bringBackParked?(event: TurnEvent): Promise<TurnEvent>;
   render(): void;
   // Property signatures, not methods, for these two: the exact-site guards count their calls by name and open paren.
   presentElsewhere: (holder: string, text: string, voice: string, label: string, localSessionKey: string) => void;
@@ -1701,6 +1708,12 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       // to the previous turn is worth hearing over your own next question.
       speech.cancelCurrent();
 
+      // A parked agent is brought back before anything below types at it: its command line, its question card's
+      // keys and its message alike.
+      const reached = await reachParked(event, event.announce);
+      if ("failure" in reached) return reached.failure;
+      event = reached.event;
+
       // A slash line IS the agent's own command (B4), so it takes the door B2
       // built for `/model` rather than the message route below: no spoken-
       // choice matching, no voice Q&A, submitted even with auto-submit off,
@@ -2286,6 +2299,14 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
   ): Promise<boolean | "staged"> {
     // What was said or typed, before choice matching rewrites it: the draft a refusal hands back.
     const written = text;
+    // A reply spoken to a parked agent after a wake: brought back first, like a typed one (`handle`), which has
+    // already been, so this finds its row live and changes nothing.
+    const reached = await reachParked(event, written, beforeInject);
+    if ("failure" in reached) {
+      if (options.failure) options.failure.reason = reached.failure.reason;
+      return false;
+    }
+    event = reached.event;
     if (event.transcriptPath && !deps.window(event.sessionId)?.messageRoute) {
       try {
         const conversation = await readConversationTail(
@@ -2321,6 +2342,31 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         ),
       ...(beforeInject ? { canContinue: beforeInject } : {}),
     });
+  }
+
+  /**
+   * A parked agent (`deps.bringBackParked`), brought back before words go to it, or why it couldn't be: then nothing
+   * was typed anywhere, the words are back in the draft, and the reason is said as well as shown, as any refused send's.
+   */
+  async function reachParked(
+    event: TurnEvent,
+    words: string,
+    beforeInject?: () => boolean | Promise<boolean>,
+  ): Promise<{ event: TurnEvent } | { failure: inject.SendFailure }> {
+    if (!deps.bringBackParked) return { event };
+    try {
+      return { event: await deps.bringBackParked(event) };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      publishDictation(words, event.sessionId);
+      deps.reportError("inject", `Could not bring a parked session back for a reply: ${reason}`, event.sessionId, {
+        label: event.label, chars: words.length,
+      });
+      if (!beforeInject || await beforeInject()) {
+        await speak(cfg, `Couldn't bring ${event.label} back. Your words are in the draft.`, event.label, false, event.sessionId);
+      }
+      return { failure: { delivered: false, reason } };
+    }
   }
 
   /**

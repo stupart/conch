@@ -189,7 +189,9 @@ describe("the apps offer Open in Terminal only on an attachable row", () => {
 
     const composer = read("mac-app/conch-mac/ComposerView.swift");
     expect(composer).toContain("var onOpenInTerminal: (() -> Void)? = nil");
-    const button = between(composer, "if noTerminal != nil, let onOpenInTerminal {", "Spacer(minLength: 8)");
+    // Given only for an attachable row, so it no longer also asks for `noTerminal`: a parked agent (parked-jobs.ts) is
+    // attachable and has none, since a send brings it back too.
+    const button = between(composer, "if let onOpenInTerminal {", "Spacer(minLength: 8)");
     expect(button).toContain("Button(action: onOpenInTerminal) {");
     expect(button).toContain('Label("Open in Terminal", systemImage: "terminal")');
   });

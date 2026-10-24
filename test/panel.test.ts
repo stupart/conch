@@ -1386,6 +1386,53 @@ describe("the reply pane shows the reply, not the announcement", () => {
   });
 });
 
+/**
+ * A background agent Claude Code stopped while it waits on you (parked-jobs.ts, 2026-10-24): one row, under its
+ * conversation's id, that needs you since it parked and says what it asked; Open in Terminal attaches it, and a send
+ * reaches it, so it carries no `noTerminal`. Once attached it is the same row, live.
+ */
+describe("a parked background agent's row", () => {
+  const parked: SessionInfo = {
+    sessionId: "5e5e5e03-0003-4000-8000-000000000003", name: "Agent - Design system a", cwd: "/work/studio",
+    pid: 0, jobId: "5e5e5e03", kind: "bg", status: "idle", statusUpdatedAt: 1_000,
+    claudeAccountId: "default", accountLabel: "Default",
+    parked: { since: 1_000, needs: "confirm: start onboarding walkthrough or next step?" },
+  };
+  const options = (session: SessionInfo, latched?: { status: "waiting" | "working" | "needs"; at: number; detail?: string }) => ({
+    sessions: [session],
+    sessionStates: new Map(latched ? [[session.sessionId, { label: "x", ...latched }]] : []),
+    pausedSessionIds: new Set<string>(),
+    live: { state: "idle" as const, label: "", partial: "" },
+    mode: { muted: false, paused: false, holding: 0 },
+    activeSessionId: null,
+    navSelectedId: null,
+    now: 50_000,
+  });
+
+  test("needs you since it parked, with its question, attachable, and no reason it can't be sent to", () => {
+    // A latch from when it last ran, newer than nothing it can say now, never outranks its record.
+    const model = buildPanelModel(options(parked, { status: "working", at: 40_000, detail: "old" }));
+    expect(model.rows[0]).toMatchObject({
+      sessionId: parked.sessionId, status: "needs", at: 1_000, parked: true, attachable: true,
+      detail: "confirm: start onboarding walkthrough or next step?",
+    });
+    const row = buildPublishedState("test-device", model, new Map(), new Set(), 50_000).rows[0]!;
+    expect(row).toMatchObject({ id: parked.sessionId, status: "needs", needsResponse: true, parked: true, attachable: true });
+    expect(row.noTerminal).toBeUndefined();
+    expect(row.revealable).toBeUndefined();
+    expect(reconcileStatus(parked, undefined, 50_000)).toBe("needs");
+  });
+
+  test("attached, the same id is a live row again, with nothing of its parked state", () => {
+    const live: SessionInfo = { ...parked, pid: 42934, agentPid: 42979, statusUpdatedAt: 60_000 };
+    delete live.parked;
+    const row = buildPanelModel({ ...options(live), now: 61_000 }).rows[0]!;
+    expect(row).toMatchObject({ sessionId: parked.sessionId, status: "waiting", revealable: true });
+    expect(row.parked).toBeUndefined();
+    expect(row.attachable).toBeUndefined();
+  });
+});
+
 test("an agent's row sits between sessions unnumbered: the shortcuts count only sessions", () => {
   const session = (sessionId: string, pid: number) => ({ sessionId, label: sessionId, status: "idle", cwd: "/w", pid }) as SessionInfo;
   const rows = [{ sessionId: "one", label: "one" }, { sessionId: "agent-x", label: "agent" }, { sessionId: "two", label: "two" }];

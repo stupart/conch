@@ -292,6 +292,7 @@ import {
   type ConchState,
 } from "./status.ts";
 import { assertCodexAccountIdle, assertClaudeAccountIdle, accountRegistrySnapshot, accountResumableSessions, findAccountTranscript as findTranscript, sessionTranscript } from "./claude-account-sessions.ts";
+import { ParkedJobAttacher } from "./parked-jobs.ts";
 import { transcriptFolder } from "./review-roots.ts";
 import { defaultCodexDir, readCodexAccounts, addCodexAccount, removeCodexAccount, requireCodexAccount, cachedCodexAccount, invalidateCodexAccount, codexAccountForLaunch } from "./codex-accounts.ts";
 import { installProfileSignal } from "./daemon-profile.ts";
@@ -2127,9 +2128,17 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   failureDesk.start(5_000, Number(process.env.CONCH_FAILURE_CHECK_MS) || FIX_CHECK_INTERVAL_MS);
   // Cut four: the voice loop owns wake → speak → listen → deliver. Built after
   // every daemon helper it is handed; the closures above reach it lazily.
+  /** Background agents parked waiting on you, brought back for a reply (parked-jobs.ts). */
+  const parkedJobs = new ParkedJobAttacher({
+    row: (sessionId) => panelSessions.get(sessionId),
+    refresh: () => renderSessionPanel(),
+    label: labelForSessionId,
+    log,
+  });
   const voice = createVoiceLoop({
     cfg,
     log,
+    bringBackParked: (event) => parkedJobs.forDelivery(event),
     // A window key names its session's hook reports: the hook knows the session, not the window.
     promptSubmitted: (sessionId, since, words, pid) => promptSubmissions.submitted(parseWindowKey(sessionId).sessionId, since, words, pid),
     promptSubmittedBy: (since, words) => promptSubmissions.reportedBy(since, words),
@@ -3561,7 +3570,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       const session = panelSessions.get(target.sessionId);
       if (!session?.jobId) return Promise.resolve(false);
       return attachTerminalSession(session.jobId, session.cwd, {}, session.claudeAccountId).then(() => {
-        log(`opened "${target.label}" in Terminal (claude attach ${session.jobId})`);
+        // A parked one (parked-jobs.ts) comes back with it: Claude Code respawns a job something attaches to.
+        log(`opened ${session.parked ? "parked " : ""}"${target.label}" in Terminal (claude attach ${session.jobId})${session.parked ? ", bringing it back" : ""}`);
         return true;
       }, (error) => {
         recordDaemonError(

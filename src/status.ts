@@ -506,12 +506,17 @@ function fullStatus(row: PanelRowModel): string {
   }
 }
 
+/** A parked background agent (parked-jobs.ts) says so before its question: a reply is what brings it back. */
+function blockedOnText(row: PanelRowModel): string {
+  return row.parked ? `parked · ${row.detail || "waiting on you"}` : row.detail ?? "";
+}
+
 function inlineRowDetail(row: PanelRowModel): string {
   // The link rides beside the summary so the row says what `o` will open.
   if (row.review) {
     return row.review.link ? `${row.review.summary} · ${row.review.link}` : row.review.summary;
   }
-  if (row.status === "needs") return row.detail ?? "";
+  if (row.status === "needs") return blockedOnText(row);
   return "";
 }
 

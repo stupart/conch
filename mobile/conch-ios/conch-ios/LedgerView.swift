@@ -899,7 +899,8 @@ struct SessionRowView: View {
                 // last turn's news and comes back when this one ends; a usage limit always shows instead.
                 if let activity {
                     SidebarSecondLine(SidebarRowText.SecondLine(text: activity, kind: .activity), font: Type.summary)
-                } else if let summary = row.usageLimit ?? row.review?.summary ?? row.detail ?? row.noTerminal, !summary.isEmpty {
+                } else if let summary = row.usageLimit ?? row.review?.summary
+                            ?? (row.parked ? SidebarRowText.parked(row.detail) : row.detail) ?? row.noTerminal, !summary.isEmpty {
                     Text(summary)
                         .font(Type.summary)
                         .foregroundStyle(Palette.textDim)

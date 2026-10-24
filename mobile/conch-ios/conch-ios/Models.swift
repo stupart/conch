@@ -212,6 +212,9 @@ struct PublishedState: Decodable, Equatable {
         /// A Claude Code background job no window is attached to: it can be
         /// opened in Terminal on the Mac. Older daemons never send it.
         var attachable = false
+        /// A background agent Claude Code stopped when it asked you something (src/parked-jobs.ts): `detail` is the
+        /// question, a send brings it back first, and its summary says "Parked". Older daemons never send it.
+        var parked = false
         /// The folder this session runs in. The daemon has always sent it and the
         /// Mac has always read it; the phone simply never asked, so its list could
         /// not say which project a row belonged to.
@@ -341,6 +344,7 @@ struct PublishedState: Decodable, Equatable {
 
         private enum CodingKeys: String, CodingKey {
             case id, label, status, backend, context, detail, at, live, paused, pauseExempt, review, reviews, noTerminal, messageRoute, attachable
+            case parked
             case revealable, claudeAccountId, codexAccountId, accountLabel, prioritized, voice
             case usageLimit
             case cwd, workDirs, parentSessionId, startedBySessionId, waitingOnAgents, approval, settings
@@ -376,6 +380,7 @@ struct PublishedState: Decodable, Equatable {
             voice = try? c.decodeIfPresent(String.self, forKey: .voice)
             messageRoute = try? c.decodeIfPresent(String.self, forKey: .messageRoute)
             attachable = (try? c.decodeIfPresent(Bool.self, forKey: .attachable)) ?? false
+            parked = (try? c.decodeIfPresent(Bool.self, forKey: .parked)) ?? false
             cwd = try? c.decodeIfPresent(String.self, forKey: .cwd)
             workDirs = try? c.decodeIfPresent([String].self, forKey: .workDirs)
             parentSessionId = try? c.decodeIfPresent(String.self, forKey: .parentSessionId)
