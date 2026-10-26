@@ -1,5 +1,6 @@
 import { backgroundStartupPid, backgroundTrustReport, managedBackgroundSession } from "./background-sessions.ts";
 import { BackgroundGuard } from "./background-recovery.ts";
+import { RestartGuard, bootTime } from "./restart-recovery.ts";
 import { dismissedWriter, loadDismissed } from "./dismissed-store.ts";
 import { defaultIsPidAlive } from "./codex-sessions.ts";
 import { handleAccountTools } from "./account-tools.ts";
@@ -957,6 +958,23 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     },
     launch: (request) => launchSession(request),
     log,
+  });
+  /**
+   * Every other session conch could start again, and what was running when the Mac went down: brought back after
+   * a restart (`restart-recovery.ts`). `CONCH_BOOT_TIME` stands in for the boot in the end-to-end test.
+   */
+  const restartGuard = new RestartGuard({
+    file: join(dirname(daemonSettingsPath), "running-sessions.json"),
+    relaunchFor: async (observed) => {
+      const session = panelSessions.get(observed.sessionId);
+      const args = session?.pid ? await readProcessArgs(session.pid) : null;
+      return session && args ? restartRequest(session, args).request : null;
+    },
+    launch: (request) => launchSession(request),
+    log,
+    changed: () => void renderSessionPanel(),
+    ...(process.env.CONCH_BOOT_TIME && /^\d+$/.test(process.env.CONCH_BOOT_TIME)
+      ? { boot: () => Number(process.env.CONCH_BOOT_TIME) } : { boot: () => bootTime() }),
   });
   /**
    * What each session's own record says it runs (session-settings.ts), newest kept: a tail
@@ -2326,7 +2344,16 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       const running = new Set(registryLive
         .filter((s) => (!s.pid && !s.agentPid) || alive(s.pid) || alive(s.agentPid))
         .flatMap((s) => [s.sessionId, s.agentSessionId ?? s.sessionId]));
-      void backgroundGuard.observe(registryLive, running).catch((error) => log(`background recovery: ${error}`));
+      // By the name the list shows, so "brought back" names what the person knows it as, never a conversation id.
+      const named = registryLive.map((s) => ({ ...s, label: labelForSessionId(s.sessionId) }));
+      // The background guard first: it reads conch's tmux servers, and what runs on them is its to bring back.
+      void backgroundGuard.observe(named, running).then(() => {
+        const background = backgroundGuard.backgroundPids();
+        if (!background) return; // a server that couldn't be read decides nothing
+        const restartable = named.filter((s) => !s.parentSessionId && !s.jobId && s.messageRoute !== "codex-app"
+          && s.pid !== undefined && alive(s.pid) && !background.has(s.pid));
+        return restartGuard.observe(restartable, running);
+      }).catch((error) => log(`session recovery: ${error}`));
     }
   }
 
@@ -2635,6 +2662,9 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       lastPublishedPanelState.phone = phoneSetup.published(cfg.phoneEnabled);
       // The sea glass approving has earned, ever (`SessionLedger.seaGlass`, 2026-10-05): the lagoon's jar.
       lastPublishedPanelState.seaGlass = ledger.seaGlass;
+      // What came back after a restart, and what is held for the person (`restart-recovery.ts`).
+      const restore = restartGuard.summary();
+      if (restore.restored.length || restore.offered.length) lastPublishedPanelState.restore = restore;
       // Setup's practice session, first among the rows while it runs, and `features.practice` always (practice.ts).
       if (practice) lastPublishedPanelState = practice.publish(lastPublishedPanelState);
       // Each working row's line, through its throttle: a fresh build carries none until this puts them back.
@@ -3670,6 +3700,20 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       log(message.summary);
       return { kind: "phone-device-ack" };
     }
+    if (message.kind === "system-power-off") {
+      // The app heard the Mac is logging out, restarting or shutting down: what ends now comes back.
+      restartGuard.poweringOff();
+      return { kind: "ack" };
+    }
+    if (message.kind === "restore-sessions") {
+      void restartGuard.settleOffer(message.accept).then((count) =>
+        log(message.accept ? `bringing back ${count} session(s) from before the restart` : "left the sessions from before the restart"));
+      return { kind: "ack" };
+    }
+    if (message.kind === "restore-dismissed") {
+      restartGuard.dismissRestored();
+      return { kind: "ack" };
+    }
     if (message.kind === "system-woke") {
       log("the Mac woke — re-dialling the relay");
       try {
@@ -3878,6 +3922,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     rendererLifecycle.restore();
     theaterNavigation.dispose();
     shuttingDown = true;
+    // A clean stop: what closes after this, conch doesn't see, so a restart after it offers rather than starts.
+    restartGuard.stopped();
     rotation.stop();
     clearInterval(browserPrune);
     clearInterval(browserAsks);

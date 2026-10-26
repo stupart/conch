@@ -153,6 +153,15 @@ private final class ConchAppDelegate: NSObject,
         ReviewNotifications.shared.readAuthorizationAtLaunch()
         // Adopts an already-listening daemon rather than starting a rival one.
         daemon.start()
+        // The Mac is logging out, restarting or shutting down. Told to the daemon before anything quits, here rather
+        // than on the window, which may not be open: sessions that end from now on are the shutdown's, and conch
+        // brings them back once the Mac starts again (`src/restart-recovery.ts`). Synchronous, because this app may
+        // be asked to quit straight after.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willPowerOffNotification, object: nil, queue: .main
+        ) { _ in
+            ConchSocketClient().notifyNow(["kind": "system-power-off"])
+        }
         OnboardingController.shared.appDidFinishLaunching()
     }
 

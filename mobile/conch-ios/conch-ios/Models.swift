@@ -30,6 +30,17 @@ struct PublishedState: Decodable, Equatable {
     var naturalVoices: NaturalVoicesReport?
     /// Where the Mac's speech engine stands (src/speech-engine.ts), for Settings' Voices.
     var speechEngine: SpeechEngineReport?
+    /// Sessions brought back after the Mac restarted, and ones held to bring back (src/restart-recovery.ts).
+    var restore: Restore?
+
+    struct Restore: Decodable, Equatable {
+        struct Session: Decodable, Equatable {
+            var conversationId: String
+            var label: String
+        }
+        var restored: [Session] = []
+        var offered: [Session] = []
+    }
 
     struct Features: Decodable, Equatable {
         var deliverables: Int?
@@ -404,7 +415,7 @@ struct PublishedState: Decodable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case v, ts, mode, live, rows, dismissed, dismissedRows, reply, conversations
-        case ownerDeviceId, deliveries, sessionSettings, naturalVoices, speechEngine, features
+        case ownerDeviceId, deliveries, sessionSettings, naturalVoices, speechEngine, features, restore
     }
 
     init() {}
@@ -456,6 +467,7 @@ struct PublishedState: Decodable, Equatable {
         sessionSettings = try? c.decodeIfPresent(SessionSettingsCatalog.self, forKey: .sessionSettings)
         naturalVoices = try? c.decodeIfPresent(NaturalVoicesReport.self, forKey: .naturalVoices)
         speechEngine = try? c.decodeIfPresent(SpeechEngineReport.self, forKey: .speechEngine)
+        restore = try? c.decodeIfPresent(Restore.self, forKey: .restore)
         // Declared since deliverables were versioned and never read, so everything the daemon gates on
         // it (Background sessions, the viewed state) read as unsupported on every Mac.
         features = try? c.decodeIfPresent(Features.self, forKey: .features)

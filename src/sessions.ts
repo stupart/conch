@@ -898,6 +898,19 @@ export async function registrySnapshot(
     allEntries.push(entry);
     if (isEngageable(entry) && !unusedBackgroundJob(claudeDir, entry)) claudeEntries.push(entry);
   }
+  // A process killed outright leaves its registry file behind until Claude Code next prunes it, and after the Mac
+  // goes down that is every session's. When conch brings one back (`restart-recovery.ts`), the live process and
+  // the dead file name one conversation, and read as two windows of it: a doubled row, half of it dead. The live
+  // one is the session; the dead one, only when something live holds its id, is debris and is dropped. A lone dead
+  // entry is read as before.
+  const heldAlive = new Set(claudeEntries.filter((entry) => entry.kind !== "bg" && Number.isSafeInteger(entry.pid)
+    && entry.pid > 0 && defaultIsPidAlive(entry.pid)).map((entry) => entry.sessionId));
+  for (let index = claudeEntries.length - 1; index >= 0; index -= 1) {
+    const entry = claudeEntries[index];
+    if (entry.kind !== "bg" && heldAlive.has(entry.sessionId) && !(Number.isSafeInteger(entry.pid) && entry.pid > 0 && defaultIsPidAlive(entry.pid))) {
+      claudeEntries.splice(index, 1);
+    }
+  }
   // One conversation is one row. The window a conversation moved out of stays
   // live under the old id; the live session it moved to is the row. A window
   // parked on a job that is listed is that job's terminal, part of its row —

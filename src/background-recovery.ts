@@ -157,6 +157,7 @@ export class BackgroundGuard {
   #records = new Map<string, BackgroundRecord>();
   #attempts = new Map<string, number[]>();
   #running: Promise<void> | null = null;
+  #servers: Record<BackgroundServer, ServerReading> | null = null;
 
   constructor(options: BackgroundGuardOptions) {
     this.#options = options;
@@ -176,6 +177,16 @@ export class BackgroundGuard {
   }
 
   /**
+   * The processes in conch's background panes, by the last reading of both servers: this guard's to bring back,
+   * so `restart-recovery.ts` leaves them alone. Null before a reading, or when a server could not be read.
+   */
+  backgroundPids(): Set<number> | null {
+    const servers = this.#servers;
+    if (!servers || servers.conch.state === "unknown" || servers.default.state === "unknown") return null;
+    return new Set([...servers.conch.panes.keys(), ...servers.default.panes.keys()]);
+  }
+
+  /**
    * After a COMPLETE registry read: note what runs, bring back what its server took with it. One at a time; a
    * read that arrives while one is under way is skipped, and the next one sees its result.
    */
@@ -191,6 +202,7 @@ export class BackgroundGuard {
       conch: await readServer(conchTmux()),
       default: await readServer(defaultTmux()),
     })))();
+    this.#servers = servers;
     let changed = false;
 
     // What runs now. A job Claude Code's own daemon hosts outlives any tmux server: nothing to record.

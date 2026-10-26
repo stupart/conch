@@ -108,6 +108,9 @@ struct WorkspaceNotices: View {
             .frame(height: 1)
     }
 
+    // Sessions that were running when the Mac went down: brought back, or held to bring back (src/restart-recovery.ts).
+    RestoreNoticeLine()
+
     // The first launch opened conch at login: said once, here, when setup's welcome didn't say it (`LoginItem`).
     LoginItemNoticeLine()
 
@@ -210,6 +213,60 @@ struct WorkspaceNotices: View {
 
 /// The first launch's line about opening at login, until OK: macOS has shown its own notice, and this names it. When
 /// macOS wants it allowed, or refused it, the line says so with the button to System Settings › General › Login Items.
+/// What happened to the sessions that were running when the Mac restarted. Brought back: said once, with OK. Held,
+/// because conch had been quit before the restart and can't know what was closed after: the person decides.
+private struct RestoreNoticeLine: View {
+    @EnvironmentObject private var store: StateStore
+
+    var body: some View {
+        if let restore = store.state?.restore, !restore.restored.isEmpty || !restore.offered.isEmpty {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.uturn.backward.circle")
+                    .font(.system(size: 10.5, weight: .medium))
+                Text(Self.sentence(restore))
+                    .font(ConchTypography.font(size: 11.5))
+                    .lineLimit(2)
+                    .help((restore.offered.isEmpty ? restore.restored : restore.offered).map(\.label).joined(separator: "\n"))
+                Spacer(minLength: 8)
+                if restore.offered.isEmpty {
+                    Button("OK", action: store.dismissRestored)
+                        .buttonStyle(.plain)
+                        .font(ConchTypography.font(size: 11, weight: .medium))
+                        .foregroundStyle(ConchPalette.statusQuiet)
+                } else {
+                    Button("Not now") { store.restoreSessions(accept: false) }
+                        .buttonStyle(.plain)
+                        .font(ConchTypography.font(size: 11, weight: .medium))
+                        .foregroundStyle(ConchPalette.textDim)
+                    Button("Bring them back") { store.restoreSessions(accept: true) }
+                        .buttonStyle(.plain)
+                        .font(ConchTypography.font(size: 11, weight: .medium))
+                        .foregroundStyle(ConchPalette.statusQuiet)
+                }
+            }
+            .foregroundStyle(ConchPalette.statusWaiting)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(ConchPalette.raised)
+
+            Rectangle()
+                .fill(ConchPalette.divider)
+                .frame(height: 1)
+        }
+    }
+
+    static func sentence(_ restore: PublishedState.RestoreReport) -> String {
+        if !restore.offered.isEmpty {
+            let count = restore.offered.count
+            return "\(count) session\(count == 1 ? " was" : "s were") running before your Mac restarted, while conch was closed."
+        }
+        let names = restore.restored.prefix(2).map(\.label).joined(separator: ", ")
+        let more = restore.restored.count > 2 ? " and \(restore.restored.count - 2) more" : ""
+        return "Brought back \(names)\(more) after your Mac restarted. They run in the background now."
+    }
+}
+
 private struct LoginItemNoticeLine: View {
     @ObservedObject private var login = LoginItem.shared
 

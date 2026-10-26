@@ -1236,6 +1236,16 @@ final class BridgeClient: ObservableObject {
     }
 
     /// Back to the default: the saved value is removed, as the Mac's reset arrow does.
+    /// Bring back the sessions the Mac held after a restart, or let them go (src/restart-recovery.ts).
+    func restoreSessions(accept: Bool) async -> Bool {
+        await post(control: ["kind": "restore-sessions", "accept": accept])
+    }
+
+    /// The notice that sessions came back after the Mac restarted has been read.
+    func dismissRestored() async -> Bool {
+        await post(control: ["kind": "restore-dismissed"])
+    }
+
     func resetSetting(key: String) async -> Bool {
         let reply = await postControlRaw(["kind": "unset-config", "key": key])
         return reply != nil && reply?["error"] == nil
