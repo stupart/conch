@@ -24,7 +24,8 @@ test("host choices survive wire validation; unknown hosts are refused", () => {
 test("background preserves the CLI resume, permissions and options and isolates Codex's server", () => {
   const request = startRequestFromArgv(["codex", "--background", "--resume", "thread-1", "--cwd", "/tmp/a b", "--model", "gpt-6-sol"]);
   expect(request.host).toBe("background");
-  expect(terminalSessionCommand(request)).toBe(`cd -- '/tmp/a b' && exec codex --no-daemon resume 'thread-1' -c 'model="gpt-6-sol"'`);
+  // No update check in a pane nobody watches; Codex's "Update available" would hold it there.
+  expect(terminalSessionCommand(request)).toBe(`cd -- '/tmp/a b' && exec codex --no-daemon -c check_for_update_on_startup=false resume 'thread-1' -c 'model="gpt-6-sol"'`);
   expect(terminalSessionCommand({ backend: "claude", host: "background", resumeSessionId: "abc", cwd: "/tmp/a b" }))
     .toBe("cd -- '/tmp/a b' && exec claude --resume 'abc'");
 });

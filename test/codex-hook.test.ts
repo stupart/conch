@@ -171,6 +171,8 @@ describe("handleCodexHookPayload", () => {
         summary: "Review the Codex backend",
         link: "https://example.com/review/123",
       },
+      // Codex's own id for the turn, so the rollout watch that also sees it end doesn't say it again.
+      turnId: "turn-456",
     };
 
     expect(event).toEqual(expected);
@@ -228,6 +230,15 @@ describe("handleCodexHookPayload", () => {
       maxChars: 350,
       summarize: false,
     }]);
+  });
+
+  test("Stop names its turn only by an id-shaped turn_id, never by whatever the payload carries", async () => {
+    for (const [turn_id, turnId] of [["01a16ae2-32a5-7261-848c-1986bafd1e96", "01a16ae2-32a5-7261-848c-1986bafd1e96"], ["two words", undefined], [42, undefined]] as const) {
+      const h = harness();
+      const event = await handleCodexHookPayload({ hook_event_name: "Stop", session_id: "s", cwd: "/work/p", turn_id: turn_id as string,
+        last_assistant_message: "Done.", agent_type: null }, h.cfg, h.dependencies);
+      expect(event?.turnId).toBe(turnId);
+    }
   });
 
   test("the shared snippet path applies markdown and speakable cleanup", async () => {

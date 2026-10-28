@@ -304,7 +304,7 @@ describe("sessions conch starts", () => {
     expect(claude).toEndWith(` ${path} ${claudeEnv} claude`);
     const codex = terminalSessionCommand({ backend: "codex", host: "background", codexAccountId: "default", cwd: "/work/demo" });
     expect(codex).toContain("-u OPENAI_API_KEY");
-    expect(codex).toEndWith(` ${path} codex --no-daemon`);
+    expect(codex).toEndWith(` ${path} codex --no-daemon -c check_for_update_on_startup=false`);
     // The `-e PATH` tmux is given would not do: the login shell's path_helper puts it back after /usr/bin.
     expect(read("src/session-lifecycle.ts")).toContain("const command = terminalSessionCommand({ ...request, host: \"background\"");
   });

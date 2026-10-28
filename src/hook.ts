@@ -43,6 +43,9 @@ interface HookPayload {
   prompt?: string;
 }
 
+/** A Codex turn id as its hooks and rollouts carry it (`01a16ae2-32a5-7261-848c-1986bafd1e96`): an id, never words. */
+export const CODEX_TURN_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+
 /** What Claude Code's SessionStart hook says started the session. */
 export const SESSION_START_SOURCES = ["startup", "resume", "clear", "compact"] as const;
 export type SessionStartSource = (typeof SESSION_START_SOURCES)[number];
@@ -84,6 +87,11 @@ export interface TurnEvent {
   opId?: string;
   /** This working state came from a Stop reclassified for live background work. */
   backgroundWork?: true;
+  /**
+   * On a Codex `turn-end`: Codex's own id for the turn (its Stop hook's `turn_id`, its rollout's `task_complete`), so
+   * the turn is said once whichever of the two reports it first (`CodexTurnsSaid`). Shaped as `CODEX_TURN_ID`.
+   */
+  turnId?: string;
   /**
    * Set when the final reply carried a conch:review marker, and always on `review-published`.
    * `kind` and `key` travel only when the agent gave them; the daemon infers the rest

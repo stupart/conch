@@ -8,7 +8,7 @@ import { createServer, connect } from "node:net";
 import { chmodSync, existsSync, lstatSync, renameSync, unlinkSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { lockSocketPath, type SocketOwnership } from "./socket-ownership.ts";
-import { isSessionStartSource, type TurnEvent } from "./hook.ts";
+import { CODEX_TURN_ID, isSessionStartSource, type TurnEvent } from "./hook.ts";
 import type { SendFailure } from "./inject.ts";
 import { checkReviewScene, LINK_REFUSED_MAX, sanitizeReviewSummary } from "./snippet.ts";
 import { ARTIFACT_KEY_MAX, checkFocusShape, deliverableKindRefusal, isDeliverableKind } from "./deliverables.ts";
@@ -841,6 +841,11 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
   if (value.promptDigest !== undefined && (type !== "working" || typeof value.promptDigest !== "string"
     || !PROMPT_DIGEST.test(value.promptDigest))) {
     return { ok: false, err: "promptDigest is a 16-hex fingerprint, on working" };
+  }
+  // Codex's turn id, from its Stop hook: an id, never words, and only on the turn it ended (`CodexTurnsSaid`).
+  if (value.turnId !== undefined && (type !== "turn-end" || typeof value.turnId !== "string"
+    || !CODEX_TURN_ID.test(value.turnId))) {
+    return { ok: false, err: "turnId is 1-128 letters, digits, dot, dash, colon or underscore, on turn-end" };
   }
   if (value.startSource !== undefined && (type !== "session-start" || !isSessionStartSource(value.startSource))) {
     return { ok: false, err: "startSource is startup, resume, clear or compact, on session-start" };

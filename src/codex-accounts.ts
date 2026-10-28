@@ -74,6 +74,26 @@ export function decodeCodexUsage(account: CodexAccountStatus, raw: unknown, now 
 export async function readCodexAccount(profile: CodexAccount, executable = "codex", timeoutMs = 12_000): Promise<CodexAccountRead> {
   let account: CodexAccountStatus = { ...profile, status: "unavailable" };
   let usage: unknown;
+  try {
+    await withCodexAppServer(profile, "conch_accounts", async (call) => {
+      account = decodeCodexAccount(profile, await call("account/read", { refreshToken: false }));
+      if (account.authType === "chatgpt") usage = await call("account/rateLimits/read").catch(() => undefined);
+    }, { executable, timeoutMs });
+  } catch { /* Preserve a successful identity read if only usage failed. */ }
+  return { account, usage: decodeCodexUsage(account, usage) };
+}
+
+/**
+ * A short-lived app-server on stdio, in `profile`'s home: `talk` is handed `call` once it has initialized, and the
+ * server is gone when `talk` settles or `timeoutMs` runs out, whichever is first. Throws when it couldn't be asked.
+ * Never starts or resumes a thread; what is asked is the caller's (`readCodexAccount`, `readCodexHooks`).
+ */
+export async function withCodexAppServer<T>(
+  profile: CodexAccount,
+  clientName: string,
+  talk: (call: (method: string, params?: unknown) => Promise<unknown>) => Promise<T>,
+  { executable = "codex", timeoutMs = 12_000 }: { executable?: string; timeoutMs?: number } = {},
+): Promise<T> {
   let child: ReturnType<typeof Bun.spawn> | undefined;
   const pending = new Map<number, { resolve: (v: unknown) => void; reject: () => void }>();
   let failed = false;
@@ -105,17 +125,15 @@ export async function readCodexAccount(profile: CodexAccount, executable = "code
     const call = (method: string, params: unknown = {}) => new Promise<unknown>((resolve, reject) => {
       if (failed) { reject(new Error("Codex connection closed")); return; }
       const key = ++id;
-      pending.set(key, { resolve, reject: () => reject(new Error("Codex account read failed")) });
+      pending.set(key, { resolve, reject: () => reject(new Error(`Codex ${method} failed`)) });
       proc.stdin.write(JSON.stringify({ id: key, method, params }) + "\n"); proc.stdin.flush();
     });
-    await call("initialize", { clientInfo: { name: "conch_accounts", version: "1" }, capabilities: { experimentalApi: false, explicitGatewayOauth: true } });
+    await call("initialize", { clientInfo: { name: clientName, version: "1" }, capabilities: { experimentalApi: false, explicitGatewayOauth: true } });
     proc.stdin.write('{"method":"initialized"}\n'); proc.stdin.flush();
-    account = decodeCodexAccount(profile, await call("account/read", { refreshToken: false }));
-    if (account.authType === "chatgpt") usage = await call("account/rateLimits/read").catch(() => undefined);
+    const result = await talk(call);
     proc.kill(); await reading;
-  } catch { /* Preserve a successful identity read if only usage failed. */ }
-  finally { if (timer) clearTimeout(timer); child?.kill("SIGKILL"); if (child) await child.exited; }
-  return { account, usage: decodeCodexUsage(account, usage) };
+    return result;
+  } finally { if (timer) clearTimeout(timer); child?.kill("SIGKILL"); if (child) await child.exited; }
 }
 const cache = new Map<string, { at: number; read: Promise<CodexAccountRead> }>();
 export const invalidateCodexAccount = (account: CodexAccount) => cache.delete(JSON.stringify([account.id, account.configDir]));

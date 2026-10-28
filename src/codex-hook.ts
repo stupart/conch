@@ -2,6 +2,7 @@ import { defaultCodexDir } from "./codex-accounts.ts";
 import { basename } from "node:path";
 import type { Config } from "./config.ts";
 import {
+  CODEX_TURN_ID,
   hookSessionFolders,
   sendToDaemon,
   stopReview,
@@ -329,6 +330,8 @@ export async function handleCodexHookPayload(
       : undefined,
     eventAt,
     ...(review ? { review } : {}),
+    // So the daemon's rollout watch, which sees this same turn end, doesn't say it again (`CodexTurnsSaid`).
+    ...(typeof payload.turn_id === "string" && CODEX_TURN_ID.test(payload.turn_id) ? { turnId: payload.turn_id } : {}),
   };
 
   const handedOff = await dependencies.sendToDaemon(cfg.socketPath, turn);
