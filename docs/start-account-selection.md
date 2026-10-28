@@ -37,7 +37,9 @@ launch under the wrong subscription. Claude's switching is a different thing:
 with "Switch accounts automatically" on, the Default sign-in itself moves between
 your Claude accounts as one nears its limit (claude-swap's list, managed in
 Providers; `src/claude-rotation.ts`), and sessions on Default follow it. Sessions
-on a separate sign-in never switch.
+on a separate sign-in never switch; retire that profile to have one account
+(claude-accounts.md, `scripts/one-account.ts`): the sheet stops offering it,
+and its conversations resume in Default.
 
 Validation lives in `StartAccountsTests.swift` (availability and reply decoding)
 and `test/start-accounts-ui.test.ts` (both native clients and their wire routing).

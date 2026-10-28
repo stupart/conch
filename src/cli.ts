@@ -863,13 +863,19 @@ switch (command) {
       const callerConfigDir = process.env.CLAUDE_CONFIG_DIR;
       delete process.env.CLAUDE_CONFIG_DIR;
       const { defaultResumeLookup, resumeAccountFor } = await import("./resume-account.ts");
-      const resolved = resumeAccountFor(request, defaultResumeLookup(callerConfigDir));
+      const lookup = defaultResumeLookup(callerConfigDir);
+      const resolved = resumeAccountFor(request, lookup);
       if (!resolved.ok) {
         console.error(`[conch] not started: ${resolved.error}`);
         process.exit(1);
       }
       request = resolved.request;
       if (resolved.said) console.log(`[conch] ${resolved.said}`);
+      // As the daemon launches: never in a retired profile, and a conversation it holds brought across first.
+      const { launchOffRetiredProfiles } = await import("./retired-profile.ts");
+      const moved = await launchOffRetiredProfiles(request, lookup.accounts);
+      request = moved.request;
+      for (const line of moved.said) console.log(`[conch] ${line}`);
     }
     let started: { tty?: string } | { backgroundId: string };
     try {
