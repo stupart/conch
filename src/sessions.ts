@@ -53,6 +53,9 @@ export interface RegistrySnapshotOptions extends CodexSessionRegistryOptions, At
   skipCodex?: boolean;
   /** Every process's parent pid; injectable so a test can hand in a fake tree. Defaults to one `ps`. */
   processParents?: () => Promise<ReadonlyMap<number, number> | null>;
+  /** Whether a registry entry's process is alive, for dropping a dead one a live one shares an id with. Injectable so a
+   * test's made-up pids don't depend on what the Mac happens to be running; defaults to asking the system. */
+  isPidAlive?: (pid: number) => boolean;
 }
 
 export interface SessionInfo {
@@ -903,11 +906,12 @@ export async function registrySnapshot(
   // the dead file name one conversation, and read as two windows of it: a doubled row, half of it dead. The live
   // one is the session; the dead one, only when something live holds its id, is debris and is dropped. A lone dead
   // entry is read as before.
-  const heldAlive = new Set(claudeEntries.filter((entry) => entry.kind !== "bg" && Number.isSafeInteger(entry.pid)
-    && entry.pid > 0 && defaultIsPidAlive(entry.pid)).map((entry) => entry.sessionId));
+  const isPidAlive = options.isPidAlive ?? defaultIsPidAlive;
+  const alive = (entry: { pid: number }) => Number.isSafeInteger(entry.pid) && entry.pid > 0 && isPidAlive(entry.pid);
+  const heldAlive = new Set(claudeEntries.filter((entry) => entry.kind !== "bg" && alive(entry)).map((entry) => entry.sessionId));
   for (let index = claudeEntries.length - 1; index >= 0; index -= 1) {
     const entry = claudeEntries[index];
-    if (entry.kind !== "bg" && heldAlive.has(entry.sessionId) && !(Number.isSafeInteger(entry.pid) && entry.pid > 0 && defaultIsPidAlive(entry.pid))) {
+    if (entry.kind !== "bg" && heldAlive.has(entry.sessionId) && !alive(entry)) {
       claudeEntries.splice(index, 1);
     }
   }

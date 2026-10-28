@@ -431,7 +431,8 @@ describe("one session, two terminals", () => {
       },
     };
   }
-  const opts = (claudeDir: string) => ({ configDir: join(claudeDir, "conch-config") });
+  // Both windows are live: the pids are made up, so whether the Mac happens to be running one must not decide it.
+  const opts = (claudeDir: string) => ({ configDir: join(claudeDir, "conch-config"), isPidAlive: () => true });
 
   test("two windows sharing one id both stay listed, each under its own name", async () => {
     const f = fixture();
@@ -442,6 +443,18 @@ describe("one session, two terminals", () => {
     const snap = await registrySnapshot(f.claudeDir, opts(f.claudeDir));
     expect(snap!.infos.map((s) => s.pid).sort()).toEqual([21210, 39889]);
     expect(snap!.infos.map((s) => s.name).sort()).toEqual(["morrow site", "morrow-prime"]);
+    rmSync(f.claudeDir, { recursive: true, force: true });
+  });
+
+  test("a dead window's leftover file is dropped when a live one holds its id, and kept when it is alone", async () => {
+    const f = fixture();
+    // After the Mac goes down every registry file is left behind; conch brings the conversation back as a new process.
+    f.write(39889, { sessionId: "back", name: "before the restart", startedAt: 1_000 });
+    f.write(21210, { sessionId: "back", name: "brought back", startedAt: 9_000 });
+    f.write(31337, { sessionId: "alone", name: "not running", startedAt: 1_000 });
+    const isPidAlive = (pid: number) => pid === 21210;
+    const snap = await registrySnapshot(f.claudeDir, { ...opts(f.claudeDir), isPidAlive });
+    expect(snap!.infos.map((s) => s.pid).sort()).toEqual([21210, 31337]);
     rmSync(f.claudeDir, { recursive: true, force: true });
   });
 
