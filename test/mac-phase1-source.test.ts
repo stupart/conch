@@ -403,8 +403,10 @@ describe("Mac conversation links keep the native clickable path", () => {
     expect(markdown).toContain("NSAttributedString(MarkdownDocument.inline(text))");
     // Its tables are NSTextTables, which TextKit 2 cannot lay out; both NSTextViews that take the
     // string switch to TextKit 1 before anything else touches them.
-    for (const [name, source] of [["the fallback", dashboard], ["the deliverable pane", mac("ReviewView.swift")]] as const) {
-      const made = source.slice(source.indexOf("let textView = NSTextView()"));
+    // The deliverable pane's is annotate's subclass (`AnnotatingTextView`, DeliverableAnnotate.swift), made the same way.
+    for (const [name, source, made_] of [["the fallback", dashboard, "let textView = NSTextView()"], ["the deliverable pane", mac("ReviewView.swift"), "let textView = AnnotatingTextView()"]] as const) {
+      expect(source, name).toContain(made_);
+      const made = source.slice(source.indexOf(made_));
       expect(made.slice(0, made.indexOf("textView.delegate = context.coordinator")), name).toContain("_ = textView.layoutManager");
     }
     expect(dashboard).toContain("textView.isSelectable = true");

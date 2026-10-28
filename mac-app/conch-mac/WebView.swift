@@ -32,6 +32,9 @@ struct DeliverableWebView: NSViewRepresentable {
         var isObservingLoadingState = false
         var surfacedURL: URL?
 
+        /// Annotate's half in the page (`AnnotateWebBridge`), in a pane that annotates.
+        var annotate: AnnotateWebBridge?
+
         init(parent: DeliverableWebView) {
             self.parent = parent
         }
@@ -281,6 +284,9 @@ struct DeliverableWebView: NSViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
+        // In a pane that annotates, the page script that finds what Tyler points at, in every page this view loads.
+        let annotator = context.environment.deliverableAnnotator
+        if annotator != nil { context.coordinator.annotate = AnnotateWebBridge.install(in: configuration) }
 
         let webView = DeliverableWKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
@@ -310,6 +316,11 @@ struct DeliverableWebView: NSViewRepresentable {
         context.coordinator.observeCurrentURL(of: webView)
         // A review's page: its agent's marks are found in it (`AgentInkController`).
         if let item = context.environment.agentInkItem { AgentInkController.shared.appeared(webView, showing: item) }
+        if let annotator, let bridge = context.coordinator.annotate {
+            bridge.webView = webView
+            bridge.annotator = annotator
+            annotator.attachPage(webView, bridge: bridge)
+        }
         return webView
     }
 
@@ -327,6 +338,7 @@ struct DeliverableWebView: NSViewRepresentable {
 
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
         AgentInkController.shared.gone(webView)
+        coordinator.annotate?.annotator?.detach(webView)
         coordinator.stopObservingLoadingState()
         webView.navigationDelegate = nil
         webView.uiDelegate = nil

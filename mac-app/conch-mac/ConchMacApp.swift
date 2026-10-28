@@ -21,6 +21,8 @@ struct ConchMacApp: App {
         Task { @MainActor in ConchStatusItem.install(store: store) }
         // Setup opens at launch only when its rule says to (OnboardingController).
         Task { @MainActor in OnboardingController.shared.attach(store: store) }
+        // Only in a conch launched by scripts/annotate-e2e.ts (`CONCH_HARNESS`): the annotate journey, driven by file.
+        Task { @MainActor in AnnotateHarness.startIfAsked(store: store) }
         // The notifications ask waits for its first need: something ready while conch is Quiet.
         ReviewNotifications.shared.isQuiet = { MainActor.assumeIsolated { store.state?.mode.paused == true } }
     }
