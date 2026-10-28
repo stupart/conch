@@ -106,8 +106,10 @@ describe("the daemon wires both ends", () => {
     expect(daemon).toContain("withHeldQuestion(read, voice.heldQuestionFor(session.sessionId)),");
   });
   test("a key is pressed only after reading Claude's registry now, not the last snapshot", () => {
-    // From the session's own account's registry: Default's held nothing for a session on another profile (2026-10-11).
-    expect(daemon).toMatch(/freshStatus: async \(sessionId\) => \(await registrySnapshot\(panelSessions\.get\(sessionId\)\?\.claudeConfigDir \?\? cfg\.claudeDir\)\)\?\.infos\s*\.find\(\(session\) => session\.sessionId === sessionId\)\?\.status,/);
+    // Every account's registry, by the default folder. A session's own account folder handed over as the default threw
+    // "Account profiles must have separate directories" for every Allow and Deny on a second account (2026-10-28).
+    expect(daemon).toMatch(/freshStatus: async \(sessionId\) => \(await registrySnapshot\(cfg\.claudeDir\)\)\?\.infos\s*\.find\(\(session\) => session\.sessionId === sessionId\)\?\.status,/);
+    expect(daemon.split("\n").filter((line) => line.includes("registrySnapshot(") && line.includes("claudeConfigDir"))).toEqual([]);
   });
 });
 

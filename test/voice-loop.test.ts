@@ -3804,6 +3804,43 @@ describe("answering a permission prompt from the Mac card", () => {
     expect(sent).toMatchObject({ delivered: false, reason: "the permission changed before conch could answer it" });
     expect(h.keys).toEqual([]);
   });
+
+  // 2026-10-28: Tyler's Allow for a Bash prompt in a session on his Blueprint account. Reading whether the dialog was
+  // still up threw ("Account profiles must have separate directories"), the throw left the loop, and the apps had only
+  // a bare "Not delivered." to show, with nothing on record but the daemon log.
+  test("an answer that throws presses nothing more, and comes back saying so, on record", async () => {
+    const h = harness({ freshStatus: async () => { throw new Error("Account profiles must have separate directories"); } });
+    const sent = await h.voice.handle(approve("once", "tu_1"));
+    expect(sent).toEqual({
+      delivered: false,
+      reason: "conch ran into an error answering the permission. If it's still asking, answer it in the terminal",
+    });
+    expect(h.keys).toEqual([]);
+    expect(h.errors).toEqual([[
+      "permission-answer",
+      "Could not answer the permission: conch ran into an error answering the permission. If it's still asking, answer it in the terminal",
+      "s1",
+      { label: "alpha", error: "Error: Account profiles must have separate directories" },
+    ]]);
+  });
+});
+
+describe("a send that throws", () => {
+  test("says so in words, keeps the words in the draft, and leaves a record", async () => {
+    const h = harness({ command: () => { throw new Error("osascript went away"); } });
+    const sent = await h.voice.handle(inject("/compact"));
+    expect(sent).toEqual({
+      delivered: false,
+      reason: "conch ran into an error partway, so it can't tell whether your words went in. They're in the draft: check the session before sending again",
+    });
+    expect(getLiveState().dictated).toEqual({ text: "/compact", id: expect.any(Number), sessionId: "s1" });
+    expect(h.errors).toEqual([[
+      "inject",
+      "Could not deliver the prompt. Review the recovered draft before retrying.",
+      "s1",
+      { label: "alpha", chars: 8, error: "Error: osascript went away" },
+    ]]);
+  });
 });
 
 describe("a permission prompt known only from Claude Code's PermissionRequest hook", () => {
