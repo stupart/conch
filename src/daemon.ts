@@ -1927,9 +1927,11 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     window: (sessionId) => panelSessions.get(sessionId),
     // The registry file itself, not the last snapshot: a permission key is pressed only while
     // Claude Code says its dialog is up.
-    // The session's own account: each keeps its own registry, and reading the default one for a session on another
-    // (Blueprint's, this one) found nothing (2026-10-11).
-    freshStatus: async (sessionId) => (await registrySnapshot(panelSessions.get(sessionId)?.claudeConfigDir ?? cfg.claudeDir))?.infos
+    // Every account's registry, read by the default folder as `sessionGone` reads it. Handing it the session's own
+    // account's folder as the default (2026-10-11) read the account list with that folder listed twice, and threw
+    // "Account profiles must have separate directories" for every Allow and Deny on a second account: Tyler's Allow
+    // for a Bash prompt in a Blueprint session went nowhere (2026-10-28).
+    freshStatus: async (sessionId) => (await registrySnapshot(cfg.claudeDir))?.infos
       .find((session) => session.sessionId === sessionId)?.status,
     sessionGone: async (sessionId) => sessionGoneFromSnapshot(await registrySnapshot(cfg.claudeDir), sessionId),
     // Where a session is now, for its deliverable's link: from its own transcript, found here, never an event's word.

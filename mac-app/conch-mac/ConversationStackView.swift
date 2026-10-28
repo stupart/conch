@@ -122,6 +122,8 @@ struct ConversationStackView: View {
     /// card — the card is where it gets fixed. Read from the store's row message, which a press
     /// clears and a failure sets, whichever sent it: this card, the composer, or a voice reply.
     @State private var questionNotices: [String: String] = [:]
+    /// The same for the permission prompt, by its id: an Allow that didn't land says why on the card still asking.
+    @State private var approvalNotices: [String: String] = [:]
     @State private var scrollRequestGeneration = 0
     /// Selecting across the whole conversation, as in a document (ConchDesign/ConversationSelection.swift). Tyler: "I
     /// would also like to drag to select areas for copying in our conversation panel — it currently only lets me do 1
@@ -452,6 +454,10 @@ struct ConversationStackView: View {
                 guard let live = liveQuestionID else { return }
                 questionNotices[live] = message
             }
+            // And while a permission prompt waits, on its card.
+            .onChange(of: store.rowMessages[conversation.sessionId]) { _, message in
+                if let approval { approvalNotices[approval.id] = message }
+            }
             .onChange(of: conversation.sessionId) { _, _ in
                 // A different session is a different conversation: start at its
                 // end, and re-arm the follow. The recorded reader is told too —
@@ -463,6 +469,7 @@ struct ConversationStackView: View {
                 multiSelections = [:]
                 questionTexts = [:]
                 questionNotices = [:]
+                approvalNotices = [:]
                 linkFailure = nil
                 selection.clear()
                 requestBottomScroll(using: proxy)
@@ -849,6 +856,14 @@ struct ConversationStackView: View {
                 .foregroundStyle(ConchPalette.textPrimary)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
+            // Why the last answer didn't land, here where it was pressed. On 2026-10-28 an Allow that went nowhere
+            // said only "Not delivered." under its bubble and on the row; the card it was pressed on said nothing.
+            if let failure = approvalNotices[approval.id] {
+                Text(failure)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(ConchPalette.statusNeeds)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if approval.answerable == false || onApprove == nil {
                 Text("conch can't answer this agent's permission prompt — answer it in its terminal.")
                     .font(.system(size: 11))

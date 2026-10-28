@@ -31,9 +31,9 @@ function history(home: string, id: string, text: string) {
   writeFileSync(path, JSON.stringify({ type: "user", cwd: "/work/demo", sessionId: id, message: { role: "user", content: text } }) + "\n");
   return path;
 }
-function registry(home: string, id: string, pid = 42) {
+function registry(home: string, id: string, pid = 42, status = "idle") {
   mkdirSync(join(home, "sessions"), { recursive: true });
-  writeFileSync(join(home, "sessions", `${pid}.json`), JSON.stringify({ sessionId: id, pid, cwd: "/work/demo", kind: "interactive", entrypoint: "cli", status: "idle" }));
+  writeFileSync(join(home, "sessions", `${pid}.json`), JSON.stringify({ sessionId: id, pid, cwd: "/work/demo", kind: "interactive", entrypoint: "cli", status }));
 }
 
 test("profiles persist only metadata, reject duplicates, and removal preserves Claude files", () => {
@@ -153,6 +153,20 @@ test("a session's transcript is looked for in its own account's folder, and the 
   // A path the row already knows wins; a row with no account searches every one, ambiguity refused as before.
   expect(sessionTranscript(home, id, { transcriptPath: "/known/path.jsonl", claudeConfigDir: work.configDir })).toBe("/known/path.jsonl");
   expect(sessionTranscript(home, id)).toBeUndefined();
+});
+
+// 2026-10-28: Tyler tapped Allow on a Bash prompt in a session on his Blueprint account, and nothing was pressed. The
+// daemon read whether the dialog was up by handing that account's folder to the account-aware registry read as the
+// DEFAULT one, 2026-10-05's trap again, and it threw for every Allow and Deny on a second account from 2026-10-11 on.
+test("a second account's session is read, dialog and all, from the default folder's snapshot", async () => {
+  const work = addClaudeAccount("Work");
+  const home = readClaudeAccounts()[0]!.configDir;
+  const id = "33333333-3333-4333-8333-333333333333";
+  registry(work.configDir, id, 43, "waiting");
+  const live = await accountRegistrySnapshot(home);
+  expect(live!.infos.find((s) => s.sessionId === id)).toMatchObject({ status: "waiting", claudeAccountId: work.id, claudeConfigDir: work.configDir });
+  // The cause, kept on record: an account's folder is not a default one (the daemon's side: permission-request.test.ts).
+  await expect(accountRegistrySnapshot(work.configDir)).rejects.toThrow("Account profiles must have separate directories");
 });
 
 test("wire validation rejects unsafe paths, invalid ids, and accounts on Codex", () => {

@@ -1550,7 +1550,34 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     log(`session ${event.startSource ?? "start"} — "${event.label}"${event.pid ? ` in pid ${event.pid}` : ""}${refreshed ? `, ${refreshed} held turn(s) moved to it` : ""}`);
   }
 
+  /**
+   * An inject that THREW comes back as a failure that says so: in words on the row, on the card and on the phone,
+   * with a record in errors.jsonl, and a message's words back in the draft. It used to leave as a bare `false`, which
+   * the apps show as "Not delivered." with nothing behind it, and nothing on record but the daemon log: Tyler's Allow
+   * for a Bash prompt (2026-10-28), which a throw in the status read stopped before any key was pressed.
+   */
   async function handle(event: TurnEvent): Promise<boolean | "staged" | inject.SendFailure | void> {
+    if (event.type !== "inject") return handleEvent(event);
+    try {
+      return await handleEvent(event);
+    } catch (error) {
+      log(`error handling inject "${event.label}": ${error}`);
+      const asking = event.approve ? "permission" : event.answers ? "question" : null;
+      if (asking) {
+        const reason = `conch ran into an error answering the ${asking}. If it's still asking, answer it in the terminal`;
+        recordDaemonError(`${asking}-answer`, `Could not answer the ${asking}: ${reason}`, event.sessionId, { label: event.label, error: String(error) });
+        return { delivered: false, reason };
+      }
+      // It may have gone in before the throw: the words are kept, and the sentence claims no more than that.
+      publishDictation(event.announce, event.sessionId);
+      recordDaemonError("inject", "Could not deliver the prompt. Review the recovered draft before retrying.", event.sessionId, {
+        label: event.label, chars: event.announce.length, error: String(error),
+      });
+      return { delivered: false, reason: "conch ran into an error partway, so it can't tell whether your words went in. They're in the draft: check the session before sending again" };
+    }
+  }
+
+  async function handleEvent(event: TurnEvent): Promise<boolean | "staged" | inject.SendFailure | void> {
     // Inject and interrupt arrive immediately, not through the drain, so a
     // queued exchange may be mid-await right now: they must not touch its stop
     // or its mic (A14). The per-event reset sits below them. A session start,
