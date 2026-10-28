@@ -83,6 +83,7 @@ describe("a third backend is one row", () => {
     bypassPermissionsFlag: "--trust-me",
     startOptions: [],
     trustFolderArgs: (cwd) => ` --trust ${cwd}`,
+    hookTrustArgs: null,
     folderTrusted: () => null,
     renameCommand: (label) => `/title ${label}`,
     // A Claude Code fork writes Claude's JSONL under its own name.

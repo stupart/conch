@@ -746,11 +746,16 @@ export interface HooksInstallResult {
   backup: string | null;
 }
 
+/** The command conch wires into Codex's hooks.json (`runCodexInstall`): this install's `conch codex-hook`. */
+export function codexHookCommand(): string {
+  return `${conchInvocation()} codex-hook`;
+}
+
 export async function runCodexInstall(
   codexDir = join(conchHome(), ".codex"),
 ): Promise<HooksInstallResult> {
   const hooksPath = join(codexDir, "hooks.json");
-  const command = `${conchInvocation()} codex-hook`;
+  const command = codexHookCommand();
 
   let existing: Record<string, any> = {};
   if (existsSync(hooksPath)) {

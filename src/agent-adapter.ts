@@ -143,6 +143,11 @@ export interface AgentAdapter {
   /** A per-launch "trust this folder" override, or "" where the agent takes none on its command line. */
   trustFolderArgs(cwd: string): string;
   /**
+   * The agent's per-launch trust for conch's own hooks (`hookTrust`, which the daemon builds from what the agent itself
+   * reports: codex-hook-trust.ts), or null where the agent has no hook review to answer at launch.
+   */
+  readonly hookTrustArgs: ((trust: string) => string) | null;
+  /**
    * The agent takes no trust answer at launch and asks on screen instead, so a yes given in
    * the app is typed into its prompt (`acceptClaudeTrust`).
    */
@@ -360,6 +365,8 @@ export const claudeAdapter: AgentAdapter = {
   // Claude Code's trust decision cannot be supplied on the command line, which
   // is why conch checks it beforehand (`folderTrusted`) and explains instead.
   trustFolderArgs: () => "",
+  // Claude Code runs the hooks in its settings without a review of its own.
+  hookTrustArgs: null,
   trustTypedAtLaunch: true,
   folderTrusted: (cwd) => claudeFolderTrusted(cwd),
   renameCommand: (label) => `/rename ${label}`,
@@ -408,7 +415,11 @@ export const codexAdapter: AgentAdapter = {
   executable: "codex",
   // A private server keeps hooks under the TUI’s ancestry, so SessionStart
   // identifies the actual conversation without guessing from cwd or title.
-  backgroundFlags: " --no-daemon",
+  // No update check: when a newer Codex is out, a TUI opens on "Update available
+  // … 1. Update now (runs `brew upgrade --cask codex`)", and in a background pane
+  // nobody sees it or answers it (codex-cli 0.164.0, with 0.165.0 out). Per
+  // launch, never config.toml: a Terminal session still offers the update.
+  backgroundFlags: " --no-daemon -c check_for_update_on_startup=false",
   exitKeystrokes: 1,
   // Codex's request_user_input picker hasn't been measured; its answer stays a message.
   questionKeys: null,
@@ -474,6 +485,8 @@ export const codexAdapter: AgentAdapter = {
     },
   ],
   trustFolderArgs: (cwd) => ` -c ${shellQuote(`projects."${cwd}".trust_level="trusted"`)}`,
+  // `hooks.state={…}` as one value: codex-cli 0.164.0 doesn't read a per-key dotted `-c` for these keys.
+  hookTrustArgs: (trust) => ` -c ${shellQuote(trust)}`,
   trustTypedAtLaunch: false,
   folderTrusted: (cwd) => codexFolderTrusted(cwd),
   // Codex has no equivalent command (provider-rename.ts returned `unsupported`).

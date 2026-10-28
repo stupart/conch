@@ -604,6 +604,33 @@ export function detectCodexTurnEnds(
   return ended;
 }
 
+/**
+ * A Codex turn is said once, whichever reports it first: the session's own Stop hook (`codex-hook.ts`, at once) or the
+ * rollout watch above (within its five seconds). Both name the turn by Codex's own id. Only a background session's
+ * hooks reach conch — one on the shared app-server is dropped by its ancestry — and those ran nowhere until conch
+ * trusted its own hooks for the background sessions it starts (codex-hook-trust.ts); from then on each of its turns
+ * arrived twice.
+ */
+export class CodexTurnsSaid {
+  readonly #said = new Map<string, { turnId: string; report?: object }>();
+  constructor(private readonly limit = 256) {}
+
+  /**
+   * True the first time this session's turn is reported; false when the other path reports the same turn. `report` is
+   * the event itself: the one that was said may come through again (a dismissed session's held turn, replayed when it
+   * is restored), and it is still the same report, not a second one.
+   */
+  first(sessionId: string, turnId: string, report?: object): boolean {
+    const said = this.#said.get(sessionId);
+    if (said?.turnId === turnId) return report !== undefined && said.report === report;
+    this.#said.delete(sessionId);
+    this.#said.set(sessionId, { turnId, ...(report ? { report } : {}) });
+    // Oldest out first: a Map keeps insertion order, and a session's latest turn is always its newest entry.
+    while (this.#said.size > this.limit) this.#said.delete(this.#said.keys().next().value!);
+    return true;
+  }
+}
+
 /** A Codex session that has just become blocked on an approval, or just come unblocked. */
 export interface CodexApprovalEvent {
   snapshot: CodexTurnSnapshot;

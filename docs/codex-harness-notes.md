@@ -221,6 +221,19 @@ drops subagents by `agent_type != null` (`:211-212`), which matches the schema. 
 The architecture's reason for polling still holds: hooks are config, and conch would additionally
 have to get them *trusted*.
 
+**Trust, as conch meets it (codex-cli 0.164.0, 2026-10-28).** An untrusted hook doesn't just stay off:
+every TUI that would load one opens on "Hooks need review" and waits for an answer, and a launch
+naming a Codex account writes conch's three into hooks.json (`runCodexInstall`). A background
+session has nobody to answer, so it never checked in ("atals and nura"). For the background sessions
+it starts, conch now asks `hooks/list` which hooks would load and trusts its own for that launch:
+exactly its command, from that home's own hooks.json, at the hash Codex reports, as one
+`-c hooks.state={"<key>"={trusted_hash="…"}}` (a per-key dotted `-c` is not read; the table merges with
+config.toml's). Anyone else's untrusted hook refuses the start, by name. Never written to
+config.toml, and never in Terminal, where the person sees the review (`src/codex-hook-trust.ts`).
+With conch's hooks running, its Stop and the rollout watch both see a turn end; the turn is said
+once by its `turn_id` (`CodexTurnsSaid`). Background launches also pass
+`-c check_for_update_on_startup=false`: "Update available" is another screen nobody would answer.
+
 **What conch should do.** Do not grow the hook path; for sessions conch starts, the app-server stream
 is strictly better. If hooks stay, add `SessionEnd` to `codex-hook.ts` and have `conch setup` say that
 Codex will ask to trust the hook. Touches E8, B5.

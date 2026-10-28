@@ -90,7 +90,7 @@ import {
 import { conchHome } from "./home.ts";
 import { createScreenContext, portListenerLookup, ScreenLog, screenContextFromPublished, type PublishedShowing } from "./screen-context.ts";
 import type { Config } from "./config.ts";
-import type { TurnEvent } from "./hook.ts";
+import { CODEX_TURN_ID, type TurnEvent } from "./hook.ts";
 import {
   speakCancellable as backendSpeakCancellable,
   stopSpeaking as backendStopSpeaking,
@@ -190,6 +190,7 @@ import {
   refreshSessionForClose,
   restartRequest,
   acceptClaudeTrust,
+  sessionFolder,
   startClaudeAccountLogin,
   startCodexAccountTerminal,
   startTerminalSession,
@@ -197,6 +198,7 @@ import {
   terminalSessionCommand,
   type StartSessionRequest,
 } from "./session-lifecycle.ts";
+import { backgroundHookReviewError, codexHookReview, readCodexHooks } from "./codex-hook-trust.ts";
 import { SessionStartOverlay } from "./session-start-overlay.ts";
 import { PromptSubmissions } from "./delivery-evidence.ts";
 import { TerminalComposer } from "./terminal-composer.ts";
@@ -206,6 +208,7 @@ import {
 } from "./terminal-question.ts";
 import {
   codexHomeDir,
+  CodexTurnsSaid,
   detectCodexApprovals,
   detectCodexTurnEnds,
   isInterAgentEnvelope,
@@ -269,7 +272,7 @@ import { assertCodexAccountIdle, assertClaudeAccountIdle, accountRegistrySnapsho
 import { transcriptFolder } from "./review-roots.ts";
 import { defaultCodexDir, readCodexAccounts, addCodexAccount, removeCodexAccount, requireCodexAccount, cachedCodexAccount, invalidateCodexAccount, codexAccountForLaunch } from "./codex-accounts.ts";
 import { claudeAccountForLaunch, readClaudeAccounts, addClaudeAccount, removeClaudeAccount, requireClaudeAccount, cachedClaudeAccountStatus, readClaudeAccountStatus, invalidateClaudeAccountStatus, type ClaudeAccountStatus } from "./claude-accounts.ts";
-import { conchInvocation, runInstall as installAccountHooks, repairConchHooks } from "./install.ts";
+import { codexHookCommand, conchInvocation, runInstall as installAccountHooks, repairConchHooks } from "./install.ts";
 import { setUpSessionBrowsers } from "./browser-open.ts";
 import {
   addressParkedWindow,
@@ -679,15 +682,30 @@ let reportLaunchError: (message: string, state: Record<string, unknown>) => void
  * didn't start … and the modal didn't close").
  */
 async function launchSession(request: StartSessionRequest): Promise<void | { backgroundId?: string; tty?: string }> {
-  const codexAccount = codexAccountForLaunch(request);
+  // A background start runs in its account's home, the default one when it names none, as `startBackgroundSession`
+  // launches it; a Codex one gets conch's hooks put right there too, before Codex is asked about them below.
+  const background = request.host === "background";
+  const codexAccount = codexAccountForLaunch(background
+    ? { ...request, [`${request.backend}AccountId`]: request.claudeAccountId ?? request.codexAccountId ?? "default" }
+    : request);
   if (codexAccount) await runCodexInstall(codexAccount.configDir);
   const account = claudeAccountForLaunch(request);
   if (account) {
     await installAccountHooks({ claudeDir: account.configDir });
     installAccountUsage(account);
   }
-  if (request.host === "background") {
-    const { backgroundId, trust } = await startBackgroundSession(request);
+  if (background) {
+    // Codex stops on its hook review until someone trusts the hooks it would run, and in the background nobody
+    // can (codex-hook-trust.ts): conch's own are trusted for this launch, and any other is said before starting.
+    let launch = request;
+    if (codexAccount) {
+      const hooks = await readCodexHooks(codexAccount, sessionFolder(request));
+      if (!hooks) log(`session-start: Codex couldn't say which hooks it would run; if it asks to review them, open the startup terminal`);
+      const review = codexHookReview(hooks ?? [], codexAccount.configDir, codexHookCommand());
+      if (review.others.length) throw new Error(backgroundHookReviewError(review.others));
+      if (review.trust) launch = { ...request, hookTrust: review.trust };
+    }
+    const { backgroundId, trust } = await startBackgroundSession(launch);
     void trust?.then((outcome) => {
       const report = backgroundTrustReport(backgroundId, outcome);
       log(report.line);
@@ -1024,6 +1042,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   let sessionStartOverlay: SessionStartOverlay | null = null;
   /** Prompts the agents' UserPromptSubmit hooks reported, by fingerprint: a typed send's confirmation. */
   const promptSubmissions = new PromptSubmissions();
+  /** Each Codex session's last turn said, from its hook or the rollout watch, so the other doesn't say it again. */
+  const codexTurnsSaid = new CodexTurnsSaid();
   let terminalComposer: TerminalComposer | null = null;
   let terminalQuestionController: TerminalQuestionController | null = null;
   let meetingMic: MicClaimPoller | null = null;
@@ -1472,6 +1492,11 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     // Setup's practice session is conch's own (practice.ts): anything naming it is the practice's to answer, and never
     // reaches the queue, the voice loop or a terminal, whichever door it came in by.
     if (event.sessionId === PRACTICE_SESSION_ID) return practice?.turn(event);
+    // A Codex turn its Stop hook and the rollout watch both report is said by whichever came first. One that carries
+    // a review still goes through: the filing is only on the hook's.
+    if (event.type === "turn-end" && event.turnId && !codexTurnsSaid.first(event.sessionId, event.turnId, event) && !event.review) {
+      return log(`"${event.label}": ${event.pid === undefined ? "its Stop hook" : "the rollout watch"} said this Codex turn already`);
+    }
     breadcrumb(`hook: ${event.type} for "${event.label}"`);
     // Turned away rather than queued: a dictation while Show's narration has the mic (`VoiceLoop.refusal`).
     const refused = voice.refusal(event);
@@ -4161,6 +4186,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
           announce: `${snapshot.label}: ${snippet || "finished, ready for your next prompt"}`,
           transcriptPath: snapshot.transcriptPath,
           eventAt: Date.now(),
+          // Its Stop hook may have said this one already (`CodexTurnsSaid`).
+          ...(CODEX_TURN_ID.test(snapshot.turnId) ? { turnId: snapshot.turnId } : {}),
         });
       })();
     }

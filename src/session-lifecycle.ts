@@ -68,6 +68,13 @@ export interface StartSessionRequest {
    */
   trustFolder?: boolean;
   /**
+   * conch's own hooks, trusted for this launch only, so a background session doesn't stop on the agent's hook review
+   * with nobody there to answer it: Codex's `hooks.state={…}` (`codexHookReview`), on its command line by the row's
+   * `hookTrustArgs`. Daemon-owned, never accepted from a wire request: built from what the agent itself reports, just
+   * before the launch.
+   */
+  hookTrust?: string;
+  /**
    * Per-session choices from the agent's own `--help` (C1), keyed by the
    * adapter row's `startOptions[].name`. Refused unless every key is in the
    * table and every value fits its kind; `bypass-permissions` here overrides
@@ -302,8 +309,9 @@ export function terminalSessionCommand(request: StartSessionRequest): string {
     ? ` ${adapter.bypassPermissionsFlag}`
     : "";
   const trust = request.trustFolder ? adapter.trustFolderArgs(cwd) : "";
+  const hookTrust = request.hookTrust && adapter.hookTrustArgs ? adapter.hookTrustArgs(request.hookTrust) : "";
   const hostFlags = request.host === "background" ? adapter.backgroundFlags : "";
-  return `cd -- ${shellQuote(cwd)} && exec ${environment}${adapter.executable}${hostFlags}${bypass}${trust}${args}`
+  return `cd -- ${shellQuote(cwd)} && exec ${environment}${adapter.executable}${hostFlags}${bypass}${trust}${hookTrust}${args}`
     + renderStartOptions(adapter, request.options)
     + (request.claudeHandoff ? ` --session-id ${shellQuote(request.claudeHandoff.sessionId)}` : "");
 }
@@ -317,6 +325,15 @@ export function terminalSessionCommand(request: StartSessionRequest): string {
 const CONVERSATION_SELECTORS: Record<SessionBackend, Record<string, "value" | "optional" | "none">> = {
   claude: { "--resume": "optional", "-r": "optional", "--continue": "none", "-c": "none", "--session-id": "value", "--fork-session": "none" },
   codex: { "--last": "none" },
+};
+
+/**
+ * `-c` overrides conch puts on a background Codex launch itself (`backgroundFlags`, `hookTrust`), not the person's
+ * choices: a relaunch builds its own again, so they are dropped quietly rather than reported as not carried over.
+ */
+const LAUNCH_OVERRIDES: Record<SessionBackend, ReadonlySet<string>> = {
+  claude: new Set(),
+  codex: new Set(["hooks.state", "check_for_update_on_startup"]),
 };
 
 /**
@@ -360,6 +377,7 @@ export function restartRequest(
     if (flag === "-c" || flag === "--config") {
       const override = inline ?? takeNext() ?? "";
       const pair = /^([A-Za-z_][\w.]*)=(.*)$/.exec(override);
+      if (pair && LAUNCH_OVERRIDES[backend].has(pair[1]!)) continue;
       const row = pair ? adapter.startOptions.find((option) => option.configKey === pair[1]) : undefined;
       const value = pair?.[2]?.replace(/^"(.*)"$/, "$1");
       if (row && value !== undefined && !startOptionsError({ backend, resumeSessionId, options: { [row.name]: value } })) {
