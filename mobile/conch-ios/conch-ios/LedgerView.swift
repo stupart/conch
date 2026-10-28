@@ -108,6 +108,18 @@ struct LedgerView: View {
                                 .listRowBackground(Palette.bg)
                                 .listRowSeparator(.hidden)
                         }
+                        // What happened to the sessions that were running when the Mac went down (restart-recovery.ts).
+                        if let restore = state.restore, !restore.restored.isEmpty || !restore.offered.isEmpty {
+                            RestoreNoticeRow(
+                                restore: restore,
+                                onBringBack: { Task { _ = await bridge.restoreSessions(accept: true) } },
+                                onNotNow: { Task { _ = await bridge.restoreSessions(accept: false) } },
+                                onDismiss: { Task { _ = await bridge.dismissRestored() } }
+                            )
+                            .disabled(!bridge.isConnected)
+                            .listRowBackground(Palette.bg)
+                            .listRowSeparator(.hidden)
+                        }
                         ForEach(folders(in: state)) { folder in
                             Section {
                                 ForEach(isCollapsed(folder) ? [] : rows(of: folder, in: state)) { row in
@@ -776,6 +788,50 @@ private enum FixturePane: String, Identifiable {
     var id: String { rawValue }
 }
 #endif
+
+/// Sessions that were running when the Mac restarted: brought back (said once, until OK), or held because conch had
+/// been quit first and can't know what was closed after, for the person to decide.
+struct RestoreNoticeRow: View {
+    let restore: PublishedState.Restore
+    let onBringBack: () -> Void
+    let onNotNow: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "arrow.uturn.backward.circle")
+                    .foregroundStyle(Palette.textDim)
+                Text(sentence)
+                    .font(Type.summary)
+                    .foregroundStyle(Palette.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 16) {
+                Spacer()
+                if restore.offered.isEmpty {
+                    Button("OK", action: onDismiss)
+                } else {
+                    Button("Not now", action: onNotNow).foregroundStyle(Palette.textDim)
+                    Button("Bring them back", action: onBringBack).fontWeight(.semibold)
+                }
+            }
+            .font(Type.caption)
+            .buttonStyle(.borderless)
+        }
+        .padding(.vertical, 6)
+    }
+
+    private var sentence: String {
+        if !restore.offered.isEmpty {
+            let count = restore.offered.count
+            return "\(count) session\(count == 1 ? " was" : "s were") running before your Mac restarted, while conch was closed."
+        }
+        let names = restore.restored.prefix(2).map(\.label).joined(separator: ", ")
+        let more = restore.restored.count > 2 ? " and \(restore.restored.count - 2) more" : ""
+        return "Brought back \(names)\(more) after your Mac restarted. They run in the background now."
+    }
+}
 
 struct SessionRowView: View {
     let row: PublishedState.Row

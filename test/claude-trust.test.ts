@@ -118,7 +118,8 @@ describe("asking before a Claude session starts in a folder it doesn't trust", (
     expect(daemon).toContain("if (request.trustFolder === true && adapterFor(request.backend).trustTypedAtLaunch && tty) {");
     // Start, restart, account handoff, bringing back a session its tmux server took with it (background-recovery.ts),
     // and a fork (`forkLiveSession`, which sets trustFolder as a restart does).
-    expect(daemon.match(/await launchSession\(|=> launchSession\(/g)?.length).toBe(5);
+    // Six: the restart guard's (`restart-recovery.ts`) brings sessions back after the Mac restarts.
+    expect(daemon.match(/await launchSession\(|=> launchSession\(/g)?.length).toBe(6);
     // Every launch goes through launchSession: its own call is the only direct one.
     expect(daemon.match(/await startTerminalSession\(/g)?.length).toBe(1);
   });

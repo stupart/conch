@@ -405,6 +405,11 @@ export interface PublishedSessionRow {
  * The fields after `at` are exactly the socket answer's (`injectDeliveryReceipt`), so the
  * late outcome and the immediate one cannot describe the same send differently.
  */
+export interface PublishedRestore {
+  restored: Array<{ conversationId: string; label: string }>;
+  offered: Array<{ conversationId: string; label: string }>;
+}
+
 export interface PublishedDelivery {
   opId: string;
   sessionId: string;
@@ -500,6 +505,11 @@ export interface PublishedState {
    * CONCH_TTS=server mode, which conch does not set up.
    */
   naturalVoices?: NaturalVoicesStatus;
+  /**
+   * Sessions conch brought back after the Mac restarted, and ones it holds for the person to bring back because
+   * it wasn't watching when the Mac went down (`restart-recovery.ts`). Absent when there is nothing to say.
+   */
+  restore?: PublishedRestore;
   /**
    * Where the speech engine stands (`speech-engine.ts`): checking, downloading
    * the whisper model (with progress), ready, or off and why — and where each

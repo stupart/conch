@@ -1121,6 +1121,12 @@ export type DeviceCommand =
   | { kind: "phone-spoke"; reason: string; text: string }
   | { kind: "phone-device"; summary: string }
   | { kind: "system-woke" }
+  /** The Mac is logging out, restarting or shutting down (the app's `willPowerOffNotification`). */
+  | { kind: "system-power-off" }
+  /** Bring back the sessions held after a restart, or let them go (`restart-recovery.ts`). */
+  | { kind: "restore-sessions"; accept: boolean }
+  /** The notice that sessions came back has been read. */
+  | { kind: "restore-dismissed" }
   | { kind: "phone-speaking"; speaking: boolean; label: string; session?: ControlSessionReference }
   | { kind: "open-pairing" }
   | { kind: "audio-take" }
@@ -1231,8 +1237,11 @@ function decodeDeviceCommand(value: unknown): DeviceCommand | null {
     const label = typeof rawLabel === "string" ? rawLabel.slice(0, 120) : "";
     return { kind: value.kind, speaking, label };
   }
-  if (value.kind === "system-woke" || value.kind === "open-pairing") {
+  if (value.kind === "system-woke" || value.kind === "open-pairing" || value.kind === "system-power-off" || value.kind === "restore-dismissed") {
     return { kind: value.kind };
+  }
+  if (value.kind === "restore-sessions" && typeof value.accept === "boolean") {
+    return { kind: "restore-sessions", accept: value.accept };
   }
   return null;
 }

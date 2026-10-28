@@ -75,6 +75,17 @@ struct PublishedState: Decodable, Equatable, Sendable {
     /// The sea glass approving results has earned, ever (src/panel.ts `seaGlass`, 2026-10-05). Nil from a daemon too old
     /// to approve, which is how the review pane knows not to offer Approve.
     let seaGlass: Int?
+    /// Sessions brought back after the Mac restarted, and ones held for the person to bring back (src/restart-recovery.ts).
+    let restore: RestoreReport?
+
+    struct RestoreReport: Decodable, Equatable, Sendable {
+        struct Session: Decodable, Equatable, Sendable {
+            let conversationId: String
+            let label: String
+        }
+        let restored: [Session]
+        let offered: [Session]
+    }
 
     struct PreviewRequest: Decodable, Equatable, Sendable {
         let id: String
@@ -248,6 +259,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         case sessionSettings
         case naturalVoices
         case seaGlass
+        case restore
     }
 
     init(
@@ -277,7 +289,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
         practice: PracticeReport? = nil,
         sessionSettings: SessionSettingsCatalog? = nil,
         naturalVoices: NaturalVoicesReport? = nil,
-        seaGlass: Int? = nil
+        seaGlass: Int? = nil,
+        restore: RestoreReport? = nil
     ) {
         self.v = v
         self.ownerDeviceId = ownerDeviceId
@@ -307,6 +320,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         self.sessionSettings = sessionSettings
         self.naturalVoices = naturalVoices
         self.seaGlass = seaGlass
+        self.restore = restore
     }
 
     init(from decoder: Decoder) throws {
@@ -357,6 +371,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         sessionSettings = try? container.decodeIfPresent(SessionSettingsCatalog.self, forKey: .sessionSettings)
         naturalVoices = try? container.decodeIfPresent(NaturalVoicesReport.self, forKey: .naturalVoices)
         seaGlass = try? container.decodeIfPresent(Int.self, forKey: .seaGlass)
+        restore = try? container.decodeIfPresent(RestoreReport.self, forKey: .restore)
     }
 
     private static func decodeLossyArray<Element: Decodable>(
@@ -405,6 +420,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
             && naturalVoices == other.naturalVoices
             // The lagoon's jar counts it.
             && seaGlass == other.seaGlass
+            // What came back after a restart is said once, until read.
+            && restore == other.restore
             // The deliverables strip draws a tab for each.
             && browserTabs == other.browserTabs
             && browserProfiles == other.browserProfiles

@@ -587,6 +587,12 @@ enum ConchSessionCommandReply: Decodable, Equatable, Sendable {
     }
 }
 
+/// `restore-sessions`: bring back what was held after a restart, or let it go.
+struct ConchRestoreSessionsRequest: Encodable, Sendable {
+    let kind = "restore-sessions"
+    let accept: Bool
+}
+
 struct ConchSocketClient: Sendable {
     private static let sendTimeoutNanoseconds: UInt64 = 500_000_000
     /// Typing, confirm-by-transcript and its re-sends; the phone allows 25s.
@@ -618,6 +624,18 @@ struct ConchSocketClient: Sendable {
         return await Task.detached(priority: .userInitiated) {
             Self.write(event, to: socketPath, whenDelivered: whenDelivered, whenNotDelivered: whenNotDelivered)
         }.value
+    }
+
+    /// Send a control message now, on this thread, bounded at `seconds`: for a moment the app may not outlive, like
+    /// the Mac powering off, where a detached task could be torn down before it ran. Returns whether it was written.
+    @discardableResult
+    func notifyNow(_ message: [String: String], seconds: TimeInterval = 1) -> Bool {
+        guard var payload = try? JSONSerialization.data(withJSONObject: message) else { return false }
+        payload.append(0x0A)
+        if case .connectFailed = Self.transact(payload, with: socketPath, deadline: Self.makeDeadline(after: Self.nanoseconds(for: seconds))) {
+            return false
+        }
+        return true
     }
 
     /// Send a control message and don't wait for an answer.

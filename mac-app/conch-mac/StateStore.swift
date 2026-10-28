@@ -362,6 +362,16 @@ final class StateStore: ObservableObject {
         Task { await socketClient.notify(["kind": "system-woke"]) }
     }
 
+    /// Bring back the sessions conch held after a restart it wasn't watching, or let them go (`restart-recovery.ts`).
+    func restoreSessions(accept: Bool) {
+        Task { _ = await socketClient.request(ConchRestoreSessionsRequest(accept: accept), timeout: 5) }
+    }
+
+    /// The notice that sessions came back after a restart has been read.
+    func dismissRestored() {
+        Task { await socketClient.notify(["kind": "restore-dismissed"]) }
+    }
+
     func forceLivenessProbe() {
         scheduleProbe(force: true)
     }
@@ -1669,7 +1679,9 @@ final class StateStore: ObservableObject {
             sessionSettings: sourceState.sessionSettings,
             naturalVoices: sourceState.naturalVoices,
             // Whether the daemon can approve at all (✓ Approve shows only then), and the lagoon's jar.
-            seaGlass: sourceState.seaGlass
+            seaGlass: sourceState.seaGlass,
+            // What came back after the Mac restarted, and what waits on the person (src/restart-recovery.ts).
+            restore: sourceState.restore
         )
         if state?.hasSamePresentation(as: next) != true {
             state = next
