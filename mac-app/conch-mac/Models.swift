@@ -89,6 +89,17 @@ struct PublishedState: Decodable, Equatable, Sendable {
         let offered: [Session]
     }
 
+    /// Failure tickets' counts (src/failure-tickets.ts `digest`): the gear's dot while any open one is unseen, and the
+    /// count beside Settings › Failures. Nil from an older daemon.
+    let failures: FailureDigest?
+
+    /// How many tickets are open, being fixed, and new since Settings › Failures was last shown.
+    struct FailureDigest: Decodable, Equatable, Sendable {
+        let open: Int
+        let fixing: Int
+        let unseen: Int
+    }
+
     struct PreviewRequest: Decodable, Equatable, Sendable {
         let id: String
         let sessionId: String
@@ -263,6 +274,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         case guards
         case seaGlass
         case restore
+        case failures
     }
 
     init(
@@ -294,7 +306,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
         naturalVoices: NaturalVoicesReport? = nil,
         guards: [RunawayGuardTrip] = [],
         seaGlass: Int? = nil,
-        restore: RestoreReport? = nil
+        restore: RestoreReport? = nil,
+        failures: FailureDigest? = nil
     ) {
         self.v = v
         self.ownerDeviceId = ownerDeviceId
@@ -326,6 +339,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         self.guards = guards
         self.seaGlass = seaGlass
         self.restore = restore
+        self.failures = failures
     }
 
     init(from decoder: Decoder) throws {
@@ -378,6 +392,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         guards = Self.decodeLossyArray(RunawayGuardTrip.self, from: container, forKey: .guards)
         seaGlass = try? container.decodeIfPresent(Int.self, forKey: .seaGlass)
         restore = try? container.decodeIfPresent(RestoreReport.self, forKey: .restore)
+        failures = try? container.decodeIfPresent(FailureDigest.self, forKey: .failures)
     }
 
     private static func decodeLossyArray<Element: Decodable>(
@@ -430,6 +445,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
             && seaGlass == other.seaGlass
             // What came back after a restart is said once, until read.
             && restore == other.restore
+            // The gear's dot and Settings › Failures' count.
+            && failures == other.failures
             // The deliverables strip draws a tab for each.
             && browserTabs == other.browserTabs
             && browserProfiles == other.browserProfiles

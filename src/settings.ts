@@ -74,6 +74,7 @@ export const SETTING_KEYS = [
   "say-rate",
   "whisper-idle-unload",
   "screen-log",
+  "failure-autofix",
 ] as const;
 
 export type SettingKey = typeof SETTING_KEYS[number];
@@ -112,7 +113,8 @@ export type SettingField =
   | "speakMaxChars"
   | "sayRate"
   | "whisperIdleUnloadMins"
-  | "screenLog";
+  | "screenLog"
+  | "failureAutofix";
 export type HandoffOrder = "newest" | "oldest" | "urgency";
 export type PhoneLanMode = "auto" | "on" | "off";
 export type SettingValue = number | boolean | string;
@@ -647,6 +649,21 @@ export const SETTING_DESCRIPTORS = [
     bounds: null,
     apply: "live",
     help: "keep a local log of which session's work was on screen, and for how long (~/.config/conch/screen); never sent anywhere",
+  },
+  {
+    // Off, and it ships off (docs/failure-tickets.md): a Claude session that starts by itself, in conch's own checkout,
+    // because something failed, is a thing you turn on. When on: one at a time, at most three a day, never for the
+    // loop's own failures, and never again for a ticket an auto-fix already fixed that came back. Not one agents may
+    // set (`AGENT_TUNABLE_SETTINGS`): an agent turning on agents is the loop deciding for Tyler.
+    key: "failure-autofix",
+    field: "failureAutofix",
+    env: "CONCH_FAILURE_AUTOFIX",
+    kind: "boolean",
+    default: false,
+    parse: parseBoolean,
+    bounds: null,
+    apply: "live",
+    help: "when a failure ticket opens, start a background Claude session in conch's checkout to fix it and open a PR (never merged); one at a time, at most 3 a day",
   },
 ] as const satisfies readonly SettingDescriptor[];
 

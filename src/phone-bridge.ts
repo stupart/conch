@@ -1,3 +1,4 @@
+import { decodeFailureTicketRequest } from "./failure-tickets.ts";
 import { connect } from "node:net";
 import { ControlFrameError, ControlFrameReader, decodeControlText, encodeControlFrame, readControlBody } from "./control-framing.ts";
 import { validateHistoryRequest } from "./history.ts";
@@ -193,6 +194,8 @@ export const MAC_APP_ONLY_DECODERS: Readonly<Record<string, (value: unknown) => 
   decodeSetupRequest,
   decodePracticeRequest,
   decodeVideoTranscriptRequest,
+  // Failure tickets hold every session's names, folders and words, and Fix starts a session: the Mac's (failure-tickets.ts).
+  decodeFailureTicketRequest,
 };
 
 /** A control body only the Mac app may send, as the control server would read it (one envelope unwrapped, as it does). */

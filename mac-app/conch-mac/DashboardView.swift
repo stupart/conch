@@ -402,6 +402,7 @@ private struct DashboardHeader: View {
                 modeHelp: modeHelp,
                 isLogDrawerOpen: isLogDrawerOpen,
                 audioHeldElsewhere: state?.audioControl.isLocal == false,
+                newFailures: state?.failures?.unseen ?? 0,
                 actions: actions
             )
         }
@@ -421,6 +422,9 @@ private struct HeaderControls: View {
     let isLogDrawerOpen: Bool
     /// C9b Cut B: another Mac holds the audio, so auto/manual is not this window's to set.
     let audioHeldElsewhere: Bool
+    /// Failure tickets nobody has looked at yet (src/failure-tickets.ts): a dot on the gear, and nothing louder. Settings ›
+    /// Failures, once shown, clears it.
+    let newFailures: Int
     let actions: DashboardActions
 
     var body: some View {
@@ -441,7 +445,10 @@ private struct HeaderControls: View {
             )
             HeaderButton(
                 symbol: "gearshape",
-                help: "Settings — connect a phone, and everything else",
+                help: newFailures > 0
+                    ? "Settings — \(newFailures == 1 ? "a new failure" : "\(newFailures) new failures") in Failures"
+                    : "Settings — connect a phone, and everything else",
+                badge: newFailures > 0,
                 action: actions.onOpenSettings
             )
             HeaderButton(
@@ -468,6 +475,9 @@ private struct HeaderButton: View {
     let symbol: String
     let help: String
     var isSelected = false
+    /// Something new behind it (a failure ticket, behind the gear): a 6-point dot in the attention ink at the glyph's
+    /// top right, ringed in the strip's own ground so it reads apart from the glyph it sits on. No count, no motion.
+    var badge = false
     let action: () -> Void
 
     @State private var isHovered = false
@@ -494,6 +504,24 @@ private struct HeaderButton: View {
                         .fill(isSelected ? ConchPalette.selection : (isHovered ? ConchPalette.hover : .clear))
                 )
                 .foregroundStyle(isSelected || isHovered ? ConchPalette.textPrimary : ConchPalette.textDim)
+                .overlay(alignment: .topTrailing) {
+                    if badge {
+                        Circle()
+                            .fill(ConchPalette.statusNeeds)
+                            .frame(width: 6, height: 6)
+                            .padding(1.5)
+                            // The ring is the button's own ground: the strip's, under its hover or selected fill when it has one.
+                            .background {
+                                ZStack {
+                                    Circle().fill(ConchPalette.bg)
+                                    Circle().fill(isSelected ? ConchPalette.selection : (isHovered ? ConchPalette.hover : .clear))
+                                }
+                            }
+                            // The 11-point glyph spans 8.5 to 19.5 of the 28: the dot's centre sits on its corner.
+                            .offset(x: -4, y: 4)
+                            .allowsHitTesting(false)
+                    }
+                }
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

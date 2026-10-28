@@ -6,7 +6,12 @@ import type { DashboardMode, PanelConchState, PublishedState, SessionStatus } fr
 export const APP_ERRORS_PATH = join(CONCH_CONFIG_DIR, "errors.jsonl");
 const MAX_APP_ERRORS_BYTES = 8 * 1024 * 1024;
 
-export type ConchErrorSource = "ios" | "mac" | "daemon";
+/**
+ * Who wrote a record. `hook` is a Claude Code hook process that couldn't hand its event to a daemon whose socket was
+ * there (hook.ts): short-lived, with no log of its own, it writes here directly. The socket's `app-error` still takes
+ * only `ios` and `mac`.
+ */
+export type ConchErrorSource = "ios" | "mac" | "daemon" | "hook";
 
 export interface ConchErrorInput {
   source: ConchErrorSource;

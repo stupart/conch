@@ -86,13 +86,15 @@ const expected = {
   "whisper-idle-unload": ["whisperIdleUnloadMins", "CONCH_WHISPER_IDLE_UNLOAD_MINS", "live", 20],
   // Ships ON, local only: which session's work was on screen, for conch now and time tracking later.
   "screen-log": ["screenLog", "CONCH_SCREEN_LOG", "live", true],
+  // Ships OFF: a fix session that starts itself is a thing you turn on (docs/failure-tickets.md).
+  "failure-autofix": ["failureAutofix", "CONCH_FAILURE_AUTOFIX", "live", false],
 } as const;
 
 describe("settings registry", () => {
-  test("contains exactly the 35 curated, default-bearing knobs", () => {
+  test("contains exactly the 36 curated, default-bearing knobs", () => {
     const keys = [...SETTING_REGISTRY.keys()];
     expect(keys.sort()).toEqual(Object.keys(expected).sort());
-    expect(SETTING_DESCRIPTORS).toHaveLength(35);
+    expect(SETTING_DESCRIPTORS).toHaveLength(36);
     for (const [key, [field, env, apply, defaultValue]] of Object.entries(expected)) {
       const descriptor = SETTING_REGISTRY.get(key);
       expect(descriptor).toMatchObject({ field, env, apply, default: defaultValue });

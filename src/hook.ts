@@ -367,7 +367,7 @@ export async function runHook(cfg: Config): Promise<void> {
   // no speech, no daemonless fallback. Claude Code adds a SessionStart hook's
   // stdout to the session's context, so this prints nothing either.
   if (event === "SessionStart") {
-    await sendToDaemon(cfg.socketPath, sessionStartEvent(payload, session, label, eventAt));
+    await handOff(cfg.socketPath, sessionStartEvent(payload, session, label, eventAt));
     return;
   }
 
@@ -379,7 +379,7 @@ export async function runHook(cfg: Config): Promise<void> {
   if (event === "UserPromptSubmit") {
     const note = takeAgentNote(payload.session_id ?? "");
     if (note) process.stdout.write(userPromptContext(note));
-    await sendToDaemon(cfg.socketPath, {
+    await handOff(cfg.socketPath, {
       type: "working",
       sessionId: session?.sessionId ?? payload.session_id ?? "",
       label,
@@ -512,7 +512,7 @@ export async function runHook(cfg: Config): Promise<void> {
     if (name === "AskUserQuestion") {
       const questions = agentQuestions(payload.tool_input);
       if (!questions.length) return;
-      await sendToDaemon(cfg.socketPath, {
+      await handOff(cfg.socketPath, {
         type: "needs-you",
         sessionId,
         label,
@@ -569,7 +569,7 @@ export async function runHook(cfg: Config): Promise<void> {
 
   // The daemon owns the warm worker and voice loop when up. Otherwise speak
   // standalone; worker mode intentionally reaches the awaited say fallback.
-  const handedOff = await sendToDaemon(cfg.socketPath, turn);
+  const handedOff = await handOff(cfg.socketPath, turn);
   if (!handedOff) {
     // Manual mode is a promise the daemon normally keeps, and with no daemon
     // there was nobody keeping it: every hook announced its own turn aloud on a
@@ -589,20 +589,54 @@ export async function runHook(cfg: Config): Promise<void> {
 }
 
 export function sendToDaemon(socketPath: string, event: TurnEvent): Promise<boolean> {
+  return deliverToDaemon(socketPath, event).then((outcome) => outcome === true);
+}
+
+/**
+ * How a hand-off went: taken; no socket there (conch is off, which is a choice); refused (a socket with nobody
+ * listening: a daemon that crashed without removing it); or not accepted within 500 ms (a daemon too busy to take it).
+ */
+export type HandOffOutcome = true | "absent" | "refused" | "timeout";
+
+export function deliverToDaemon(socketPath: string, event: TurnEvent, timeoutMs = 500): Promise<HandOffOutcome> {
   return new Promise((resolve) => {
     const sock = connect(socketPath);
     const timer = setTimeout(() => {
       sock.destroy();
-      resolve(false);
-    }, 500);
+      resolve("timeout");
+    }, timeoutMs);
     sock.on("connect", () => {
       sock.end(JSON.stringify(event) + "\n");
       clearTimeout(timer);
       resolve(true);
     });
-    sock.on("error", () => {
+    sock.on("error", (error: NodeJS.ErrnoException) => {
       clearTimeout(timer);
-      resolve(false);
+      resolve(error.code === "ECONNREFUSED" ? "refused" : "absent");
     });
   });
+}
+
+/**
+ * The hook's hand-off, filing one a daemon whose socket is there didn't take (`appendConchError`, source `hook`): conch
+ * missed a turn, and this process is short-lived with no log of its own. A socket that isn't there is conch switched
+ * off, and files nothing. app-errors.ts is loaded only then, so a hook that hands off costs nothing more.
+ */
+export async function handOff(socketPath: string, event: TurnEvent, deliver = deliverToDaemon): Promise<boolean> {
+  const outcome = await deliver(socketPath, event);
+  if (outcome === "refused" || outcome === "timeout") {
+    try {
+      const { appendConchError } = await import("./app-errors.ts");
+      appendConchError({
+        source: "hook",
+        operation: "hook",
+        message: outcome === "timeout"
+          ? "conch's daemon didn't take a hook's event within 500 ms, so conch missed it."
+          : "conch's daemon socket refused a hook's event (nothing is listening on it), so conch missed it.",
+        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+        state: { event: event.type, ...(event.label ? { label: event.label } : {}) },
+      }, null);
+    } catch {}
+  }
+  return outcome === true;
 }

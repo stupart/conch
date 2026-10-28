@@ -144,6 +144,15 @@ private final class ConchAppDelegate: NSObject,
     let daemon = DaemonHost()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        #if DEBUG
+        // A Debug build launched to be photographed in one theme (`CONCH_DEBUG_APPEARANCE=dark|light`, scripts/
+        // failure-tickets-e2e.ts): the system's own setting is the user's, and isn't changed to take a picture.
+        switch ProcessInfo.processInfo.environment["CONCH_DEBUG_APPEARANCE"] {
+        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
+        case "light": NSApp.appearance = NSAppearance(named: .aqua)
+        default: break
+        }
+        #endif
         let center = UNUserNotificationCenter.current()
         center.delegate = self
         // The first launch opens conch at login, visibly: macOS's notice, and conch's own line on setup's welcome or in

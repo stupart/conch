@@ -13,6 +13,9 @@ import CoreGraphics
 /// add and try, and the benchmark catalog (SkillsLibrary.swift). The header's sparkles opens Skills.
 public enum SettingsSection: String, CaseIterable, Identifiable, Sendable {
     case providers, environments, tools, skills, benchmarks, browser, logins, general, phone, permissions, setup
+    /// What went wrong, as tickets, and Fix (2026-10-28, FailureTickets.swift). Last: it is where conch looks after
+    /// itself, after Setup, which is where it was set up.
+    case failures
 
     public var id: String { rawValue }
 
@@ -29,6 +32,7 @@ public enum SettingsSection: String, CaseIterable, Identifiable, Sendable {
         case .phone: "Phone app"
         case .permissions: "Permissions"
         case .setup: "Setup"
+        case .failures: "Failures"
         }
     }
 
@@ -46,6 +50,7 @@ public enum SettingsSection: String, CaseIterable, Identifiable, Sendable {
         case .phone: "iphone"
         case .permissions: "hand.raised"
         case .setup: "checklist"
+        case .failures: "ladybug"
         }
     }
 
