@@ -209,8 +209,8 @@ struct StepMark: View {
 }
 
 /// The app's icon at a size, with the corners and the lift an icon has in the Dock. With none handed in (a preview), the
-/// running app's own icon on the Mac, a plain tile on the phone: never the menu bar's spiral, which stood in here once
-/// and read as an old app icon beside the hermit crab everyone else sees.
+/// running app's own icon on the Mac, a plain tile on the phone: never the menu bar's mark (then a spiral), which stood
+/// in here once and read as an old app icon beside the hermit crab everyone else sees.
 public struct AppIconView: View {
     let size: CGFloat
     var lifted = false

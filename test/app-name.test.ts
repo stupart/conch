@@ -53,14 +53,15 @@ test("nor with the same emoji written as a code point", () => {
 /**
  * What stays: the real marks. `PairingView` shows the app icon's own art (`SetupIcon`, the hermit
  * crab on the home screen; the conch-shell photo it showed before was a different shell again),
- * and the menu bar draws `ConchMark.statusImage`, its monochrome template mark until the brand
- * adopts another. The pairing screen's own comment records why it replaced the emoji.
+ * and the menu bar draws `ConchMark.statusImage`, the brand's monochrome menu bar mark ("the circle,
+ * looking", the icon's crab peeking out of the wordmark's o). The pairing screen's own comment
+ * records why it replaced the emoji.
  */
 test("the real mark is untouched", () => {
   const pairing = read("mobile/conch-ios/conch-ios/PairingView.swift");
   expect(pairing).toContain('Image("SetupIcon")');
   expect(pairing).not.toContain('Image("ConchMark")');
-  expect(read("mac-app/conch-mac/StatusItem.swift")).toContain("ConchMark.statusImage(for: voice, side: 18)");
+  expect(read("mac-app/conch-mac/StatusItem.swift")).toContain("ConchMark.statusImage(for: voice)");
 });
 
 /** The bundles were already clean; this keeps them that way. */

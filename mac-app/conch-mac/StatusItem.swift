@@ -21,8 +21,8 @@ struct OverlaysMenuToggle: View {
     }
 }
 
-/// The conch mark in the menu bar (M2): an NSStatusItem whose mark takes the voice's colour, and a
-/// standard NSMenu when it is clicked. No hover behaviour.
+/// The conch mark in the menu bar (M2): an NSStatusItem whose mark shows the voice's state (`ConchMark`, a template
+/// image in every state), and a standard NSMenu when it is clicked. No hover behaviour.
 ///
 /// AppKit rather than SwiftUI's menu bar scene, which draws a custom label once and never redraws it,
 /// blocks the run loop while its menu is open, and exposes no item whose window can be watched for the
@@ -161,11 +161,10 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         return VoiceState.resolve(live: state.live.state, paused: state.mode.paused, readyCount: readyRows(state).count)
     }
 
-    /// The whole mark recolours; Talk is the template image macOS tints for the bar.
+    /// The state's mark, which macOS inks for the bar in every state: the voice's colours are the control bar's.
     private func show(_ voice: VoiceState) {
         guard let button = item.button else { return }
-        // A touch larger than the 16 pt default (Tyler: "can also be a touch larger up there").
-        button.image = ConchMark.statusImage(for: voice, side: 18)
+        button.image = ConchMark.statusImage(for: voice)
         button.setAccessibilityLabel("conch, \(voice.title)")
     }
 
