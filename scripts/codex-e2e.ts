@@ -230,10 +230,10 @@ env_key = "E2E_MODEL_KEY"
   } finally {
     daemon.kill("SIGTERM");
     await daemon.exited;
-    // This test's own server, in its own TMUX_TMPDIR: never one of the user's.
-    for (const name of tmux("list-sessions", "-F", "#{session_name}").stdout.toString().split("\n").filter(Boolean)) {
-      tmux("kill-session", "-t", name);
-    }
+    // Only the test's own server, by its own socket name in its own TMUX_TMPDIR, as restore-e2e.ts ends its own: conch
+    // keeps its server up when empty (`exit-empty off`), so ending the sessions alone left it running. Never a bare
+    // kill-server.
+    tmux("kill-server");
     mock.server.stop(true);
     if (keep) say(`kept ${root}`);
     else rmSync(root, { recursive: true, force: true });
