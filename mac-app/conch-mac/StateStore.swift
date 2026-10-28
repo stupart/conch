@@ -1069,7 +1069,17 @@ final class StateStore: ObservableObject {
         onOpened: @escaping @MainActor (ConchScreenApp?) -> Void = { _ in },
         onFailure: @escaping @MainActor (String) -> Void
     ) {
-        var url = LinkTarget.url(for: link, cwd: cwd)
+        // A heading in the text the link is in: the AppKit documents scroll to it themselves (`scrollToMarkdownAnchor`), and
+        // there is nothing outside the text to open, least of all the folder an empty path resolves to.
+        if link.hasPrefix("#") { return }
+        // An Atlas page (`AtlasLink`, a wiki link in an agent's words or a page's): conch's copy of it, opened as any file
+        // is, and when none is saved, why, in place of macOS's "no such file" for a copy that was never there.
+        let atlasPage = AtlasLink.page(of: link)
+        if let page = atlasPage, !FileManager.default.fileExists(atPath: page.copy().path) {
+            onFailure("\(page.name) isn\u{2019}t saved in conch yet. conch can\u{2019}t read Atlas itself: ask the session to show you the page.")
+            return
+        }
+        var url = atlasPage?.copy() ?? LinkTarget.url(for: link, cwd: cwd)
         // A Figma file opens in Figma when it is on this Mac, not in a browser tab that then
         // offers to open Figma: the app does not claim figma.com links, only `figma://`.
         if let app = FigmaLink.appURL(for: url), NSWorkspace.shared.urlForApplication(toOpen: app) != nil {
@@ -2192,9 +2202,12 @@ enum LinkTarget {
     }
 
     /// The string behind a clicked link attribute — a `URL` or a `String` —
-    /// decoded, so `my%20doc.md` names the file it means.
+    /// decoded, so `my%20doc.md` names the file it means. A link to a heading
+    /// in the same text (`#status`) stays one: its path is empty, and as an
+    /// empty path it resolved to the folder and opened Finder there.
     static func text(of link: Any) -> String {
         if let url = link as? URL {
+            if url.scheme == nil, url.path.isEmpty, let fragment = url.fragment { return "#" + fragment }
             return url.scheme == nil || url.isFileURL ? url.path : url.absoluteString
         }
         return link as? String ?? String(describing: link)

@@ -105,6 +105,9 @@ describe("LinkTarget — the resolver every Mac open goes through", () => {
         'print(LinkTarget.text(of: URL(string: "docs/my%20doc.md")!))',
         'print(LinkTarget.text(of: URL(string: "https://example.com/x")!))',
         'print(LinkTarget.text(of: "plain" as Any))',
+        // A heading in the same text stays a link to it: as an empty path it resolved to the folder and opened Finder.
+        'print(LinkTarget.text(of: URL(string: "#headline-findings")!))',
+        'print(LinkTarget.text(of: URL(string: "other.md#headline-findings")!))',
       ].join("\n"));
       try {
         const run = Bun.spawnSync([swift!, file], { stdout: "pipe", stderr: "pipe" });
@@ -122,6 +125,8 @@ describe("LinkTarget — the resolver every Mac open goes through", () => {
           "docs/my doc.md",
           "https://example.com/x",
           "plain",
+          "#headline-findings",
+          "other.md",
         ]);
       } finally {
         rmSync(dir, { recursive: true, force: true });
@@ -207,8 +212,8 @@ describe("every open site in the Mac app goes through the one door that reports 
     expect(mac("DashboardView.swift")).toContain("@State private var deliverableAddress: String?");
     expect(mac("DashboardView.swift")).toContain("liveAddress: $deliverableAddress");
     // Cleared on both routes back, or a web address outlives the deliverable that published it
-    // and the arrow opens the wrong thing. Only `case .web` ever sets it, so nothing else can
-    // overwrite a stale value.
+    // and the arrow opens the wrong thing. Only `case .web` and a followed Atlas wiki link (the
+    // copy it shows, `followAtlas`) ever set it, so nothing else can overwrite a stale value.
     expect(mac("DashboardView.swift")).toContain(
       ".onChange(of: selectedReview.id) { _, _ in deliverableAddress = nil }",
     );
@@ -256,7 +261,8 @@ describe("the Mac deliverable viewers say why a file would not show", () => {
       "DeliverableImageView(url: url, onFailure: { loadFailed(url, $0) })",
       "DeliverableVideoView(url: url, onFailure: { loadFailed(url, $0) })",
       "DeliverablePDFView(url: url, onFailure: { loadFailed(url, $0) })",
-      "DeliverableDocumentView(url: url, renderMarkdown: true, onFailure: { loadFailed(url, $0) })",
+      // The filed document, or the Atlas page a wiki link led to, at the heading the link named.
+      "DeliverableDocumentView(url: url, renderMarkdown: true, anchor: atlasTrail.last?.page.heading, onFailure: { loadFailed(url, $0) })",
       "DeliverableDocumentView(url: url, renderMarkdown: false, onFailure: { loadFailed(url, $0) })",
     ]) expect(review).toContain(viewer);
   });
@@ -438,6 +444,8 @@ describe("the phone: the same dead tap, said and recorded", () => {
       "case .open:",
       "UIApplication.shared.open(url) { opened in",
       'if !opened { fail("iPhone couldn\'t open \\(url.absoluteString)") }',
+      "case let .atlas(page):",
+      'fail("\\(page) is an Atlas page. conch keeps its copies of those on your Mac: open it there.")',
     );
   });
 
@@ -459,6 +467,7 @@ describe("the phone: the same dead tap, said and recorded", () => {
           '  case .invalid: print("invalid")',
           '  case let .file(path): print("file:\\(path)")',
           '  case .open: print("open")',
+          '  case let .atlas(page): print("atlas:\\(page)")',
           "  }",
           "}",
           // Tyler's actual link, from the Mac's errors.jsonl (2026-09-17):
@@ -468,6 +477,9 @@ describe("the phone: the same dead tap, said and recorded", () => {
           'show("http://localhost:5173")',
           'show("mailto:t@example.com")',
           'show("not-a-url-at-all")',
+          // A wiki link in an Atlas page, as the shared renderer writes it (`AtlasLink`).
+          'show("atlas:projects/index")',
+          'show("atlas:projects/acme/plan.md%23next-steps")',
         ].join("\n"),
       );
       try {
@@ -479,6 +491,8 @@ describe("the phone: the same dead tap, said and recorded", () => {
           "open",
           "open",
           "invalid",
+          "atlas:projects/index",
+          "atlas:projects/acme/plan",
         ]);
       } finally {
         rmSync(dir, { recursive: true, force: true });

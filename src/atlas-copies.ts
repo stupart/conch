@@ -12,7 +12,13 @@ import { conchHome } from "./home.ts";
  * with `review_to_front` itself.
  *
  * conch never talks to Atlas: the agent read the page with its own Atlas tools and hands conch the words, so no
- * credential of Atlas's ever passes through here.
+ * credential of Atlas's ever passes through here. The only Atlas credentials on the Mac are the Claude Code and Codex
+ * hosts' own (the atlas plugin's launcher reads them from the Keychain for its profile); conch has none of its own, and
+ * borrowing a host's would make every read look like that host's.
+ *
+ * A copy's wiki links (`[[projects/index|Projects]]`) are links in the app (ConchDesign's AtlasLink.swift): a click opens
+ * the linked page's copy from this folder in the same pane, or, with none saved, says so and offers to ask the session
+ * that showed the page to `atlas_show` it too.
  *
  * The publish rule (snippet.ts `checkLocalFile`) lets a Markdown file in this folder through, as it does conch's own
  * captures: a copy of a wiki page is work to show, wherever the session itself works, and only Markdown is let through,
