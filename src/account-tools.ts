@@ -61,7 +61,8 @@ export function isAccountToolsReply(v: unknown): v is AccountToolsReply {
     && (v.operation === undefined || (record(v.operation) && validAccountId(v.operation.id) && ["working", "done", "failed"].includes(v.operation.state) && printable(v.operation.message, 4096)));
 }
 
-function statePath(account: ClaudeAccount): string {
+/** Where Claude keeps this account's state (`.claude.json`): beside the default folder, inside any other. */
+export function statePath(account: ClaudeAccount): string {
   return account.id === "default" && account.configDir === join(conchHome(), ".claude") ? join(conchHome(), ".claude.json") : join(account.configDir, ".claude.json");
 }
 /**

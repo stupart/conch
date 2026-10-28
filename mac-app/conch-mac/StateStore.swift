@@ -829,7 +829,8 @@ final class StateStore: ObservableObject {
         codexAccountId: String? = nil,
         cwd: String?,
         trustFolder: Bool = false,
-        options: [String: ConchStartOptionValue] = [:]
+        options: [String: ConchStartOptionValue] = [:],
+        prompt: String? = nil
     ) async -> StartOutcome {
         let resumed = Self.nonempty(resumeSessionId)
         let teleport = Self.nonempty(teleportSessionId)
@@ -844,7 +845,8 @@ final class StateStore: ObservableObject {
             codexAccountId: codexAccountId,
             cwd: workingDirectory,
             trustFolder: trustFolder ? true : nil,
-            options: options.isEmpty ? nil : options
+            options: options.isEmpty ? nil : options,
+            prompt: Self.nonempty(prompt)
         )
         let outcome = await socketClient.request(
             request,

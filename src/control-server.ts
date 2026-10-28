@@ -4,6 +4,8 @@ import type { ClaudeAccountRequest, ClaudeAccountsReply } from "./claude-account
 import { ControlFrameError, ControlFrameReader, encodeControlFrame } from "./control-framing.ts";
 import type { HistoryPageRequest, HistoryItemRequest, HistoryResponse } from "./history.ts";
 import { fitLoginInventoryReply, type LoginInventoryReply, type LoginInventoryRequest } from "./login-inventory.ts";
+import type { BenchmarksReply, BenchmarksRequest } from "./benchmarks.ts";
+import type { SkillsLibraryReply, SkillsLibraryRequest } from "./skills-library.ts";
 import { createServer, connect } from "node:net";
 import { chmodSync, existsSync, lstatSync, renameSync, unlinkSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -305,6 +307,7 @@ export function dispatchControlMessage(
     || validated.value.kind === "agent-capabilities"
     || validated.value.kind === "account-tools" || validated.value.kind === "claude-accounts" || validated.value.kind === "codex-accounts"
     || validated.value.kind === "login-inventory"
+    || validated.value.kind === "skills-library" || validated.value.kind === "benchmarks"
     || validated.value.kind === "session-start"
     || validated.value.kind === "session-close"
     || validated.value.kind === "session-fork"
@@ -353,6 +356,10 @@ export interface RuntimeControlDispatchOptions {
   accountTools?(message: AccountToolsRequest): Promise<AccountToolsReply>;
   /** The logins inventory (login-inventory.ts): what is installed and signed in on this Mac, as whom. Read only. */
   loginInventory?(message: LoginInventoryRequest): Promise<LoginInventoryReply>;
+  /** The skills library (skills-library.ts): every skill, the public indexes', and Add's and Try's writes. */
+  skillsLibrary?(message: SkillsLibraryRequest): Promise<SkillsLibraryReply>;
+  /** The benchmark catalog (benchmarks.ts). Read only. */
+  benchmarks?(message: BenchmarksRequest): BenchmarksReply;
   claudeAccounts?(message: ClaudeAccountRequest): Promise<ClaudeAccountsReply>;
   historyPage?(message: HistoryPageRequest): HistoryResponse | Promise<HistoryResponse>;
   historyItem?(message: HistoryItemRequest): HistoryResponse | Promise<HistoryResponse>;
@@ -434,6 +441,14 @@ export async function applyRuntimeControlMessage(
     if (message.kind === "account-tools") {
       if (!options.accountTools) throw new Error("Tools management requires an updated Conch daemon");
       return await options.accountTools(message);
+    }
+    if (message.kind === "skills-library") {
+      if (!options.skillsLibrary) throw new Error("The skills library requires an updated conch daemon");
+      return await options.skillsLibrary(message);
+    }
+    if (message.kind === "benchmarks") {
+      if (!options.benchmarks) throw new Error("Benchmarks require an updated conch daemon");
+      return options.benchmarks(message);
     }
     if (message.kind === "login-inventory") {
       if (!options.loginInventory) throw new Error("The logins inventory requires an updated conch daemon");
@@ -1362,6 +1377,7 @@ function isRuntimeControlCandidate(value: unknown): boolean {
   return socketRecord(value) && (
     value.kind === "account-tools" || value.kind === "claude-accounts" || value.kind === "codex-accounts" || value.kind === "session-start" || value.kind === "session-close" || value.kind === "session-fork"
     || value.kind === "login-inventory"
+    || value.kind === "skills-library" || value.kind === "benchmarks"
     || value.kind === "history-page" || value.kind === "history-item"
     || value.kind === "app-error" || value.kind === "resumable"
     || value.kind === "agent-capabilities"

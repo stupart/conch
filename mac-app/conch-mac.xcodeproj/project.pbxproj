@@ -50,6 +50,7 @@
 		CB0E00000000000000000003 /* BrowserSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB0E00000000000000000004 /* BrowserSettingsView.swift */; };
 		CB0F00000000000000000001 /* BrowserSignInsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB0F00000000000000000002 /* BrowserSignInsStore.swift */; };
 		CB1A00000000000000000001 /* LoginsSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB1A00000000000000000002 /* LoginsSettingsView.swift */; };
+		CB5C00000000000000000001 /* SkillsLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB5C00000000000000000002 /* SkillsLibraryView.swift */; };
 		A100000000000000000000950 /* DirectHTTPTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000000000000000000950 /* DirectHTTPTransport.swift */; };
 		A100000000000000000000951 /* RemoteMacStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000000000000000000951 /* RemoteMacStore.swift */; };
 		A100000000000000000000952 /* RemoteMacViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000000000000000000952 /* RemoteMacViews.swift */; };
@@ -120,6 +121,7 @@
 		CB0E00000000000000000004 /* BrowserSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserSettingsView.swift; sourceTree = "<group>"; };
 		CB0F00000000000000000002 /* BrowserSignInsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserSignInsStore.swift; sourceTree = "<group>"; };
 		CB1A00000000000000000002 /* LoginsSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginsSettingsView.swift; sourceTree = "<group>"; };
+		CB5C00000000000000000002 /* SkillsLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillsLibraryView.swift; sourceTree = "<group>"; };
 		A200000000000000000000950 /* DirectHTTPTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectHTTPTransport.swift; sourceTree = "<group>"; };
 		A200000000000000000000951 /* RemoteMacStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteMacStore.swift; sourceTree = "<group>"; };
 		A200000000000000000000952 /* RemoteMacViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteMacViews.swift; sourceTree = "<group>"; };
@@ -220,6 +222,7 @@
 				CB0E00000000000000000004 /* BrowserSettingsView.swift */,
 				CB0F00000000000000000002 /* BrowserSignInsStore.swift */,
 				CB1A00000000000000000002 /* LoginsSettingsView.swift */,
+				CB5C00000000000000000002 /* SkillsLibraryView.swift */,
 				CCAC00000000000000000002 /* ClaudeAccountsView.swift */,
 				CCAC00000000000000000004 /* ExecutionModels.swift */,
 				CCAC00000000000000000006 /* ClaudeSwapLicense.txt */,
@@ -495,6 +498,7 @@
 				CB0E00000000000000000003 /* BrowserSettingsView.swift in Sources */,
 				CB0F00000000000000000001 /* BrowserSignInsStore.swift in Sources */,
 				CB1A00000000000000000001 /* LoginsSettingsView.swift in Sources */,
+				CB5C00000000000000000001 /* SkillsLibraryView.swift in Sources */,
 				CCAC00000000000000000001 /* ClaudeAccountsView.swift in Sources */,
 				CCAC00000000000000000003 /* ExecutionModels.swift in Sources */,
 			);

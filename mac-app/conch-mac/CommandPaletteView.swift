@@ -14,6 +14,8 @@ struct PaletteCommand: Identifiable, Equatable {
         case pause, resume, wake, recite, stop, reveal, rename, setModel, fork
         case dismiss, inspect, helpSession
         case restore(id: String, label: String)
+        /// A section of Settings: Skills and Benchmarks (SkillsLibraryView.swift).
+        case settings(SettingsSection)
         /// Typed into the session as written; an argument, if given, follows it.
         case type(String)
     }
@@ -74,6 +76,16 @@ enum PaletteCatalog {
             id: "help", section: .session, title: "Help with conch",
             detail: "Select the conch help session, or start it: a Claude session that knows the app",
             action: .helpSession
+        ))
+        out.append(PaletteCommand(
+            id: "skills", section: .session, title: "Skills…",
+            detail: "Every skill in every account, and skills from the public indexes to add and try",
+            action: .settings(.skills)
+        ))
+        out.append(PaletteCommand(
+            id: "benchmarks", section: .session, title: "Benchmarks…",
+            detail: "Indexes and leaderboards for judging models and agents",
+            action: .settings(.benchmarks)
         ))
         // Typing needs a pane the daemon can reach, which is what `revealable` says.
         if let row, row.parentSessionId == nil, row.revealable {
@@ -430,6 +442,9 @@ struct CommandPaletteSheet: View {
         case let .restore(id, label):
             store.restoreSession(id: id, label: label)
             return
+        case let .settings(section):
+            SettingsRouter.shared.open(section)
+            return
         default:
             break
         }
@@ -457,7 +472,7 @@ struct CommandPaletteSheet: View {
                 label: row.label,
                 text: argument.isEmpty ? line : "\(line) \(argument)"
             ))
-        case .helpSession, .restore: break
+        case .helpSession, .restore, .settings: break
         }
     }
 }

@@ -228,7 +228,7 @@ interface SettingsLayer {
   value: JsonRecord;
 }
 
-interface SkillMetadata {
+export interface SkillMetadata {
   name: string;
   description?: string;
   userInvocable: boolean;
@@ -551,13 +551,14 @@ function parseFrontmatter(text: string): JsonRecord | null {
     if (!match) continue;
     const key = match[1]!;
     const raw = match[2]!;
-    if (raw === "|" || raw === ">") {
+    // A block scalar, with or without its chomping indicator (`|-`, `>+`): YAML's own long-description forms.
+    if (/^[|>][-+]?$/.test(raw)) {
       const block: string[] = [];
       while (index + 1 < end && (/^\s+/.test(lines[index + 1]!) || !lines[index + 1]!.trim())) {
         index += 1;
         block.push(lines[index]!.replace(/^\s{1,4}/, ""));
       }
-      result[key] = raw === ">" ? block.join(" ").replace(/\s+/g, " ").trim() : block.join("\n").trim();
+      result[key] = raw.startsWith(">") ? block.join(" ").replace(/\s+/g, " ").trim() : block.join("\n").trim();
       continue;
     }
     if (!raw && index + 1 < end && /^\s*-\s+/.test(lines[index + 1]!)) {
@@ -582,7 +583,8 @@ function allowedTools(value: unknown): string[] {
   return value.split(/[\s,]+/).map((item) => item.trim()).filter(Boolean);
 }
 
-function readSkillMetadata(path: string): SkillMetadata {
+/** A SKILL.md's frontmatter, read from its head only: the skills library (skills-library.ts) reads skills this way too. */
+export function readSkillMetadata(path: string): SkillMetadata {
   const { text, bytes } = readHead(path, SKILL_HEAD_BYTES);
   const frontmatter = parseFrontmatter(text);
   const name = stringValue(frontmatter?.name) ?? basename(dirname(path));

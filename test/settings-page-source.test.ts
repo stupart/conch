@@ -163,9 +163,13 @@ describe("the page's layout and appearance", () => {
     expect(page).toContain(".frame(width: SettingsLayout.listWidth)");
     expect(page).toContain(".contentMargins(.trailing, SettingsLayout.trailingMargin(width: content.size.width), for: .scrollContent)");
     // Every section, and each one's header in the scroll view with it, so the column holds all of it.
-    for (const section of ["providers", "environments", "tools", "browser", "logins", "general", "phone", "permissions", "setup"]) {
+    for (const section of ["providers", "environments", "tools", "skills", "benchmarks", "browser", "logins", "general", "phone", "permissions", "setup"]) {
       expect(page, section).toContain(`case .${section}:`);
     }
+    // Skills and Benchmarks (2026-10-28) run the whole width, a reader of their own beside their list (SettingsSection.runsFullWidth).
+    expect(page).toContain("if router.state.section.runsFullWidth {");
+    expect(macSources["SkillsLibraryView.swift"]).toContain('SettingsSectionHeader(title: "Skills"');
+    expect(macSources["SkillsLibraryView.swift"]).toContain('SettingsSectionHeader(title: "Benchmarks"');
     expect(settings).toContain('SettingsSectionHeader(title: "General"');
     expect(macSources["ClaudeAccountsView.swift"]).toContain('SettingsSectionHeader(title: "Providers"');
     expect(settings).toContain('SettingsSectionHeader(title: "Environments"');
