@@ -111,6 +111,9 @@ struct WorkspaceNotices: View {
     // Sessions that were running when the Mac went down: brought back, or held to bring back (src/restart-recovery.ts).
     RestoreNoticeLine()
 
+    // Something kept failing and a runaway guard stopped conch doing more of it (src/runaway.ts): said once, plainly.
+    RunawayGuardNoticeLine()
+
     // The first launch opened conch at login: said once, here, when setup's welcome didn't say it (`LoginItem`).
     LoginItemNoticeLine()
 
@@ -264,6 +267,44 @@ private struct RestoreNoticeLine: View {
         let names = restore.restored.prefix(2).map(\.label).joined(separator: ", ")
         let more = restore.restored.count > 2 ? " and \(restore.restored.count - 2) more" : ""
         return "Brought back \(names)\(more) after your Mac restarted. They run in the background now."
+    }
+}
+
+/// A runaway guard tripped (src/runaway.ts, docs/runaway-guards.md): conch stopped restarting a worker that kept dying,
+/// reached its ceiling on processes, or stopped bringing sessions back on its own. One plain line for the newest, while
+/// it lasts; OK hides the trips on screen, and a guard that trips again says so again. Nothing to press but OK: each
+/// guard tries again by itself, and the line says when.
+private struct RunawayGuardNoticeLine: View {
+    @EnvironmentObject private var store: StateStore
+    @State private var dismissed: Set<String> = []
+
+    var body: some View {
+        let trips = RunawayGuardNotice.showing(store.state?.guards ?? [], dismissed: dismissed)
+        if let trip = trips.first {
+            HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.arrow.circlepath")
+                    .font(.system(size: 10.5, weight: .medium))
+                Text(RunawayGuardNotice.sentence(trip, more: trips.count - 1))
+                    .font(ConchTypography.font(size: 11.5))
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+                    .help(trips.map { [$0.what, $0.detail].compactMap { $0 }.joined(separator: ": ") }.joined(separator: "\n"))
+                Spacer(minLength: 8)
+                Button("OK") { dismissed.formUnion(trips.map(\.id)) }
+                    .buttonStyle(.plain)
+                    .font(ConchTypography.font(size: 11, weight: .medium))
+                    .foregroundStyle(ConchPalette.statusQuiet)
+            }
+            .foregroundStyle(ConchPalette.statusWaiting)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(ConchPalette.raised)
+
+            Rectangle()
+                .fill(ConchPalette.divider)
+                .frame(height: 1)
+        }
     }
 }
 

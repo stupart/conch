@@ -15,6 +15,7 @@ import type { SpeechEngineStatus } from "./speech-engine.ts";
 import type { PublishedPhone } from "./phone-setup.ts";
 import type { PublishedPractice } from "./practice.ts";
 import type { PublishedSessionSettings, SessionSettingsCatalog } from "./session-settings.ts";
+import type { GuardTrip } from "./runaway.ts";
 import { deviceExecutionCatalog, sessionExecution, type ExecutionCatalog, type SessionExecution } from "./execution-model.ts";
 
 export type PanelConchState = "idle" | "muted" | "paused" | "speaking" | "listening" | "recording" | "transcribing";
@@ -510,6 +511,12 @@ export interface PublishedState {
    * it wasn't watching when the Mac went down (`restart-recovery.ts`). Absent when there is nothing to say.
    */
   restore?: PublishedRestore;
+  /**
+   * What a runaway guard stopped conch doing because it kept failing (`runaway.ts`): a worker it stopped
+   * restarting, the ceiling on processes reached, sessions it stopped bringing back on its own. The Mac app says
+   * each until it is over. Absent when nothing has tripped.
+   */
+  guards?: GuardTrip[];
   /**
    * Where the speech engine stands (`speech-engine.ts`): checking, downloading
    * the whisper model (with progress), ready, or off and why — and where each

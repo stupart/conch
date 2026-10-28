@@ -178,6 +178,10 @@ public enum DaemonHealth {
     /// ping for `steadyAfter` has run, and the next exit starts the count, and the backoff, again. Its output can't be
     /// what says it ran: launched by the app it is headless and prints nothing, and one that prints and exits is the
     /// loop this stops. A frozen daemon replaced is the freeze budget's (`restartPlan`), never this one's.
+    ///
+    /// Forgiveness has a limit too: more than `hourlyLimit` exits in an hour gives up however steadily each ran, or a
+    /// daemon that crashed every three minutes, each time after answering long enough to be forgiven, was restarted
+    /// forever, loading its models again each time (runaway guards, docs/runaway-guards.md).
     public struct CrashBudget: Equatable, Sendable {
         public enum Plan: Equatable, Sendable {
             case restart(after: TimeInterval)
@@ -187,19 +191,23 @@ public enum DaemonHealth {
         public static let limit = 5
         public static let longestWait: TimeInterval = 30
         public static let steadyAfter: TimeInterval = 120
+        public static let hourlyLimit = 12
 
         /// Restarts since the last daemon that ran steadily.
         public private(set) var restarts = 0
         /// When the run of answers the daemon is on began; nil after anything but an answer.
         public private(set) var answeringSince: Date?
+        /// Exits in the last hour, forgiven or not.
+        public private(set) var exits: [Date] = []
 
         public init() {}
 
         /// The daemon exited: start another after the backoff, or give up.
-        public mutating func exited() -> Plan {
+        public mutating func exited(at now: Date = Date()) -> Plan {
             answeringSince = nil
             restarts += 1
-            guard restarts <= Self.limit else { return .giveUp }
+            exits = exits.filter { now.timeIntervalSince($0) < 3_600 } + [now]
+            guard restarts <= Self.limit, exits.count <= Self.hourlyLimit else { return .giveUp }
             return .restart(after: min(Self.longestWait, Double(1 << min(restarts, 16))))
         }
 

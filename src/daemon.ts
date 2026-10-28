@@ -70,7 +70,6 @@ export {
   shouldHandleTurnAudibly,
   startsConversationByListening,
 } from "./voice-loop.ts";
-import { appendFileSync } from "node:fs";
 import { currentTurnText } from "./transcript-turn.ts";
 import {
   existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -122,7 +121,7 @@ import {
   stopSoxProcess,
 } from "./listen.ts";
 import { createNarration, NARRATION_QUIET_WITHIN_MS } from "./narration.ts";
-import { INJECT_DEBUG_LOG, readSessionScreen, readTerminalTab, revealSessionWindow, withUIHold } from "./inject.ts";
+import { INJECT_DEBUG_LOG, INJECT_DEBUG_LOG_MAX_BYTES, readSessionScreen, readTerminalTab, revealSessionWindow, withUIHold } from "./inject.ts";
 import { createTerminalMirror } from "./terminal-mirror.ts";
 import { openSessionApp } from "./session-app-open.ts";
 import { adapterFor, transcriptFormatFor } from "./agent-adapter.ts";
@@ -379,6 +378,7 @@ import { createSetup, loginShellHas, MIC_CHECK_QUIET_WITHIN_MS, runInstallerInLo
 import { createPractice, practiceGate, PRACTICE_LABEL, PRACTICE_SESSION_ID, type Practice } from "./practice.ts";
 import { resolveAgentBinaries } from "./doctor-checks.ts";
 import { codexHooksAreWiredAt, isConchHookCommand, runCodexInstall, runInstall } from "./install.ts";
+import { appendCapped, childCeilingFrom, installChildCeiling, RESTART_POLICY, runawayGuards } from "./runaway.ts";
 import { pluginInstalledFor, runInstallPlugin } from "./plugin-install.ts";
 
 /**
@@ -727,12 +727,7 @@ const PUBLISHED_CONVERSATION_WINDOW = 30;
  */
 /** Queue tracing, always on: a stuck event is invisible without it. */
 function traceQueue(message: string): void {
-  try {
-    appendFileSync(
-      INJECT_DEBUG_LOG,
-      `[${new Date().toISOString().slice(11, 23)}] queue: ${message}\n`,
-    );
-  } catch {}
+  appendCapped(INJECT_DEBUG_LOG, `[${new Date().toISOString().slice(11, 23)}] queue: ${message}\n`, INJECT_DEBUG_LOG_MAX_BYTES);
 }
 
 export function injectTimeoutFor(line: string): number {
@@ -878,6 +873,20 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   // running through shutdown, so a shutdown that hangs is named too; process.exit ends it.
   if (loopWatchdogEnabled()) startLoopWatchdog({ logPath: LOG_FILE });
   breadcrumb("daemon: starting");
+  // Runaway guards (runaway.ts, docs/runaway-guards.md): a trip is said once here and published for the Mac app
+  // (wired to the panel below, once it exists). The ceiling holds this process's live children to a number a steady
+  // daemon never comes near, over every spawn site at once; past it a spawn throws, as it does for a missing binary.
+  runawayGuards.wire({ log });
+  installChildCeiling({
+    limit: childCeilingFrom(),
+    onRefused: (live, program, byProgram) => runawayGuards.note({
+      name: "processes",
+      what: "starting more processes",
+      why: `had ${live} running at once${byProgram.length ? ` (${byProgram.slice(0, 3).map(([name, count]) => `${count} ${name}`).join(", ")})` : ""}`,
+      detail: `refused ${program}`,
+      forMs: 10 * 60_000,
+    }),
+  });
   const daemonSettingsPath = settingsPathFor();
   const ownerDeviceId = await loadDeviceId(dirname(daemonSettingsPath), log);
   const rendererSelection = configureRenderer();
@@ -948,6 +957,25 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   let panelOrder: string[] = [];
   let panelLabels = new Map<string, string>();
   let panelSessions = new Map<string, SessionInfo>();
+  /**
+   * Every session conch starts on its own, not because someone asked: the two guards below. Each caps a conversation
+   * at three a day, but that cap is by conversation id, and a relaunch whose id came back different would never
+   * reach it; this caps them all together, well above the biggest restart wave conch has seen (fourteen sessions
+   * after the 2026-10-26 restart), so only a loop reaches it (`runaway.ts`).
+   */
+  const relaunches = runawayGuards.breaker("session-relaunch", "bringing sessions back on its own", {
+    limit: 40,
+    windowMs: 10 * 60_000,
+    cooldownsMs: [60 * 60_000, 4 * 60 * 60_000, 24 * 60 * 60_000],
+    calmMs: 24 * 60 * 60_000,
+  });
+  const onItsOwn = <T>(request: StartSessionRequest, launch: () => Promise<T>): Promise<T> => {
+    if (!relaunches.allows()) {
+      return Promise.reject(new Error("conch has brought back too many sessions on its own in the last few minutes"));
+    }
+    relaunches.record(`${request.backend} in ${request.cwd ?? "?"}`);
+    return launch();
+  };
   /** Background sessions whose tmux server dies under them come back (`background-recovery.ts`). */
   const backgroundGuard = new BackgroundGuard({
     file: join(dirname(daemonSettingsPath), "background-sessions.json"),
@@ -956,7 +984,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       const args = session?.pid ? await readProcessArgs(session.pid) : null;
       return session && args ? restartRequest(session, args).request : null;
     },
-    launch: (request) => launchSession(request),
+    launch: (request) => onItsOwn(request, () => launchSession(request)),
     log,
   });
   /**
@@ -970,12 +998,14 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       const args = session?.pid ? await readProcessArgs(session.pid) : null;
       return session && args ? restartRequest(session, args).request : null;
     },
-    launch: (request) => launchSession(request),
+    launch: (request) => onItsOwn(request, () => launchSession(request)),
     log,
     changed: () => void renderSessionPanel(),
     ...(process.env.CONCH_BOOT_TIME && /^\d+$/.test(process.env.CONCH_BOOT_TIME)
       ? { boot: () => Number(process.env.CONCH_BOOT_TIME) } : { boot: () => bootTime() }),
   });
+  // A guard tripping, or a trip ending, is something to show (`PublishedState.guards`).
+  runawayGuards.wire({ changed: () => void renderSessionPanel() });
   /**
    * What each session's own record says it runs (session-settings.ts), newest kept: a tail
    * with no turn in it must not blank a value an earlier read found.
@@ -1188,6 +1218,11 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     healthCheckMs: TTS_WORKER_HEALTH_CHECK_MS,
     // Null (the default, 30 s) unless scripts/voice-heal-e2e.ts set CONCH_TEST_HOOKS.
     periodicRetryMs: voiceTestFigure("worker-retry-ms") ?? undefined,
+    // Twelve, not the usual five: voice-heal's own repairs (a retry, a rebuild, a fetch) each restart it once or
+    // twice in quick succession, and they must not wait out a cool-down. The e2e breaks it many ways in one run.
+    restarts: runawayGuards.breaker("kokoro", "restarting the natural voices (Kokoro)", {
+      ...RESTART_POLICY, limit: voiceTestFigure("worker-restart-limit") ?? 12,
+    }),
     log,
   });
   if (cfg.ttsEngine !== "server") {
@@ -2266,9 +2301,15 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     if (newly.length) log(`conch tools out of date in ${newly.length} session${newly.length === 1 ? "" : "s"}: ${newly.map((id) => labelForSessionId(id)).join(", ")}`);
     publishedStateWriter.request();
   }
-  const toolsStaleTimer = setInterval(() => void refreshToolsStale().catch(() => {}), 60_000);
+  /** One look at a time: a `ps` that hung added another every minute (`listMcpServerProcesses` now has a leash too). */
+  let toolsStaleLook: Promise<void> | null = null;
+  const lookForStaleTools = (): void => {
+    if (toolsStaleLook) return;
+    toolsStaleLook = refreshToolsStale().catch(() => {}).finally(() => { toolsStaleLook = null; });
+  };
+  const toolsStaleTimer = setInterval(lookForStaleTools, 60_000);
   toolsStaleTimer.unref?.();
-  setTimeout(() => void refreshToolsStale().catch(() => {}), 15_000).unref?.();
+  setTimeout(lookForStaleTools, 15_000).unref?.();
 
   const publishedStateWriter = createPublishThrottle(() => {
     breadcrumb("published state: writing the sessions file");
@@ -2667,6 +2708,9 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       // What came back after a restart, and what is held for the person (`restart-recovery.ts`).
       const restore = restartGuard.summary();
       if (restore.restored.length || restore.offered.length) lastPublishedPanelState.restore = restore;
+      // What a runaway guard stopped, until it is over (`runaway.ts`).
+      const guards = runawayGuards.published();
+      if (guards.length) lastPublishedPanelState.guards = guards;
       // Setup's practice session, first among the rows while it runs, and `features.practice` always (practice.ts).
       if (practice) lastPublishedPanelState = practice.publish(lastPublishedPanelState);
       // Each working row's line, through its throttle: a fresh build carries none until this puts them back.
@@ -4020,6 +4064,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       exclusive: (task, outerSignal) => speech.runProbe((laneSignal) => {
         return task(AbortSignal.any([outerSignal, laneSignal]));
       }),
+      restarts: runawayGuards.breaker("kokoro-server", "restarting the natural voices (mlx_audio.server)"),
       log,
     });
   }
@@ -4081,6 +4126,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     },
     resetReadiness: () => whisperServerClient.resetHealth(),
     exclusive: (task, signal) => whisperServerClient.runExclusive(task, signal),
+    restarts: runawayGuards.breaker("whisper-server", "restarting the speech engine (whisper-server)"),
     log,
   });
 
@@ -4145,7 +4191,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   const codexTurnMemory: CodexTurnMemory = new Map();
   /** The ask already announced per Codex session, so a five-second poll says it once. */
   const codexApprovalMemory = new Map<string, string>();
-  const codexTimer = setInterval(() => void (async () => {
+  async function watchCodexTurns(): Promise<void> {
     breadcrumb("timer: codex turn watch");
     let ended: ReturnType<typeof detectCodexTurnEnds>;
     let approvals: ReturnType<typeof detectCodexApprovals>;
@@ -4212,7 +4258,17 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         });
       })();
     }
-  })(), 5_000);
+  }
+  /**
+   * One look at a time. A look can outlast the five seconds (its process probes may take six), and ticks that
+   * overlapped each started their own probes, and could each announce the same turn.
+   */
+  let codexWatching = false;
+  const codexTimer = setInterval(() => {
+    if (codexWatching) return;
+    codexWatching = true;
+    void watchCodexTurns().finally(() => { codexWatching = false; });
+  }, 5_000);
   codexTimer.unref?.();
 
   // Warm Whisper independently after the socket and signal path are live.

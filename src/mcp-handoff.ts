@@ -87,6 +87,8 @@ export class McpHandoff {
   /** A published toolset whose hand-off came to nothing: not tried again. */
   readonly #declined = new Set<string>();
   #child: HandoffChild | undefined;
+  /** The published toolset the fresh server took over for: declined too if that server dies. */
+  #handedOver: string | undefined;
   #proxying = false;
   /** Requests sent on to the fresh server and not answered yet. */
   readonly #pending = new Set<JsonRpcId>();
@@ -153,6 +155,7 @@ export class McpHandoff {
       return;
     }
     this.#proxying = true;
+    this.#handedOver = published;
     this.#options.diagnostic(`hand-off: a fresh server has the installed conch's tools; told the client the list changed`);
     await this.#options.writeLine(LIST_CHANGED);
     void child.exited.then(() => this.#lost(child));
@@ -209,6 +212,10 @@ export class McpHandoff {
     if (this.#child !== child || this.#closed) return;
     this.#child = undefined;
     this.#proxying = false;
+    // Not tried again for these tools: a fresh server that took over and died was started again at the next check,
+    // a minute later, and every minute after, for as long as the installed conch's server kept dying. A newer
+    // toolset (the next deploy) is a new try.
+    if (this.#handedOver) this.#declined.add(this.#handedOver);
     this.#options.diagnostic("hand-off: the fresh server exited; this server answers again, with its own tools");
     for (const id of this.#pending) {
       await this.#options.writeLine(JSON.stringify({

@@ -138,17 +138,27 @@ export function parseMcpServerProcesses(output: string): McpServerProcess[] {
   return servers;
 }
 
-/** Every `conch mcp` process on this Mac; null when `ps` can't say. */
-export async function listMcpServerProcesses(): Promise<McpServerProcess[] | null> {
+/**
+ * Every `conch mcp` process on this Mac; null when `ps` can't say, in `timeoutMs` (killed then, like `probe.ts`'s):
+ * the daemon asks once a minute, and one that hung held its caller, and its `ps`, for good.
+ */
+export async function listMcpServerProcesses(timeoutMs = 10_000): Promise<McpServerProcess[] | null> {
   try {
     const child = Bun.spawn(["ps", "-axo", "pid=,ppid=,lstart=,args="], {
       stdout: "pipe",
       stderr: "ignore",
       env: { ...process.env, LC_ALL: "C" },
     });
-    const output = await new Response(child.stdout).text();
-    if (await child.exited !== 0) return null;
-    return parseMcpServerProcesses(output);
+    const timer = setTimeout(() => {
+      try { child.kill("SIGKILL"); } catch { /* already gone */ }
+    }, timeoutMs);
+    try {
+      const output = await new Response(child.stdout).text();
+      if (await child.exited !== 0) return null;
+      return parseMcpServerProcesses(output);
+    } finally {
+      clearTimeout(timer);
+    }
   } catch {
     return null;
   }

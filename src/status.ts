@@ -30,6 +30,7 @@ import {
   reviewReady,
 } from "./panel.ts";
 import { conchHome } from "./home.ts";
+import { LogDamper } from "./runaway.ts";
 import { toClipboard } from "./inject.ts";
 import { buildClipboardEscape, type MouseEvent } from "./theater-mouse.ts";
 import {
@@ -1901,9 +1902,19 @@ export function prepareLogFile(): void {
   } catch {}
 }
 
+/**
+ * One line said over and over is written ten times a minute and then counted (`runaway.ts`): a storm of one error
+ * would otherwise roll the hours before it, which explain it, out of both files, and stat and append on every line.
+ */
+const logDamper = new LogDamper();
+
 /** Print a log line without clobbering (or being clobbered by) terminal chrome.
  *  Always recorded to LOG_FILE; only shown in the pane when logs are toggled on. */
 export function logAbove(msg: string): void {
+  for (const line of logDamper.admit(msg)) writeLogLine(line);
+}
+
+function writeLogLine(msg: string): void {
   try {
     // Roll over while running, not only at startup: a daemon that lives for
     // weeks grew it without bound. One previous file is kept. Measured on disk

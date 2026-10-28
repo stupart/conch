@@ -1678,6 +1678,8 @@ final class StateStore: ObservableObject {
             practice: sourceState.practice,
             sessionSettings: sourceState.sessionSettings,
             naturalVoices: sourceState.naturalVoices,
+            // What a runaway guard stopped because it kept failing (src/runaway.ts).
+            guards: sourceState.guards,
             // Whether the daemon can approve at all (✓ Approve shows only then), and the lagoon's jar.
             seaGlass: sourceState.seaGlass,
             // What came back after the Mac restarted, and what waits on the person (src/restart-recovery.ts).

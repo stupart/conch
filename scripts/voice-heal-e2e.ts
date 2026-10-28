@@ -68,6 +68,9 @@ chmodSync(uvOf(appDir), 0o755);
 // The switchboard: how often a waiting heal looks again, and the worker's periodic retry, shortened for the test.
 writeFileSync(join(hooks, "watch-ms"), "400\n");
 writeFileSync(join(hooks, "worker-retry-ms"), "1500\n");
+// This run breaks the worker many ways in a few minutes, each one a fresh failure to heal from: its restart breaker
+// (runaway.ts), which would rightly call that a loop, is set out of reach.
+writeFileSync(join(hooks, "worker-restart-limit"), "10000\n");
 const setHook = (name: string, value: string | null) => {
   if (value === null) rmSync(join(hooks, name), { force: true });
   else writeFileSync(join(hooks, name), `${value}\n`);

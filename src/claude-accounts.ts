@@ -175,7 +175,9 @@ export async function readClaudeAccountStatus(account: ClaudeAccount, isolate = 
       env, cwd: conchHome(), stdout: "pipe", stderr: "ignore",
     });
     let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; child.kill(); }, 5_000);
+    // SIGKILL, not SIGTERM: this awaits the exit, and a `claude` that ignored a TERM held its caller (a status line,
+    // Settings' account list) for as long as it liked.
+    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, 5_000);
     try {
       const output = new Response(child.stdout).text();
       await child.exited;

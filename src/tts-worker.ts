@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { conchHome } from "./home.ts";
 import { dirname, join } from "node:path";
 import { awaitWithWatchdog, type WatchdogWarning } from "./audio-watchdog.ts";
+import { Breaker, duration } from "./runaway.ts";
 import workerSource from "./tts-worker.py" with { type: "text" };
 
 export const TTS_WORKER_PROTOCOL_VERSION = 1;
@@ -193,6 +194,14 @@ export interface ManagedTtsWorkerOptions {
   periodicRetryMs?: number;
   outputDir?: string;
   log?: WatchdogWarning;
+  /**
+   * Counts every restart, across bursts (`runaway.ts`): a burst's retries, a periodic retry, a restart after the
+   * worker exited or failed its health check. A load is not one (a boot, a prewarm, a new interpreter: the first
+   * try of a "startup"). A worker that comes up warm and then dies resets each burst, so it was restarted, and its
+   * model loaded again, every few seconds for as long as the daemon lived; past five in ten minutes this refuses,
+   * speech stays on `say`, and the periodic retry waits out the cool-down. Absent: a breaker of the worker's own.
+   */
+  restarts?: Breaker;
 }
 
 function deferredReady(generation: number): ReadyWaiter {
@@ -344,10 +353,12 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
   private readonly outputFiles = new Set<string>();
   private readonly lifecycle = new AbortController();
   private readonly log: WatchdogWarning;
+  private readonly restarts: Breaker;
 
   constructor(private readonly options: ManagedTtsWorkerOptions) {
     this.status = options.enabled ? "starting" : "disabled";
     this.python = options.python ?? null;
+    this.restarts = options.restarts ?? new Breaker({ name: "kokoro", what: "restarting the Kokoro voice worker" });
     const logger = options.log ?? console.warn;
     this.log = (message) => {
       try { logger(message); } catch {}
@@ -614,8 +625,19 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
   private async recover(reason: string): Promise<boolean> {
     const delays = this.options.retryDelaysMs ?? TTS_WORKER_RETRY_DELAYS_MS;
     this.log(`kokoro worker ${reason === "startup" ? "starting" : `recovery requested: ${reason}`}`);
-    for (const delay of delays) {
+    for (const [attempt, delay] of delays.entries()) {
       if (!(await abortableSleep(delay, this.lifecycle.signal)) || this.stopped()) return false;
+      // A load's first try is a load; every other spawn is a restart, and restarts are what the breaker bounds.
+      if (reason !== "startup" || attempt > 0) {
+        if (!this.restarts.allows()) {
+          // No new failure to report: voice-heal heard of the last one, and hears of the next after the cool-down.
+          this.status = "down";
+          this.log(`kokoro worker keeps failing, so it is not being restarted for ${duration(this.restarts.waitMs())}; using say`);
+          this.armPeriodic();
+          return false;
+        }
+        this.restarts.record(this.lastError ?? reason);
+      }
       try {
         const frame = await this.spawnOnce();
         if (this.stopped()) return false;
@@ -903,9 +925,10 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
     return pending;
   }
 
+  /** Every 30 s, or once the restart breaker's cool-down is over, whichever is later. */
   private armPeriodic(): void {
     if (this.periodicTimer || this.stopped()) return;
-    const delay = this.options.periodicRetryMs ?? TTS_WORKER_PERIODIC_RETRY_MS;
+    const delay = Math.max(this.options.periodicRetryMs ?? TTS_WORKER_PERIODIC_RETRY_MS, this.restarts.waitMs());
     this.periodicTimer = setTimeout(() => {
       this.periodicTimer = null;
       if (!this.stopped()) void this.beginRecovery("periodic retry");

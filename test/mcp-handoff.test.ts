@@ -173,6 +173,9 @@ describe("handing over to a newer conch's server", () => {
     ]);
     await c.send({ jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "conch_sessions", arguments: {} } });
     expect(c.local).toEqual([{ name: "conch_sessions" }]);
+    // The same tools are not handed over again: a server that dies after taking over is not restarted every check.
+    await c.send({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "conch_sessions", arguments: {} } });
+    expect(c.spawned()).toBe(1);
     await c.close();
   });
 });

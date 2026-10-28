@@ -18,6 +18,7 @@ import {
   type TtsWorkerProcess,
 } from "../src/tts-worker.ts";
 import { parseWav } from "../src/tts-wav.ts";
+import { Breaker } from "../src/runaway.ts";
 
 const MODEL = "mock/Kokoro";
 const MOCK_WORKER = join(import.meta.dir, "fixtures", "mock-tts-worker.py");
@@ -354,6 +355,64 @@ describe("managed TTS worker JSONL protocol", () => {
     expect(await harness.worker.start()).toBeFalse();
     expect(harness.kills).toContainEqual({ pid, signal: "SIGKILL" });
     expect(readdirSync(harness.root).filter((name) => name.endsWith(".wav"))).toEqual([]);
+  });
+});
+
+describe("Kokoro restarts (runaway guard)", () => {
+  /** A worker that says it is ready at once, and dies when told to: the load that works and then falls over. */
+  function flakyWorkers() {
+    const deaths: Array<(code: number) => void> = [];
+    const spawn = (): TtsWorkerProcess => {
+      let die!: (code: number) => void;
+      const exited = new Promise<number>((resolve) => { die = resolve; });
+      deaths.push(die);
+      const ready = JSON.stringify({
+        type: "ready", protocol: 1, model: MODEL, voices: ["af_heart"], sample_rate: 24_000, pid: 1, load_ms: 1, warmup_ms: 1,
+      });
+      return {
+        pid: 90_000 + deaths.length,
+        stdin: { write: () => 0, flush: () => 0, end: () => {} },
+        stdout: new ReadableStream<Uint8Array>({ start: (controller) => controller.enqueue(new TextEncoder().encode(`${ready}\n`)) }),
+        exited,
+        kill: () => die(137),
+        unref: () => {},
+      };
+    };
+    return { spawn, deaths };
+  }
+
+  test("a worker that loads and then dies is restarted five times in ten minutes, then left on say", async () => {
+    let now = 0;
+    const restarts = new Breaker({ name: "kokoro", what: "restarting Kokoro", now: () => now });
+    const { spawn, deaths } = flakyWorkers();
+    const lines: string[] = [];
+    const worker = new ManagedTtsWorker({
+      enabled: true, model: MODEL, voices: ["af_heart"], speed: 1, command: ["kokoro"], spawn,
+      retryDelaysMs: [0], periodicRetryMs: 30_000, startupTimeoutMs: 1_000, restarts, log: (line) => lines.push(line),
+    });
+    try {
+      expect(await worker.start()).toBeTrue(); // the load: not a restart
+      for (let death = 1; death <= 5; death++) {
+        deaths.at(-1)!(1);
+        for (let i = 0; i < 20 && deaths.length === death; i++) await Bun.sleep(1);
+        for (let i = 0; i < 20 && !worker.isReady(); i++) await Bun.sleep(1);
+        expect(worker.isReady()).toBeTrue();
+        now += 60_000;
+      }
+      expect(deaths).toHaveLength(6);
+      deaths.at(-1)!(1);
+      for (let i = 0; i < 20 && worker.snapshot().status !== "down"; i++) await Bun.sleep(1);
+      expect(worker.snapshot()).toMatchObject({ status: "down", spawnAttempts: 6 });
+      expect(deaths).toHaveLength(6);
+      // The fifth restart tripped it a minute ago: four minutes of its five-minute cool-down are left.
+      expect(lines.at(-1)).toBe("kokoro worker keeps failing, so it is not being restarted for 4 min; using say");
+      // Speech asking for it while the breaker is open spawns nothing either.
+      worker.requestRecovery("synth while down");
+      await Bun.sleep(5);
+      expect(deaths).toHaveLength(6);
+    } finally {
+      worker.close();
+    }
   });
 });
 

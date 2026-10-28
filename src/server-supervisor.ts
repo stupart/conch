@@ -4,6 +4,7 @@ import {
   type WatchdogWarning,
 } from "./audio-watchdog.ts";
 import { breadcrumb } from "./loop-watchdog.ts";
+import { Breaker, duration } from "./runaway.ts";
 
 export type ServerSupervisorStatus = "disabled" | "starting" | "ready" | "recovering" | "fallback" | "unloaded" | "stopped";
 export type ServerOwnership = "none" | "adopted" | "owned";
@@ -57,6 +58,13 @@ export interface ServerSupervisorOptions {
    * setting change applies at the next transcription without a restart.
    */
   idleUnloadMs?: () => number;
+  /**
+   * Counts every replacement a recovery spawns, across bursts (`runaway.ts`). A burst is three tries, and the
+   * periodic canary opens another every 30 s, so without it a server that never starts, or starts and dies, was
+   * spawned forever; past five in ten minutes this refuses, and the canary waits out its cool-down instead.
+   * Absent: a breaker of the supervisor's own, so no supervisor is ever without one.
+   */
+  restarts?: Breaker;
 }
 
 const DEFAULT_RETRY_DELAYS_MS = [500, 1_000, 2_000];
@@ -121,6 +129,7 @@ export class ServerSupervisor<RequestReason extends string = string> {
   private readonly schedule: (callback: () => void, ms: number) => ServerTimer;
   private readonly terminate: (child: WatchdogProcess, signal: AbortSignal) => Promise<void>;
   private readonly exclusive: <T>(task: (signal: AbortSignal) => Promise<T>, signal: AbortSignal) => Promise<T>;
+  private readonly restarts: Breaker;
 
   constructor(private readonly options: ServerSupervisorOptions) {
     this.status = options.enabled ? "starting" : "disabled";
@@ -134,6 +143,8 @@ export class ServerSupervisor<RequestReason extends string = string> {
     this.schedule = options.schedule ?? defaultSchedule;
     this.terminate = options.terminate ?? ((child, signal) => this.terminateChild(child, signal));
     this.exclusive = options.exclusive ?? ((task, signal) => task(signal));
+    this.restarts = options.restarts
+      ?? new Breaker({ name: options.language.service, what: `restarting ${options.language.service}` });
   }
 
   snapshot(): ServerSupervisorSnapshot {
@@ -438,13 +449,23 @@ export class ServerSupervisor<RequestReason extends string = string> {
         continue;
       }
 
+      // Every bounded burst ends in the fallback, but the periodic canary opens another: the breaker is what
+      // bounds them all together. Refused, it stays on the fallback until the cool-down is over.
+      if (!this.restarts.allows()) {
+        this.enterFallback(
+          `${this.service} keeps failing, so it is not being restarted for ${duration(this.restarts.waitMs())}; ${this.fallback}`,
+        );
+        return;
+      }
       let child: WatchdogProcess;
       try {
         child = this.spawnOwned();
       } catch (error) {
+        this.restarts.record(`restart spawn failed: ${String(error)}`);
         this.log(`${this.service} restart spawn failed: ${String(error)}`);
         continue;
       }
+      this.restarts.record(`replacement after ${reason}`);
       try {
         if (await this.probeCurrentChild(
           child,
@@ -652,9 +673,10 @@ export class ServerSupervisor<RequestReason extends string = string> {
     });
   }
 
+  /** Every 30 s, or once the restart breaker's cool-down is over, whichever is later. */
   private armPeriodicProbe(): void {
     if (this.stopped() || this.timer) return;
-    this.armTimer(this.periodicProbeMs, () => {
+    this.armTimer(Math.max(this.periodicProbeMs, this.restarts.waitMs()), () => {
       if (this.recovery) this.armPeriodicProbe();
       else this.requestRecovery("periodic-probe");
     });

@@ -193,13 +193,32 @@ final class DaemonHealthTests: XCTestCase {
             clock = clock.addingTimeInterval(5)
         }
         XCTAssertEqual(budget.restarts, 0)
-        XCTAssertEqual(budget.exited(), .restart(after: 2), "the backoff starts again too")
-        // Over a long session, exits that each follow a steady run never add up to giving up.
-        for _ in 0..<10 {
+        XCTAssertEqual(budget.exited(at: clock), .restart(after: 2), "the backoff starts again too")
+        // Over a long session, exits that each follow a steady run, a few an hour, never add up to giving up.
+        for _ in 0..<30 {
             for step in 0...24 { budget.observed(.healthy, at: clock.addingTimeInterval(Double(step) * 5)) }
-            clock = clock.addingTimeInterval(200)
-            XCTAssertEqual(budget.exited(), .restart(after: 2))
+            clock = clock.addingTimeInterval(600)
+            XCTAssertEqual(budget.exited(at: clock), .restart(after: 2))
         }
+    }
+
+    /// Forgiveness has a limit: a daemon that answers for its two minutes and then crashes, over and over, is a crash
+    /// loop with a longer period. More than twelve exits in an hour gives up and says so.
+    func testSteadyRunsDontForgiveACrashEveryFewMinutes() {
+        var budget = DaemonHealth.CrashBudget()
+        var clock = now
+        var plans: [DaemonHealth.CrashBudget.Plan] = []
+        for _ in 0..<13 {
+            for step in 0...24 { budget.observed(.healthy, at: clock.addingTimeInterval(Double(step) * 5)) }
+            clock = clock.addingTimeInterval(180)
+            plans.append(budget.exited(at: clock))
+        }
+        XCTAssertEqual(plans.prefix(12), Array(repeating: .restart(after: 2), count: 12)[...])
+        XCTAssertEqual(plans.last, .giveUp)
+        // Old exits age out: an hour on, the count has room again.
+        clock = clock.addingTimeInterval(3_600)
+        for step in 0...24 { budget.observed(.healthy, at: clock.addingTimeInterval(Double(step) * 5)) }
+        XCTAssertEqual(budget.exited(at: clock.addingTimeInterval(180)), .restart(after: 2))
     }
 
     func testAnswersThatDontLastDontForgive() {
