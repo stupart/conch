@@ -479,8 +479,9 @@ final class StateStore: ObservableObject {
     /// Tell the daemon a deliverable has been looked at, so every surface agrees about it and
     /// a relaunch does not forget. Fire and forget, like reveal: whoever showed it has already
     /// greyed it, and the daemon's copy is what makes that survive and reach the phone.
-    func markReviewViewed(sessionId: String, review: String) {
-        let request = ConchSessionCommandRequest(sessionId: sessionId, command: .reviewViewed, review: review)
+    /// `path`: one of a folder deliverable's focus paths, opened in its viewer, for its mark to grey (`seen`).
+    func markReviewViewed(sessionId: String, review: String, path: String? = nil) {
+        let request = ConchSessionCommandRequest(sessionId: sessionId, command: .reviewViewed, review: review, path: path)
         Task { _ = await socketClient.request(request) }
     }
 

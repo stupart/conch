@@ -28,6 +28,7 @@ import {
   type AgentCapabilitiesRead,
 } from "./agent-capabilities.ts";
 import { isAgentInstall, type AgentInstall } from "./agent-install.ts";
+import { FOCUS_PATH_MAX } from "./deliverables.ts";
 import type { ResumableSession } from "./resumable.ts";
 import { startOptionsError, startPromptError, teleportRequestError } from "./session-lifecycle.ts";
 import { normalizeSessionLabel } from "./sessions.ts";
@@ -947,7 +948,7 @@ export type SessionControlMessage =
    * it, not a position or a time: the row may hold several, and which one was read is the
    * whole point.
    */
-  | { kind: "session-command"; sessionId: string; command: "review-viewed"; review: string }
+  | { kind: "session-command"; sessionId: string; command: "review-viewed"; review: string; path?: string }
   /**
    * Take deliverables off the session: one filing by the identity it was filed with, or every
    * filing of an `artifact`. Exactly one of the two.
@@ -1353,7 +1354,14 @@ export function validateSessionControlMessage(value: unknown): ParseResult<Sessi
     case "review-viewed": {
       const review = boundedPrintable(value.review, "review-viewed: review", MAX_REVIEW_ID_LENGTH);
       if (!review.ok) return review;
-      return { ok: true, value: { kind: "session-command", sessionId: sessionId.value, command: "review-viewed", review: review.value } };
+      // One of a folder's focus paths, opened in the viewer (`SessionReview.seen`): the daemon marks it only if it is
+      // one, as it is in `focus`.
+      const path = value.path === undefined ? undefined : boundedPrintable(value.path, "review-viewed: path", FOCUS_PATH_MAX);
+      if (path && !path.ok) return path;
+      return {
+        ok: true,
+        value: { kind: "session-command", sessionId: sessionId.value, command: "review-viewed", review: review.value, ...(path ? { path: path.value } : {}) },
+      };
     }
     // The same identity rule as review-viewed: the one filing, by the id it was filed with, and nothing else on it.
     case "review-approve":

@@ -9,11 +9,16 @@
  *
  *   bun scripts/folder-deliverable-e2e.ts [--keep]
  *
+ * Then the Mac's side of what was looked at: opening a focus path in the viewer is `review-viewed` with its `path`, over
+ * the socket as the app sends it. The daemon publishes it as seen on that filing only, refuses a path the filing didn't
+ * point at, and a newer filing that points at the path again starts with it unseen.
+ *
  * Never plays audio, never opens the microphone, never downloads a model (the engine paths point at nothing), and
  * stops its daemon by its own pid.
  */
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { connect } from "node:net";
 import { join } from "node:path";
 import { artifactIdentity } from "../src/deliverables.ts";
 import { sendToDaemon } from "../src/hook.ts";
@@ -98,7 +103,22 @@ const env: Record<string, string> = {
   CONCH_PHONE: "0",
 };
 
-type Review = { summary: string; link?: string; kind?: string; version?: number; artifact?: string; focus?: string[]; id?: string };
+type Review = { summary: string; link?: string; kind?: string; version?: number; artifact?: string; focus?: string[]; id?: string; seen?: Record<string, number>; viewedAt?: number };
+
+/** One control message and the daemon's answer, as the Mac app sends one (`ConchSessionCommandRequest`). */
+function ask(socket: string, message: Record<string, unknown>): Promise<Record<string, unknown>> {
+  return new Promise((done, fail) => {
+    const client = connect(socket, () => client.write(JSON.stringify(message) + "\n"));
+    let reply = "";
+    client.on("data", (data) => {
+      reply += data.toString();
+      const line = reply.split("\n").find((each) => each.trim());
+      if (line && reply.includes("\n")) { client.destroy(); try { done(JSON.parse(line)); } catch (error) { fail(error); } }
+    });
+    client.on("error", fail);
+    setTimeout(() => { client.destroy(); fail(new Error(`no answer to ${JSON.stringify(message)}`)); }, 10_000);
+  });
+}
 type Row = { id: string; review?: Review; reviews?: Review[] };
 const sessionsFile = () => readFileSync(env.CONCH_SESSIONS_FILE!, "utf8");
 const ourRow = (): Row | null => {
@@ -138,6 +158,20 @@ try {
   check(accepted?.outcome === "filed" && accepted.kind === "folder" && accepted.version === 1,
     `review_to_front filed the folder: ${first.text.slice(0, 200)}`);
   const one = await until("the folder deliverable", 10_000, () => ourRow()?.review?.kind === "folder" ? ourRow()!.review! : null);
+
+  // Opened in the Mac's viewer: the file, then a file inside the pointed-at folder (which the app sends as "test").
+  const seenOne = await ask(env.CONCH_SOCKET!, { kind: "session-command", sessionId, command: "review-viewed", review: one?.id, path: "src/setup.ts" });
+  check(seenOne.changed === true, `review-viewed with a focus path is taken: ${JSON.stringify(seenOne)}`);
+  await ask(env.CONCH_SOCKET!, { kind: "session-command", sessionId, command: "review-viewed", review: one?.id, path: "test" });
+  const seen = await until("the seen paths published", 10_000, () => {
+    const held = ourRow()?.review;
+    return held?.seen?.["src/setup.ts"] && held.seen.test ? held : null;
+  });
+  check(Boolean(seen?.viewedAt) && Object.keys(seen?.seen ?? {}).sort().join() === "src/setup.ts,test",
+    `published as seen on that filing, and the filing looked at: ${JSON.stringify(seen?.seen)}`);
+  const notPointed = await ask(env.CONCH_SOCKET!, { kind: "session-command", sessionId, command: "review-viewed", review: one?.id, path: "src/parts/never-published.ts" });
+  check(notPointed.changed === false && !JSON.stringify(ourRow()?.review?.seen).includes("never-published"),
+    `a path the filing didn't point at changes nothing: ${JSON.stringify(notPointed)}`);
   const artifact = artifactIdentity(realpathSync(module));
   check(one?.link === module && one.version === 1 && one.artifact === artifact, `published: kind folder, v1, link ${one?.link}`);
   check(JSON.stringify(one?.focus) === JSON.stringify(["src/setup.ts", "test"]), `…with its focus relative to it: ${JSON.stringify(one?.focus)}`);
@@ -150,6 +184,8 @@ try {
   check(two?.review?.artifact === artifact && two.reviews?.length === 2 && two.reviews.every((held) => held.artifact === artifact),
     `the daemon filed it as the same artifact's version 2, beside version 1 (${two?.reviews?.map((held) => `v${held.version}`).join(", ")})`);
   check(JSON.stringify(two?.review?.focus) === JSON.stringify(["test/setup.test.ts"]), `…each version with its own focus: ${JSON.stringify(two?.review?.focus)}`);
+  check(two?.review?.seen === undefined && two?.reviews?.[0]?.seen?.["src/setup.ts"] !== undefined,
+    `…and nothing seen on version 2, while version 1 keeps what was: ${JSON.stringify(two?.reviews?.map((held) => held.seen ?? null))}`);
 
   const listed = await call("conch_deliverables", {});
   check(!listed.isError && JSON.parse(listed.text).deliverables[0]?.focus?.[0] === "test/setup.test.ts", "conch_deliverables lists the focus");
@@ -165,6 +201,13 @@ try {
   check(sent, "a raw review-published with an escaping focus reached the socket");
   const logged = await until("the daemon's refusal", 10_000, () => readFileSync(env.CONCH_LOG_FILE!, "utf8").includes("refused a deliverable's focus"));
   check(Boolean(logged) && ourRow()?.review?.summary === "The layout, with its tests", "the daemon refused it and filed nothing");
+
+  // The agent points at a path seen in version 1 again: version 3 has it unseen.
+  const third = await call("review_to_front", { summary: "The setup again", link: module, focus: ["src/setup.ts"] });
+  check(!third.isError && JSON.parse(third.text).version === 3, `filed a third time, version 3: ${third.text.slice(0, 120)}`);
+  const three = await until("version 3", 10_000, () => ourRow()?.review?.version === 3 ? ourRow()! : null);
+  check(three?.review?.seen === undefined && three?.reviews?.[0]?.seen?.["src/setup.ts"] !== undefined,
+    `pointed at again in a newer filing, src/setup.ts is unseen there and still seen on version 1: ${JSON.stringify(three?.reviews?.map((held) => held.seen ?? null))}`);
 } finally {
   daemon.kill("SIGTERM");
   const exited = await Promise.race([daemon.exited.then(() => true), Bun.sleep(10_000).then(() => false)]);

@@ -37,6 +37,8 @@ struct ReviewItem: Identifiable, Equatable {
     let kind: String?
     /// A folder deliverable's paths to point at, relative to the folder (`focus`); empty for anything else.
     let focus: [String]
+    /// Which of `focus` were opened in the viewer, by the path as it is there, epoch-ms (`seen`).
+    let seen: [String: Double]
     /// Why the link its agent gave was not published, when one was given and refused (`linkRefused`).
     let linkRefused: String?
     /// What a live page's login-wall check found when it was published (`access`): the banner over a page that asked
@@ -69,6 +71,7 @@ struct ReviewItem: Identifiable, Equatable {
         marks = review.marks
         kind = review.kind
         focus = review.focus
+        seen = review.seen
         linkRefused = review.linkRefused
         access = review.access
         // The identity the daemon minted when it filed this deliverable, which it carries
@@ -125,6 +128,8 @@ struct InlineReviewView: View {
         ReviewSurface(
             item: item,
             changed: changed,
+            // Told to the daemon, on this filing, so it is seen on every surface and after a relaunch.
+            onSeen: { path in store.markReviewViewed(sessionId: item.rowID, review: item.id, path: path) },
             annotator: annotator,
             annotates: showsInk,
             // The arrow OUT, not a bigger box. This control used to swap between filling the
@@ -163,6 +168,8 @@ struct InlineReviewView: View {
 private struct ReviewSurface: View {
     let item: ReviewItem
     let changed: ConchFileChanges
+    /// One of a folder's focus paths was opened in its viewer (`WorkspaceFilesView.onSeen`).
+    let onSeen: (String) -> Void
     @ObservedObject var annotator: DeliverableAnnotator
     let annotates: Bool
     let actionSymbol: String
@@ -188,7 +195,9 @@ private struct ReviewSurface: View {
                         rowID: item.rowID,
                         changed: changed,
                         focus: item.focus,
-                        title: folder.lastPathComponent
+                        title: folder.lastPathComponent,
+                        seen: item.seen,
+                        onSeen: onSeen
                     )
                     .id(item.id)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -361,6 +370,11 @@ struct WorkspaceFilesView: View {
     /// a skill on its own file and Benchmarks on its report, which no agent pointed at: a mark there would say one had.
     var marksFocus = true
     var title: String?
+    /// Which of `focus` were opened in the viewer, by the path as it is there, epoch-ms, as the daemon holds it for this
+    /// filing (`ReviewItem.seen`); and where to say another was (`StateStore.markReviewViewed`'s `path`). A newer filing
+    /// is another item, with nothing seen: pointed at again, a path is unseen again.
+    var seen: [String: Double] = [:]
+    var onSeen: ((String) -> Void)?
 
     /// Folders read once, when opened, and kept.
     ///
@@ -375,12 +389,22 @@ struct WorkspaceFilesView: View {
     /// that plane as well"), and a double-click on it puts it back to 232. Remembered once for every tree, a folder
     /// deliverable's and the Files tab's alike, as the sidebar's width is: the names in it want the same room in both.
     @AppStorage(PaneSplit.fileTree.key) private var railWidth = Double(PaneSplit.fileTree.standard)
+    /// Opened here and told to the daemon, until its next publish says so too: the mark greys as the file opens.
+    @State private var seenHere: [String: Double] = [:]
+    /// When each path pointed at last changed on the disk: one changed since it was opened is unseen again. Read off the
+    /// main thread when the tree opens and whenever a file is picked, never from `body`.
+    @State private var modified: [String: Date] = [:]
 
     private var rows: [ConchFileRow] {
         ConchFileTree.rows(root: root, listings: listings, expanded: expanded)
     }
 
     private var pointedAt: ConchFileFocus { ConchFileFocus(focus: focus, relativeTo: root) }
+
+    /// What of `focus` counts as seen now (`ConchFileFocus.seen`).
+    private var seenPaths: Set<String> {
+        pointedAt.seen(seen.merging(seenHere) { max($0, $1) }, modified: modified)
+    }
 
     var body: some View {
         // The tree, a hairline, and the file picked in it; the hairline is the divider, with a grip on it that says so
@@ -420,7 +444,21 @@ struct WorkspaceFilesView: View {
             listings = [:]
             expanded = []
             selected = nil
+            seenHere = [:]
+            modified = [:]
             loadRoot()
+        }
+        // A file in the viewer is opened: what it is of `focus` is seen (and a pointed-at folder holding it).
+        .onChange(of: selected) { _, path in
+            guard marksFocus, let onSeen, let path else { return }
+            let keys = pointedAt.keysSeen(byOpening: path)
+            guard !keys.isEmpty else { return }
+            let now = Date().timeIntervalSince1970 * 1000
+            for key in keys {
+                seenHere[key] = now
+                onSeen(key)
+            }
+            readModified()
         }
     }
 
@@ -432,6 +470,7 @@ struct WorkspaceFilesView: View {
             expanded: expanded,
             changed: changed,
             focus: marksFocus ? pointedAt : nil,
+            seen: marksFocus ? seenPaths : [],
             title: title,
             font: { ConchTypography.font(size: $0, weight: $1) },
             onPick: pick
@@ -495,6 +534,22 @@ struct WorkspaceFilesView: View {
                 for folder in open { load(folder) }
                 if selected == nil { selected = first }
             }
+        }
+        readModified()
+    }
+
+    /// When each path pointed at last changed, off the main thread: twelve at most, one `stat` each.
+    private func readModified() {
+        let paths = pointedAt.paths
+        guard marksFocus, !paths.isEmpty else { return }
+        Task.detached(priority: .utility) {
+            var times: [String: Date] = [:]
+            for path in paths {
+                if let date = (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date {
+                    times[path] = date
+                }
+            }
+            await MainActor.run { modified = times }
         }
     }
 

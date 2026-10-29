@@ -3301,11 +3301,11 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       void renderSessionPanel();
       return renamed.label;
     },
-    markReviewViewed: (target, review) => {
+    markReviewViewed: (target, review, path) => {
       const state = ledger.sessionStates.get(target.sessionId);
       const held = state?.reviews;
       if (!state || !held?.length) return false;
-      const next = markReviewViewed(held, review, Date.now());
+      const next = markReviewViewed(held, review, Date.now(), path);
       if (!next) return false;
       ledger.sessionStates.set(target.sessionId, {
         ...state,

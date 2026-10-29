@@ -813,6 +813,8 @@ struct FolderDeliverablePicture: View {
                 expanded: expanded,
                 changed: ConchFileChanges(changed: Self.changed, relativeTo: Self.root),
                 focus: focus,
+                // The file in the viewer is the one opened so far.
+                seen: focus.seen(["src/InviteCard.tsx": 1]),
                 title: "invite",
                 onPick: { _ in }
             )
@@ -852,6 +854,9 @@ struct FolderDeliverablePicture: View {
 struct TreeRailPicture: View {
     let width: CGFloat
     var module = false
+    /// What Tyler has opened of what was pointed out, by the keys the daemon holds them by.
+    var seen: [String] = []
+    var title = "final"
 
     static let root = "/Users/tyler/Projects/conch/shots/final"
     static let names = ["01-skills-installed.png", "02-skill-detail.png", "03-skills-discover.png", "04-benchmarks.png",
@@ -875,6 +880,8 @@ struct TreeRailPicture: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
+    private var shotsFocus: ConchFileFocus { ConchFileFocus(focus: Array(Self.names.prefix(6)), relativeTo: Self.root) }
+
     @ViewBuilder private var rail: some View {
         if module {
             let root = FolderDeliverablePicture.root
@@ -886,6 +893,7 @@ struct TreeRailPicture: View {
                 expanded: expanded,
                 changed: ConchFileChanges(changed: FolderDeliverablePicture.changed, relativeTo: root),
                 focus: focus,
+                seen: focus.seen(Dictionary(uniqueKeysWithValues: seen.map { ($0, 1.0) })),
                 title: "invite",
                 onPick: { _ in }
             )
@@ -896,8 +904,9 @@ struct TreeRailPicture: View {
                 selected: Self.root + "/02-skill-detail.png",
                 expanded: [],
                 changed: ConchFileChanges(changed: [], relativeTo: Self.root),
-                focus: ConchFileFocus(focus: Array(Self.names.prefix(6)), relativeTo: Self.root),
-                title: "final",
+                focus: shotsFocus,
+                seen: shotsFocus.seen(Dictionary(uniqueKeysWithValues: seen.map { ($0, 1.0) })),
+                title: title,
                 onPick: { _ in }
             )
         }
@@ -905,20 +914,26 @@ struct TreeRailPicture: View {
 }
 
 try render("tree-rail", width: 760) {
-    Heading(title: "The file tree, and the line beside it", note: "What the agent pointed out has a short violet rule in the margin, quieter on a folder on the way to it, and the header says how many. What the session changed has its dot after the name. The grip on the line beside the tree says it drags; double-click it to put it back.")
-    Caption("At its standard width, 232")
+    Heading(title: "The file tree, and the line beside it", note: "What the agent pointed out has a short violet rule in the margin, quieter on a folder on the way to it, and the header says how many are left to look at. Once opened in the viewer the rule goes grey, until the agent points at it again in a newer version or the file changes. What the session changed has its dot after the name. The grip on the line beside the tree says it drags; double-click it to put it back.")
+    Caption("At its standard width, 232, nothing opened yet")
     TreeRailPicture(width: 232)
-    Caption("Dragged to its narrowest, 160")
-    TreeRailPicture(width: 160)
-    Caption("Dragged wide, 360: a module, two files and a folder pointed out, with what the session changed")
-    TreeRailPicture(width: 360, module: true)
+    Caption("Two of the six opened: their rules go grey and their names step back; the header counts what is left")
+    TreeRailPicture(width: 232, seen: ["01-skills-installed.png", "02-skill-detail.png"])
+    Caption("All six opened: every rule grey, and the header's too")
+    TreeRailPicture(width: 232, seen: Array(TreeRailPicture.names.prefix(6)))
+    Caption("Dragged to its narrowest, 160: the header says less, the folder's name first")
+    TreeRailPicture(width: 160, seen: ["01-skills-installed.png", "02-skill-detail.png"])
+    Caption("At 160 with a long folder name: the count down to its number, the name in the middle cut")
+    TreeRailPicture(width: 160, seen: ["01-skills-installed.png", "02-skill-detail.png"], title: "skills-page-screenshots")
+    Caption("Dragged wide, 360: a module, two files and a folder pointed out, with what the session changed. Both files in src opened, so src has nothing left to lead to; test still has")
+    TreeRailPicture(width: 360, module: true, seen: ["src/InviteCard.tsx", "src/join.ts"])
 }
 
 let folderPage = FogContent(id: "morrow-invite-folder-v1") { FolderDeliverablePicture() }
 let folderSession = FogSession(id: "morrow", label: "Morrow brand page", agent: "Claude", item: "The invite module's new layout: the card, the join step and their tests", standing: .ready)
 
 try render("m3-panel-folder", width: 1280) {
-    Heading(title: "Conversation panel, full screen on a folder", note: "A folder a session published is its tree: what the session changed has its dot after the name, what the agent pointed out (focus) is open with a violet rule in the margin (quieter on the folders on the way), the header says how many, and the first focused file is in the viewer. Picking a file opens it there. The grip on the line beside the tree drags it wider or narrower.")
+    Heading(title: "Conversation panel, full screen on a folder", note: "A folder a session published is its tree: what the session changed has its dot after the name, what the agent pointed out (focus) is open with a violet rule in the margin (quieter on the folders on the way), and the first focused file is in the viewer; opened, its rule goes grey and the header counts what is left. Picking a file opens it there. The grip on the line beside the tree drags it wider or narrower.")
     m3Fog(.bottomLeading, fullScreen: true, draft: "Split the email check into its own step", session: folderSession, pager: true, content: folderPage)
     Caption("Docked: the words, named by their session. A pick of the folder (Next, the switcher, the Ready pill) opens it full screen here, from anywhere: only conch draws its tree.")
     m3Fog(.bottomLeading, session: folderSession, pager: true)

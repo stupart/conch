@@ -376,6 +376,8 @@ export interface PublishedSessionRow {
     preview?: ReviewPreview;
     /** A folder deliverable's paths to point at, relative to it (`SessionReview.focus`). */
     focus?: string[];
+    /** Which of `focus` were opened, and when (`SessionReview.seen`). Older apps ignore it. */
+    seen?: Record<string, number>;
     /** Why the link its agent gave was not published (`SessionReview.linkRefused`). Older apps ignore it. */
     linkRefused?: string;
     /** The session folders beyond `cwd` that held its files when it was filed (`SessionReview.roots`). */
@@ -392,7 +394,7 @@ export interface PublishedSessionRow {
   reviews?: Array<{
     summary: string; link?: string; scene?: ReviewScene; at?: number; id?: string; viewedAt?: number; approvedAt?: number;
     asksApproval?: true; approvalLabel?: string; artifact?: string; version?: number; kind?: DeliverableKind; preview?: ReviewPreview; focus?: string[];
-    linkRefused?: string; roots?: string[]; snapshot?: ReviewSnapshot; access?: ReviewAccess;
+    seen?: Record<string, number>; linkRefused?: string; roots?: string[]; snapshot?: ReviewSnapshot; access?: ReviewAccess;
   }>;
 }
 
@@ -666,7 +668,7 @@ export function panelReplyText(
  */
 function publishedDeliverableFacts(
   review: SessionReview,
-): Pick<SessionReview, "artifact" | "version" | "kind" | "preview" | "focus" | "linkRefused" | "roots" | "snapshot" | "access" | "asksApproval" | "approvalLabel"> {
+): Pick<SessionReview, "artifact" | "version" | "kind" | "preview" | "focus" | "seen" | "linkRefused" | "roots" | "snapshot" | "access" | "asksApproval" | "approvalLabel"> {
   return {
     ...(review.artifact ? { artifact: review.artifact } : {}),
     ...(review.version !== undefined ? { version: review.version } : {}),
@@ -674,6 +676,8 @@ function publishedDeliverableFacts(
     ...(review.preview ? { preview: { ...review.preview } } : {}),
     // The paths the agent pointed at, never a listing: the apps read the tree themselves.
     ...(review.focus?.length ? { focus: [...review.focus] } : {}),
+    // Which of those were opened, for the Mac's tree to grey (and the phone's, later).
+    ...(review.seen && Object.keys(review.seen).length ? { seen: { ...review.seen } } : {}),
     ...(review.linkRefused ? { linkRefused: review.linkRefused } : {}),
     // What the phone's file access checks this one's files against, beside the row's own folders.
     ...(review.roots?.length ? { roots: [...review.roots] } : {}),
@@ -1190,6 +1194,16 @@ export interface SessionReview {
    */
   viewedAt?: number;
   /**
+   * Which of a folder's `focus` paths were opened (in the Mac's viewer), each by the path as it is in `focus`, epoch-ms.
+   * Absent means none.
+   *
+   * 2026-10-29, Tyler: "we should prob change the color after the user views it so they know they've viewed it and then
+   * it resets if the ai liek repoints at it". On the record, like `viewedAt`, so it outlives a relaunch and the phone can
+   * agree later; and on THIS filing, so a newer version that points at a path again starts with it unseen. Whether
+   * the file changed since is the Mac's to judge: it has the file (`ConchFileFocus.seen`).
+   */
+  seen?: Record<string, number>;
+  /**
    * When you approved it, epoch-ms; absent means you haven't (`approveReview`).
    *
    * 2026-10-05, Tyler's decision: approving a result marks it done. It leaves the review queue (it is no longer ready
@@ -1533,17 +1547,32 @@ function cappedIndex(held: readonly SessionReview[]): number {
  * deliverable would otherwise make it look freshly read — and an identity this session does
  * not hold must change nothing at all, rather than marking whatever is nearest.
  *
+ * With `path`, one of a folder's `focus` paths was opened: it is `seen` now, and the deliverable is looked at if it
+ * wasn't. A path is restamped each time it is opened, unlike the deliverable: the Mac counts a file changed since it
+ * was seen as unseen again, and opening it again is what makes it seen. A path that isn't in this filing's focus
+ * changes nothing; nor does one opened within a second of the last time, so a pane drawn twice doesn't write twice.
+ *
  * `undefined` means nothing changed, so the caller knows not to persist or republish.
  */
 export function markReviewViewed(
   held: readonly SessionReview[] | undefined,
   review: string,
   now: number,
+  path?: string,
 ): SessionReview[] | undefined {
   if (!held?.length) return undefined;
   const index = held.findIndex((one) => one.id === review);
-  if (index < 0 || held[index]!.viewedAt !== undefined) return undefined;
-  return held.map((one, at) => at === index ? { ...one, viewedAt: now } : one);
+  if (index < 0) return undefined;
+  const one = held[index]!;
+  if (path === undefined) {
+    if (one.viewedAt !== undefined) return undefined;
+    return held.map((each, at) => at === index ? { ...each, viewedAt: now } : each);
+  }
+  if (!one.focus?.includes(path)) return undefined;
+  const last = one.seen?.[path];
+  if (last !== undefined && now - last < 1_000 && one.viewedAt !== undefined) return undefined;
+  const marked: SessionReview = { ...one, viewedAt: one.viewedAt ?? now, seen: { ...one.seen, [path]: now } };
+  return held.map((each, at) => at === index ? marked : each);
 }
 
 /**

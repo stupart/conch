@@ -205,12 +205,15 @@ public struct ConchFileChanges: Equatable, Sendable {
 public struct ConchFileFocus: Equatable, Sendable {
     /// Absolute, standardized, in the order the agent named them.
     public let paths: [String]
+    /// Each of `paths` as the daemon holds it, relative to the folder: what a path is marked seen by (`seen`).
+    public let keys: [String]
     /// The folder they are inside, standardized.
     public let root: String
 
     public init(focus: [String], relativeTo root: String) {
         let base = ConchFileTree.standardized(root)
         var resolved: [String] = []
+        var keys: [String] = []
         for raw in focus {
             let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             let parts = trimmed.split(separator: "/", omittingEmptySubsequences: true)
@@ -218,8 +221,10 @@ public struct ConchFileFocus: Equatable, Sendable {
             let path = ConchFileTree.standardized(base + "/" + parts.joined(separator: "/"))
             guard path.hasPrefix(base + "/"), !resolved.contains(path) else { continue }
             resolved.append(path)
+            keys.append(parts.joined(separator: "/"))
         }
         paths = resolved
+        self.keys = keys
         self.root = base
     }
 
@@ -245,6 +250,36 @@ public struct ConchFileFocus: Equatable, Sendable {
         guard entry.isDirectory else { return false }
         let prefix = entry.path + "/"
         return paths.contains { $0.hasPrefix(prefix) }
+    }
+
+    // MARK: Seen
+
+    /// The paths pointed at that Tyler has seen: opened in the viewer (`seen`, by key, epoch-ms, as the daemon keeps it
+    /// for this filing), and not changed on the disk since (`modified`, by path; a path whose time isn't known counts as
+    /// unchanged). A newer filing that points at a path again is a new record with nothing seen, so it is unseen again.
+    public func seen(_ seen: [String: Double], modified: [String: Date] = [:]) -> Set<String> {
+        var out: Set<String> = []
+        for (path, key) in zip(paths, keys) {
+            guard let at = seen[key], at.isFinite else { continue }
+            if let changed = modified[path], changed.timeIntervalSince1970 * 1000 > at { continue }
+            out.insert(path)
+        }
+        return out
+    }
+
+    /// What opening `path` in the viewer marks seen, by key: the path itself when it was pointed at, and a pointed-at
+    /// folder holding it, whose point was what is in it.
+    public func keysSeen(byOpening path: String) -> [String] {
+        zip(paths, keys).compactMap { focused, key in
+            focused == path || path.hasPrefix(focused + "/") ? key : nil
+        }
+    }
+
+    /// Does this folder hold a path pointed at that isn't seen yet: its route mark stays the agent's until all are.
+    public func leadsToUnseen(_ entry: ConchFileEntry, seen: Set<String>) -> Bool {
+        guard entry.isDirectory else { return false }
+        let prefix = entry.path + "/"
+        return paths.contains { $0.hasPrefix(prefix) && !seen.contains($0) }
     }
 
     /// The folders to open so every focus path is on screen: each one's folders between the root and it, and a focused

@@ -13,6 +13,7 @@ import {
   carriedReview,
   carriedReviews,
   markReviewViewed,
+  fileReview,
   MAX_SESSION_REVIEWS,
   type SessionReview,
   latestLatchedState,
@@ -216,7 +217,7 @@ describe("buildPublishedState — external session snapshot", () => {
   test("what has been looked at is published, and the daemon says it can tell you", () => {
     const held = [
       { summary: "first", at: 1_000, id: "v-1", viewedAt: 1_500 },
-      { summary: "second", at: 2_000, id: "v-2" },
+      { summary: "second", link: "/w/module", at: 2_000, id: "v-2", focus: ["src/setup.ts", "test"], seen: { test: 1_800 } },
     ];
     const model = buildPanelModel({
       sessions: [{ sessionId: "holds", name: "Holds", status: "idle", statusUpdatedAt: 10 }],
@@ -236,6 +237,10 @@ describe("buildPublishedState — external session snapshot", () => {
     expect(row.reviews?.[0]?.viewedAt).toBe(1_500);
     expect(row.reviews?.[1]?.viewedAt).toBeUndefined();
     expect(row.review?.viewedAt).toBeUndefined();
+    // Which of a folder's focus paths were opened, on the filing they were opened in (`SessionReview.seen`).
+    expect(row.reviews?.[1]?.seen).toEqual({ test: 1_800 });
+    expect(row.review?.seen).toEqual({ test: 1_800 });
+    expect(row.reviews?.[0]?.seen).toBeUndefined();
     // An app that finds no `features` is talking to a daemon from before this, and must not
     // present its own guesses as shared truth.
     expect(published.features).toEqual({ deliverables: 4, viewedState: 1, sessionHosts: 1, helpSession: 1 });
@@ -1211,6 +1216,37 @@ describe("a review outlives the turn that produced it", () => {
     const held = [{ summary: "first", at: 1, id: "a", viewedAt: 1_000 }];
     // A second window opening the same deliverable would otherwise make it look freshly read.
     expect(markReviewViewed(held, "a", 9_000)).toBeUndefined();
+  });
+
+  test("opening one of a folder's focus paths marks it seen, on that filing, and the folder looked at", () => {
+    const held = [
+      { summary: "the folder", at: 1, id: "a", focus: ["src/setup.ts", "test"] },
+      { summary: "another", at: 2, id: "b" },
+    ];
+    const once = markReviewViewed(held, "a", 9_000, "src/setup.ts")!;
+    expect(once[0]).toEqual({ ...held[0], viewedAt: 9_000, seen: { "src/setup.ts": 9_000 } });
+    expect(once[1]).toEqual(held[1]);
+    // Another path keeps the first; the folder keeps when it was first looked at.
+    const twice = markReviewViewed(once, "a", 12_000, "test")!;
+    expect(twice[0]!.seen).toEqual({ "src/setup.ts": 9_000, test: 12_000 });
+    expect(twice[0]!.viewedAt).toBe(9_000);
+    // Opened again later, a path is restamped (the Mac counts a file changed since as unseen until it is opened again);
+    // within a second, nothing changes, so a pane drawn twice writes once.
+    expect(markReviewViewed(twice, "a", 12_500, "test")).toBeUndefined();
+    expect(markReviewViewed(twice, "a", 60_000, "test")![0]!.seen).toEqual({ "src/setup.ts": 9_000, test: 60_000 });
+    // Only a path this filing pointed at, exactly as it is in its focus.
+    expect(markReviewViewed(held, "a", 9_000, "src/other.ts")).toBeUndefined();
+    expect(markReviewViewed(held, "a", 9_000, "test/")).toBeUndefined();
+    expect(markReviewViewed(held, "b", 9_000, "src/setup.ts")).toBeUndefined();
+  });
+
+  test("a newer filing that points at a path again starts with it unseen", () => {
+    const first = fileReview("s", { summary: "v1", link: "/w/module", kind: "folder", focus: ["src/setup.ts"] }, 1_000, undefined);
+    const seen = markReviewViewed([first], first.id, 2_000, "src/setup.ts")!;
+    expect(seen[0]!.seen).toEqual({ "src/setup.ts": 2_000 });
+    const second = fileReview("s", { summary: "v2", link: "/w/module", kind: "folder", focus: ["src/setup.ts"] }, 3_000, seen);
+    expect(second.version).toBe(2);
+    expect(second.seen).toBeUndefined();
   });
 
   test("an identity the session does not hold changes nothing", () => {

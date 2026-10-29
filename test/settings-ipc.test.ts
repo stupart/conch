@@ -173,7 +173,7 @@ describe("settings control IPC", () => {
   });
 
   test("review-viewed reaches the controller with the identity intact, and is honest where it is unsupported", () => {
-    const marked: Array<{ sessionId: string; review: string }> = [];
+    const marked: Array<{ sessionId: string; review: string; path?: string }> = [];
     const base: SessionActionsController = {
       voiceCandidates: () => [],
       effectiveVoice: () => "",
@@ -202,13 +202,22 @@ describe("settings control IPC", () => {
 
     const supported = dispatchSessionControlMessage(message, optionsFor({
       ...base,
-      markReviewViewed: (actual, review) => {
-        marked.push({ sessionId: actual.sessionId, review });
+      markReviewViewed: (actual, review, path) => {
+        marked.push({ sessionId: actual.sessionId, review, ...(path !== undefined ? { path } : {}) });
         return true;
       },
     }));
     // The identity has to survive the trip: which deliverable was read is the whole point.
     expect(marked).toEqual([{ sessionId: "session-a", review: '["s",1,"abc"]' }]);
+    // And a focus path opened in it, when there is one.
+    dispatchSessionControlMessage({ ...message, path: "src/setup.ts" }, optionsFor({
+      ...base,
+      markReviewViewed: (actual, review, path) => {
+        marked.push({ sessionId: actual.sessionId, review, ...(path !== undefined ? { path } : {}) });
+        return true;
+      },
+    }));
+    expect(marked[1]).toEqual({ sessionId: "session-a", review: '["s",1,"abc"]', path: "src/setup.ts" });
     expect(supported).toEqual({
       kind: "session-ack",
       sessionId: "session-a",

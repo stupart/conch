@@ -521,6 +521,8 @@ struct ConchSessionCommandRequest: Encodable, Sendable {
     let effort: String?
     /// Which deliverable was looked at, by the identity the daemon minted when it filed it.
     let review: String?
+    /// For `review-viewed`: one of a folder deliverable's `focus` paths, opened in the viewer, as it is in `focus`.
+    let path: String?
     /// Every filing of this artifact, for `review-remove`.
     let artifact: String?
     /// For a command the daemon TYPES (`/model`, the `/rename` sync): after the
@@ -534,6 +536,7 @@ struct ConchSessionCommandRequest: Encodable, Sendable {
         model: String? = nil,
         effort: String? = nil,
         review: String? = nil,
+        path: String? = nil,
         artifact: String? = nil,
         awaitDelivery: Bool? = nil
     ) {
@@ -543,6 +546,7 @@ struct ConchSessionCommandRequest: Encodable, Sendable {
         self.model = model
         self.effort = effort
         self.review = review
+        self.path = path
         self.artifact = artifact
         self.awaitDelivery = awaitDelivery
     }
