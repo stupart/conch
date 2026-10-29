@@ -37,7 +37,11 @@ test("under test, setState writes to the redirected state file, not the daemon's
 test("the log rolls over at its size limit while running, keeping one private old file", () => {
   rmSync(`${LOG_FILE}.1`, { force: true });
   const line = "x".repeat(256 * 1024);
-  for (let written = 0; written <= MAX_LOG_BYTES + line.length; written += line.length + 1) logAbove(line);
+  // Each line its own (letters, not numbers: the log's damper counts lines that differ only by numbers as one).
+  let letter = 0;
+  for (let written = 0; written <= MAX_LOG_BYTES + line.length; written += line.length + 3) {
+    logAbove(`${String.fromCharCode(97 + letter++)} ${line}`);
+  }
   logAbove("after the roll 9c1d");
   expect(existsSync(`${LOG_FILE}.1`)).toBe(true);
   expect(statSync(LOG_FILE).size).toBeLessThan(MAX_LOG_BYTES);
@@ -45,4 +49,13 @@ test("the log rolls over at its size limit while running, keeping one private ol
   expect(readFileSync(LOG_FILE, "utf8")).toContain("after the roll 9c1d");
   expect(readFileSync(`${LOG_FILE}.1`, "utf8")).not.toContain("after the roll 9c1d");
   rmSync(`${LOG_FILE}.1`, { force: true });
+});
+
+// One error said over and over (runaway.ts): written ten times a minute, then counted, so it can't push the hours
+// before it out of the file.
+test("a line repeated a thousand times is written a few times, not a thousand", () => {
+  const before = readFileSync(LOG_FILE, "utf8").length;
+  for (let i = 0; i < 1_000; i++) logAbove(`[conch 10/28 19:00:00] phone relay disconnected (1006) — before open, try ${i} 4e2b`);
+  const added = readFileSync(LOG_FILE, "utf8").slice(before);
+  expect(added.split("\n").filter((line) => line.includes("4e2b")).length).toBeLessThanOrEqual(10);
 });

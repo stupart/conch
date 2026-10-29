@@ -1,6 +1,6 @@
 import { paneTarget, qualifyPane, tmuxServers } from "./tmux-binary.ts";
 import { TERMINAL_SCRIPT_TIMEOUT_MS, terminalTabLookup } from "./terminal-tab.ts";
-import { appendFileSync } from "node:fs";
+import { appendCapped } from "./runaway.ts";
 import { dirname, join } from "node:path";
 import type { Config } from "./config.ts";
 import type { AnswerKey, NamedKey } from "./agent-adapter.ts";
@@ -353,6 +353,8 @@ const CLIPBOARD_VERSION_SCRIPT = [
  */
 export const INJECT_DEBUG_LOG = process.env.CONCH_INJECT_DEBUG_LOG
   || join(dirname(process.env.CONCH_LOG_FILE || "/tmp/conch-daemon.log"), "conch-inject-debug.log");
+/** It rolls over like the daemon log, keeping one old file: always on, it had no bound but a reboot clearing /tmp. */
+export const INJECT_DEBUG_LOG_MAX_BYTES = 4 * 1024 * 1024;
 
 /**
  * Deliver a transcript into the session's prompt.
@@ -395,9 +397,7 @@ async function injectTextInTransaction(
     // Straight to a file, never console.error: the daemon owns an alt-screen
     // TUI and its stderr goes nowhere visible, so the first attempt at this
     // produced an empty log and looked like "the code never ran" when it had.
-    try {
-      appendFileSync(INJECT_DEBUG_LOG, `${line}\n`);
-    } catch {}
+    appendCapped(INJECT_DEBUG_LOG, `${line}\n`, INJECT_DEBUG_LOG_MAX_BYTES);
   };
   step(`begin pid=${sessionPid ?? "none"} chars=${text.length}`);
   const copyToClipboard = options.copyToClipboard ?? writeClipboard;

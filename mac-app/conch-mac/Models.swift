@@ -72,6 +72,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
     let sessionSettings: SessionSettingsCatalog?
     /// Where the natural voices stand (src/voice-env.ts): the calm line's source (`NaturalVoicesNoticeStore`).
     let naturalVoices: NaturalVoicesReport?
+    /// What a runaway guard stopped conch doing because it kept failing (src/runaway.ts), until it is over.
+    let guards: [RunawayGuardTrip]
     /// The sea glass approving results has earned, ever (src/panel.ts `seaGlass`, 2026-10-05). Nil from a daemon too old
     /// to approve, which is how the review pane knows not to offer Approve.
     let seaGlass: Int?
@@ -258,6 +260,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         case practice
         case sessionSettings
         case naturalVoices
+        case guards
         case seaGlass
         case restore
     }
@@ -289,6 +292,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         practice: PracticeReport? = nil,
         sessionSettings: SessionSettingsCatalog? = nil,
         naturalVoices: NaturalVoicesReport? = nil,
+        guards: [RunawayGuardTrip] = [],
         seaGlass: Int? = nil,
         restore: RestoreReport? = nil
     ) {
@@ -319,6 +323,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         self.practice = practice
         self.sessionSettings = sessionSettings
         self.naturalVoices = naturalVoices
+        self.guards = guards
         self.seaGlass = seaGlass
         self.restore = restore
     }
@@ -370,6 +375,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         practice = try? container.decodeIfPresent(PracticeReport.self, forKey: .practice)
         sessionSettings = try? container.decodeIfPresent(SessionSettingsCatalog.self, forKey: .sessionSettings)
         naturalVoices = try? container.decodeIfPresent(NaturalVoicesReport.self, forKey: .naturalVoices)
+        guards = Self.decodeLossyArray(RunawayGuardTrip.self, from: container, forKey: .guards)
         seaGlass = try? container.decodeIfPresent(Int.self, forKey: .seaGlass)
         restore = try? container.decodeIfPresent(RestoreReport.self, forKey: .restore)
     }
@@ -418,6 +424,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
             && sessionSettings == other.sessionSettings
             // The natural voices' calm line follows them.
             && naturalVoices == other.naturalVoices
+            // A runaway guard tripping, or its trip ending, is said.
+            && guards == other.guards
             // The lagoon's jar counts it.
             && seaGlass == other.seaGlass
             // What came back after a restart is said once, until read.

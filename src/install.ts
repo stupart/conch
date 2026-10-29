@@ -562,6 +562,9 @@ export function renderServicePlist(
 ): string {
   // CONCH_STARTED_BY is how the daemon's identity file names launchd as its
   // owner, which is what lets the Mac app say so instead of "outside this app".
+  // KeepAlive restarts a daemon that crashed, not one that exited 0 on purpose: one that finds another daemon on
+  // the socket exits 0 (`runDaemon`), and `<true/>` restarted it every ten seconds for as long as the other ran, a
+  // full start each time (runaway guards, docs/runaway-guards.md). A crash loop waits 30 s between tries.
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -570,7 +573,8 @@ export function renderServicePlist(
   <key>ProgramArguments</key>
   <array>${daemonArgv.map((arg) => `<string>${arg}</string>`).join("")}</array>
   <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>ThrottleInterval</key><integer>30</integer>
   <key>WorkingDirectory</key><string>${conchRoot}</string>
   <key>EnvironmentVariables</key>
   <dict>

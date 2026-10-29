@@ -108,6 +108,27 @@ test("the installed command works inside an extra profile and forwards the origi
   expect(readFileSync(join(account.configDir, "conch-usage.json"), "utf8")).not.toContain("must-not-persist");
 });
 
+test("a status check that fails rests a minute, not one more `claude` for every refresh of the status line", async () => {
+  const bin = join(root, "bin");
+  mkdirSync(bin);
+  const calls = join(root, "calls");
+  writeFileSync(join(bin, "claude"), `#!/bin/sh\necho call >> "${calls}"\necho 'not json'\n`, { mode: 0o700 });
+  const path = join(account.configDir, "settings.json");
+  writeFileSync(path, JSON.stringify({}));
+  installAccountUsage(account);
+  const command = JSON.parse(readFileSync(path, "utf8")).statusLine.command;
+  const raw = JSON.stringify({ rate_limits: { five_hour: { used_percentage: 37, resets_at: Date.now() / 1000 + 3600 } } });
+  for (let refresh = 0; refresh < 4; refresh++) {
+    const child = Bun.spawn(["/bin/sh", "-c", command], {
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CLAUDE_CONFIG_DIR: account.configDir },
+      stdin: new Blob([raw]), stdout: "ignore", stderr: "ignore",
+    });
+    expect(await child.exited).toBe(0);
+  }
+  expect(readFileSync(calls, "utf8").trim().split("\n")).toHaveLength(1);
+  expect(readAccountUsage([account], Date.now()).accounts[0]!.windows).toEqual([]);
+});
+
 describe("a status line whose bun moved", () => {
   // 2026-10-03: the status line conch puts on an account named /opt/homebrew/Cellar/bun/1.4.2/bin/bun, which the next
   // Homebrew upgrade deletes. The daemon repairs it at start, keeping what the user had before conch's.

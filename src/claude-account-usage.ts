@@ -81,7 +81,9 @@ export function decodeRateLimits(value: unknown, now = Date.now()): UsageWindow[
 
 export function saveAccountUsage(account: ClaudeAccountStatus, rateLimits: unknown, now = Date.now()): void {
   const subject = identity(account);
-  if (!subject) { clearAccountUsage(account); return; }
+  // A check that failed rests its minute, as one that worked does. Cleared instead, every refresh of the status line
+  // found nothing cached, so "usage changed", and started another `claude auth status` for as long as it failed.
+  if (!subject) { write(usagePath(account), { failedAt: new Date(now).toISOString() }); return; }
   write(usagePath(account), { identity: subject, rateLimits: Object.fromEntries(decodeRateLimits(rateLimits, now).map(window => [
     window.name === "5 hour" ? "five_hour" : "seven_day",
     { used_percentage: window.pct, resets_at: Date.parse(window.resetsAt!) / 1000 },
@@ -113,10 +115,12 @@ export async function runAccountStatusline(id: string | undefined, configDir: st
       const payload: unknown = JSON.parse(raw);
       if (object(payload) && object(payload.rate_limits)) {
         const previous = read(usagePath(account));
-        // The auth CLI is only consulted when usage changes or once a minute.
+        // The auth CLI is only consulted when usage changes or once a minute, and not within a minute of failing.
         // Checking the public identity prevents a manual login from inheriting another account's cache.
-        if (JSON.stringify(decodeRateLimits(previous?.rateLimits)) !== JSON.stringify(decodeRateLimits(payload.rate_limits))
-          || typeof previous?.fetchedAt !== "string" || Date.now() - Date.parse(previous.fetchedAt) >= 60_000) {
+        const failedAt = typeof previous?.failedAt === "string" ? Date.parse(previous.failedAt) : Number.NaN;
+        if (!(Date.now() - failedAt < 60_000) && (
+          JSON.stringify(decodeRateLimits(previous?.rateLimits)) !== JSON.stringify(decodeRateLimits(payload.rate_limits))
+          || typeof previous?.fetchedAt !== "string" || Date.now() - Date.parse(previous.fetchedAt) >= 60_000)) {
           saveAccountUsage(await readClaudeAccountStatus(account), payload.rate_limits);
         }
       }

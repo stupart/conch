@@ -45,6 +45,10 @@ test("the launchd plist names launchd as the daemon's owner", () => {
   });
   expect(plist).toContain("<key>CONCH_STARTED_BY</key><string>launchd</string>");
   expect(plist).toContain("<string>/usr/local/bin/conch</string><string>daemon</string>");
+  // A daemon that exits 0 because another owns the socket is not restarted every ten seconds; a crash still is.
+  expect(plist).toContain("<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>");
+  expect(plist).toContain("<key>ThrottleInterval</key><integer>30</integer>");
+  expect(Bun.spawnSync(["/usr/bin/plutil", "-lint", "-"], { stdin: new Blob([plist]) }).exitCode).toBe(0);
 });
 
 test("service off unloads the agent by label and drops the plist — never a kill by pattern", () => {

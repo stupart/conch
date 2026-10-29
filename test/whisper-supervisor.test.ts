@@ -8,6 +8,7 @@ import {
   type ServerTimer,
 } from "../src/server-supervisor.ts";
 import { WhisperServerClient } from "../src/transcribe.ts";
+import { Breaker } from "../src/runaway.ts";
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -112,6 +113,69 @@ describe("whisper-server supervision", () => {
     await h.supervisor.settled();
     expect(h.children).toHaveLength(4);
     expect(h.terminated).toHaveLength(3);
+    h.supervisor.close();
+  });
+
+  test("a server that comes up and dies is restarted five times in ten minutes, then left on the fallback", async () => {
+    let now = 0;
+    const tripped: boolean[] = [];
+    const restarts = new Breaker({ name: "whisper-server", what: "restarting whisper-server", now: () => now, changed: (_, open) => tripped.push(open) });
+    const h = harness({ restarts });
+    h.presence.push(false);
+    h.readiness.push(true);
+    expect(await h.supervisor.start()).toBeTrue();
+    // Each death: a canary finds nothing listening, the burst's first try spawns, and the new one answers.
+    for (let death = 1; death <= 5; death++) {
+      h.presence.push(false, false, false);
+      h.readiness.push(true);
+      h.children.at(-1)!.exit.resolve(1);
+      await Bun.sleep(0);
+      await h.supervisor.settled();
+      expect(h.supervisor.snapshot().status).toBe("ready");
+      expect(h.children).toHaveLength(death + 1);
+      now += 60_000;
+    }
+    expect(tripped).toEqual([true]);
+    // The sixth death is not answered with a sixth restart: the cold cli serves, and the canary waits out the cool-down.
+    h.presence.push(false, false, false);
+    h.children.at(-1)!.exit.resolve(1);
+    await Bun.sleep(0);
+    await h.supervisor.settled();
+    expect(h.children).toHaveLength(6);
+    expect(h.supervisor.snapshot()).toMatchObject({ status: "fallback", periodicArmed: true });
+    const canary = h.timers.findLast((timer) => !timer.cancelled)!;
+    expect(canary.ms).toBe(restarts.waitMs());
+    expect(canary.ms).toBeGreaterThan(30_000);
+    // Once it is over, the canary may restart it again.
+    now += canary.ms;
+    h.presence.push(false, false, false);
+    h.readiness.push(true);
+    canary.callback();
+    await h.supervisor.settled();
+    expect(h.children).toHaveLength(7);
+    expect(h.supervisor.snapshot().status).toBe("ready");
+    h.supervisor.close();
+  });
+
+  test("a server that never starts is spawned about five times an hour, not a burst every 30 s for a day", async () => {
+    let now = 0;
+    const restarts = new Breaker({ name: "whisper-server", what: "restarting whisper-server", now: () => now });
+    const h = harness({ restarts, probePresence: async () => false, probeReady: async () => false });
+    expect(await h.supervisor.start()).toBeFalse();
+    await h.supervisor.settled();
+    const day = 24 * 60 * 60_000;
+    let canaries = 0;
+    while (now < day) {
+      const canary = h.timers.findLast((timer) => !timer.cancelled)!;
+      canary.cancelled = true;
+      now += canary.ms;
+      canaries++;
+      canary.callback();
+      await h.supervisor.settled();
+    }
+    // Without the breaker: 2,880 canaries a day, each a burst of three, so 8,641 spawns of a large model.
+    expect(h.children.length).toBeLessThan(150);
+    expect(canaries).toBeLessThan(100);
     h.supervisor.close();
   });
 

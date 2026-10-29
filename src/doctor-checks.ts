@@ -593,11 +593,24 @@ function defaultIsExecutable(file: string): boolean {
   }
 }
 
+/**
+ * A login shell or a `--version`, on a leash: Setup asks for these every few seconds while it is open, behind a
+ * 15 s cache, and a shell profile that hung left one more shell waiting each time the cache ran out.
+ */
+const RUN_TIMEOUT_MS = 15_000;
+
 async function defaultRun(argv: string[]): Promise<{ stdout: string; ok: boolean }> {
   try {
     const child = Bun.spawn(argv, { stdout: "pipe", stderr: "ignore" });
-    const stdout = await new Response(child.stdout).text();
-    return { stdout, ok: (await child.exited) === 0 };
+    const timer = setTimeout(() => {
+      try { child.kill("SIGKILL"); } catch { /* already gone */ }
+    }, RUN_TIMEOUT_MS);
+    try {
+      const stdout = await new Response(child.stdout).text();
+      return { stdout, ok: (await child.exited) === 0 };
+    } finally {
+      clearTimeout(timer);
+    }
   } catch {
     return { stdout: "", ok: false };
   }

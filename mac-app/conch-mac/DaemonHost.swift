@@ -397,13 +397,23 @@ final class DaemonHost: ObservableObject {
         stopHealthWatch()
         outputPipe?.fileHandleForReading.readabilityHandler = nil
         outputPipe = nil
+        // Said in the log the banner sends Tyler to. Launched by this app, the daemon's own output (a crash's stack
+        // among it) reaches only `recentOutput`, so "Check the log" found nothing there about why it stopped.
+        let how = finished.terminationReason == .uncaughtSignal
+            ? "signal \(finished.terminationStatus)" : "exit \(finished.terminationStatus)"
+        let lastWords = recentOutput.suffix(6).joined(separator: " | ")
+        DaemonHealth.appendToLog(
+            "the daemon stopped (\(how))" + (lastWords.isEmpty ? "" : "; it last said: \(lastWords)"), path: logPath
+        )
         // Back off rather than hammering. A daemon that cannot start — a port
         // already taken, a machine with no memory left — should not become a
         // restart loop that makes the machine worse.
         switch crashes.exited() {
         case .restart(let delay):
+            DaemonHealth.appendToLog("starting it again in \(Int(delay)) s", path: logPath)
             scheduleRestart(after: delay)
         case .giveUp:
+            DaemonHealth.appendToLog("it kept stopping, so it is not being started again until you start it", path: logPath)
             state = .failed("The daemon kept stopping. Check the log, then start it again.")
         }
     }
