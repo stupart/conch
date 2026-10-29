@@ -130,7 +130,7 @@ describe("the live tail stays what the Mac chose it to be", () => {
     expect(macStack).toContain("model: history.region,");
     expect(macStack).not.toMatch(/@StateObject[^\n]*HistoryRegionModel/);
     // A body publishes nothing: `sync` runs inside `body`.
-    const sync = sliceFrom(region, "func sync(_ slots: [HistoryWindow.Slot]) {", "/// A row was drawn");
+    const sync = sliceFrom(region, "func sync(_ slots: [HistoryWindow.Slot], below: String? = nil) {", "/// A row was drawn");
     expect(sync).not.toContain("objectWillChange");
   });
 });

@@ -52,6 +52,8 @@ public final class HistoryRegionModel: ObservableObject {
     private let cap: Int
     private var shownScheduled = false
     private var growthScheduled = false
+    /// The first row drawn under the region as it was last synced (`HistoryRegion.below`).
+    private var below: String?
 
     public init(overscan: CGFloat = 2, cap: Int = 160) {
         self.overscan = overscan
@@ -63,16 +65,19 @@ public final class HistoryRegionModel: ObservableObject {
     /// Another session: nothing about the last one's rows or heights applies.
     public func reset() {
         window = HistoryWindow(overscan: overscan, cap: cap)
+        below = nil
         driver.cancel()
         objectWillChange.send()
     }
 
-    /// The rows, as the region's body is given them. Called from `body`, so it publishes
-    /// nothing: the body it is called from draws the result.
-    func sync(_ slots: [HistoryWindow.Slot]) {
+    /// The rows, as the region's body is given them, and the first row drawn under it. Called from
+    /// `body`, so it publishes nothing: the body it is called from draws the result.
+    func sync(_ slots: [HistoryWindow.Slot], below: String? = nil) {
         let before = window.materialised.map { window.ids[$0] }
         let total = window.total
-        shifted(by: window.set(slots), from: total)
+        let shift = window.set(slots, fromBelow: below != self.below)
+        self.below = below
+        shifted(by: shift, from: total)
         if window.materialised.map({ window.ids[$0] }) != before { scheduleShown() }
         scheduleGrowth()
     }
@@ -167,6 +172,9 @@ public struct HistoryRegion<Payload, Row: View>: View {
     let edge: HistoryEdge
     let note: String?
     let entries: [HistoryEntry<Payload>]
+    /// The first row drawn under the region — the live window's first item — or nil for none. When
+    /// it changes, rows are moving between that window and this region rather than arriving.
+    let below: String?
     let gap: CGFloat
     let edgeFont: Font
     let row: (Payload) -> Row
@@ -179,6 +187,7 @@ public struct HistoryRegion<Payload, Row: View>: View {
         edge: HistoryEdge,
         note: String? = nil,
         entries: [HistoryEntry<Payload>],
+        below: String? = nil,
         gap: CGFloat,
         edgeFont: Font,
         @ViewBuilder row: @escaping (Payload) -> Row
@@ -187,6 +196,7 @@ public struct HistoryRegion<Payload, Row: View>: View {
         self.edge = edge
         self.note = note
         self.entries = entries
+        self.below = below
         self.gap = gap
         self.edgeFont = edgeFont
         self.row = row
@@ -210,7 +220,8 @@ public struct HistoryRegion<Payload, Row: View>: View {
     private var windowed: some View {
         let _ = model.sync(
             [HistoryWindow.Slot(id: HistoryRegionID.edge, estimate: HistoryEdgeView.height)]
-                + entries.map { HistoryWindow.Slot(id: $0.id, estimate: $0.payload == nil ? nil : $0.estimate) }
+                + entries.map { HistoryWindow.Slot(id: $0.id, estimate: $0.payload == nil ? nil : $0.estimate) },
+            below: below
         )
         let window = model.window
         let shown = window.materialised.map { Shown(index: $0, id: window.ids[$0]) }
@@ -412,8 +423,11 @@ final class HistoryScrollDriver {
         let clip = scrollView.contentView
         let delta = pending
         pending = 0
-        // Relative to where the reader is NOW, so a flick that is still moving keeps its ground.
-        clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: clip.bounds.origin.y + delta))
+        // Relative to where the reader is NOW, so a flick that is still moving keeps its ground. And
+        // within the document, as every other scroll is: `scroll(to:)` alone does not constrain, and a
+        // move larger than what is below the reader left them past the end, looking at nothing.
+        let moved = NSRect(origin: NSPoint(x: clip.bounds.origin.x, y: clip.bounds.origin.y + delta), size: clip.bounds.size)
+        clip.scroll(to: clip.constrainBoundsRect(moved).origin)
         scrollView.reflectScrolledClipView(clip)
     }
 
