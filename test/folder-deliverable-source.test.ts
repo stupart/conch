@@ -15,6 +15,7 @@ const statusItem = swift("mac-app/conch-mac/StatusItem.swift");
 const macModels = swift("mac-app/conch-mac/Models.swift");
 const sheet = swift("mobile/conch-ios/conch-ios/DeliverableSheet.swift");
 const phoneModels = swift("mobile/conch-ios/conch-ios/Models.swift");
+const skills = swift("mac-app/conch-mac/SkillsLibraryView.swift");
 
 function between(text: string, start: string, end: string): string {
   const a = text.indexOf(start);
@@ -43,7 +44,7 @@ describe("the Mac draws a folder deliverable as the Files tab's tree", () => {
   test("one tree: the rail is ConchDesign's, in the window's type, with the focus opened on first draw", () => {
     const files = between(review, "struct WorkspaceFilesView: View {", "private struct MissingDeliverableView: View {");
     expect(files).toContain("ConchFileTreeRail(");
-    expect(files).toContain("focus: pointedAt,");
+    expect(files).toContain("focus: marksFocus ? pointedAt : nil,");
     expect(files).toContain("font: { ConchTypography.font(size: $0, weight: $1) },");
     // The disk is asked once, off the main thread, never from body.
     const open = between(files, "private func openFocus() {", "private func load(");
@@ -52,6 +53,13 @@ describe("the Mac draws a folder deliverable as the Files tab's tree", () => {
     expect(open).toContain("if selected == nil { selected = first }");
     expect(between(files, "private func loadRoot() {", "private func openFocus")).toContain("openFocus()");
     expect(review).not.toContain("private struct FileRowView");
+  });
+
+  test("Settings' readers open a skill's file and a report without marking them as an agent's", () => {
+    // A skill's own file and Benchmarks' report are opened and picked; no agent pointed at them.
+    expect(skills.match(/WorkspaceFilesView\(/g)?.length).toBe(3);
+    expect(skills.match(/marksFocus: false\)/g)?.length).toBe(3);
+    expect(review).toContain("var marksFocus = true");
   });
 
   test("the window and the panel hand the session's changes to a folder's tree", () => {

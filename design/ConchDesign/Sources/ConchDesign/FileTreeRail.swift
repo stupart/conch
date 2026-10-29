@@ -6,10 +6,13 @@ import SwiftUI
 /// screen in the conversation panel) draw this, over listings the host loaded and keeps (`ConchFileTree.rows`). Here in
 /// ConchDesign so the gallery can draw the real rows, not a picture of them.
 ///
-/// Two kinds of mark, and they say different things. A dot in the ready colour is a file this session CHANGED, at full
-/// strength, and a folder holding one, quieter (`ConchFileChanges`). The agent's violet is what it POINTED AT
-/// (`ConchFileFocus`): the row washed in its ink with the ✦ its marks carry, and the folders on the way to it tinted, the
-/// way agent ink points at one thing on a page.
+/// Two kinds of mark, at the two ends of a row, and they say different things. A dot in the ready colour, after the name,
+/// is a file this session CHANGED, at full strength, and a folder holding one, quieter (`ConchFileChanges`). A short rule
+/// in the agent's violet, in the margin before the row, is what it POINTED OUT for you to look at (`ConchFileFocus`), and a
+/// folder on the way to one has it quieter; the header says how many. Not a wash and a ✦ on every row, as it was until
+/// 2026-10-29 (Tyler: "i think we can do better than the purple pointed at star thing"): with most of a folder pointed out
+/// the washed rows read as a selection beside the real one, and the stars as noise. A mark in the margin is how an
+/// editor marks a page, it never touches the row's own fill, and a column of them still reads as one quiet line.
 public struct ConchFileTreeRail: View {
     let rows: [ConchFileRow]
     let selected: String?
@@ -56,7 +59,8 @@ public struct ConchFileTreeRail: View {
     private var lines: some View {
         LazyVStack(alignment: .leading, spacing: 0) {
             if let title {
-                HStack(spacing: 5) {
+                // On one baseline: the folder's name and the count are two sizes.
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
                     Image(systemName: "folder")
                         .font(.system(size: 10, weight: .medium))
                     Text(title)
@@ -64,16 +68,25 @@ public struct ConchFileTreeRail: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer(minLength: 4)
-                    if focus?.isEmpty == false {
-                        // What the violet means, once, where the tree starts.
-                        Text("✦ pointed at")
-                            .font(font(10.5, .medium))
-                            .foregroundStyle(CanvasInk.agentText)
+                    if let focus, !focus.isEmpty {
+                        // What the rule in the margin means, once, where the tree starts, in plain words and beside
+                        // the rule itself.
+                        ConchFocusMark()
+                            // Centred on the words' capitals, as it is on a row's name: its middle half their height
+                            // above the baseline.
+                            .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + Self.countCapHeight / 2 }
                             .accessibilityHidden(true)
+                        Text(Self.toLookAt(focus.paths.count))
+                            .font(font(10.5, .regular))
+                            .foregroundStyle(ConchColor.textTertiary)
+                            .lineLimit(1)
+                            .layoutPriority(1)
                     }
                 }
                 .foregroundStyle(ConchColor.textPrimary)
-                .padding(.horizontal, ConchSpace.x3)
+                // The rows' own inset, so the folder's icon sits over their first column and the count ends over their
+                // dots.
+                .padding(.horizontal, ConchFileRowView.contentInset)
                 .frame(height: 26)
                 .accessibilityElement(children: .combine)
                 .accessibilityAddTraits(.isHeader)
@@ -85,7 +98,7 @@ public struct ConchFileTreeRail: View {
                     isOpen: expanded.contains(row.entry.path),
                     isChanged: changed.changed(row.entry),
                     holdsChanges: changed.contains(row.entry),
-                    isFocused: focus?.isFocused(row.entry) ?? false,
+                    focus: focus.flatMap { $0.place(of: row.entry) },
                     leadsToFocus: focus?.leadsTo(row.entry) ?? false,
                     font: font,
                     action: { onPick(row.entry) }
@@ -93,6 +106,27 @@ public struct ConchFileTreeRail: View {
             }
         }
         .padding(.vertical, ConchSpace.x1)
+    }
+
+    /// The header's words for the marks: how many the agent pointed out.
+    static func toLookAt(_ count: Int) -> String { "\(count) to look at" }
+
+    /// The count's capital height at 10.5 points, about 0.72 of its size, rounded so the rule lands on whole points.
+    static let countCapHeight: CGFloat = 8
+}
+
+/// The agent's mark in the tree's margin: a short rule in its violet, 2 by 12 points, on whole points so it is crisp at 1x.
+struct ConchFocusMark: View {
+    static let size = CGSize(width: 2, height: 12)
+    /// A folder on the way to what was pointed out is the route to it, and says so more quietly, as a folder holding a
+    /// change does.
+    var route = false
+
+    var body: some View {
+        Capsule()
+            .fill(CanvasInk.agentText)
+            .opacity(route ? 0.35 : 1)
+            .frame(width: Self.size.width, height: Self.size.height)
     }
 }
 
@@ -103,7 +137,8 @@ struct ConchFileRowView: View {
     let isOpen: Bool
     let isChanged: Bool
     let holdsChanges: Bool
-    let isFocused: Bool
+    /// Where this row is among what the agent pointed out, when it is one of them (`ConchFileFocus.place(of:)`).
+    let focus: ConchFileFocus.Place?
     let leadsToFocus: Bool
     let font: (CGFloat, Font.Weight) -> Font
     let action: () -> Void
@@ -111,8 +146,14 @@ struct ConchFileRowView: View {
     @State private var isHovered = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// The agent's ink as a wash under the row it pointed at: its violet, faint enough that the name stays the thing read.
-    static let focusWash = ConchRGBA(CanvasInk.agent.hex, alpha: 0.14)
+    /// The row's fill (selection, hover), in from both edges of the rail; and what the row holds, in from those.
+    static let fillInset: CGFloat = 6
+    static let contentInset: CGFloat = 10
+    /// The margin mark's left edge: two points in from the rail's own, clear of a border its host draws there, and two
+    /// short of the row's fill, so it never touches the selection and never reads as part of it.
+    static let markInset: CGFloat = 2
+
+    var isFocused: Bool { focus != nil }
 
     var body: some View {
         Button(action: action) {
@@ -134,20 +175,13 @@ struct ConchFileRowView: View {
                     .frame(width: 13)
 
                 Text(row.entry.name)
-                    .font(font(11.5, isChanged || isFocused ? .medium : .regular))
+                    .font(font(11.5, isChanged ? .medium : .regular))
                     .foregroundStyle(nameStyle)
                     .lineLimit(1)
                     .truncationMode(.middle)
 
-                Spacer(minLength: 4)
-
-                if isFocused {
-                    // The mark an agent's ink carries on the canvas, so the two read as one voice.
-                    Text("✦")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(CanvasInk.agentText)
-                        .accessibilityHidden(true)
-                }
+                // A gap before the dot only where there is one: the name has the room to the row's edge otherwise.
+                Spacer(minLength: isChanged || holdsChanges ? 4 : 0)
 
                 // Two strengths, on purpose. A file the session edited is the claim; a folder
                 // merely CONTAINING one is the route to it, and must not shout as loudly or
@@ -160,43 +194,57 @@ struct ConchFileRowView: View {
                         .accessibilityHidden(true)
                 }
             }
-            .padding(.leading, ConchSpace.x2 + CGFloat(row.depth) * ConchSpace.x3)
-            .padding(.trailing, ConchSpace.x2)
+            .padding(.leading, Self.contentInset + CGFloat(row.depth) * ConchSpace.x3)
+            .padding(.trailing, Self.contentInset)
             .frame(height: 22)
             .background(
                 RoundedRectangle(cornerRadius: ConchRadius.small, style: .continuous)
                     .fill(background)
-                    .padding(.horizontal, ConchSpace.x1)
+                    .padding(.horizontal, Self.fillInset)
             )
+            .overlay(alignment: .leading) {
+                if isFocused || leadsToFocus {
+                    ConchFocusMark(route: !isFocused)
+                        .offset(x: Self.markInset)
+                        .accessibilityHidden(true)
+                }
+            }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
-        .help(row.entry.path)
+        .help(help)
         .accessibilityLabel(accessibilityLabel)
     }
 
     private var background: AnyShapeStyle {
         if isSelected { return AnyShapeStyle(ConchColor.rowSelected) }
-        if isFocused { return AnyShapeStyle(Self.focusWash.color) }
         return isHovered ? AnyShapeStyle(ConchColor.rowHover) : AnyShapeStyle(Color.clear)
     }
 
     private var iconStyle: AnyShapeStyle {
-        if isChanged { return AnyShapeStyle(ConchColor.ready) }
-        if isFocused || leadsToFocus { return AnyShapeStyle(CanvasInk.agentText) }
-        return AnyShapeStyle(ConchColor.textTertiary)
+        isChanged ? AnyShapeStyle(ConchColor.ready) : AnyShapeStyle(ConchColor.textTertiary)
     }
 
     private var nameStyle: AnyShapeStyle {
         isChanged || isSelected || isFocused ? AnyShapeStyle(ConchColor.textPrimary) : AnyShapeStyle(ConchColor.textSecondary)
     }
 
+    /// The path, and for a row the agent pointed out, that it did and where it came in its list.
+    var help: String {
+        guard let focus else { return row.entry.path }
+        return row.entry.path + "\n" + Self.pointedOut(focus)
+    }
+
+    static func pointedOut(_ place: ConchFileFocus.Place) -> String {
+        place.of > 1 ? "Pointed out by the agent, \(place.index) of \(place.of)" : "Pointed out by the agent"
+    }
+
     var accessibilityLabel: String {
         var said = row.entry.name
         if row.entry.isDirectory { said += isOpen ? ", open folder" : ", folder" }
-        if isFocused { said += ", pointed at by the agent" }
-        else if leadsToFocus { said += ", holds what the agent pointed at" }
+        if let focus { said += ", " + Self.pointedOut(focus).lowercased() }
+        else if leadsToFocus { said += ", holds what the agent pointed out" }
         if isChanged { said += ", changed by this session" }
         else if holdsChanges { said += ", holds changed files" }
         return said

@@ -1440,7 +1440,8 @@ struct FolderDeliverableView: View {
                             .foregroundStyle(Palette.textDim)
                         ForEach(focus, id: \.self) { path in
                             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                // The ✦ an agent's marks carry, in its colour, as the Mac's tree marks these rows.
+                                // The ✦ an agent's marks carry, in its colour. (The Mac's tree marks these rows with a rule in its
+                                // margin instead, since 2026-10-29: there they sit among the folder's other files.)
                                 Text("✦")
                                     .font(Type.caption)
                                     .foregroundStyle(CanvasInk.agentText)

@@ -357,6 +357,9 @@ struct WorkspaceFilesView: View {
     let changed: ConchFileChanges
     /// A folder deliverable's paths to point at, relative to `root`: opened and marked on first draw (`ConchFileFocus`).
     var focus: [String] = []
+    /// Whether `focus` is marked as the agent's, in the tree's margin, or only opened and picked. Settings' readers open
+    /// a skill on its own file and Benchmarks on its report, which no agent pointed at: a mark there would say one had.
+    var marksFocus = true
     var title: String?
 
     /// Folders read once, when opened, and kept.
@@ -380,7 +383,8 @@ struct WorkspaceFilesView: View {
     private var pointedAt: ConchFileFocus { ConchFileFocus(focus: focus, relativeTo: root) }
 
     var body: some View {
-        // The tree, a hairline, and the file picked in it; the hairline is the divider (`ConchSplitView`).
+        // The tree, a hairline, and the file picked in it; the hairline is the divider, with a grip on it that says so
+        // (`ConchSplitView`).
         ConchSplitView(split: .fileTree, width: $railWidth, label: "Resize the file list") {
             rail
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -427,7 +431,7 @@ struct WorkspaceFilesView: View {
             selected: selected,
             expanded: expanded,
             changed: changed,
-            focus: pointedAt,
+            focus: marksFocus ? pointedAt : nil,
             title: title,
             font: { ConchTypography.font(size: $0, weight: $1) },
             onPick: pick

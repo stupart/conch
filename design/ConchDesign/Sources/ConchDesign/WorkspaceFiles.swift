@@ -228,6 +228,17 @@ public struct ConchFileFocus: Equatable, Sendable {
     /// Is this the very path the agent pointed at?
     public func isFocused(_ entry: ConchFileEntry) -> Bool { paths.contains(entry.path) }
 
+    /// Where a path the agent pointed at came in its list: the 2nd of 6.
+    public struct Place: Equatable, Sendable {
+        public let index: Int
+        public let of: Int
+    }
+
+    /// This row's place among what the agent pointed at, in the order it named them; nil when it isn't one.
+    public func place(of entry: ConchFileEntry) -> Place? {
+        paths.firstIndex(of: entry.path).map { Place(index: $0 + 1, of: paths.count) }
+    }
+
     /// Does this folder hold a path the agent pointed at, at any depth: the route to it. The separator matters, as
     /// for `ConchFileChanges.contains`: `/src/app` must not claim `/src/application.ts`.
     public func leadsTo(_ entry: ConchFileEntry) -> Bool {
