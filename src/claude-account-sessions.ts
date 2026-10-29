@@ -1,3 +1,4 @@
+import { statSync } from "node:fs";
 import { windowKey, processParentTable } from "./window-key.ts";
 import { readClaudeAccounts, type ClaudeAccount } from "./claude-accounts.ts";
 import { findTranscript, registrySnapshot, codexRegistrySnapshot, withStartedBy, type RegistrySnapshot } from "./sessions.ts";
@@ -46,12 +47,19 @@ export async function accountRegistrySnapshot(defaultDir: string, accounts = rea
 }
 
 export function findAccountTranscript(defaultDir: string, id: string): string | undefined {
-  const paths = new Set(readClaudeAccounts(defaultDir).flatMap((account) => {
+  const found = new Map<string, boolean>();
+  for (const account of readClaudeAccounts(defaultDir)) {
     const path = findTranscript(account.configDir, id);
-    return path ? [path] : [];
-  }));
+    if (path) found.set(path, (found.get(path) ?? false) || !account.retired);
+  }
   // An unscoped ambiguous lookup cannot choose another account's conversation.
-  return paths.size === 1 ? [...paths][0] : undefined;
+  const offered = [...found].filter(([, active]) => active).map(([path]) => path);
+  if (found.size === 1) return [...found.keys()][0];
+  if (offered.length !== 1) return undefined;
+  // A copy brought across from a retired profile is the same conversation (retired-profile.ts): the one written last is
+  // the one going on, which is the retired profile's only while a session there hasn't moved yet.
+  const written = (path: string) => { try { return statSync(path).mtimeMs; } catch { return -1; } };
+  return [...found.keys()].reduce((newest, path) => written(path) > written(newest) ? path : newest, offered[0]!);
 }
 
 /**
@@ -73,12 +81,15 @@ export function sessionTranscript(
 
 export function accountResumableSessions(options: ReadResumableSessionsOptions, accounts: ClaudeAccount[], codexAccounts?: ClaudeAccount[]): ResumableSessionsRead {
   const result: ResumableSessionsRead = { sessions: [], complete: true };
+  // A retired profile's conversations resume in Default (retired-profile.ts), so they are listed as Default's, once.
+  const home = accounts.find((account) => account.id === "default");
   for (const account of accounts) {
     const read = readResumableSessionsResult({ ...options, claudeHome: account.configDir,
       ...(codexAccounts === undefined && account.id === "default" ? {} : { codexHome: "" }) });
     result.complete &&= read.complete;
+    const listedAs = account.retired && home ? home : account;
     result.sessions.push(...read.sessions.map((session) => session.backend === "codex" ? session : {
-      ...session, claudeAccountId: account.id, accountLabel: account.label,
+      ...session, claudeAccountId: listedAs.id, accountLabel: listedAs.label,
     }));
   }
   for (const account of codexAccounts ?? []) {
@@ -87,6 +98,12 @@ export function accountResumableSessions(options: ReadResumableSessionsOptions, 
     result.sessions.push(...read.sessions.map(session => ({ ...session, codexAccountId: account.id, accountLabel: account.label })));
   }
   result.sessions.sort((a, b) => b.updatedAt - a.updatedAt);
+  const listed = new Set<string>();
+  result.sessions = result.sessions.filter((session) => {
+    if (session.backend !== "claude") return true;
+    const key = `${session.claudeAccountId}:${session.sessionId}`;
+    return !listed.has(key) && !!listed.add(key);
+  });
   const limit = options.limit ?? 200;
   if (result.sessions.length > limit) result.complete = false;
   result.sessions = result.sessions.slice(0, limit);

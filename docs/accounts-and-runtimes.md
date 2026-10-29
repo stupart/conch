@@ -69,8 +69,11 @@ provide a cross-device launch scheduler. Other Macs use the existing paired
 connection for session viewing and typed input.
 
 The durable record key intentionally stays device/provider/native ID. Moving a
-conversation between account roots or machines needs a separate migration and
-alias policy. Do not copy conversation UUIDs between roots as a migration.
+conversation between machines needs a separate migration and alias policy.
+Between account roots on one Mac there is one: a retired profile's conversations
+are copied into Default under the same ID (`src/retired-profile.ts`), which the
+records store reads as a second source of the same session. Don't copy them
+between two profiles that are both still offered.
 
 ## Provider settings and usage
 

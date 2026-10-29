@@ -18,6 +18,12 @@ New, resume, restart, background attach, and background stop carry the selected 
 
 Sign-in and removal require a fresh, complete registry read with no live sessions for that account. Removal restores the previous status line and unregisters the profile: it does not delete conversations, revoke credentials, cancel a subscription, or log out. A removed profile ID fails explicitly instead of falling back to another account.
 
+### Retire a profile (one account)
+
+With "Switch accounts automatically" on, Default's sign-in already moves between every Claude subscription, so a second profile signed in to one of them only splits sessions, settings and memory in two. Retiring it keeps it registered but stops offering it: Providers and the start sheet list only the others, and its conversations are listed as Default's. Its live sessions are still seen, answered, closed and attached to. Nothing launches in it again: a new start, restart, fork, background recovery or resume that names it runs in Default, and a conversation it holds is brought across first (`src/retired-profile.ts`): the transcript, its subagent and tool-result folder, edit checkpoints and task list, copied into the same `projects/<folder>/` under the same id as copy-on-write clones. A copy that has fallen behind is extended; one that has gone on in Default is never written over. The retired folder keeps everything, and its sign-in is never read or changed.
+
+`bun scripts/one-account.ts` folds a profile into Default: it says what it would copy, merge and carry over (memory indexes joined, settings and user MCP servers Default lacks, with Default's own values kept where both have one), which of the profile's sessions are still running and how to move each, and retires it with `--apply`, after copying every Default file it changes to `~/.config/conch/one-account-backups/<time>/`. It refuses to retire a profile whose subscription rotation doesn't cover unless told to. Running it again brings across only what is new. `bun scripts/one-account-e2e.ts` plays the move of a running session in a sandbox.
+
 Conch adds its lifecycle hooks to the selected configuration at login/launch using the existing idempotent installer. Existing settings are preserved and backed up if changed. A managed status-line wrapper records official public rate-limit fields and forwards the original status-line input/output. Its private sidecar preserves the original command; the measurement cache contains only identity, usage, and time. Claude owns the credentials.
 
 ## Storage and protocol
@@ -35,7 +41,7 @@ Other actions are `list`, `refresh`, `login`, `remove`, and `usage`; `refresh`, 
 
 ## Scope
 
-This version manages account choice and reports authentication status. Its main view adapts claude-swap's usage bars and reads Claude Code's supported status-line output. It does not purchase subscriptions, pool allowances, rotate on rate limits, or move a conversation between account roots. Keep histories where Claude created them; copying the same conversation UUID between profile folders is not a migration workflow. Separate profile directories do not isolate keyless Claude Console/Anthropic profile authentication, which Claude stores outside those directories.
+This version manages account choice and reports authentication status. Its main view adapts claude-swap's usage bars and reads Claude Code's supported status-line output. It does not purchase subscriptions or pool allowances; rotation is claude-swap's (see start-account-selection.md). Histories stay where Claude created them, with one exception: a retired profile's conversations are brought across to Default under their own ids as they are resumed (above), since a conversation's identity in conch's records is the device, provider and native id, not the profile. Separate profile directories do not isolate keyless Claude Console/Anthropic profile authentication, which Claude stores outside those directories.
 
 See [accounts and runtimes](accounts-and-runtimes.md) for the independent identity/location model, measurement freshness, and open-source attribution.
 

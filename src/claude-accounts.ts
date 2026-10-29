@@ -9,6 +9,12 @@ export interface ClaudeAccount {
   id: string;
   label: string;
   configDir: string;
+  /**
+   * Kept but no longer offered (`retireClaudeAccount`): its live sessions are still seen, answered and closed, and
+   * nothing launches in it again. A start, restart, fork or resume that names it runs in Default, bringing the
+   * conversation across (retired-profile.ts).
+   */
+  retired?: true;
 }
 
 export interface ClaudeAccountStatus extends ClaudeAccount {
@@ -99,9 +105,14 @@ export function readClaudeAccounts(defaultDir = defaultClaudeDir(), file = accou
     const configDir = canonical(entry.configDir);
     if (dirs.has(configDir)) throw new Error("Account profiles must have separate directories");
     ids.add(entry.id); dirs.add(configDir);
-    accounts.push({ id: entry.id, label: entry.label.trim(), configDir });
+    accounts.push({ id: entry.id, label: entry.label.trim(), configDir, ...(entry.retired === true ? { retired: true as const } : {}) });
   }
   return accounts;
+}
+
+/** The profiles a person can choose: every one but the retired. */
+export function offeredClaudeAccounts<T extends ClaudeAccount>(accounts: readonly T[]): T[] {
+  return accounts.filter((account) => !account.retired);
 }
 
 function save(accounts: ClaudeAccount[], file: string): void {
@@ -134,6 +145,22 @@ export function removeClaudeAccount(id: string, file = accountStorePath(), defau
   const accounts = readClaudeAccounts(defaultDir, file);
   if (!accounts.some((account) => account.id === id)) throw new Error("Account was not found");
   save(accounts.filter((account) => account.id !== id), file);
+}
+
+/**
+ * Stop offering a profile, or offer it again (`retired` false). 2026-10-28, Tyler: "we should have one account for all
+ * of conch I thought? (at least for mine)". Like removal it changes only conch's registration, never Claude's files or
+ * sign-in; unlike removal its live sessions stay seen until they move, and its conversations stay resumable, in Default.
+ */
+export function retireClaudeAccount(id: string, retired = true, file = accountStorePath(), defaultDir = defaultClaudeDir()): ClaudeAccount {
+  if (id === "default") throw new Error("The default account cannot be retired");
+  const accounts = readClaudeAccounts(defaultDir, file);
+  const account = accounts.find((one) => one.id === id);
+  if (!account) throw new Error("Account was not found");
+  const { retired: _, ...rest } = account;
+  const changed: ClaudeAccount = retired ? { ...rest, retired: true } : rest;
+  save(accounts.map((one) => one.id === id ? changed : one), file);
+  return changed;
 }
 
 export function requireClaudeAccount(id: string, defaultDir = defaultClaudeDir()): ClaudeAccount {

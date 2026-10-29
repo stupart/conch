@@ -31,16 +31,31 @@ export type ResumeAccount =
 
 const named = (account: ClaudeAccount) => `"${account.label}"`;
 
-/** The request with the account that holds its conversation, or why none can resume it. Only a Claude resume is looked at. */
+/**
+ * The request with the account that holds its conversation, or why none can resume it. Only a Claude resume is looked at.
+ *
+ * A retired profile's conversation resumes in Default, which the launch brings it across to (retired-profile.ts): for
+ * choosing, it is Default's, and so is an agent's own retired profile.
+ */
 export function resumeAccountFor(request: StartSessionRequest, lookup: ResumeLookup): ResumeAccount {
   const id = request.resumeSessionId?.trim();
   if (request.backend !== "claude" || !id) return { ok: true, request };
-  const holders = lookup.accounts
-    .map((account) => ({ account, at: lookup.heldAt(account.configDir, id) }))
-    .filter((one): one is { account: ClaudeAccount; at: number } => one.at !== undefined)
-    .sort((a, b) => b.at - a.at);
+  const home = lookup.accounts.find((account) => account.id === "default");
+  const runsIn = (account: ClaudeAccount) => account.retired && home ? home : account;
+  // One per profile a resume can run in, newest first. `retired`: only a retired profile has it, so it comes across.
+  const holders: { account: ClaudeAccount; at: number; retired?: ClaudeAccount }[] = [];
+  for (const account of lookup.accounts) {
+    const at = lookup.heldAt(account.configDir, id);
+    if (at === undefined) continue;
+    const held = holders.find((one) => one.account === runsIn(account));
+    if (!held) holders.push({ account: runsIn(account), at, ...(account.retired ? { retired: account } : {}) });
+    else if (!account.retired) Object.assign(held, { at: Math.max(held.at, at), retired: undefined });
+    else held.at = Math.max(held.at, at);
+  }
+  holders.sort((a, b) => b.at - a.at);
   const caller = lookup.callerConfigDir ? lookup.canonical(lookup.callerConfigDir) : undefined;
-  const callerAccount = caller ? lookup.accounts.find((account) => lookup.canonical(account.configDir) === caller) : undefined;
+  const callerProfile = caller ? lookup.accounts.find((account) => lookup.canonical(account.configDir) === caller) : undefined;
+  const callerAccount = callerProfile && runsIn(callerProfile);
   const looked = [
     ...lookup.accounts.map((account) => `${named(account)} (${account.configDir})`),
     ...(caller && !callerAccount ? [`your CLAUDE_CONFIG_DIR (${lookup.callerConfigDir})`] : []),
@@ -49,9 +64,17 @@ export function resumeAccountFor(request: StartSessionRequest, lookup: ResumeLoo
     + " resume and exit. Check the id (`conch resumable <words from it>`), or fork a live session from conch's Mac app or with conch_fork";
 
   if (request.claudeAccountId !== undefined) {
-    const chosen = lookup.accounts.find((account) => account.id === request.claudeAccountId);
-    if (!chosen) return { ok: false, error: `there is no Claude account profile with id ${request.claudeAccountId}` };
-    if (lookup.heldAt(chosen.configDir, id) !== undefined) return { ok: true, request };
+    const asked = lookup.accounts.find((account) => account.id === request.claudeAccountId);
+    if (!asked) return { ok: false, error: `there is no Claude account profile with id ${request.claudeAccountId}` };
+    const chosen = runsIn(asked);
+    const held = holders.find((one) => one.account === chosen);
+    if (held) {
+      return chosen === asked && !held.retired ? { ok: true, request } : {
+        ok: true,
+        request: { ...request, claudeAccountId: chosen.id },
+        said: `resuming in the ${named(chosen)} account profile${held.retired ? `, bringing conversation ${id} across from the retired ${named(held.retired)} profile` : ""}`,
+      };
+    }
     if (!holders.length) return { ok: false, error: none };
     return {
       ok: false,
@@ -65,7 +88,8 @@ export function resumeAccountFor(request: StartSessionRequest, lookup: ResumeLoo
     return {
       ok: true,
       request: { ...request, claudeAccountId: pick.account.id },
-      said: `resuming in the ${named(pick.account)} account profile, which has conversation ${id}`
+      said: `resuming in the ${named(pick.account)} account profile, `
+        + (pick.retired ? `bringing conversation ${id} across from the retired ${named(pick.retired)} profile` : `which has conversation ${id}`)
         + (others.length ? ` (also in ${others.map(({ account }) => named(account)).join(", ")}: pass --account to choose)` : ""),
     };
   }

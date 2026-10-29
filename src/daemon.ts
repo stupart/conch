@@ -10,6 +10,7 @@ import { createSkillsLibrary, libraryHomes } from "./skills-library.ts";
 import { createLoginInventory, loginProjects, loginSources } from "./login-inventory.ts";
 import { accountModelCatalog, modelCatalogForSession } from "./provider-models.ts";
 import { prepareClaudeHandoff, settleClaudeHandoff, claudeHandoffReceipt, requireClaudeHandoffSupport } from "./claude-account-handoff.ts";
+import { launchOffRetiredProfiles } from "./retired-profile.ts";
 import { SessionReconciler } from "./session-reconciler.ts";
 import { RecordsRuntime } from "./records-runtime.ts";
 import { createRecordOperation, createRecordReceiptObserver, type RecordObserver } from "./records-receipts.ts";
@@ -276,7 +277,7 @@ import {
 import { assertCodexAccountIdle, assertClaudeAccountIdle, accountRegistrySnapshot, accountResumableSessions, findAccountTranscript as findTranscript, sessionTranscript } from "./claude-account-sessions.ts";
 import { transcriptFolder } from "./review-roots.ts";
 import { defaultCodexDir, readCodexAccounts, addCodexAccount, removeCodexAccount, requireCodexAccount, cachedCodexAccount, invalidateCodexAccount, codexAccountForLaunch } from "./codex-accounts.ts";
-import { claudeAccountForLaunch, readClaudeAccounts, addClaudeAccount, removeClaudeAccount, requireClaudeAccount, cachedClaudeAccountStatus, readClaudeAccountStatus, invalidateClaudeAccountStatus, type ClaudeAccountStatus } from "./claude-accounts.ts";
+import { claudeAccountForLaunch, offeredClaudeAccounts, readClaudeAccounts, addClaudeAccount, removeClaudeAccount, requireClaudeAccount, cachedClaudeAccountStatus, readClaudeAccountStatus, invalidateClaudeAccountStatus, type ClaudeAccountStatus } from "./claude-accounts.ts";
 import { codexHookCommand, conchInvocation, runInstall as installAccountHooks, repairConchHooks } from "./install.ts";
 import { setUpSessionBrowsers } from "./browser-open.ts";
 import {
@@ -704,7 +705,17 @@ function fileThrownEvent(event: Pick<TurnEvent, "type" | "sessionId" | "label">,
  * waited on it (2026-10-05, Tyler: "trying to start a new session (background session with claude account) and it
  * didn't start … and the modal didn't close").
  */
-async function launchSession(request: StartSessionRequest): Promise<void | { backgroundId?: string; tty?: string }> {
+async function launchSession(asked: StartSessionRequest): Promise<void | { backgroundId?: string; tty?: string }> {
+  // Nothing launches in a retired profile: a restart, fork or resume that names one runs in Default, with its
+  // conversation brought across first (retired-profile.ts).
+  let profiles: ReturnType<typeof readClaudeAccounts> = [];
+  try {
+    profiles = readClaudeAccounts();
+  } catch {
+    // An unreadable list: a launch that names a profile says so below (`claudeAccountForLaunch`), the rest go ahead.
+  }
+  const { request, said } = await launchOffRetiredProfiles(asked, profiles);
+  for (const line of said) log(line);
   // A background start runs in its account's home, the default one when it names none, as `startBackgroundSession`
   // launches it; a Codex one gets conch's hooks put right there too, before Codex is asked about them below.
   const background = request.host === "background";
@@ -3573,7 +3584,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
           done = adding ? undefined : { ok: false, output: "Claude's sign-in didn't start. Check that Claude Code is installed, then try again." };
         }
         const installed = swapExecutable() !== undefined;
-        const accounts = await Promise.all(readClaudeAccounts(cfg.claudeDir).map(account => cachedClaudeAccountStatus(account, false)));
+        const accounts = await Promise.all(offeredClaudeAccounts(readClaudeAccounts(cfg.claudeDir)).map(account => cachedClaudeAccountStatus(account, false)));
         return { kind: "claude-accounts", accounts, ...(adding ? { adding } : {}),
           rotation: { installed, on: cfg.claudeRotation, running: rotation.running,
             ...(installed ? { dashboard: await readSwapDashboard() } : {}),
@@ -3605,12 +3616,14 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
           await startClaudeAccountLogin(account);
         }
       }
-      const accounts = await Promise.all(readClaudeAccounts(cfg.claudeDir).map(account =>
+      // A retired profile isn't offered, though its sessions that haven't moved yet still run on its connection.
+      const profiles = readClaudeAccounts(cfg.claudeDir);
+      const accounts = await Promise.all(offeredClaudeAccounts(profiles).map(account =>
         cachedClaudeAccountStatus(account, message.action === "refresh" && message.id === account.id)));
       void renderSessionPanel();
       return { kind: "claude-accounts", accounts,
         ...(loginUrl ? { loginUrl } : {}),
-        execution: deviceExecutionCatalog(ownerDeviceId, hostname(), accounts, readCodexAccounts()),
+        execution: deviceExecutionCatalog(ownerDeviceId, hostname(), profiles, readCodexAccounts()),
         usage: readAccountUsage(accounts),
         ...(created ? { createdAccountId: created.id } : {}),
         ...(message.action === "login" ? { loginOpened: true as const } : {}) };
@@ -3710,11 +3723,14 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     start: async (message) => {
       const request = { ...message, bypassPermissions: cfg.bypassPermissions };
       if (message.host === "background" && message.resumeSessionId && !message.claudeSourceAccountId && message.options?.["fork-session"] !== true) {
-        const account = message.claudeAccountId ?? message.codexAccountId ?? "default";
+        // A retired profile's conversation is listed, and resumed, as Default's: one still running there is running.
+        const retired = new Set(readClaudeAccounts(cfg.claudeDir).filter((one) => one.retired).map((one) => one.id));
+        const runsIn = (id: string) => retired.has(id) ? "default" : id;
+        const account = runsIn(message.claudeAccountId ?? message.codexAccountId ?? "default");
         const alreadyRunning = [...panelSessions.values()].some(session =>
           (session.agentSessionId ?? session.sessionId) === message.resumeSessionId
           && (session.backend ?? "claude") === message.backend
-          && (session.claudeAccountId ?? session.codexAccountId ?? "default") === account
+          && runsIn(session.claudeAccountId ?? session.codexAccountId ?? "default") === account
           && (session.pid || session.agentPid || session.messageRoute));
         if (alreadyRunning) throw new Error("This conversation is already running. Close it before resuming in Background, or continue in its current session.");
       }
