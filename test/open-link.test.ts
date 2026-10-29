@@ -262,7 +262,7 @@ describe("the Mac deliverable viewers say why a file would not show", () => {
       "DeliverableVideoView(url: url, onFailure: { loadFailed(url, $0) })",
       "DeliverablePDFView(url: url, onFailure: { loadFailed(url, $0) })",
       // The filed document, or the Atlas page a wiki link led to, at the heading the link named.
-      "DeliverableDocumentView(url: url, renderMarkdown: true, anchor: atlasTrail.last?.page.heading, onFailure: { loadFailed(url, $0) })",
+      "DeliverableDocumentView(url: url, renderMarkdown: true, anchor: atlasTrail.last?.page.heading, offset: returnOffset, onFailure: { loadFailed(url, $0) })",
       "DeliverableDocumentView(url: url, renderMarkdown: false, onFailure: { loadFailed(url, $0) })",
     ]) expect(review).toContain(viewer);
   });

@@ -36,7 +36,8 @@ describe("a link in a rendered document goes where it means", () => {
     expect(click).toContain("textView.scrollToMarkdownAnchor(anchor)");
     // A link to the page already shown moves only to its heading.
     expect(click).toContain("page.copy().standardizedFileURL == loadedURL?.standardizedFileURL");
-    expect(click).toContain("onOpenAtlas(page)");
+    // With the link's words, to name the page by, and where the document was, for Back to return to.
+    expect(click).toContain("onOpenAtlas(AtlasFollow(page: page, words: said.isEmpty ? nil : said, offset: textView.enclosingScrollView?.contentView.bounds.minY ?? 0))");
   });
 
   test("a page a link led to opens at its top, or at the heading the link named", () => {
@@ -57,10 +58,15 @@ describe("the pane follows a wiki link to conch's copy, or says it has none", ()
     expect(content).toContain("let url = atlasTrail.last?.copy ?? filed");
     expect(content).toContain("if let stop = atlasTrail.last, stop.copy == nil {");
     expect(content).toContain("AtlasPageUnsavedView(");
-    expect(content).toContain("followAtlas(page, from: url)");
+    expect(content).toContain("followAtlas(followed, from: url)");
+    // Back returns to where the page was left; the page a link led to opens at its top or its heading.
+    expect(review).toContain("returnOffset = left.fromOffset");
+    expect(content).toContain("offset: returnOffset");
     // Back, and the pane's own controls on the line while it is up, instead of the corner's circles over it.
     expect(content).toContain("AtlasTrailLine(page: stop.page, back: stop.back, onBack: atlasBack) {");
     expect(content).toContain(".onChange(of: atlasTrail.isEmpty) { _, empty in onTrail(!empty) }");
+    // Only the way out goes on the line, and only to a copy: Compare is the filed deliverable's.
+    expect(content).toContain("ForEach(stop.copy == nil ? [] : lineControls.filter { !$0.comparesVersions }) { control in");
     expect(review).toContain("if !opensFromAddressLine, !controlsOnTrail {");
     expect(review).toContain('.keyboardShortcut("[", modifiers: .command)');
   });
