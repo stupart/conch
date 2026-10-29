@@ -274,8 +274,12 @@ public struct HistoryWindow: Equatable, Sendable {
 
     /// Replace the rows. Returns how far to move the reader so that what they are looking at
     /// stays where it is: down by whatever arrived above them, up by whatever left.
+    ///
+    /// `fromBelow`: what is drawn under the region changed with these rows — the live window moved
+    /// on, or the session left or rejoined the daemon's eight published windows — so rows the region
+    /// gained or lost at its end traded places with it rather than arriving (`shift`).
     @discardableResult
-    public mutating func set(_ slots: [Slot]) -> CGFloat {
+    public mutating func set(_ slots: [Slot], fromBelow: Bool = false) -> CGFloat {
         let newIDs = slots.map(\.id)
         let oldIDs = ids
         let wasMaterialised = Set(ids[materialised])
@@ -300,7 +304,7 @@ public struct HistoryWindow: Equatable, Sendable {
         for (id, height) in zip(ids, heights) { known[id] = height }
 
         let shift = Self.shift(
-            from: oldIDs, tops: oldTops, to: index, tops: tops, readerTop: readerTop, leading: leading
+            from: oldIDs, tops: oldTops, to: index, tops: tops, readerTop: readerTop, leading: leading, fromBelow: fromBelow
         )
         if let top = readerTop { readerTop = top + shift }
 
@@ -437,19 +441,32 @@ public struct HistoryWindow: Equatable, Sendable {
     /// above, rows above being measured, and rows leaving, all at once. If that row has gone,
     /// the next one that survived is used instead. Below every row (reading the live tail
     /// underneath), everything that changed is above the reader, so the whole difference.
+    ///
+    /// Unless what is under the region changed too (`fromBelow`): then the rows it gained or lost
+    /// at its end are the live tail's, moved across the seam, and were on screen below all along.
+    /// Counted as arrivals, an idle session leaving the daemon's eight published windows — its whole
+    /// conversation moving out of the live window and into the region at once — moved its reader
+    /// 4,294 pt down a document that had not grown, past its end, and the column was blank
+    /// (2026-10-29). Only what changed above the last row that stayed moves them.
     static func shift(
         from oldIDs: [String],
         tops oldTops: [CGFloat],
         to newIndex: [String: Int],
         tops newTops: [CGFloat],
         readerTop: CGFloat?,
-        leading: Int
+        leading: Int,
+        fromBelow: Bool = false
     ) -> CGFloat {
         let oldTotal = oldTops[oldIDs.count]
         let newTotal = newTops[newTops.count - 1]
-        guard let readerTop,
-              let first = anchor(tops: oldTops, count: oldIDs.count, readerTop: readerTop, leading: leading)
-        else { return newTotal - oldTotal }
+        guard let readerTop else { return newTotal - oldTotal }
+        guard let first = anchor(tops: oldTops, count: oldIDs.count, readerTop: readerTop, leading: leading) else {
+            guard fromBelow else { return newTotal - oldTotal }
+            for old in oldIDs.indices.reversed() {
+                if let new = newIndex[oldIDs[old]] { return newTops[new + 1] - oldTops[old + 1] }
+            }
+            return 0
+        }
         for old in first..<oldIDs.count {
             if let new = newIndex[oldIDs[old]] { return newTops[new] - oldTops[old] }
         }

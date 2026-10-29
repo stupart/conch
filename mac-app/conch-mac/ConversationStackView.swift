@@ -341,6 +341,10 @@ struct ConversationStackView: View {
                         edge: historyEdge,
                         note: conversation.shared ? "Shared with another window — both windows' messages are shown" : nil,
                         entries: recordedEntries,
+                        // Where the live window starts: rows crossing it — the window moving on, or this
+                        // session leaving the daemon's published eight and drawn from the record — were
+                        // already on screen, and do not move the reader as history arriving above would.
+                        below: conversation.items.first?.id,
                         gap: 22,
                         edgeFont: .system(size: 11)
                     ) { recorded in

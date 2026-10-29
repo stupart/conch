@@ -101,6 +101,31 @@ final class HistoryScrollTests: XCTestCase {
         XCTAssertEqual(shift, 270, "with nothing to anchor to but furniture, what the reader sees is the live tail")
     }
 
+    /// Tyler, 2026-10-29: "large areas of white in the conch conversation bar". An idle session left the
+    /// daemon's eight published windows while he read its end, so its whole conversation moved out of the
+    /// live window and into the region at once. Taken for a page arriving above, the reader was moved by
+    /// all of it, 4,291 pt down a document that had not grown, past its end: nothing there to draw.
+    func testRowsTradingPlacesWithTheLiveTailDoNotMoveTheReaderBelowThem() {
+        var window = HistoryWindow()
+        window.set([HistoryWindow.Slot(id: "edge", estimate: 20)])
+        window.scrolled(top: 3_914, height: 666) // the end of the live tail, below every row
+        let all = [HistoryWindow.Slot(id: "edge", estimate: 20)] + slots((0..<7).map { "r\($0)" }, height: 613)
+        var moved = window
+        XCTAssertEqual(moved.set(all, fromBelow: true), 0, "the same messages, drawn above the seam instead of below it")
+        XCTAssertEqual(moved.readerTop, 3_914)
+        XCTAssertTrue(moved.materialised.contains(7), "and the row under the reader is a real view, not a spacer")
+        XCTAssertEqual(window.set(all), 7 * 613, "a first page arriving above the same reader still moves them by all of it")
+
+        // The live window moving on: its oldest rows join the region's end as an older row arrives above.
+        var sliding = self.window(4)
+        sliding.scrolled(top: sliding.total + 250, height: 400)
+        XCTAssertEqual(sliding.set([HistoryWindow.Slot(id: "edge", estimate: 30)] + slots(["o0"], height: 70)
+            + slots((0..<4).map { "r\($0)" }) + slots(["n0", "n1"], height: 300), fromBelow: true), 70,
+                       "the row that arrived above moves the reader; the two that came up out of the live window do not")
+        XCTAssertEqual(sliding.set([HistoryWindow.Slot(id: "edge", estimate: 30)] + slots(["o0"], height: 70)
+            + slots((0..<4).map { "r\($0)" }), fromBelow: true), 0, "nor do rows going back down into it")
+    }
+
     func testRowsLeavingAboveMoveTheReaderUpAndAVanishedAnchorFallsToTheNextRow() {
         var window = window(10)
         window.scrolled(top: 30 + 400 + 5, height: 300) // inside r4

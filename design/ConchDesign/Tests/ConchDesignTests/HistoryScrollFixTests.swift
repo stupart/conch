@@ -107,6 +107,69 @@ final class HistoryScrollFixTests: XCTestCase {
         }
     }
 
+    // MARK: - The live window moving into the region (2026-10-29)
+
+    /// The Mac's conversation, small: the record's rows in the region, the live window's under it.
+    private struct Seam: View {
+        @ObservedObject var model: HistoryRegionModel
+        let recorded: [String]
+        let live: [String]
+
+        var body: some View {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    HistoryRegion(
+                        model: model,
+                        edge: HistoryEdge(mark: .none),
+                        entries: recorded.map { HistoryEntry(id: $0, estimate: 520, payload: $0) },
+                        below: live.first,
+                        gap: 0,
+                        edgeFont: .system(size: 11)
+                    ) { _ in
+                        Color.gray.frame(height: 600)
+                    }
+                    ForEach(live, id: \.self) { _ in Color.gray.frame(height: 600) }
+                }
+            }
+        }
+    }
+
+    /// Tyler: "large areas of white in the conch conversation bar". He was reading the end of an idle
+    /// session when the daemon stopped publishing its live window — it keeps the eight busiest — and the
+    /// record drew every message instead: the whole conversation moved from under the region into it. The
+    /// region took that for history arriving above him and scrolled him its full height, past the end of a
+    /// document that had not grown, and the column was empty until he scrolled.
+    @MainActor
+    func testThroughTheRegionASessionLeavingThePublishedWindowsKeepsItsReaderOnIt() {
+        _ = NSApplication.shared
+        NSApp.setActivationPolicy(.prohibited)
+        let messages = (0..<7).map { "m\($0)" }
+        let model = HistoryRegionModel(overscan: 2, cap: 160)
+        let window = NSWindow(contentRect: NSRect(x: -30_000, y: -30_000, width: 700, height: 666), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.orderOut(nil) }
+        let host = NSHostingView(rootView: Seam(model: model, recorded: [], live: messages))
+        window.contentView = host
+        window.orderFrontRegardless()
+        settle(host)
+        guard let scroll = scrollView(in: host), let document = scroll.documentView else { return XCTFail("no scroll view") }
+        let clip = scroll.contentView
+        clip.scroll(to: NSPoint(x: 0, y: document.frame.height - clip.bounds.height))
+        scroll.reflectScrolledClipView(clip)
+        settle(host)
+
+        host.rootView = Seam(model: model, recorded: messages, live: [])
+        settle(host)
+        XCTAssertLessThanOrEqual(clip.bounds.maxY, document.frame.height + 0.5, "the viewport is on the conversation, not past its end")
+        XCTAssertTrue(model.window.materialised.contains(messages.count), "and the message under it is drawn, not a spacer's height")
+    }
+
+    private func scrollView(in view: NSView) -> NSScrollView? {
+        if let found = view as? NSScrollView { return found }
+        for sub in view.subviews { if let found = scrollView(in: sub) { return found } }
+        return nil
+    }
+
     // MARK: - A read that fails (#3)
 
     private let t0 = Date(timeIntervalSinceReferenceDate: 800_000_000)
