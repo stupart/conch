@@ -157,22 +157,6 @@ final class ConchDesignTests: XCTestCase {
         }
     }
 
-    func testTheMarkIsTheApprovedSVG() {
-        let points = ConchMark.unitPoints
-        XCTAssertEqual(points.count, 1201)
-        // Starts one unit above the centre, ends at the top of the crown, crests at 90 degrees.
-        XCTAssertEqual(points[0].x, 12, accuracy: 0.001)
-        XCTAssertEqual(points[0].y, 11, accuracy: 0.001)
-        XCTAssertEqual(points[1200].y, 5.8, accuracy: 0.001)
-        XCTAssertEqual(points[750].x, 20.2, accuracy: 0.001)
-        // Two points from conch-mark.svg, one on each segment: "L13.683 10.051" (step 68), "L9.956 4.966" (step 1173).
-        XCTAssertEqual(points[68].x, 13.683, accuracy: 0.001)
-        XCTAssertEqual(points[68].y, 10.051, accuracy: 0.001)
-        XCTAssertEqual(points[1173].x, 9.956, accuracy: 0.001)
-        XCTAssertEqual(points[1173].y, 4.966, accuracy: 0.001)
-        XCTAssertEqual(ConchMark.lineWidth(forSide: 16), 1.15, accuracy: 0.001)
-    }
-
     /// The Ready pill brings the scene to you: the deliverable, else conch's window if open, else the terminal, else conch.
     func testTheReadyPillsSceneIsTheLinkThenConchsWindowThenTheTerminal() {
         let page = URL(string: "https://example.com/pull/1")!

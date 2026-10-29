@@ -282,7 +282,7 @@ struct SpringCurve: View {
 
 // The mark
 try render("mark") {
-    Heading(title: "The conch mark", note: "Menu bar only. 16 pt, cropped tight, 1.15 pt stroke; Talk is a template image.")
+    Heading(title: "The conch mark", note: "Menu bar only: the circle, looking. 18 pt, a template image in every state, drawn from its own 1x and 2x grids.")
     HStack(alignment: .top, spacing: 18) {
         ForEach(VoiceState.allCases, id: \.self) { state in
             VStack(alignment: .leading, spacing: 12) {
@@ -291,13 +291,13 @@ try render("mark") {
                     .frame(width: 150, height: 130)
                     .background(RoundedRectangle(cornerRadius: ConchRadius.medium).fill(ConchColor.surface))
                 Text(state.title).font(ConchType.uiEmphasis).foregroundStyle(ConchColor.textPrimary)
-                // The real status item image, at menu bar size, in a strip like the bar.
+                // The real status item image, at menu bar size, in a strip like the bar, inked as the bar inks a template.
                 HStack(spacing: 10) {
                     Image(nsImage: ConchMark.statusImage(for: state))
-                        .renderingMode(state == .talk ? .template : .original)
+                        .renderingMode(.template)
                         .foregroundStyle(ConchColor.textPrimary)
-                        .frame(width: 16, height: 16)
-                        .padding(.horizontal, 5)
+                        .frame(width: ConchMark.side, height: ConchMark.side)
+                        .padding(.horizontal, 4)
                         .background(RoundedRectangle(cornerRadius: 4).strokeBorder(ConchColor.hairlineStrong, lineWidth: 1))
                     Image(systemName: "wifi").font(.system(size: 13, weight: .medium))
                     Text("10:31").font(.system(size: 13, weight: .medium))

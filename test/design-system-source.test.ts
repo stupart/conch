@@ -120,12 +120,15 @@ test("M2: the status item takes focus only for Open conch and opening a session"
   expect(callers.sort()).toEqual(["bringConchForward", "openConch", "openInWindow", "openSession"]);
 });
 
-test("M2: the whole mark recolours by state, and Talk is the template image", () => {
+// The mark was a scallop spiral that recoloured by state, with only Talk a template; on a dark bar the other states kept
+// their light colours. It is the brand's circle, looking, a template in every state (ConchMarkTests measures its pixels).
+test("M2: the mark shows each state in the bar's own ink, a template image in every state", () => {
   const mark = read("design/ConchDesign/Sources/ConchDesign/ConchMark.swift");
-  expect(mark).toContain("image.isTemplate = state == .talk");
-  expect(mark).toContain("public static func statusImage(for state: VoiceState, side: CGFloat = 16) -> NSImage {");
+  expect(mark).toContain("image.isTemplate = true");
+  expect(mark).not.toContain("image.isTemplate = state == .talk");
+  expect(mark).toContain("public static func statusImage(for state: VoiceState) -> NSImage {");
   expect(item).toContain(".map(Self.voiceState)");
-  expect(item).toContain("button.image = ConchMark.statusImage(for: voice, side: 18)");
+  expect(item).toContain("button.image = ConchMark.statusImage(for: voice)");
 });
 
 test("M2: the notch hiding the item is noticed, logged, and conch stays in the Dock", () => {

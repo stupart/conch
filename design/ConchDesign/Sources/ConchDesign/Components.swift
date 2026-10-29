@@ -88,8 +88,8 @@ public struct VoiceOrb: View {
     public static let ringSpread: CGFloat = 5 / 36
     /// The mic on listening's orange, the same in light and dark as the orange is.
     public static let onListening = ConchColor.textPrimary.light
-    /// Ready's disc, under a white check: the light green in both schemes, as the menu bar mark draws it. Dark's
-    /// brighter green is for a mark on a dark ground, and the check on it measured 2.72; on this it is 3.57.
+    /// Ready's disc, under a white check: the light green in both schemes, as the menu bar mark drew it when it was
+    /// coloured. Dark's brighter green is for a mark on a dark ground, and the check on it measured 2.72; on this it is 3.57.
     public static let readyFill = ConchColor.ready.light
 
     public init(state: VoiceState, size: CGFloat = 36) {
