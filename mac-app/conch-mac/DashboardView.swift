@@ -432,6 +432,13 @@ private struct HeaderControls: View {
                 isDisabled: audioHeldElsewhere,
                 action: actions.onPauseOrResume
             )
+            // Every skill across the accounts, the indexes' to add and try, and the benchmarks beside them: two
+            // sections of Settings (SkillsLibraryView.swift), opened at Skills.
+            HeaderButton(
+                symbol: "sparkles",
+                help: "Skills — every skill in every account, and ones to add",
+                action: { SettingsRouter.shared.open(.skills) }
+            )
             HeaderButton(
                 symbol: "gearshape",
                 help: "Settings — connect a phone, and everything else",

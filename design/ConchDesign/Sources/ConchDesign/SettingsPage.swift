@@ -8,8 +8,11 @@ import CoreGraphics
 /// shows at all, and how wide a section runs. The Mac's `SettingsRouter` holds the one state for the app, and every way in
 /// (the header's gear, ⌘, and conch › Settings…, the menu bar menu, Manage… beside an account, the voices' Why?) goes
 /// through it.
+///
+/// Skills and Benchmarks (2026-10-28) sit beside Plugins & MCP: every skill across the accounts, the public indexes' to
+/// add and try, and the benchmark catalog (SkillsLibrary.swift). The header's sparkles opens Skills.
 public enum SettingsSection: String, CaseIterable, Identifiable, Sendable {
-    case providers, environments, tools, browser, logins, general, phone, permissions, setup
+    case providers, environments, tools, skills, benchmarks, browser, logins, general, phone, permissions, setup
 
     public var id: String { rawValue }
 
@@ -18,6 +21,8 @@ public enum SettingsSection: String, CaseIterable, Identifiable, Sendable {
         case .providers: "Providers"
         case .environments: "Environments"
         case .tools: "Plugins & MCP"
+        case .skills: "Skills"
+        case .benchmarks: "Benchmarks"
         case .browser: "Browser"
         case .logins: "Logins"
         case .general: "General"
@@ -33,6 +38,8 @@ public enum SettingsSection: String, CaseIterable, Identifiable, Sendable {
         case .providers: "person.crop.circle"
         case .environments: "desktopcomputer"
         case .tools: "puzzlepiece.extension"
+        case .skills: "sparkles"
+        case .benchmarks: "chart.bar.xaxis"
         case .browser: "globe"
         case .logins: "person.badge.key"
         case .general: "slider.horizontal.3"
@@ -40,6 +47,12 @@ public enum SettingsSection: String, CaseIterable, Identifiable, Sendable {
         case .permissions: "hand.raised"
         case .setup: "checklist"
         }
+    }
+
+    /// The section runs the whole width beside the list, a reader of its own at its right (Skills, Benchmarks), rather than
+    /// stopping at `SettingsLayout.column`: the column's margin would squeeze its list and every scroll view in its reader.
+    public var runsFullWidth: Bool {
+        self == .skills || self == .benchmarks
     }
 
     /// The section viewed last, kept in UserDefaults under the key the separate window used, so the one you had open there

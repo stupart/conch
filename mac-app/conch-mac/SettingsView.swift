@@ -1024,11 +1024,18 @@ struct ConchSettingsPage: View {
                         .frame(width: 1)
 
                     GeometryReader { content in
-                        section(router.state.section)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                            // Every section is one scroll view: this stops its content at the column and leaves the
-                            // scroll view, and its scroller, the full width.
-                            .contentMargins(.trailing, SettingsLayout.trailingMargin(width: content.size.width), for: .scrollContent)
+                        if router.state.section.runsFullWidth {
+                            // Skills and Benchmarks lay out a list and a reader of their own across the whole width; the
+                            // column's margin would squeeze the list and every scroll view in the reader.
+                            section(router.state.section)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        } else {
+                            section(router.state.section)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                                // Every section is one scroll view: this stops its content at the column and leaves the
+                                // scroll view, and its scroller, the full width.
+                                .contentMargins(.trailing, SettingsLayout.trailingMargin(width: content.size.width), for: .scrollContent)
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1054,6 +1061,8 @@ struct ConchSettingsPage: View {
                 throw NSError(domain: "ConchTools", code: 1, userInfo: [NSLocalizedDescriptionKey: "Could not reach the Conch daemon."])
             }
         }
+        case .skills: ConchSkillsSettingsView()
+        case .benchmarks: ConchBenchmarksSettingsView()
         case .browser: ConchBrowserSettingsView()
         case .logins: ConchLoginsSettingsView()
         case .general: ConchSettingsView()

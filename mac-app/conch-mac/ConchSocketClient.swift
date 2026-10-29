@@ -232,6 +232,8 @@ struct ConchSessionStartRequest: Encodable, Sendable {
     /// Per-session choices from the agent's own `--help`, keyed by the
     /// daemon's option names (`agent-adapter.ts`). The daemon validates.
     let options: [String: ConchStartOptionValue]?
+    /// The new conversation's first message: Settings › Skills' Try (`startPromptError`, session-lifecycle.ts).
+    let prompt: String?
 
     init(
         backend: ConchAgentBackend,
@@ -243,8 +245,10 @@ struct ConchSessionStartRequest: Encodable, Sendable {
         codexAccountId: String? = nil,
         cwd: String?,
         trustFolder: Bool? = nil,
-        options: [String: ConchStartOptionValue]? = nil
+        options: [String: ConchStartOptionValue]? = nil,
+        prompt: String? = nil
     ) {
+        self.prompt = prompt
         self.backend = backend
         self.host = host
         self.resumeSessionId = resumeSessionId

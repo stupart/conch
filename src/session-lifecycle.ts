@@ -81,6 +81,31 @@ export interface StartSessionRequest {
    * the persisted default the sheets seed their toggle from.
    */
   options?: Record<string, string | boolean>;
+  /**
+   * The new session's first message, typed as the agent's own positional argument (`claude "<prompt>"`, `codex
+   * "<prompt>"`), so it starts working on it at once. The skills library's Try (skill-install.ts) asks a session to show
+   * what a skill does this way. Only for a new conversation: a resumed one has its own (`startPromptError`).
+   */
+  prompt?: string;
+}
+
+/** The longest first message a start carries: a short ask, not a document. */
+export const START_PROMPT_MAX = 2_000;
+
+/**
+ * Why a start's first message is refused, or undefined. One printable line, no longer than `START_PROMPT_MAX`, never
+ * starting with "-" (it is a positional argument, and both agents would read that as a flag), and only for a new
+ * conversation: a resume, a fork or a teleport already has one.
+ */
+export function startPromptError(request: Pick<StartSessionRequest, "prompt" | "resumeSessionId" | "teleportSessionId">): string | undefined {
+  if (request.prompt === undefined) return;
+  if (typeof request.prompt !== "string" || !request.prompt.trim()) return "prompt must be a non-empty string";
+  if (request.prompt.length > START_PROMPT_MAX) return `prompt cannot exceed ${START_PROMPT_MAX} characters`;
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(request.prompt)) return "prompt must be one line without control characters";
+  if (request.prompt.trim().startsWith("-")) return "prompt cannot start with -";
+  if (request.resumeSessionId !== undefined || request.teleportSessionId !== undefined) {
+    return "a first message is only for a new conversation, not a resume or a teleport";
+  }
 }
 
 export interface SessionLifecycleProcess {
@@ -282,7 +307,7 @@ export function sessionFolder(request: Pick<StartSessionRequest, "cwd">): string
 /** A Terminal-started agent replaces its shell, so leaving the agent also completes the tab cleanly. */
 export function terminalSessionCommand(request: StartSessionRequest): string {
   if (request.claudeSourceAccountId !== undefined && !request.claudeHandoff) throw new Error("Account handoff must be prepared by the daemon");
-  const error = teleportRequestError(request) ?? startOptionsError(request);
+  const error = teleportRequestError(request) ?? startOptionsError(request) ?? startPromptError(request);
   if (error) throw new Error(error);
   const cwd = sessionFolder(request);
   const adapter = adapterFor(request.backend);
@@ -313,7 +338,9 @@ export function terminalSessionCommand(request: StartSessionRequest): string {
   const hostFlags = request.host === "background" ? adapter.backgroundFlags : "";
   return `cd -- ${shellQuote(cwd)} && exec ${environment}${adapter.executable}${hostFlags}${bypass}${trust}${hookTrust}${args}`
     + renderStartOptions(adapter, request.options)
-    + (request.claudeHandoff ? ` --session-id ${shellQuote(request.claudeHandoff.sessionId)}` : "");
+    + (request.claudeHandoff ? ` --session-id ${shellQuote(request.claudeHandoff.sessionId)}` : "")
+    // Last, after every flag: both agents take their first message as the one positional argument.
+    + (request.prompt ? ` ${shellQuote(request.prompt.trim())}` : "");
 }
 
 /**

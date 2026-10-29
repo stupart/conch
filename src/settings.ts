@@ -1,5 +1,7 @@
 import { accountToolsRequestError, isAccountToolsReply, type AccountToolsRequest, type AccountToolsReply } from "./account-tools.ts";
 import { isLoginInventoryReply, loginInventoryRequestError, type LoginInventoryReply, type LoginInventoryRequest } from "./login-inventory.ts";
+import { benchmarksRequestError, isBenchmarksReply, type BenchmarksReply, type BenchmarksRequest } from "./benchmarks.ts";
+import { isSkillsLibraryReply, skillsLibraryRequestError, type SkillsLibraryReply, type SkillsLibraryRequest } from "./skills-library.ts";
 import { claudeHandoffError } from "./claude-account-handoff.ts";
 import { accountRequestError, validAccountId, type ClaudeAccountRequest, type ClaudeAccountsReply } from "./claude-accounts.ts";
 import { parseExecutionCatalog } from "./execution-model.ts";
@@ -27,7 +29,7 @@ import {
 } from "./agent-capabilities.ts";
 import { isAgentInstall, type AgentInstall } from "./agent-install.ts";
 import type { ResumableSession } from "./resumable.ts";
-import { startOptionsError, teleportRequestError } from "./session-lifecycle.ts";
+import { startOptionsError, startPromptError, teleportRequestError } from "./session-lifecycle.ts";
 import { normalizeSessionLabel } from "./sessions.ts";
 import { isValidVoiceName } from "./speak.ts";
 import { MAX_HISTORY_LINES, type TerminalFocusReply, type TerminalScreenReply } from "./terminal-mirror.ts";
@@ -953,6 +955,10 @@ export type RuntimeControlMessage =
   | AccountToolsRequest
   /** The logins inventory (login-inventory.ts): the Mac app's and the CLI's alone; the phone bridge refuses it. */
   | LoginInventoryRequest
+  /** Settings › Skills (skills-library.ts): every skill on this Mac, the public indexes', Add and Try. */
+  | SkillsLibraryRequest
+  /** Settings › Benchmarks (benchmarks.ts): the catalog this build carries. */
+  | BenchmarksRequest
   | HistoryRequest
   | { kind: "resumable"; query?: string; limit?: number }
   | {
@@ -976,6 +982,8 @@ export type RuntimeControlMessage =
     cwd?: string;
     /** Per-session choices from the agent's own `--help`, validated against its adapter row (C1). */
     options?: Record<string, string | boolean>;
+    /** The new conversation's first message (`startPromptError`): the skills library's Try. */
+    prompt?: string;
   }
   /** `restart`: close it, then resume the same conversation with the same start flags. */
   | { kind: "session-close"; sessionId: string; restart?: true }
@@ -1098,6 +1106,8 @@ export interface PairingOpen {
 export type RuntimeControlResponse =
   | ClaudeAccountsReply
   | AccountToolsReply
+  | SkillsLibraryReply
+  | BenchmarksReply
   | LoginInventoryReply
   | HistoryResponse
   | { kind: "resumable"; sessions: ResumableSession[]; complete: boolean }
@@ -1201,6 +1211,7 @@ export function isControlMessageCandidate(value: unknown): boolean {
     || value.kind === "agent-capabilities"
     || value.kind === "account-tools" || value.kind === "claude-accounts" || value.kind === "codex-accounts"
     || value.kind === "login-inventory"
+    || value.kind === "skills-library" || value.kind === "benchmarks"
     || value.kind === "session-start"
     || value.kind === "session-close"
     || value.kind === "session-fork"
@@ -1386,6 +1397,17 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
     const { kind, backend, accountId, action, requestId, id, source, url, command, args, enabled } = value;
     return { ok: true, value: { kind, backend, accountId, action, requestId, id, source, url, command, args, enabled } as AccountToolsRequest };
   }
+  if (value.kind === "skills-library") {
+    const err = skillsLibraryRequestError(value);
+    if (err) return { ok: false, err };
+    const { kind: _kind, ...rest } = value;
+    return { ok: true, value: { kind: "skills-library", ...rest } as SkillsLibraryRequest };
+  }
+  if (value.kind === "benchmarks") {
+    const err = benchmarksRequestError(value);
+    if (err) return { ok: false, err };
+    return { ok: true, value: { kind: "benchmarks", ...(typeof value.offset === "number" ? { offset: value.offset } : {}) } };
+  }
   if (value.kind === "login-inventory") {
     const err = loginInventoryRequestError(value);
     if (err) return { ok: false, err };
@@ -1536,6 +1558,8 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
     const options = value.options === undefined
       ? undefined
       : { ...(value.options as Record<string, string | boolean>) };
+    const promptError = startPromptError({ prompt: value.prompt as string | undefined, resumeSessionId, teleportSessionId });
+    if (promptError) return { ok: false, err: promptError };
     return {
       ok: true,
       value: {
@@ -1552,6 +1576,7 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
         ...(teleportSessionId ? { teleportSessionId } : {}),
         ...(cwd ? { cwd } : {}),
         ...(options ? { options } : {}),
+        ...(typeof value.prompt === "string" ? { prompt: value.prompt.trim() } : {}),
       },
     };
   }
@@ -1677,6 +1702,7 @@ export function validateControlMessage(value: unknown): ParseResult<AnyControlMe
     || value.kind === "agent-capabilities"
     || value.kind === "account-tools" || value.kind === "claude-accounts" || value.kind === "codex-accounts"
     || value.kind === "login-inventory"
+    || value.kind === "skills-library" || value.kind === "benchmarks"
     || value.kind === "session-start"
     || value.kind === "session-close"
     || value.kind === "session-fork"
@@ -1760,6 +1786,10 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
   if (!record(value) || typeof value.kind !== "string") return { ok: false, err: "invalid control response" };
   if (value.kind === "account-tools") return isAccountToolsReply(value)
     ? { ok: true, value } : { ok: false, err: "Invalid account tools response" };
+  if (value.kind === "skills-library") return isSkillsLibraryReply(value)
+    ? { ok: true, value } : { ok: false, err: "invalid skills library response" };
+  if (value.kind === "benchmarks") return isBenchmarksReply(value)
+    ? { ok: true, value } : { ok: false, err: "invalid benchmarks response" };
   if (value.kind === "login-inventory") return isLoginInventoryReply(value)
     ? { ok: true, value } : { ok: false, err: "invalid login inventory response" };
   if (value.kind === "claude-accounts" || value.kind === "codex-accounts") {

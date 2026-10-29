@@ -1,0 +1,1592 @@
+{
+  "updatedAt": "2026-10-28",
+  "report": {
+    "title": "AI Benchmarks and Evals: Index Map and Eval Guide (October 2026)",
+    "atlasPath": "projects/evals-and-benchmarks/overview.md"
+  },
+  "indexes": [
+    {
+      "id": "epoch-benchmarking-hub",
+      "name": "Epoch AI Benchmarking Hub",
+      "url": "https://epoch.ai/benchmarks",
+      "kind": "aggregator",
+      "domains": [
+        "aggregator",
+        "general",
+        "reasoning",
+        "math",
+        "coding",
+        "agents",
+        "knowledge"
+      ],
+      "maintainer": "Epoch AI (nonprofit research org)",
+      "measures": "Epoch's own runs plus curated external scores for frontier models across dozens of benchmarks, downloadable as CSV.",
+      "freshness": "Continuous; last update 2026-10-28",
+      "take": "Best single source of independently run, downloadable scores. Caveat: many rows are copied from developers, and Epoch has an OpenAI funding tie on FrontierMath."
+    },
+    {
+      "id": "epoch-capabilities-index",
+      "name": "Epoch Capabilities Index (ECI)",
+      "url": "https://epoch.ai/benchmarks/eci",
+      "kind": "aggregator",
+      "domains": [
+        "aggregator",
+        "general"
+      ],
+      "maintainer": "Epoch AI",
+      "measures": "One capability score per model, fitted across many benchmarks so models can be compared even when they ran different tests.",
+      "freshness": "Refit as data arrives; last update 2026-10-28",
+      "take": "Keeps tracking progress after single benchmarks saturate. Caveat: arbitrary scale (only differences mean anything) and it leans on developer-reported scores."
+    },
+    {
+      "id": "epoch-benchmark-reviews",
+      "name": "Epoch Benchmark Reviews",
+      "url": "https://epoch.ai/data/benchmark-reviews-documentation/included-benchmarks",
+      "kind": "aggregator",
+      "domains": [
+        "aggregator",
+        "general",
+        "coding",
+        "agents",
+        "tool-use",
+        "computer-use",
+        "knowledge",
+        "long-context"
+      ],
+      "maintainer": "Epoch AI",
+      "measures": "Independent audits that rate external benchmarks Verified, Flawed or Not enough info.",
+      "freshness": "New reviews every week or two; 24 reviews, latest 2026-10-26",
+      "take": "Check here before trusting a headline number: Flawed so far include SWE-bench Verified, SWE-Bench Pro v1, Terminal-Bench 4.0, OSWorld 2.1, BFCL v4 and HLE. Caveat: small-sample, version-specific audits."
+    },
+    {
+      "id": "artificial-analysis",
+      "name": "Artificial Analysis",
+      "url": "https://artificialanalysis.ai/methodology/intelligence-benchmarking",
+      "kind": "aggregator",
+      "domains": [
+        "aggregator",
+        "general",
+        "coding",
+        "agents",
+        "science",
+        "knowledge",
+        "economic-value",
+        "cost-performance",
+        "image-generation",
+        "video-generation",
+        "speech-recognition",
+        "text-to-speech"
+      ],
+      "maintainer": "Artificial Analysis (independent)",
+      "measures": "Independent Intelligence Index plus per-benchmark scores, price, speed and latency for LLMs, and arenas for image, video and speech.",
+      "freshness": "Continuous; Intelligence Index v5.0 released 2026-10-27",
+      "take": "The default single number with cost that the industry quotes. Caveat: the index changes composition almost monthly, so never compare across versions, and its private evals can't be audited."
+    },
+    {
+      "id": "arena",
+      "name": "Arena (formerly LMArena)",
+      "url": "https://arena.ai/leaderboard",
+      "kind": "leaderboard",
+      "domains": [
+        "human-preference",
+        "general",
+        "coding",
+        "agents",
+        "vision",
+        "image-generation",
+        "image-editing",
+        "video-generation",
+        "web-browsing"
+      ],
+      "maintainer": "Arena (UC Berkeley spin-out, now a VC-backed company)",
+      "measures": "Crowd-sourced blind pairwise votes, ranked by Elo-style scores, across text, coding, vision, image, video and agent arenas.",
+      "freshness": "Continuous; blog activity 2026-10-27",
+      "take": "Best signal of what real users prefer. Caveat: preference, not correctness; the 'Leaderboard Illusion' paper showed private-variant testing favours big labs, and Arena now sells evals to the labs it ranks."
+    },
+    {
+      "id": "scale-labs-leaderboards",
+      "name": "Scale Labs Leaderboards (formerly SEAL)",
+      "url": "https://labs.scale.com/leaderboard",
+      "kind": "leaderboard",
+      "domains": [
+        "general",
+        "reasoning",
+        "knowledge",
+        "coding",
+        "agents",
+        "tool-use",
+        "economic-value",
+        "voice-agents",
+        "safety"
+      ],
+      "maintainer": "Scale AI (Meta took a 49% stake in June 2025)",
+      "measures": "Expert-built, partly private leaderboards including HLE, SWE-Bench Pro, MCP Atlas and the Remote Labor Index.",
+      "freshness": "Active; no per-board dates, models through late Oct 2026",
+      "take": "Held-out private sets limit contamination and it hosts the official HLE board. Caveat: Scale is 49% Meta-owned and sells training data to labs."
+    },
+    {
+      "id": "vals-ai",
+      "name": "Vals AI (Vals Index + industry benchmarks)",
+      "url": "https://www.vals.ai/benchmarks",
+      "kind": "leaderboard",
+      "domains": [
+        "economic-value",
+        "agents",
+        "coding",
+        "science",
+        "math",
+        "cost-performance"
+      ],
+      "maintainer": "Vals AI",
+      "measures": "Private domain evals (legal, finance, tax, medical, coding) with cost per test, plus an overall Vals Index.",
+      "freshness": "Continuous; boards dated 2026-10-27 and 28",
+      "take": "Best view of performance on real professional work, with cost. Caveat: private datasets can't be reproduced, and some boards test few models."
+    },
+    {
+      "id": "openrouter-rankings",
+      "name": "OpenRouter Rankings",
+      "url": "https://openrouter.ai/rankings",
+      "kind": "leaderboard",
+      "domains": [
+        "cost-performance",
+        "coding",
+        "tool-use",
+        "general"
+      ],
+      "maintainer": "OpenRouter",
+      "measures": "Real token usage by model and app across OpenRouter's API traffic.",
+      "freshness": "Weekly; data through 2026-10-27",
+      "take": "Best proxy for what developers actually pay for, especially coding agents and open-weight models. Caveat: only OpenRouter traffic, and popularity is not quality."
+    },
+    {
+      "id": "livebench",
+      "name": "LiveBench (now LiveBench 2.0)",
+      "url": "https://livebench.ai/",
+      "kind": "leaderboard",
+      "domains": [
+        "general",
+        "reasoning",
+        "math",
+        "coding",
+        "agents"
+      ],
+      "maintainer": "Abacus.AI with academic co-authors",
+      "measures": "Regularly refreshed questions across math, coding, reasoning, language, data analysis and instruction following, to limit contamination.",
+      "freshness": "LiveBench 2.0 releases through 2026-10-14; v1 changelog stopped 2026-01",
+      "take": "Pioneered contamination-limited refreshes. Caveat: 2.0 isn't comparable with v1, the site promotes sponsor Abacus AI's agent, and Berkeley RDI found its scoring exploitable."
+    },
+    {
+      "id": "llm-stats",
+      "name": "llm-stats.com",
+      "url": "https://llm-stats.com/",
+      "kind": "aggregator",
+      "domains": [
+        "aggregator",
+        "cost-performance",
+        "general",
+        "long-context"
+      ],
+      "maintainer": "llm-stats (independent site)",
+      "measures": "Lookup of reported and measured scores by exact benchmark variant, with pricing.",
+      "freshness": "Live; lists October 2026 models",
+      "take": "Handy for finding one variant's number. Caveat: mixes developer-reported and measured scores without labels; mirror sites like this often disagree with primary sources."
+    },
+    {
+      "id": "vellum-llm-leaderboard",
+      "name": "Vellum LLM Leaderboard",
+      "url": "https://www.vellum.ai/llm-leaderboard",
+      "kind": "aggregator",
+      "domains": [
+        "aggregator",
+        "cost-performance",
+        "general"
+      ],
+      "maintainer": "Vellum (LLM-ops vendor)",
+      "measures": "Curated snapshot of headline benchmark scores, cost and speed for popular models.",
+      "freshness": "No date shown; partly outdated",
+      "take": "Quick look at headline marketing numbers. Caveat: mixes self-reported and independent scores and uses saturated or old benchmark versions; don't decide on it."
+    },
+    {
+      "id": "hf-community-evals",
+      "name": "Hugging Face Community Evals",
+      "url": "https://huggingface.co/blog/community-evals",
+      "kind": "aggregator",
+      "domains": [
+        "aggregator",
+        "general"
+      ],
+      "maintainer": "Hugging Face",
+      "measures": "Benchmark scores attached to model repos on the Hugging Face Hub, mostly submitted by the community.",
+      "freshness": "Beta since 2026-02-04",
+      "take": "The Hub's successor to the Open LLM Leaderboard for open models. Caveat: mostly self-reported, verification optional, and its launch benchmarks are already saturated."
+    },
+    {
+      "id": "betterbench",
+      "name": "BetterBench",
+      "url": "https://betterbench.stanford.edu/",
+      "kind": "aggregator",
+      "domains": [
+        "aggregator",
+        "general"
+      ],
+      "maintainer": "Stanford (Reuel, Hardy, Kochenderfer et al.)",
+      "measures": "Quality scores for AI benchmarks themselves, against 46 criteria across design, implementation, documentation and maintenance.",
+      "freshness": "NeurIPS 2024; living repository with no visible update date (24 benchmarks assessed)",
+      "take": "Useful checklist for judging or building a benchmark. Caveat: its assessments predate the 2025-26 benchmarks; for current verdicts use Epoch Benchmark Reviews."
+    },
+    {
+      "id": "harbor",
+      "name": "Harbor",
+      "url": "https://docs.harborframework.com/",
+      "kind": "suite",
+      "domains": [
+        "coding",
+        "agents",
+        "tool-use",
+        "cost-performance"
+      ],
+      "maintainer": "Laude Institute / Harbor team",
+      "measures": "Harness for running any agent on containerised task sets (Terminal-Bench, SWE-Bench Pro, your own) with separate verifier sandboxes and reward-hack detection.",
+      "freshness": "Very active; reward-hacking update 2026-10-28",
+      "take": "The most useful entry for building coding agents: run your own agent and tasks the way public leaderboards do. Caveat: results compare only when dataset version, resources and network policy are pinned."
+    },
+    {
+      "id": "inspect-evals",
+      "name": "Inspect Evals",
+      "url": "https://ukgovernmentbeis.github.io/inspect_evals/",
+      "kind": "suite",
+      "domains": [
+        "safety",
+        "coding",
+        "agents",
+        "reasoning",
+        "math",
+        "science",
+        "knowledge"
+      ],
+      "maintainer": "Generality Labs, with the UK AI Security Institute",
+      "measures": "Library of ready-to-run eval implementations (GPQA, HLE, SWE-bench, agent, cyber and safety evals) for the Inspect framework.",
+      "freshness": "Active; commits through 2026",
+      "take": "Most practical way to run standard evals yourself, and HF Community Evals uses its format. Caveat: community implementations may not match official harness numbers."
+    },
+    {
+      "id": "lm-evaluation-harness",
+      "name": "EleutherAI lm-evaluation-harness",
+      "url": "https://github.com/EleutherAI/lm-evaluation-harness",
+      "kind": "suite",
+      "domains": [
+        "general",
+        "reasoning",
+        "knowledge",
+        "math"
+      ],
+      "maintainer": "EleutherAI",
+      "measures": "EleutherAI's standard harness for running hundreds of academic benchmarks on open models.",
+      "freshness": "Active; news through 2026-09",
+      "take": "Backbone of open-model evaluation. Caveat: built for short-answer academic tasks, so weak for agents, tool use and long tasks."
+    },
+    {
+      "id": "terminal-bench",
+      "name": "Terminal-Bench",
+      "url": "https://www.tbench.ai/",
+      "kind": "benchmark",
+      "domains": [
+        "coding",
+        "agents",
+        "tool-use",
+        "cost-performance"
+      ],
+      "maintainer": "Laude Institute and Stanford (Harbor team); Snorkel AI mirror",
+      "measures": "Hard command-line tasks in containers (build, debug, configure, data and science work), with cost and tokens per run.",
+      "freshness": "Versioned continuously: 2.0 (2025-11) to 4.0 (2026-08-29); 4.1 and 5.0 announced",
+      "take": "The de facto eval for CLI coding agents, reported by labs. Caveat: Epoch rated 4.0.0 Flawed (scoring defects in 30 of 66 tasks), and VM resources alone move scores ~6 points, so compare only matched setups."
+    },
+    {
+      "id": "swe-rebench",
+      "name": "SWE-rebench",
+      "url": "https://swe-rebench.com/",
+      "kind": "leaderboard",
+      "domains": [
+        "coding",
+        "agents",
+        "cost-performance"
+      ],
+      "maintainer": "SWE-rebench team at Nebius",
+      "measures": "Fresh SWE-style tasks mined each window after model release dates, run with one harness, with cost per problem.",
+      "freshness": "Rolling windows; latest window ends 2026-07-01",
+      "take": "Best contamination control for repo tasks, and it scores agent products (Claude Code, Codex, Cursor) side by side. Caveat: ~100 tasks per window and it lags new models."
+    },
+    {
+      "id": "frontiercode",
+      "name": "FrontierCode",
+      "url": "https://artificialanalysis.ai/evaluations/frontiercode",
+      "kind": "benchmark",
+      "domains": [
+        "coding",
+        "agents"
+      ],
+      "maintainer": "Cognition; run independently by Artificial Analysis",
+      "measures": "Private tasks from 36 open-source repos graded on whether maintainers would merge the change, not just whether tests pass.",
+      "freshness": "Launched 2026-06; leaderboard 2026-10-12",
+      "take": "Best public proxy for 'mergeable code'. Caveat: private tasks no one can audit (Epoch: Not enough info), partly LLM-judged, and built by a coding-agent vendor (Cognition)."
+    },
+    {
+      "id": "aa-coding-agent-index",
+      "name": "Artificial Analysis Coding Agent Index",
+      "url": "https://artificialanalysis.ai/agents/coding-agents",
+      "kind": "leaderboard",
+      "domains": [
+        "coding",
+        "agents",
+        "cost-performance"
+      ],
+      "maintainer": "Artificial Analysis",
+      "measures": "Agent products (Claude Code, Codex, Cursor CLI and others) compared on Terminal-Bench, FrontierCode and more, with cost and time per task.",
+      "freshness": "Index v2.0; components updated Aug-Oct 2026",
+      "take": "Closest independent ranking of coding-agent products. Caveat: component sets change between versions, and model and harness effects are mixed together."
+    },
+    {
+      "id": "cursorbench",
+      "name": "CursorBench",
+      "url": "https://cursor.com/en/cursorbench",
+      "kind": "leaderboard",
+      "domains": [
+        "coding",
+        "agents",
+        "cost-performance"
+      ],
+      "maintainer": "Cursor (Anysphere)",
+      "measures": "Real IDE coding tasks from Cursor usage, with the score-versus-cost curve for each model's effort setting.",
+      "freshness": "4.0 published 2026-09-10; changelog 2026-10-07",
+      "take": "Most IDE-realistic board, and it shows what extra effort costs. Caveat: private tasks in Cursor's own harness (Epoch: Not enough info), and 4.0 isn't comparable to 3.x."
+    },
+    {
+      "id": "swe-bench-pro",
+      "name": "SWE-Bench Pro (V1 and V2)",
+      "url": "https://labs.scale.com/leaderboard/swe_bench_pro_public_v2",
+      "kind": "benchmark",
+      "domains": [
+        "coding",
+        "agents"
+      ],
+      "maintainer": "Scale AI (Scale Labs); V2 co-developed with Reflection",
+      "measures": "Harder, multi-language repo tasks from Scale, with a public split and a held-out commercial split.",
+      "freshness": "V2 public split released 2026-09-22 (642 tasks)",
+      "take": "Replaced Verified in early 2026, but V1 was audited as ~30% broken (OpenAI withdrew its endorsement 2026-07-08; Epoch: Flawed). V2's anti-cheating protocol is worth copying, but its top score is already 98%."
+    },
+    {
+      "id": "deepswe",
+      "name": "DeepSWE",
+      "url": "https://deepswe.datacurve.ai/",
+      "kind": "benchmark",
+      "domains": [
+        "coding",
+        "agents",
+        "cost-performance"
+      ],
+      "maintainer": "Datacurve",
+      "measures": "Original, non-PR-mined coding tasks run in one uniform harness, with cost per task.",
+      "freshness": "v1.1; last updated 2026-09-22",
+      "take": "Cleaner model comparison than PR-mined sets. Caveat: Epoch rated v1.1 Flawed, and the top four are tied within error at 73-74%."
+    },
+    {
+      "id": "swe-bench-verified",
+      "name": "SWE-bench Verified (and the SWE-bench family)",
+      "url": "https://www.swebench.com/",
+      "kind": "benchmark",
+      "domains": [
+        "coding",
+        "agents"
+      ],
+      "maintainer": "SWE-bench team (Princeton, Stanford); Verified built with OpenAI",
+      "measures": "500 human-checked GitHub issues from Python repos; the agent's patch must pass the repo's tests.",
+      "freshness": "Static (2024-08); board still takes submissions, last seen 2026-09-01",
+      "take": "Still the most-cited coding number, but OpenAI stopped reporting it (2026-02) and Epoch rates it Flawed: broken tests and contamination, with vendor scores near 96%. Use only as a smoke test."
+    },
+    {
+      "id": "gso",
+      "name": "GSO (Global Software Optimization)",
+      "url": "https://gso-bench.github.io/",
+      "kind": "benchmark",
+      "domains": [
+        "coding",
+        "agents"
+      ],
+      "maintainer": "UC Berkeley",
+      "measures": "Making real code faster: reach at least 95% of the expert commit's speedup while passing tests, with hack-adjusted scores.",
+      "freshness": "Changelog 2026-09-27; new models added 2026-09-29",
+      "take": "Hard, unsaturated and unusually serious about cheating. Caveat: 102 tasks, and the hack detector is itself an LLM."
+    },
+    {
+      "id": "kernelbench-verified",
+      "name": "KernelBench-Verified",
+      "url": "https://github.com/facebookresearch/kernel_bench_verified",
+      "kind": "benchmark",
+      "domains": [
+        "coding",
+        "agents"
+      ],
+      "maintainer": "Stanford (KernelBench); Meta FAIR and Stanford (Verified)",
+      "measures": "Writing faster GPU kernels than PyTorch, under hidden tests and realistic baselines (Verified protocol).",
+      "freshness": "Verified paper 2026-07; KernelBench repo last commit 2026-03",
+      "take": "Use the Verified protocol or nothing: under it the best model's speedup drops from 1.43x to 0.88x, so most headline KernelBench speedups were reward hacking."
+    },
+    {
+      "id": "mirrorcode",
+      "name": "MirrorCode",
+      "url": "https://epoch.ai/mirrorcode",
+      "kind": "benchmark",
+      "domains": [
+        "coding",
+        "agents",
+        "long-context"
+      ],
+      "maintainer": "Epoch AI, co-developed with and grant-funded by METR",
+      "measures": "Reimplementing whole real CLI programs from their behaviour alone, graded by hidden end-to-end tests, over multi-day runs with no internet.",
+      "freshness": "Full release 2026-06; leaderboard updated, newest models not yet charted",
+      "take": "Best public evidence of very long autonomous coding (a 2-17 human-week job done in 14 hours). Caveat: target programs are public, runs are very expensive, and only Epoch runs it."
+    },
+    {
+      "id": "arena-webdev",
+      "name": "Arena WebDev / Code Arena",
+      "url": "https://arena.ai/leaderboard/webdev",
+      "kind": "leaderboard",
+      "domains": [
+        "coding",
+        "design",
+        "human-preference"
+      ],
+      "maintainer": "Arena (formerly LMArena)",
+      "measures": "Crowd votes on working web apps and UIs built by models, with full-stack and image-to-web boards.",
+      "freshness": "Continuous; published 2026-10-27",
+      "take": "The main human signal for which model builds the best-looking working front end. Caveat: votes favour visual polish over correctness and maintainability."
+    },
+    {
+      "id": "livecodebench",
+      "name": "LiveCodeBench",
+      "url": "https://livecodebench.github.io/leaderboard.html",
+      "kind": "benchmark",
+      "domains": [
+        "coding",
+        "reasoning"
+      ],
+      "maintainer": "LiveCodeBench team (Berkeley, MIT, Cornell)",
+      "measures": "Competitive-programming problems released after each model's training cutoff.",
+      "freshness": "Official board last updated 2025-08",
+      "take": "The time-windowing idea still matters, but the official board stopped in 2025 and vendor numbers can't be inspected; contest problems say little about repo work."
+    },
+    {
+      "id": "aider-polyglot",
+      "name": "Aider Polyglot leaderboard",
+      "url": "https://aider.chat/docs/leaderboards/",
+      "kind": "leaderboard",
+      "domains": [
+        "coding"
+      ],
+      "maintainer": "Paul Gauthier / Aider",
+      "measures": "225 hard exercises in six languages, scored on solving them and applying the edits correctly.",
+      "freshness": "Last updated 2025-11-20",
+      "take": "The go-to cheap coding benchmark of 2025, no longer updated; replaced in practice by Terminal-Bench and SWE-rebench."
+    },
+    {
+      "id": "metr-time-horizons",
+      "name": "METR time horizons",
+      "url": "https://metr.org/time-horizons/",
+      "kind": "leaderboard",
+      "domains": [
+        "agents",
+        "coding"
+      ],
+      "maintainer": "METR",
+      "measures": "Length of task (in human working time) an agent completes with 50% reliability, tracked over time.",
+      "freshness": "No longer actively updated since 2026-09-08; last model added 2026-05-08",
+      "take": "The most-cited 'how fast are agents improving' trend (doubling every few months). Caveat: METR says horizons above 16 hours are unreliable, error bars are ~2x each way, and the page has stopped updating."
+    },
+    {
+      "id": "metr-developer-productivity",
+      "name": "METR developer productivity studies",
+      "url": "https://metr.org/research/",
+      "kind": "benchmark",
+      "domains": [
+        "coding",
+        "economic-value"
+      ],
+      "maintainer": "METR",
+      "measures": "Randomised trials of how much AI tools actually speed up experienced open-source developers.",
+      "freshness": "Original RCT 2025-07; 2026 follow-up design under revision",
+      "take": "The only serious RCT on real coding uplift (devs were 19% slower in 2025 while feeling faster). Caveat: the 2026 follow-up broke on selection effects, so there's no current clean estimate."
+    },
+    {
+      "id": "arena-agent-arena",
+      "name": "Arena Agent Arena",
+      "url": "https://arena.ai/blog/agent-arena-methodology/",
+      "kind": "leaderboard",
+      "domains": [
+        "agents",
+        "coding",
+        "human-preference",
+        "safety"
+      ],
+      "maintainer": "Arena (formerly LMArena)",
+      "measures": "In-the-wild agent tasks from Arena users (~160k a week), scored on reliability and steerability, plus an Alignment Index.",
+      "freshness": "Launched 2026-06-04; models added through 2026-10-24",
+      "take": "The only large-scale real-usage agent signal. Caveat: Arena's own user base, proprietary scoring, and metric definitions keep changing."
+    },
+    {
+      "id": "exgentic-open-agent-leaderboard",
+      "name": "Exgentic Open Agent Leaderboard",
+      "url": "https://www.exgentic.ai/",
+      "kind": "leaderboard",
+      "domains": [
+        "agents",
+        "tool-use",
+        "coding",
+        "cost-performance"
+      ],
+      "maintainer": "IBM Research",
+      "measures": "Same models run under different agent harnesses, to separate the harness's effect from the model's.",
+      "freshness": "Paper 2026-02 (ICLR 2026); last blog 2026-05-13",
+      "take": "Useful framing for harness builders: the harness alone moves results up to 11 points on the same model. Caveat: small samples and slow updates."
+    },
+    {
+      "id": "mcp-atlas",
+      "name": "MCP Atlas",
+      "url": "https://labs.scale.com/leaderboard/mcp_atlas",
+      "kind": "benchmark",
+      "domains": [
+        "tool-use",
+        "agents"
+      ],
+      "maintainer": "Scale AI (Scale Labs)",
+      "measures": "Agents completing tasks against real MCP servers, with a private half of the tasks and confidence intervals.",
+      "freshness": "Re-scored under a revised method 2026-04-08; models through Sep 2026",
+      "take": "The most credible MCP-specific board, and the first to check if you ship MCP servers. Caveat: LLM-judge scoring, and the top 10 is packed within a few points."
+    },
+    {
+      "id": "tau-bench",
+      "name": "τ-bench / τ²-bench / τ³-bench",
+      "url": "https://taubench.com/",
+      "kind": "benchmark",
+      "domains": [
+        "tool-use",
+        "agents",
+        "voice-agents"
+      ],
+      "maintainer": "Sierra (sierra-research)",
+      "measures": "Customer-service agents following a policy while using tools with a simulated user; reports reliability as pass^k.",
+      "freshness": "Very active; τ-bench 2.0.0 released 2026-10-20",
+      "take": "The standard for policy-following tool agents and the main source of the pass^k reliability metric. Caveat: the τ² text board is near ceiling (~88%), the simulated user adds noise, and Berkeley RDI found an exploit; headroom is now in τ³ banking and voice."
+    },
+    {
+      "id": "mcpmark",
+      "name": "MCPMark (Verified)",
+      "url": "https://github.com/eval-sys/mcpmark",
+      "kind": "benchmark",
+      "domains": [
+        "tool-use",
+        "agents"
+      ],
+      "maintainer": "eval-sys (MCPMark authors, open source)",
+      "measures": "State-changing tasks on real MCP servers (GitHub, Notion, Postgres, browser and more), checked programmatically.",
+      "freshness": "MCPMark Verified default since 2026-06-12; no commits since",
+      "take": "Good template for testing your own MCP server with programmatic checks instead of a judge. Caveat: leaderboard upkeep after June 2026 is unclear."
+    },
+    {
+      "id": "toolathlon",
+      "name": "Toolathlon (Verified)",
+      "url": "https://github.com/hkust-nlp/Toolathlon",
+      "kind": "benchmark",
+      "domains": [
+        "tool-use",
+        "agents"
+      ],
+      "maintainer": "HKUST NLP and collaborators",
+      "measures": "Long multi-app tool-use tasks across many real software environments.",
+      "freshness": "Verified release 2026-06-30; last commit 2026-08-06",
+      "take": "One of the hardest broad tool-use evals labs report, frozen for stable comparison. Caveat: long, costly runs, and current standings come mostly from aggregators."
+    },
+    {
+      "id": "bfcl",
+      "name": "Berkeley Function Calling Leaderboard (BFCL)",
+      "url": "https://gorilla.cs.berkeley.edu/leaderboard.html",
+      "kind": "leaderboard",
+      "domains": [
+        "tool-use",
+        "agents",
+        "cost-performance"
+      ],
+      "maintainer": "UC Berkeley Gorilla team",
+      "measures": "Whether models emit correct function calls across single, parallel, multi-turn and agentic cases.",
+      "freshness": "v4; last updated 2026-04-12",
+      "take": "Still the reference for whether a small or open model makes well-formed tool calls. Caveat: Epoch rated v4 Flawed (defects in 24 of 50 sampled tasks), and single-call accuracy predicts little about long MCP sessions."
+    },
+    {
+      "id": "browsecomp",
+      "name": "BrowseComp / BrowseComp-Plus",
+      "url": "https://openai.com/index/browsecomp/",
+      "kind": "benchmark",
+      "domains": [
+        "web-browsing",
+        "agents"
+      ],
+      "maintainer": "OpenAI; BrowseComp-Plus by Waterloo",
+      "measures": "Hard-to-find facts that require persistent web browsing to locate.",
+      "freshness": "Static (2025-04); still vendor-reported in 2026",
+      "take": "The standard deep-research number, but frontier scores cluster near 90%, answers have leaked onto the web, and a model has decrypted its answer key. Use BrowseComp-Plus for reproducible comparisons."
+    },
+    {
+      "id": "online-mind2web",
+      "name": "Online-Mind2Web",
+      "url": "https://github.com/OSU-NLP-Group/Online-Mind2Web",
+      "kind": "benchmark",
+      "domains": [
+        "web-browsing",
+        "agents"
+      ],
+      "maintainer": "OSU NLP Group",
+      "measures": "Web agents on live real websites, with human-verified scoring.",
+      "freshness": "v2 submission schema 2026-05-23; repo active 2026-10-27",
+      "take": "Closer to what browser agents really face than sandboxed sites. Caveat: live sites drift, and auto-judge scores depend on the judge model."
+    },
+    {
+      "id": "webarena-verified",
+      "name": "WebArena-Verified (WebArena family)",
+      "url": "https://github.com/ServiceNow/webarena-verified",
+      "kind": "benchmark",
+      "domains": [
+        "web-browsing",
+        "agents"
+      ],
+      "maintainer": "ServiceNow (Verified); original WebArena by CMU",
+      "measures": "Web agents completing tasks on self-hosted copies of shopping, forum, code and CMS sites, with fixed graders.",
+      "freshness": "Last release 2026-02",
+      "take": "If you evaluate web agents, use Verified, not the original, whose reference answers were readable by the agent. Caveat: synthetic sites and few 2026 results."
+    },
+    {
+      "id": "gaia",
+      "name": "GAIA",
+      "url": "https://huggingface.co/spaces/gaia-benchmark/leaderboard",
+      "kind": "benchmark",
+      "domains": [
+        "agents",
+        "web-browsing",
+        "tool-use",
+        "general"
+      ],
+      "maintainer": "Meta and Hugging Face",
+      "measures": "Real-world assistant questions needing browsing, files and multi-step reasoning.",
+      "freshness": "Static (2023); no 2026 maintainer activity",
+      "take": "Historically important, but validation answers have leaked, HAL stopped running it, and Berkeley RDI could exploit it; only the held-out test set means anything."
+    },
+    {
+      "id": "osworld",
+      "name": "OSWorld (2.x and Verified)",
+      "url": "https://osworld-v2.xlang.ai/",
+      "kind": "benchmark",
+      "domains": [
+        "computer-use",
+        "agents",
+        "multimodal"
+      ],
+      "maintainer": "XLANG Lab (HKU) and collaborators",
+      "measures": "Computer-use agents completing tasks across real desktop apps in a virtual machine.",
+      "freshness": "OSWorld 2.0 2026-06-26; v2.1 2026-09-16",
+      "take": "The computer-use benchmark labs report. v1/Verified is saturated (frontier ~80% vs a 72% human baseline); v2 is still hard. Caveat: Epoch rated 2.1 Flawed, and vendors mix strict and partial-credit scores."
+    },
+    {
+      "id": "screenspot-pro",
+      "name": "ScreenSpot-Pro",
+      "url": "https://github.com/likaixin2000/ScreenSpot-Pro-GUI-Grounding",
+      "kind": "benchmark",
+      "domains": [
+        "computer-use",
+        "vision"
+      ],
+      "maintainer": "Kaixin Li et al. (NUS)",
+      "measures": "GUI grounding: clicking the right element in high-resolution professional app screenshots.",
+      "freshness": "Community submissions through 2026-06-17",
+      "take": "Isolates the 'click the right pixel' part of computer use, useful for diagnosing failures. Caveat: not task completion, and results are self-submitted."
+    },
+    {
+      "id": "androidworld",
+      "name": "AndroidWorld",
+      "url": "https://github.com/google-research/android_world",
+      "kind": "benchmark",
+      "domains": [
+        "computer-use",
+        "agents"
+      ],
+      "maintainer": "Google Research",
+      "measures": "Mobile agents completing tasks across real Android apps in an emulator.",
+      "freshness": "Code maintained (2026-10-23); leaderboard is a Google Sheet",
+      "take": "The standard mobile-agent environment, but saturated (~97% reported vs ~80% human), so use it for regression testing."
+    },
+    {
+      "id": "remote-labor-index",
+      "name": "Remote Labor Index (RLI)",
+      "url": "https://labs.scale.com/leaderboard/rli",
+      "kind": "benchmark",
+      "domains": [
+        "economic-value",
+        "agents"
+      ],
+      "maintainer": "Scale AI and the Center for AI Safety",
+      "measures": "Real paid freelance projects; scored on whether the agent's deliverable would be accepted by a client.",
+      "freshness": "Launched 2025-10; includes Sep-Oct 2026 models",
+      "take": "The most direct test of doing a paid remote job end to end, and far from saturated (top ~21%). Caveat: manual grading, no confidence intervals, and Epoch says there isn't enough public information to review it."
+    },
+    {
+      "id": "gdpval",
+      "name": "GDPval / GDPval-AA",
+      "url": "https://artificialanalysis.ai/evaluations/gdpval-aa",
+      "kind": "benchmark",
+      "domains": [
+        "economic-value",
+        "agents",
+        "general"
+      ],
+      "maintainer": "OpenAI; GDPval-AA by Artificial Analysis",
+      "measures": "Real deliverables from 44 occupations graded against expert work; GDPval-AA reruns it with an agent harness and LLM judge.",
+      "freshness": "OpenAI release 2025-09; GDPval-AA v2.1 has Oct 2026 models",
+      "take": "Most-reported proxy for white-collar economic value. Caveat: OpenAI's expert grading can't be reproduced, and GDPval-AA uses an LLM judge and its own harness."
+    },
+    {
+      "id": "vending-bench",
+      "name": "Vending-Bench 2 / Vending-Bench Arena",
+      "url": "https://andonlabs.com/evals/vending-bench-2",
+      "kind": "benchmark",
+      "domains": [
+        "agents",
+        "economic-value",
+        "long-context"
+      ],
+      "maintainer": "Andon Labs",
+      "measures": "An agent runs a simulated vending business for a long period; scored on money made.",
+      "freshness": "Leaderboard has late-2026 models; Arena rounds through 2026-09",
+      "take": "A rare long-horizon eval with no ceiling that surfaces odd behaviour (cartels, supplier deception). Caveat: high variance between runs, and the demand model can be gamed."
+    },
+    {
+      "id": "humanitys-last-exam",
+      "name": "Humanity's Last Exam (HLE)",
+      "url": "https://lastexam.ai/",
+      "kind": "benchmark",
+      "domains": [
+        "reasoning",
+        "knowledge",
+        "science",
+        "math",
+        "multimodal"
+      ],
+      "maintainer": "Center for AI Safety and Scale AI",
+      "measures": "About 2,500 expert-written questions at the edge of human knowledge across many fields.",
+      "freshness": "Dataset final 2025-04; HLE-Diamond subset 2026-09-22",
+      "take": "Still the hard-knowledge number labs quote. Caveat: Epoch rated it Flawed (46% of a 48-item sample unanswerable or wrongly keyed); prefer HLE-Diamond and never mix with-tools and no-tools scores."
+    },
+    {
+      "id": "arc-agi-3",
+      "name": "ARC-AGI-3",
+      "url": "https://arcprize.org/arc-agi/3/",
+      "kind": "benchmark",
+      "domains": [
+        "reasoning",
+        "agents"
+      ],
+      "maintainer": "ARC Prize Foundation",
+      "measures": "Interactive game environments where an agent must explore and work out the rules with no instructions.",
+      "freshness": "Launched 2026-03-25; ARC Prize 2026 results due 2026-12-04",
+      "take": "The current flagship generalisation test. Caveat: the harness matters hugely (62.7% vs 99.9% for the same model), so compare Standard-harness scores only."
+    },
+    {
+      "id": "simpleqa-verified",
+      "name": "SimpleQA Verified",
+      "url": "https://www.kaggle.com/benchmarks/deepmind/simpleqa-verified",
+      "kind": "benchmark",
+      "domains": [
+        "knowledge"
+      ],
+      "maintainer": "Google DeepMind / Google Research (Kaggle-hosted)",
+      "measures": "Short fact-seeking questions that test whether a model answers correctly or makes things up.",
+      "freshness": "Released 2025-09; Epoch run 2026-10-26; Epoch verdict Verified",
+      "take": "Best current factuality check, and not saturated (top ~76%). Caveat: public questions, so contamination is possible, and abstentions count as wrong."
+    },
+    {
+      "id": "frontiermath-erdos",
+      "name": "FrontierMath: Erdős",
+      "url": "https://epoch.ai/frontiermath",
+      "kind": "benchmark",
+      "domains": [
+        "math",
+        "reasoning"
+      ],
+      "maintainer": "Epoch AI",
+      "measures": "Open Erdős-style research problems with machine-checked proofs.",
+      "freshness": "Launched 2026-09-03; last run 2026-10-08",
+      "take": "One of the few math evals with real headroom (top 4.4%). Caveat: 68 problems, so one solve moves ~1.5 points, and only Epoch runs it."
+    },
+    {
+      "id": "critpt",
+      "name": "CritPt",
+      "url": "https://epoch.ai/benchmarks/critpt/review",
+      "kind": "benchmark",
+      "domains": [
+        "science",
+        "reasoning"
+      ],
+      "maintainer": "CritPt authors (50+ physics researchers)",
+      "measures": "Research-level physics reasoning challenges.",
+      "freshness": "v2 on the leaderboard by 2026-10-22; Epoch run 2026-10-28",
+      "take": "A rare unsaturated science eval (top 32-36%). Caveat: Epoch rated v1 Flawed for underspecified challenges; fixing them moved one model from 21% to 77%."
+    },
+    {
+      "id": "matharena",
+      "name": "MathArena",
+      "url": "https://matharena.ai/",
+      "kind": "leaderboard",
+      "domains": [
+        "math",
+        "reasoning",
+        "cost-performance"
+      ],
+      "maintainer": "SRI Lab at ETH Zurich and INSAIT",
+      "measures": "Models scored on new math competitions right after they happen, including human-graded proofs.",
+      "freshness": "Continuous; newest model added 2026-10-23",
+      "take": "The most contamination-aware math board. Caveat: final-answer contests are saturated, so signal now comes from proofs, and few problems means wide error bars."
+    },
+    {
+      "id": "simplebench",
+      "name": "SimpleBench",
+      "url": "https://simple-bench.com/",
+      "kind": "leaderboard",
+      "domains": [
+        "reasoning",
+        "general"
+      ],
+      "maintainer": "AI Explained (Philip) and collaborators",
+      "measures": "Trick common-sense, spatial and social reasoning questions that people find easy.",
+      "freshness": "No date shown; includes models released through Aug 2026",
+      "take": "Cheap check for common-sense traps that harder evals miss. Caveat: small, mostly private and run by one person; the top model is within 2 points of the human average."
+    },
+    {
+      "id": "kaggle-game-arena",
+      "name": "Kaggle Game Arena / Kaggle Benchmarks",
+      "url": "https://www.kaggle.com/game-arena",
+      "kind": "leaderboard",
+      "domains": [
+        "reasoning",
+        "agents"
+      ],
+      "maintainer": "Kaggle and Google DeepMind",
+      "measures": "Models play strategy and social games (chess, Werewolf, poker) against each other.",
+      "freshness": "Werewolf and poker added 2026-02-02; live standings not checked",
+      "take": "Contamination-resistant and scales with ability. Caveat: Google-run, with Gemini leading at launch, and the game skills are narrow."
+    },
+    {
+      "id": "frontiermath",
+      "name": "FrontierMath (Tiers 1-3 and Tier 4)",
+      "url": "https://epoch.ai/frontiermath",
+      "kind": "benchmark",
+      "domains": [
+        "math",
+        "reasoning"
+      ],
+      "maintainer": "Epoch AI (commissioned and funded by OpenAI)",
+      "measures": "Unpublished research-level math problems in tiers of difficulty, checked automatically.",
+      "freshness": "v2 tiers released 2026-06-12; last run 2026-10-26",
+      "take": "Was the most respected private math eval; now saturated (Tiers 1-3 ~94%, Tier 4 100%). Caveat: OpenAI funded it and can access most problems."
+    },
+    {
+      "id": "arc-agi-2",
+      "name": "ARC-AGI-2",
+      "url": "https://arcprize.org/leaderboard",
+      "kind": "benchmark",
+      "domains": [
+        "reasoning"
+      ],
+      "maintainer": "ARC Prize Foundation",
+      "measures": "Abstract visual puzzles that test learning a new rule from a few examples.",
+      "freshness": "Launched 2025-03; leaderboard has models through 2026-10",
+      "take": "Saturated by frontier models (~95% at about $1 per task); still meaningful only under ARC Prize's Kaggle compute limits."
+    },
+    {
+      "id": "gpqa-diamond",
+      "name": "GPQA Diamond",
+      "url": "https://github.com/idavidrein/gpqa",
+      "kind": "benchmark",
+      "domains": [
+        "science",
+        "reasoning",
+        "knowledge"
+      ],
+      "maintainer": "Rein et al. (NYU, 2023); Epoch runs it continuously",
+      "measures": "198 graduate-level, search-resistant science multiple-choice questions.",
+      "freshness": "Static (2023); Epoch still runs it (2026-10-26)",
+      "take": "Saturated: top models ~96% against a ~97% noise ceiling, and Artificial Analysis and Vals dropped it. Now only a floor check."
+    },
+    {
+      "id": "mmlu-pro",
+      "name": "MMLU / MMLU-Pro",
+      "url": "https://github.com/TIGER-AI-Lab/MMLU-Pro",
+      "kind": "benchmark",
+      "domains": [
+        "knowledge",
+        "reasoning"
+      ],
+      "maintainer": "TIGER-Lab, University of Waterloo (MMLU-Pro); Hendrycks et al. (MMLU)",
+      "measures": "Harder 10-option version of MMLU's multi-subject knowledge questions.",
+      "freshness": "Static; dropped by Artificial Analysis (2026-01) and archived by Vals",
+      "take": "Saturated and contaminated for frontier models; only a sanity check for small or open models."
+    },
+    {
+      "id": "aime",
+      "name": "AIME",
+      "url": "https://matharena.ai/",
+      "kind": "benchmark",
+      "domains": [
+        "math"
+      ],
+      "maintainer": "MAA (contest); run by MathArena, Epoch and Vals",
+      "measures": "The 15 problems of each year's American Invitational Mathematics Examination.",
+      "freshness": "New contest each February",
+      "take": "Saturated (many models at 100%) and contamination-prone for models released after the exam. Use MathArena's proof splits or FrontierMath Erdős instead."
+    },
+    {
+      "id": "mrcr",
+      "name": "MRCR",
+      "url": "https://huggingface.co/datasets/openai/mrcr",
+      "kind": "benchmark",
+      "domains": [
+        "long-context"
+      ],
+      "maintainer": "OpenAI (open dataset); Google reports its own MRCR v2",
+      "measures": "Multi-round co-reference: find the right one of several near-identical items in a long conversation, up to 1M tokens.",
+      "freshness": "Released 2025-04; bug fix 2025-12-05",
+      "take": "The long-context number labs actually report in 2026. Caveat: 'MRCR v2' means different things at Google and OpenAI, and settings vary, so cross-vendor numbers don't compare."
+    },
+    {
+      "id": "graphwalks",
+      "name": "GraphWalks",
+      "url": "https://huggingface.co/datasets/openai/graphwalks",
+      "kind": "benchmark",
+      "domains": [
+        "long-context",
+        "reasoning"
+      ],
+      "maintainer": "OpenAI",
+      "measures": "Graph traversal over long inputs, testing reasoning across a long context rather than retrieval.",
+      "freshness": "Released 2025-04; bug fix 2026-02-27; Epoch verdict Verified (2026-09-29)",
+      "take": "Long-context reasoning with programmatically checked answers, and Epoch-verified. Caveat: synthetic and public."
+    },
+    {
+      "id": "fiction-livebench",
+      "name": "Fiction.LiveBench",
+      "url": "https://fiction.live/stories/Fiction-liveBench-Mar-14-2025/oQdzQvKHw8JyXbN87/home",
+      "kind": "benchmark",
+      "domains": [
+        "long-context"
+      ],
+      "maintainer": "Fiction.live",
+      "measures": "Comprehension questions over long fiction at increasing context lengths.",
+      "freshness": "No 2026 frontier models found; may have stalled",
+      "take": "Closer to real long-document reading than needle tests. Caveat: small, private, single maintainer, and possibly no longer updated."
+    },
+    {
+      "id": "ruler",
+      "name": "RULER",
+      "url": "https://github.com/NVIDIA/RULER",
+      "kind": "benchmark",
+      "domains": [
+        "long-context"
+      ],
+      "maintainer": "NVIDIA",
+      "measures": "Synthetic tasks that test how much of a model's advertised context window it can really use.",
+      "freshness": "Leaderboard last updated mid-2025",
+      "take": "Still standard in open-model papers. Caveat: synthetic and stale; frontier labs don't report it."
+    },
+    {
+      "id": "longbench-v2",
+      "name": "LongBench v2",
+      "url": "https://longbench2.github.io/",
+      "kind": "benchmark",
+      "domains": [
+        "long-context",
+        "reasoning"
+      ],
+      "maintainer": "Tsinghua University (THUDM / THU-KEG)",
+      "measures": "Multiple-choice reasoning over realistic long documents, with a human baseline.",
+      "freshness": "Leaderboard last updated 2025",
+      "take": "Realistic long-document reasoning. Caveat: stale since mid-2025, with a 25% guessing floor."
+    },
+    {
+      "id": "nolima",
+      "name": "NoLiMa",
+      "url": "https://github.com/adobe-research/NoLiMa",
+      "kind": "benchmark",
+      "domains": [
+        "long-context"
+      ],
+      "maintainer": "Adobe Research",
+      "measures": "Needle-in-a-haystack retrieval with no word overlap between question and answer.",
+      "freshness": "Last results 2025-07-17",
+      "take": "Strong evidence that advertised context isn't usable context. Caveat: not updated for 2026 models."
+    },
+    {
+      "id": "chroma-context-rot",
+      "name": "Chroma 'Context Rot' study",
+      "url": "https://www.trychroma.com/research/context-rot",
+      "kind": "benchmark",
+      "domains": [
+        "long-context"
+      ],
+      "maintainer": "Chroma (Kelly Hong, Anton Troynikov, Jeff Huber)",
+      "measures": "Study of how accuracy degrades as input length grows, even on simple tasks.",
+      "freshness": "One-off report 2025-07-14",
+      "take": "The reference for 'context rot' and for curating context instead of filling it. Caveat: a 2025 study, not a maintained leaderboard."
+    },
+    {
+      "id": "aa-text-to-image",
+      "name": "Artificial Analysis Text-to-Image Arena",
+      "url": "https://artificialanalysis.ai/image/leaderboard/text-to-image",
+      "kind": "leaderboard",
+      "domains": [
+        "image-generation",
+        "human-preference",
+        "cost-performance",
+        "design"
+      ],
+      "maintainer": "Artificial Analysis",
+      "measures": "Vetted-rater pairwise votes on prompts balanced across use cases (including marketing and UI), shown with price and latency.",
+      "freshness": "Continuous; prompts refreshed monthly; models added Oct 2026",
+      "take": "Best-designed image arena for choosing a vendor. Caveat: still holistic preference, English-only, with no logo, icon or vector slice."
+    },
+    {
+      "id": "arena-text-to-image",
+      "name": "Arena Text-to-Image",
+      "url": "https://arena.ai/leaderboard/text-to-image",
+      "kind": "leaderboard",
+      "domains": [
+        "image-generation",
+        "human-preference",
+        "design"
+      ],
+      "maintainer": "Arena (formerly LMArena)",
+      "measures": "Crowd pairwise votes on images from the same prompt, ranked by Elo, with text-rendering and commercial-design slices.",
+      "freshness": "Continuous; published 2026-10-26",
+      "take": "Largest vote pool for image models. Caveat: rewards looks over prompt faithfulness, and the category slices barely reorder the top."
+    },
+    {
+      "id": "aa-image-editing",
+      "name": "Artificial Analysis Image Editing Arena",
+      "url": "https://artificialanalysis.ai/image/leaderboard/editing",
+      "kind": "leaderboard",
+      "domains": [
+        "image-editing",
+        "human-preference",
+        "cost-performance"
+      ],
+      "maintainer": "Artificial Analysis",
+      "measures": "Vetted-rater pairwise votes on edits, with text-and-symbol edit categories, price and latency.",
+      "freshness": "Continuous; models added Oct 2026",
+      "take": "Closest public signal for 'change the copy or logo on this asset'. Caveat: doesn't check untouched areas or exact brand colours."
+    },
+    {
+      "id": "arena-image-edit",
+      "name": "Arena Image Edit",
+      "url": "https://arena.ai/leaderboard/image-edit",
+      "kind": "leaderboard",
+      "domains": [
+        "image-editing",
+        "human-preference"
+      ],
+      "maintainer": "Arena (formerly LMArena)",
+      "measures": "Crowd pairwise votes on image edits, including multi-image reference edits.",
+      "freshness": "Continuous; published 2026-10-27",
+      "take": "Highest-volume human signal on edits. Caveat: says little about preserving logos or untouched regions."
+    },
+    {
+      "id": "arena-t2i-hard",
+      "name": "Arena-T2I-Hard",
+      "url": "https://huggingface.co/datasets/lmarena-ai/Arena-T2I-Hard",
+      "kind": "benchmark",
+      "domains": [
+        "image-generation",
+        "human-preference"
+      ],
+      "maintainer": "Arena with UCLA and UC Berkeley",
+      "measures": "310 hard real prompts, each scored with a checklist of about 30 dependent yes/no questions.",
+      "freshness": "Paper v2 2026-10-19",
+      "take": "Built because arena Elo doesn't predict faithfulness, and it still separates top models; a pattern to copy for brand-brief QA. Caveat: new, VLM-judged, English-only."
+    },
+    {
+      "id": "geneval-2",
+      "name": "GenEval 2 (Soft-TIFA)",
+      "url": "https://arxiv.org/abs/2512.16853",
+      "kind": "benchmark",
+      "domains": [
+        "image-generation",
+        "human-preference"
+      ],
+      "maintainer": "Kamath, Krishna, Zettlemoyer et al.",
+      "measures": "Prompt adherence scored by breaking each prompt into small yes/no questions (Soft-TIFA).",
+      "freshness": "Paper 2025-12; static",
+      "take": "Reference design for automatic prompt-adherence checks; tracks humans better than one holistic question. Caveat: still VLM-judged and needs periodic human audits."
+    },
+    {
+      "id": "imagenworld",
+      "name": "ImagenWorld",
+      "url": "https://arxiv.org/abs/2603.27862",
+      "kind": "benchmark",
+      "domains": [
+        "image-generation",
+        "image-editing",
+        "design",
+        "human-preference"
+      ],
+      "maintainer": "Sani, Ku, Chen et al. (25 authors; ICLR 2026)",
+      "measures": "Human-rated generation and editing across domains including text-heavy and symbolic graphics, plus how well VLM judges match people.",
+      "freshness": "Paper 2026-03 (ICLR 2026); static",
+      "take": "Most relevant academic benchmark for graphic assets and for calibrating VLM judges, which rank well but under-penalise artifacts. Caveat: no live leaderboard."
+    },
+    {
+      "id": "mmrb2",
+      "name": "Multimodal RewardBench 2 (MMRB2)",
+      "url": "https://arxiv.org/abs/2512.16899",
+      "kind": "benchmark",
+      "domains": [
+        "multimodal",
+        "vision",
+        "image-generation",
+        "image-editing",
+        "human-preference"
+      ],
+      "maintainer": "Meta FAIR / Meta Superintelligence Labs (Hu et al.)",
+      "measures": "How well AI judges pick the better image or edit in hard human-labelled pairs.",
+      "freshness": "Paper 2025-12 (CVPR 2026)",
+      "take": "Check this before trusting a VLM as your image judge: top judges reach 66-80% against more than 90% for humans, and they over-prefer busy images."
+    },
+    {
+      "id": "vqascore-genai-bench",
+      "name": "VQAScore / GenAI-Bench (t2v_metrics)",
+      "url": "https://github.com/linzhiqiu/t2v_metrics",
+      "kind": "suite",
+      "domains": [
+        "image-generation",
+        "video-generation",
+        "human-preference"
+      ],
+      "maintainer": "Zhiqiu Lin, Deva Ramanan et al. (CMU)",
+      "measures": "Toolkit that scores image-prompt alignment by asking a VLM whether the image shows the prompt.",
+      "freshness": "v3.1 released 2026-06-04",
+      "take": "Easy drop-in upgrade over CLIPScore, runs on open VLMs. Caveat: one holistic question compresses differences between strong models; use checklists for decisions."
+    },
+    {
+      "id": "hpsv3",
+      "name": "HPSv3 (Human Preference Score v3)",
+      "url": "https://github.com/MizzenAI/HPSv3",
+      "kind": "benchmark",
+      "domains": [
+        "image-generation",
+        "human-preference"
+      ],
+      "maintainer": "MizzenAI / Ma, Wu et al. (ICCV 2025)",
+      "measures": "Learned model that predicts which of two images people would prefer.",
+      "freshness": "Released 2025-08; repo last commit 2025-12",
+      "take": "Strongest open preference scorer by reported accuracy, good for best-of-N. Caveat: self-reported numbers, generic taste rather than brand fit, and it doesn't check prompt adherence."
+    },
+    {
+      "id": "longtext-bench",
+      "name": "LongText-Bench / CVTG-2K",
+      "url": "https://arxiv.org/abs/2507.22058",
+      "kind": "benchmark",
+      "domains": [
+        "image-generation",
+        "design"
+      ],
+      "maintainer": "X-Omni team, Tencent (LongText-Bench); TextCrafter authors (CVTG-2K)",
+      "measures": "Accuracy of long and multi-region text rendered inside images, scored by OCR.",
+      "freshness": "Static (2025); still standard in 2026 reports",
+      "take": "The de facto public text-rendering numbers. Caveat: OCR ignores font, kerning and layout, results are mostly vendor-reported, and top models exceed 90%."
+    },
+    {
+      "id": "wise",
+      "name": "WISE / WISE_Verified",
+      "url": "https://github.com/PKU-YuanGroup/WISE",
+      "kind": "benchmark",
+      "domains": [
+        "image-generation",
+        "knowledge"
+      ],
+      "maintainer": "PKU-Yuan Group",
+      "measures": "Whether a model draws the right thing from briefs that need world knowledge.",
+      "freshness": "WISE_Verified released 2026-04-19; results through 2026-06",
+      "take": "Matters for culturally or factually loaded briefs ('make a Diwali promo'). Caveat: VLM-judged, and many closed frontier models are missing."
+    },
+    {
+      "id": "oneig-bench",
+      "name": "OneIG-Bench",
+      "url": "https://oneig-bench.github.io/",
+      "kind": "benchmark",
+      "domains": [
+        "image-generation"
+      ],
+      "maintainer": "OneIG-Bench team (Chang et al.; NeurIPS 2025 D&B)",
+      "measures": "Image generation scored on alignment, text rendering, reasoning, style and diversity.",
+      "freshness": "Leaderboard last updated 2025-09",
+      "take": "Useful for triaging open models on text and style in one suite. Caveat: no frontier closed models since Sep 2025."
+    },
+    {
+      "id": "qwen-image-bench",
+      "name": "Qwen-Image-Bench",
+      "url": "https://arxiv.org/abs/2605.28091",
+      "kind": "benchmark",
+      "domains": [
+        "image-generation",
+        "design"
+      ],
+      "maintainer": "Qwen-Image team, Alibaba (attribution unconfirmed)",
+      "measures": "Professional creative-QA rubric with per-facet diagnostics for image generation.",
+      "freshness": "Paper 2026-05-27",
+      "take": "Closest public analogue to a creative-QA rubric. Caveat: built and judged by a model vendor, with little outside adoption yet."
+    },
+    {
+      "id": "dreambench-plus-plus",
+      "name": "DreamBench++",
+      "url": "https://github.com/yuangpeng/dreambench_plus",
+      "kind": "benchmark",
+      "domains": [
+        "image-generation",
+        "human-preference"
+      ],
+      "maintainer": "Peng et al. (Tsinghua and collaborators; ICLR 2025)",
+      "measures": "Subject-driven generation: keeping a given subject consistent while following the prompt.",
+      "freshness": "Static (2024); still used in 2026 papers",
+      "take": "Standard check for keeping a mascot or product consistent. Caveat: GPT-4o judge that is weaker on concept preservation, and no live board."
+    },
+    {
+      "id": "vist-brand-style",
+      "name": "VIST (Toloka brand style-transfer benchmark)",
+      "url": "https://toloka.ai/blog/vist-a-new-benchmark-for-brand-style-transfer-in-ai-image-generation/",
+      "kind": "benchmark",
+      "domains": [
+        "image-generation",
+        "image-editing",
+        "design",
+        "human-preference"
+      ],
+      "maintainer": "Toloka",
+      "measures": "Brand style transfer from reference images, judged pairwise by designers and non-designers.",
+      "freshness": "One-off, published 2025-12-16 (systems from Oct 2025)",
+      "take": "The only public benchmark aimed at brand-style transfer, and its method is a template for in-house brand evals. Caveat: vendor-run and a stale snapshot."
+    },
+    {
+      "id": "gedit-bench",
+      "name": "GEdit-Bench",
+      "url": "https://github.com/stepfun-ai/Step1X-Edit",
+      "kind": "benchmark",
+      "domains": [
+        "image-editing"
+      ],
+      "maintainer": "StepFun (released with Step1X-Edit)",
+      "measures": "Instruction-based image editing across real-world edit types, VLM-scored.",
+      "freshness": "Static (2025-04); still the headline number in 2026 open-model cards",
+      "take": "Every open editing model reports it. Caveat: open models now beat the closed models that win human arenas, which suggests benchmark-fitting."
+    },
+    {
+      "id": "imgedit-bench",
+      "name": "ImgEdit-Bench",
+      "url": "https://github.com/PKU-YuanGroup/ImgEdit",
+      "kind": "benchmark",
+      "domains": [
+        "image-editing"
+      ],
+      "maintainer": "PKU-Yuan Group (NeurIPS 2025 D&B)",
+      "measures": "Editing quality, including preservation of untouched detail.",
+      "freshness": "Static (2025-05)",
+      "take": "Measures the right axis for brand assets (detail preservation). Caveat: scores bunch near the ceiling, so it no longer separates frontier models."
+    },
+    {
+      "id": "geneval",
+      "name": "GenEval / DPG-Bench",
+      "url": "https://github.com/djghosh13/geneval",
+      "kind": "benchmark",
+      "domains": [
+        "image-generation"
+      ],
+      "maintainer": "University of Washington (GenEval); Tencent ELLA authors (DPG-Bench)",
+      "measures": "Object-focused prompt adherence (counts, colours, positions) checked by an object detector.",
+      "freshness": "Static (2023); still printed in 2026 papers",
+      "take": "Saturated and drifted from human judgement by up to 17.7 points; ignore it for model choice."
+    },
+    {
+      "id": "design-arena",
+      "name": "DesignArena",
+      "url": "https://www.designarena.ai/leaderboard",
+      "kind": "leaderboard",
+      "domains": [
+        "design",
+        "image-generation",
+        "image-editing",
+        "coding",
+        "video-generation",
+        "text-to-speech",
+        "voice-agents",
+        "human-preference"
+      ],
+      "maintainer": "DesignArena by Intelligence (intelligence.ai)",
+      "measures": "Crowd votes across SVG, symbol, UI component, website, image, video and voice tasks.",
+      "freshness": "Continuous; models added through 2026-10-26",
+      "take": "The nearest thing to a logo and icon arena. Caveat: snap-judgement votes favour striking output, and it mixes SVG-writing LLMs with native vector image models."
+    },
+    {
+      "id": "vectorgym",
+      "name": "VectorGym",
+      "url": "https://arxiv.org/abs/2603.29852",
+      "kind": "benchmark",
+      "domains": [
+        "design",
+        "coding",
+        "image-generation"
+      ],
+      "maintainer": "ServiceNow Research and Mila",
+      "measures": "Suite of SVG generation and editing tasks for LLMs.",
+      "freshness": "Paper 2026-03 (EMNLP 2026); static",
+      "take": "Most current academic SVG suite, useful for picking a model to emit editable icons. Caveat: VLM-judged academic SVGs and no live board."
+    },
+    {
+      "id": "aa-video-arena",
+      "name": "Artificial Analysis Video Arena",
+      "url": "https://artificialanalysis.ai/video/leaderboard/text-to-video",
+      "kind": "leaderboard",
+      "domains": [
+        "video-generation",
+        "human-preference",
+        "cost-performance"
+      ],
+      "maintainer": "Artificial Analysis",
+      "measures": "Pairwise votes on text-to-video and image-to-video, split with and without audio, with price per minute.",
+      "freshness": "Continuous; models added Oct 2026",
+      "take": "Most useful video board for a buyer. Caveat: many models statistically tied, and its leaders differ sharply from Arena's video board."
+    },
+    {
+      "id": "vbench",
+      "name": "VBench / VBench-2.0",
+      "url": "https://github.com/Vchitect/VBench",
+      "kind": "suite",
+      "domains": [
+        "video-generation"
+      ],
+      "maintainer": "Vchitect (Shanghai AI Lab / NTU S-Lab)",
+      "measures": "Automatic per-dimension scores for generated video (quality, consistency, motion, prompt match).",
+      "freshness": "Repo active 2026-08",
+      "take": "Standard automatic suite for open video models. Caveat: diverges from people on longer clips; frontier models are compared in arenas instead."
+    },
+    {
+      "id": "aa-speech-agent-arena",
+      "name": "Artificial Analysis Speech Agent Arena",
+      "url": "https://artificialanalysis.ai/articles/announcing-the-speech-agent-arena",
+      "kind": "leaderboard",
+      "domains": [
+        "voice-agents",
+        "human-preference",
+        "tool-use",
+        "cost-performance"
+      ],
+      "maintainer": "Artificial Analysis",
+      "measures": "Voice agents on scripted scenarios, judged on both preference and task success, with latency and cost.",
+      "freshness": "Launched 2026-08-24",
+      "take": "Most realistic public voice-agent eval; it shows the best-liked agent isn't the most successful. Caveat: few private, English-only scenarios."
+    },
+    {
+      "id": "tau-voice",
+      "name": "τ-Voice / τ³-bench voice (Sierra)",
+      "url": "https://taubench.com",
+      "kind": "benchmark",
+      "domains": [
+        "voice-agents",
+        "agents",
+        "tool-use"
+      ],
+      "maintainer": "Sierra Research",
+      "measures": "Voice agents completing tool-using customer-service tasks with a simulated caller.",
+      "freshness": "Repo active 2026-10-28; live board",
+      "take": "Best measure of whether a voice agent actually gets the job done. Caveat: simulator and judge models changed between versions, so scores don't compare across versions."
+    },
+    {
+      "id": "aa-speech-to-speech-index",
+      "name": "Artificial Analysis Speech-to-Speech Index",
+      "url": "https://artificialanalysis.ai/speech-to-speech",
+      "kind": "leaderboard",
+      "domains": [
+        "voice-agents",
+        "reasoning",
+        "tool-use",
+        "cost-performance"
+      ],
+      "maintainer": "Artificial Analysis",
+      "measures": "Composite of reasoning, turn-taking and tool-use scores for realtime voice models.",
+      "freshness": "Launched 2026-06-23; updated since",
+      "take": "One place to compare realtime voice models. Caveat: two of its three parts are saturated, so it's effectively a τ-Voice ranking, and latency isn't scored."
+    },
+    {
+      "id": "full-duplex-bench",
+      "name": "Full-Duplex-Bench (v1 to v3)",
+      "url": "https://github.com/DanielLin94144/Full-Duplex-Bench",
+      "kind": "benchmark",
+      "domains": [
+        "voice-agents"
+      ],
+      "maintainer": "Guan-Ting Lin et al.",
+      "measures": "Turn-taking: whether a voice agent knows when to speak, pause, back-channel or yield.",
+      "freshness": "v3 released 2026-05-20",
+      "take": "Standard test of the commonest real-call failure. Caveat: v1 is saturated, so use v2 or v3."
+    },
+    {
+      "id": "aa-speech-to-text",
+      "name": "Artificial Analysis Speech-to-Text",
+      "url": "https://artificialanalysis.ai/speech-to-text",
+      "kind": "leaderboard",
+      "domains": [
+        "speech-recognition",
+        "cost-performance",
+        "voice-agents"
+      ],
+      "maintainer": "Artificial Analysis",
+      "measures": "Word error rate, price and speed of commercial speech-to-text APIs.",
+      "freshness": "Speed measured daily; WER runs undated",
+      "take": "Best comparison of speech-to-text APIs on price, speed and accuracy. Caveat: only about 8 hours of audio, not your call conditions."
+    },
+    {
+      "id": "open-asr-leaderboard",
+      "name": "Hugging Face Open ASR Leaderboard",
+      "url": "https://huggingface.co/spaces/hf-audio/open_asr_leaderboard",
+      "kind": "leaderboard",
+      "domains": [
+        "speech-recognition",
+        "cost-performance"
+      ],
+      "maintainer": "Hugging Face (hf-audio) with community contributors",
+      "measures": "Word error rate and speed of open and API speech recognition models across public and private test sets.",
+      "freshness": "Very active; updated 2026-10-26",
+      "take": "Reference board for self-hostable speech-to-text. Caveat: top models sit within one WER point and some fit the test sets; test on your own audio."
+    },
+    {
+      "id": "aa-text-to-speech",
+      "name": "Artificial Analysis Text-to-Speech Arena",
+      "url": "https://artificialanalysis.ai/text-to-speech/leaderboard",
+      "kind": "leaderboard",
+      "domains": [
+        "text-to-speech",
+        "human-preference",
+        "cost-performance"
+      ],
+      "maintainer": "Artificial Analysis",
+      "measures": "Blind listener preference between text-to-speech voices, shown with price.",
+      "freshness": "Continuous; models added Oct 2026",
+      "take": "Default TTS vendor shortlist. Caveat: judges short clips only, not long-form consistency, brand-name pronunciation or latency, and it disagrees with TTS Arena V2."
+    },
+    {
+      "id": "tts-arena-v2",
+      "name": "TTS Arena V2",
+      "url": "https://huggingface.co/spaces/TTS-AGI/TTS-Arena-V2",
+      "kind": "leaderboard",
+      "domains": [
+        "text-to-speech",
+        "human-preference"
+      ],
+      "maintainer": "TTS-AGI community (Hugging Face Space)",
+      "measures": "Open community blind votes between text-to-speech models.",
+      "freshness": "Updated 2026-10-24",
+      "take": "Independent counterpoint that surfaces small labs. Caveat: thin vote counts make ranks volatile."
+    },
+    {
+      "id": "ttsds2",
+      "name": "TTSDS2 (Text-to-Speech Distribution Score 2)",
+      "url": "https://github.com/ttsds/ttsds",
+      "kind": "benchmark",
+      "domains": [
+        "text-to-speech"
+      ],
+      "maintainer": "Minixhofer et al. (ttsds project; ICLR 2026 oral)",
+      "measures": "Automatic distribution-level score of how human-like synthetic speech is.",
+      "freshness": "ICLR 2026 paper; public leaderboard offline",
+      "take": "Best-validated automatic TTS metric for an in-house regression suite (average Spearman 0.67 with human ratings). Caveat: needs many samples per system."
+    },
+    {
+      "id": "hal",
+      "name": "HAL: Holistic Agent Leaderboard",
+      "url": "https://hal.cs.princeton.edu/",
+      "kind": "leaderboard",
+      "domains": [
+        "agents",
+        "cost-performance",
+        "coding",
+        "web-browsing"
+      ],
+      "maintainer": "Princeton (Kapoor, Narayanan et al.)",
+      "measures": "Cost-aware agent leaderboard running many benchmarks under fixed, comparable scaffolds.",
+      "freshness": "Paused; harness repo archived 2026-07-01",
+      "take": "Pioneered cost- and scaffold-aware agent comparison and is worth reading, but no longer tracks new models."
+    },
+    {
+      "id": "stanford-helm",
+      "name": "Stanford HELM",
+      "url": "https://crfm.stanford.edu/helm/",
+      "kind": "leaderboard",
+      "domains": [
+        "general",
+        "reasoning",
+        "knowledge",
+        "safety",
+        "vision",
+        "long-context"
+      ],
+      "maintainer": "Stanford CRFM",
+      "measures": "Reproducible, transparent runs of many models across standard scenarios and metrics.",
+      "freshness": "Maintenance mode since 2026-06-01",
+      "take": "Still the gold standard for inspectable runs on open models. Caveat: no new frontier models expected, and its capability set is saturated."
+    },
+    {
+      "id": "openai-simple-evals",
+      "name": "OpenAI simple-evals",
+      "url": "https://github.com/openai/simple-evals",
+      "kind": "suite",
+      "domains": [
+        "knowledge",
+        "reasoning",
+        "web-browsing"
+      ],
+      "maintainer": "OpenAI",
+      "measures": "OpenAI's reference implementations and grader prompts for SimpleQA, BrowseComp, HealthBench and others.",
+      "freshness": "Deprecated July 2025",
+      "take": "Useful only for the canonical grader prompts; no longer updated."
+    },
+    {
+      "id": "hf-open-llm-leaderboard",
+      "name": "Hugging Face Open LLM Leaderboard",
+      "url": "https://huggingface.co/spaces/open-llm-leaderboard/open_llm_leaderboard",
+      "kind": "leaderboard",
+      "domains": [
+        "general",
+        "reasoning",
+        "math",
+        "knowledge"
+      ],
+      "maintainer": "Hugging Face (Clementine Fourrier et al.)",
+      "measures": "Standardised academic benchmarks for open-weight models; evaluated 13,000+ models.",
+      "freshness": "Retired 2025-03-13; static archive",
+      "take": "Still cited on countless model cards, but retired as saturated and hill-climbed. Use HF Community Evals, Epoch or Artificial Analysis instead."
+    },
+    {
+      "id": "papers-with-code",
+      "name": "Papers with Code",
+      "url": "https://paperswithcode.com/",
+      "kind": "aggregator",
+      "domains": [
+        "aggregator"
+      ],
+      "maintainer": "Meta AI (sunset); its successor is run by Hugging Face",
+      "measures": "Was the main registry of state-of-the-art results per task and dataset.",
+      "freshness": "Shut down July 2025; redirects to Hugging Face Trending Papers",
+      "take": "Its SOTA tables are gone and nothing has fully replaced them; HF Trending Papers keeps only paper-to-code links."
+    }
+  ]
+}

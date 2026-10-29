@@ -4,6 +4,9 @@ import { RestartGuard, bootTime } from "./restart-recovery.ts";
 import { dismissedWriter, loadDismissed } from "./dismissed-store.ts";
 import { defaultIsPidAlive } from "./codex-sessions.ts";
 import { handleAccountTools } from "./account-tools.ts";
+import { readBenchmarks } from "./benchmarks.ts";
+import { createSkillIndexes } from "./skill-indexes.ts";
+import { createSkillsLibrary, libraryHomes } from "./skills-library.ts";
 import { createLoginInventory, loginProjects, loginSources } from "./login-inventory.ts";
 import { accountModelCatalog, modelCatalogForSession } from "./provider-models.ts";
 import { prepareClaudeHandoff, settleClaudeHandoff, claudeHandoffReceipt, requireClaudeHandoffSupport } from "./claude-account-handoff.ts";
@@ -752,6 +755,8 @@ export function injectTimeoutFor(line: string): number {
   try {
     const kind = JSON.parse(line)?.type ?? JSON.parse(line)?.kind;
     if (kind === "account-tools") return 20_000;
+    // Opening, adding or trying a skill from an index can download its repository first.
+    if (kind === "skills-library") return 60_000;
     if (kind === "inject") return 25_000;
     // A truthful close waits for the agent pid to disappear after Ctrl-D; the
     // bridge must not invent a failure while that clean shutdown is in flight.
@@ -3408,6 +3413,14 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     }),
     log,
   });
+  /**
+   * Settings › Skills (skills-library.ts): every account's skills, read when asked; the public indexes, read from the
+   * cache and refreshed in the background once a day (skill-indexes.ts); Add's and Try's writes.
+   */
+  const skillsLibrary = createSkillsLibrary({
+    homes: () => libraryHomes(cfg.claudeDir),
+    discover: createSkillIndexes({ log }),
+  });
   const runtimeControlDispatchOptions: RuntimeControlDispatchOptions = {
     historyPage: (message) => records.historyPage({ ...message,
       session: historySessionFor(ownerDeviceId, message.session, { sessions: panelSessions, agents: panelAgents }) }),
@@ -3425,6 +3438,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     }, readClaudeAccounts(cfg.claudeDir), readCodexAccounts()),
     accountTools: message => handleAccountTools(message, cfg.claudeDir),
     loginInventory: message => loginInventory.handle(message),
+    skillsLibrary: message => skillsLibrary.handle(message),
+    benchmarks: (message) => readBenchmarks(undefined, undefined, message.offset ?? 0),
     claudeAccounts: async (message) => {
       if (message.kind === "codex-accounts") {
         const created = message.action === "add" ? addCodexAccount(message.label!, message.configDir) : undefined;
