@@ -25,7 +25,12 @@ enum DebugSnapshot {
     /// and an optional second line names the window (`Target`). One line alone
     /// is what every caller wrote before named windows existed, and still means
     /// exactly what it meant then.
-    static let requestPath = "/tmp/conch-shot.request"
+    ///
+    /// `CONCH_SHOT_REQUEST` names another, for a second copy of the app run against a sandboxed daemon (a Debug build
+    /// photographed by a script): with the default, the user's own app would answer the same request with a picture
+    /// of their window. `conch shot` reads the same variable.
+    static let requestPath = ProcessInfo.processInfo.environment["CONCH_SHOT_REQUEST"].flatMap { $0.hasPrefix("/tmp/") ? $0 : nil }
+        ?? "/tmp/conch-shot.request"
 
     /// Ask the app to OPEN something before it is photographed.
     ///

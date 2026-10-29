@@ -87,6 +87,12 @@ export interface StartSessionRequest {
    * what a skill does this way. Only for a new conversation: a resumed one has its own (`startPromptError`).
    */
   prompt?: string;
+  /**
+   * The daemon's own first message, where `prompt` is a client's: a fix session's brief (failure-tickets.ts), which
+   * runs to several lines. Built by the daemon, never accepted from a wire request, and only for a new conversation,
+   * where the last argument is the prompt. A start carries one or the other.
+   */
+  initialPrompt?: string;
 }
 
 /** The longest first message a start carries: a short ask, not a document. */
@@ -336,11 +342,18 @@ export function terminalSessionCommand(request: StartSessionRequest): string {
   const trust = request.trustFolder ? adapter.trustFolderArgs(cwd) : "";
   const hookTrust = request.hookTrust && adapter.hookTrustArgs ? adapter.hookTrustArgs(request.hookTrust) : "";
   const hostFlags = request.host === "background" ? adapter.backgroundFlags : "";
+  if (request.initialPrompt !== undefined && (resume || teleport || request.claudeHandoff)) {
+    throw new Error("A first message is only given to a new conversation");
+  }
+  if (request.initialPrompt !== undefined && request.prompt !== undefined) {
+    throw new Error("A start carries one first message, a client's or the daemon's");
+  }
   return `cd -- ${shellQuote(cwd)} && exec ${environment}${adapter.executable}${hostFlags}${bypass}${trust}${hookTrust}${args}`
     + renderStartOptions(adapter, request.options)
     + (request.claudeHandoff ? ` --session-id ${shellQuote(request.claudeHandoff.sessionId)}` : "")
     // Last, after every flag: both agents take their first message as the one positional argument.
-    + (request.prompt ? ` ${shellQuote(request.prompt.trim())}` : "");
+    + (request.prompt ? ` ${shellQuote(request.prompt.trim())}` : "")
+    + (request.initialPrompt ? ` ${shellQuote(request.initialPrompt)}` : "");
 }
 
 /**

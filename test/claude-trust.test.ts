@@ -117,9 +117,10 @@ describe("asking before a Claude session starts in a folder it doesn't trust", (
     const daemon = readFileSync(`${import.meta.dir}/../src/daemon.ts`, "utf8");
     expect(daemon).toContain("if (request.trustFolder === true && adapterFor(request.backend).trustTypedAtLaunch && tty) {");
     // Start, restart, account handoff, bringing back a session its tmux server took with it (background-recovery.ts),
-    // and a fork (`forkLiveSession`, which sets trustFolder as a restart does).
-    // Six: the restart guard's (`restart-recovery.ts`) brings sessions back after the Mac restarts.
-    expect(daemon.match(/await launchSession\(|=> launchSession\(/g)?.length).toBe(6);
+    // a fork (`forkLiveSession`, which sets trustFolder as a restart does), and a failure ticket's fix session
+    // (failure-tickets.ts, in conch's own checkout, which is trusted already).
+    // And the restart guard's (`restart-recovery.ts`), which brings sessions back after the Mac restarts: seven.
+    expect(daemon.match(/await launchSession\(|=> launchSession\(/g)?.length).toBe(7);
     // Every launch goes through launchSession: its own call is the only direct one.
     expect(daemon.match(/await startTerminalSession\(/g)?.length).toBe(1);
   });
@@ -129,7 +130,10 @@ describe("the start sheet, as source (conch-mac has no XCTest target)", () => {
   const view = readFileSync(`${import.meta.dir}/../mac-app/conch-mac/ContentView.swift`, "utf8");
 
   test("keeps watching after its notice, and closes itself when the session checks in", () => {
-    expect(view).toContain("if let id = await waitForSession(rounds: 225), error == notice {\n                onStarted(id)\n                dismiss()");
+    expect(view).toContain("let late = await waitForSession(rounds: 225)\n            if let late, error == notice {\n                onStarted(late)\n                dismiss()");
+    // And one that never checks in is filed as a failure (docs/failure-tickets.md), unless the sheet went away first.
+    expect(view).toContain("} else if late == nil, error == notice, !Task.isCancelled {");
+    expect(view).toContain('store.reportAppError(operation: "session-start", message: "The session never checked in."');
     // Which row is the launched session is one rule, shared with the phone and tested in
     // ConchDesign (StartedSessionTests): sessions only, this agent, this account.
     expect(view).toContain("let watch = StartedSessionWatch(");

@@ -1,3 +1,4 @@
+import { decodeFailureTicketRequest, type FailureDesk } from "./failure-tickets.ts";
 import type { AccountToolsRequest, AccountToolsReply } from "./account-tools.ts";
 import { PROMPT_DIGEST } from "./delivery-evidence.ts";
 import type { ClaudeAccountRequest, ClaudeAccountsReply } from "./claude-accounts.ts";
@@ -1321,6 +1322,16 @@ export interface ControlServerOptions {
   narration?: Narration;
   /** The words of a video dropped on the Mac app's composer (video-transcript.ts), from the recording it wrote. */
   videoTranscripts?: VideoTranscripts;
+  /**
+   * Failure tickets (failure-tickets.ts): Settings › Failures' list and its actions, and `conch failures`. Absent: the
+   * request is answered as unavailable.
+   */
+  failureTickets?: Pick<FailureDesk, "list" | "act">;
+  /**
+   * A failure this server answered for itself, filed as the daemon files its own (`recordDaemonError`): an inject
+   * refused before the voice loop saw it, whose refusal the Mac app's socket client drops unread.
+   */
+  onFailure?(operation: string, message: string, sessionId?: string, state?: Record<string, unknown>): void;
   /** The Mac app's answer to a window snapshot the daemon asked for (`review-preview`, review-preview.ts). */
   onReviewPreview?(message: { request?: unknown; path?: unknown; error?: unknown }): Promise<{ ok: true } | { ok: false; error: string }>;
   /**
@@ -1482,6 +1493,21 @@ export function createControlServer(options: ControlServerOptions): ControlServe
           } catch {
             frame = encodeControlFrame(JSON.stringify({ kind: "session-error", error: "the logins inventory was too large to send" }));
           }
+          sock.end(frame);
+          return;
+        }
+        // Failure tickets (failure-tickets.ts) name no session: Settings › Failures and `conch failures` ask for the list
+        // and act on one. The Mac app's and the CLI's alone, never a phone's (phone-bridge.ts `MAC_APP_ONLY_DECODERS`).
+        const tickets = decodeFailureTicketRequest(body);
+        if (tickets) {
+          let reply: unknown;
+          if ("error" in tickets) reply = { kind: "failure-ticket-error", error: tickets.error };
+          else if (!options.failureTickets) reply = { kind: "failure-ticket-error", error: "This conch has no failure tickets." };
+          else if (tickets.kind === "failure-tickets") reply = options.failureTickets.list();
+          else reply = await options.failureTickets.act(tickets.id, tickets.action);
+          let frame: Buffer;
+          try { frame = encodeControlFrame(JSON.stringify(reply)); }
+          catch { frame = encodeControlFrame(JSON.stringify({ kind: "failure-ticket-error", error: "That was too large to send." })); }
           sock.end(frame);
           return;
         }
@@ -1703,6 +1729,12 @@ export function createControlServer(options: ControlServerOptions): ControlServe
             }
             if (!turn.ok) {
               log(`ignoring malformed event: ${turn.err}`);
+              // A message someone sent, refused before delivery: filed, since the Mac app shows no reply but inject-done.
+              if (socketRecord(value) && value.type === "inject") {
+                options.onFailure?.("inject", `Refused before delivery: ${turn.err}`,
+                  typeof value.sessionId === "string" ? value.sessionId : undefined,
+                  { ...(typeof value.label === "string" ? { label: value.label } : {}), refused: true });
+              }
               response = { kind: "session-error", error: turn.err };
             } else {
               // A hook's event is how setup hears from an agent for the first time (setup.ts).

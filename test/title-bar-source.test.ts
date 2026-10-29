@@ -68,7 +68,9 @@ describe("E1: the header lives in the title-bar strip", () => {
   test("every control that was in the header is still there, at 26pt or more", () => {
     const controls = section(dashboard, "private struct HeaderControls: View {", "private struct SessionLedger: View {");
     expect(controls).toContain("ModeToggle(");
-    expect(controls).toContain('help: "Settings — connect a phone, and everything else"');
+    expect(controls).toContain(': "Settings — connect a phone, and everything else"');
+    // A new failure ticket is a dot on the gear and words in its help, nothing louder (docs/failure-tickets.md).
+    expect(controls).toContain("badge: newFailures > 0,");
     expect(controls).toContain('help: isLogDrawerOpen ? "Hide logs" : "Show logs"');
     expect(controls).toContain('help: "Keyboard shortcuts"');
     expect(controls).toContain(".frame(width: 28, height: 28)");

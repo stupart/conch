@@ -1124,9 +1124,16 @@ private struct StartSessionSheet: View {
             // And keep watching: answered in Terminal, it checks in a minute later, and the
             // sheet sat on this notice for a session that was already running. Tyler: "conch
             // app is still in creation model even tho sessions has been made".
-            if let id = await waitForSession(rounds: 225), error == notice {
-                onStarted(id)
+            let late = await waitForSession(rounds: 225)
+            if let late, error == notice {
+                onStarted(late)
                 dismiss()
+            } else if late == nil, error == notice, !Task.isCancelled {
+                // Three minutes on and still not in the list: a start that, as far as anyone can tell, didn't happen. Filed
+                // as a failure (docs/failure-tickets.md); the sheet said so all along, and nothing else did.
+                var detail = ["backend": effectiveBackend.rawValue, "host": sessionHost]
+                if let backgroundId { detail["backgroundId"] = backgroundId }
+                store.reportAppError(operation: "session-start", message: "The session never checked in.", sessionId: launchedSessionId, state: detail)
             }
         }
     }

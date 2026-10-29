@@ -432,6 +432,7 @@ private struct ConchSettingRowView: View {
         "announce-sentences": "Sentences announced",
         "announce-max-chars": "Announcement length limit",
         "say-rate": "Fallback voice speed (wpm)",
+        "failure-autofix": "Fix new failures on their own",
     ]
 
     private var displayName: String {
@@ -953,6 +954,13 @@ final class SettingsRouter: ObservableObject {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         state = SettingsPageState(section: SettingsSection(stored: defaults.string(forKey: SettingsSection.storageKey)))
+        #if DEBUG
+        // A Debug build launched to be photographed opens on the section it names (`CONCH_DEBUG_SETTINGS=failures`), so a
+        // picture of a section needs nobody's mouse and never touches what the user's own app remembers.
+        if let named = ProcessInfo.processInfo.environment["CONCH_DEBUG_SETTINGS"], let section = SettingsSection(rawValue: named) {
+            state.open(section)
+        }
+        #endif
     }
 
     private let defaults: UserDefaults
@@ -1005,6 +1013,8 @@ final class SettingsRouter: ObservableObject {
 /// ConchPalette now (2026-10-14).
 struct ConchSettingsPage: View {
     @ObservedObject var router: SettingsRouter
+    /// The published failure counts, for Failures' place in the list, and the fix session's terminal.
+    @EnvironmentObject private var store: StateStore
 
     var body: some View {
         GeometryReader { proxy in
@@ -1016,7 +1026,7 @@ struct ConchSettingsPage: View {
                     .frame(height: 1)
 
                 HStack(spacing: 0) {
-                    SettingsSectionList(selected: router.state.section, onSelect: router.select)
+                    SettingsSectionList(selected: router.state.section, failures: store.state?.failures, onSelect: router.select)
                         .frame(width: SettingsLayout.listWidth)
 
                     Rectangle()
@@ -1069,6 +1079,16 @@ struct ConchSettingsPage: View {
         case .phone: ConchPairingView()
         case .permissions: ConchPermissionsView()
         case .setup: SetupSettingsTab()
+        // Failure tickets (ConchDesign/FailureTickets.swift): the list and Fix, over the socket; a fix session's startup
+        // terminal opens as the New session sheet's does.
+        case .failures: FailureTicketsView(openTerminal: { store.openStartupTerminal($0) }) { request in
+            // A Fix waits on the session's start (installing an account's hooks first, then tmux), as a start does.
+            switch await ConchSocketClient().request(request, timeout: 20) {
+            case .reply(let data): return data
+            case .connectFailed, .timeout:
+                throw NSError(domain: "ConchFailures", code: 1, userInfo: [NSLocalizedDescriptionKey: "Could not reach the conch daemon."])
+            }
+        }
         }
     }
 }
@@ -1129,6 +1149,9 @@ private struct SettingsBackButton: View {
 /// (30 pt, radius 7, its hover and selection).
 private struct SettingsSectionList: View {
     let selected: SettingsSection
+    /// Failure tickets' counts: Failures carries its open count (the page's own "Open" heading, so the two never disagree;
+    /// one being fixed waits on a PR, not on you), and a dot while any is new (the header's gear has one too).
+    let failures: PublishedState.FailureDigest?
     let onSelect: (SettingsSection) -> Void
 
     var body: some View {
@@ -1140,7 +1163,12 @@ private struct SettingsSectionList: View {
                 .padding(.bottom, ConchSpace.x3)
                 .accessibilityAddTraits(.isHeader)
             ForEach(SettingsSection.allCases) { section in
-                SettingsSectionRow(section: section, isSelected: section == selected) { onSelect(section) }
+                SettingsSectionRow(
+                    section: section,
+                    isSelected: section == selected,
+                    count: section == .failures ? failures?.open ?? 0 : 0,
+                    isNew: section == .failures && (failures?.unseen ?? 0) > 0
+                ) { onSelect(section) }
             }
             Spacer(minLength: 0)
         }
@@ -1154,6 +1182,10 @@ private struct SettingsSectionList: View {
 private struct SettingsSectionRow: View {
     let section: SettingsSection
     let isSelected: Bool
+    /// Shown at the row's end when above zero, in the faint ink: how many are open (Failures).
+    var count = 0
+    /// Something new in it: the 6-point attention dot the header's gear carries (`HeaderButton.badge`).
+    var isNew = false
     let action: () -> Void
     @State private var isHovered = false
 
@@ -1169,6 +1201,18 @@ private struct SettingsSectionRow: View {
                     .foregroundStyle(ConchPalette.textPrimary)
                     .lineLimit(1)
                 Spacer(minLength: 0)
+                if count > 0 {
+                    Text("\(count)")
+                        .font(ConchTypography.font(size: 12))
+                        .foregroundStyle(ConchPalette.textFaint)
+                        .monospacedDigit()
+                }
+                if isNew {
+                    Circle()
+                        .fill(ConchPalette.statusNeeds)
+                        .frame(width: 6, height: 6)
+                        .accessibilityLabel("New")
+                }
             }
             .padding(.horizontal, ConchSpace.x2)
             .frame(maxWidth: .infinity, minHeight: 30)

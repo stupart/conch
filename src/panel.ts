@@ -1,3 +1,4 @@
+import type { FailureDigest } from "./failure-tickets.ts";
 import type { PreviewRequest, ReviewPreview } from "./review-preview.ts";
 import type { AccessState, ReviewSnapshot } from "./page-access.ts";
 import { sessionLabel, type SessionInfo } from "./sessions.ts";
@@ -542,6 +543,12 @@ export interface PublishedState {
    * can't approve: that is how an app knows whether to offer Approve.
    */
   seaGlass: number;
+  /**
+   * Failure tickets (failure-tickets.ts): how many are open, being fixed, and new since Settings › Failures was last
+   * shown. Counts only: the tickets themselves are the Mac app's to ask for (`failure-tickets`), never published.
+   * Absent from older daemons.
+   */
+  failures?: FailureDigest;
 }
 
 const MAX_PUBLISHED_CONVERSATION_CHARS = 4_000;

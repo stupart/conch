@@ -1695,7 +1695,9 @@ final class StateStore: ObservableObject {
             // Whether the daemon can approve at all (✓ Approve shows only then), and the lagoon's jar.
             seaGlass: sourceState.seaGlass,
             // What came back after the Mac restarted, and what waits on the person (src/restart-recovery.ts).
-            restore: sourceState.restore
+            restore: sourceState.restore,
+            // The gear's dot and Settings › Failures' count.
+            failures: sourceState.failures
         )
         if state?.hasSamePresentation(as: next) != true {
             state = next

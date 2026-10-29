@@ -84,6 +84,7 @@ The defaults below are read from `src/settings.ts`; `conch settings` prints the 
 |---|---|---|---|
 | `screen-log` | `CONCH_SCREEN_LOG` | `true` | Keep a local log of which session's work was on screen, and for how long, in `~/.config/conch/screen`. Never sent anywhere ([screen-context.md](screen-context.md)) |
 | `records` | `CONCH_RECORDS_ENABLED` | `false` | Index local agent history and record observed outcomes |
+| `failure-autofix` | `CONCH_FAILURE_AUTOFIX` | `false` | When a failure ticket opens, start a background Claude session in conch's checkout to fix it and open a PR, never merged: one at a time, at most 3 a day ([failure-tickets.md](failure-tickets.md)) |
 
 ## Environment-only variables
 

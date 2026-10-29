@@ -4442,6 +4442,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     const { via } = await injectKey(cfg, known?.pid, "Escape");
     if (via === "none") {
       log(`⚠ could not reach "${label}" to stop it`);
+      recordDaemonError("interrupt", "Couldn't reach the session to stop it.", event.sessionId, { label });
       await speak(cfg, `Couldn't reach ${label} to stop it.`, label, false, event.sessionId);
       return;
     }

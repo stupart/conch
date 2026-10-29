@@ -59,7 +59,7 @@ Optional / manual setup:
   conch service [install|off] | uninstall [--models]  manage or remove the install
   conch install-plugin | uninstall-plugin | config-toggle <agent> <plugin|mcp-server> <id> <on|off> [--scope user|project] [--project <dir>] [--preview] | config-rollback <file>  the conch plugin · a next-session switch in the agent's own file · undo it
   conch install [--codex] | pair | browser | logins [--refresh] [--json] | skills [discover [words]] [--json]   wire hooks · connect the iPhone app · conch's in-app browser (its profiles, a page as a tab) · which CLIs, agents, MCP servers and plugins are signed in, as whom · every skill in every account, or a search of the public indexes
-  conch doctor | help-session | version | parity <session> | mcp-usage [--since 7d]   live checks | a Claude session that knows conch | version | debug: conch beside the session's terminal in one picture, PASS/FAIL on the last message sent (parity --help) | how agents use conch's MCP tools: calls, errors, p50/p90 ms (mcp-usage --help)
+  conch doctor | help-session | version | parity <session> | mcp-usage [--since 7d] | failures [--all] [--json] [--from-logs]   live checks | a Claude session that knows conch | version | debug: conch beside the session's terminal in one picture, PASS/FAIL on the last message sent (parity --help) | how agents use conch's MCP tools: calls, errors, p50/p90 ms (mcp-usage --help) | failure tickets: each kind of failure, how often, its status and fix PR (Settings › Failures)
 
 Internal entrypoints: conch hook | codex-hook | daemon | mcp | browse <url> [--profile <name>] (open, in sessions conch starts)
 `;
@@ -704,6 +704,12 @@ switch (command) {
     if (code) process.exitCode = code;
     break;
   }
+  case "failures": {
+    // Failure tickets (failure-tickets.ts): the daemon's store, read only. `--from-logs` groups the records themselves.
+    const { runFailuresCli } = await import("./failure-tickets.ts");
+    process.exitCode = runFailuresCli(rest);
+    break;
+  }
   case "dictations": {
     // The dictations handed back to the apps lately, newest first, in full: a recording whose words never reached a
     // draft can be read back here (`recent-dictations.jsonl`, status.ts).
@@ -780,7 +786,9 @@ switch (command) {
     // appeared for any output folder outside /tmp — which is every folder a shoot
     // script would use.
     const ask = screen ? `/tmp/conch-shot-geometry-${Date.now()}.png` : target;
-    await Bun.write("/tmp/conch-shot.request", selector ? `${ask}\n${selector}` : ask);
+    // `CONCH_SHOT_REQUEST`: a second copy of the app, run against a sandboxed daemon, answers its own (DebugSnapshot.swift).
+    const requestFile = process.env.CONCH_SHOT_REQUEST?.startsWith("/tmp/") ? process.env.CONCH_SHOT_REQUEST : "/tmp/conch-shot.request";
+    await Bun.write(requestFile, selector ? `${ask}\n${selector}` : ask);
     if (screen) {
       // -D 1 is the main display: one file, always, rather than one per screen. The
       // sidecar's isOnMainDisplay says when the window you care about is elsewhere.
@@ -795,7 +803,7 @@ switch (command) {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     if (!fileExists(expected)) {
-      try { removeFile("/tmp/conch-shot.request"); } catch {}
+      try { removeFile(requestFile); } catch {}
       // The app reports which step failed rather than leaving the caller to
       // guess after a five-second wait.
       const reason = fileExists(`${ask}.error`)

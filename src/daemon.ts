@@ -115,7 +115,7 @@ import { ManagedTtsWorker, TTS_WORKER_HEALTH_CHECK_MS } from "./tts-worker.ts";
 import { VoiceEnvManager, voiceTestFigure, type NaturalVoicesStatus } from "./voice-env.ts";
 import { hubCacheDir, modelCacheBytes, verifyModelCache } from "./voice-model-cache.ts";
 import { SpeechEngineManager, speechEngineStatusPath, type SpeechEngineStatus } from "./speech-engine.ts";
-import { resolveTmux } from "./tmux-binary.ts";
+import { conchTmux, resolveTmux } from "./tmux-binary.ts";
 import {
   listenOnce,
   hasActiveRecorders,
@@ -185,7 +185,9 @@ import {
   type SessionSettingsChangeState,
   type SessionSettingsSample,
 } from "./session-settings.ts";
-import { appendConchError } from "./app-errors.ts";
+import { appendConchError, APP_ERRORS_PATH } from "./app-errors.ts";
+import { conchCheckout, FailureDesk, FIX_CHECK_INTERVAL_MS, ghBranchPr, tmuxSessionAlive } from "./failure-tickets.ts";
+import { mcpUsagePath } from "./mcp-usage.ts";
 import {
   attachTerminalSession,
   closeSession,
@@ -666,6 +668,7 @@ async function repairHookPrograms(): Promise<void> {
       if (hooks || status) log(`repaired conch's ${hooks ? `${hooks} hook${hooks === 1 ? "" : "s"}` : ""}${hooks && status ? " and " : ""}${status ? "status line" : ""} in ${account.label}: their bun had moved`);
     } catch (error) {
       log(`could not repair conch's hooks in ${account.label}: ${(error as Error).message}`);
+      fileDaemonFailure("hook-repair", `Could not repair conch's hooks: ${(error as Error).message}`, undefined, { account: account.id });
     }
   }
 }
@@ -675,6 +678,22 @@ async function repairHookPrograms(): Promise<void> {
  * the daemon has one. A yes the app gave that was never typed into Claude's prompt is only known then.
  */
 let reportLaunchError: (message: string, state: Record<string, unknown>) => void = () => {};
+
+/**
+ * `recordDaemonError`, for code that runs before the daemon has one or outside it (a hook repair at start, the event
+ * queue's catch). Until 2026-10-28 an event that threw was one log line, `error handling inject "…": Error: …`, and an
+ * Allow that never reached its session said so nowhere Tyler could see (docs/failure-tickets.md).
+ */
+let fileDaemonFailure: (operation: string, message: string, sessionId?: string, state?: Record<string, unknown>) => void = () => {};
+
+/** An event that threw, filed under its own type with the top of its stack (home shortened). */
+function fileThrownEvent(event: Pick<TurnEvent, "type" | "sessionId" | "label">, error: unknown, operation: string = event.type): void {
+  const message = error instanceof Error ? error.message : String(error);
+  const stack = error instanceof Error && error.stack
+    ? error.stack.split("\n").slice(1, 6).map((line) => line.trim().split(conchHome()).join("~")).join("\n")
+    : undefined;
+  fileDaemonFailure(operation, message, event.sessionId || undefined, { label: event.label, threw: true, ...(stack ? { stack } : {}) });
+}
 
 /**
  * Open a session in Terminal and, for Claude in a folder you just trusted in the app, answer
@@ -965,6 +984,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     consumeStopKey: () => voice.consumeStop(),
     onError: (event, error) => {
       log(`error handling ${event.type} "${event.label}": ${error}`);
+      fileThrownEvent(event, error);
       speech.cancelCurrent();
     },
     onIdle: () => setState(restState()),
@@ -1007,7 +1027,12 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       const args = session?.pid ? await readProcessArgs(session.pid) : null;
       return session && args ? restartRequest(session, args).request : null;
     },
-    launch: (request) => onItsOwn(request, () => launchSession(request)),
+    // A session that couldn't be brought back is filed (`session-restore`): the guard only logs it.
+    launch: (request) => onItsOwn(request, () => launchSession(request)).catch((error: unknown) => {
+      fileDaemonFailure("session-restore", `Could not bring a background session back: ${error instanceof Error ? error.message : String(error)}`,
+        request.resumeSessionId, { backend: request.backend });
+      throw error;
+    }),
     log,
   });
   /**
@@ -1590,6 +1615,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       // only once this settles (control-server.ts).
       return handle(event).catch((error) => {
         log(`error handling ${event.type} "${event.label}": ${error}`);
+        fileThrownEvent(event, error);
         return false;
       });
     }
@@ -1634,6 +1660,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         },
         (error) => {
           log(`error filing a publication from "${event.label}": ${error}`);
+          fileThrownEvent(event, error, "review-filing");
           void checking?.then((found) => discardCapture(found.snapshot?.path, captureFolderPath()));
           return refusedVerdict(`conch's daemon failed while filing it: ${error instanceof Error ? error.message : String(error)}`);
         },
@@ -1978,11 +2005,50 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         { source: "daemon", operation, message, ...(sessionId ? { sessionId } : {}), ...(state ? { state } : {}) },
         lastPublishedPanelState,
       );
+      fileRecordedFailures();
     } catch (error) {
       log(`could not record daemon error: ${error}`);
     }
   };
   reportLaunchError = (message, state) => recordDaemonError("session-start", message, undefined, state);
+  fileDaemonFailure = recordDaemonError;
+  /**
+   * Failure tickets (failure-tickets.ts, docs/failure-tickets.md): every record written here, by the apps and by the
+   * agents' MCP servers, filed by kind. Fix starts a background Claude session on one, in the checkout this daemon runs
+   * from, on the Default account, through `launchSession` like any other start: the brief is its first message.
+   */
+  const failureDesk = new FailureDesk({
+    errorsPath: APP_ERRORS_PATH,
+    mcpUsagePath: mcpUsagePath(),
+    daemonLogPath: LOG_FILE,
+    // This process's start: a fix merged before it is running here; one merged after isn't yet (`fileOccurrence`).
+    codeSince: Math.round(performance.timeOrigin),
+    log,
+    autoFix: () => cfg.failureAutofix,
+    fixFolder: () => conchCheckout(),
+    startFix: async ({ cwd, prompt }) => {
+      const launched = await launchSession({
+        backend: "claude", host: "background", cwd, claudeAccountId: "default", initialPrompt: prompt,
+        bypassPermissions: cfg.bypassPermissions,
+      });
+      return launched?.backgroundId ? { backgroundId: launched.backgroundId } : {};
+    },
+    fixSessionAlive: (name) => tmuxSessionAlive(conchTmux(), name),
+    findPr: (folder, branch) => ghBranchPr(folder, branch),
+    recordFailure: (operation, message, state) => recordDaemonError(operation, message, undefined, state),
+    changed: () => void renderSessionPanel(),
+  });
+  let failurePoke: ReturnType<typeof setTimeout> | undefined;
+  /** A record was just written: filed now rather than at the next poll, so Settings › Failures has it at once. */
+  function fileRecordedFailures(): void {
+    if (failurePoke) return;
+    failurePoke = setTimeout(() => {
+      failurePoke = undefined;
+      try { failureDesk.poll(); } catch (error) { log(`failure tickets: ${error}`); }
+    }, 250);
+  }
+  // Every 5 s for new records; a fixing ticket's PR and session every 5 minutes (`CONCH_FAILURE_CHECK_MS` for the e2e).
+  failureDesk.start(5_000, Number(process.env.CONCH_FAILURE_CHECK_MS) || FIX_CHECK_INTERVAL_MS);
   // Cut four: the voice loop owns wake → speak → listen → deliver. Built after
   // every daemon helper it is handed; the closures above reach it lazily.
   const voice = createVoiceLoop({
@@ -2741,6 +2807,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       // What a runaway guard stopped, until it is over (`runaway.ts`).
       const guards = runawayGuards.published();
       if (guards.length) lastPublishedPanelState.guards = guards;
+      // Failure tickets: how many are open and unseen, for the gear's dot and Settings › Failures (failure-tickets.ts).
+      lastPublishedPanelState.failures = failureDesk.digest();
       // Setup's practice session, first among the rows while it runs, and `features.practice` always (practice.ts).
       if (practice) lastPublishedPanelState = practice.publish(lastPublishedPanelState);
       // Each working row's line, through its throttle: a fresh build carries none until this puts them back.
@@ -3627,6 +3695,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       log(focused.focused
         ? `brought ${labelForSessionId(message.sessionId)}'s terminal forward (Terminal button)`
         : `couldn't bring ${labelForSessionId(message.sessionId)}'s terminal forward: ${focused.reason ?? "no reason given"}`);
+      // The Mac app shows the reason on the row and reports nothing; the phone files its own `terminal-focus` too.
+      if (!focused.focused) recordDaemonError("terminal-focus", `Couldn't bring the session's terminal forward: ${focused.reason ?? "no reason given"}`, message.sessionId, { label: labelForSessionId(message.sessionId) });
       return focused;
     },
     openSessionApp: async (message) => {
@@ -3634,6 +3704,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       log(reply.opened
         ? `opened ${labelForSessionId(message.sessionId)} in Codex (session header)`
         : `couldn't open ${labelForSessionId(message.sessionId)} in its app: ${reply.reason}`);
+      if (!reply.opened) recordDaemonError("session-open-app", `Couldn't open the session in its app: ${reply.reason}`, message.sessionId, { label: labelForSessionId(message.sessionId) });
       return reply;
     },
     start: async (message) => {
@@ -3687,6 +3758,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         },
         lastPublishedPanelState,
       );
+      fileRecordedFailures();
     },
   };
   // Device operations remain whole: the server decodes, the daemon owns effects.
@@ -3992,6 +4064,9 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     // uploads, by the whisper the phone's `/transcript` uses.
     videoTranscripts: createVideoTranscripts({ uploads: phoneUploads.directory, transcribe: (wav) => transcribeWavSegments(cfg, wav) }),
     onReviewPreview: (message) => windowPreviews.answer(message),
+    failureTickets: failureDesk,
+    // A send the socket refused before it reached the voice loop: the Mac app drops that reply, so it is filed here.
+    onFailure: recordDaemonError,
     pageCapture,
     browser,
     setup,
@@ -4011,6 +4086,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     // A clean stop: what closes after this, conch doesn't see, so a restart after it offers rather than starts.
     restartGuard.stopped();
     rotation.stop();
+    failureDesk.stop();
     clearInterval(browserPrune);
     clearInterval(browserAsks);
     // The practice session and its card go with the daemon: nothing of it is left for the next one.
@@ -4231,6 +4307,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   const codexTurnMemory: CodexTurnMemory = new Map();
   /** The ask already announced per Codex session, so a five-second poll says it once. */
   const codexApprovalMemory = new Map<string, string>();
+  /** When each way the watch failed was last filed (`codex-watch`): it fails every five seconds while it fails at all. */
+  const codexWatchFiled = new Map<string, number>();
   async function watchCodexTurns(): Promise<void> {
     breadcrumb("timer: codex turn watch");
     let ended: ReturnType<typeof detectCodexTurnEnds>;
@@ -4244,6 +4322,12 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       ended = detectCodexTurnEnds(codexTurnMemory, snapshots);
       approvals = detectCodexApprovals(codexApprovalMemory, snapshots);
     } catch (error) {
+      // Codex's turn ends and approvals go unseen while this fails, and it runs every poll: filed once an hour a message.
+      const said = error instanceof Error ? error.message : String(error);
+      if (Date.now() - (codexWatchFiled.get(said) ?? 0) > 60 * 60_000) {
+        codexWatchFiled.set(said, Date.now());
+        recordDaemonError("codex-watch", `Codex's watch failed: ${said}`);
+      }
       return log(`codex watch failed: ${error}`);
     }
     // A Codex permission ask, through the same needs-you path Claude's
