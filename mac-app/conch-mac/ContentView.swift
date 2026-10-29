@@ -27,6 +27,8 @@ struct ContentView: View {
     @State private var remoteSelection: RemoteSessionID?
     @State private var renamingSessionID: SessionRow.ID?
     @State private var renameDraft = ""
+    /// The row a click just moved to, and when: the second click of a double-click that picked it is not a rename.
+    @State private var pickedByClick: (id: SessionRow.ID, at: Date)?
     @State private var isShowingKeyboardShortcuts = false
     @State private var isShowingSessionStart = false
     @State private var isShowingCommandPalette = false
@@ -241,6 +243,7 @@ struct ContentView: View {
     private func selectSession(_ row: SessionRow) {
         // Already picked: `viewing` doesn't change, so the glide is asked for here (the camera may have wandered off it).
         if page == .lagoon, workspace.viewing == row.id { lagoon.focus(row.id) }
+        if workspace.viewing != row.id { pickedByClick = (row.id, Date()) }
         workspace.viewing = row.id
         // A session chosen from Settings (the menu bar menu, the command palette) is a session to see.
         settings.close()
@@ -248,9 +251,15 @@ struct ContentView: View {
 
     /// A row's double-click renames it, as every file list has taught. On the lagoon a single click only moves the camera,
     /// so there a double-click is the way into that session's conversation (spec §1), and Rename stays in the row's menu.
+    ///
+    /// Only the session already shown is renamed. A double-click whose first click moved to the row is someone opening it,
+    /// or clicking twice when the first seemed not to take: it went into renaming, and Return was the only way out but Esc
+    /// (Tyler, 2026-10-29: "sometime when clicking on a convo ... it start editing the name").
     private func doubleClickSession(_ row: SessionRow) {
         if page == .lagoon {
             openConversation(row)
+        } else if let picked = pickedByClick, picked.id == row.id, Date().timeIntervalSince(picked.at) < NSEvent.doubleClickInterval + 0.2 {
+            return
         } else {
             beginRename(row)
         }
@@ -290,10 +299,13 @@ struct ContentView: View {
         renameDraft = row.label
     }
 
+    /// Return, or a click away from the field (`DashboardRow`). A name left as it was, or emptied, is no rename: Return
+    /// sent the same name back, which made it one Tyler chose.
     private func commitRename(_ row: SessionRow) {
         guard renamingSessionID == row.id else { return }
-        let requestedLabel = renameDraft
+        let requestedLabel = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         cancelRename()
+        guard !requestedLabel.isEmpty, requestedLabel != row.label else { return }
         store.renameSession(id: row.id, label: requestedLabel)
     }
 

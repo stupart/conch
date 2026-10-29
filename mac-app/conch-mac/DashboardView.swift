@@ -1094,6 +1094,8 @@ private struct DashboardRow: View {
     @State private var reviewPulseOpacity = 0.0
     @State private var pulseTask: Task<Void, Never>?
     @FocusState private var renameFocused: Bool
+    /// While renaming, a click anywhere but the field ends it (`endsRename`).
+    @State private var clickAway: Any?
 
     private var reviewIdentity: ReviewItem.ID? {
         ReviewItem(row: row)?.id
@@ -1266,6 +1268,14 @@ private struct DashboardRow: View {
         }
     }
 
+    /// A click outside the field being renamed in: anywhere else in the window, or another window. Inside it the field
+    /// editor has the keyboard, and the field around it is its delegate.
+    private static func endsRename(_ event: NSEvent) -> Bool {
+        guard let editor = event.window?.firstResponder as? NSTextView, editor.isFieldEditor else { return true }
+        let field = editor.delegate as? NSView ?? editor
+        return !field.convert(field.bounds, to: nil).contains(event.locationInWindow)
+    }
+
     private var rowContent: some View {
         HStack(alignment: .nameLine, spacing: 8) {
             // Full brand cyan means "your mic is open". The rail was painting it
@@ -1319,6 +1329,17 @@ private struct DashboardRow: View {
                                 DispatchQueue.main.async {
                                     renameFocused = true
                                 }
+                                // Clicking away ends it, as in Finder: a changed name is kept, an unchanged one is no
+                                // rename at all (`commitRename`). Only Return or Esc did, and the field stayed open
+                                // through clicks on other rows. Watched, never taken: the click goes where it was going.
+                                clickAway = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { event in
+                                    if Self.endsRename(event) { DispatchQueue.main.async(execute: onCommitRename) }
+                                    return event
+                                }
+                            }
+                            .onDisappear {
+                                if let clickAway { NSEvent.removeMonitor(clickAway) }
+                                clickAway = nil
                             }
                     } else {
                         // The name is the thing, and it has the line. Tyler (2026-09-28): "we should
