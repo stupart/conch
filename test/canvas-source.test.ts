@@ -247,11 +247,19 @@ describe("Send", () => {
   test("nothing is captured, or the grant asked for, except on an explicit Send with somewhere to send it", () => {
     // The phone's window snapshot is the one other still (window-preview.test.ts): only on the daemon's request, of
     // the app the session built, and only with a grant already given. It never asks for one.
-    expect(filesWith("SCScreenshotManager")).toEqual(["CanvasSend.swift", "WindowPreview.swift"]);
+    expect(filesWith("SCScreenshotManager")).toEqual(["AnnotateHarness.swift", "CanvasSend.swift", "WindowPreview.swift"]);
+    // The annotate harness (scripts/annotate-e2e.ts) photographs conch's own window alone, through the current process's
+    // content, which needs no grant and sees no one else's screen; and only in a conch launched for it.
+    const harness = macSources["AnnotateHarness.swift"]!;
+    expect(harness).toContain("SCShareableContent.currentProcess");
+    expect(harness).toContain("SCContentFilter(desktopIndependentWindow: shared)");
+    expect(harness).toContain('static let running = ProcessInfo.processInfo.environment["CONCH_HARNESS"]?.isEmpty == false');
+    expect(harness).toContain('guard running, let named = ProcessInfo.processInfo.environment["CONCH_HARNESS"], timer == nil else { return }');
+    expect(harness).not.toContain("CGRequestScreenCaptureAccess");
     expect(filesWith("CanvasCapture.still(")).toEqual(["CanvasSend.swift"]);
     // Show is the other capture, on its own explicit press (canvas-show-source.test.ts).
     // And the Terminal tab's picture of one Terminal window, only while its tab is on screen (terminal-mirror-source.test.ts).
-    expect(filesWith("SCShareableContent")).toEqual(["CanvasSend.swift", "CanvasShow.swift", "TerminalMirror.swift", "WindowPreview.swift"]);
+    expect(filesWith("SCShareableContent")).toEqual(["AnnotateHarness.swift", "CanvasSend.swift", "CanvasShow.swift", "TerminalMirror.swift", "WindowPreview.swift"]);
     // Settings' Screen Recording row checks too (Permissions.swift): a check, which neither captures nor asks.
     expect(filesWith("CGPreflightScreenCaptureAccess")).toEqual(["CanvasSend.swift", "Permissions.swift", "TerminalMirror.swift", "WindowPreview.swift"]);
     // The grant is asked for in one place, for a Send and a Show alike (`CanvasCapture.granted`).

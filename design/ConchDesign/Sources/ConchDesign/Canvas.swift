@@ -523,7 +523,7 @@ extension CanvasInk {
     }
 
     /// Bold type in `colour` (the words on its ink, `on`), centred on its cap height in `rect`, in a y-down context.
-    private static func label(_ text: String, centredIn rect: CGRect, size: CGFloat, colour: ConchRGBA, in context: CGContext) {
+    static func label(_ text: String, centredIn rect: CGRect, size: CGFloat, colour: ConchRGBA, in context: CGContext) {
         let font = ConchType.coreText(size: size, bold: true)
         let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [
             NSAttributedString.Key(kCTFontAttributeName as String): font,

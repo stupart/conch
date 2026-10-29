@@ -46,6 +46,10 @@ enum DebugSnapshot {
     /// caller can tell a picture of the session it asked for from one of another.
     @MainActor static var viewing: String?
 
+    /// A second conch launched for a harness (`CONCH_HARNESS`, scripts/annotate-e2e.ts) leaves these files to the conch
+    /// they were written for: they are fixed paths in /tmp, and two apps polling them race for every request.
+    static let answersRequests = ProcessInfo.processInfo.environment["CONCH_HARNESS"] == nil
+
     /// Which window to photograph.
     ///
     /// `key` is what a one-line request has always meant and stays the default.
@@ -60,6 +64,7 @@ enum DebugSnapshot {
     /// Read and clear a pending request to show a session.
     @MainActor
     static func pendingSelection() -> String? {
+        guard answersRequests else { return nil }
         let manager = FileManager.default
         guard manager.fileExists(atPath: selectRequestPath) else { return nil }
         let wanted = (try? String(contentsOfFile: selectRequestPath, encoding: .utf8))?
@@ -72,6 +77,7 @@ enum DebugSnapshot {
     /// Read and clear a pending request to open the capability inspector.
     @MainActor
     static func pendingInspection() -> String? {
+        guard answersRequests else { return nil }
         let manager = FileManager.default
         guard manager.fileExists(atPath: inspectRequestPath) else { return nil }
         let wanted = (try? String(contentsOfFile: inspectRequestPath, encoding: .utf8))?
@@ -158,6 +164,7 @@ enum DebugSnapshot {
     /// Honour a pending request, if there is one. Cheap enough to call per poll.
     @MainActor
     static func serviceRequest() {
+        guard answersRequests else { return }
         let manager = FileManager.default
         guard manager.fileExists(atPath: requestPath) else { return }
 

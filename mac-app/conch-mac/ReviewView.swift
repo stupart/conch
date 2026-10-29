@@ -116,11 +116,17 @@ struct InlineReviewView: View {
     var showsInk = true
 
     @State private var isWebLoading = false
+    /// Tyler's notes on this deliverable, while he annotates it (`DeliverableAnnotator`, docs/annotate.md). Off with the
+    /// ink, for the same reason: a comparison's two sides would annotate in turns.
+    @StateObject private var annotator = DeliverableAnnotator()
+    @EnvironmentObject private var store: StateStore
 
     var body: some View {
         ReviewSurface(
             item: item,
             changed: changed,
+            annotator: annotator,
+            annotates: showsInk,
             // The arrow OUT, not a bigger box. This control used to swap between filling the
             // conch window and sharing it, which meant the deliverable had no way to reach the
             // thing it actually is — a page in a browser, a file in its own app. Tyler: "maybe
@@ -142,6 +148,10 @@ struct InlineReviewView: View {
         )
         // The page or image below says it shows this review, for its marks to find (`AgentInkController`).
         .environment(\.agentInkItem, showsInk ? item : nil)
+        // And registers itself to be annotated.
+        .environment(\.deliverableAnnotator, showsInk ? annotator : nil)
+        .onAppear { annotator.show(item, store: store) }
+        .onChange(of: item) { _, item in annotator.show(item, store: store) }
     }
 
     /// Read from where the pane IS, as the arrow opens.
@@ -153,6 +163,8 @@ struct InlineReviewView: View {
 private struct ReviewSurface: View {
     let item: ReviewItem
     let changed: ConchFileChanges
+    @ObservedObject var annotator: DeliverableAnnotator
+    let annotates: Bool
     let actionSymbol: String
     let actionHelp: String
     let actionAccessibilityLabel: String
@@ -212,6 +224,11 @@ private struct ReviewSurface: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(ConchPalette.surface)
         .overlay(alignment: .topTrailing) { stageControl }
+        // Annotating a picture or a document: the edge round the pane (a page's is under its address line).
+        .overlay { if annotates, annotator.annotating, annotator.kind != .page { AnnotateEdge() } }
+        // The notes waiting to go, and Send, along the pane's foot (`AnnotateTrayHost`).
+        .overlay(alignment: .bottom) { if annotates { AnnotateTrayHost(annotator: annotator) } }
+        .animation(.easeOut(duration: 0.16), value: annotates && (annotator.annotating || !annotator.batch.isEmpty))
     }
 
     /// The stage control, and nothing else.
@@ -244,16 +261,27 @@ private struct ReviewSurface: View {
         HStack(spacing: 6) {
             if !opensFromAddressLine, !controlsOnTrail {
                 ForEach(paneControls) { control in
-                    circleButton(symbol: control.symbol, help: control.help, label: control.label, action: control.action)
+                    circleButton(symbol: control.symbol, help: control.help, label: control.label, isOn: control.isOn, action: control.action)
                 }
             }
         }
         .padding(10)
     }
 
-    /// Compare (only with another version held) and the way out, in that order, so ↗ is always the last.
+    /// Annotate (where what shows takes notes), Compare (only with another version held) and the way out, in that order,
+    /// so ↗ is always the last.
     private var paneControls: [ReviewPaneControl] {
         var controls: [ReviewPaneControl] = []
+        if annotates, annotator.canAnnotate {
+            let on = annotator.annotating
+            controls.append(ReviewPaneControl(
+                symbol: on ? "text.bubble.fill" : "text.bubble",
+                help: on ? "Stop annotating (Esc): your notes stay" : "Annotate: pin notes to what you point at, then send them to \(annotator.route?.label ?? "its session")",
+                label: on ? "Stop annotating" : "Annotate",
+                action: annotator.toggle,
+                isOn: on
+            ))
+        }
         if let onCompare {
             controls.append(ReviewPaneControl(
                 symbol: "rectangle.split.2x1",
@@ -275,14 +303,14 @@ private struct ReviewSurface: View {
         return DeliverableSource(link: link) == .web
     }
 
-    private func circleButton(symbol: String, help: String, label: String, action: @escaping () -> Void) -> some View {
+    private func circleButton(symbol: String, help: String, label: String, isOn: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(ConchPalette.textDim)
+                .foregroundStyle(isOn ? CanvasInk.onYou.color : ConchPalette.textDim)
                 .frame(width: 28, height: 28)
                 .background(
-                    Circle().fill(ConchPalette.raised.opacity(0.92))
+                    Circle().fill(isOn ? CanvasInk.you.color : ConchPalette.raised.opacity(0.92))
                 )
                 .overlay(
                     Circle().strokeBorder(ConchPalette.divider, lineWidth: 0.5)
@@ -304,7 +332,9 @@ struct ReviewPaneControl: Identifiable {
     let action: () -> Void
     /// Compare: versions of the filed deliverable, so it has nothing to say about an Atlas page a link led to.
     var comparesVersions = false
-    var id: String { symbol }
+    /// A mode it turns on, and it is on (Annotate): drawn in Tyler's ink.
+    var isOn = false
+    var id: String { label }
 }
 
 /// The session's working folder: the tree on the left, the file you picked on the right.
@@ -581,6 +611,15 @@ private struct ReviewContent: View {
     /// file conch can't preview never does, so the control is never drawn there. One per file shown: the pane is keyed
     /// on it, so the next file opens fitted.
     @StateObject private var zoom = ZoomTarget()
+    /// The pane's annotator, which a page, a picture or a document here registers with and is annotated through
+    /// (`DeliverableAnnotator`); nil in the Files tab.
+    @Environment(\.deliverableAnnotator) private var annotator
+
+    /// Tyler's notes over what is drawn here, in its own points (`AnnotateLayer`).
+    @ViewBuilder
+    private func notes(_ kind: DeliverableAnnotator.Kind) -> some View {
+        if let annotator { AnnotateLayer(annotator: annotator, kind: kind) }
+    }
 
     var body: some View {
         content.overlay(alignment: .bottom) { LinkFailureLine(message: $linkFailure) }
@@ -614,6 +653,7 @@ private struct ReviewContent: View {
         switch DeliverableSource(link: link) {
         case let .image(url):
             DeliverableImageView(url: url, onFailure: { loadFailed(url, $0) })
+                .overlay { notes(.picture) }
                 .padding(18)
                 .background(ConchPalette.surface)
                 // In the PANE's corner, outside the picture's 18 point margin: 10 in, as the corner buttons above it.
@@ -669,6 +709,7 @@ private struct ReviewContent: View {
             }
                 .onChange(of: atlasTrail.isEmpty) { _, empty in onTrail(!empty) }
                 .onDisappear { onTrail(false) }
+                .overlay { notes(.document) }
                 .background(ConchPalette.surface)
                 .overlay(alignment: .bottomTrailing) { ZoomOverlay(target: zoom) }
                 .onAppear {
@@ -676,6 +717,7 @@ private struct ReviewContent: View {
                 }
         case let .text(url):
             DeliverableDocumentView(url: url, renderMarkdown: false, onFailure: { loadFailed(url, $0) })
+                .overlay { notes(.document) }
                 .background(ConchPalette.surface)
                 .overlay(alignment: .bottomTrailing) { ZoomOverlay(target: zoom) }
                 .onAppear {
@@ -807,6 +849,7 @@ private struct ReviewContent: View {
                         }
                     }
                 )
+                .overlay { notes(.page) }
                 // The field follows the page: a redirect, or a link followed inside it, moves
                 // where you are without anyone typing.
                 .onChange(of: liveLink) { _, here in
@@ -881,9 +924,9 @@ private struct ReviewContent: View {
         Button(action: control.action) {
             Image(systemName: control.symbol)
                 .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(ConchPalette.textDim)
+                .foregroundStyle(control.isOn ? CanvasInk.onYou.color : ConchPalette.textDim)
                 .frame(width: 22, height: 22)
-                .background(Circle().fill(ConchPalette.surface))
+                .background(Circle().fill(control.isOn ? CanvasInk.you.color : ConchPalette.surface))
                 .overlay(Circle().strokeBorder(ConchPalette.divider, lineWidth: 0.5))
                 .contentShape(Circle())
         }
@@ -1602,6 +1645,7 @@ private struct DeliverableDocumentView: NSViewRepresentable {
         var loadedURL: URL?
         var onOpenLink: (String) -> Void = { _ in }
         var onOpenAtlas: (AtlasFollow) -> Void = { _ in }
+        weak var annotator: DeliverableAnnotator?
 
         /// Three kinds of link, each to where it means. A heading in this document (`#status`) is scrolled to, here: it
         /// used to reach the door as an empty path and open the document's folder in Finder. An Atlas page goes to the
@@ -1643,7 +1687,8 @@ private struct DeliverableDocumentView: NSViewRepresentable {
             zoom.report(scrollView.readout)
         }
 
-        let textView = NSTextView()
+        // Says when a press has ended, for words selected while annotating to become a note (`DeliverableAnnotator`).
+        let textView = AnnotatingTextView()
         // TextKit 1, up front: `NSTextView()` starts on TextKit 2, which has no `NSTextTable`, and a rendered
         // document's tables are `NSTextTable`s (TranscriptFallback.swift says the same, for the same reason).
         _ = textView.layoutManager
@@ -1656,7 +1701,16 @@ private struct DeliverableDocumentView: NSViewRepresentable {
         textView.autoresizingMask = [.width]
         textView.textContainer?.widthTracksTextView = true
         scrollView.documentView = textView
+        if let annotator = context.environment.deliverableAnnotator {
+            context.coordinator.annotator = annotator
+            annotator.attachDocument(host: scrollView, text: textView, path: url.path)
+            textView.onPressEnded = { [weak annotator] in annotator?.documentSelected() }
+        }
         return scrollView
+    }
+
+    static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
+        coordinator.annotator?.detach(scrollView)
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
@@ -1664,6 +1718,7 @@ private struct DeliverableDocumentView: NSViewRepresentable {
         context.coordinator.onOpenAtlas = onOpenAtlas
         guard context.coordinator.loadedURL != url,
               let textView = scrollView.documentView as? NSTextView else { return }
+        let followed = context.coordinator.loadedURL != nil
         context.coordinator.loadedURL = url
 
         let content: String
@@ -1707,6 +1762,10 @@ private struct DeliverableDocumentView: NSViewRepresentable {
             }
         } else if let anchor {
             DispatchQueue.main.async { textView.scrollToMarkdownAnchor(anchor) }
+        }
+        // The same view given an Atlas page a link led to: notes made on it are that page's, not the filed document's.
+        if followed, let annotator = context.coordinator.annotator {
+            annotator.attachDocument(host: scrollView, text: textView, path: url.path)
         }
     }
 
@@ -1760,6 +1819,7 @@ private struct DeliverableImageView: NSViewRepresentable {
 
     final class Coordinator {
         var loadedURL: URL?
+        weak var annotator: DeliverableAnnotator?
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -1792,13 +1852,21 @@ private struct DeliverableImageView: NSViewRepresentable {
         var onDoubleClick: (NSPoint) -> Void = { _ in }
         /// Whether a drag moves the picture: zoomed in, with more of it than shows.
         var pans: () -> Bool = { false }
+        /// Annotating (`DeliverableAnnotator`): a press is a box or a spot, never a zoom or a pan.
+        var annotating: () -> Bool = { false }
+        var onAnnotate: (NSEvent.EventType, NSPoint) -> Void = { _, _ in }
         private var dragFrom: NSPoint?
+        private var annotatingPress = false
 
         override func hitTest(_ point: NSPoint) -> NSView? {
             super.hitTest(point) == nil ? nil : self
         }
 
         override func mouseDown(with event: NSEvent) {
+            if annotating() {
+                annotatingPress = true
+                return onAnnotate(.leftMouseDown, convert(event.locationInWindow, from: nil))
+            }
             if event.clickCount == 2 {
                 onDoubleClick(convert(event.locationInWindow, from: nil))
                 return
@@ -1809,6 +1877,7 @@ private struct DeliverableImageView: NSViewRepresentable {
         }
 
         override func mouseDragged(with event: NSEvent) {
+            if annotatingPress { return onAnnotate(.leftMouseDragged, convert(event.locationInWindow, from: nil)) }
             guard let from = dragFrom, let clip = superview as? NSClipView else { return super.mouseDragged(with: event) }
             let to = event.locationInWindow
             dragFrom = to
@@ -1826,6 +1895,10 @@ private struct DeliverableImageView: NSViewRepresentable {
         }
 
         override func mouseUp(with event: NSEvent) {
+            if annotatingPress {
+                annotatingPress = false
+                return onAnnotate(.leftMouseUp, convert(event.locationInWindow, from: nil))
+            }
             guard dragFrom != nil else { return super.mouseUp(with: event) }
             dragFrom = nil
             NSCursor.pop()
@@ -1852,7 +1925,7 @@ private struct DeliverableImageView: NSViewRepresentable {
             guard dragFrom == nil else { return }
             let location = event?.locationInWindow ?? window?.mouseLocationOutsideOfEventStream ?? .zero
             let onPicture = window?.contentView?.hitTest(location) === self
-            (pans() && onPicture ? NSCursor.openHand : NSCursor.arrow).set()
+            (annotating() && onPicture ? NSCursor.crosshair : pans() && onPicture ? NSCursor.openHand : NSCursor.arrow).set()
         }
     }
 
@@ -1885,6 +1958,9 @@ private struct DeliverableImageView: NSViewRepresentable {
         var onZoom: (ZoomReadout) -> Void = { _ in }
         /// Pinched or double-clicked: the one the keys zoom next.
         var onTouch: () -> Void = {}
+        /// Annotating: the picture's presses go to the annotator, in the picture's own points (`PictureCanvas`).
+        var annotating: () -> Bool = { false }
+        var onAnnotate: (NSEvent.EventType, NSPoint) -> Void = { _, _ in }
         /// Zoomed since the last decode was asked for: the next is made for exactly the width it is drawn at, not kept
         /// from another scale because it is near enough. A picture zoomed back out to fit is drawn from a decode made
         /// for fit, never one made for 75% and shrunk, which Core Animation does without mipmaps.
@@ -1906,6 +1982,11 @@ private struct DeliverableImageView: NSViewRepresentable {
             container.onDoubleClick = { [weak self] point in
                 self?.onTouch()
                 self?.zoom(.toggle, around: point)
+            }
+            container.annotating = { [weak self] in self?.annotating() ?? false }
+            container.onAnnotate = { [weak self] phase, point in
+                guard let self else { return }
+                self.onAnnotate(phase, self.imageView.convert(point, from: self.container))
             }
             container.pans = { [weak self] in
                 guard let self, abs(self.magnification - 1) > 0.001 else { return false }
@@ -2124,6 +2205,13 @@ private struct DeliverableImageView: NSViewRepresentable {
     func makeNSView(context: Context) -> FitWidthImageScrollView {
         let view = FitWidthImageScrollView()
         if let item = context.environment.agentInkItem { AgentInkController.shared.appeared(view.imageView, image: url.path, showing: item) }
+        // Annotated as a picture: a box dragged, or a spot clicked, in its own points.
+        if let annotator = context.environment.deliverableAnnotator {
+            context.coordinator.annotator = annotator
+            annotator.attachPicture(host: view, picture: view.imageView, path: url.path)
+            view.annotating = { [weak annotator] in annotator?.annotating ?? false }
+            view.onAnnotate = { [weak annotator] phase, point in annotator?.pictureDrag(phase, at: point) }
+        }
         if let zoom = context.environment.conchZoomTarget {
             zoom.attach(view) { [weak view] action in view?.zoom(action) }
             view.onZoom = { [weak zoom] readout in zoom?.report(readout) }
@@ -2134,6 +2222,7 @@ private struct DeliverableImageView: NSViewRepresentable {
 
     static func dismantleNSView(_ view: FitWidthImageScrollView, coordinator: Coordinator) {
         AgentInkController.shared.gone(view.imageView)
+        coordinator.annotator?.detach(view)
     }
 
     func updateNSView(_ view: FitWidthImageScrollView, context: Context) {

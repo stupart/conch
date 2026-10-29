@@ -288,6 +288,17 @@ https://brew.sh rather than trying to install Homebrew yourself.
   sits above the fold now", marks: [{id: "cta", kind: "box", frame: {selector:
   ".hero .cta"}, label: "Moved up from the footer"}]}`.
 
+  **Notes the user pinned on your result.** A message with an `[annotate]`
+  line (often after a picture's path) holds the user's notes on something you
+  published, pinned in conch's pane. Each is numbered and names what it is on
+  in these same frames: `{selector}` (with the element's tag and words),
+  `{quote}`, or `{image}` with a `rect` or `at` in fractions. Then come their
+  words and a picture of it, and `notes.json` has the lot. Act on each note;
+  the frame is the exact element, words or region they meant. A note marked
+  "not on the page when sent" was pinned before the page changed, and its
+  picture shows what was there. To point at what you changed, publish the
+  next version with marks on the same frames.
+
   `session` is optional and defaults to you. A session may only surface its own
   work; naming a different session is refused, because the dashboard attributes
   the artifact to whoever is named and putting words in a sibling's mouth is
