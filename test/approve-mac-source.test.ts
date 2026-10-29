@@ -167,7 +167,8 @@ describe("Open on a page sits at the right end of its address line", () => {
     expect(surface).toContain("lineControls: paneControls");
     expect(surface).toContain(".overlay(alignment: .topTrailing) { stageControl }");
     const stage = between(surface, "private var stageControl: some View {", "private var paneControls: [ReviewPaneControl] {");
-    expect(stage).toContain("if !opensFromAddressLine {");
+    // So do an Atlas page's a wiki link led to (`controlsOnTrail`, atlas-wiki-links-source.test.ts).
+    expect(stage).toContain("if !opensFromAddressLine, !controlsOnTrail {");
     expect(surface).toContain("return DeliverableSource(link: link) == .web");
     // ↗ last: Compare (when there is another version) first.
     const controls = between(surface, "private var paneControls: [ReviewPaneControl] {", "private var opensFromAddressLine: Bool {");

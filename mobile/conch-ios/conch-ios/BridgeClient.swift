@@ -861,9 +861,17 @@ final class BridgeClient: ObservableObject {
         case file(String)
         /// Everything else goes to iOS's own door.
         case open
+        /// An Atlas page, by path: a wiki link in a page or a reply (`AtlasLink`, `atlas:<path>`). conch keeps its copies
+        /// of Atlas pages on the Mac, and iOS has nothing to open the address with.
+        case atlas(String)
 
         static func decide(_ url: URL) -> LinkRoute {
-            guard url.scheme != nil else { return .invalid }
+            guard let scheme = url.scheme else { return .invalid }
+            if scheme.lowercased() == "atlas" {
+                let address = String(url.absoluteString.dropFirst(scheme.count + 1))
+                let page = (address.removingPercentEncoding ?? address).split(separator: "#", maxSplits: 1).first.map(String.init) ?? ""
+                return .atlas(page.replacingOccurrences(of: #"\.(md|markdown)$"#, with: "", options: [.regularExpression, .caseInsensitive]))
+            }
             return url.isFileURL ? .file(url.path) : .open
         }
     }
@@ -897,6 +905,8 @@ final class BridgeClient: ObservableObject {
             UIApplication.shared.open(url) { opened in
                 if !opened { fail("iPhone couldn't open \(url.absoluteString)") }
             }
+        case let .atlas(page):
+            fail("\(page) is an Atlas page. conch keeps its copies of those on your Mac: open it there.")
         }
     }
 

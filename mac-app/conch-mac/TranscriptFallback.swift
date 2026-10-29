@@ -223,6 +223,11 @@ struct ConversationTextView: NSViewRepresentable {
         var onOpenLink: (String) -> Void = { _ in }
 
         func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+            // A heading in this reply is scrolled to here; the door has nothing to open for one.
+            if let anchor = MarkdownAnchor.target(of: link) {
+                textView.scrollToMarkdownAnchor(anchor)
+                return true
+            }
             onOpenLink(LinkTarget.text(of: link))
             return true
         }

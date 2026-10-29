@@ -210,7 +210,8 @@ describe("a Figma file opens in Figma", () => {
   const door = store.slice(store.indexOf("func openLink("), store.indexOf("private var errorStateSnapshot"));
 
   test("the one door hands a Figma file to the app when it is installed, before anything else reads the url", () => {
-    expect(door).toContain("var url = LinkTarget.url(for: link, cwd: cwd)");
+    // An Atlas page's link is its saved copy (atlas-wiki-links-source.test.ts); everything else resolves as before.
+    expect(door).toContain("var url = atlasPage?.copy() ?? LinkTarget.url(for: link, cwd: cwd)");
     expect(door).toMatch(/if let app = FigmaLink\.appURL\(for: url\), NSWorkspace\.shared\.urlForApplication\(toOpen: app\) != nil \{\s*url = app\s*\}/);
     expect(door.indexOf("FigmaLink.appURL")).toBeLessThan(door.indexOf("let target ="));
   });

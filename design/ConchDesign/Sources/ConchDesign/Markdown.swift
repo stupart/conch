@@ -63,6 +63,9 @@ enum MarkdownDocument {
         var code: [String] = []
         var table: [[String]] = []
         var inCode = false
+        /// Inside an HTML comment that began on a line of its own: a note to whoever edits the source (Atlas pages keep
+        /// "<!-- Manual notes section; … -->" under their headings), which no reader is meant to see.
+        var inComment = false
 
         func flushParagraph() {
             // Newlines stay: 14 of 78 live replies (2026-09-20) put "Task name: …" and "Sender: …" on consecutive
@@ -93,6 +96,12 @@ enum MarkdownDocument {
                 continue
             }
             if inCode { code.append(line); continue }
+
+            if inComment || trimmed.hasPrefix("<!--") {
+                flushAll()
+                inComment = !trimmed.contains("-->")
+                continue
+            }
 
             if trimmed.isEmpty { flushAll(); continue }
 
@@ -203,7 +212,11 @@ enum MarkdownDocument {
     /// one was to click on the off chance ("it's just a ui problem really, to show me with an underline on hover that i
     /// can click on it"). A hover underline is not honest here: SwiftUI's `Text` draws an AttributedString as one view
     /// and cannot hit-test one run inside it. Always-underlined is the same signal, before the pointer arrives.
+    ///
+    /// An Atlas page's wiki links (`[[projects/index|Projects]]`) are links too: written as Markdown links to their pages
+    /// first (`AtlasLink.linkingWikiLinks`), so they read as their labels and are underlined like any other.
     static func inline(_ text: String) -> AttributedString {
+        let text = AtlasLink.linkingWikiLinks(text)
         var parsed = (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
             ?? AttributedString(text)
         for run in parsed.runs where run.link != nil { parsed[run.range].underlineStyle = .single }
@@ -655,6 +668,10 @@ final class MarkdownPieceCache: @unchecked Sendable {
 /// `base` is the body — font, colour and paragraph style — and every block is derived from it, so a caller that dims
 /// half the text by passing a different base gets the same layout in both halves.
 public enum MarkdownTypesetter {
+    /// On each heading's text: the anchor a link to it names (`MarkdownAnchor`), so a pane can find the heading a
+    /// `[Status](#status)` link means and scroll to it.
+    public static let anchorKey = NSAttributedString.Key("conch.markdownAnchor")
+
     public static func attributedString(_ text: String, base: [NSAttributedString.Key: Any]) -> NSAttributedString {
         let blocks = MarkdownDocument.blocks(text)
         guard !blocks.isEmpty else { return NSAttributedString(string: text, attributes: base) }
@@ -714,11 +731,20 @@ public enum MarkdownTypesetter {
             return block
         }
 
+        /// How many headings have had each anchor so far: the second "Notes" is `notes-1`, as GitHub numbers them.
+        var anchors: [String: Int] = [:]
         for block in blocks {
             switch block {
             case let .heading(level, text):
                 let scaled = styled(font, traits: .bold, size: size * MarkdownDocument.headingScale(level))
+                let start = output.length
                 append(text, font: scaled, style: paragraph(spacingBefore: level <= 2 ? size * 0.6 : size * 0.3))
+                // From the words as they read, emphasis and links taken out, as a reader would type them after the #.
+                let words = NSAttributedString(MarkdownDocument.inline(text)).string
+                let slug = MarkdownAnchor.slug(words)
+                let seen = anchors[slug, default: 0]
+                anchors[slug] = seen + 1
+                output.addAttribute(anchorKey, value: seen == 0 ? slug : "\(slug)-\(seen)", range: NSRange(location: start, length: output.length - start))
             case let .paragraph(text):
                 append(text, font: font, style: paragraph())
             case let .bullet(depth, text), let .ordered(depth, _, text):
@@ -809,6 +835,8 @@ public enum MarkdownSoftBreaks {
         /// Whether the last line written is one a following plain line continues: a paragraph's or a list item's.
         var continuable = false
         var inCode = false
+        /// An HTML comment's lines, which `MarkdownDocument.blocks` drops whole: none is joined to prose, or prose to one.
+        var inComment = false
         var lines = text.replacingOccurrences(of: "\r\n", with: "\n").split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         // Frontmatter is key: value lines, each its own; it passes through as it is.
         if lines.first == "---", let close = lines.dropFirst().firstIndex(of: "---") {
@@ -819,6 +847,12 @@ public enum MarkdownSoftBreaks {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
                 inCode.toggle()
+                output.append(line)
+                continuable = false
+                continue
+            }
+            if !inCode, inComment || trimmed.hasPrefix("<!--") {
+                inComment = !trimmed.contains("-->")
                 output.append(line)
                 continuable = false
                 continue

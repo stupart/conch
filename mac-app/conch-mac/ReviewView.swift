@@ -160,6 +160,9 @@ private struct ReviewSurface: View {
     let onCompare: (() -> Void)?
     @Binding var isWebLoading: Bool
     @Binding var liveAddress: String?
+    /// An Atlas page a wiki link led to is up, with its line, which carries the controls as a page's address line does
+    /// (`ReviewContent`'s `onTrail`).
+    @State private var controlsOnTrail = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -186,7 +189,8 @@ private struct ReviewSurface: View {
                         liveAddress: $liveAddress,
                         signInBanner: PageAccess.macBanner(item.access),
                         // A page's way out is on its address line, at the right end, as the lagoon's glass has it.
-                        lineControls: paneControls
+                        lineControls: paneControls,
+                        onTrail: { controlsOnTrail = $0 }
                     )
                     .id(item.id)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -238,7 +242,7 @@ private struct ReviewSurface: View {
     /// tooltip and VoiceOver label either way, from the one list (`paneControls`).
     private var stageControl: some View {
         HStack(spacing: 6) {
-            if !opensFromAddressLine {
+            if !opensFromAddressLine, !controlsOnTrail {
                 ForEach(paneControls) { control in
                     circleButton(symbol: control.symbol, help: control.help, label: control.label, action: control.action)
                 }
@@ -255,7 +259,8 @@ private struct ReviewSurface: View {
                 symbol: "rectangle.split.2x1",
                 help: "Compare with the version before",
                 label: "Compare with another version",
-                action: onCompare
+                action: onCompare,
+                comparesVersions: true
             ))
         }
         if let action {
@@ -297,6 +302,8 @@ struct ReviewPaneControl: Identifiable {
     let help: String
     let label: String
     let action: () -> Void
+    /// Compare: versions of the filed deliverable, so it has nothing to say about an Atlas page a link led to.
+    var comparesVersions = false
     var id: String { symbol }
 }
 
@@ -543,6 +550,9 @@ private struct ReviewContent: View {
     /// A page's Compare and ↗, at the right end of its address line (`ReviewSurface.paneControls`). None for a file
     /// picked in the Files tab, whose pane has no way out of its own.
     var lineControls: [ReviewPaneControl] = []
+    /// Whether an Atlas page a wiki link led to is up: its line carries `lineControls`, so the corner's circles go, as
+    /// they do over a page, rather than sit on the line's right end.
+    var onTrail: (Bool) -> Void = { _ in }
     /// The banner was closed, for as long as this deliverable is shown.
     @State private var signInBannerClosed = false
     @State private var navigationFailure: DeliverableNavigationFailure?
@@ -553,6 +563,14 @@ private struct ReviewContent: View {
     @State private var knocked = false
     /// Its session has been asked to start the server again, from here.
     @State private var askedToStart = false
+    /// The Atlas pages wiki links in a markdown deliverable led to, in the order they were followed; the last is shown in
+    /// the filed document's place, and empty shows the filed document (`AtlasStop`). The pane is keyed on the deliverable,
+    /// so the next one opens on itself.
+    @State private var atlasTrail: [AtlasStop] = []
+    /// The pages its session has been asked for, from here (`askForAtlasPage`).
+    @State private var askedForPages: Set<String> = []
+    /// Where to put the page Back returned to: as far down it as it was when the link was followed.
+    @State private var returnOffset: CGFloat?
     @EnvironmentObject private var store: StateStore
     /// A link or file this pane could not open, in the OS's own words with
     /// the resolved target, shown here rather than as a Finder alert (A13).
@@ -616,10 +634,41 @@ private struct ReviewContent: View {
                 .onAppear {
                     isWebLoading = false
                 }
-        case let .markdown(url):
-            DeliverableDocumentView(url: url, renderMarkdown: true, onFailure: { loadFailed(url, $0) }) { link in
-                open(link, cwd: url.deletingLastPathComponent().path)
+        case let .markdown(filed):
+            // The filed document, or the Atlas page a wiki link in it led to: conch's saved copy of it, or, with none
+            // saved, the page saying so.
+            let url = atlasTrail.last?.copy ?? filed
+            VStack(spacing: 0) {
+                if let stop = atlasTrail.last {
+                    AtlasTrailLine(page: stop.page, back: stop.back, onBack: atlasBack) {
+                        // The way out, to the copy shown; none on a page with no copy, where it could only open the
+                        // filed document under a line naming another page. Compare is the filed deliverable's.
+                        HStack(spacing: 6) {
+                            ForEach(stop.copy == nil ? [] : lineControls.filter { !$0.comparesVersions }) { control in
+                                lineButton(control)
+                            }
+                        }
+                    }
+                }
+                if let stop = atlasTrail.last, stop.copy == nil {
+                    AtlasPageUnsavedView(
+                        title: stop.words ?? stop.page.name.split(separator: "/").last.map(String.init) ?? stop.page.name,
+                        page: stop.page.name,
+                        cameFrom: stop.back,
+                        session: store.state?.row(rowID)?.label,
+                        asked: askedForPages.contains(stop.page.name),
+                        onAsk: { askForAtlasPage(stop.page, from: stop.from) }
+                    )
+                } else {
+                    DeliverableDocumentView(url: url, renderMarkdown: true, anchor: atlasTrail.last?.page.heading, offset: returnOffset, onFailure: { loadFailed(url, $0) }) { link in
+                        open(link, cwd: url.deletingLastPathComponent().path)
+                    } onOpenAtlas: { followed in
+                        followAtlas(followed, from: url)
+                    }
+                }
             }
+                .onChange(of: atlasTrail.isEmpty) { _, empty in onTrail(!empty) }
+                .onDisappear { onTrail(false) }
                 .background(ConchPalette.surface)
                 .overlay(alignment: .bottomTrailing) { ZoomOverlay(target: zoom) }
                 .onAppear {
@@ -869,6 +918,191 @@ private struct ReviewContent: View {
 
     static func startServerPrompt(_ page: URL) -> String {
         "The page you filed for review, \(page.absoluteString), isn't loading: nothing is listening on \(LocalServer.name(of: page)). Please start its server again and tell me when it's up."
+    }
+
+    /// A wiki link followed: the page, from conch's copy when one is saved (`AtlasLink.Page.copy`), in this one's place.
+    /// The way out (↗, ⌘3) follows it to the copy shown, as it follows a page the web view moved to; with no copy it
+    /// opens the filed document.
+    private func followAtlas(_ followed: AtlasFollow, from document: URL) {
+        linkFailure = nil
+        returnOffset = nil
+        let page = followed.page
+        let copy = page.copy()
+        let saved = FileManager.default.fileExists(atPath: copy.path)
+        let from = AtlasLink.path(ofCopy: document).map { AtlasLink.Page(path: $0).name }
+        // Back is named for the page it returns to, by its title where it has one ("AI Benchmarks and Evals"), read once,
+        // here, rather than from the disk on every draw.
+        let back = Self.markdownTitle(of: document) ?? from ?? document.deletingPathExtension().lastPathComponent
+        atlasTrail.append(AtlasStop(page: page, copy: saved ? copy : nil, words: followed.words, back: back, from: from, fromOffset: followed.offset))
+        liveAddress = saved ? copy.path : nil
+    }
+
+    /// A document's title: its first top-level heading, read from the first 64 KB.
+    private static func markdownTitle(of document: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: document) else { return nil }
+        defer { try? handle.close() }
+        let head = (try? handle.read(upToCount: 64 * 1024)).map { String(decoding: $0, as: UTF8.self) } ?? ""
+        return AtlasLink.title(of: head)
+    }
+
+    /// Back one page: the one the link was followed from, the filed document at the end, scrolled to where it was.
+    private func atlasBack() {
+        guard let left = atlasTrail.popLast() else { return }
+        returnOffset = left.fromOffset
+        liveAddress = atlasTrail.last?.copy?.path
+    }
+
+    /// The one thing that brings an unsaved page: the session that showed this one, asked to read it with its own Atlas
+    /// tools and show it (`atlas_show`), which files it as its next deliverable. Tyler presses it; conch never asks by
+    /// itself. Through the inject path every reply takes, as `askToStart` is.
+    private func askForAtlasPage(_ page: AtlasLink.Page, from source: String?) {
+        guard let row = store.state?.row(rowID) else { return }
+        askedForPages.insert(page.name)
+        let delivery = store.send(.inject(sessionId: row.id, label: row.label, text: Self.atlasPagePrompt(page, from: source)))
+        Task { if !(await delivery.value) { askedForPages.remove(page.name) } }
+    }
+
+    static func atlasPagePrompt(_ page: AtlasLink.Page, from source: String?) -> String {
+        let from = source.map { " in \(AtlasLink.Page(path: $0).name)" } ?? ""
+        return "I followed a link to the Atlas page \(page.name)\(from), and conch has no copy of it. Please read it with your Atlas tools and show it to me with atlas_show."
+    }
+}
+
+/// One wiki link followed in a markdown deliverable: the Atlas page, conch's copy of it (nil when none is saved), the link's
+/// own words, what Back from it is called, the Atlas path of the page it was followed from when that was a copy too, and
+/// how far down that page was scrolled.
+private struct AtlasStop: Equatable {
+    let page: AtlasLink.Page
+    let copy: URL?
+    let words: String?
+    let back: String
+    let from: String?
+    let fromOffset: CGFloat
+}
+
+/// A wiki link clicked in a rendered document: its page, its words as the document shows them, and how far down the
+/// document was scrolled, for Back to return to.
+struct AtlasFollow {
+    let page: AtlasLink.Page
+    let words: String?
+    let offset: CGFloat
+}
+
+/// Over an Atlas page a wiki link led to: the way back (⌘[), named for where it goes, which page this is, and the pane's
+/// own controls at the right end, as a page's address line has them. Only once a link has been followed: the filed
+/// document needs none of it, and a line over every document would be the bar Tyler had taken off the pane ("adds
+/// clutter").
+private struct AtlasTrailLine<Controls: View>: View {
+    let page: AtlasLink.Page
+    let back: String
+    let onBack: () -> Void
+    @ViewBuilder let controls: Controls
+    @State private var hovering = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Button(action: onBack) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text(back)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    .foregroundStyle(hovering ? ConchPalette.textPrimary : ConchPalette.textDim)
+                    // The whole height of the line takes the click, not only the words' 14 points of it.
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.vertical, -6)
+                .onHover { hovering = $0 }
+                .keyboardShortcut("[", modifiers: .command)
+                .help("Back to \(back) (⌘[)")
+                .accessibilityLabel("Back to \(back)")
+                // Back is the line's point: it keeps its words, and the path gives way first.
+                .layoutPriority(1)
+                Spacer(minLength: 0)
+                // "Atlas ·" always shows; a long path gives up its start, so its own name stays.
+                HStack(spacing: 0) {
+                    Text("Atlas · ")
+                        .fixedSize()
+                    Text(page.name)
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                }
+                .foregroundStyle(ConchPalette.textFaint)
+                .textSelection(.enabled)
+                controls
+            }
+            .font(ConchTypography.font(size: 11))
+            .foregroundStyle(ConchPalette.textDim)
+            // Back's words start where the document's do (its text view's 24 pt inset and 5 pt of line padding), the
+            // chevron hanging left of them; the right end matches a page's address line.
+            .padding(.leading, 18)
+            .padding(.trailing, 14)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(ConchPalette.raised)
+
+            Rectangle()
+                .fill(ConchPalette.divider)
+                .frame(height: 1)
+        }
+    }
+}
+
+/// A wiki link to an Atlas page conch has no copy of, said plainly in place of a dead click. conch can't read Atlas
+/// itself (`AtlasLink`): the session that showed this page can, so the pane offers to ask it. With no session to ask,
+/// it says who can.
+private struct AtlasPageUnsavedView: View {
+    /// The page as the link named it ("AI Benchmark Index Map — 2026-10-28"), else its path's last part: the line above
+    /// already says its whole path.
+    let title: String
+    let page: String
+    /// The page the link was in, by the name Back has for it.
+    let cameFrom: String
+    /// The session that filed the page this link was in, by name; nil when it is no longer there to ask.
+    let session: String?
+    let asked: Bool
+    let onAsk: () -> Void
+
+    private var detail: String {
+        guard let session else {
+            return "conch can\u{2019}t read Atlas itself, and the session that showed you \(cameFrom) isn\u{2019}t running. Any session with Atlas can save this page: ask it to show you \(page)."
+        }
+        return asked
+            ? "Asked \(session). It comes in as a new deliverable once it\u{2019}s saved."
+            : "conch can\u{2019}t read Atlas itself. \(session) showed you \(cameFrom), and can save this page with its Atlas tools."
+    }
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "doc.text.magnifyingglass")
+                .font(.system(size: 22, weight: .regular))
+                .foregroundStyle(ConchPalette.textDim)
+            Text("\(title) isn\u{2019}t saved in conch yet")
+                .font(ConchTypography.font(size: 14, weight: .medium))
+                .foregroundStyle(ConchPalette.textPrimary)
+                .multilineTextAlignment(.center)
+                .textSelection(.enabled)
+            Text(detail)
+                .font(ConchTypography.font(size: 12))
+                .foregroundStyle(ConchPalette.textDim)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            if let session {
+                Button("Ask \(session) for it", action: onAsk)
+                    .disabled(asked)
+                    .padding(.top, 4)
+            }
+        }
+        .frame(maxWidth: 460)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(24)
+        .background(ConchPalette.surface)
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -1348,11 +1582,17 @@ private struct DeliverablePDFView: NSViewRepresentable {
 private struct DeliverableDocumentView: NSViewRepresentable {
     let url: URL
     let renderMarkdown: Bool
+    /// The heading to open on, from a wiki link that named one (`[[page#status]]`); the top when nil.
+    var anchor: String?
+    /// How far down to open instead, when Back returned to this document: where it was when the link was followed.
+    var offset: CGFloat?
     /// Why the file could not be read, in macOS's words (A13).
     let onFailure: (Error) -> Void
     /// A link inside the rendered document, clicked. NSTextView's own fallback
     /// is a silent `NSWorkspace.open` — exactly the dead click A13 is about.
     var onOpenLink: (String) -> Void = { _ in }
+    /// A wiki link to another Atlas page, clicked (`AtlasLink`): the pane shows that page in this one's place.
+    var onOpenAtlas: (AtlasFollow) -> Void = { _ in }
 
     /// Deliverables are files an agent just produced, but an unbounded read is
     /// still an unbounded read. 2MB of text is far past what a review is for.
@@ -1361,8 +1601,29 @@ private struct DeliverableDocumentView: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         var loadedURL: URL?
         var onOpenLink: (String) -> Void = { _ in }
+        var onOpenAtlas: (AtlasFollow) -> Void = { _ in }
 
+        /// Three kinds of link, each to where it means. A heading in this document (`#status`) is scrolled to, here: it
+        /// used to reach the door as an empty path and open the document's folder in Finder. An Atlas page goes to the
+        /// pane, unless it is this one, when only its heading is. Everything else, a web page or a file beside this one,
+        /// goes through the door as it always did.
         func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+            if let anchor = MarkdownAnchor.target(of: link) {
+                textView.scrollToMarkdownAnchor(anchor)
+                return true
+            }
+            if let page = AtlasLink.page(of: LinkTarget.text(of: link)) {
+                if page.copy().standardizedFileURL == loadedURL?.standardizedFileURL {
+                    if let heading = page.heading { textView.scrollToMarkdownAnchor(heading) }
+                } else {
+                    // The link's own words, to name the page by, and where this document was, for Back.
+                    var words = NSRange()
+                    _ = textView.textStorage?.attribute(.link, at: charIndex, effectiveRange: &words)
+                    let said = (textView.string as NSString).substring(with: words).trimmingCharacters(in: .whitespacesAndNewlines)
+                    onOpenAtlas(AtlasFollow(page: page, words: said.isEmpty ? nil : said, offset: textView.enclosingScrollView?.contentView.bounds.minY ?? 0))
+                }
+                return true
+            }
             onOpenLink(LinkTarget.text(of: link))
             return true
         }
@@ -1400,6 +1661,7 @@ private struct DeliverableDocumentView: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.onOpenLink = onOpenLink
+        context.coordinator.onOpenAtlas = onOpenAtlas
         guard context.coordinator.loadedURL != url,
               let textView = scrollView.documentView as? NSTextView else { return }
         context.coordinator.loadedURL = url
@@ -1430,6 +1692,22 @@ private struct DeliverableDocumentView: NSViewRepresentable {
                 ])
             )
         }
+        // A page a wiki link led to opens at its top, or at the heading the link named, and one Back returned to where
+        // it was left, not wherever the page before it was scrolled to: the view is the same one, given the next file.
+        scrollView.contentView.scroll(to: .zero)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        if let offset {
+            DispatchQueue.main.async {
+                if let layoutManager = textView.layoutManager, let container = textView.textContainer {
+                    layoutManager.ensureLayout(for: container)
+                }
+                let clip = scrollView.contentView
+                clip.scroll(to: NSPoint(x: 0, y: min(offset, max(0, textView.frame.height - clip.bounds.height))))
+                scrollView.reflectScrolledClipView(clip)
+            }
+        } else if let anchor {
+            DispatchQueue.main.async { textView.scrollToMarkdownAnchor(anchor) }
+        }
     }
 
     /// Mapped, so only the pages the 2MB prefix touches are read — and its
@@ -1442,6 +1720,37 @@ private struct DeliverableDocumentView: NSViewRepresentable {
             text += "\n\n… truncated at 2MB — open the file for the rest."
         }
         return text
+    }
+}
+
+extension NSTextView {
+    /// Scroll a rendered Markdown document so the heading a `#anchor` link names sits at the top of what shows, and flash
+    /// it as Find does. The typesetter marks each heading with its anchor (`MarkdownTypesetter.anchorKey`); a link may
+    /// name it as the slug or as the heading's own words. False, and nothing moves, when there is no such heading.
+    @discardableResult
+    func scrollToMarkdownAnchor(_ anchor: String) -> Bool {
+        guard let storage = textStorage, let layoutManager, let textContainer else { return false }
+        let wanted = MarkdownAnchor.slug(anchor)
+        var found: NSRange?
+        storage.enumerateAttribute(MarkdownTypesetter.anchorKey, in: NSRange(location: 0, length: storage.length)) { value, range, stop in
+            guard (value as? String) == wanted else { return }
+            found = range
+            stop.pointee = true
+        }
+        guard let range = found else { return false }
+        layoutManager.ensureLayout(for: textContainer)
+        let rect = layoutManager.boundingRect(forGlyphRange: layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil), in: textContainer)
+        if let clip = enclosingScrollView?.contentView {
+            // The document's own top margin above the heading, as its first heading has, and never past its end.
+            let top = min(max(0, rect.minY + textContainerOrigin.y - textContainerInset.height), max(0, frame.height - clip.bounds.height))
+            clip.scroll(to: NSPoint(x: clip.bounds.minX, y: top))
+            enclosingScrollView?.reflectScrolledClipView(clip)
+        } else {
+            scrollRangeToVisible(range)
+        }
+        // The heading's words, not the line break after them.
+        showFindIndicator(for: NSRange(location: range.location, length: max(0, range.length - 1)))
+        return true
     }
 }
 
