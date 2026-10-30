@@ -3,9 +3,9 @@ import { Database } from "bun:sqlite";
 import { appendFileSync, closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { CodexSessionEntry } from "../src/codex-sessions.ts";
+import { writeCodexSession, type CodexSessionEntry } from "../src/codex-sessions.ts";
 import { buildPanelModel, buildPanelRows, buildPublishedState } from "../src/panel.ts";
-import { registrySnapshot, sessionLabel, subagentSessions, type SessionInfo } from "../src/sessions.ts";
+import { codexEntriesById, registrySnapshot, sessionLabel, subagentSessions, type SessionInfo } from "../src/sessions.ts";
 import {
   codexThreadDbPaths,
   codexThreadLabel,
@@ -1232,5 +1232,37 @@ describe("discovery runs without freezing the daemon's one thread", () => {
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
+  });
+});
+
+describe("a session its hooks have reported on", () => {
+  const entry = { sessionId: "t1", cwd: "/Users/me/Projects", pid: 0, status: "idle" as const, updatedAt: 1, transcriptPath: "/t.jsonl" };
+
+  test("keeps the thread's name, and takes the hook's pid and status", () => {
+    const merged = codexEntriesById([{ ...entry, name: "atals and nura" }], [{ ...entry, pid: 42, status: "busy", updatedAt: 2 }]);
+    expect(merged.get("t1")).toMatchObject({ name: "atals and nura", pid: 42, status: "busy", updatedAt: 2 });
+  });
+
+  test("through the registry: a running session's row keeps its name once a hook has written it", async () => {
+    const home = realCodexHome({ threads: [{ id: "named", name: "atals and nura" }] });
+    const claudeDir = mkdtempSync(join(tmpdir(), "conch-claude-"));
+    const configDir = mkdtempSync(join(tmpdir(), "conch-config-"));
+    mkdirSync(join(claudeDir, "sessions"));
+    try {
+      writeCodexSession({ sessionId: "named", cwd: "/Users/me/Projects", pid: process.pid, status: "idle", updatedAt: NOW, codexHome: home }, { configDir });
+      const snap = await registrySnapshot(claudeDir, { codexHome: home, configDir, now: NOW });
+      const info = snap!.infos.find((candidate) => candidate.sessionId === "named")!;
+      expect(info.pid).toBe(process.pid);
+      expect(sessionLabel(info, info.cwd, { labelsPath: join(configDir, "labels.json") })).toBe("atals and nura");
+    } finally {
+      for (const dir of [home, claudeDir, configDir]) rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a hook's session with no thread, and a thread with no hook, both stand", () => {
+    const merged = codexEntriesById([{ ...entry, sessionId: "thread", name: "named" }], [{ ...entry, sessionId: "hook", pid: 7 }]);
+    expect(merged.get("thread")?.name).toBe("named");
+    expect(merged.get("hook")).toMatchObject({ pid: 7 });
+    expect(merged.get("hook")).not.toHaveProperty("name");
   });
 });

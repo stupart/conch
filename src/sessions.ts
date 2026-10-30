@@ -19,6 +19,7 @@ import { adapterFor, agentAdapters } from "./agent-adapter.ts";
 import {
   defaultIsPidAlive,
   readCodexSessions,
+  type CodexSessionEntry,
   type CodexSessionRegistryOptions,
 } from "./codex-sessions.ts";
 import { readCodexThreads } from "./codex-threads.ts";
@@ -977,7 +978,12 @@ export async function registrySnapshot(
   // where an observed row can only be seen.
   const observed = options.skipCodex ? { entries: [], complete: true } : await readCodexThreads(options);
   for (const entry of observed.entries) {
-    if (liveIds.has(entry.sessionId)) continue;
+    if (liveIds.has(entry.sessionId)) {
+      // The one thing a hook doesn't know is the thread's name (`codexEntriesById`).
+      const fed = infos.find((info) => info.sessionId === entry.sessionId);
+      if (fed && entry.name) fed.name = entry.name;
+      continue;
+    }
     liveIds.add(entry.sessionId);
     infos.push(await toInfo(claudeDir, entry, "codex"));
   }
@@ -1223,12 +1229,29 @@ export function findTranscript(
   return undefined;
 }
 
+/**
+ * Each Codex session once: a hook's entry, with the live pid and status, over the thread's, keeping the thread's name,
+ * which a hook doesn't know. Replacing the whole entry named a session after its folder the moment its hooks ran:
+ * "atals and nura" became "Projects" on its first turn in a background session (2026-10-30).
+ */
+export function codexEntriesById(
+  observed: readonly CodexSessionEntry[],
+  hooked: readonly CodexSessionEntry[],
+): Map<string, CodexSessionEntry> {
+  const entries = new Map(observed.map(entry => [entry.sessionId, entry]));
+  for (const entry of hooked) {
+    const name = entries.get(entry.sessionId)?.name;
+    entries.set(entry.sessionId, name ? { ...entry, name } : entry);
+  }
+  return entries;
+}
+
 /** Observe one Codex profile without scanning another provider's directory. */
 export async function codexRegistrySnapshot(codexHome: string, options: RegistrySnapshotOptions = {}): Promise<RegistrySnapshot> {
   const scoped = { ...options, codexHome };
   const hooked = readCodexSessions(scoped);
   const observed = await readCodexThreads(scoped);
-  const entries = new Map([...observed.entries, ...hooked.entries].map(entry => [entry.sessionId, entry]));
+  const entries = codexEntriesById(observed.entries, hooked.entries);
   let infos = await Promise.all([...entries.values()].map(entry => toInfo("", entry, "codex")));
   if (infos.filter(info => info.pid).length >= 2) {
     const parents = await (options.processParents ?? processParentTable)();

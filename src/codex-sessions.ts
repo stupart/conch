@@ -22,6 +22,8 @@ export interface CodexSessionEntry {
   status: CodexSessionStatus;
   updatedAt: number;
   transcriptPath: string;
+  /** The thread's name, from Codex's own database (`readCodexThreads`). A hook's entry never has one. */
+  name?: string;
   messageRoute?: "codex-app";
   codexHome?: string;
 }
