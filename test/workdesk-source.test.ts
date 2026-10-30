@@ -28,6 +28,30 @@ const rules = read("design/ConchDesign/Sources/ConchDesign/Workbench.swift");
 const views = code("design/ConchDesign/Sources/ConchDesign/WorkdeskViews.swift");
 const workspace = read("design/ConchDesign/Sources/ConchDesign/Workspace.swift");
 
+describe("the run: what an agent last touched is at the right end", () => {
+  test("pages and filed work are one line, in Workdesk.run's order, held while the pointer is in it", () => {
+    const strip = between(dashboard, "private func deliverableTabs(for row: SessionRow) -> some View {", "private func conversationBody(for row: Sessi");
+    expect(strip).toContain("let liveRun = Workdesk.run(tabs: browserTabs, groups: deliverableGroups) { byID[$0.newest]?.reviewedAt }");
+    expect(strip).toContain("let run = Workdesk.held(liveRun, order: heldRun)");
+    expect(strip).toContain("ForEach(run) { entry in");
+    expect(strip).toContain("hovering: { heldRun = $0 ? run.map(\\.id) : nil },");
+    // The end is the live one: a tab held back under the pointer is still what the run goes to when it leaves.
+    expect(strip).toContain("newest: liveRun.last.map { Workdesk.RunEnd(id: $0.id, at: $0.agentAt) },");
+  });
+
+  test("the run opens at its end, goes back when that changes, and never scrolls under the pointer", () => {
+    const run = between(views, "public struct WorkdeskTabRun<Content: View>: View {", "extension View {");
+    expect(run).toContain("reveal(attention ?? newest?.id ?? shown, in: proxy, animated: false)");
+    expect(run).toContain("if pointerIn { endWaits = true } else { reveal(attention ?? now?.id, in: proxy, animated: true) }");
+    expect(run).toContain("if !inside, endWaits {");
+  });
+
+  test("the app reads when an agent last used a tab, and a daemon without it is no failure", () => {
+    expect(readFileSync(join(import.meta.dir, "..", "mac-app/conch-mac/Models.swift"), "utf8")).toContain("usedAt = try? container.decodeIfPresent(Double.self, forKey: .usedAt)");
+    expect(workbench).toContain("openedAt: openedAt, usedAt: usedAt,");
+  });
+});
+
 describe("the user's own tab: the Workdesk's +", () => {
   test("the strip ends in a +, outside the scroller, for a session's own Workdesk; the session menu has it too", () => {
     const strip = between(dashboard, "private func deliverableTabs(for row: SessionRow) -> some View {", "private func conversationBody(for row: SessionRow?) -> some View {");

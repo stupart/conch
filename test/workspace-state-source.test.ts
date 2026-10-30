@@ -254,7 +254,7 @@ describe("new work does not replace what you are reading", () => {
       pane.indexOf("private func conversationBody("),
     );
     expect(strip.length).toBeGreaterThan(500);
-    expect(strip).toContain("ForEach(deliverableGroups) { group in");
+    expect(strip).toContain("case let .deliverable(group, _):");
     // The tab stands for the reader's pick when it is one of its own versions, else the newest
     // — and its click opens THAT, so the common case stays one click. Selection follows the
     // group, so picking an older version does not unselect the tab it belongs to.

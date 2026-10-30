@@ -201,11 +201,20 @@ public struct WorkdeskNewTabButton: View {
 ///
 /// Tyler's strip, full, 2026-10-16: the last tab was cut mid-letter against the + ("…in light anc"), and a tab he had
 /// just opened could be out of sight. Each tab names itself with `workdeskTab(_:)`, by the id `shown` uses.
+///
+/// What an agent last touched is at the right end (`Workdesk.run`), so the run opens there and goes back there when
+/// that changes (Tyler, 2026-10-30: "it should autoscroll to right end of tabs list when it can cause sometimes they are
+/// new but hidden"). "When it can" is the pointer: while it's in the run nothing scrolls, and whatever came meanwhile is
+/// shown when it leaves.
 public struct WorkdeskTabRun<Content: View>: View {
     let shown: AnyHashable?
     /// A tab that needs the user (`Tab.ask`): scrolled into view as it comes, shown or not, so a request is never out
     /// of sight at the far end of a full strip (Tyler, 2026-10-18: "it was all the way on the left so i missed it").
     let attention: AnyHashable?
+    /// The right end, as `Workdesk.run` orders it.
+    let newest: Workdesk.RunEnd?
+    /// The pointer came into the run or left it: the strip holds its order meanwhile (`Workdesk.held`).
+    let hovering: ((Bool) -> Void)?
     let newTab: (() -> Void)?
     let newTabHovered: Bool
     let content: Content
@@ -216,10 +225,16 @@ public struct WorkdeskTabRun<Content: View>: View {
     public static var gutter: CGFloat { 6 }
 
     @State private var extent = RunExtent()
+    @State private var pointerIn = false
+    /// Something reached the right end while the pointer was in the run.
+    @State private var endWaits = false
 
-    public init(shown: AnyHashable?, attention: AnyHashable? = nil, newTab: (() -> Void)? = nil, newTabHovered: Bool = false, @ViewBuilder content: () -> Content) {
+    public init(shown: AnyHashable?, attention: AnyHashable? = nil, newest: Workdesk.RunEnd? = nil, hovering: ((Bool) -> Void)? = nil,
+                newTab: (() -> Void)? = nil, newTabHovered: Bool = false, @ViewBuilder content: () -> Content) {
         self.shown = shown
         self.attention = attention
+        self.newest = newest
+        self.hovering = hovering
         self.newTab = newTab
         self.newTabHovered = newTabHovered
         self.content = content()
@@ -236,9 +251,21 @@ public struct WorkdeskTabRun<Content: View>: View {
                 .scrollIndicators(.never)
                 .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in extent.visible = width }
                 .mask(RunFadeMask(leading: extent.leadingFade, trailing: extent.trailingFade))
-                .onAppear { reveal(attention ?? shown, in: proxy, animated: false) }
+                .onAppear { reveal(attention ?? newest?.id ?? shown, in: proxy, animated: false) }
                 .onChange(of: shown) { _, now in reveal(now, in: proxy, animated: true) }
+                .onChange(of: newest) { _, now in
+                    if pointerIn { endWaits = true } else { reveal(attention ?? now?.id, in: proxy, animated: true) }
+                }
                 .onChange(of: attention) { _, now in reveal(now, in: proxy, animated: true) }
+                .onHover { inside in
+                    pointerIn = inside
+                    hovering?(inside)
+                    if !inside, endWaits {
+                        endWaits = false
+                        reveal(attention ?? newest?.id, in: proxy, animated: true)
+                    }
+                }
+                .onDisappear { hovering?(false) }
             }
             if let newTab {
                 WorkdeskNewTabButton(isHovered: newTabHovered, action: newTab)

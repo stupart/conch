@@ -375,6 +375,64 @@ public enum DeliverableGroups {
     }
 }
 
+/// One tab of the Workdesk's run: a live page or a filed artifact, in the same line.
+public enum WorkdeskRunItem: Equatable, Sendable, Identifiable {
+    case browser(Workbench.Tab)
+    case deliverable(DeliverableGroup, filedAt: Double)
+
+    /// What the run scrolls to it by (`workdeskTab`).
+    public var id: String {
+        switch self {
+        case let .browser(tab): "browser:" + tab.id
+        case let .deliverable(group, _): "deliverable:" + group.id
+        }
+    }
+
+    /// Epoch-ms an agent last did something with it: a command in the page, or a filing of the artifact.
+    public var agentAt: Double {
+        switch self {
+        case let .browser(tab): tab.usedAt
+        case let .deliverable(_, filedAt): filedAt
+        }
+    }
+}
+
+extension Workdesk {
+    /// The run's right end, and when an agent last touched what is there: the id alone wouldn't change when the tab
+    /// already at the end is touched again, and that one can be scrolled out of sight too.
+    public struct RunEnd: Equatable {
+        public let id: AnyHashable
+        public let at: Double
+
+        public init(id: AnyHashable, at: Double) {
+            self.id = id
+            self.at = at
+        }
+    }
+
+    /// The run, oldest first by what an agent last did: what's new, or what an agent just touched, is at the right end.
+    ///
+    /// Live pages used to lead, oldest first, and stay there however much an agent did in them. Tyler, 2026-10-30: "i
+    /// keep forgetting about site changes cause they stay on the left side". Only an agent moves a tab: opening one or
+    /// reading it doesn't, so nothing shifts because it was looked at. A filing with no time sorts first, and a tie
+    /// keeps the pages ahead of the filed work, the order they came in.
+    public static func run(tabs: [Workbench.Tab], groups: [DeliverableGroup], filedAt: (DeliverableGroup) -> Double?) -> [WorkdeskRunItem] {
+        let items = tabs.map(WorkdeskRunItem.browser) + groups.map { .deliverable($0, filedAt: filedAt($0) ?? 0) }
+        return items.enumerated()
+            .sorted { ($0.element.agentAt, $0.offset) < ($1.element.agentAt, $1.offset) }
+            .map(\.element)
+    }
+
+    /// The run in `order`, the ids it had when the pointer came in, so no tab moves out from under a click. Anything new
+    /// since goes on the end, where it moves nothing, and anything closed is gone. Nil is the run as it is.
+    public static func held(_ run: [WorkdeskRunItem], order: [String]?) -> [WorkdeskRunItem] {
+        guard let order else { return run }
+        let byID = Dictionary(run.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+        let kept = Set(order)
+        return order.compactMap { byID[$0] } + run.filter { !kept.contains($0.id) }
+    }
+}
+
 /// A Figma file, addressed to the Figma app rather than the browser.
 ///
 /// Where a Figma design lives is Figma, where you are signed in. The review pane shows the web

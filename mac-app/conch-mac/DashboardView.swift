@@ -1921,6 +1921,8 @@ private struct ConversationPane: View {
     /// Two versions of one artifact in the deliverable pane, when the reader asked to compare them
     /// (`DeliverableCompareView`). Opening a version from the tab strip ends it.
     @State private var comparison: DeliverableComparison?
+    /// The strip's order while the pointer is in it (`Workdesk.held`); nil the rest of the time.
+    @State private var heldRun: [String]?
     /// §3: the header grows a hairline only once the transcript has scrolled under it.
     @State private var transcriptScrolled = false
     /// Approving the result the pane shows (`ReviewApprovals`): the session bar's ✓ Approve, ↵ and ⌘Z.
@@ -3053,68 +3055,77 @@ private struct ConversationPane: View {
                 // a full strip cut its last tab mid-letter against the +).
                 let shownTab = workPane(for: row) == .browser ? selectedBrowserTab?.id : nil
                 let shownGroup = shown.flatMap { id in deliverableGroups.first { $0.versions.contains(id) }?.id }
+                // Pages and filed work in one line, what an agent last touched at the right end (`Workdesk.run`), and
+                // held as it is while the pointer is in it, so no tab moves out from under a click.
+                let liveRun = Workdesk.run(tabs: browserTabs, groups: deliverableGroups) { byID[$0.newest]?.reviewedAt }
+                let run = Workdesk.held(liveRun, order: heldRun)
                 WorkdeskTabRun(
                     shown: shownTab.map { AnyHashable("browser:" + $0) } ?? shownGroup.map { AnyHashable("deliverable:" + $0) },
                     // A tab that needs Tyler is scrolled into view, shown or not (2026-10-18: "it was all the way on the
                     // left so i missed it").
                     attention: Workbench.asking(in: browserTabs, session: row.id).map { AnyHashable("browser:" + $0.id) },
+                    newest: liveRun.last.map { Workdesk.RunEnd(id: $0.id, at: $0.agentAt) },
+                    hovering: { heldRun = $0 ? run.map(\.id) : nil },
                     newTab: opensBrowserTabs(row) ? { openBrowserTab(for: row) } : nil
                 ) {
-                    // The live pages, the agent's and Tyler's own, as tabs among its work (Tyler, 2026-10-09:
-                    // "Agents's pages should live as tabs in the deliverables plane just like the deliverables").
-                    // An agent at work in one says so; one it acted in unseen has a dot (ConchDesign
-                    // `WorkbenchTabButton`).
-                    ForEach(browserTabs) { tab in
-                        WorkbenchTabButton(
-                            tab: tab,
-                            isSelected: tab.id == shownTab,
-                            agentWorking: workbench.working[tab.id] != nil,
-                            hasActivity: Workbench.showsActivity(tab.id, actedIn: workbench.actedIn, shown: shownTab),
-                            open: {
-                                workbench.touched()
-                                comparison = nil
-                                workspace.show(browserTab: tab.id, for: row.id)
-                            },
-                            close: { workbench.close(tab.id) }
-                        )
-                        .workdeskTab("browser:" + tab.id)
-                    }
-                    ForEach(deliverableGroups) { group in
-                        let versions = group.versions.compactMap { byID[$0] }
-                        DeliverableTab(
-                            versions: versions,
-                            current: byID[group.shown(picked: picked)] ?? versions[0],
-                            isSelected: shown.map(group.versions.contains) ?? false,
-                            now: timeline.date,
-                            open: { item in
-                                // A version opened from the strip is a look at that one: any comparison ends.
-                                comparison = nil
-                                workspace.show(work: .deliverable, for: row.id)
-                                workspace.select(deliverable: item.id, for: row.id)
-                                // Looking at it is what marks it, and only the daemon's copy
-                                // makes that survive a relaunch and reach the phone. The
-                                // version actually opened is the one marked — never the whole
-                                // group — so `markReviewViewed`'s rules hold as they are: no
-                                // restamping, and no id the session does not hold.
-                                if item.viewedAt == nil, state?.features?.viewedState != nil {
-                                    store.markReviewViewed(sessionId: row.id, review: item.id)
+                    ForEach(run) { entry in
+                        switch entry {
+                        // The live pages, the agent's and Tyler's own, as tabs among its work (Tyler, 2026-10-09:
+                        // "Agents's pages should live as tabs in the deliverables plane just like the deliverables").
+                        // An agent at work in one says so; one it acted in unseen has a dot (ConchDesign
+                        // `WorkbenchTabButton`).
+                        case let .browser(tab):
+                            WorkbenchTabButton(
+                                tab: tab,
+                                isSelected: tab.id == shownTab,
+                                agentWorking: workbench.working[tab.id] != nil,
+                                hasActivity: Workbench.showsActivity(tab.id, actedIn: workbench.actedIn, shown: shownTab),
+                                open: {
+                                    workbench.touched()
+                                    comparison = nil
+                                    workspace.show(browserTab: tab.id, for: row.id)
+                                },
+                                close: { workbench.close(tab.id) }
+                            )
+                            .workdeskTab(entry.id)
+                        case let .deliverable(group, _):
+                            let versions = group.versions.compactMap { byID[$0] }
+                            DeliverableTab(
+                                versions: versions,
+                                current: byID[group.shown(picked: picked)] ?? versions[0],
+                                isSelected: shown.map(group.versions.contains) ?? false,
+                                now: timeline.date,
+                                open: { item in
+                                    // A version opened from the strip is a look at that one: any comparison ends.
+                                    comparison = nil
+                                    workspace.show(work: .deliverable, for: row.id)
+                                    workspace.select(deliverable: item.id, for: row.id)
+                                    // Looking at it is what marks it, and only the daemon's copy
+                                    // makes that survive a relaunch and reach the phone. The
+                                    // version actually opened is the one marked — never the whole
+                                    // group — so `markReviewViewed`'s rules hold as they are: no
+                                    // restamping, and no id the session does not hold.
+                                    if item.viewedAt == nil, state?.features?.viewedState != nil {
+                                        store.markReviewViewed(sessionId: row.id, review: item.id)
+                                    }
+                                },
+                                // The whole artifact, every version: the tab is the artifact. The
+                                // group's id is the daemon's artifact, which is what it removes by.
+                                // Only a daemon that can remove one is offered the item.
+                                remove: (state?.features?.deliverables ?? 0) >= 2
+                                    ? { store.removeDeliverable(sessionId: row.id, artifact: group.id) }
+                                    : nil,
+                                compare: { pair in startComparing(pair, in: row) },
+                                cwd: row.cwd,
+                                revealInFinder: { path in
+                                    store.openLink(path, cwd: row.cwd, rowId: row.id, reveal: true, onFailure: { _ in })
                                 }
-                            },
-                            // The whole artifact, every version: the tab is the artifact. The
-                            // group's id is the daemon's artifact, which is what it removes by.
-                            // Only a daemon that can remove one is offered the item.
-                            remove: (state?.features?.deliverables ?? 0) >= 2
-                                ? { store.removeDeliverable(sessionId: row.id, artifact: group.id) }
-                                : nil,
-                            compare: { pair in startComparing(pair, in: row) },
-                            cwd: row.cwd,
-                            revealInFinder: { path in
-                                store.openLink(path, cwd: row.cwd, rowId: row.id, reveal: true, onFailure: { _ in })
-                            }
-                        )
-                        .workdeskTab("deliverable:" + group.id)
+                            )
+                            .workdeskTab(entry.id)
+                        }
                     }
                 }
+                .animation(.easeOut(duration: 0.22), value: run.map(\.id))
             }
             // The strip is the Workdesk's, one item a tab (ConchDesign `Workdesk`), and says so to VoiceOver.
             .accessibilityElement(children: .contain)
