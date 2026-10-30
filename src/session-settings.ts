@@ -23,6 +23,10 @@
  *   gpt-6-luna xhigh for this session only" and writes nothing. Max and Ultra sit behind a
  *   "More reasoning…" row (Enter opens it, writes nothing). The rollout records the change at
  *   once, as `event_msg` `thread_settings_applied`, even while idle.
+ * - During a turn (codex-cli 0.164.0, a turn held open by a fake API, 2026-10-30) Codex's `/model`
+ *   does all of that too: Enter opens the picker rather than queueing a message, Escape steps back
+ *   out of it without interrupting, and `s` applies at once with the turn still running. Claude's
+ *   hasn't been measured, so it still waits for the turn to end.
  *
  * So a running session is only ever changed through the picker's own session-only key, driven
  * by reading its screen between keys — never by the one-line commands, which rewrite defaults.
@@ -126,6 +130,8 @@ export interface AgentSessionSettings {
   readonly settings: readonly SessionSettingSpec[];
   /** What conch types to open the picker a running session is changed through. */
   readonly pickerCommand: string;
+  /** Its picker takes a change during a turn, so a working session isn't made to wait. */
+  readonly changesMidTurn: boolean;
   readonly plan: (screen: string, change: SessionSettingsChange, committed: boolean) => PickerStep;
   /** Refuses to open the picker on a screen that could not take it; null when it can. */
   readonly precheck: (screen: string) => string | null;
@@ -170,6 +176,7 @@ export const AGENT_SESSION_SETTINGS: Record<SessionBackend, AgentSessionSettings
       },
     ],
     pickerCommand: "/model",
+    changesMidTurn: false,
     plan: planClaudePicker,
     precheck: claudePrecheck,
     promptText: claudeInputBoxText,
@@ -198,6 +205,7 @@ export const AGENT_SESSION_SETTINGS: Record<SessionBackend, AgentSessionSettings
       },
     ],
     pickerCommand: "/model",
+    changesMidTurn: true,
     plan: planCodexPicker,
     precheck: codexPrecheck,
     promptText: codexComposerText,
@@ -742,7 +750,6 @@ export function codexComposerText(screen: string): string | null {
 }
 
 function codexPrecheck(screen: string): string | null {
-  if (BUSY.test(screen)) return "the session is working; change it when its turn is over";
   if (codexPickerDepth(screen) > 0) return "a picker is already open in the session";
   if (codexComposerText(screen) === null) return "its prompt isn't on screen (a dialog may be open)";
   return null;
