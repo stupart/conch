@@ -307,6 +307,7 @@ export class SessionLedger {
       version?: unknown;
       preview?: { path?: unknown; kind?: unknown; capturedAt?: unknown };
       focus?: unknown;
+      seen?: unknown;
       linkRefused?: unknown;
       roots?: unknown;
       snapshot?: { path?: unknown; capturedAt?: unknown };
@@ -345,6 +346,12 @@ export class SessionLedger {
     const saved = isDeliverableKind(review.kind) && (review.kindSource === "agent" || review.kindSource === "inferred");
     // A focus this conch can't read is dropped, like a scene: the deliverable is still the folder.
     const focus = review.focus === undefined ? undefined : checkFocusShape(review.focus);
+    // Which of those were opened: only paths still in the focus, each at a time it could have been.
+    const seen = focus?.ok && review.seen && typeof review.seen === "object" && !Array.isArray(review.seen)
+      ? Object.fromEntries(Object.entries(review.seen as Record<string, unknown>).filter(
+        (entry): entry is [string, number] => focus.focus.includes(entry[0]) && typeof entry[1] === "number" && Number.isFinite(entry[1]),
+      ))
+      : {};
     // Why its link was refused, and the folders that held its files: each as it was filed
     // (`fileReview`), or not at all.
     const linkRefused = !review.link && typeof review.linkRefused === "string" && review.linkRefused
@@ -370,6 +377,7 @@ export class SessionLedger {
         ? { preview: { path: review.preview.path, kind: "image" as const, capturedAt: review.preview.capturedAt } }
         : {}),
       ...(focus?.ok ? { focus: focus.focus } : {}),
+      ...(Object.keys(seen).length ? { seen } : {}),
       ...(linkRefused ? { linkRefused } : {}),
       ...(roots.length ? { roots } : {}),
       // A live page's picture from the Mac, as filed; `/file` checks the file itself when the phone asks.
@@ -526,6 +534,7 @@ export class SessionLedger {
         ...(held.version !== undefined ? { version: held.version } : {}),
         ...(held.preview ? { preview: held.preview } : {}),
         ...(held.focus?.length ? { focus: held.focus } : {}),
+        ...(held.seen && Object.keys(held.seen).length ? { seen: held.seen } : {}),
         ...(held.linkRefused ? { linkRefused: held.linkRefused } : {}),
         ...(held.roots?.length ? { roots: held.roots } : {}),
         ...(held.snapshot ? { snapshot: held.snapshot } : {}),

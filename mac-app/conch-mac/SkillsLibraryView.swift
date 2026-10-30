@@ -763,7 +763,7 @@ private struct InstalledSkillReader: View {
             if let location {
                 // Commands share their folder with every other command, so their tree opens on their own file.
                 WorkspaceFilesView(root: location.folder, rowID: "", changed: ConchFileChanges(changed: [], relativeTo: ""),
-                                   focus: [location.file])
+                                   focus: [location.file], marksFocus: false)
                     .id(location.id)
             }
         }
@@ -812,7 +812,8 @@ private struct DiscoverSkillReader: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             if let folder {
-                WorkspaceFilesView(root: folder, rowID: "", changed: ConchFileChanges(changed: [], relativeTo: ""), focus: ["SKILL.md"])
+                WorkspaceFilesView(root: folder, rowID: "", changed: ConchFileChanges(changed: [], relativeTo: ""), focus: ["SKILL.md"],
+                                   marksFocus: false)
             } else if let failure {
                 ReaderPlaceholder(text: failure)
             } else {
@@ -1323,7 +1324,8 @@ struct ConchBenchmarksSettingsView: View {
                     if let reportCopy {
                         // As `atlas_show` files a page: its Markdown copy, read by the deliverables pane's renderer.
                         WorkspaceFilesView(root: (reportCopy as NSString).deletingLastPathComponent, rowID: "",
-                                           changed: ConchFileChanges(changed: [], relativeTo: ""), focus: [(reportCopy as NSString).lastPathComponent])
+                                           changed: ConchFileChanges(changed: [], relativeTo: ""), focus: [(reportCopy as NSString).lastPathComponent],
+                                           marksFocus: false)
                     } else {
                         ReaderPlaceholder(text: "No copy of this Atlas page is on this Mac yet. Atlas has no web view of a page: an agent shows it with atlas_show, which keeps its Markdown in ~/Documents/conch-notes/atlas.")
                     }

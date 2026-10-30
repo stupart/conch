@@ -49,7 +49,7 @@ export interface SessionActionsController {
    * Record that one of this session's deliverables has been looked at. False when there was
    * nothing to change — no such deliverable, or it was already marked.
    */
-  markReviewViewed?(target: Readonly<SessionActionsTarget>, review: string): boolean | void;
+  markReviewViewed?(target: Readonly<SessionActionsTarget>, review: string, path?: string): boolean | void;
   /**
    * Take one filing (`review`) or every filing of an `artifact` off this session. False when it
    * holds nothing that matches.
@@ -89,7 +89,7 @@ export type SessionActionMutation =
   | { command: "restore" }
   | { command: "set-settings"; change: SessionSettingsChange }
   | { command: "attach" }
-  | { command: "review-viewed"; review: string }
+  | { command: "review-viewed"; review: string; path?: string }
   | ({ command: "review-remove" } & ({ review: string } | { artifact: string }))
   | { command: "review-approve"; review: string }
   | { command: "review-unapprove"; review: string };
@@ -120,7 +120,7 @@ export function invokeSessionAction(
     case "set-settings":
       return controller.setSettings?.({ ...target }, { ...mutation.change }) ?? false;
     case "review-viewed":
-      return controller.markReviewViewed?.({ ...target }, mutation.review) ?? false;
+      return controller.markReviewViewed?.({ ...target }, mutation.review, mutation.path) ?? false;
     case "review-remove":
       return controller.removeReview?.({ ...target }, "review" in mutation ? { review: mutation.review } : { artifact: mutation.artifact }) ?? false;
     case "attach":

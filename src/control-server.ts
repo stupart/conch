@@ -202,7 +202,7 @@ function applySessionControlMessage(
       const marked = invokeSessionAction(
         controller,
         target,
-        { command: "review-viewed", review: message.review },
+        { command: "review-viewed", review: message.review, ...(message.path !== undefined ? { path: message.path } : {}) },
       );
       return sessionCommandAck(message, marked === true, target.label);
     }

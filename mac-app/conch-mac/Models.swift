@@ -1101,6 +1101,9 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
     /// A folder deliverable's paths to point at, relative to the folder (`focus`). Empty from an older daemon and for
     /// anything but a folder; one this build can't read is none, never a review that fails.
     let focus: [String]
+    /// Which of `focus` were opened, by the path as it is there, epoch-ms (`seen`, src/panel.ts `SessionReview.seen`).
+    /// Empty when none were, and from an older daemon.
+    let seen: [String: Double]
     /// Why the link its agent gave was not published, when one was given and refused (`linkRefused`, one sentence
     /// naming the link and the reason). Nil when there was no link, and from an older daemon.
     let linkRefused: String?
@@ -1122,6 +1125,7 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
         case version
         case kind
         case focus
+        case seen
         case linkRefused
         case access
     }
@@ -1153,6 +1157,7 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
         version = try? container.decodeIfPresent(Int.self, forKey: .version)
         kind = try? container.decodeIfPresent(String.self, forKey: .kind)
         focus = (try? container.decodeIfPresent([String].self, forKey: .focus)) ?? []
+        seen = ((try? container.decodeIfPresent([String: Double].self, forKey: .seen)) ?? [:]).filter { $0.value.isFinite }
         linkRefused = try? container.decodeIfPresent(String.self, forKey: .linkRefused)
         access = try? container.decodeIfPresent(PageAccess.Found.self, forKey: .access)
     }

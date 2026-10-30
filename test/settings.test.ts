@@ -482,6 +482,11 @@ describe("control-message validation", () => {
         input: { kind: "session-command", sessionId: " session-1 ", command: "review-viewed", review: '  ["s",1,"abc"]  ' },
         output: { kind: "session-command", sessionId: "session-1", command: "review-viewed", review: '["s",1,"abc"]' },
       },
+      // One of a folder's focus paths, opened in the viewer (`SessionReview.seen`).
+      {
+        input: { kind: "session-command", sessionId: "session-1", command: "review-viewed", review: "a", path: " src/setup.ts " },
+        output: { kind: "session-command", sessionId: "session-1", command: "review-viewed", review: "a", path: "src/setup.ts" },
+      },
       {
         input: { kind: "session-command", sessionId: "session-1", command: "review-remove", review: ' ["s",1,"abc"] ' },
         output: { kind: "session-command", sessionId: "session-1", command: "review-remove", review: '["s",1,"abc"]' },
@@ -551,6 +556,11 @@ describe("control-message validation", () => {
       { kind: "session-command", sessionId: "session-1", command: "review-viewed", review: "bad\u0000id" },
       { kind: "session-command", sessionId: "session-1", command: "review-viewed", review: "x".repeat(513) },
       { kind: "session-command", sessionId: "session-1", command: "review-viewed", review: 42 },
+      // A path that is given must be one: a string, not empty, short enough to be a focus path, no control characters.
+      { kind: "session-command", sessionId: "session-1", command: "review-viewed", review: "a", path: "" },
+      { kind: "session-command", sessionId: "session-1", command: "review-viewed", review: "a", path: 3 },
+      { kind: "session-command", sessionId: "session-1", command: "review-viewed", review: "a", path: "x".repeat(201) },
+      { kind: "session-command", sessionId: "session-1", command: "review-viewed", review: "a", path: "a\u0000b" },
       // Removing names exactly one thing: a filing or an artifact, never both, never neither.
       { kind: "session-command", sessionId: "session-1", command: "review-remove" },
       { kind: "session-command", sessionId: "session-1", command: "review-remove", review: "a", artifact: "b" },

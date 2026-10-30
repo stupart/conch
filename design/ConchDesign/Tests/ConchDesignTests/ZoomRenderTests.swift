@@ -190,7 +190,10 @@ final class ZoomRenderTests: XCTestCase {
         XCTAssertFalse(grip.isNull)
         XCTAssertEqual(grip.midX, 465, accuracy: 0.5, "grip \(grip)")
         XCTAssertEqual(grip.midY, 200, accuracy: 0.5, "grip \(grip)")
-        XCTAssertEqual(grip.width, PaneDividerHandle.grip.width * 2, accuracy: 1)
+        // The grip on a line, 5 wide so it lands on whole points either side of the line's middle, and 28 tall.
+        XCTAssertEqual(grip.width, PaneDividerHandle.lineGrip.width * 2, accuracy: 1)
+        XCTAssertEqual(grip.height, PaneDividerHandle.lineGrip.height * 2, accuracy: 1)
+        XCTAssertEqual(grip.minX, 460, accuracy: 0.5, "grip \(grip)")
         XCTAssertEqual(ConchSplitView<Color, Color>.handleOffset(leading: 232), 224.5)
     }
 

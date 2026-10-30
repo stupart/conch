@@ -15,6 +15,7 @@ const statusItem = swift("mac-app/conch-mac/StatusItem.swift");
 const macModels = swift("mac-app/conch-mac/Models.swift");
 const sheet = swift("mobile/conch-ios/conch-ios/DeliverableSheet.swift");
 const phoneModels = swift("mobile/conch-ios/conch-ios/Models.swift");
+const skills = swift("mac-app/conch-mac/SkillsLibraryView.swift");
 
 function between(text: string, start: string, end: string): string {
   const a = text.indexOf(start);
@@ -34,7 +35,7 @@ describe("the Mac draws a folder deliverable as the Files tab's tree", () => {
   test("the deliverable surface routes a folder to WorkspaceFilesView, with its focus and the session's changes", () => {
     const surface = between(review, "private struct ReviewSurface: View {", "private var stageControl");
     expect(surface).toContain("if let link = item.link, case let .folder(folder) = DeliverableSource(link: link) {");
-    expect(surface).toMatch(/WorkspaceFilesView\(\s*root: folder\.path,\s*rowID: item\.rowID,\s*changed: changed,\s*focus: item\.focus,\s*title: folder\.lastPathComponent\s*\)/);
+    expect(surface).toMatch(/WorkspaceFilesView\(\s*root: folder\.path,\s*rowID: item\.rowID,\s*changed: changed,\s*focus: item\.focus,\s*title: folder\.lastPathComponent,\s*seen: item\.seen,\s*onSeen: onSeen\s*\)/);
     // Keyed on the version, so the next one opens on its own focus.
     expect(surface).toContain(".id(item.id)");
     expect(between(review, "struct ReviewItem: Identifiable, Equatable {", "struct InlineReviewView")).toContain("focus = review.focus");
@@ -43,7 +44,7 @@ describe("the Mac draws a folder deliverable as the Files tab's tree", () => {
   test("one tree: the rail is ConchDesign's, in the window's type, with the focus opened on first draw", () => {
     const files = between(review, "struct WorkspaceFilesView: View {", "private struct MissingDeliverableView: View {");
     expect(files).toContain("ConchFileTreeRail(");
-    expect(files).toContain("focus: pointedAt,");
+    expect(files).toContain("focus: marksFocus ? pointedAt : nil,");
     expect(files).toContain("font: { ConchTypography.font(size: $0, weight: $1) },");
     // The disk is asked once, off the main thread, never from body.
     const open = between(files, "private func openFocus() {", "private func load(");
@@ -52,6 +53,32 @@ describe("the Mac draws a folder deliverable as the Files tab's tree", () => {
     expect(open).toContain("if selected == nil { selected = first }");
     expect(between(files, "private func loadRoot() {", "private func openFocus")).toContain("openFocus()");
     expect(review).not.toContain("private struct FileRowView");
+  });
+
+  test("a focus path opened in the viewer is seen: told to the daemon on its filing, greyed here at once", () => {
+    // The window's and the panel's pane both build InlineReviewView, which says so for the filing it shows.
+    expect(review).toContain("onSeen: { path in store.markReviewViewed(sessionId: item.rowID, review: item.id, path: path) },");
+    const files = between(review, "struct WorkspaceFilesView: View {", "private struct MissingDeliverableView: View {");
+    // What opening a file marks: the path itself and a pointed-at folder holding it, here at once and told on.
+    const opened = between(files, ".onChange(of: selected) { _, path in", "readModified()");
+    expect(opened).toContain("guard marksFocus, let onSeen, let path else { return }");
+    expect(opened).toContain("let keys = pointedAt.keysSeen(byOpening: path)");
+    expect(opened).toContain("seenHere[key] = now");
+    expect(opened).toContain("onSeen(key)");
+    // Seen is the daemon's and this pane's together, less what changed on the disk since; read off the main thread.
+    expect(files).toContain("pointedAt.seen(seen.merging(seenHere) { max($0, $1) }, modified: modified)");
+    expect(between(files, "private func readModified() {", "private func load(")).toContain("Task.detached(priority: .utility)");
+    expect(files).toContain("seen: marksFocus ? seenPaths : [],");
+    // The request carries the path; the model reads what the daemon publishes.
+    expect(swift("mac-app/conch-mac/StateStore.swift")).toContain("ConchSessionCommandRequest(sessionId: sessionId, command: .reviewViewed, review: review, path: path)");
+    expect(macModels).toContain("seen = ((try? container.decodeIfPresent([String: Double].self, forKey: .seen)) ?? [:]).filter { $0.value.isFinite }");
+  });
+
+  test("Settings' readers open a skill's file and a report without marking them as an agent's", () => {
+    // A skill's own file and Benchmarks' report are opened and picked; no agent pointed at them.
+    expect(skills.match(/WorkspaceFilesView\(/g)?.length).toBe(3);
+    expect(skills.match(/marksFocus: false\)/g)?.length).toBe(3);
+    expect(review).toContain("var marksFocus = true");
   });
 
   test("the window and the panel hand the session's changes to a folder's tree", () => {

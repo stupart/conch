@@ -780,8 +780,9 @@ try render("m3-panel-content", width: 1280) {
 }
 
 /// A folder a session published, as the side panel's renderer draws it (`WorkspaceFilesView`): the real tree rows
-/// (`ConchFileTreeRail`) over a listing made up here, with what the session changed and what the agent pointed at, and
-/// the first focused file in the viewer beside it (drawn here as text, standing in for the app's text renderer).
+/// (`ConchFileTreeRail`) over a listing made up here, with what the session changed and what the agent pointed out, and
+/// the first focused file in the viewer beside it (drawn here as text, standing in for the app's text renderer), across
+/// the real divider (`ConchSplitView`) with its grip.
 struct FolderDeliverablePicture: View {
     static let root = "/Users/tyler/Projects/morrow/web/invite"
     static let focus = ["src/InviteCard.tsx", "src/join.ts", "test"]
@@ -791,9 +792,9 @@ struct FolderDeliverablePicture: View {
         ConchFileEntry(path: root + "/" + relative, name: (relative as NSString).lastPathComponent, isDirectory: directory)
     }
 
-    private static let directories: Set<String> = ["src", "src/copy", "test", "public"].map { root + "/" + $0 }.reduce(into: []) { $0.insert($1) }
+    static let directories: Set<String> = ["src", "src/copy", "test", "public"].map { root + "/" + $0 }.reduce(into: []) { $0.insert($1) }
 
-    private static let listings: [String: [ConchFileEntry]] = [
+    static let listings: [String: [ConchFileEntry]] = [
         root: ConchFileTree.sorted([entry("src", directory: true), entry("test", directory: true), entry("public", directory: true),
                                     entry("README.md"), entry("package.json"), entry(".env.example")]),
         root + "/src": ConchFileTree.sorted([entry("src/copy", directory: true), entry("src/InviteCard.tsx"), entry("src/join.ts"),
@@ -805,20 +806,21 @@ struct FolderDeliverablePicture: View {
 
     var body: some View {
         let expanded = focus.expanded(isDirectory: { Self.directories.contains($0) })
-        HStack(spacing: 0) {
+        ConchSplitView(split: .fileTree, width: .constant(232), label: "Resize the file list") {
             ConchFileTreeRail(
                 rows: ConchFileTree.rows(root: Self.root, listings: Self.listings, expanded: expanded),
                 selected: Self.root + "/src/InviteCard.tsx",
                 expanded: expanded,
                 changed: ConchFileChanges(changed: Self.changed, relativeTo: Self.root),
                 focus: focus,
+                // The file in the viewer is the one opened so far.
+                seen: focus.seen(["src/InviteCard.tsx": 1]),
                 title: "invite",
                 onPick: { _ in }
             )
-            .frame(width: 232)
-            .frame(maxHeight: .infinity, alignment: .top)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .background(ConchColor.surfaceRaised)
-            Rectangle().fill(ConchColor.hairline).frame(width: 1)
+        } trailing: {
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(Array(Self.source.enumerated()), id: \.offset) { line in
                     Text(verbatim: line.element.isEmpty ? " " : line.element)
@@ -847,11 +849,91 @@ struct FolderDeliverablePicture: View {
     ]
 }
 
+/// The file tree beside the file picked in it, across the real divider, at a width the divider can be dragged to: six of
+/// a folder's nine files pointed out, the second picked (the folder Tyler asked about, 2026-10-29), and the invite module.
+struct TreeRailPicture: View {
+    let width: CGFloat
+    var module = false
+    /// What Tyler has opened of what was pointed out, by the keys the daemon holds them by.
+    var seen: [String] = []
+    var title = "final"
+
+    static let root = "/Users/tyler/Projects/conch/shots/final"
+    static let names = ["01-skills-installed.png", "02-skill-detail.png", "03-skills-discover.png", "04-benchmarks.png",
+                        "05-skills-narrow.png", "06-skills-dark.png", "notes.md", "README.md", "skills-page.html"]
+
+    var body: some View {
+        ConchSplitView(split: .fileTree, width: .constant(Double(width)), label: "Resize the file list") {
+            rail
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .background(ConchColor.surfaceRaised)
+        } trailing: {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(ConchColor.fill)
+                .overlay(Text(module ? "InviteCard.tsx" : "02-skill-detail.png").font(ConchType.meta).foregroundStyle(ConchColor.textTertiary))
+                .padding(20)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(ConchColor.surface)
+        }
+        .frame(height: module ? 350 : 262)
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(ConchColor.hairline, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var shotsFocus: ConchFileFocus { ConchFileFocus(focus: Array(Self.names.prefix(6)), relativeTo: Self.root) }
+
+    @ViewBuilder private var rail: some View {
+        if module {
+            let root = FolderDeliverablePicture.root
+            let focus = ConchFileFocus(focus: FolderDeliverablePicture.focus, relativeTo: root)
+            let expanded = focus.expanded(isDirectory: { FolderDeliverablePicture.directories.contains($0) })
+            ConchFileTreeRail(
+                rows: ConchFileTree.rows(root: root, listings: FolderDeliverablePicture.listings, expanded: expanded),
+                selected: root + "/src/InviteCard.tsx",
+                expanded: expanded,
+                changed: ConchFileChanges(changed: FolderDeliverablePicture.changed, relativeTo: root),
+                focus: focus,
+                seen: focus.seen(Dictionary(uniqueKeysWithValues: seen.map { ($0, 1.0) })),
+                title: "invite",
+                onPick: { _ in }
+            )
+        } else {
+            let entries = Self.names.map { ConchFileEntry(path: Self.root + "/" + $0, name: $0, isDirectory: false) }
+            ConchFileTreeRail(
+                rows: ConchFileTree.rows(root: Self.root, listings: [Self.root: ConchFileTree.sorted(entries)], expanded: []),
+                selected: Self.root + "/02-skill-detail.png",
+                expanded: [],
+                changed: ConchFileChanges(changed: [], relativeTo: Self.root),
+                focus: shotsFocus,
+                seen: shotsFocus.seen(Dictionary(uniqueKeysWithValues: seen.map { ($0, 1.0) })),
+                title: title,
+                onPick: { _ in }
+            )
+        }
+    }
+}
+
+try render("tree-rail", width: 760) {
+    Heading(title: "The file tree, and the line beside it", note: "What the agent pointed out has a short violet rule in the margin, quieter on a folder on the way to it, and the header says how many are left to look at. Once opened in the viewer the rule goes grey, until the agent points at it again in a newer version or the file changes. What the session changed has its dot after the name. The grip on the line beside the tree says it drags; double-click it to put it back.")
+    Caption("At its standard width, 232, nothing opened yet")
+    TreeRailPicture(width: 232)
+    Caption("Two of the six opened: their rules go grey and their names step back; the header counts what is left")
+    TreeRailPicture(width: 232, seen: ["01-skills-installed.png", "02-skill-detail.png"])
+    Caption("All six opened: every rule grey, and the header's too")
+    TreeRailPicture(width: 232, seen: Array(TreeRailPicture.names.prefix(6)))
+    Caption("Dragged to its narrowest, 160: the header says less, the folder's name first")
+    TreeRailPicture(width: 160, seen: ["01-skills-installed.png", "02-skill-detail.png"])
+    Caption("At 160 with a long folder name: the count down to its number, the name in the middle cut")
+    TreeRailPicture(width: 160, seen: ["01-skills-installed.png", "02-skill-detail.png"], title: "skills-page-screenshots")
+    Caption("Dragged wide, 360: a module, two files and a folder pointed out, with what the session changed. Both files in src opened, so src has nothing left to lead to; test still has")
+    TreeRailPicture(width: 360, module: true, seen: ["src/InviteCard.tsx", "src/join.ts"])
+}
+
 let folderPage = FogContent(id: "morrow-invite-folder-v1") { FolderDeliverablePicture() }
 let folderSession = FogSession(id: "morrow", label: "Morrow brand page", agent: "Claude", item: "The invite module's new layout: the card, the join step and their tests", standing: .ready)
 
 try render("m3-panel-folder", width: 1280) {
-    Heading(title: "Conversation panel, full screen on a folder", note: "A folder a session published is its tree: what the session changed has its dot, what the agent pointed at (focus) is open and washed in its violet with the ✦, and the first focused file is in the viewer. Picking a file opens it there.")
+    Heading(title: "Conversation panel, full screen on a folder", note: "A folder a session published is its tree: what the session changed has its dot after the name, what the agent pointed out (focus) is open with a violet rule in the margin (quieter on the folders on the way), and the first focused file is in the viewer; opened, its rule goes grey and the header counts what is left. Picking a file opens it there. The grip on the line beside the tree drags it wider or narrower.")
     m3Fog(.bottomLeading, fullScreen: true, draft: "Split the email check into its own step", session: folderSession, pager: true, content: folderPage)
     Caption("Docked: the words, named by their session. A pick of the folder (Next, the switcher, the Ready pill) opens it full screen here, from anywhere: only conch draws its tree.")
     m3Fog(.bottomLeading, session: folderSession, pager: true)

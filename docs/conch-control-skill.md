@@ -165,7 +165,9 @@ https://brew.sh rather than trying to install Homebrew yourself.
   marked, and a click on a file opens it there. `focus` names up to 12 paths
   inside the folder to point at, relative to it or absolute inside it
   (`focus: ["src/setup.ts", "test/"]`); the tree opens expanded to them and
-  marks them. Each must exist and stay inside the folder: no `..`, no symlink
+  marks them, and greys each one the user has opened. To point at one again,
+  publish the folder again with it in `focus`: a new version starts unseen.
+  Each must exist and stay inside the folder: no `..`, no symlink
   out, at most 200 characters each and 1024 bytes in all. Only the folder and
   these paths are published, never a listing, so the phone shows the folder's
   name and the focus paths and says to open it on the Mac. The folder is the

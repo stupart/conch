@@ -205,12 +205,15 @@ public struct ConchFileChanges: Equatable, Sendable {
 public struct ConchFileFocus: Equatable, Sendable {
     /// Absolute, standardized, in the order the agent named them.
     public let paths: [String]
+    /// Each of `paths` as the daemon holds it, relative to the folder: what a path is marked seen by (`seen`).
+    public let keys: [String]
     /// The folder they are inside, standardized.
     public let root: String
 
     public init(focus: [String], relativeTo root: String) {
         let base = ConchFileTree.standardized(root)
         var resolved: [String] = []
+        var keys: [String] = []
         for raw in focus {
             let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             let parts = trimmed.split(separator: "/", omittingEmptySubsequences: true)
@@ -218,8 +221,10 @@ public struct ConchFileFocus: Equatable, Sendable {
             let path = ConchFileTree.standardized(base + "/" + parts.joined(separator: "/"))
             guard path.hasPrefix(base + "/"), !resolved.contains(path) else { continue }
             resolved.append(path)
+            keys.append(parts.joined(separator: "/"))
         }
         paths = resolved
+        self.keys = keys
         self.root = base
     }
 
@@ -228,12 +233,53 @@ public struct ConchFileFocus: Equatable, Sendable {
     /// Is this the very path the agent pointed at?
     public func isFocused(_ entry: ConchFileEntry) -> Bool { paths.contains(entry.path) }
 
+    /// Where a path the agent pointed at came in its list: the 2nd of 6.
+    public struct Place: Equatable, Sendable {
+        public let index: Int
+        public let of: Int
+    }
+
+    /// This row's place among what the agent pointed at, in the order it named them; nil when it isn't one.
+    public func place(of entry: ConchFileEntry) -> Place? {
+        paths.firstIndex(of: entry.path).map { Place(index: $0 + 1, of: paths.count) }
+    }
+
     /// Does this folder hold a path the agent pointed at, at any depth: the route to it. The separator matters, as
     /// for `ConchFileChanges.contains`: `/src/app` must not claim `/src/application.ts`.
     public func leadsTo(_ entry: ConchFileEntry) -> Bool {
         guard entry.isDirectory else { return false }
         let prefix = entry.path + "/"
         return paths.contains { $0.hasPrefix(prefix) }
+    }
+
+    // MARK: Seen
+
+    /// The paths pointed at that Tyler has seen: opened in the viewer (`seen`, by key, epoch-ms, as the daemon keeps it
+    /// for this filing), and not changed on the disk since (`modified`, by path; a path whose time isn't known counts as
+    /// unchanged). A newer filing that points at a path again is a new record with nothing seen, so it is unseen again.
+    public func seen(_ seen: [String: Double], modified: [String: Date] = [:]) -> Set<String> {
+        var out: Set<String> = []
+        for (path, key) in zip(paths, keys) {
+            guard let at = seen[key], at.isFinite else { continue }
+            if let changed = modified[path], changed.timeIntervalSince1970 * 1000 > at { continue }
+            out.insert(path)
+        }
+        return out
+    }
+
+    /// What opening `path` in the viewer marks seen, by key: the path itself when it was pointed at, and a pointed-at
+    /// folder holding it, whose point was what is in it.
+    public func keysSeen(byOpening path: String) -> [String] {
+        zip(paths, keys).compactMap { focused, key in
+            focused == path || path.hasPrefix(focused + "/") ? key : nil
+        }
+    }
+
+    /// Does this folder hold a path pointed at that isn't seen yet: its route mark stays the agent's until all are.
+    public func leadsToUnseen(_ entry: ConchFileEntry, seen: Set<String>) -> Bool {
+        guard entry.isDirectory else { return false }
+        let prefix = entry.path + "/"
+        return paths.contains { $0.hasPrefix(prefix) && !seen.contains($0) }
     }
 
     /// The folders to open so every focus path is on screen: each one's folders between the root and it, and a focused

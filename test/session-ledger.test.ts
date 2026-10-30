@@ -226,6 +226,23 @@ describe("saved deliverables", () => {
     expect(restored(path).sessionStates.get("a")?.review?.scene).toBeUndefined();
   }));
 
+  test("which of a folder's focus paths were opened is saved and restored, only paths still in its focus", () => withFile((path) => {
+    const ledger = new SessionLedger(path);
+    const review = { summary: "module", link: "/w/module", at: 1_000, id: "a-rev", focus: ["src/setup.ts", "test"], seen: { "src/setup.ts": 2_000 } };
+    ledger.sessionStates.set("a", { label: "a", status: "waiting", at: 1_000, review, reviews: [review] });
+    ledger.saveReviews();
+    expect(restored(path).sessionStates.get("a")?.review?.seen).toEqual({ "src/setup.ts": 2_000 });
+    const saved = JSON.parse(readFileSync(path, "utf8"));
+    saved.a.review.seen = { "src/setup.ts": 2_000, "elsewhere.ts": 3_000, test: "yesterday" };
+    saved.a.reviews[0].seen = saved.a.review.seen;
+    writeFileSync(path, JSON.stringify(saved));
+    expect(restored(path).sessionStates.get("a")?.review?.seen).toEqual({ "src/setup.ts": 2_000 });
+    saved.a.review.seen = [1, 2];
+    saved.a.reviews[0].seen = [1, 2];
+    writeFileSync(path, JSON.stringify(saved));
+    expect(restored(path).sessionStates.get("a")?.review?.seen).toBeUndefined();
+  }));
+
   test("a malformed entry is skipped and a live latch is never overwritten", () => withFile((path) => {
     const ledger = new SessionLedger(path);
     file(ledger, "a", 1_000);
