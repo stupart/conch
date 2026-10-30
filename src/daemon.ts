@@ -3392,7 +3392,9 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       }
       if (!target.pid) return refuse("the session has no terminal conch can type into");
       const status = lastPanelModel?.rows.find((row) => row.sessionId === target.sessionId)?.status;
-      if (status === "working") return refuse("the session is working; change it when its turn is over");
+      if (status === "working" && !AGENT_SESSION_SETTINGS[backend].changesMidTurn) {
+        return refuse("the session is working; change it when its turn is over");
+      }
       if (status === "needs") return refuse("the session is waiting on you; answer it first");
       settle({ state: "applying", ...change, at: startedAt, startedAt });
       const receipt = createRecordOperation(observeRecords, { sessionId: target.sessionId }, "delivery");

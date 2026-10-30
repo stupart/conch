@@ -134,7 +134,7 @@ test("the daemon drives the agent's own picker, never a one-line /model", () => 
   expect(drive).toContain("read: () => readSessionScreen(target.pid),");
   // Typed and not submitted, so the driver can check the prompt before Enter.
   expect(drive).toContain("delivered(await ui.text({ ...cfg, autoSubmit: false }, target.pid, words, { clipboardFallback: false }))");
-  expect(drive).toContain('if (status === "working") return refuse(');
+  expect(drive).toContain('if (status === "working" && !AGENT_SESSION_SETTINGS[backend].changesMidTurn) {');
   expect(drive).toContain('if (status === "needs") return refuse(');
   expect(drive).toMatch(/recordDaemonError\("session-settings",/);
   expect(daemon).not.toContain("`/model ${");

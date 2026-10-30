@@ -574,15 +574,28 @@ describe("driving a running session's own picker", () => {
     expect(sim.session).toEqual(before);
   });
 
-  test.each(["claude", "codex"] as const)("%s: a working session is refused before anything is typed", async (backend) => {
-    const sim = backend === "claude" ? simulatedClaude({ busy: true }) : simulatedCodex({ busy: true });
+  test("claude: a working session is refused before anything is typed", async () => {
     const typed: string[] = [];
-    const outcome = await driveSessionSettings(backend, { effort: "high" }, {
-      ...depsFor(sim),
+    const outcome = await driveSessionSettings("claude", { effort: "high" }, {
+      ...depsFor(simulatedClaude({ busy: true })),
       type: async (words) => (typed.push(words), true),
     });
     expect(outcome).toEqual({ ok: false, reason: "the session is working; change it when its turn is over" });
     expect(typed).toEqual([]);
+  });
+
+  test("codex: a working session changes through the same picker, for this session only", async () => {
+    const sim = simulatedCodex({ busy: true });
+    const outcome = await driveSessionSettings("codex", { model: "gpt-6-luna", effort: "high" }, depsFor(sim));
+    expect(outcome.ok).toBe(true);
+    expect(sim.session).toEqual({ model: "gpt-6-luna", effort: "high" });
+    expect(sim.savedDefault).toBe(false);
+    expect(sim.sentMessage).toBeNull();
+  });
+
+  test("only an agent whose picker can't take a change during a turn waits it out", () => {
+    expect(AGENT_SESSION_SETTINGS.codex.changesMidTurn).toBe(true);
+    expect(AGENT_SESSION_SETTINGS.claude.changesMidTurn).toBe(false);
   });
 
   test.each([
