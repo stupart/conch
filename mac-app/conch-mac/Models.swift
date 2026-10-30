@@ -149,6 +149,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
         let profile: String
         /// Epoch-ms.
         let openedAt: Double
+        /// Epoch-ms an agent last ran a command in it. Absent from an older daemon: when it was opened stands in.
+        let usedAt: Double?
         /// "user" for a tab the user opened from the Workdesk's +; absent for an agent's.
         let opener: String?
         /// The user paused agents in it.
@@ -163,16 +165,17 @@ struct PublishedState: Decodable, Equatable, Sendable {
         }
 
         private enum CodingKeys: String, CodingKey {
-            case id, sessionId, url, title, profile, openedAt, opener, paused, ask
+            case id, sessionId, url, title, profile, openedAt, usedAt, opener, paused, ask
         }
 
-        init(id: String, sessionId: String, url: String, title: String?, profile: String, openedAt: Double, opener: String?, paused: Bool?, ask: Ask? = nil) {
+        init(id: String, sessionId: String, url: String, title: String?, profile: String, openedAt: Double, usedAt: Double? = nil, opener: String?, paused: Bool?, ask: Ask? = nil) {
             self.id = id
             self.sessionId = sessionId
             self.url = url
             self.title = title
             self.profile = profile
             self.openedAt = openedAt
+            self.usedAt = usedAt
             self.opener = opener
             self.paused = paused
             self.ask = ask
@@ -187,6 +190,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
             title = try container.decodeIfPresent(String.self, forKey: .title)
             profile = try container.decode(String.self, forKey: .profile)
             openedAt = try container.decode(Double.self, forKey: .openedAt)
+            usedAt = try? container.decodeIfPresent(Double.self, forKey: .usedAt)
             opener = try container.decodeIfPresent(String.self, forKey: .opener)
             paused = try container.decodeIfPresent(Bool.self, forKey: .paused)
             ask = (try? container.decodeIfPresent(Ask.self, forKey: .ask)) ?? nil

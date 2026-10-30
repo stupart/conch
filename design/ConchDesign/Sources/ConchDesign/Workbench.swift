@@ -47,6 +47,9 @@ public enum Workbench {
         public let profile: String
         /// Epoch-ms it was opened.
         public let openedAt: Double
+        /// Epoch-ms an agent last ran a command in it, or it was opened: what moves it along the Workdesk's run
+        /// (`Workdesk.run`). The user's own clicks in a page don't change it.
+        public let usedAt: Double
         /// The user opened it, with the Workdesk's +; an agent's otherwise.
         public let openedByUser: Bool
         /// The user paused agents in it: their commands there are refused.
@@ -75,6 +78,7 @@ public enum Workbench {
             title: String? = nil,
             profile: String = Workbench.defaultProfile,
             openedAt: Double = 0,
+            usedAt: Double? = nil,
             openedByUser: Bool = false,
             paused: Bool = false,
             ask: Ask? = nil
@@ -85,6 +89,7 @@ public enum Workbench {
             self.title = title
             self.profile = profile
             self.openedAt = openedAt
+            self.usedAt = usedAt ?? openedAt
             self.openedByUser = openedByUser
             self.paused = paused
             self.ask = ask
@@ -98,12 +103,12 @@ public enum Workbench {
 
         /// The same tab, paused or not: what the Workdesk shows the moment the user turns Pause agents on or off.
         public func with(paused: Bool) -> Tab {
-            Tab(id: id, sessionId: sessionId, url: url, title: title, profile: profile, openedAt: openedAt, openedByUser: openedByUser, paused: paused, ask: ask)
+            Tab(id: id, sessionId: sessionId, url: url, title: title, profile: profile, openedAt: openedAt, usedAt: usedAt, openedByUser: openedByUser, paused: paused, ask: ask)
         }
 
         /// The same tab with its ask, or answered: what the Workdesk shows the moment the user presses Done.
         public func with(ask: Ask?) -> Tab {
-            Tab(id: id, sessionId: sessionId, url: url, title: title, profile: profile, openedAt: openedAt, openedByUser: openedByUser, paused: paused, ask: ask)
+            Tab(id: id, sessionId: sessionId, url: url, title: title, profile: profile, openedAt: openedAt, usedAt: usedAt, openedByUser: openedByUser, paused: paused, ask: ask)
         }
     }
 

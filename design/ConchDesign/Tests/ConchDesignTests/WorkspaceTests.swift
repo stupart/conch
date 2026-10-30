@@ -429,4 +429,45 @@ extension WorkspaceTests {
         XCTAssertNil(figmaApp("https://example.com/design/KEY/figma.com"))
         XCTAssertNil(figmaApp("file:///Users/me/Asset.fig"))
     }
+
+    // MARK: - The Workdesk's run
+
+    private func page(_ id: String, opened: Double, used: Double? = nil) -> Workbench.Tab {
+        Workbench.Tab(id: id, sessionId: "s", url: "https://\(id).example", openedAt: opened, usedAt: used)
+    }
+
+    private func runIDs(_ tabs: [Workbench.Tab], _ filed: [(String, Double?)]) -> [String] {
+        let times = Dictionary(uniqueKeysWithValues: filed.map { ($0.0, $0.1) })
+        return Workdesk.run(tabs: tabs, groups: filed.map { DeliverableGroup(id: $0.0, versions: [$0.0]) }) { times[$0.id] ?? nil }.map(\.id)
+    }
+
+    /// Pages used to lead whatever happened: a site an agent had just changed sat left of everything filed before it.
+    func testWhatAnAgentLastTouchedIsAtTheRightEndOfTheRun() {
+        XCTAssertEqual(
+            runIDs([page("site", opened: 1, used: 50), page("docs", opened: 2)], [("old", 10), ("new", 40)]),
+            ["browser:docs", "deliverable:old", "deliverable:new", "browser:site"]
+        )
+    }
+
+    func testANewFilingOfAnArtifactMovesItPastAPageTheAgentLeftAlone() {
+        XCTAssertEqual(runIDs([page("site", opened: 30)], [("hero", 60)]), ["browser:site", "deliverable:hero"])
+    }
+
+    func testATabWithoutAnAgentCommandStandsWhereItWasOpened() {
+        XCTAssertEqual(page("site", opened: 30).usedAt, 30)
+        XCTAssertEqual(page("site", opened: 30, used: 70).with(paused: true).usedAt, 70)
+        XCTAssertEqual(page("site", opened: 30, used: 70).with(ask: nil).usedAt, 70)
+    }
+
+    func testARunTieKeepsPagesFirstAndAFilingWithNoTimeGoesLeft() {
+        XCTAssertEqual(runIDs([page("site", opened: 5)], [("tied", 5), ("untimed", nil)]), ["deliverable:untimed", "browser:site", "deliverable:tied"])
+    }
+
+    /// While the pointer is in the run: nothing moves under it, a new tab lands on the end, a closed one goes.
+    func testAHeldRunKeepsItsOrder() {
+        let live = Workdesk.run(tabs: [page("a", opened: 3, used: 90), page("b", opened: 2), page("new", opened: 95)], groups: []) { _ in nil }
+        XCTAssertEqual(live.map(\.id), ["browser:b", "browser:a", "browser:new"])
+        XCTAssertEqual(Workdesk.held(live, order: ["browser:a", "browser:b", "browser:closed"]).map(\.id), ["browser:a", "browser:b", "browser:new"])
+        XCTAssertEqual(Workdesk.held(live, order: nil), live)
+    }
 }

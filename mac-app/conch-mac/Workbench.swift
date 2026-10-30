@@ -1016,7 +1016,7 @@ struct WorkbenchFailure: Error, Equatable {
 extension PublishedState.BrowserTab {
     var workbenchTab: Workbench.Tab {
         Workbench.Tab(
-            id: id, sessionId: sessionId, url: url, title: title, profile: profile, openedAt: openedAt,
+            id: id, sessionId: sessionId, url: url, title: title, profile: profile, openedAt: openedAt, usedAt: usedAt,
             openedByUser: opener == "user", paused: paused == true,
             ask: ask.map { Workbench.Tab.Ask(reason: $0.reason, at: $0.at) }
         )

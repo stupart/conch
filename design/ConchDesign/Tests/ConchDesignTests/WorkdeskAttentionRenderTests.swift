@@ -109,6 +109,17 @@ final class WorkdeskAttentionRenderTests: XCTestCase {
         }
     }
 
+    /// The run opens at its right end, where what an agent last touched is, even with the tab shown at the far left.
+    func testARunOpensAtItsRightEnd() throws {
+        for dark in [false, true] {
+            for width in Self.widths {
+                let label = "\(Int(width)) \(dark ? "dark" : "light")"
+                let shot = try picture(RunEndScene(width: width), size: CGSize(width: width, height: AskScene.height), dark: dark, name: "run-end-\(label)")
+                XCTAssertNotNil(shot.span(x: 6, width - 36, y: 17, where: { isAttention($0, dark: dark) }), "the last tab in view, \(label)")
+            }
+        }
+    }
+
     // MARK: - Passkeys
 
     /// The passkey line: the same strip, the bar's surface without the wash, its key on the left axis and its × the bar's
@@ -266,6 +277,28 @@ private func diff(_ a: Shot.RGB, _ b: Shot.RGB) -> Int {
 /// The Workdesk as the app lays it out: the strip (Files, Shell, a hairline, the run of browser tabs and filed work, the
 /// +), and under it either the tab that needs the user (its bar, the strip under it, its page) or the deliverable he was
 /// reading while it waits.
+/// A full strip shown at its first tab, with the tab that says "Needs you" last: in view only if the run went to its end.
+private struct RunEndScene: View {
+    let width: CGFloat
+
+    var body: some View {
+        HStack(spacing: 2) {
+            WorkdeskTabRun(shown: AnyHashable("d1"), newest: Workdesk.RunEnd(id: "tab-1", at: 1), newTab: {}) {
+                StandInDeliverable(summary: "Pricing page, second pass", age: "9m", selected: true).workdeskTab("d1")
+                StandInDeliverable(summary: "Onboarding flow audit", age: "4m", selected: false).workdeskTab("d2")
+                StandInDeliverable(summary: "Mood board, round two", age: "1m", selected: false).workdeskTab("d3")
+                WorkbenchTabButton(tab: AskScene.dashboard, isSelected: false, open: {}, close: {}).workdeskTab("tab-2")
+                WorkbenchTabButton(tab: AskScene.invoices, isSelected: false, open: {}, close: {}).workdeskTab("tab-3")
+                WorkbenchTabButton(tab: AskScene.signIn, isSelected: false, open: {}, close: {}).workdeskTab("tab-1")
+            }
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 5)
+        .frame(width: width, height: AskScene.height, alignment: .top)
+        .background(ConchColor.surface)
+    }
+}
+
 private struct AskScene: View {
     let width: CGFloat
     /// In front, or waiting behind the deliverable.
