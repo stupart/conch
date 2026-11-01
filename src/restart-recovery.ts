@@ -124,6 +124,20 @@ export interface RunningSession {
   agentSessionId?: string;
   label?: string;
   backend?: string;
+  /** Its sign-in (claude-session-sign-ins.ts), which its hook may tell of after the ledger first took it down. */
+  claudeSignInId?: string;
+}
+
+/**
+ * A record's request with the session's sign-in as it is now: its hook can tell of it after the registry showed the
+ * session and the record was written, and a session brought back on the rotating login instead of its sign-in would be
+ * on the wrong account without a word. True when that changed it.
+ */
+export function followSignIn(request: StartSessionRequest, session: Pick<RunningSession, "claudeSignInId">): boolean {
+  if (request.claudeSignInId === session.claudeSignInId) return false;
+  if (session.claudeSignInId) request.claudeSignInId = session.claudeSignInId;
+  else delete request.claudeSignInId;
+  return true;
 }
 
 export interface RestartGuardOptions {
@@ -233,6 +247,7 @@ export class RestartGuard {
       const known = this.#ledger.records.find((record) => record.conversationId === conversationId);
       if (known) {
         if (known.goneAt !== undefined || (session.label && session.label !== known.label)) changed = true;
+        if (followSignIn(known.request, session)) changed = true;
         known.goneAt = undefined;
         known.seenAt = now;
         known.label = session.label ?? known.label;

@@ -1,7 +1,8 @@
 import { decodeFailureTicketRequest, type FailureDesk } from "./failure-tickets.ts";
 import type { AccountToolsRequest, AccountToolsReply } from "./account-tools.ts";
 import { PROMPT_DIGEST } from "./delivery-evidence.ts";
-import type { ClaudeAccountRequest, ClaudeAccountsReply } from "./claude-accounts.ts";
+import { validAccountId, type ClaudeAccountRequest, type ClaudeAccountsReply } from "./claude-accounts.ts";
+import type { ClaudeSessionSignInRequest, ClaudeSessionSignInsReply } from "./claude-session-sign-ins.ts";
 import { ControlFrameError, ControlFrameReader, encodeControlFrame } from "./control-framing.ts";
 import type { HistoryPageRequest, HistoryItemRequest, HistoryResponse } from "./history.ts";
 import { fitLoginInventoryReply, type LoginInventoryReply, type LoginInventoryRequest } from "./login-inventory.ts";
@@ -307,6 +308,7 @@ export function dispatchControlMessage(
     || validated.value.kind === "history-page" || validated.value.kind === "history-item"
     || validated.value.kind === "agent-capabilities"
     || validated.value.kind === "account-tools" || validated.value.kind === "claude-accounts" || validated.value.kind === "codex-accounts"
+    || validated.value.kind === "claude-session-sign-ins"
     || validated.value.kind === "login-inventory"
     || validated.value.kind === "skills-library" || validated.value.kind === "benchmarks"
     || validated.value.kind === "session-start"
@@ -362,6 +364,8 @@ export interface RuntimeControlDispatchOptions {
   /** The benchmark catalog (benchmarks.ts). Read only. */
   benchmarks?(message: BenchmarksRequest): BenchmarksReply;
   claudeAccounts?(message: ClaudeAccountRequest): Promise<ClaudeAccountsReply>;
+  /** Sign-ins for single sessions (claude-session-sign-ins.ts). An add's token goes to the Keychain, never back out. */
+  claudeSessionSignIns?(message: ClaudeSessionSignInRequest): Promise<ClaudeSessionSignInsReply>;
   historyPage?(message: HistoryPageRequest): HistoryResponse | Promise<HistoryResponse>;
   historyItem?(message: HistoryItemRequest): HistoryResponse | Promise<HistoryResponse>;
   listResumable(
@@ -428,7 +432,9 @@ export function sessionStartLine(
 ): string {
   const account = message.claudeAccountId ?? message.codexAccountId ?? "default";
   const kind = message.teleportSessionId ? " teleport" : message.resumeSessionId ? " resume" : "";
+  // A sign-in by its id too, never its name or anything of its token.
   return `session-start: ${message.backend} ${message.host ?? "terminal"}${kind} account=${account}`
+    + (message.claudeSignInId ? ` sign-in=${message.claudeSignInId}` : "")
     + ` trustFolder=${message.trustFolder === true ? "yes" : "no"} folder=${basename(folder) || folder}`
     + (asking ? " — asking whether to trust it first" : "");
 }
@@ -458,6 +464,10 @@ export async function applyRuntimeControlMessage(
     if (message.kind === "claude-accounts" || message.kind === "codex-accounts") {
       if (!options.claudeAccounts) throw new Error("Account management requires an updated Conch daemon");
       return await options.claudeAccounts(message);
+    }
+    if (message.kind === "claude-session-sign-ins") {
+      if (!options.claudeSessionSignIns) throw new Error("Sign-ins for single sessions need an updated conch daemon");
+      return await options.claudeSessionSignIns(message);
     }
     if (message.kind === "history-page") {
       const { kind, ...request } = message;
@@ -865,6 +875,10 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
   }
   if (value.startSource !== undefined && (type !== "session-start" || !isSessionStartSource(value.startSource))) {
     return { ok: false, err: "startSource is startup, resume, clear or compact, on session-start" };
+  }
+  // The sign-in a session was launched with, from its marker (claude-session-sign-ins.ts): an id, never a token.
+  if (value.claudeSignIn !== undefined && ((type !== "session-start" && type !== "working") || !validAccountId(value.claudeSignIn))) {
+    return { ok: false, err: "claudeSignIn is a sign-in id, on session-start or working" };
   }
   if (value.questionId !== undefined && (value.answers === undefined || typeof value.questionId !== "string"
     || !value.questionId || value.questionId.length > 300)) {
@@ -1387,6 +1401,7 @@ export interface ControlServer {
 function isRuntimeControlCandidate(value: unknown): boolean {
   return socketRecord(value) && (
     value.kind === "account-tools" || value.kind === "claude-accounts" || value.kind === "codex-accounts" || value.kind === "session-start" || value.kind === "session-close" || value.kind === "session-fork"
+    || value.kind === "claude-session-sign-ins"
     || value.kind === "login-inventory"
     || value.kind === "skills-library" || value.kind === "benchmarks"
     || value.kind === "history-page" || value.kind === "history-item"
@@ -1494,6 +1509,14 @@ export function createControlServer(options: ControlServerOptions): ControlServe
             frame = encodeControlFrame(JSON.stringify({ kind: "session-error", error: "the logins inventory was too large to send" }));
           }
           sock.end(frame);
+          return;
+        }
+        // Sign-ins for single sessions (claude-session-sign-ins.ts) name no session, and an add carries a token: the Mac
+        // app's alone, never a phone's (phone-bridge.ts `MAC_APP_ONLY_KINDS`), so a token never crosses the relay. Validated
+        // as every runtime message is (settings.ts); its reply and its refusals never hold the token.
+        if (socketRecord(body) && body.kind === "claude-session-sign-ins") {
+          const signIns = await dispatchRuntimeRequest(body, (message) => application.runtime(message));
+          sock.end(encodeControlFrame(JSON.stringify(signIns.handled ? signIns.response : { kind: "session-error", error: "invalid sign-in request" })));
           return;
         }
         // Failure tickets (failure-tickets.ts) name no session: Settings › Failures and `conch failures` ask for the list

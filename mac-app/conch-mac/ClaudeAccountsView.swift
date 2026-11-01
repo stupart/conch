@@ -607,6 +607,7 @@ private struct ProviderAccountSection: View {
                 Text(working).font(ConchTypography.font(size: 11)).foregroundStyle(SwapPalette.secondaryText)
             }
             switching(list)
+            SessionSignInsSection()
             DisclosureGroup(isExpanded: $showProfiles) {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("A separate sign-in is its own Claude folder on this Mac. Sessions started on one keep its account and never switch. Default is the one that switches.")
@@ -839,6 +840,213 @@ private struct ProviderAccountSection: View {
     }
 }
 
+
+/// Sign-ins for single sessions (daemon claude-session-sign-ins.ts): the list, Add, Remove, and step one of adding,
+/// `claude setup-token` in Terminal. A token passes through `add` once, on its way to the daemon and the Keychain: it is
+/// never kept here, published, logged or put in UserDefaults.
+@MainActor
+final class ClaudeSessionSignInsStore: ObservableObject {
+    @Published var signIns: [ClaudeSessionSignIn] = []
+    @Published var busy = false
+    @Published var error: String?
+    @Published var notice: String?
+    private let client = ConchSocketClient()
+
+    func list() async { _ = await send("list") }
+
+    /// Terminal, running `claude setup-token` in a folder of its own. True once it's open.
+    func openSetup() async -> Bool {
+        // Terminal opens behind any UI work the daemon is already doing (its UI transaction), so not a short wait.
+        guard let reply = await send("setup", timeout: 30) else { return false }
+        return reply.setupOpened == true
+    }
+
+    /// The name and the pasted token to the daemon, which writes the token to the Keychain. True once it's saved.
+    func add(label: String, token: String) async -> Bool {
+        guard await send("add", label: label, token: token, timeout: 100)?.added != nil else { return false }
+        notice = "Added \(label.trimmingCharacters(in: .whitespacesAndNewlines)). Choose it when you start a Claude session."
+        return true
+    }
+
+    func remove(_ signIn: ClaudeSessionSignIn) async {
+        if await send("remove", id: signIn.id, timeout: 100) != nil {
+            notice = "Removed \(signIn.label). Sessions on it keep running; restarting one asks you to choose again."
+        }
+    }
+
+    private func send(_ action: String, id: String? = nil, label: String? = nil, token: String? = nil,
+                      timeout: TimeInterval = 20) async -> ClaudeSessionSignInsReply? {
+        struct Request: Encodable {
+            let kind = "claude-session-sign-ins"
+            let action: String
+            let id: String?
+            let label: String?
+            /// `add` only. Encoded straight onto the socket; this struct lives as long as the request does.
+            let token: String?
+        }
+        struct Failure: Decodable { let error: String? }
+        busy = true
+        error = nil
+        notice = nil
+        defer { busy = false }
+        switch await client.request(Request(action: action, id: id, label: label, token: token), timeout: timeout) {
+        case let .reply(data):
+            if let reply = try? JSONDecoder().decode(ClaudeSessionSignInsReply.self, from: data) {
+                signIns = reply.signIns
+                return reply
+            }
+            // The daemon's own words: none of them repeats a token (claude-session-sign-ins.ts).
+            error = (try? JSONDecoder().decode(Failure.self, from: data))?.error ?? "Sign-ins for single sessions need an updated conch daemon."
+        case .connectFailed:
+            error = "Start the conch daemon to manage sign-ins."
+        case .timeout:
+            error = "The daemon did not reply. Refresh before trying again."
+        }
+        return nil
+    }
+}
+
+/// "Sign-ins for single sessions" (2026-11-01, Tyler: "one profile, choose which account a new session signs in as"):
+/// a Claude subscription one session can start on, in Default, where every other session follows the rotating login.
+/// Settings, memory and projects stay Default's; only the account differs.
+private struct SessionSignInsSection: View {
+    @StateObject private var store = ClaudeSessionSignInsStore()
+    @State private var adding = false
+    @State private var removing: ClaudeSessionSignIn?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Sign-ins for single sessions").font(ConchTypography.font(size: 13, weight: .medium))
+            Text("Start a session on one of these and it keeps that Claude subscription, without switching. It still uses Default's settings, memory and projects.")
+                .font(ConchTypography.font(size: 11)).foregroundStyle(SwapPalette.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            if let notice = store.notice {
+                Text(notice).font(ConchTypography.font(size: 12)).foregroundStyle(SwapPalette.foreground)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let error = store.error {
+                Text(error).font(ConchTypography.font(size: 12)).foregroundStyle(ConchPalette.statusNeeds)
+                    .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+            }
+            if !store.signIns.isEmpty {
+                VStack(spacing: 0) {
+                    ForEach(store.signIns) { signIn in
+                        row(signIn)
+                        Rectangle().fill(SwapPalette.divider).frame(height: 1)
+                    }
+                }
+            }
+            Button("Add a sign-in…") { adding = true }.disabled(store.busy)
+        }
+        .task { await store.list() }
+        .sheet(isPresented: $adding) {
+            AddSessionSignInSheet(store: store) { adding = false }
+        }
+        .alert("Remove \(removing?.label ?? "this sign-in")?", isPresented: Binding(
+            get: { removing != nil }, set: { if !$0 { removing = nil } }
+        )) {
+            Button("Remove", role: .destructive) {
+                guard let signIn = removing else { return }
+                removing = nil
+                Task { await store.remove(signIn) }
+            }
+            Button("Cancel", role: .cancel) { removing = nil }
+        } message: {
+            Text("Its token is deleted from this Mac's Keychain. Sessions on it keep running; restarting one asks you to choose a sign-in again.")
+        }
+    }
+
+    /// The Claude list's rhythm (`listRow`): the mark in its 26-point square, 14 above and below.
+    private func row(_ signIn: ClaudeSessionSignIn) -> some View {
+        HStack(spacing: 10) {
+            Image("AgentClaude").resizable().scaledToFit().frame(width: 26, height: 26)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(signIn.label).font(ConchTypography.font(size: 13, weight: .medium)).lineLimit(1)
+                Text("Added \(signIn.added.formatted(date: .abbreviated, time: .omitted))")
+                    .font(ConchTypography.font(size: 11)).foregroundStyle(SwapPalette.secondaryText)
+            }
+            Spacer(minLength: 8)
+            Button("Remove…", role: .destructive) { removing = signIn }.disabled(store.busy)
+        }
+        .padding(.vertical, 14)
+    }
+}
+
+/// Adding a sign-in, in two steps: `claude setup-token` in Terminal, which signs in in the browser and prints a token,
+/// then the token pasted here with a name. The paste lives in this sheet's state until Save, which sends it and clears
+/// the field; nothing else ever sees it.
+private struct AddSessionSignInSheet: View {
+    @ObservedObject var store: ClaudeSessionSignInsStore
+    let onClose: () -> Void
+    @State private var name = ""
+    @State private var token = ""
+    @State private var opened = false
+    @State private var problem: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Add a sign-in").font(ConchTypography.font(size: 17, weight: .medium))
+            VStack(alignment: .leading, spacing: 8) {
+                Text("1. Get a token").font(ConchTypography.font(size: 13, weight: .medium))
+                Text("Terminal runs claude setup-token in a folder of its own, so the login your sessions use doesn't change. Sign in with the account you want in the browser it opens, then copy the token it prints.")
+                    .font(ConchTypography.font(size: 12)).foregroundStyle(SwapPalette.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button(opened ? "Open Terminal again" : "Open Terminal") {
+                    Task { opened = await store.openSetup() || opened }
+                }.disabled(store.busy)
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                Text("2. Paste it here").font(ConchTypography.font(size: 13, weight: .medium))
+                TextField("Name, e.g. Work Max", text: $name).textFieldStyle(.roundedBorder)
+                SecureField("Token from claude setup-token", text: $token).textFieldStyle(.roundedBorder)
+                Text("Kept in this Mac's Keychain, and read only by the sessions you start on it.")
+                    .font(ConchTypography.font(size: 11)).foregroundStyle(SwapPalette.secondaryText)
+            }
+            if let problem = problem ?? store.error {
+                Text(problem).font(ConchTypography.font(size: 12)).foregroundStyle(ConchPalette.statusNeeds)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Button("Cancel") { close() }.keyboardShortcut(.cancelAction)
+                Spacer()
+                if store.busy { ProgressView().controlSize(.small) }
+                Button("Save") { save() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(store.busy || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || token.isEmpty)
+            }
+        }
+        .padding(24)
+        .frame(width: 460)
+        .background(ConchPalette.bg)
+        .onDisappear { token = "" }
+    }
+
+    private func save() {
+        problem = nil
+        if let wrong = SessionSignInName.problem(name) {
+            problem = wrong
+            return
+        }
+        // Sent once and cleared at once, whatever the daemon says.
+        let pasted = token
+        token = ""
+        guard let checked = SessionSignInToken.normalized(pasted) else {
+            problem = SessionSignInToken.problem
+            return
+        }
+        Task {
+            if await store.add(label: name, token: checked) {
+                name = ""
+                onClose()
+            }
+        }
+    }
+
+    private func close() {
+        token = ""
+        onClose()
+    }
+}
 
 /// A Claude sign-in shown in the app (daemon `claude-web-login.ts`): what it's for, and Anthropic's authorize page.
 struct ClaudeSignInRequest: Identifiable, Equatable {

@@ -6,6 +6,7 @@ import { processMatchesProvider, readProcessIdentity, sameProcessIdentity, type 
 import { conchHome } from "./home.ts";
 import { CODEX_ACCOUNT_ENV_REMOVE, codexAccountForLaunch, type CodexAccount } from "./codex-accounts.ts";
 import { CLAUDE_ACCOUNT_ENV_REMOVE, claudeAccountForLaunch, requireClaudeAccount, type ClaudeAccount } from "./claude-accounts.ts";
+import { claudeSignInForLaunch, setupTokenCommand, signInShellPrefix, SIGN_IN_LAUNCH_ENV } from "./claude-session-sign-ins.ts";
 import { statSync } from "node:fs";
 import {
   adapterFor,
@@ -28,6 +29,12 @@ export interface StartSessionRequest {
   host?: "terminal" | "background";
   /** A registered local Claude profile, never an arbitrary environment override. */
   claudeAccountId?: string;
+  /**
+   * Which Claude subscription this one session signs in as (claude-session-sign-ins.ts): a sign-in's id, in the Default
+   * profile only. The launched shell reads its token from the Keychain itself (`signInShellPrefix`), so this id is all
+   * the request, the command and anything that records them ever hold. Absent: Default's own, rotating login.
+   */
+  claudeSignInId?: string;
   codexAccountId?: string;
   /** Explicit local conversation handoff; credentials stay in their own profile. */
   claudeSourceAccountId?: string;
@@ -317,9 +324,13 @@ export function terminalSessionCommand(request: StartSessionRequest): string {
   if (error) throw new Error(error);
   const cwd = sessionFolder(request);
   const adapter = adapterFor(request.backend);
-  const account = claudeAccountForLaunch(request);
+  // A sign-in runs in Default, named or not, and drops whatever other credential the shell carries, as a second profile
+  // does: an ANTHROPIC_API_KEY there would win over the token. Its own two variables are kept (`SIGN_IN_LAUNCH_ENV`).
+  const signIn = claudeSignInForLaunch(request);
+  const account = claudeAccountForLaunch(request) ?? (signIn ? requireClaudeAccount("default") : undefined);
   const codexAccount = codexAccountForLaunch(request);
-  const profile = account ? claudeProfileCommandPrefix(account, request.claudeHandoff || request.host === "background" ? true : undefined)
+  const profile = account ? claudeProfileCommandPrefix(account, signIn || request.claudeHandoff || request.host === "background" ? true : undefined,
+    signIn ? SIGN_IN_LAUNCH_ENV : [])
     : request.claudeConfigDir ? claudeAccountCommandPrefix(request.claudeConfigDir, false)
     : codexAccount ? codexProfileCommandPrefix(codexAccount, request.host === "background" ? true : undefined) : "";
   // `open` and $BROWSER into conch's Workbench while `browser-open-in-conch` is on (browser-open.ts): after the
@@ -348,7 +359,9 @@ export function terminalSessionCommand(request: StartSessionRequest): string {
   if (request.initialPrompt !== undefined && request.prompt !== undefined) {
     throw new Error("A start carries one first message, a client's or the daemon's");
   }
-  return `cd -- ${shellQuote(cwd)} && exec ${environment}${adapter.executable}${hostFlags}${bypass}${trust}${hookTrust}${args}`
+  // The token is read by the shell, after `cd` and before `exec`: never in this text, tmux's arguments or a process's argv.
+  const token = signIn ? signInShellPrefix(signIn) : "";
+  return `cd -- ${shellQuote(cwd)} && ${token}exec ${environment}${adapter.executable}${hostFlags}${bypass}${trust}${hookTrust}${args}`
     + renderStartOptions(adapter, request.options)
     + (request.claudeHandoff ? ` --session-id ${shellQuote(request.claudeHandoff.sessionId)}` : "")
     // Last, after every flag: both agents take their first message as the one positional argument.
@@ -388,7 +401,7 @@ const LAUNCH_OVERRIDES: Record<SessionBackend, ReadonlySet<string>> = {
  * for values with spaces; no start-table value can contain one.
  */
 export function restartRequest(
-  session: Pick<SessionInfo, "sessionId" | "agentSessionId" | "backend" | "cwd" | "claudeAccountId" | "codexAccountId">,
+  session: Pick<SessionInfo, "sessionId" | "agentSessionId" | "backend" | "cwd" | "claudeAccountId" | "codexAccountId" | "claudeSignInId">,
   args: readonly string[],
 ): { request: StartSessionRequest; notCarriedOver: string[] } {
   const backend = session.backend ?? "claude";
@@ -442,6 +455,8 @@ export function restartRequest(
   return {
     request: { backend, resumeSessionId, ...(session.cwd ? { cwd: session.cwd } : {}),
       ...(session.claudeAccountId ? { claudeAccountId: session.claudeAccountId } : {}),
+      // Its sign-in too, so it comes back on the same account; one since removed refuses, never the rotating login.
+      ...(session.claudeSignInId ? { claudeSignInId: session.claudeSignInId } : {}),
       ...(session.codexAccountId ? { codexAccountId: session.codexAccountId } : {}), options },
     notCarriedOver,
   };
@@ -559,10 +574,7 @@ export async function startTerminalSession(
  * yes that never landed left the session on its prompt with nothing in the log (2026-10-05).
  */
 export async function startBackgroundSession(request: StartSessionRequest): Promise<{ backgroundId: string; trust?: Promise<BackgroundTrustOutcome> }> {
-  // A pre-existing tmux server may carry another account's environment.
-  // Explicitly select the registered profile and clear provider overrides.
-  const command = terminalSessionCommand({ ...request, host: "background",
-    [`${request.backend}AccountId`]: request.claudeAccountId ?? request.codexAccountId ?? "default" });
+  const command = backgroundSessionCommand(request);
   if (!Bun.which(adapterFor(request.backend).executable)) throw new Error(`${request.backend} is not installed or is not on PATH`);
   const cwd = sessionFolder(request);
   if (cwd === helpSessionDir()) ensureHelpSession();
@@ -573,21 +585,47 @@ export async function startBackgroundSession(request: StartSessionRequest): Prom
   return { backgroundId: name, trust: acceptBackgroundTrust(pane) };
 }
 
-export function claudeAccountCommandPrefix(configDir: string, isolate = true): string {
-  return `env ${isolate ? CLAUDE_ACCOUNT_ENV_REMOVE.map((key) => `-u ${key}`).join(" ") + " " : ""}CLAUDE_CONFIG_DIR=${shellQuote(configDir)} `;
+/**
+ * What a background start runs in conch's tmux, built by the one builder a Terminal start uses. A pre-existing tmux
+ * server may carry another account's environment: the registered profile is named explicitly and provider overrides
+ * cleared, a sign-in's token read by the pane's own shell as in Terminal.
+ */
+export function backgroundSessionCommand(request: StartSessionRequest): string {
+  return terminalSessionCommand({ ...request, host: "background",
+    [`${request.backend}AccountId`]: request.claudeAccountId ?? request.codexAccountId ?? "default" });
 }
 
-function claudeProfileCommandPrefix(account: ClaudeAccount, isolate = account.id !== "default"): string {
+/** `keep`: credentials not to strip, because the launch sets them itself (a sign-in's, `SIGN_IN_LAUNCH_ENV`). */
+export function claudeAccountCommandPrefix(configDir: string, isolate = true, keep: readonly string[] = []): string {
+  return `env ${removedClaudeEnvironment(isolate, keep)}CLAUDE_CONFIG_DIR=${shellQuote(configDir)} `;
+}
+
+function removedClaudeEnvironment(isolate: boolean, keep: readonly string[]): string {
+  return isolate ? CLAUDE_ACCOUNT_ENV_REMOVE.filter((key) => !keep.includes(key)).map((key) => `-u ${key}`).join(" ") + " " : "";
+}
+
+function claudeProfileCommandPrefix(account: ClaudeAccount, isolate = account.id !== "default", keep: readonly string[] = []): string {
   // An unset default must stay unset: explicitly setting ~/.claude can select
   // a different macOS Keychain entry. Additional profiles always name a root.
-  if (account.id === "default" && process.env.CLAUDE_CONFIG_DIR === undefined) return `env ${isolate ? CLAUDE_ACCOUNT_ENV_REMOVE.map(key => `-u ${key}`).join(" ") + " " : ""}-u CLAUDE_CONFIG_DIR `;
-  return claudeAccountCommandPrefix(account.configDir, isolate);
+  if (account.id === "default" && process.env.CLAUDE_CONFIG_DIR === undefined) return `env ${removedClaudeEnvironment(isolate, keep)}-u CLAUDE_CONFIG_DIR `;
+  return claudeAccountCommandPrefix(account.configDir, isolate, keep);
 }
 
 /** Authentication stays in Anthropic's own CLI and browser flow. */
 export async function startClaudeAccountLogin(account: ClaudeAccount, dependencies: SessionLifecycleDependencies = {}): Promise<void> {
   await withUITransaction(() => runInTerminal(
     `exec ${claudeProfileCommandPrefix(account)}claude auth login --claudeai`, "claude", undefined, dependencies,
+  ));
+}
+
+/**
+ * "Add a sign-in", step one (claude-session-sign-ins.ts): Terminal running `claude setup-token` in `configDir`, a
+ * throwaway folder, with no credential from the shell, so neither Default's login nor the rotation's can change. It is
+ * Anthropic's own browser sign-in; the token it prints is pasted into conch's sheet by hand.
+ */
+export async function startClaudeSetupToken(configDir: string, dependencies: SessionLifecycleDependencies = {}): Promise<void> {
+  await withUITransaction(() => runInTerminal(
+    setupTokenCommand(configDir, claudeAccountCommandPrefix(configDir)), "claude", undefined, dependencies,
   ));
 }
 

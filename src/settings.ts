@@ -4,6 +4,13 @@ import { benchmarksRequestError, isBenchmarksReply, type BenchmarksReply, type B
 import { isSkillsLibraryReply, skillsLibraryRequestError, type SkillsLibraryReply, type SkillsLibraryRequest } from "./skills-library.ts";
 import { claudeHandoffError } from "./claude-account-handoff.ts";
 import { accountRequestError, validAccountId, type ClaudeAccountRequest, type ClaudeAccountsReply } from "./claude-accounts.ts";
+import {
+  decodeSessionSignInRequest,
+  isSessionSignInsReply,
+  sessionSignInRequestError,
+  type ClaudeSessionSignInRequest,
+  type ClaudeSessionSignInsReply,
+} from "./claude-session-sign-ins.ts";
 import { parseExecutionCatalog } from "./execution-model.ts";
 import { parseSwapDashboard } from "./claude-swap.ts";
 import { connect } from "node:net";
@@ -970,6 +977,11 @@ export type SessionControlMessage =
 
 export type RuntimeControlMessage =
   | ClaudeAccountRequest
+  /**
+   * Sign-ins for single sessions (claude-session-sign-ins.ts): list, add (its token goes to the Keychain and nowhere
+   * else), remove, and `setup`'s Terminal. The Mac app's alone; the phone bridge refuses it.
+   */
+  | ClaudeSessionSignInRequest
   | AccountToolsRequest
   /** The logins inventory (login-inventory.ts): the Mac app's and the CLI's alone; the phone bridge refuses it. */
   | LoginInventoryRequest
@@ -989,6 +1001,8 @@ export type RuntimeControlMessage =
     kind: "session-start";
     host?: "terminal" | "background";
     claudeAccountId?: string;
+    /** A sign-in's id, for a Claude session in the Default profile (`StartSessionRequest.claudeSignInId`). */
+    claudeSignInId?: string;
     claudeSourceAccountId?: string;
     codexAccountId?: string;
     backend: "claude" | "codex";
@@ -1123,6 +1137,7 @@ export interface PairingOpen {
 
 export type RuntimeControlResponse =
   | ClaudeAccountsReply
+  | ClaudeSessionSignInsReply
   | AccountToolsReply
   | SkillsLibraryReply
   | BenchmarksReply
@@ -1228,6 +1243,7 @@ export function isControlMessageCandidate(value: unknown): boolean {
     || value.kind === "history-page" || value.kind === "history-item"
     || value.kind === "agent-capabilities"
     || value.kind === "account-tools" || value.kind === "claude-accounts" || value.kind === "codex-accounts"
+    || value.kind === "claude-session-sign-ins"
     || value.kind === "login-inventory"
     || value.kind === "skills-library" || value.kind === "benchmarks"
     || value.kind === "session-start"
@@ -1439,6 +1455,12 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
     return { ok: true, value: { kind: "login-inventory", action: value.action as LoginInventoryRequest["action"],
       ...(typeof value.id === "string" ? { id: value.id } : {}) } };
   }
+  if (value.kind === "claude-session-sign-ins") {
+    // A refusal never repeats the token (`sessionSignInRequestError`), and the copy holds only what its action uses.
+    const err = sessionSignInRequestError(value);
+    if (err) return { ok: false, err };
+    return { ok: true, value: decodeSessionSignInRequest(value) };
+  }
   if (value.kind === "claude-accounts" || value.kind === "codex-accounts") {
     const err = accountRequestError(value);
     if (err) return { ok: false, err };
@@ -1540,6 +1562,13 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
     if (value.claudeAccountId !== undefined && (value.backend !== "claude" || !validAccountId(value.claudeAccountId))) {
       return { ok: false, err: "Choose a valid Claude account" };
     }
+    // A sign-in is Claude's, in Default: another profile has a login of its own (claude-session-sign-ins.ts).
+    if (value.claudeSignInId !== undefined) {
+      if (value.backend !== "claude" || !validAccountId(value.claudeSignInId)) return { ok: false, err: "Choose a valid Claude sign-in" };
+      if (value.claudeAccountId !== undefined && value.claudeAccountId !== "default") {
+        return { ok: false, err: "A sign-in runs in the Default profile only. Choose Default to use it." };
+      }
+    }
     if (value.backend !== "claude" && value.backend !== "codex") {
       return { ok: false, err: "session backend must be claude or codex" };
     }
@@ -1591,6 +1620,7 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
         kind: "session-start",
         ...(value.host ? { host: value.host as "terminal" | "background" } : {}),
         ...(typeof value.claudeAccountId === "string" ? { claudeAccountId: value.claudeAccountId } : {}),
+        ...(typeof value.claudeSignInId === "string" ? { claudeSignInId: value.claudeSignInId } : {}),
         ...(typeof value.claudeSourceAccountId === "string" ? { claudeSourceAccountId: value.claudeSourceAccountId } : {}),
         ...(typeof value.codexAccountId === "string" ? { codexAccountId: value.codexAccountId } : {}),
         backend: value.backend,
@@ -1726,6 +1756,7 @@ export function validateControlMessage(value: unknown): ParseResult<AnyControlMe
     || value.kind === "history-page" || value.kind === "history-item"
     || value.kind === "agent-capabilities"
     || value.kind === "account-tools" || value.kind === "claude-accounts" || value.kind === "codex-accounts"
+    || value.kind === "claude-session-sign-ins"
     || value.kind === "login-inventory"
     || value.kind === "skills-library" || value.kind === "benchmarks"
     || value.kind === "session-start"
@@ -1817,6 +1848,8 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
     ? { ok: true, value } : { ok: false, err: "invalid benchmarks response" };
   if (value.kind === "login-inventory") return isLoginInventoryReply(value)
     ? { ok: true, value } : { ok: false, err: "invalid login inventory response" };
+  if (value.kind === "claude-session-sign-ins") return isSessionSignInsReply(value)
+    ? { ok: true, value } : { ok: false, err: "invalid sign-ins response" };
   if (value.kind === "claude-accounts" || value.kind === "codex-accounts") {
     if (!Array.isArray(value.accounts) || value.accounts.length > 17 || value.accounts.some((account) =>
       !record(account) || !validAccountId(account.id) || typeof account.label !== "string"

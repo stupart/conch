@@ -26,6 +26,7 @@ import { currentTurnText } from "./transcript-turn.ts";
 import { findHookWindow, sessionLabel, isEngageable, workingFolderOverrides, type SessionInfo } from "./sessions.ts";
 import { sessionHasLiveBackgroundWork } from "./agent-activity.ts";
 import { askClaude } from "./model.ts";
+import { signInMarker } from "./claude-session-sign-ins.ts";
 
 interface HookPayload {
   hook_event_name?: string;
@@ -191,6 +192,12 @@ export interface TurnEvent {
   asking?: { id: string; questions: AgentQuestion[] };
   /** On `session-start`: what started it. Absent when Claude Code named nothing conch knows. */
   startSource?: SessionStartSource;
+  /**
+   * On `session-start` and `working`: the sign-in the session was launched with (claude-session-sign-ins.ts), read from
+   * the marker its launch set. Only the id: the token beside it in the hook's environment is never read here. Absent
+   * from a `session-start` is a session on no sign-in, which a resume outside one is.
+   */
+  claudeSignIn?: string;
 }
 
 /**
@@ -212,6 +219,7 @@ export function sessionStartEvent(
   session: Pick<SessionInfo, "sessionId" | "pid"> | null,
   label: string,
   eventAt: number,
+  signIn = signInMarker(),
 ): TurnEvent {
   return {
     type: "session-start",
@@ -223,6 +231,7 @@ export function sessionStartEvent(
     transcriptPath: payload.transcript_path,
     eventAt,
     ...(isSessionStartSource(payload.source) ? { startSource: payload.source } : {}),
+    ...(signIn ? { claudeSignIn: signIn } : {}),
   };
 }
 
@@ -379,6 +388,7 @@ export async function runHook(cfg: Config): Promise<void> {
   if (event === "UserPromptSubmit") {
     const note = takeAgentNote(payload.session_id ?? "");
     if (note) process.stdout.write(userPromptContext(note));
+    const signIn = signInMarker();
     await handOff(cfg.socketPath, {
       type: "working",
       sessionId: session?.sessionId ?? payload.session_id ?? "",
@@ -388,6 +398,8 @@ export async function runHook(cfg: Config): Promise<void> {
       announce: "",
       eventAt,
       ...(typeof payload.prompt === "string" && payload.prompt.trim() ? { promptDigest: promptDigest(payload.prompt) } : {}),
+      // Again on every prompt, so a daemon that missed the session's start still learns which sign-in it runs on.
+      ...(signIn ? { claudeSignIn: signIn } : {}),
     });
     return;
   }

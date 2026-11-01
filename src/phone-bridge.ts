@@ -181,12 +181,16 @@ function historyRequest(pathname: string, value: unknown): ReturnType<typeof val
  * browser profiles this Mac has and who each is signed in as is the Mac app's Settings and `conch logins`, never a phone's
  * to ask, and asking runs the Mac's CLIs.
  *
+ * Sign-ins for single sessions (`claude-session-sign-ins`, claude-session-sign-ins.ts) are on this side too: an add carries
+ * a Claude subscription's token, which goes from the Mac app to the Keychain and never through a phone or the relay, and
+ * a remove or a setup changes which accounts this Mac's sessions can run on.
+ *
  * The requests with a decoder are refused by that decoder, the one the control server dispatches
  * with (`createControlServer`), so a kind added to setup's or the practice's is refused here the day
  * it is added. test/phone-mac-only.test.ts holds every branch the control server takes before a
  * session is resolved to one side or the other.
  */
-export const MAC_APP_ONLY_KINDS: ReadonlySet<string> = new Set(["review-preview", "screen-observation", "page-capture", "page-capture-answer", "login-inventory"]);
+export const MAC_APP_ONLY_KINDS: ReadonlySet<string> = new Set(["review-preview", "screen-observation", "page-capture", "page-capture-answer", "login-inventory", "claude-session-sign-ins"]);
 export const MAC_APP_ONLY_DECODERS: Readonly<Record<string, (value: unknown) => unknown>> = {
   decodeBrowserMessage,
   decodeBrowserOpenRequest,
