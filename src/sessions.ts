@@ -61,6 +61,11 @@ export interface RegistrySnapshotOptions extends CodexSessionRegistryOptions, At
 
 export interface SessionInfo {
   claudeAccountId?: string;
+  /**
+   * The sign-in this session runs on, in the Default profile (claude-session-sign-ins.ts), as its hook said; its label is
+   * then `accountLabel`. A restart, fork or recovery relaunches with it.
+   */
+  claudeSignInId?: string;
   codexAccountId?: string;
   codexHome?: string;
   /** Message delivery can exist independently of a terminal. */

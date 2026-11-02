@@ -11,6 +11,15 @@ import { createLoginInventory, loginProjects, loginSources } from "./login-inven
 import { accountModelCatalog, modelCatalogForSession } from "./provider-models.ts";
 import { prepareClaudeHandoff, settleClaudeHandoff, claudeHandoffReceipt, requireClaudeHandoffSupport } from "./claude-account-handoff.ts";
 import { launchOffRetiredProfiles } from "./retired-profile.ts";
+import {
+  addSessionSignIn,
+  readSessionSignIns,
+  readSessionSignInsQuietly,
+  removeSessionSignIn,
+  SessionSignInLedger,
+  setupTokenFolder,
+  withSessionSignIn,
+} from "./claude-session-sign-ins.ts";
 import { SessionReconciler } from "./session-reconciler.ts";
 import { RecordsRuntime } from "./records-runtime.ts";
 import { createRecordOperation, createRecordReceiptObserver, type RecordObserver } from "./records-receipts.ts";
@@ -198,6 +207,7 @@ import {
   acceptClaudeTrust,
   sessionFolder,
   startClaudeAccountLogin,
+  startClaudeSetupToken,
   startCodexAccountTerminal,
   startTerminalSession,
   startBackgroundSession,
@@ -1012,6 +1022,11 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   let panelLabels = new Map<string, string>();
   let panelSessions = new Map<string, SessionInfo>();
   /**
+   * Which sign-in each session runs on, as its hook said (claude-session-sign-ins.ts): its row reads as that account,
+   * and a restart, fork or recovery relaunches on it.
+   */
+  const sessionSignIns = new SessionSignInLedger(join(dirname(daemonSettingsPath), "claude-sign-in-by-session.json"));
+  /**
    * Every session conch starts on its own, not because someone asked: the two guards below. Each caps a conversation
    * at three a day, but that cap is by conversation id, and a relaunch whose id came back different would never
    * reach it; this caps them all together, well above the biggest restart wave conch has seen (fourteen sessions
@@ -1116,8 +1131,11 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   const installVersionCache = new Map<string, string | null>();
   const registrySnapshot = async (claudeDir: string): Promise<Awaited<ReturnType<typeof accountRegistrySnapshot>>> => {
     const snapshot = await accountRegistrySnapshot(claudeDir, readClaudeAccounts(claudeDir), readCodexAccounts());
+    // The sign-ins' names only while some session runs on one: one small file, read with the registry.
+    const signIns = sessionSignIns.size ? readSessionSignInsQuietly() : [];
     return snapshot ? { ...snapshot, infos: snapshot.infos.map((session) =>
-      bindSessionProcess(session, panelSessions.get(session.sessionId), readProcessIdentity)) } : null;
+      withSessionSignIn(bindSessionProcess(session, panelSessions.get(session.sessionId), readProcessIdentity),
+        sessionSignIns.for(session), signIns)) } : null;
   };
   let numberedSessionRows: NumberedPanelSessionRow[] = [];
   let selectedId: string | null = null;
@@ -1582,6 +1600,12 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     // With the process it came from: a send typed at that process counts it whatever id it names (`PromptSubmissions`).
     if (event.type === "working" && event.promptDigest) {
       promptSubmissions.note(parseWindowKey(event.sessionId).sessionId, event.promptDigest, Date.now(), event.pid);
+    }
+    // Which sign-in the session runs on, from its hook (claude-session-sign-ins.ts). A start says so either way, as a
+    // resume outside a sign-in does by saying nothing; a prompt only when it carries one, since the daemon's own
+    // `working` events (the Codex watch) carry none.
+    if ((event.type === "session-start" || (event.type === "working" && event.claudeSignIn)) && sessionSignIns.note(event.sessionId, event.claudeSignIn)) {
+      void renderSessionPanel();
     }
     // Setup's practice session is conch's own (practice.ts): anything naming it is the practice's to answer, and never
     // reaches the queue, the voice loop or a terminal, whichever door it came in by.
@@ -2749,6 +2773,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       // of discarding labels that only a later complete snapshot may prune.
       if (snap?.complete) {
         panelSessions = new Map(registryLive.map((session) => [session.sessionId, session]));
+        sessionSignIns.prune(snap.liveIds);
       } else {
         for (const session of registryLive) panelSessions.set(session.sessionId, session);
       }
@@ -3629,6 +3654,29 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         usage: readAccountUsage(accounts),
         ...(created ? { createdAccountId: created.id } : {}),
         ...(message.action === "login" ? { loginOpened: true as const } : {}) };
+    },
+    /**
+     * Sign-ins for single sessions (claude-session-sign-ins.ts). An add's token goes straight to the Keychain: it is not
+     * logged, filed, published or sent back, and a failure's words never hold it. Only the name and id are logged.
+     */
+    claudeSessionSignIns: async (message) => {
+      let added: string | undefined;
+      if (message.action === "add") {
+        const signIn = await addSessionSignIn(message.label!, message.token!);
+        added = signIn.id;
+        log(`added the Claude sign-in "${signIn.label}" (${signIn.id}) for single sessions`);
+      }
+      if (message.action === "remove") {
+        const removed = await removeSessionSignIn(message.id!);
+        log(`removed the Claude sign-in ${removed ? `"${removed.label}" ` : ""}(${message.id})`);
+        void renderSessionPanel();
+      }
+      if (message.action === "setup") {
+        await startClaudeSetupToken(setupTokenFolder());
+        log("opened claude setup-token in Terminal, in a folder of its own, for a new sign-in");
+      }
+      return { kind: "claude-session-sign-ins", signIns: readSessionSignIns(),
+        ...(added ? { added } : {}), ...(message.action === "setup" ? { setupOpened: true as const } : {}) };
     },
     readCapabilities: (message) => {
       const observations: AgentCapabilityObservation[] = [];

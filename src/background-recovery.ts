@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { BACKGROUND_NAME } from "./background-sessions.ts";
+import { followSignIn } from "./restart-recovery.ts";
 import type { StartSessionRequest } from "./session-lifecycle.ts";
 import { conchTmux, defaultTmux } from "./tmux-binary.ts";
 
@@ -135,6 +136,8 @@ export interface ObservedSession {
   pid?: number;
   /** A Claude Code background job: hosted by Claude Code's own daemon, which a tmux server's end does not reach. */
   jobId?: string;
+  /** Its sign-in (claude-session-sign-ins.ts), kept in step with its record (restart-recovery.ts `followSignIn`). */
+  claudeSignInId?: string;
 }
 
 export interface BackgroundGuardOptions {
@@ -215,6 +218,7 @@ export class BackgroundGuard {
       const conversationId = session.agentSessionId ?? session.sessionId;
       const known = this.#records.get(name);
       if (known && known.conversationId === conversationId) {
+        if (followSignIn(known.request, session)) changed = true;
         // Written back now and then, not on every read: the file is for after a restart, not a clock.
         if (now - known.seenAt > 5 * 60_000 || (session.label && session.label !== known.label)) {
           known.seenAt = now;

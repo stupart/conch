@@ -21,7 +21,7 @@ import {
 } from "../src/browser-open.ts";
 import { loadConfig } from "../src/config.ts";
 import { SETTING_REGISTRY } from "../src/settings.ts";
-import { terminalSessionCommand } from "../src/session-lifecycle.ts";
+import { backgroundSessionCommand, terminalSessionCommand } from "../src/session-lifecycle.ts";
 
 const REPO = join(import.meta.dir, "..");
 const read = (path: string) => readFileSync(join(REPO, path), "utf8");
@@ -306,7 +306,10 @@ describe("sessions conch starts", () => {
     expect(codex).toContain("-u OPENAI_API_KEY");
     expect(codex).toEndWith(` ${path} codex --no-daemon -c check_for_update_on_startup=false`);
     // The `-e PATH` tmux is given would not do: the login shell's path_helper puts it back after /usr/bin.
-    expect(read("src/session-lifecycle.ts")).toContain("const command = terminalSessionCommand({ ...request, host: \"background\"");
+    const lifecycle = read("src/session-lifecycle.ts");
+    expect(lifecycle).toContain("const command = backgroundSessionCommand(request);");
+    expect(lifecycle).toContain("return terminalSessionCommand({ ...request, host: \"background\"");
+    expect(backgroundSessionCommand({ backend: "claude", cwd: "/work/demo" })).toBe(claude);
   });
 
   /** A fake agent on PATH that reports which `open` it would run, before and after a login shell's path_helper. */

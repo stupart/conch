@@ -26,6 +26,17 @@ With "Switch accounts automatically" on, Default's sign-in already moves between
 
 Conch adds its lifecycle hooks to the selected configuration at login/launch using the existing idempotent installer. Existing settings are preserved and backed up if changed. A managed status-line wrapper records official public rate-limit fields and forwards the original status-line input/output. Its private sidecar preserves the original command; the measurement cache contains only identity, usage, and time. Claude owns the credentials.
 
+### Sign-ins for single sessions (one profile, one account per session)
+
+2026-11-01, Tyler: "one profile, choose which account a new session signs in as". A second profile was the only way to keep one session on one subscription, and it split settings and memory. A sign-in keeps the session in Default and changes only its account (`src/claude-session-sign-ins.ts`).
+
+1. **Settings → Providers → Sign-ins for single sessions → Add a sign-in…** Step one opens Terminal on `claude setup-token`, in a throwaway `CLAUDE_CONFIG_DIR` with no credential from the shell, so Default's login and the rotation are untouched. Sign in in the browser with the account you want; the folder goes when it finishes, and the window clears the token once you press Return.
+2. Paste the token, name it, **Save**. The daemon writes it to the login Keychain (generic password, service `conch.claude.session-sign-in`, account the sign-in's id) by `/usr/bin/security -i`, with the command on STDIN, so no process's argv ever holds it. conch keeps only the name and date, in `~/.config/conch/claude-session-sign-ins.json`.
+3. In **New session** (or a resume's **Continue with**), with Claude and Default chosen, **Signs in as** offers *Default · rotating* and each sign-in. The launched shell reads the token from the Keychain itself into `CLAUDE_CODE_OAUTH_TOKEN` just before it execs Claude Code, and exports `CONCH_CLAUDE_SIGN_IN=<id>`: the command conch builds, tmux's arguments, the sessions file and the logs only ever hold the id. Every other credential variable is dropped for the launch, as for a second profile.
+4. The session's hook says which sign-in it runs on (the marker, never the token); the row reads as the sign-in's name, and restart, fork and the recovery guards relaunch on it. A sign-in removed since (or missing from the Keychain) stops the relaunch with words; it never falls back to the rotating login.
+
+Removing a sign-in deletes its Keychain item and its name. Sessions running on it keep running until they are restarted. The control request is `{"kind":"claude-session-sign-ins","action":"list"|"add"|"remove"|"setup"}` (`add` with `label` and `token`, `remove` with `id`), the Mac app's alone: the phone bridge refuses it, so a token never crosses the relay. A `session-start` may carry `claudeSignInId`, for Claude in Default only.
+
 ## Storage and protocol
 
 - Metadata: `$CONCH_CONFIG_DIR/claude-accounts.json`, defaulting to `~/.config/conch/claude-accounts.json`.

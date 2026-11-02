@@ -169,10 +169,15 @@ export function requireClaudeAccount(id: string, defaultDir = defaultClaudeDir()
   return account;
 }
 
-/** Additional profiles do not inherit API credentials from the launcher. */
+/**
+ * Additional profiles do not inherit API credentials from the launcher, nor a sign-in's descriptor and marker
+ * (claude-session-sign-ins.ts): a tmux server started from a sign-in's session would otherwise hand them to every
+ * background session after.
+ */
 export const CLAUDE_ACCOUNT_ENV_REMOVE = [
   "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL",
   "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "ANTHROPIC_PROFILE",
+  "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR", "CONCH_CLAUDE_SIGN_IN",
 ] as const;
 
 export function claudeAccountEnvironment(configDir: string, isolate = true): NodeJS.ProcessEnv {

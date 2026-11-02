@@ -609,6 +609,10 @@ private struct StartSessionSheet: View {
 
     @StateObject private var accounts = ClaudeAccountsStore()
     @State private var claudeAccountId = "default"
+    /// Sign-ins for single sessions (daemon claude-session-sign-ins.ts), offered with Claude in Default; nil is Default's
+    /// own, rotating login.
+    @StateObject private var signIns = ClaudeSessionSignInsStore()
+    @State private var claudeSignInId: String?
     @State private var resumeAccountId: String?
     @AppStorage("conch.session.host") private var host = "terminal"
     private var sessionHost: String { mode == .teleport || mode == .help ? "terminal" : host }
@@ -699,6 +703,10 @@ private struct StartSessionSheet: View {
             else if effectiveBackend == .codex { codexAccountId = $0 }
             else { claudeAccountId = $0 }
         })
+    }
+    /// The sign-in this start sends: the one shown, only for Claude in Default (`SessionSignInChoice`).
+    private var sentSignInId: String? {
+        SessionSignInChoice.sent(selection: claudeSignInId, backend: effectiveBackend.rawValue, accountId: selectedAccountId, signIns: signIns.signIns)
     }
     private var permissionsSummary: String {
         if case .bool(true)? = optionValues["bypass-permissions"] { return "Permission prompts bypassed" }
@@ -791,6 +799,11 @@ private struct StartSessionSheet: View {
                         selection: accountSelection, now: usageNow, allowAtLimit: allowAtLimit,
                         locked: mode == .resume && effectiveBackend == .codex, sourceAccountId: handoffSourceAccountId)
                     }
+                    // One profile, and which account this session signs in as (2026-11-01, Tyler): Default's rotating login, or a
+                    // sign-in that keeps it on one subscription. A resume's "Continue with" offers the same.
+                    if SessionSignInChoice.offered(backend: effectiveBackend.rawValue, accountId: selectedAccountId, signIns: signIns.signIns) {
+                        StartSignInPicker(signIns: signIns.signIns, selection: $claudeSignInId)
+                    }
                     if activeAccounts.busy { ProgressView().controlSize(.small) }
                     if let failure = activeAccounts.error { Text(failure).font(.caption).foregroundStyle(ConchPalette.statusNeeds) }
                     if isAccountHandoff {
@@ -882,6 +895,7 @@ private struct StartSessionSheet: View {
         .onChange(of: resumeSelection?.id) { _, _ in resumeAccountId = nil; launchedSessionId = nil }
         .task { await accounts.send("list") }
         .task { await codexAccounts.send("list") }
+        .task { await signIns.list() }
         .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { usageNow = $0 }
         .padding(24)
         .frame(width: 480)
@@ -949,15 +963,16 @@ private struct StartSessionSheet: View {
     /// silently get wrong: the same conversation reopened in the wrong folder
     /// is a conversation about files that are not there.
     private var footnote: String {
+        let signedInAs = sentSignInId.flatMap { id in signIns.signIns.first { $0.id == id } }.map { ", signed in as \($0.label)" } ?? ""
         if mode == .new {
-            return "Opens \(backend.label) \(sessionHost == "background" ? "in the background" : "in Terminal") on this Mac."
+            return "Opens \(backend.label) \(sessionHost == "background" ? "in the background" : "in Terminal") on this Mac\(signedInAs)."
         }
         guard let picked = resumeSelection else {
             return "Pick a session to restart. It reopens with its own agent, in its own folder."
         }
         if isAccountHandoff { return "Opens a fork in \(picked.shortCwd), using the selected account. The original history stays intact." }
         let agent = picked.backend.lowercased() == "codex" ? "Codex" : "Claude"
-        return "Resumes \(agent) in \(picked.shortCwd), \(sessionHost == "background" ? "in the background" : "in Terminal")."
+        return "Resumes \(agent) in \(picked.shortCwd), \(sessionHost == "background" ? "in the background" : "in Terminal")\(signedInAs)."
     }
 
     /// The table for the agent this launch will run; a resume-only entry only
@@ -1081,6 +1096,7 @@ private struct StartSessionSheet: View {
                 teleportSessionId: mode == .teleport ? teleportSessionId : nil,
                 claudeAccountId: effectiveBackend == .claude
                     ? (mode == .resume ? (resumeAccountId ?? resumeSelection?.claudeAccountId) : (accounts.accounts.isEmpty ? nil : claudeAccountId)) : nil,
+                claudeSignInId: sentSignInId,
                 claudeSourceAccountId: isAccountHandoff ? (resumeSelection?.claudeAccountId ?? "default") : nil,
                 codexAccountId: effectiveBackend == .codex
                     ? (mode == .resume ? resumeSelection?.codexAccountId : (codexAccounts.accounts.isEmpty ? nil : codexAccountId)) : nil,

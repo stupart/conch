@@ -27,15 +27,15 @@ export interface PendingFork {
 export const FORK_ADOPT_WITHIN_MS = 5 * 60_000;
 
 /**
- * The agent's own fork of the conversation, built the way a restart relaunches (the same folder, account and flags),
- * with what couldn't be carried over:
+ * The agent's own fork of the conversation, built the way a restart relaunches (the same folder, account, sign-in and
+ * flags), with what couldn't be carried over:
  * - Claude Code: `--resume <id> --fork-session`;
  * - Codex: `codex fork <id>` (`forkArgs`);
  * - a Claude background job, whose flags live in Claude Code's own daemon where nothing can read them: its conversation,
  *   forked in conch's background host with the defaults a new session gets.
  */
 export function forkRequest(
-  session: Pick<SessionInfo, "sessionId" | "agentSessionId" | "backend" | "cwd" | "claudeAccountId" | "codexAccountId" | "jobId">,
+  session: Pick<SessionInfo, "sessionId" | "agentSessionId" | "backend" | "cwd" | "claudeAccountId" | "codexAccountId" | "jobId" | "claudeSignInId">,
   args: readonly string[],
 ): ReturnType<typeof restartRequest> {
   if (session.jobId) {
@@ -46,6 +46,7 @@ export function forkRequest(
         resumeSessionId: session.agentSessionId ?? session.sessionId,
         ...(session.cwd ? { cwd: session.cwd } : {}),
         ...(session.claudeAccountId ? { claudeAccountId: session.claudeAccountId } : {}),
+        ...(session.claudeSignInId ? { claudeSignInId: session.claudeSignInId } : {}),
         options: { "fork-session": true },
       },
       notCarriedOver: ["the flags it was started with (a background job's can't be read)"],

@@ -219,6 +219,8 @@ enum ConchStartOptionValue: Encodable, Sendable, Equatable {
 struct ConchSessionStartRequest: Encodable, Sendable {
     let kind = "session-start"
     let claudeAccountId: String?
+    /// Which Claude subscription this one session signs in as, in Default (daemon claude-session-sign-ins.ts): an id.
+    let claudeSignInId: String?
     let claudeSourceAccountId: String?
     let codexAccountId: String?
     let host: String?
@@ -241,6 +243,7 @@ struct ConchSessionStartRequest: Encodable, Sendable {
         resumeSessionId: String?,
         teleportSessionId: String? = nil,
         claudeAccountId: String? = nil,
+        claudeSignInId: String? = nil,
         claudeSourceAccountId: String? = nil,
         codexAccountId: String? = nil,
         cwd: String?,
@@ -254,6 +257,7 @@ struct ConchSessionStartRequest: Encodable, Sendable {
         self.resumeSessionId = resumeSessionId
         self.teleportSessionId = teleportSessionId
         self.claudeAccountId = claudeAccountId
+        self.claudeSignInId = claudeSignInId
         self.claudeSourceAccountId = claudeSourceAccountId
         self.codexAccountId = codexAccountId
         self.cwd = cwd

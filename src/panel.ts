@@ -82,6 +82,8 @@ export interface PanelRowModel {
   backend?: "claude" | "codex";
   accountLabel?: string;
   claudeAccountId?: string;
+  /** The sign-in it runs on (claude-session-sign-ins.ts); `accountLabel` is then the sign-in's name. */
+  claudeSignInId?: string;
   codexAccountId?: string;
   /** A subagent row: nested under this session, never the active one (C4). */
   parentSessionId?: string;
@@ -278,8 +280,11 @@ export interface PublishedSessionRow {
    */
   /** `conch` is conch's own practice session (`practice.ts`), which has no agent and no terminal. */
   backend?: "claude" | "codex" | "conch";
+  /** Which account it is on, in words: its profile's name, or its sign-in's (`claudeSignInId`). */
   accountLabel?: string;
   claudeAccountId?: string;
+  /** A sign-in's id (claude-session-sign-ins.ts), on a Claude row in the Default profile signed in as one. Never a token. */
+  claudeSignInId?: string;
   codexAccountId?: string;
   /**
    * Present on a subagent row: the session it runs inside. A viewer indents
@@ -730,7 +735,9 @@ export function buildPublishedState(
     features: { deliverables: 4, viewedState: 1, sessionHosts: 1, helpSession: 1, ...(options.settingsForSessionId ? { sessionSettings: 1 as const } : {}) },
     ownerDeviceId,
     execution: deviceExecutionCatalog(ownerDeviceId, options.runtimeLabel ?? ownerDeviceId,
-      model.rows.flatMap((row) => row.claudeAccountId ? [{ id: row.claudeAccountId, label: row.accountLabel ?? row.claudeAccountId }] : []),
+      // A row on a sign-in reads as the sign-in, but its profile is Default: never named after the sign-in here.
+      model.rows.flatMap((row) => row.claudeAccountId ? [{ id: row.claudeAccountId,
+        label: row.claudeSignInId ? "Default" : row.accountLabel ?? row.claudeAccountId }] : []),
       model.rows.flatMap((row) => row.codexAccountId ? [{ id: row.codexAccountId, label: row.accountLabel ?? row.codexAccountId }] : [])),
     ts: now,
     ...(options.audio ? { audioControl: options.audio.control, audioOutbox: options.audio.outbox } : {}),
@@ -763,6 +770,7 @@ export function buildPublishedState(
         ...(row.backend ? { backend: row.backend } : {}),
         ...(row.accountLabel ? { accountLabel: row.accountLabel } : {}),
         ...(row.claudeAccountId ? { claudeAccountId: row.claudeAccountId } : {}),
+        ...(row.claudeSignInId ? { claudeSignInId: row.claudeSignInId } : {}),
         ...(row.codexAccountId ? { codexAccountId: row.codexAccountId } : {}),
         ...(row.usageLimit ? { usageLimit: row.usageLimit } : {}),
         ...(row.parentSessionId ? { parentSessionId: row.parentSessionId } : {}),
@@ -932,6 +940,7 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
         ...(session.backend ? { backend: session.backend } : {}),
         ...(session.accountLabel ? { accountLabel: session.accountLabel } : {}),
         ...(session.claudeAccountId ? { claudeAccountId: session.claudeAccountId } : {}),
+        ...(session.claudeSignInId ? { claudeSignInId: session.claudeSignInId } : {}),
         ...(session.codexAccountId ? { codexAccountId: session.codexAccountId } : {}),
         ...(options.usageLimitBySessionId?.get(session.sessionId)
           ? { usageLimit: options.usageLimitBySessionId.get(session.sessionId)! } : {}),
