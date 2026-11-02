@@ -10,7 +10,7 @@ struct ConchBrowserSettingsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: SettingsLayout.headerGap) {
-                SettingsSectionHeader(title: "Browser", subtitle: "conch's own browser, in each session's Workdesk: how it follows agents, its profiles, and your sign-ins from Chrome.")
+                SettingsSectionHeader(title: "Browser", subtitle: "conch's own browser, in each session's Workdesk: how it follows agents, when its tabs sleep, its profiles, and your sign-ins from Chrome.")
                 VStack(alignment: .leading, spacing: 24) {
                     BrowserFollowBlock()
                     SettingsHairline()
@@ -29,9 +29,11 @@ struct ConchBrowserSettingsView: View {
 }
 
 /// Whether an agent's work in a browser tab comes forward in the Workdesk by itself (`Workbench.follows`), on unless
-/// turned off. A tab whose agent asked Tyler to act in it comes forward whatever this says (`Workbench.summons`).
+/// turned off. A tab whose agent asked Tyler to act in it comes forward whatever this says (`Workbench.summons`). And
+/// whether a tab left alone sleeps (`Workbench.asleep`), on unless turned off: off, every tab asleep wakes.
 private struct BrowserFollowBlock: View {
     @AppStorage(Workbench.followSettingKey) private var follows = true
+    @AppStorage(Workbench.sleepSettingKey) private var sleeps = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -54,6 +56,26 @@ private struct BrowserFollowBlock: View {
                         .labelsHidden()
                         .toggleStyle(.switch)
                         .accessibilityLabel("Bring the agent's tab forward")
+                }
+                .padding(.horizontal, ConchSpace.x4)
+                .padding(.vertical, 11)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                SettingsHairline()
+                HStack(spacing: ConchSpace.x3) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Let idle tabs sleep")
+                            .font(ConchTypography.font(size: 12.5, weight: .medium))
+                            .foregroundStyle(ConchPalette.textPrimary)
+                        Text("A tab neither you nor an agent has used for \(Int(Workbench.sleepAfter / 60)) minutes lets go of its page to free memory. When you show it, or an agent uses it, it opens again at the same address, still signed in.")
+                            .font(ConchTypography.font(size: 11))
+                            .foregroundStyle(ConchPalette.textDim)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: ConchSpace.x3)
+                    Toggle("", isOn: $sleeps)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .accessibilityLabel("Let idle tabs sleep")
                 }
                 .padding(.horizontal, ConchSpace.x4)
                 .padding(.vertical, 11)

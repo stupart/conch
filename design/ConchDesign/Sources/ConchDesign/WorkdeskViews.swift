@@ -54,22 +54,27 @@ enum WorkdeskField {
 /// the globe becomes its ×, in the globe's own place, as Safari's tabs do, so the tabs after it stay where they are.
 /// While an agent's command runs in it the Agent badge follows its name; a tab an agent acted in that isn't shown has a
 /// dot; a tab the user paused agents in shows a raised hand in place of the globe; and a tab whose agent asked the user to
-/// act in it (`Tab.ask`) says "Needs you", over any of those.
+/// act in it (`Tab.ask`) says "Needs you", over any of those. A tab asleep (`Workbench.asleep`) is drawn a step quieter,
+/// its mark faded, still a mark's 3:1 (the paused hand is the only word that agents are paused there), and its name in
+/// the tertiary text colour, still 4.5:1; it says why under the pointer, and nothing moves.
 public struct WorkbenchTabButton: View {
     let tab: Workbench.Tab
     let isSelected: Bool
     let agentWorking: Bool
     let hasActivity: Bool
+    let isAsleep: Bool
     let open: () -> Void
     let close: () -> Void
 
     @State private var isHovered: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(
         tab: Workbench.Tab,
         isSelected: Bool,
         agentWorking: Bool = false,
         hasActivity: Bool = false,
+        isAsleep: Bool = false,
         isHovered: Bool = false,
         open: @escaping () -> Void,
         close: @escaping () -> Void
@@ -78,6 +83,7 @@ public struct WorkbenchTabButton: View {
         self.isSelected = isSelected
         self.agentWorking = agentWorking
         self.hasActivity = hasActivity
+        self.isAsleep = isAsleep
         _isHovered = State(initialValue: isHovered)
         self.open = open
         self.close = close
@@ -88,9 +94,20 @@ public struct WorkbenchTabButton: View {
     /// The globe's place, and the ×'s: the globe at the strip's 10 points is 10 wide.
     private static let mark: CGFloat = 10
 
+    /// Asleep, and not the one in front: a tab being shown is waking, and is drawn as it will be.
+    private var dozing: Bool { isAsleep && !isSelected }
+
+    /// What the name says under the pointer: what it asks, else where it is, and why it sleeps when it does.
+    private var help: String {
+        if let ask = tab.ask { return "Needs you: \(ask.reason)\n\(tab.url)" }
+        let place = tab.isBlank ? "New tab" : "\(label)\n\(tab.url)"
+        return dozing ? "\(place)\n\(Workbench.asleepWords)" : place
+    }
+
     private var accessibility: String {
         [label, "browser tab", tab.ask.map { "needs you: \($0.reason)" }, tab.openedByUser ? "opened by you" : nil,
-         agentWorking ? "an agent is working in it" : nil, hasActivity ? "new agent activity" : nil, tab.paused ? "agents paused" : nil]
+         agentWorking ? "an agent is working in it" : nil, hasActivity ? "new agent activity" : nil, tab.paused ? "agents paused" : nil,
+         dozing ? "asleep" : nil]
             .compactMap { $0 }
             .joined(separator: ", ")
     }
@@ -112,6 +129,7 @@ public struct WorkbenchTabButton: View {
                 } else {
                     Image(systemName: tab.paused ? "hand.raised.fill" : "globe")
                         .font(.system(size: 10))
+                        .opacity(dozing ? 0.72 : 1)
                         .accessibilityHidden(true)
                 }
             }
@@ -128,7 +146,7 @@ public struct WorkbenchTabButton: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(tab.ask.map { "Needs you: \($0.reason)\n\(tab.url)" } ?? (tab.isBlank ? "New tab" : "\(label)\n\(tab.url)"))
+            .help(help)
             .accessibilityLabel(accessibility)
 
             // What it asks of the user outranks what its agent is doing in it: that is news, this is a request.
@@ -142,7 +160,10 @@ public struct WorkbenchTabButton: View {
                 WorkdeskActivityDot()
             }
         }
-        .foregroundStyle(isSelected ? ConchColor.textPrimary : ConchColor.textSecondary)
+        .foregroundStyle(isSelected ? ConchColor.textPrimary : dozing ? ConchColor.textTertiary : ConchColor.textSecondary)
+        // Falling asleep, or woken by an agent, it eases between the two rather than blinking; woken by a press, it is
+        // selected at once, as any tab is.
+        .animation(isSelected ? nil : ConchMotion.hover.animation(reduceMotion: reduceMotion), value: dozing)
         .padding(.horizontal, 8)
         .frame(height: 24)
         .contentShape(Rectangle())
