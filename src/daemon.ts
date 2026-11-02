@@ -287,6 +287,7 @@ import {
 import { assertCodexAccountIdle, assertClaudeAccountIdle, accountRegistrySnapshot, accountResumableSessions, findAccountTranscript as findTranscript, sessionTranscript } from "./claude-account-sessions.ts";
 import { transcriptFolder } from "./review-roots.ts";
 import { defaultCodexDir, readCodexAccounts, addCodexAccount, removeCodexAccount, requireCodexAccount, cachedCodexAccount, invalidateCodexAccount, codexAccountForLaunch } from "./codex-accounts.ts";
+import { installProfileSignal } from "./daemon-profile.ts";
 import { claudeAccountForLaunch, offeredClaudeAccounts, readClaudeAccounts, addClaudeAccount, removeClaudeAccount, requireClaudeAccount, cachedClaudeAccountStatus, readClaudeAccountStatus, invalidateClaudeAccountStatus, type ClaudeAccountStatus } from "./claude-accounts.ts";
 import { codexHookCommand, conchInvocation, runInstall as installAccountHooks, repairConchHooks } from "./install.ts";
 import { setUpSessionBrowsers } from "./browser-open.ts";
@@ -4206,6 +4207,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   process.on("SIGTERM", () => void shutdown());
   process.on("SIGHUP", () => void shutdown());
   process.on("SIGQUIT", () => void shutdown());
+  // `kill -USR2` (or `conch profile`): where the daemon's own CPU goes, written to profiles/ (daemon-profile.ts).
+  installProfileSignal(join(dirname(daemonSettingsPath), "profiles"), log);
 
   meetingMic = new MicClaimPoller({
     enabled: cfg.meetingAutopause,
