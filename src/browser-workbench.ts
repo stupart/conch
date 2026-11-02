@@ -29,7 +29,8 @@ import { ownCapture } from "./page-capture.ts";
  * at its last address on its profile when it first sees it.
  *
  * The daemon owns the tabs (which session's, what address, which profile) and the profiles (browser-profiles.ts); the
- * Mac app owns the pages, one live web view per tab, kept alive while it runs (Workbench.swift). An agent's command
+ * Mac app owns the pages, one live web view per tab while it's in use; one left alone sleeps and wakes when shown or
+ * given a command, which nothing here needs to know (ConchDesign `Workbench.asleep`). An agent's command
  * goes the way `conch_capture`'s page does (page-capture.ts), since the daemon can't call the app: it is named on the
  * sessions file (`browserRequests`, with the tabs and the profiles), the app says at once that it has it (`ack`), runs
  * it against the page, and answers over the socket (`browser-answer`).
