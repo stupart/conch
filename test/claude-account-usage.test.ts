@@ -91,7 +91,10 @@ test("the control boundary preserves created account identity and native usage",
 test("the installed command works inside an extra profile and forwards the original status line", async () => {
   const bin = join(root, "bin");
   mkdirSync(bin);
-  writeFileSync(join(bin, "claude"), '#!/bin/sh\nprintf \'%s\' \'{"loggedIn":true,"email":"work@example.com","orgId":"org-a","subscriptionType":"max"}\'\n', { mode: 0o700 });
+  // Who the profile is signed in as comes from Claude Code's own file; a `claude` started for it would say so here.
+  const calls = join(root, "calls");
+  writeFileSync(join(bin, "claude"), `#!/bin/sh\necho call >> "${calls}"\n`, { mode: 0o700 });
+  writeFileSync(join(account.configDir, ".claude.json"), JSON.stringify({ oauthAccount: { emailAddress: "work@example.com", organizationUuid: "org-a" } }));
   const path = join(account.configDir, "settings.json");
   writeFileSync(path, JSON.stringify({ statusLine: { type: "command", command: "cat" } }));
   installAccountUsage(account);
@@ -106,13 +109,17 @@ test("the installed command works inside an extra profile and forwards the origi
   expect(await child.exited).toBe(0);
   expect(readAccountUsage([account], time).accounts[0]!.windows[0]!.pct).toBe(37);
   expect(readFileSync(join(account.configDir, "conch-usage.json"), "utf8")).not.toContain("must-not-persist");
+  // Never `claude auth status` from a status line: it refreshes an expired sign-in, and this runs once a minute from
+  // every session in the profile (2026-11-02, the daily "Login expired").
+  expect(existsSync(calls)).toBe(false);
 });
 
-test("a status check that fails rests a minute, not one more `claude` for every refresh of the status line", async () => {
+test("a profile whose file names nobody rests a minute, and no status line ever starts `claude`", async () => {
   const bin = join(root, "bin");
   mkdirSync(bin);
   const calls = join(root, "calls");
   writeFileSync(join(bin, "claude"), `#!/bin/sh\necho call >> "${calls}"\necho 'not json'\n`, { mode: 0o700 });
+  const saved: string[] = [];
   const path = join(account.configDir, "settings.json");
   writeFileSync(path, JSON.stringify({}));
   installAccountUsage(account);
@@ -124,8 +131,12 @@ test("a status check that fails rests a minute, not one more `claude` for every 
       stdin: new Blob([raw]), stdout: "ignore", stderr: "ignore",
     });
     expect(await child.exited).toBe(0);
+    saved.push(readFileSync(join(account.configDir, "conch-usage.json"), "utf8"));
   }
-  expect(readFileSync(calls, "utf8").trim().split("\n")).toHaveLength(1);
+  // One failure, written once and left to rest: every later refresh found it within the minute.
+  expect(new Set(saved).size).toBe(1);
+  expect(JSON.parse(saved[0]!).failedAt).toBeString();
+  expect(existsSync(calls)).toBe(false);
   expect(readAccountUsage([account], Date.now()).accounts[0]!.windows).toEqual([]);
 });
 

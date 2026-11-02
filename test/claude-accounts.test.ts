@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { addClaudeAccount, accountStorePath, claudeAccountEnvironment, decodeClaudeAuth, readClaudeAccounts, removeClaudeAccount } from "../src/claude-accounts.ts";
+import { addClaudeAccount, accountStorePath, claudeAccountEnvironment, claudeProfileIdentity, decodeClaudeAuth, readClaudeAccountStatus, readClaudeAccounts, removeClaudeAccount } from "../src/claude-accounts.ts";
 import { accountRegistrySnapshot, accountResumableSessions, assertClaudeAccountIdle, findAccountTranscript, sessionTranscript } from "../src/claude-account-sessions.ts";
 import { attachTerminalCommand, closeSession, restartRequest, startClaudeAccountLogin, startRequestFromArgv, terminalSessionCommand } from "../src/session-lifecycle.ts";
 import { validateControlResponse, validateRuntimeControlMessage } from "../src/settings.ts";
@@ -185,3 +185,42 @@ test("an unset default config stays unset so the existing Keychain login is reta
   const command = terminalSessionCommand({ backend: "claude", claudeAccountId: "default", cwd: "/work/demo" });
   expect(command).toBe("cd -- '/work/demo' && exec env -u CLAUDE_CONFIG_DIR claude");
 });
+
+/**
+ * `claude auth status` refreshes an expired sign-in before it answers, and a refresh uses up the token it was given. Killed
+ * partway, or run twice at once, it lost a profile's sign-in: Blueprint's said "Login expired" about once a day (2026-11-02).
+ */
+test("a status check is never killed, and one profile never has two running at once", async () => {
+  const bin = join(root, "status-bin");
+  mkdirSync(bin);
+  const log = join(root, "status-log");
+  writeFileSync(join(bin, "claude"), `#!/bin/sh\necho start >> "${log}"\nsleep 0.6\necho done >> "${log}"\nprintf '%s' '{"loggedIn":true,"email":"person@example.com"}'\n`, { mode: 0o700 });
+  const path = process.env.PATH;
+  process.env.PATH = `${bin}:${path}`;
+  try {
+    const account = { id: "work", label: "Work", configDir: join(root, "status-profile") };
+    const [first, second] = await Promise.all([readClaudeAccountStatus(account), readClaudeAccountStatus(account)]);
+    expect(first.status).toBe("signed-in");
+    expect(second.email).toBe("person@example.com");
+    expect(readFileSync(log, "utf8").trim().split("\n")).toEqual(["start", "done"]);
+    // Too slow for the caller: it hears "unavailable", and the check still finishes and saves what it renewed.
+    writeFileSync(log, "");
+    expect((await readClaudeAccountStatus(account, false, 100)).status).toBe("unavailable");
+    await Bun.sleep(900);
+    expect(readFileSync(log, "utf8").trim().split("\n")).toEqual(["start", "done"]);
+  } finally {
+    process.env.PATH = path;
+  }
+});
+
+test("who a profile is signed in as comes from Claude Code's own file, with no process and no network", () => {
+  const configDir = join(root, "identity-profile");
+  mkdirSync(configDir);
+  const account = { id: "work", label: "Work", configDir };
+  expect(claudeProfileIdentity(account)).toBeUndefined();
+  writeFileSync(join(configDir, ".claude.json"), JSON.stringify({ oauthAccount: { emailAddress: "person@example.com", organizationUuid: "org-a", accessToken: "secret" } }));
+  expect(claudeProfileIdentity(account)).toEqual({ email: "person@example.com", organizationId: "org-a" });
+  writeFileSync(join(configDir, ".claude.json"), JSON.stringify({ oauthAccount: { emailAddress: "bad\nline" } }));
+  expect(claudeProfileIdentity(account)).toBeUndefined();
+});
+
