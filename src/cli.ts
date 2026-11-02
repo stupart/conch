@@ -581,6 +581,46 @@ switch (command) {
     if (!ok) process.exit(1);
     break;
   }
+  case "profile": {
+    // Where the daemon's CPU goes (daemon-profile.ts): it profiles itself for this long on SIGUSR2 and writes a report.
+    const seconds = rest[0] === undefined ? 30 : Number(rest[0]);
+    if (!Number.isFinite(seconds) || seconds < 1 || seconds > 300) {
+      console.error("usage: conch profile [seconds, 1–300; default 30]");
+      process.exitCode = 2;
+      break;
+    }
+    const { existsSync, readdirSync, readFileSync, statSync, writeFileSync } = await import("node:fs");
+    const { dirname, join } = await import("node:path");
+    const dir = join(dirname(settingsPathFor()), "profiles");
+    const pid = existsSync(join(dir, "daemon.pid")) ? Number(readFileSync(join(dir, "daemon.pid"), "utf8").trim()) : Number.NaN;
+    if (!Number.isSafeInteger(pid) || pid <= 0) {
+      console.error("[conch] no running daemon has said where it is; restart it once with this version");
+      process.exitCode = 1;
+      break;
+    }
+    writeFileSync(join(dir, "request"), `${seconds}\n`, { mode: 0o600 });
+    const asked = Date.now();
+    try { process.kill(pid, "SIGUSR2"); } catch {
+      console.error(`[conch] the daemon (pid ${pid}) isn't running`);
+      process.exitCode = 1;
+      break;
+    }
+    console.log(`[conch] profiling the daemon (pid ${pid}) for ${seconds} s…`);
+    const deadline = asked + (seconds + 30) * 1000;
+    let report: string | undefined;
+    while (!report && Date.now() < deadline) {
+      await Bun.sleep(1000);
+      report = readdirSync(dir).filter((name) => name.startsWith("daemon-") && name.endsWith(".md"))
+        .map((name) => join(dir, name)).find((path) => statSync(path).mtimeMs >= asked + seconds * 1000 - 2000);
+    }
+    if (!report) {
+      console.error("[conch] no report came back; check the daemon's log");
+      process.exitCode = 1;
+      break;
+    }
+    console.log(report);
+    break;
+  }
   case "logins": {
     // The logins inventory (login-inventory.ts), from the daemon, which reads it and keeps it a few minutes.
     const unknown = rest.filter((arg) => arg !== "--refresh" && arg !== "--json");
