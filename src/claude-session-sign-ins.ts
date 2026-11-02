@@ -19,20 +19,33 @@ import { conchHome } from "./home.ts";
  *  - pasted into the Mac app's sheet, sent once over the daemon's local socket (`add`; the phone bridge refuses the
  *    kind, phone-bridge.ts `MAC_APP_ONLY_KINDS`), and written to the login Keychain by `/usr/bin/security -i`, the
  *    command on its STDIN (`addSessionSignIn`): never in any process's argv, never in conch's own files;
- *  - read back by the launched shell itself (`signInShellPrefix`), into CLAUDE_CODE_OAUTH_TOKEN, just before it execs
- *    Claude Code: the command conch builds, tmux's arguments, the sessions file and the logs only ever hold the id.
+ *  - read back by the launched shell itself (`signInShellPrefix`) into a variable it never exports, and handed to Claude
+ *    Code on a file descriptor (`signInTokenRedirect`, CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR), never its environment:
+ *    the command conch builds, tmux's arguments, the sessions file and the logs only ever hold the id, and what the
+ *    agent runs can't read it either (below).
+ *
+ * Not CLAUDE_CODE_OAUTH_TOKEN, which is where it went first: every command the agent ran would have inherited a year's
+ * credential in its environment, one `env` from its transcript, which conch publishes. Measured on Claude Code 2.1.309
+ * with a fake token, 2026-11-01: handed over on fd 3, the API was sent it (401, "OAuth access token is invalid", where no
+ * token at all says "Not logged in"), and a command Claude Code started saw no token, no descriptor variable and no
+ * descriptor to read.
  * What conch keeps is the label and when it was added (`claude-session-sign-ins.json`), and which live session runs on
  * which sign-in (`SessionSignInLedger`), which the session's own hook says through a marker that is only the id.
  */
 
 /** The Keychain service each sign-in's token is kept under: one generic password per sign-in, its account the id. */
 export const SIGN_IN_KEYCHAIN_SERVICE = "conch.claude.session-sign-in";
-/** Where the launched shell puts the token for Claude Code, which reads it in place of the Keychain login. */
+/** Where Claude Code would read a token from its environment: never set by a sign-in launch, and stripped from it. */
 export const SIGN_IN_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
+/** Where a sign-in launch tells Claude Code to read the token from instead: a descriptor, `SIGN_IN_TOKEN_FD`. */
+export const SIGN_IN_TOKEN_FD_ENV = "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR";
+export const SIGN_IN_TOKEN_FD = 3;
+/** The launched shell's own variable for the token: never exported, so nothing it starts inherits it. */
+const SIGN_IN_SHELL_VARIABLE = "conch_sign_in";
 /** The sign-in's id, beside the token: not secret, so the session's hook can say which sign-in it runs on. */
 export const SIGN_IN_MARKER_ENV = "CONCH_CLAUDE_SIGN_IN";
 /** What a sign-in launch keeps when it strips the launcher's other credentials (`claudeProfileCommandPrefix`). */
-export const SIGN_IN_LAUNCH_ENV: readonly string[] = [SIGN_IN_TOKEN_ENV, SIGN_IN_MARKER_ENV];
+export const SIGN_IN_LAUNCH_ENV: readonly string[] = [SIGN_IN_TOKEN_FD_ENV, SIGN_IN_MARKER_ENV];
 
 const MAX_SIGN_INS = 32;
 const MAX_TOKEN_LENGTH = 1_024;
@@ -315,17 +328,27 @@ export function signInSecurityBinary(env: Record<string, string | undefined> = p
 }
 
 /**
- * The start of a launch with a sign-in, before its `exec`: the shell reads the token from the Keychain itself, refuses
- * to go on without one (an empty answer included, which would have Claude Code fall back to the rotating login), and
- * exports it with the marker. Only the id is in this text; the token never is.
+ * The start of a launch with a sign-in, before its `exec`: the shell reads the token from the Keychain itself into a
+ * variable it doesn't export, refuses to go on without one (an empty answer included, which would have Claude Code fall
+ * back to the rotating login), and exports where to read it (`SIGN_IN_TOKEN_FD_ENV`) and the marker. Only the id is in
+ * this text; the token never is. `signInTokenRedirect` ends the same command.
  */
 export function signInShellPrefix(signIn: Pick<ClaudeSessionSignIn, "id" | "label">, security = signInSecurityBinary()): string {
   if (!validAccountId(signIn.id)) throw new Error("Invalid sign-in id");
   const missing = `conch: the Claude sign-in "${signIn.label}" isn't in your Keychain any more, so this session didn't start.`
     + " Add it again in conch's Settings > Providers, or start the session on Default.";
-  return `{ ${SIGN_IN_TOKEN_ENV}="$(${security} find-generic-password -s ${SIGN_IN_KEYCHAIN_SERVICE} -a ${shellQuote(signIn.id)} -w 2>/dev/null)"`
-    + ` && [ -n "$${SIGN_IN_TOKEN_ENV}" ] || { printf '%s\\n' ${shellQuote(missing)}; exit 1; }; }`
-    + ` && export ${SIGN_IN_TOKEN_ENV} ${SIGN_IN_MARKER_ENV}=${shellQuote(signIn.id)} && `;
+  return `{ ${SIGN_IN_SHELL_VARIABLE}="$(${security} find-generic-password -s ${SIGN_IN_KEYCHAIN_SERVICE} -a ${shellQuote(signIn.id)} -w 2>/dev/null)"`
+    + ` && [ -n "$${SIGN_IN_SHELL_VARIABLE}" ] || { printf '%s\\n' ${shellQuote(missing)}; exit 1; }; }`
+    + ` && export ${SIGN_IN_TOKEN_FD_ENV}=${SIGN_IN_TOKEN_FD} ${SIGN_IN_MARKER_ENV}=${shellQuote(signIn.id)} && `;
+}
+
+/**
+ * The end of that command: the token on `SIGN_IN_TOKEN_FD`, from a pipe the shell fills with its builtin `printf` (no
+ * process is started with it as an argument, and nothing touches the disk). Claude Code reads it to the end at start-up,
+ * so the pipe is empty by the time anything it runs could look. zsh, as Terminal's shell and conch's tmux are.
+ */
+export function signInTokenRedirect(): string {
+  return ` ${SIGN_IN_TOKEN_FD}< <(printf '%s' "$${SIGN_IN_SHELL_VARIABLE}")`;
 }
 
 /** Where `claude setup-token` runs: a folder of its own, so Default's login and the rotation's are never touched. */

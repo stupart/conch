@@ -220,25 +220,28 @@ describe("on the wire", () => {
 });
 
 describe("launching on a sign-in", () => {
-  test("Terminal and background read the token in the launched shell, by id, and keep it and the marker past env", async () => {
+  test("Terminal and background read the token in the launched shell, by id, and hand it over on a descriptor", async () => {
     const signIn = await saved();
     delete process.env.CLAUDE_CONFIG_DIR;
     const terminal = terminalSessionCommand({ backend: "claude", cwd: "/work/demo", claudeSignInId: signIn.id });
     const background = backgroundSessionCommand({ backend: "claude", cwd: "/work/demo", claudeSignInId: signIn.id });
     for (const command of [terminal, background]) {
-      expect(command.startsWith("cd -- '/work/demo' && { CLAUDE_CODE_OAUTH_TOKEN=\"$(")).toBe(true);
+      expect(command.startsWith("cd -- '/work/demo' && { conch_sign_in=\"$(")).toBe(true);
       expect(command).toContain(` find-generic-password -s conch.claude.session-sign-in -a '${signIn.id}' -w 2>/dev/null)"`);
-      expect(command).toContain(`&& export CLAUDE_CODE_OAUTH_TOKEN CONCH_CLAUDE_SIGN_IN='${signIn.id}' && exec env `);
-      // Every other credential the shell has is dropped, as a second profile's launch drops them; these two are kept.
+      expect(command).toContain(`&& export CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=3 CONCH_CLAUDE_SIGN_IN='${signIn.id}' && exec env `);
+      expect(command).toEndWith(` 3< <(printf '%s' "$conch_sign_in")`);
+      // Every other credential the shell has is dropped, an inherited token included; the descriptor and marker are kept.
       expect(command).toContain("-u ANTHROPIC_API_KEY");
-      expect(command).not.toContain("-u CLAUDE_CODE_OAUTH_TOKEN");
+      expect(command).toContain("-u CLAUDE_CODE_OAUTH_TOKEN ");
+      expect(command).not.toContain("-u CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR");
       expect(command).not.toContain("-u CONCH_CLAUDE_SIGN_IN");
+      expect(command).not.toMatch(/export [^&]*CLAUDE_CODE_OAUTH_TOKEN(?!_FILE_DESCRIPTOR)/);
       // Default's own folder, unset as Default always is.
       expect(command).toContain("-u CLAUDE_CONFIG_DIR claude");
       expect(command).not.toMatch(TOKEN_SHAPED);
     }
     expect(terminalSessionCommand({ backend: "claude", cwd: "/work/demo", claudeSignInId: signIn.id, resumeSessionId: SESSION }))
-      .toEndWith(`claude --resume '${SESSION}'`);
+      .toEndWith(`claude --resume '${SESSION}' 3< <(printf '%s' "$conch_sign_in")`);
     // Nothing changes for a launch with no sign-in.
     expect(terminalSessionCommand({ backend: "claude", cwd: "/work/demo" })).toBe("cd -- '/work/demo' && exec claude");
     expect(backgroundSessionCommand({ backend: "claude", cwd: "/work/demo" })).toContain("-u CONCH_CLAUDE_SIGN_IN");
@@ -318,7 +321,9 @@ describe("the launch prefix, run", () => {
     const claude = join(dir, "claude");
     writeFileSync(claude, [
       "#!/bin/sh",
-      `if [ "$CLAUDE_CODE_OAUTH_TOKEN" = "$(cat '${join(dir, "token")}')" ]; then echo "token: matches"; else echo "token: does not match"; fi`,
+      // The token is read where Claude Code reads it, the descriptor the environment names; the environment itself must hold none.
+      `if [ -n "$CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR" ] && [ "$(eval "cat <&$CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR")" = "$(cat '${join(dir, "token")}')" ]; then echo "token: matches"; else echo "token: does not match"; fi`,
+      'echo "token in environment: ${CLAUDE_CODE_OAUTH_TOKEN:+yes}"',
       'echo "marker: ${CONCH_CLAUDE_SIGN_IN:-unset}"',
       'echo "api key: ${ANTHROPIC_API_KEY:-unset}"',
       'echo "args: $*"',
@@ -332,7 +337,7 @@ describe("the launch prefix, run", () => {
     // zsh as Terminal's shell and the background host's are, without anyone's rc files: the command alone.
     const child = Bun.spawn(["/bin/zsh", "-f", "-c", command], {
       cwd: root, stdout: "pipe", stderr: "pipe",
-      env: { PATH: `${dir}:/usr/bin:/bin`, HOME: root, ANTHROPIC_API_KEY: "from-the-shell" },
+      env: { PATH: `${dir}:/usr/bin:/bin`, HOME: root, ANTHROPIC_API_KEY: "from-the-shell", CLAUDE_CODE_OAUTH_TOKEN: "inherited-from-the-shell" },
     });
     const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     return { code, out: out + err };
@@ -350,6 +355,7 @@ describe("the launch prefix, run", () => {
       expect(out).toContain("token: matches");
       expect(out).toContain(`marker: ${signIn.id}`);
       expect(out).toContain("api key: unset");
+      expect(out).toContain("token in environment: \n");
       expect(out).not.toMatch(TOKEN_SHAPED);
       expect(code).toBe(0);
     }
@@ -546,7 +552,7 @@ describe("restart, fork and resume keep it", () => {
     const { kind: _, ...request } = (wire as { value: StartSessionRequest & { kind: string } }).value;
     const command = terminalSessionCommand(request);
     expect(command).toContain(`-a '${signIn.id}' -w`);
-    expect(command).toEndWith(`--resume '${SESSION}'`);
+    expect(command).toEndWith(`--resume '${SESSION}' 3< <(printf '%s' "$conch_sign_in")`);
   });
 
   test("a relaunch on a sign-in that's since been removed fails, in words, before anything is closed or started", async () => {

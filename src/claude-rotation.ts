@@ -39,6 +39,7 @@ export function rotationEnvironment(base: NodeJS.ProcessEnv = process.env): Node
   delete env.CLAUDE_CONFIG_DIR;
   delete env.ANTHROPIC_API_KEY;
   delete env.CLAUDE_CODE_OAUTH_TOKEN;
+  delete env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR;
   return env;
 }
 

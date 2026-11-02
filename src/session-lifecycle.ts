@@ -6,7 +6,7 @@ import { processMatchesProvider, readProcessIdentity, sameProcessIdentity, type 
 import { conchHome } from "./home.ts";
 import { CODEX_ACCOUNT_ENV_REMOVE, codexAccountForLaunch, type CodexAccount } from "./codex-accounts.ts";
 import { CLAUDE_ACCOUNT_ENV_REMOVE, claudeAccountForLaunch, requireClaudeAccount, type ClaudeAccount } from "./claude-accounts.ts";
-import { claudeSignInForLaunch, setupTokenCommand, signInShellPrefix, SIGN_IN_LAUNCH_ENV } from "./claude-session-sign-ins.ts";
+import { claudeSignInForLaunch, setupTokenCommand, signInShellPrefix, signInTokenRedirect, SIGN_IN_LAUNCH_ENV } from "./claude-session-sign-ins.ts";
 import { statSync } from "node:fs";
 import {
   adapterFor,
@@ -325,7 +325,7 @@ export function terminalSessionCommand(request: StartSessionRequest): string {
   const cwd = sessionFolder(request);
   const adapter = adapterFor(request.backend);
   // A sign-in runs in Default, named or not, and drops whatever other credential the shell carries, as a second profile
-  // does: an ANTHROPIC_API_KEY there would win over the token. Its own two variables are kept (`SIGN_IN_LAUNCH_ENV`).
+  // does: an ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN there would win over it. Its own two are kept (`SIGN_IN_LAUNCH_ENV`).
   const signIn = claudeSignInForLaunch(request);
   const account = claudeAccountForLaunch(request) ?? (signIn ? requireClaudeAccount("default") : undefined);
   const codexAccount = codexAccountForLaunch(request);
@@ -359,14 +359,16 @@ export function terminalSessionCommand(request: StartSessionRequest): string {
   if (request.initialPrompt !== undefined && request.prompt !== undefined) {
     throw new Error("A start carries one first message, a client's or the daemon's");
   }
-  // The token is read by the shell, after `cd` and before `exec`: never in this text, tmux's arguments or a process's argv.
+  // The token is read by the shell, after `cd` and before `exec`, and handed over on a descriptor at the end: never in
+  // this text, tmux's arguments, a process's argv or Claude Code's environment.
   const token = signIn ? signInShellPrefix(signIn) : "";
   return `cd -- ${shellQuote(cwd)} && ${token}exec ${environment}${adapter.executable}${hostFlags}${bypass}${trust}${hookTrust}${args}`
     + renderStartOptions(adapter, request.options)
     + (request.claudeHandoff ? ` --session-id ${shellQuote(request.claudeHandoff.sessionId)}` : "")
     // Last, after every flag: both agents take their first message as the one positional argument.
     + (request.prompt ? ` ${shellQuote(request.prompt.trim())}` : "")
-    + (request.initialPrompt ? ` ${shellQuote(request.initialPrompt)}` : "");
+    + (request.initialPrompt ? ` ${shellQuote(request.initialPrompt)}` : "")
+    + (signIn ? signInTokenRedirect() : "");
 }
 
 /**
