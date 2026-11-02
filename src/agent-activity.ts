@@ -6,8 +6,10 @@ import {
   readSync,
   readdirSync,
   statSync,
+  type Stats,
 } from "node:fs";
 import { basename, dirname, extname, join } from "node:path";
+import { fileVersion, sameFileVersion, type FileVersion } from "./file-version.ts";
 
 /**
  * Files written by a live task can legitimately go quiet while a tool call is
@@ -34,31 +36,80 @@ interface Candidate {
   bytes: Buffer;
 }
 
-function freshFile(path: string, now: number, liveWindowMs: number): boolean {
+/** Bounds for the caches below, which are keyed by folders and files of sessions that come and go. */
+const MAX_REMEMBERED = 256;
+
+function remember<Value>(cache: Map<string, Value>, key: string, value: Value): Value {
+  cache.delete(key);
+  cache.set(key, value);
+  if (cache.size > MAX_REMEMBERED) cache.delete(cache.keys().next().value!);
+  return value;
+}
+
+/**
+ * A subagents folder's names, listed again only when the folder itself changed: an agent's files being added or
+ * removed moves the folder's mtime, and nothing else changes what a listing returns. A listing taken within a second
+ * of the folder changing is not trusted, so a filesystem with whole-second times cannot hide a file added in that
+ * same second. Sessions keep every agent they ever started here: 419 files in one of Tyler's (2026-11-02).
+ */
+const listings = new Map<string, { ino: number; mtimeMs: number; listedAt: number; names: string[] }>();
+
+function listing(dir: string): string[] | null {
+  let folder: Stats;
   try {
-    const stat = statSync(path);
-    return stat.isFile() && now - stat.mtimeMs <= liveWindowMs;
+    folder = statSync(dir);
   } catch {
-    return false;
+    listings.delete(dir);
+    return null;
   }
+  const known = listings.get(dir);
+  if (known && known.ino === folder.ino && known.mtimeMs === folder.mtimeMs && known.listedAt - folder.mtimeMs >= 1000) {
+    return known.names;
+  }
+  const listedAt = Date.now();
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    listings.delete(dir);
+    return null;
+  }
+  return remember(listings, dir, { ino: folder.ino, mtimeMs: folder.mtimeMs, listedAt, names }).names;
+}
+
+/**
+ * Each file's `stat`, once per scan. Both windows below ask about the same `.jsonl` files, which were stat-ed twice.
+ * Never kept between scans: appending to an agent's transcript moves its mtime and not its folder's, so a quiet agent
+ * woken by SendMessage would read as stale until something else changed the folder.
+ */
+type StatMemo = Map<string, Stats | null>;
+
+function statOnce(stats: StatMemo, path: string): Stats | null {
+  if (stats.has(path)) return stats.get(path)!;
+  let stat: Stats | null = null;
+  try {
+    stat = statSync(path, { throwIfNoEntry: false }) ?? null;
+  } catch {}
+  stats.set(path, stat);
+  return stat;
+}
+
+function freshFile(stat: Stats | null, now: number, liveWindowMs: number): boolean {
+  return !!stat && stat.isFile() && now - stat.mtimeMs <= liveWindowMs;
 }
 
 function freshIds(
   dir: string,
+  names: readonly string[],
+  stats: StatMemo,
   match: (name: string) => string | undefined,
   now: number,
   liveWindowMs: number,
 ): Map<string, Candidate> {
   const ids = new Map<string, Candidate>();
-  let names: string[];
-  try {
-    names = readdirSync(dir);
-  } catch {
-    return ids;
-  }
   for (const name of names) {
     const id = match(name);
-    if (!id || !freshFile(join(dir, name), now, liveWindowMs)) continue;
+    if (!id || !freshFile(statOnce(stats, join(dir, name)), now, liveWindowMs)) continue;
     ids.set(id, { id, bytes: Buffer.from(id) });
   }
   return ids;
@@ -214,8 +265,12 @@ export function liveBackgroundAgents(transcriptPath: string): LiveAgent[] {
     const sessionId = basename(transcriptPath, extname(transcriptPath));
     const projectDir = dirname(transcriptPath);
     const sidechains = join(projectDir, sessionId, "subagents");
+    const names = listing(sidechains) ?? [];
+    const stats: StatMemo = new Map();
     const agents = freshIds(
       sidechains,
+      names,
+      stats,
       // Spawn metadata can land before the transcript. It contributes only a
       // candidate id; the parent transcript still proves launch/completion.
       (name) => name.match(/^agent-(.+?)(?:\.jsonl|\.meta\.json)$/)?.[1],
@@ -227,56 +282,92 @@ export function liveBackgroundAgents(transcriptPath: string): LiveAgent[] {
     // on its agents") in the middle of it.
     for (const [id, candidate] of freshIds(
       sidechains,
+      names,
+      stats,
       (name) => name.match(/^agent-(.+?)\.jsonl$/)?.[1],
       now,
       MID_TOOL_WINDOW_MS,
     )) {
-      if (!agents.has(id) && insideToolCall(join(sidechains, `agent-${id}.jsonl`))) agents.set(id, candidate);
+      const path = join(sidechains, `agent-${id}.jsonl`);
+      if (!agents.has(id) && insideToolCallOf(path, statOnce(stats, path))) agents.set(id, candidate);
     }
 
     if (!agents.size) return [];
-
-    const live: string[] = [];
-    visitLinesNewestFirst(transcriptPath, (buffer) => containsCandidate(buffer, agents), (line) => {
-      if (!containsCandidate(line, agents)) return false;
-      let entry: any;
-      try {
-        entry = JSON.parse(line.toString("utf8"));
-      } catch {
-        return false; // tolerate a partial final line while Claude is writing
-      }
-
-      const content = taskNotificationText(entry);
-      if (content) {
-        const taskId = content.match(/<task-id>\s*([^<]+?)\s*<\/task-id>/)?.[1];
-        const status = content.match(/<status>\s*([^<]+?)\s*<\/status>/)?.[1];
-        if (taskId && status && TERMINAL_TASK_STATUS.has(status)) {
-          agents.delete(taskId);
-        }
-      } else if (entry?.type === "user" && entry?.toolUseResult && typeof entry.toolUseResult === "object") {
-        const result = entry.toolUseResult;
-        if (typeof result.resumedAgentId === "string" && agents.has(result.resumedAgentId)) {
-          // SendMessage to a finished agent resumes it in the background; its
-          // next completion notification closes it again. Newest first, so a
-          // resume met here reopens the agent past every older completion.
-          live.push(result.resumedAgentId);
-          agents.delete(result.resumedAgentId);
-        } else if (typeof result.agentId === "string" && agents.has(result.agentId)) {
-          // Newest first, so a launch met here is the last word on the agent:
-          // it is still out there.
-          if (result.isAsync === true) live.push(result.agentId);
-          // A synchronous Agent uses the same artifact naming convention but is
-          // already complete when its tool_result is written.
-          agents.delete(result.agentId);
-        }
-      }
-
-      return !agents.size;
-    });
-    return live.map((agentId) => describeAgent(sidechains, agentId));
+    return launchedAgents(transcriptPath, agents).map((agentId) => describeAgent(sidechains, agentId));
   } catch {
     return [];
   }
+}
+
+/**
+ * The last scan of each parent transcript: which of its candidates it still launches. The answer depends only on
+ * the transcript and the candidates, so a parent that has not moved, asked about the same agents, is not read again.
+ */
+const scans = new Map<string, { version: FileVersion; ids: string; live: string[] }>();
+
+/** Which candidates the parent transcript's newest word still has in flight, newest first. Consumes `agents`. */
+function launchedAgents(transcriptPath: string, agents: Map<string, Candidate>): string[] {
+  const version = fileVersion(transcriptPath);
+  const ids = [...agents.keys()].sort().join("\u0000");
+  const known = scans.get(transcriptPath);
+  if (known && known.ids === ids && sameFileVersion(known.version, version)) return [...known.live];
+  const live = scanLaunches(transcriptPath, agents);
+  // Taken before the scan: a transcript that moves during it reads as moved next time.
+  if (version) remember(scans, transcriptPath, { version, ids, live: [...live] });
+  return live;
+}
+
+function scanLaunches(transcriptPath: string, agents: Map<string, Candidate>): string[] {
+  const live: string[] = [];
+  visitLinesNewestFirst(transcriptPath, (buffer) => containsCandidate(buffer, agents), (line) => {
+    if (!containsCandidate(line, agents)) return false;
+    let entry: any;
+    try {
+      entry = JSON.parse(line.toString("utf8"));
+    } catch {
+      return false; // tolerate a partial final line while Claude is writing
+    }
+
+    const content = taskNotificationText(entry);
+    if (content) {
+      const taskId = content.match(/<task-id>\s*([^<]+?)\s*<\/task-id>/)?.[1];
+      const status = content.match(/<status>\s*([^<]+?)\s*<\/status>/)?.[1];
+      if (taskId && status && TERMINAL_TASK_STATUS.has(status)) {
+        agents.delete(taskId);
+      }
+    } else if (entry?.type === "user" && entry?.toolUseResult && typeof entry.toolUseResult === "object") {
+      const result = entry.toolUseResult;
+      if (typeof result.resumedAgentId === "string" && agents.has(result.resumedAgentId)) {
+        // SendMessage to a finished agent resumes it in the background; its
+        // next completion notification closes it again. Newest first, so a
+        // resume met here reopens the agent past every older completion.
+        live.push(result.resumedAgentId);
+        agents.delete(result.resumedAgentId);
+      } else if (typeof result.agentId === "string" && agents.has(result.agentId)) {
+        // Newest first, so a launch met here is the last word on the agent:
+        // it is still out there.
+        if (result.isAsync === true) live.push(result.agentId);
+        // A synchronous Agent uses the same artifact naming convention but is
+        // already complete when its tool_result is written.
+        agents.delete(result.agentId);
+      }
+    }
+
+    return !agents.size;
+  });
+  return live;
+}
+
+/** `insideToolCall` per agent transcript, kept until the file moves: one `stat` (already taken) instead of a read. */
+const insideToolCalls = new Map<string, { version: FileVersion; inside: boolean }>();
+
+function insideToolCallOf(path: string, stat: Stats | null): boolean {
+  const version = stat ? { ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs } : null;
+  const known = insideToolCalls.get(path);
+  if (known && sameFileVersion(known.version, version)) return known.inside;
+  const inside = insideToolCall(path);
+  if (version) remember(insideToolCalls, path, { version, inside });
+  return inside;
 }
 
 /** Does this transcript end inside a tool call: a tool_use with no tool_result after it? */

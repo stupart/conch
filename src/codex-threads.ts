@@ -180,6 +180,10 @@ export function codexThreadDbPaths(codexHome: string): { state: string; history:
 }
 
 export function openReadOnly(path: string): Database {
+  return openReadOnlyConnection(path).db;
+}
+
+function openReadOnlyConnection(path: string): { db: Database; immutable: boolean } {
   // `readonly` is the whole safety story: Codex may be mid-write in another
   // process, and conch must never be the reason its database is locked.
   try {
@@ -189,7 +193,7 @@ export function openReadOnly(path: string): Database {
     // the constructor alone catches nothing and the fallback below was dead code
     // — which is why Codex rows kept vanishing even after this was "fixed".
     db.query("SELECT 1").get();
-    return db;
+    return { db, immutable: false };
   } catch (error) {
     // Codex's live databases intermittently refuse a READ-ONLY open with
     // SQLITE_CANTOPEN while a plain or `immutable=1` open of the same file
@@ -205,8 +209,68 @@ export function openReadOnly(path: string): Database {
     // here as "incomplete" rather than "no sessions".
     const fallback = new Database(`file:${path}?immutable=1`, { readonly: true });
     fallback.query("SELECT 1").get();
-    return fallback;
+    return { db: fallback, immutable: true };
   }
+}
+
+/**
+ * Read a Codex database through a read-only connection kept open between reads.
+ *
+ * Every render opened and closed `state_5.sqlite` once per Codex session for its helpers, and both databases again
+ * for the registry: `openReadOnly` and re-preparing the same statements on each new connection were about 5% of the
+ * daemon's JavaScript time in the 2026-11-02 profile. Kept open, a read is the query alone. It is safe because a
+ * connection holds no lock between statements: bun:sqlite resets each one when `get`/`all` returns (checked
+ * against a writer with no busy timeout, in rollback and WAL mode alike), and SQLite notices another process's
+ * commit at the start of each read, so a kept connection sees what a fresh one would. Two things a kept one could
+ * not see are covered: a database replaced by a new file (a new inode) is opened afresh, and the `immutable=1`
+ * fallback, which promises SQLite nothing changes and would go stale, is closed after its one read and never kept.
+ * A read that fails drops the connection, so the next starts clean.
+ */
+const keptDatabases = new Map<string, { db: Database; ino: number }>();
+/** Two databases per Codex home; a test's fixtures are let go oldest first. */
+const MAX_KEPT_DATABASES = 4;
+
+export function readCodexDatabase<T>(path: string, read: (db: Database) => T): T {
+  let ino: number;
+  try {
+    ino = statSync(path).ino;
+  } catch (error) {
+    // Gone: let its connection go too, rather than hold a deleted file open.
+    forgetCodexDatabase(path);
+    throw error;
+  }
+  let kept = keptDatabases.get(path);
+  if (kept && kept.ino !== ino) {
+    forgetCodexDatabase(path);
+    kept = undefined;
+  }
+  if (!kept) {
+    const opened = openReadOnlyConnection(path);
+    if (opened.immutable) {
+      try {
+        return read(opened.db);
+      } finally {
+        opened.db.close();
+      }
+    }
+    kept = { db: opened.db, ino };
+    keptDatabases.set(path, kept);
+    while (keptDatabases.size > MAX_KEPT_DATABASES) forgetCodexDatabase(keptDatabases.keys().next().value!);
+  }
+  try {
+    return read(kept.db);
+  } catch (error) {
+    forgetCodexDatabase(path);
+    throw error;
+  }
+}
+
+function forgetCodexDatabase(path: string): void {
+  const kept = keptDatabases.get(path);
+  keptDatabases.delete(path);
+  try {
+    kept?.db.close();
+  } catch {}
 }
 
 /**
@@ -836,26 +900,18 @@ export function readCodexTurnStatuses(
   const status = new Map<string, string>();
   if (!threadIds.length || !existsSync(history)) return status;
   try {
-    const hist = openReadOnly(history);
-    try {
-      const placeholders = threadIds.map(() => "?").join(",");
-      for (
-        const row of hist
-          .query(
-            `SELECT thread_id, status
-               FROM thread_turns t
-              WHERE thread_id IN (${placeholders})
-                AND rollout_ordinal = (
-                      SELECT MAX(rollout_ordinal) FROM thread_turns
-                       WHERE thread_id = t.thread_id)`,
-          )
-          .all(...(threadIds as string[])) as Array<Record<string, any>>
-      ) {
-        status.set(String(row.thread_id), String(row.status));
-      }
-    } finally {
-      hist.close();
-    }
+    const placeholders = threadIds.map(() => "?").join(",");
+    const rows = readCodexDatabase(history, (hist) => hist
+      .query(
+        `SELECT thread_id, status
+           FROM thread_turns t
+          WHERE thread_id IN (${placeholders})
+            AND rollout_ordinal = (
+                  SELECT MAX(rollout_ordinal) FROM thread_turns
+                   WHERE thread_id = t.thread_id)`,
+      )
+      .all(...(threadIds as string[])) as Array<Record<string, any>>);
+    for (const row of rows) status.set(String(row.thread_id), String(row.status));
   } catch {}
   return status;
 }
@@ -943,22 +999,18 @@ export async function readCodexHelperThreads(
   const { state, history } = codexThreadDbPaths(codexHome);
   if (!existsSync(state)) return [];
   let children: Array<Record<string, any>> = [];
-  let db: Database | undefined;
   try {
-    db = openReadOnly(state);
-    children = db
+    children = readCodexDatabase(state, (db) => db
       .query(
         `SELECT threads.*
            FROM thread_spawn_edges
            JOIN threads ON threads.id = thread_spawn_edges.child_thread_id
           WHERE thread_spawn_edges.parent_thread_id = ?`,
       )
-      .all(parentThreadId) as Array<Record<string, any>>;
+      .all(parentThreadId) as Array<Record<string, any>>);
   } catch {
     // A Codex without the table, or a torn read: no helpers, as for Claude.
     return [];
-  } finally {
-    db?.close();
   }
   if (!children.length) return [];
   const holders = await readCodexOpenThreadIds(codexHome, options.lockProbe);
@@ -1035,13 +1087,12 @@ async function codexThreadsPass(
     bootedAt ?? 0,
   );
 
-  let db: Database | undefined;
   try {
-    db = openReadOnly(state);
     // An open thread is live no matter how long ago it was last touched; the
-    // window only has to catch threads Codex has since closed.
+    // window only has to catch threads Codex has since closed. Asked before the
+    // query, which reads the database in one synchronous step (`readCodexDatabase`).
     const holders = await readCodexOpenThreadIds(codexHome, options.lockProbe);
-    const threads = db
+    const threads = readCodexDatabase(state, (db) => db
       .query(
         // `source` separates a session from a script. On this machine: 354
         // `exec` rows against 9 `cli` and 45 `vscode` — because every
@@ -1062,9 +1113,7 @@ async function codexThreadsPass(
           ORDER BY updated_at_ms DESC
           LIMIT 200`,
       )
-      .all() as Array<Record<string, any>>;
-    db.close();
-    db = undefined;
+      .all() as Array<Record<string, any>>);
 
     const listed = threads
       .filter((row) => {
@@ -1148,7 +1197,5 @@ async function codexThreadsPass(
     // this catch silently hid two separate bugs for hours.
     if (process.env.CONCH_DEBUG_CODEX) console.error("codex read failed:", error);
     return { entries: [], complete: false, available: false };
-  } finally {
-    db?.close();
   }
 }

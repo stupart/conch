@@ -17,7 +17,7 @@
  * import `adapterFor` back, and an ES module cycle only bites when a binding
  * is read before its module has run.
  */
-import { readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { liveBackgroundAgents, subagentRowId } from "./agent-activity.ts";
 import {
@@ -374,12 +374,11 @@ export const claudeAdapter: AgentAdapter = {
   findTranscript: (sessionId, { claudeDir }) => {
     const projects = join(claudeDir, "projects");
     try {
+      // `existsSync`, not a `statSync` that throws: every project but one misses, and the registry asks this for
+      // each Claude session on every render (75 projects here, 2026-11-02). Each miss built an exception.
       for (const dir of readdirSync(projects)) {
         const candidate = join(projects, dir, `${sessionId}.jsonl`);
-        try {
-          statSync(candidate);
-          return candidate;
-        } catch {}
+        if (existsSync(candidate)) return candidate;
       }
     } catch {}
     return undefined;
