@@ -198,25 +198,66 @@ export function decodeClaudeAuth(account: ClaudeAccount, raw: string): ClaudeAcc
   } catch { return { ...account, status: "unavailable" }; }
 }
 
-/** Read the official CLI's public status, never its credential files or Keychain. */
-export async function readClaudeAccountStatus(account: ClaudeAccount, isolate = false): Promise<ClaudeAccountStatus> {
+/** One `claude auth status` per profile at a time: the one still running is the answer for everyone who asks. */
+const statusRuns = new Map<string, Promise<ClaudeAccountStatus>>();
+
+/**
+ * Read the official CLI's public status, never its credential files or Keychain.
+ *
+ * Never killed, and never two at once for one profile. `claude auth status` refreshes an expired sign-in before it
+ * answers (measured on 2.1.309: a fake expired one sent it to platform.claude.com first), and a refresh uses up the
+ * refresh token it was given. Killed after 5 s, as it was, on a Mac under load, the new token was never saved: every
+ * session in the profile said "Login expired · Please run /login", Blueprint's about once a day from 2026-10-26 (Tyler,
+ * 2026-11-02: "my login expires every day for some in the anthropic terminals"). Two at once would each refresh with the
+ * same token, which loses one the same way. Past `timeoutMs` the caller hears "unavailable" and the check runs on.
+ */
+export function readClaudeAccountStatus(account: ClaudeAccount, isolate = false, timeoutMs = 5_000): Promise<ClaudeAccountStatus> {
+  const key = JSON.stringify([account.configDir, isolate]);
+  let run = statusRuns.get(key);
+  if (!run) {
+    run = runClaudeAccountStatus(account, isolate);
+    statusRuns.set(key, run);
+    void run.finally(() => statusRuns.delete(key));
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<ClaudeAccountStatus>((resolve) => {
+    timer = setTimeout(() => resolve({ ...account, status: "unavailable" }), timeoutMs);
+  });
+  return Promise.race([run.then((status) => ({ ...status, id: account.id, label: account.label })), late])
+    .finally(() => clearTimeout(timer));
+}
+
+async function runClaudeAccountStatus(account: ClaudeAccount, isolate: boolean): Promise<ClaudeAccountStatus> {
   try {
     const env = account.id === "default" ? { ...process.env } : claudeAccountEnvironment(account.configDir);
     if (isolate) for (const key of CLAUDE_ACCOUNT_ENV_REMOVE) delete env[key];
     const child = Bun.spawn(["claude", "auth", "status", "--json"], {
       env, cwd: conchHome(), stdout: "pipe", stderr: "ignore",
     });
-    let timedOut = false;
-    // SIGKILL, not SIGTERM: this awaits the exit, and a `claude` that ignored a TERM held its caller (a status line,
-    // Settings' account list) for as long as it liked.
-    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, 5_000);
-    try {
-      const output = new Response(child.stdout).text();
-      await child.exited;
-      const raw = await output;
-      return timedOut ? { ...account, status: "unavailable" } : decodeClaudeAuth(account, raw);
-    } finally { clearTimeout(timer); }
+    const output = new Response(child.stdout).text();
+    await child.exited;
+    return decodeClaudeAuth(account, await output);
   } catch { return { ...account, status: "unavailable" }; }
+}
+
+/**
+ * Who a profile is signed in as, from Claude Code's own `.claude.json`: no process, no network, so no refresh. Says who,
+ * not whether the sign-in still works; undefined when the file names nobody. Default's is beside its folder, as Claude
+ * Code keeps it when CLAUDE_CONFIG_DIR is unset.
+ */
+export function claudeProfileIdentity(account: ClaudeAccount, home = conchHome()): { email: string; organizationId?: string } | undefined {
+  const file = account.id === "default" && process.env.CLAUDE_CONFIG_DIR === undefined
+    ? join(home, ".claude.json") : join(account.configDir, ".claude.json");
+  try {
+    const signedIn = JSON.parse(readFileSync(file, "utf8"))?.oauthAccount;
+    const text = (value: unknown) => typeof value === "string" && value && value.length < 200 && !CONTROL.test(value) ? value : undefined;
+    const email = text(signedIn?.emailAddress);
+    if (!email) return undefined;
+    const organizationId = text(signedIn?.organizationUuid);
+    return { email, ...(organizationId ? { organizationId } : {}) };
+  } catch {
+    return undefined;
+  }
 }
 
 /** Keep provider-specific launch validation at the profile boundary. */

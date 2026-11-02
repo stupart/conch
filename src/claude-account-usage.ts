@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
-import { accountStorePath, readClaudeAccountStatus, validAccountId, type ClaudeAccount, type ClaudeAccountStatus } from "./claude-accounts.ts";
+import { accountStorePath, claudeProfileIdentity, validAccountId, type ClaudeAccount, type ClaudeAccountStatus } from "./claude-accounts.ts";
 import { conchInvocation, staleProgram } from "./install.ts";
 import type { SwapDashboard, UsageWindow } from "./claude-swap.ts";
 
@@ -82,7 +82,7 @@ export function decodeRateLimits(value: unknown, now = Date.now()): UsageWindow[
 export function saveAccountUsage(account: ClaudeAccountStatus, rateLimits: unknown, now = Date.now()): void {
   const subject = identity(account);
   // A check that failed rests its minute, as one that worked does. Cleared instead, every refresh of the status line
-  // found nothing cached, so "usage changed", and started another `claude auth status` for as long as it failed.
+  // found nothing cached, so "usage changed", and checked again for as long as it failed.
   if (!subject) { write(usagePath(account), { failedAt: new Date(now).toISOString() }); return; }
   write(usagePath(account), { identity: subject, rateLimits: Object.fromEntries(decodeRateLimits(rateLimits, now).map(window => [
     window.name === "5 hour" ? "five_hour" : "seven_day",
@@ -115,13 +115,16 @@ export async function runAccountStatusline(id: string | undefined, configDir: st
       const payload: unknown = JSON.parse(raw);
       if (object(payload) && object(payload.rate_limits)) {
         const previous = read(usagePath(account));
-        // The auth CLI is only consulted when usage changes or once a minute, and not within a minute of failing.
-        // Checking the public identity prevents a manual login from inheriting another account's cache.
+        // Saved when usage changes or once a minute, and not within a minute of failing. Checking who the profile is
+        // signed in as keeps a manual login from inheriting another account's cache. Read from Claude Code's own file,
+        // never `claude auth status`: that refreshed an expired sign-in, and run from every session's status line once
+        // a minute, and killed when slow, it lost the profile's sign-in about once a day (`readClaudeAccountStatus`).
         const failedAt = typeof previous?.failedAt === "string" ? Date.parse(previous.failedAt) : Number.NaN;
         if (!(Date.now() - failedAt < 60_000) && (
           JSON.stringify(decodeRateLimits(previous?.rateLimits)) !== JSON.stringify(decodeRateLimits(payload.rate_limits))
           || typeof previous?.fetchedAt !== "string" || Date.now() - Date.parse(previous.fetchedAt) >= 60_000)) {
-          saveAccountUsage(await readClaudeAccountStatus(account), payload.rate_limits);
+          const signedIn = claudeProfileIdentity(account);
+          saveAccountUsage(signedIn ? { ...account, status: "signed-in", ...signedIn } : { ...account, status: "unavailable" }, payload.rate_limits);
         }
       }
     } catch { /* A malformed reading must not break the user's status line. */ }
