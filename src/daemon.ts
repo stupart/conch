@@ -165,6 +165,7 @@ import { MCP_TOOLSET } from "./mcp-toolset.ts";
 import { sessionForCallerPid } from "./caller-session.ts";
 import { CONCH_DATA } from "./config.ts";
 import {
+  keepConversationTails,
   publishedConversation,
   readConversationTail,
   withHeldQuestion,
@@ -182,6 +183,7 @@ import {
 import { cancelClaudeWebLogin, startClaudeWebLogin } from "./claude-web-login.ts";
 import { isWindowKey, parseWindowKey } from "./window-key.ts";
 import { contextUsageFromLines, readTranscriptTailLines, type SessionContextUsage } from "./context-meter.ts";
+import { FileMemo } from "./file-version.ts";
 import { LiveActivity, withLiveActivity, type ActivitySource } from "./live-activity.ts";
 import { sessionUsageLimitFromLines } from "./session-usage-limit.ts";
 import {
@@ -779,6 +781,13 @@ const MAX_PUBLISHED_CONVERSATIONS = 8;
 const MAX_PUBLISHED_AGENT_CONVERSATIONS = 4;
 /** Per-session window. Smaller than the focused one: this is every row at once. */
 const PUBLISHED_CONVERSATION_WINDOW = 30;
+
+/** What a session's transcript tail says: how full its context is, a usage limit it stopped at, its model and effort. */
+interface TranscriptTailFacts {
+  context: SessionContextUsage | null;
+  usageLimit: string | undefined;
+  settings: SessionSettingsSample | null;
+}
 
 /**
  * How long to wait for the daemon to answer one control line.
@@ -1817,11 +1826,14 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   // The leading edge renders at once and a sustained burst still renders every
   // 250ms. The 20s panel timer stays as the backstop for dropped FSEvents.
   //
-  // ponytail: re-reads the bounded tail rather than keeping a byte cursor per
-  // transcript. Measured: a whole tail read is 2.4-6.0ms on a 234 MB Claude
-  // transcript and 1.8-3.6ms on a 702 MB rollout, because `readConversationTail`
-  // already reads a 512 KB window and not the file. A cursor would save single
-  // digit milliseconds. Add one if a render ever has to run faster than 250ms.
+  // A render reads every published transcript, not only the one that moved, so
+  // what it costs is the sum over all of them. Re-reading each bounded tail was
+  // a few milliseconds apiece (2.4-6.0ms on a 234 MB Claude transcript), but with
+  // 15 sessions renders ran nearly back to back and those re-reads, with the
+  // collector behind them, were most of a 68% core (profile, 2026-11-02). The
+  // published tails are now kept parsed between renders (`keepConversationTails`):
+  // on Tyler's thirteen, a render's conversations went from 24 ms to 0.4 ms with
+  // nothing new and with one transcript grown, for about 50 MB of kept lines.
   const transcriptRender = createPublishThrottle(() => void renderSessionPanel(), { intervalMs: 250 });
   const accountSourcesWatch = watchChangingPaths(() => void renderSessionPanel());
   const transcriptWatch = watchChangingPaths(() => {
@@ -1830,6 +1842,13 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   }, { debounceMs: 50 });
   let lastPublishedPanelState: PublishedState | null = null;
   let lastPanelModel: PanelModel | null = null;
+  /**
+   * What each live session's transcript tail said at the last render, and the version of the file it was read from:
+   * the context meter, a usage limit and the model and effort, all pure reads of the last megabyte. Every render read
+   * and parsed that megabyte for every live session, moved or not (about 7% of the daemon's JavaScript time in the
+   * 2026-11-02 profile); now a session whose transcript has not moved costs one `stat`.
+   */
+  const transcriptTailFacts = new FileMemo<TranscriptTailFacts>();
   /**
    * What each working row's agent is doing now, the sidebar's second line (live-activity.ts). Read during a full
    * render, cached per transcript version, and put on the published rows at most once a second per row. When a held
@@ -2595,6 +2614,31 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       ? findTranscript(cfg.claudeDir, previewId)
       : undefined;
     const contentEvent = voice.current().reciting ?? ledger.lastTurn;
+    // Not tied to `contentEvent` like the reply beside it. That is the last
+    // turn conch SPOKE, which is null for a whole daemon lifetime until
+    // something finishes — so on a fresh start the app would show an empty
+    // stack even with sessions full of history sitting right there. The
+    // conversation belongs to whichever session is showing.
+    const shownSessionId = contentEvent?.sessionId ?? conversationSessionId;
+    const shownSession = live.find((candidate) => candidate.sessionId === shownSessionId);
+    // Prefer the session's OWN path. `findTranscript` searches Claude's
+    // projects directory by id, which can never locate a Codex rollout —
+    // so every Codex row resolved to nothing and showed no conversation at
+    // all, even while its rows updated live.
+    const shownPath = shownSessionId
+      ? (contentEvent?.sessionId === shownSessionId && contentEvent.transcriptPath)
+        || shownSession?.transcriptPath
+        || findTranscript(cfg.claudeDir, shownSessionId)
+      : undefined;
+    // One per published row, beside the one showing. Each budget is chosen by activity.
+    const publishedReads = [
+      ...sessionsToPublish(live, MAX_PUBLISHED_CONVERSATIONS, (id) => sessionStates.get(id)?.at),
+      // Its own budget, or seven sessions left an agent's row nothing to open (C4).
+      ...sessionsToPublish(nested, MAX_PUBLISHED_AGENT_CONVERSATIONS, (id) => sessionStates.get(id)?.at),
+    ].map((session) => ({ session, path: session.transcriptPath ?? findTranscript(cfg.claudeDir, session.sessionId) }));
+    // Exactly these transcripts stay parsed until the next render, so one that has not moved is not read again
+    // and one that grew is read from where it ended (conversation.ts); a session no longer shown is let go.
+    keepConversationTails([shownPath, ...publishedReads.map((read) => read.path)].filter((path): path is string => !!path));
     // The RAW reply is fetched alongside the spoken one. stripMarkdown exists to
     // make text speakable; handing that same string to a GUI is what made every
     // list render as a literal "- " with no blocks at all.
@@ -2606,25 +2650,13 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         ? lastReplyFor(contentEvent.transcriptPath, contentEvent.sessionId, panelSessions.get(contentEvent.sessionId))
         : null,
       previewPath && previewId ? lastReplyFor(previewPath, previewId, panelSessions.get(previewId)) : null,
-      // Not tied to `contentEvent` like the reply beside it. That is the last
-      // turn conch SPOKE, which is null for a whole daemon lifetime until
-      // something finishes — so on a fresh start the app would show an empty
-      // stack even with sessions full of history sitting right there. The
-      // conversation belongs to whichever session is showing.
       (() => {
-        const sessionId = contentEvent?.sessionId ?? conversationSessionId;
-        if (!sessionId) return Promise.resolve(null);
-        // Prefer the session's OWN path. `findTranscript` searches Claude's
-        // projects directory by id, which can never locate a Codex rollout —
-        // so every Codex row resolved to nothing and showed no conversation at
-        // all, even while its rows updated live.
-        const session = live.find((candidate) => candidate.sessionId === sessionId);
-        const path = (contentEvent?.sessionId === sessionId && contentEvent.transcriptPath)
-          || session?.transcriptPath
-          || findTranscript(cfg.claudeDir, sessionId);
-        if (!path) return Promise.resolve(null);
+        const sessionId = shownSessionId;
+        const path = shownPath;
+        if (!sessionId || !path) return Promise.resolve(null);
         // The row's registry entry rides along: a window of a shared session
         // reads its own branch of the transcript, not the other's (A8).
+        const session = shownSession;
         return readConversationTail(path, sessionId, transcriptFormatFor(path), { window: session }).catch(() => null);
       })(),
     ]);
@@ -2652,13 +2684,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     breadcrumb("panel: conversations");
     const conversationsBySession = Object.fromEntries(
       (await Promise.all(
-        [
-          ...sessionsToPublish(live, MAX_PUBLISHED_CONVERSATIONS, (id) => sessionStates.get(id)?.at),
-          // Its own budget, or seven sessions left an agent's row nothing to open (C4).
-          ...sessionsToPublish(nested, MAX_PUBLISHED_AGENT_CONVERSATIONS, (id) => sessionStates.get(id)?.at),
-        ].map(async (session) => {
-          const path = session.transcriptPath
-            ?? findTranscript(cfg.claudeDir, session.sessionId);
+        publishedReads.map(async ({ session, path }) => {
           if (!path) return null;
           const read = await readConversationTail(path, session.sessionId, transcriptFormatFor(path), { window: session })
             .catch(() => null);
@@ -2675,20 +2701,32 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     );
     await liveActivityObserved;
     breadcrumb("panel: context usage, model and effort");
-    // One tail read per session for both: how full its context is, and what model and effort it runs.
+    // One tail read per session for all three: how full its context is, whether it stopped at a usage limit, and what
+    // model and effort it runs. Read again only when the transcript moved (`TranscriptTailFacts`).
     const sessionContexts = new Map<string, SessionContextUsage>();
     const sessionUsageLimits = new Map<string, string>();
     await Promise.all(live.map(async (session) => {
       const path = session.transcriptPath
         ?? findTranscript(cfg.claudeDir, session.sessionId);
-      const tail = path ? await readTranscriptTailLines(path).catch(() => null) : null;
       const format = path ? transcriptFormatFor(path) : null;
-      const context = tail && format ? contextUsageFromLines(tail, format) : null;
-      if (context) sessionContexts.set(session.sessionId, context);
-      const usageLimit = tail && format ? sessionUsageLimitFromLines(tail, format, session) : undefined;
-      if (usageLimit) sessionUsageLimits.set(session.sessionId, usageLimit);
-      noteSessionSettings(session, tail && format ? sessionSettingsFromLines(tail, format) : null);
+      // What the usage limit reads besides the lines: a window of a shared session reads its own branch.
+      const key = `${path}\u0000${format}\u0000${session.bridgeSessionId ?? ""}\u0000${session.startedAt ?? ""}`;
+      const facts = await transcriptTailFacts.get(session.sessionId, path, key, async () => {
+        const tail = path ? await readTranscriptTailLines(path).catch(() => null) : null;
+        return tail && format
+          ? {
+            context: contextUsageFromLines(tail, format),
+            usageLimit: sessionUsageLimitFromLines(tail, format, session),
+            settings: sessionSettingsFromLines(tail, format),
+          }
+          : null;
+      });
+      // Copies: what a render publishes is never the object the next one is handed.
+      if (facts?.context) sessionContexts.set(session.sessionId, { ...facts.context });
+      if (facts?.usageLimit) sessionUsageLimits.set(session.sessionId, facts.usageLimit);
+      noteSessionSettings(session, facts?.settings ? { ...facts.settings } : null);
     }));
+    transcriptTailFacts.retain(new Set(live.map((session) => session.sessionId)));
     if (snap?.complete) {
       const liveIds = new Set(registryLive.map((session) => session.sessionId));
       for (const ids of [sessionSettingsSamples, sessionSettingsChanges, sessionSettingsAsked]) {

@@ -127,7 +127,9 @@ describe("what the published state carries", () => {
     const daemon = read("src/daemon.ts");
     const block = daemon.slice(daemon.indexOf('breadcrumb("panel: context usage, model and effort");'));
     expect(block).toContain("const tail = path ? await readTranscriptTailLines(path).catch(() => null) : null;");
-    expect(block).toContain("noteSessionSettings(session, tail && format ? sessionSettingsFromLines(tail, format) : null);");
+    expect(block).toContain("context: contextUsageFromLines(tail, format),");
+    expect(block).toContain("settings: sessionSettingsFromLines(tail, format),");
+    expect(block).toContain("noteSessionSettings(session, facts?.settings ? { ...facts.settings } : null);");
     expect(daemon).toContain("        publishedSessionSettingsFor(),\n      );");
     expect(daemon).toContain("sessionSettingsCatalog = accountModelCatalog({ claudeDir: cfg.claudeDir, codexHome: codexHomeDir() },");
     // A tail with no turn in it keeps what an earlier read found; the agent's own record is asked once.

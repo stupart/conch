@@ -26,7 +26,19 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+  type Stats,
+} from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import {
   SUBAGENT_ROW_PREFIX,
@@ -538,11 +550,15 @@ const MAX_CANVAS_COUNTS = 256;
  * Put the count of Tyler's marks on each canvas receipt: "2 marks · 1 note". The message names only the notes with
  * words in them, so the rest are counted from the canvas.json beside the picture — once, since a sent canvas does
  * not change. The reducer reads lines, never files, so this runs once per read, as `attachSidechainPaths` does.
+ *
+ * It replaces a receipt's row rather than writing into it: the row may be shared with the cached build of an
+ * unchanged transcript (`readConversationTail`), and the next read starts from that build again.
  */
 export async function attachCanvasCounts(conversation: Conversation): Promise<void> {
   for (const key of conversation.order) {
-    const receipt = conversation.items[key]?.receipt;
-    if (receipt?.kind !== "canvas" || !receipt.thumb) continue;
+    const item = conversation.items[key];
+    const receipt = item?.receipt;
+    if (!item || receipt?.kind !== "canvas" || !receipt.thumb) continue;
     const marks = join(dirname(receipt.thumb), "canvas.json");
     if (!canvasCounts.has(marks)) {
       if (canvasCounts.size >= MAX_CANVAS_COUNTS) canvasCounts.delete(canvasCounts.keys().next().value!);
@@ -558,8 +574,8 @@ export async function attachCanvasCounts(conversation: Conversation): Promise<vo
     const summary = [counts.marks ? counted(counts.marks, "mark") : "", counts.notes ? counted(counts.notes, "note") : ""]
       .filter(Boolean).join(" · ");
     const detail = [summary, ...said].filter(Boolean).join("\n");
-    if (detail) receipt.detail = detail;
-    conversation.items[key]!.text = receiptText(receipt);
+    const marked = detail ? { ...receipt, detail } : receipt;
+    conversation.items[key] = { ...item, receipt: marked, text: receiptText(marked) };
   }
 }
 
@@ -1641,21 +1657,56 @@ function parseMaybeJson(value: unknown): unknown {
   }
 }
 
+/**
+ * One transcript line, parsed once for both of its readers: `entry` is what the reducer folds (the trimmed line;
+ * undefined for a blank or torn one), `strict` what `selectWindowBranch` has always read (the line as written; null
+ * when that does not parse). They differ only for a line edged with something `trim` drops and JSON does not allow.
+ */
+export interface ParsedLine {
+  entry: unknown;
+  strict: unknown;
+}
+
+function parseLine(line: string): ParsedLine {
+  const trimmed = line.trim();
+  let entry: unknown;
+  if (trimmed) {
+    try {
+      entry = JSON.parse(trimmed);
+    } catch {
+      // A torn or half-written final line is normal on a live transcript.
+    }
+  }
+  if (trimmed.length === line.length) return { entry, strict: entry === undefined ? null : entry };
+  let strict: unknown = null;
+  try {
+    strict = JSON.parse(line);
+  } catch {}
+  return { entry, strict };
+}
+
 /** Fold a whole transcript's lines, in order, into a conversation. */
 export function buildConversation(
   sessionId: string,
   lines: readonly string[],
   format: ConversationFormat,
 ): Conversation {
+  return conversationOf(sessionId, lines.map(parseLine), format);
+}
+
+/**
+ * `buildConversation` over lines already parsed. The reducers only read an entry and build fresh rows from it, so
+ * the same parsed lines fold into the same conversation every time; a cached tail relies on that.
+ */
+function conversationOf(sessionId: string, lines: readonly ParsedLine[], format: ConversationFormat): Conversation {
   const conversation = emptyConversation(sessionId);
   const reduce = format === "codex" ? reduceCodexLine : reduceClaudeLine;
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
+  for (const { entry } of lines) {
+    if (entry === undefined) continue;
     try {
-      reduce(conversation, JSON.parse(trimmed));
+      reduce(conversation, entry);
     } catch {
-      // A torn or half-written final line is normal on a live transcript.
+      // An entry of a shape the reducer did not expect: what it folded before throwing stays, as it always did.
     }
   }
   return conversation;
@@ -1740,6 +1791,263 @@ function saidMessages(conversation: Conversation): number {
   return count;
 }
 
+/** A transcript line, parsed, and the byte it starts at. */
+interface TailLine extends ParsedLine {
+  at: number;
+}
+
+/**
+ * A transcript's tail as last read, parsed (`keepConversationTails`).
+ *
+ * `lines` is every newline-ended line that starts after byte `after` (-1: from the top of the file), oldest first,
+ * and `rest` what follows the last newline: usually nothing, an unfinished line while an agent is mid-write. `last`
+ * is the end of the last newline-ended line as written (at most `LAST_BYTES` of it), at `lastAt`. A file that grew
+ * and still holds those bytes there, newline and all, was appended to, as both agents write: only what follows is new.
+ */
+interface ParsedTail {
+  ino: number;
+  size: number;
+  mtimeMs: number;
+  after: number;
+  lines: TailLine[];
+  rest: TailLine;
+  last: Buffer | null;
+  lastAt: number;
+  /** The most bytes any read of this file has asked for: a line further back than that is let go. */
+  deepest: number;
+  /** What this version of the file was built into, per read (`builtKey`). */
+  built: Map<string, { conversation: Conversation; wholeFile: boolean }>;
+}
+
+/**
+ * The transcripts whose tails are kept parsed between reads, and those tails.
+ *
+ * Every render re-read and re-parsed the tail of all thirteen published conversations whether or not they had moved:
+ * 41% of the daemon's JavaScript time in a 60 s profile with 15 sessions (2026-11-02), nearly all of it `JSON.parse`,
+ * with most of the 41% of CPU spent off that thread being the collector clearing up after it. Kept, an unchanged
+ * transcript costs an `fstat`, and one that grew costs parsing what was appended and folding its tail again. On
+ * Tyler's thirteen, a render's conversations went from 24 ms (32 ms of CPU, the collector's included) to 0.4 ms, with
+ * nothing new and with one transcript grown alike. The memory is the parsed tails themselves, about 50 MB for those
+ * thirteen, as deep as each was read (512 KB for most, 16 and 32 MB for the two full of screenshots): what every
+ * render used to allocate afresh and throw away. `MAX_KEPT_TAIL_BYTES` bounds it.
+ */
+const keptTails = new Map<string, ParsedTail>();
+let keptPaths: ReadonlySet<string> = new Set();
+let keptBytes = 0;
+
+/** Lines conversation reads have parsed, in this process: what a kept tail saves, for the tests and the measurement. */
+export const conversationTailParses = { lines: 0 };
+
+/**
+ * Keep these transcripts parsed between reads, and let every other go. The daemon names the conversations it is
+ * about to publish; nothing else calls this, so a hook or an MCP server reads afresh every time, as it always did.
+ * `maxBytes` is `MAX_KEPT_TAIL_BYTES` but for a test.
+ */
+export function keepConversationTails(paths: Iterable<string>, maxBytes = MAX_KEPT_TAIL_BYTES): void {
+  keptPaths = new Set(paths);
+  keptBytes = maxBytes;
+  for (const path of keptTails.keys()) if (!keptPaths.has(path)) keptTails.delete(path);
+}
+
+/** How much of the last line is compared to tell an append from a rewrite: enough to be sure, not a screenshot's worth. */
+const LAST_BYTES = 4096;
+
+function readRange(fd: number, start: number, end: number): Buffer {
+  const bytes = Buffer.allocUnsafe(Math.max(0, end - start));
+  let filled = 0;
+  while (filled < bytes.length) {
+    const read = readSync(fd, bytes, filled, bytes.length - filled, start + filled);
+    if (read === 0) break;
+    filled += read;
+  }
+  return filled === bytes.length ? bytes : bytes.subarray(0, filled);
+}
+
+/** A line of `bytes`, read from byte `offset` of the file. One at the top of the file loses its byte-order mark, as `Blob.text()` drops it. */
+function tailLine(bytes: Buffer, start: number, end: number, offset: number): TailLine {
+  let text = bytes.toString("utf8", start, end);
+  if (offset + start === 0 && text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+  conversationTailParses.lines++;
+  return { at: offset + start, ...parseLine(text) };
+}
+
+/**
+ * The lines of `bytes`, read from byte `offset`: each newline-ended one that starts after `after`, and what follows
+ * the last newline. The same lines `text.split("\n")` gives of the decoded text, since a newline byte is never part
+ * of a longer UTF-8 sequence.
+ */
+function splitLines(bytes: Buffer, offset: number, after: number): Pick<ParsedTail, "lines" | "rest" | "last" | "lastAt"> {
+  const lines: TailLine[] = [];
+  let start = 0;
+  let lastStart = -1;
+  for (let newline = bytes.indexOf(0x0a); newline !== -1; newline = bytes.indexOf(0x0a, start)) {
+    if (offset + start > after) lines.push(tailLine(bytes, start, newline, offset));
+    lastStart = start;
+    start = newline + 1;
+  }
+  const lastFrom = Math.max(lastStart, start - 1 - LAST_BYTES);
+  return {
+    lines,
+    rest: tailLine(bytes, start, bytes.length, offset),
+    // A copy: a view would keep the whole read alive for one line.
+    last: lastStart === -1 ? null : Buffer.from(bytes.subarray(lastFrom, start - 1)),
+    lastAt: offset + lastFrom,
+  };
+}
+
+function freshTail(fd: number, stat: Stats, after: number): ParsedTail {
+  const start = Math.max(0, after);
+  return {
+    ino: stat.ino,
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    after,
+    ...splitLines(readRange(fd, start, stat.size), start, after),
+    deepest: 0,
+    built: new Map(),
+  };
+}
+
+/** The kept tail brought up to a file that only grew; null when it was replaced, cut short or written over. */
+function appended(tail: ParsedTail, fd: number, stat: Stats): ParsedTail | null {
+  if (stat.ino !== tail.ino || stat.size <= tail.size || !tail.last) return null;
+  const bytes = readRange(fd, tail.lastAt, stat.size);
+  const known = tail.last.length;
+  if (bytes.length <= known || bytes[known] !== 0x0a || !bytes.subarray(0, known).equals(tail.last)) return null;
+  const more = splitLines(bytes.subarray(known + 1), tail.lastAt + known + 1, tail.after);
+  for (const line of more.lines) tail.lines.push(line);
+  tail.rest = more.rest;
+  if (more.last) {
+    tail.last = more.last;
+    tail.lastAt = more.lastAt;
+  }
+  tail.size = stat.size;
+  tail.mtimeMs = stat.mtimeMs;
+  tail.built.clear();
+  return tail;
+}
+
+/** Reach further back than the kept tail: parse the lines from `after` up to the first one it holds. False when it holds none. */
+function deepened(tail: ParsedTail, fd: number, after: number): boolean {
+  const first = tail.lines[0]?.at ?? tail.rest.at;
+  if (first <= tail.after) return false;
+  const start = Math.max(0, after);
+  // These bytes end with the newline before `first`, so every line in them is whole.
+  tail.lines = splitLines(readRange(fd, start, first), start, after).lines.concat(tail.lines);
+  tail.after = after;
+  return true;
+}
+
+/** Let go of the lines no read as deep as `tail.deepest` keeps: the window slides on as the file grows. */
+function letGo(tail: ParsedTail, floor: number): void {
+  if (floor <= tail.after) return;
+  let drop = 0;
+  while (drop < tail.lines.length && tail.lines[drop]!.at <= floor) drop++;
+  if (drop) tail.lines = tail.lines.slice(drop);
+  tail.after = floor;
+}
+
+/**
+ * A transcript's last `tailBytes`, parsed: what `file.slice(start).text().split("\n")` gave, the first fragment
+ * dropped, but kept from the last read when the transcript is one `keepConversationTails` named and has not moved,
+ * or has only grown. `key` names the build a read wants (`builtKey`): when this version of the file was built into
+ * it already, nothing is read. Null for an empty or unreadable file. One synchronous stretch, so two reads of one
+ * file in the same render can never interleave their updates.
+ */
+function parsedTail(
+  path: string,
+  tailBytes: number,
+  keyFor: (after: number) => string,
+): { tail: ParsedTail; start: number; key: string } | null {
+  let fd: number;
+  try {
+    fd = openSync(path, "r");
+  } catch {
+    return null;
+  }
+  const keep = keptPaths.has(path);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.size) return null;
+    const start = Math.max(0, stat.size - tailBytes);
+    const after = start > 0 ? start : -1;
+    const key = keyFor(after);
+    let tail = keep ? keptTails.get(path) : undefined;
+    const deepest = Math.max(tail?.deepest ?? 0, tailBytes);
+    if (tail && (tail.ino !== stat.ino || tail.size !== stat.size || tail.mtimeMs !== stat.mtimeMs)) {
+      tail = appended(tail, fd, stat) ?? undefined;
+    }
+    if (tail?.built.has(key)) return { tail, start, key };
+    if (tail && after < tail.after && !deepened(tail, fd, after)) tail = undefined;
+    tail ??= freshTail(fd, stat, after);
+    tail.deepest = deepest;
+    letGo(tail, stat.size - deepest);
+    if (keep) keptTails.set(path, tail);
+    return { tail, start, key };
+  } catch {
+    keptTails.delete(path);
+    return null;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * The most file the kept lines may span, every transcript together. Tyler's thirteen published tails span 48 MB, two
+ * of them 16 and 32 MB of screenshots (2026-11-02); thirteen tails at the 32 MB cap would hold 400 MB. Past this the
+ * widest let their lines go: an unchanged one is still answered from its build, and one that grew is read afresh.
+ */
+const MAX_KEPT_TAIL_BYTES = 64 * 1024 * 1024;
+
+function fitKeptTails(): void {
+  const span = (tail: ParsedTail) => (tail.lines.length ? tail.size - tail.lines[0]!.at : 0);
+  let total = 0;
+  for (const tail of keptTails.values()) total += span(tail);
+  for (const tail of [...keptTails.values()].sort((a, b) => span(b) - span(a))) {
+    if (total <= keptBytes) return;
+    total -= span(tail);
+    tail.lines = [];
+    tail.last = null;
+    tail.after = tail.size;
+    tail.rest = { at: tail.size, entry: undefined, strict: null };
+  }
+}
+
+/** The lines a read from `after` keeps, oldest first. */
+function linesAfter(tail: ParsedTail, after: number): TailLine[] {
+  let low = 0;
+  let high = tail.lines.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (tail.lines[middle]!.at > after) high = middle;
+    else low = middle + 1;
+  }
+  const lines = tail.lines.slice(low);
+  if (tail.rest.at > after) lines.push(tail.rest);
+  return lines;
+}
+
+/** Everything a build depends on besides the file: where the read starts, the reader, the id, and a window's branch. */
+function builtKey(after: number, sessionId: string, format: ConversationFormat, window: WindowIdentity | undefined): string {
+  const branch = format === "claude" && window && isWindowKey(sessionId)
+    ? `${window.bridgeSessionId ?? ""}\u0000${window.startedAt ?? ""}`
+    : "";
+  return `${after}\u0000${format}\u0000${sessionId}\u0000${branch}`;
+}
+
+/**
+ * A read's own copy of a build: its own stack and map, so `withHeldQuestion` can add a row, over rows shared with
+ * the build. Nothing that reads a conversation writes into a row; `attachCanvasCounts` replaces the rows it changes.
+ */
+function copied(conversation: Conversation): Conversation {
+  return {
+    sessionId: conversation.sessionId,
+    order: [...conversation.order],
+    items: { ...conversation.items },
+    ...(conversation.shared ? { shared: true } : {}),
+  };
+}
+
 /**
  * The end of a transcript as a conversation. Unless the caller names `tailBytes`, a tail holding fewer than
  * `MIN_TAIL_MESSAGES` messages is read again twice as deep, up to `MAX_TAIL_BYTES` or the start of the file.
@@ -1771,35 +2079,43 @@ async function readConversationTailOnce(
   window: WindowIdentity | undefined,
   tailBytes: number,
 ): Promise<{ conversation: Conversation; wholeFile: boolean }> {
+  const read = parsedTail(transcriptPath, tailBytes, (after) => builtKey(after, sessionId, format, window));
+  if (!read) return { conversation: emptyConversation(sessionId), wholeFile: true };
+  let built = read.tail.built.get(read.key);
+  if (!built) {
+    const after = read.start > 0 ? read.start : -1;
+    built = {
+      conversation: buildTail(transcriptPath, linesAfter(read.tail, after), sessionId, format, window),
+      wholeFile: read.start === 0,
+    };
+    read.tail.built.set(read.key, built);
+    if (keptTails.get(transcriptPath) === read.tail) fitKeptTails();
+  }
+  // Canvas counts come from files beside the transcript, so they are put on every read, never kept with the build.
+  const conversation = copied(built.conversation);
+  await attachCanvasCounts(conversation);
+  return { conversation, wholeFile: built.wholeFile };
+}
+
+function buildTail(
+  transcriptPath: string,
+  parsed: readonly ParsedLine[],
+  sessionId: string,
+  format: ConversationFormat,
+  window: WindowIdentity | undefined,
+): Conversation {
   const options = { window };
-  const file = Bun.file(transcriptPath);
-  let size = 0;
-  try {
-    size = file.size;
-  } catch {
-    return { conversation: emptyConversation(sessionId), wholeFile: true };
-  }
-  if (!size) return { conversation: emptyConversation(sessionId), wholeFile: true };
-  const start = Math.max(0, size - tailBytes);
-  let text: string;
-  try {
-    text = await file.slice(start).text();
-  } catch {
-    return { conversation: emptyConversation(sessionId), wholeFile: true };
-  }
-  let lines: readonly string[] = text.split("\n");
-  if (start > 0) lines = lines.slice(1);
+  let lines = parsed;
   // A key that names a window (`<id>#<pid>`) asks for that window's branch of
   // the file both windows write. A plain id is one window and reads as before.
   let shared = false;
   if (format === "claude" && options.window && isWindowKey(sessionId)) {
     ({ lines, shared } = selectWindowBranch(lines, options.window));
   }
-  const conversation = buildConversation(sessionId, lines, format);
+  const conversation = conversationOf(sessionId, lines, format);
   if (shared) conversation.shared = true;
   if (format === "claude") attachSidechainPaths(conversation, transcriptPath);
-  await attachCanvasCounts(conversation);
-  return { conversation, wholeFile: start === 0 };
+  return conversation;
 }
 
 /** What the registry says about one window of a shared session (`~/.claude/sessions/<pid>.json`). */
@@ -1843,8 +2159,18 @@ function bridgeSuffix(id: unknown): string {
 export function selectWindowBranch(
   lines: readonly string[],
   window: WindowIdentity,
-): { lines: readonly string[]; shared: boolean } {
+): { lines: readonly string[]; shared: boolean };
+/** The same, over lines a cached tail parsed already (`ParsedLine.strict` is each one as read here). */
+export function selectWindowBranch<Line extends ParsedLine>(
+  lines: readonly Line[],
+  window: WindowIdentity,
+): { lines: readonly Line[]; shared: boolean };
+export function selectWindowBranch(
+  lines: readonly (string | ParsedLine)[],
+  window: WindowIdentity,
+): { lines: readonly (string | ParsedLine)[]; shared: boolean } {
   const entries: any[] = lines.map((line) => {
+    if (typeof line !== "string") return line.strict;
     try {
       return JSON.parse(line);
     } catch {
