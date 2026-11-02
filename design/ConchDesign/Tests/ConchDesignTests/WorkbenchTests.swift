@@ -250,6 +250,99 @@ final class WorkbenchTests: XCTestCase {
         XCTAssertEqual(WorkPane(rawValue: "deliverable"), .deliverable)
     }
 
+    // MARK: Sleeping tabs
+
+    /// A morning's tabs, an hour on: what each was last used for, by its agent (`usedAt`) or by the user (`touched`).
+    private enum Idle {
+        static let now = Date(timeIntervalSince1970: 1_800_000_000)
+        static func ago(_ seconds: TimeInterval) -> Date { now.addingTimeInterval(-seconds) }
+        static func ms(_ seconds: TimeInterval) -> Double { ago(seconds).timeIntervalSince1970 * 1000 }
+
+        static func tab(_ id: String, usedAgo: TimeInterval = 3600, url: String = "https://acme.dev/", openedByUser: Bool = false, paused: Bool = false, ask: Workbench.Tab.Ask? = nil) -> Workbench.Tab {
+            Workbench.Tab(id: id, sessionId: "s1", url: url, openedAt: ms(7200), usedAt: ms(usedAgo), openedByUser: openedByUser, paused: paused, ask: ask)
+        }
+
+        static func asleep(_ tabs: [Workbench.Tab], shown: String? = nil, touched: [String: Date] = [:], busy: Set<String> = [], enabled: Bool = true) -> Set<String> {
+            Workbench.asleep(tabs, shown: shown, touched: touched, busy: busy, enabled: enabled, now: now)
+        }
+    }
+
+    /// An agent's tab it ran a command in within the last ten minutes keeps its page; past ten, it sleeps. One the app
+    /// hasn't seen touched since it opened goes by that alone.
+    func testAnAgentsTabUsedInTheLastTenMinutesStaysAwake() {
+        XCTAssertEqual(Workbench.sleepAfter, 600)
+        let tabs = [Idle.tab("working", usedAgo: 30), Idle.tab("between-steps", usedAgo: 599), Idle.tab("done", usedAgo: 600), Idle.tab("yesterday", usedAgo: 86_400)]
+        XCTAssertEqual(Idle.asleep(tabs), ["done", "yesterday"])
+    }
+
+    /// Whatever its agent last did, a tab stays awake while it asks the user something, while it is the one shown, while
+    /// an agent's command is in flight or waiting in it, while the user's own blank tab waits for an address, and for
+    /// ten minutes after the user last looked at or touched it.
+    func testATabInUseInAnyWayStaysAwake() {
+        let tabs = [
+            Idle.tab("asks", ask: Workbench.Tab.Ask(reason: "Sign in to Mobbin", at: Idle.ms(3000))),
+            Idle.tab("shown"),
+            Idle.tab("busy"),
+            Idle.tab("blank", url: "", openedByUser: true),
+            Idle.tab("touched", usedAgo: 86_400),
+            Idle.tab("seen-long-ago"),
+            Idle.tab("idle"),
+        ]
+        let touched = ["touched": Idle.ago(540), "seen-long-ago": Idle.ago(1200)]
+        XCTAssertEqual(Idle.asleep(tabs, shown: "shown", touched: touched, busy: ["busy"]), ["seen-long-ago", "idle"])
+    }
+
+    /// Left alone, a tab sleeps, the user's as an agent's, paused or not; with the setting off, none does.
+    func testAnIdleTabSleeps() {
+        let tabs = [Idle.tab("agents"), Idle.tab("users", openedByUser: true), Idle.tab("paused", openedByUser: true, paused: true)]
+        XCTAssertEqual(Idle.asleep(tabs, touched: ["users": Idle.ago(601)]), ["agents", "users", "paused"])
+        XCTAssertEqual(Idle.asleep(tabs, enabled: false), [])
+        XCTAssertEqual(Idle.asleep([]), [])
+    }
+
+    /// A sleeping tab wakes as it is shown, or as an agent's command reaches it, and stays awake ten minutes after;
+    /// the command waits for its page to load until a few seconds before its own deadline, an open for nothing.
+    func testASleepingTabWakesOnShowOrOnACommand() {
+        let tabs = [Idle.tab("a"), Idle.tab("b")]
+        XCTAssertEqual(Idle.asleep(tabs), ["a", "b"])
+        // Shown: awake while it is, and for ten minutes after it is put away (the app counts being seen as a touch).
+        XCTAssertEqual(Idle.asleep(tabs, shown: "a"), ["b"])
+        XCTAssertEqual(Idle.asleep(tabs, touched: ["a": Idle.ago(1)]), ["b"])
+        // A command for it, on the file or in the app's hands: awake until it is answered, and ten minutes on.
+        XCTAssertEqual(Idle.asleep(tabs, busy: ["b"]), ["a"])
+        XCTAssertEqual(Idle.asleep(tabs, touched: ["b": Idle.ago(5)]), ["a"])
+        // An agent's command that worked moves its usedAt too: awake on that alone.
+        XCTAssertEqual(Idle.asleep([Idle.tab("a"), Idle.tab("b", usedAgo: 2)]), ["a"])
+        // An ask reaching a sleeping tab wakes it, so its page is there when the user comes to it.
+        XCTAssertEqual(Idle.asleep([Idle.tab("a", ask: Workbench.Tab.Ask(reason: "Approve the login", at: Idle.ms(1))), Idle.tab("b")]), ["b"])
+
+        let deadline = Idle.now.addingTimeInterval(12)
+        XCTAssertEqual(Workbench.wokenLoadBy(op: "read", deadline: deadline), Idle.now.addingTimeInterval(8))
+        for op in ["click", "type", "screenshot"] { XCTAssertEqual(Workbench.wokenLoadBy(op: op, deadline: deadline), deadline.addingTimeInterval(-Workbench.wokenMargin), op) }
+        XCTAssertNil(Workbench.wokenLoadBy(op: "open", deadline: deadline), "an open goes somewhere else at once")
+    }
+
+    /// Sleeping says which tabs, and nothing else: the tabs, their order in the strip (`Workdesk.run`, by `usedAt`) and
+    /// their `usedAt` are what they were, asleep and woken.
+    func testSleepingNeverMovesATabOrItsUsedAt() {
+        let tabs = [Idle.tab("old", usedAgo: 7000), Idle.tab("mid", usedAgo: 4000), Idle.tab("new", usedAgo: 60), Idle.tab("mine", usedAgo: 5000, openedByUser: true)]
+        let before = tabs
+        let run = { Workdesk.run(tabs: tabs, groups: []) { _ in nil }.map(\.id) }
+        let order = run()
+        let sleeping = Idle.asleep(tabs)
+        XCTAssertEqual(sleeping, ["old", "mid", "mine"])
+        XCTAssertEqual(Idle.asleep(tabs, shown: "mid"), ["old", "mine"])
+        XCTAssertEqual(tabs, before)
+        XCTAssertEqual(run(), order)
+        XCTAssertEqual(order, ["browser:old", "browser:mine", "browser:mid", "browser:new"])
+        XCTAssertEqual(tabs.map(\.usedAt), before.map(\.usedAt))
+    }
+
+    func testASleepingTabSaysWhyUnderThePointer() {
+        XCTAssertEqual(Workbench.asleepWords, "Asleep to save memory. It opens again when you show it, or when an agent uses it.")
+        XCTAssertEqual(Workbench.sleepSettingKey, "conch.workbench.sleepIdleTabs")
+    }
+
     /// An Atlas page's copy is known by where atlas_show keeps it: Markdown under the copies folder, by its Atlas path.
     func testAnAtlasPagesCopyIsKnownByItsFolder() {
         let home = "/Users/someone"

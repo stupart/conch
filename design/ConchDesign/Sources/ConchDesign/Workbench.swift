@@ -3,9 +3,10 @@ import Foundation
 import CoreGraphics
 
 /// The Workbench's decisions, pure: which WebKit data store a profile's pages use, which tab a session is showing, which
-/// newly opened tab comes to the front, what a tab is called in the strip, and what the address field takes. The daemon's
-/// half is src/browser-workbench.ts; the Mac app's pages and pane are Workbench.swift there, and the script it runs in
-/// a page is `WorkbenchScript`. Its tabs are the Workdesk's browser items (`WorkPane.browser`).
+/// newly opened tab comes to the front, which tabs sleep (`asleep`), what a tab is called in the strip, and what the
+/// address field takes. The daemon's half is src/browser-workbench.ts; the Mac app's pages and pane are Workbench.swift
+/// there, and the script it runs in a page is `WorkbenchScript`. Its tabs are the Workdesk's browser items
+/// (`WorkPane.browser`).
 ///
 /// Tyler, 2026-10-09: "Agents's pages should live as tabs in the deliverables plane just like the deliverables."
 /// 2026-10-16: "letting me sign-in in an in-conch browser session and letting agents use that browser in the app so i
@@ -238,6 +239,47 @@ public enum Workbench {
         let rect = CGRect(x: box[0] * scale, y: box[1] * scale, width: box[2] * scale, height: box[3] * scale)
         return rect.width * rect.height > 0 || rect.width + rect.height > 0 ? rect : nil
     }
+
+    /// How long a tab is left alone before it sleeps (`asleep`): long enough that an agent between two steps, or the user
+    /// back from another tab, finds it as it was; short enough that a morning's leftover pages don't hold gigabytes.
+    public static let sleepAfter: TimeInterval = 10 * 60
+
+    /// Settings › Browser's "Let idle tabs sleep" (on unless turned off).
+    public static let sleepSettingKey = "conch.workbench.sleepIdleTabs"
+
+    /// The tabs that sleep: their pages and web processes go, and the tabs stay as they are, in the strip, on the
+    /// sessions file and in `browser_tabs`. A tab sleeps once it has been left alone for `sleepAfter`: it isn't the one
+    /// shown (`shown`), no agent's command has run in it (`usedAt`) and none is in flight or waiting in the app (`busy`),
+    /// it asks the user nothing (`Tab.ask`), and nobody has looked at or touched it (`touched`, when the app last did,
+    /// or last answered a command there). One the app hasn't seen used since it opened goes by `usedAt` alone: its page
+    /// would only be loading afresh. A blank tab never sleeps, its address field waiting for the user; pausing agents
+    /// changes nothing. A sleeping tab this leaves out wakes: shown, given a command, asked about, used.
+    ///
+    /// Tyler, 2026-11-02, with 14 tabs open and one WebKit process holding 9.3 GB: "can we like pause the browser tabs of
+    /// sessions that aren't using the tabs or something to this effect? there def optimizations we can make without
+    /// interrupting the agents who are actively working in tabs right?"
+    public static func asleep(_ tabs: [Tab], shown: String?, touched: [String: Date], busy: Set<String>, enabled: Bool = true, now: Date) -> Set<String> {
+        guard enabled else { return [] }
+        let since = now.addingTimeInterval(-sleepAfter)
+        return Set(tabs.filter { tab in
+            guard tab.id != shown, !busy.contains(tab.id), tab.ask == nil, !tab.isBlank else { return false }
+            let used = Date(timeIntervalSince1970: tab.usedAt / 1000)
+            return used <= since && (touched[tab.id] ?? .distantPast) <= since
+        }.map(\.id))
+    }
+
+    /// How long a command waits for the page of a tab woken for it to load again: until `wokenMargin` before the
+    /// command's own deadline, which leaves it the time to run on whatever has loaded. An open waits for nothing: it
+    /// goes somewhere else at once.
+    public static func wokenLoadBy(op: String, deadline: Date) -> Date? {
+        op == "open" ? nil : deadline.addingTimeInterval(-wokenMargin)
+    }
+
+    /// The shortest of the commands' own times (src/browser-workbench.ts `BROWSER_OP_MS`) is 12 s: 8 of it for the load.
+    public static let wokenMargin: TimeInterval = 4
+
+    /// A sleeping tab's help in the strip.
+    public static let asleepWords = "Asleep to save memory. It opens again when you show it, or when an agent uses it."
 
     /// The tab a session is showing, among its own (oldest first): the reader's pick while it is still open, else the
     /// newest. A pick that closed is no pick, rather than an empty pane where a page used to be.

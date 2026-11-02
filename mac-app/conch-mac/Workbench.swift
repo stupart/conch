@@ -4,10 +4,15 @@ import SwiftUI
 import WebKit
 
 /// The Workbench, conch's in-app browser: the Mac app's half (src/browser-workbench.ts is the daemon's). Each tab the
-/// daemon publishes is a live web view here, made when the tab first appears and kept alive while the app runs, so
+/// daemon publishes is a live web view here, made when the tab first appears and kept alive while it is in use, so
 /// switching tabs never reloads a page and an agent can drive one nobody is looking at. Shown, a page sits in the
 /// Workdesk (`WorkbenchPane`), where Tyler clicks and types in it directly: that is taking over. Not shown, it is
 /// parked in a window of its own off every screen, still drawing, so a read or a screenshot sees it as it is.
+///
+/// A tab left alone sleeps (`Workbench.asleep`, `rest`): its page and its web process go, and the tab stays as it was,
+/// in the strip and on the daemon's file, which is told nothing. Shown, or given an agent's command, it wakes (`wake`):
+/// its page made again at its address on its profile's store, as on first sight, signed in as before, and the command
+/// waits for it to load (`WorkbenchPage.woke`).
 ///
 /// An agent's command comes the way a page capture does (`PageCaptureRequests`): named on the sessions file, acked at
 /// once (the ack's reply carries what to type, which is never on the file), run against the page by `WorkbenchScript`,
@@ -53,6 +58,8 @@ final class WorkbenchStore: ObservableObject {
     @Published private(set) var working: [String: String] = [:]
     /// Tabs an agent acted in while they weren't shown: each keeps its dot until it is.
     @Published private(set) var actedIn: Set<String> = []
+    /// Tabs asleep (`Workbench.asleep`): no page, until shown or given a command (`wake`).
+    @Published private(set) var asleep: Set<String> = []
     @Published private(set) var agentActivity: AgentActivity?
     /// A tab whose address field takes the keyboard when it is shown: the one Tyler just opened.
     @Published var focusAddress: String?
@@ -83,12 +90,23 @@ final class WorkbenchStore: ObservableObject {
     private var areas: [WeakView] = []
     /// Commands under way per tab, and the linger before a tab's badge goes.
     private var running: [String: Int] = [:]
+    /// Commands taken in hand per tab, from the file until answered: a tab never sleeps under one.
+    private var inHand: [String: Int] = [:]
+    /// When the app last saw each tab used: shown, touched in, woken, or a command of an agent's answered there.
+    private var lastUse: [String: Date] = [:]
     private var lingering: [String: Task<Void, Never>] = [:]
     private var touchMonitor: Any?
 
     /// When this app started: pages wait for the dashboard window until `pagesWaitForWindow` after it (`accept`).
     private let launchedAt = Date()
     static let pagesWaitForWindow: TimeInterval = 8
+
+    /// A page's parking window is on screen (invisibly) from the moment it's made, and macOS counts it as a visible
+    /// window: a background launch then never built conch's own, and no Dock click would (2026-10-12, 2026-10-18).
+    /// So pages wait for the dashboard window, or a few seconds when it doesn't come (closed, or a launch without it).
+    private var pagesWait: Bool {
+        ReviewNotifications.shared.reviewWindow == nil && Date().timeIntervalSince(launchedAt) < Self.pagesWaitForWindow
+    }
 
     init(socket: ConchSocketClient) {
         self.socket = socket
@@ -115,6 +133,7 @@ final class WorkbenchStore: ObservableObject {
                 guard page.webView.bounds.contains(point) else { continue }
             }
             touched()
+            lastUse[page.id] = Date()
             return
         }
         // Anywhere else in the Workdesk: a deliverable he is reading or scrolling, the files, the shell he types in, the
@@ -141,10 +160,22 @@ final class WorkbenchStore: ObservableObject {
         areas.append(WeakView(view: view))
     }
 
-    /// The pane's word on which browser tab it shows: that tab's dot goes.
+    /// The pane's word on which browser tab it shows: that tab's dot goes. Seen is used, the tab left as much as the one
+    /// come.
     func show(_ id: String?) {
+        for seen in [shown, id].compactMap({ $0 }) { lastUse[seen] = Date() }
         shown = id
         if let id { actedIn.remove(id) }
+    }
+
+    /// A tab about to be shown, or wanted awake: used now, and, asleep, its page made again at its last address on its
+    /// profile's store, as on first sight (`makePage`). The pane calls it for a sleeping tab it would show, and the
+    /// strip as it is pressed, so the page is there by the time the pane is.
+    @discardableResult
+    func wake(_ id: String) -> WorkbenchPage? {
+        lastUse[id] = Date()
+        guard asleep.remove(id) != nil, let tab = tabs.first(where: { $0.id == id }) else { return pages[id] }
+        return makePage(for: tab, woke: true)
     }
 
     func tabs(of sessionId: String) -> [Workbench.Tab] {
@@ -189,20 +220,12 @@ final class WorkbenchStore: ObservableObject {
             page.close()
             pages[tab.id] = nil
         }
-        // A page's parking window is on screen (invisibly) from the moment it's made, and macOS counts it as a visible
-        // window: a background launch then never built conch's own, and no Dock click would (2026-10-12, 2026-10-18).
-        // So pages wait for the dashboard window, or a few seconds when it doesn't come (closed, or a launch without it).
-        let dashboardFirst = ReviewNotifications.shared.reviewWindow == nil && Date().timeIntervalSince(launchedAt) < Self.pagesWaitForWindow
-        for tab in all where pages[tab.id] == nil && !closed.contains(tab.id) && !dashboardFirst {
-            guard let store = dataStore(for: tab.profile) else { continue }
-            let socket = socket
-            pages[tab.id] = WorkbenchPage(tab: tab, store: store) { event in
-                Task { _ = await socket.request(event, timeout: 2) }
-            }
-        }
-        for tab in all { pages[tab.id]?.agentsPaused = tab.paused }
         let open = all.filter { !closed.contains($0.id) }
         if open != tabs { tabs = open }
+        // Before any page is made, so a tab idle since before the app opened is never made only to sleep.
+        rest(busy: Set(snapshot.browserRequests.map(\.tab)))
+        for tab in open where pages[tab.id] == nil && !asleep.contains(tab.id) { makePage(for: tab) }
+        for tab in all { pages[tab.id]?.agentsPaused = tab.paused }
         let arrived = Workbench.arrivals(open, known: known, now: Date())
         known = ids
         if !arrived.isEmpty {
@@ -216,6 +239,7 @@ final class WorkbenchStore: ObservableObject {
     func close(_ id: String) {
         touched()
         closed.insert(id)
+        asleep.remove(id)
         pages[id]?.close()
         pages[id] = nil
         tabs.removeAll { $0.id == id }
@@ -317,7 +341,49 @@ final class WorkbenchStore: ObservableObject {
         }
     }
 
-    /// The default store for the built-in profile; a store of its own, kept by WebKit, for any other.
+    /// A tab's page, on its profile's store, loading its address: on first sight, and woken. Not while pages wait for
+    /// the dashboard window (`pagesWait`): a tab woken then is made with the rest when they stop waiting.
+    @discardableResult
+    private func makePage(for tab: Workbench.Tab, woke: Bool = false) -> WorkbenchPage? {
+        guard !pagesWait, let store = dataStore(for: tab.profile) else { return nil }
+        let socket = socket
+        let page = WorkbenchPage(tab: tab, store: store) { event in
+            Task { _ = await socket.request(event, timeout: 2) }
+        }
+        page.woke = woke
+        pages[tab.id] = page
+        return page
+    }
+
+    /// Tabs left alone go to sleep, and any asleep the rule wants awake wake (`Workbench.asleep`): a command for one (on
+    /// the file, `busy`, or in hand), an ask, an agent's use. Sleeping is the page closed, as a tab closed here is, and
+    /// nothing else: the tab keeps its place in `tabs` and the daemon is told nothing, so its order and its `usedAt`
+    /// stay as they were.
+    private func rest(busy: Set<String>) {
+        lastUse = lastUse.filter { entry in tabs.contains { $0.id == entry.key } }
+        let sleeping = Workbench.asleep(
+            tabs, shown: shown, touched: lastUse, busy: busy.union(inHand.keys),
+            enabled: UserDefaults.standard.object(forKey: Workbench.sleepSettingKey) as? Bool ?? true, now: Date()
+        )
+        guard sleeping != asleep else { return }
+        for id in asleep.subtracting(sleeping) { wake(id) }
+        for id in sleeping.subtracting(asleep) {
+            pages[id]?.close()
+            pages[id] = nil
+        }
+        asleep = sleeping
+    }
+
+    /// A command answered, or never run: its tab counts as used from now.
+    private func letGo(_ request: PublishedState.BrowserRequest) {
+        let left = (inHand[request.tab] ?? 1) - 1
+        inHand[request.tab] = left > 0 ? left : nil
+        lastUse[request.tab] = Date()
+    }
+
+    /// The default store for the built-in profile; a store of its own, kept by WebKit, for any other. Each is made once
+    /// and kept while the app runs, so a page made again (woken, or a profile picked) is on the very store it was, its
+    /// sign-ins with it.
     private func dataStore(for profile: String) -> WKWebsiteDataStore? {
         switch Workbench.dataStore(forProfile: profile) {
         case .default:
@@ -337,9 +403,12 @@ final class WorkbenchStore: ObservableObject {
         handled.formIntersection(requests.map(\.id))
         for request in requests where !handled.contains(request.id) {
             handled.insert(request.id)
+            // In hand until answered: its tab stays awake under it. One asleep was woken for it already (`rest`).
+            inHand[request.tab, default: 0] += 1
             let socket = socket
             let page = pages[request.tab]
             Task { @MainActor in
+                defer { self.letGo(request) }
                 // Said first, as a capture's is: how the daemon tells an app that isn't running from a page that is slow.
                 // Its reply hands over what an agent types, which never goes on the sessions file.
                 guard case let .reply(data) = await socket.request(WorkbenchAnswer(request: request.id, ack: true), timeout: 5),
@@ -381,6 +450,8 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
     let profile: String
     /// Tyler paused agents in it: a command reaching it is refused, even one already queued.
     var agentsPaused = false
+    /// Made again after sleeping (`WorkbenchStore.wake`): the next command waits for its address to load first.
+    var woke = false
     /// Where an agent's command is landing now, marked over the page (`WorkbenchMarks`).
     @Published private(set) var mark: WorkbenchMark?
     private var markSerial = 0
@@ -647,6 +718,12 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
     private func execute(_ request: PublishedState.BrowserRequest, text: String?, deadline: Date) async -> WorkbenchAnswer {
         // Paused while it waited its turn: Tyler's hand comes first.
         if agentsPaused { return WorkbenchAnswer(request: request.id, error: Workbench.pausedRefusal(tab: id)) }
+        // Woken for it, or a moment before: the command finds the page as it would have awake, loaded, for as long as its
+        // own time allows (`Workbench.wokenLoadBy`).
+        if woke {
+            woke = false
+            if let loadBy = Workbench.wokenLoadBy(op: request.op, deadline: deadline) { _ = await waitForLoad(until: loadBy) }
+        }
         // Its own deadline for a navigation a command sets off, inside the command's.
         let settleBy = min(deadline.addingTimeInterval(-1), Date().addingTimeInterval(10))
         switch request.op {

@@ -2299,6 +2299,11 @@ private struct ConversationPane: View {
             )
             .id(tab.id)
             .onDisappear { if workbench.shown == tab.id { workbench.show(nil) } }
+        } else if workPane(for: row) == .browser, let tab = selectedBrowserTab, workbench.asleep.contains(tab.id) {
+            // Asleep (`WorkbenchStore.wake`): shown, it wakes, and the pane above takes its page.
+            ConchPalette.surface
+                .onAppear { workbench.wake(tab.id) }
+                .id(tab.id)
         } else if workPane(for: row) == .files, let folder = workingFolder {
             WorkspaceFilesView(root: folder, rowID: row.id, changed: changedFiles(for: row))
         } else if workPane(for: row) == .shell, let folder = workingFolder {
@@ -3072,16 +3077,18 @@ private struct ConversationPane: View {
                         switch entry {
                         // The live pages, the agent's and Tyler's own, as tabs among its work (Tyler, 2026-10-09:
                         // "Agents's pages should live as tabs in the deliverables plane just like the deliverables").
-                        // An agent at work in one says so; one it acted in unseen has a dot (ConchDesign
-                        // `WorkbenchTabButton`).
+                        // An agent at work in one says so; one it acted in unseen has a dot; one asleep is quieter
+                        // (ConchDesign `WorkbenchTabButton`), and wakes as it is pressed.
                         case let .browser(tab):
                             WorkbenchTabButton(
                                 tab: tab,
                                 isSelected: tab.id == shownTab,
                                 agentWorking: workbench.working[tab.id] != nil,
                                 hasActivity: Workbench.showsActivity(tab.id, actedIn: workbench.actedIn, shown: shownTab),
+                                isAsleep: workbench.asleep.contains(tab.id),
                                 open: {
                                     workbench.touched()
+                                    workbench.wake(tab.id)
                                     comparison = nil
                                     workspace.show(browserTab: tab.id, for: row.id)
                                 },

@@ -102,6 +102,31 @@ final class WorkdeskPolishTests: XCTestCase {
         }
     }
 
+    /// A tab asleep is a step quieter than one awake, as Tyler asked of it (2026-11-02, "subtle"): its mark faded, still a
+    /// mark's 3:1, since the paused hand is the only word that agents are paused there, and its name in the tertiary text
+    /// colour, which still reads at 4.5:1. It takes the very same room, so nothing in the strip moves as a tab sleeps or
+    /// wakes; the paused hand fades as the globe does.
+    func testATabAsleepIsAStepQuieterInTheSameRoom() throws {
+        let awake = NSHostingView(rootView: WorkbenchTabButton(tab: SleepScene.tab, isSelected: false, open: {}, close: {})).fittingSize
+        let asleep = NSHostingView(rootView: WorkbenchTabButton(tab: SleepScene.tab, isSelected: false, isAsleep: true, open: {}, close: {})).fittingSize
+        XCTAssertEqual(awake, asleep)
+        for dark in [false, true] {
+            let label = dark ? "dark" : "light"
+            let strip = try picture(SleepScene(), size: SleepScene.size, dark: dark, name: "after-strip-tab-asleep")
+            let ground = strip.color(2, 2)
+            // Each tab: its mark 8 to 18 from its left, its name from 23.
+            let tabs = (0..<3).map { SleepScene.inset + CGFloat($0) * (awake.width + SleepScene.gap) }
+            let marks = tabs.map { strip.strongestColor(x: $0 + 8, $0 + 18, y: 9, 25, against: ground) }
+            let names = tabs.map { strip.strongestColor(x: $0 + 23, $0 + awake.width - 8, y: 9, 25, against: ground) }
+            XCTAssertLessThan(contrast(marks[1], ground), contrast(marks[0], ground) * 0.75, "the globe fades, \(label)")
+            XCTAssertLessThan(contrast(marks[2], ground), contrast(marks[0], ground) * 0.75, "the hand fades, \(label)")
+            XCTAssertGreaterThanOrEqual(contrast(marks[1], ground), 3, "and is still a mark, \(label)")
+            XCTAssertGreaterThanOrEqual(contrast(marks[2], ground), 3, "the paused hand too, \(label)")
+            XCTAssertLessThan(contrast(names[1], ground), contrast(names[0], ground), "the name is quieter, \(label)")
+            XCTAssertGreaterThanOrEqual(contrast(names[1], ground), 4.5, "and still reads, \(label)")
+        }
+    }
+
     /// The fade's strength follows how much is out of sight, so it comes and goes as the content reaches an edge.
     func testAnEdgeFadesByHowMuchIsBeyondIt() {
         let fade = WorkdeskTabRun<EmptyView>.fade
@@ -420,6 +445,28 @@ private struct FiledTab: View {
         .padding(.horizontal, 8)
         .frame(height: 24)
         .background(RoundedRectangle(cornerRadius: 6).fill(isSelected ? AnyShapeStyle(ConchColor.rowSelected) : AnyShapeStyle(Color.clear)))
+    }
+}
+
+/// The strip's tabs alone, on its surface: one awake, the same asleep, and one the user paused agents in, asleep.
+private struct SleepScene: View {
+    static let tab = Workbench.Tab(id: "tab-2", sessionId: "s1", url: "https://billing.northwind.example/invoices", title: "Invoices · Northwind", openedAt: 2)
+    static let inset: CGFloat = 6
+    static let gap: CGFloat = 2
+    static let size = CGSize(width: 520, height: 34)
+
+    var body: some View {
+        // Each at its own width, as the strip's scroller lays them out.
+        HStack(spacing: Self.gap) {
+            WorkbenchTabButton(tab: Self.tab, isSelected: false, open: {}, close: {})
+            WorkbenchTabButton(tab: Self.tab, isSelected: false, isAsleep: true, open: {}, close: {})
+            WorkbenchTabButton(tab: Self.tab.with(paused: true), isSelected: false, isAsleep: true, open: {}, close: {})
+        }
+        .fixedSize()
+        .padding(.leading, Self.inset)
+        .padding(.vertical, 5)
+        .frame(width: Self.size.width, height: Self.size.height, alignment: .topLeading)
+        .background(ConchColor.surface)
     }
 }
 

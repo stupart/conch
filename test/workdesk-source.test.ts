@@ -253,6 +253,86 @@ describe("a tab that needs the user", () => {
   });
 });
 
+/**
+ * Idle tabs sleep (2026-11-02). Tyler, with 14 tabs open and one WebKit process holding 9.3 GB: "can we like pause the
+ * browser tabs of sessions that aren't using the tabs or something to this effect? there def optimizations we can make
+ * without interrupting the agents who are actively working in tabs right?" The rule is ConchDesign's (WorkbenchTests);
+ * what the app must keep doing with it is here.
+ */
+describe("a tab left alone sleeps, and wakes on demand", () => {
+  const rest = between(workbench, "private func rest(busy: Set<String>) {", "\n    }\n");
+
+  test("the rule decides, with the shown tab, the app's own record of use, and every command in flight or in hand", () => {
+    expect(rest).toContain("Workbench.asleep(");
+    expect(rest).toContain("tabs, shown: shown, touched: lastUse, busy: busy.union(inHand.keys),");
+    expect(rest).toContain("UserDefaults.standard.object(forKey: Workbench.sleepSettingKey) as? Bool ?? true");
+    const accept = between(workbench, "func accept(_ snapshot: PublishedState) {", "\n    }\n");
+    expect(accept).toContain("rest(busy: Set(snapshot.browserRequests.map(\\.tab)))");
+    // Before any page is made, and none is made for a tab asleep.
+    expect(accept.indexOf("rest(busy:")).toBeLessThan(accept.indexOf("makePage(for: tab)"));
+    expect(accept).toContain("for tab in open where pages[tab.id] == nil && !asleep.contains(tab.id) { makePage(for: tab) }");
+    // Seen, touched in, or answered a command in: used.
+    expect(between(workbench, "func show(_ id: String?) {", "\n    }\n")).toContain("for seen in [shown, id].compactMap({ $0 }) { lastUse[seen] = Date() }");
+    expect(between(workbench, "private func noteTouch(_ event: NSEvent) {", "func watch(_ view: NSView) {")).toContain("lastUse[page.id] = Date()");
+  });
+
+  test("sleeping closes the page and nothing else: the tab keeps its place and the daemon is told nothing", () => {
+    expect(rest).toContain("pages[id]?.close()");
+    expect(rest).not.toContain("tabs =");
+    expect(rest).not.toContain("socket");
+    expect(rest).not.toContain("WorkbenchTabEvent");
+    // A page closed reports nothing more: its last word is cancelled with it.
+    const close = between(workbench, "    func close() {\n        guard !isClosed else { return }", "\n    }\n");
+    expect(close).toContain("reporting?.cancel()");
+  });
+
+  test("woken, a page is made as on first sight: its last address, on its profile's store, the one it had", () => {
+    const wake = between(workbench, "func wake(_ id: String) -> WorkbenchPage? {", "\n    }\n");
+    expect(wake).toContain("guard asleep.remove(id) != nil, let tab = tabs.first(where: { $0.id == id }) else { return pages[id] }");
+    expect(wake).toContain("return makePage(for: tab, woke: true)");
+    const make = between(workbench, "private func makePage(for tab: Workbench.Tab, woke: Bool = false) -> WorkbenchPage? {", "\n    }\n");
+    expect(make).toContain("guard !pagesWait, let store = dataStore(for: tab.profile) else { return nil }");
+    expect(make).toContain("WorkbenchPage(tab: tab, store: store)");
+    // The store for a profile is made once and kept, so its sign-ins come back with the page.
+    const store = between(workbench, "private func dataStore(for profile: String) -> WKWebsiteDataStore? {", "\n    }\n");
+    expect(store).toContain("if let known = stores[uuid] { return known }");
+    expect(store).toContain("return .default()");
+    expect(between(workbench, "init(tab: Workbench.Tab, store: WKWebsiteDataStore, report: @escaping (WorkbenchTabEvent) -> Void) {", "\n    }\n"))
+      .toContain("if let url = URL(string: tab.url), Workbench.isWeb(url) { load(url) }");
+  });
+
+  test("an agent's command wakes its tab, is acked as before, and waits for the page to load within its own time", () => {
+    const handle = between(workbench, "private func handle(_ requests: [PublishedState.BrowserRequest]) {", "\n    }\n}");
+    expect(handle.indexOf("inHand[request.tab, default: 0] += 1")).toBeLessThan(handle.indexOf("Task { @MainActor in"));
+    expect(handle).toContain("defer { self.letGo(request) }");
+    // The ack is still the first thing said.
+    expect(handle.indexOf("WorkbenchAnswer(request: request.id, ack: true)")).toBeLessThan(handle.indexOf("await page.run(request, text: ack.text)"));
+    const execute = between(workbench, "private func execute(_ request: PublishedState.BrowserRequest, text: String?, deadline: Date) async -> WorkbenchAnswer {", 'case "open":');
+    expect(execute).toContain("if let loadBy = Workbench.wokenLoadBy(op: request.op, deadline: deadline) { _ = await waitForLoad(until: loadBy) }");
+    // Inside the race against the command's deadline, after a pause has had its say.
+    expect(execute.indexOf("if agentsPaused")).toBeLessThan(execute.indexOf("if woke {"));
+  });
+
+  test("shown, a sleeping tab wakes; the strip draws it quieter and wakes it as it is pressed", () => {
+    const content = between(dashboard, "private func workContent(for row: SessionRow) -> some View {", "} else if workPane(for: row) == .files");
+    expect(content).toContain("} else if workPane(for: row) == .browser, let tab = selectedBrowserTab, workbench.asleep.contains(tab.id) {");
+    expect(content).toContain(".onAppear { workbench.wake(tab.id) }");
+    expect(dashboard).toContain("isAsleep: workbench.asleep.contains(tab.id),");
+    const strip = between(dashboard, "private func deliverableTabs(for row: SessionRow) -> some View {", "private func conversationBody(for row: SessionRow?) -> some View {");
+    expect(strip.indexOf("workbench.wake(tab.id)")).toBeLessThan(strip.indexOf("workspace.show(browserTab: tab.id, for: row.id)"));
+    const button = between(views, "public struct WorkbenchTabButton: View {", "public struct WorkdeskNewTabButton: View {");
+    expect(button).toContain("Workbench.asleepWords");
+    expect(button).toContain(".opacity(dozing ? 0.72 : 1)");
+  });
+
+  test("Settings › Browser can turn it off, beside following", () => {
+    const settings = code("mac-app/conch-mac/BrowserSettingsView.swift");
+    expect(settings).toContain("@AppStorage(Workbench.sleepSettingKey) private var sleeps = true");
+    expect(settings).toContain('Text("Let idle tabs sleep")');
+    expect(rules).toContain('public static let sleepSettingKey = "conch.workbench.sleepIdleTabs"');
+  });
+});
+
 describe("the Workdesk, by name", () => {
   test("the pane is the Workdesk where the user reads it: the strip, the side-by-side help, the divider", () => {
     expect(dashboard).toContain(".accessibilityLabel(Workdesk.name)");
