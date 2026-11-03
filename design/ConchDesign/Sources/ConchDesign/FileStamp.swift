@@ -34,18 +34,29 @@ public struct ConchStampedRead<Value> {
     private var value: Value?
     /// How many times it actually read the file, for the poll's tests and measurements.
     public private(set) var reads = 0
+    /// Whether the last `value(at:read:)` answered with a value it read just then, rather than the one it read before.
+    ///
+    /// The value read before is one its reader has already taken in, so everything worked out from it alone is already
+    /// worked out. The Mac's poll took the same snapshot in again four times a second: the deep comparison of every row
+    /// and conversation that keeps an unchanged state from republishing, the outbox against every conversation, and the
+    /// rest (`StateStore.revisit`).
+    public private(set) var fresh = false
 
     public init() {}
 
     public mutating func value(at path: String, read: () -> Value?) -> Value? {
         let now = ConchFileStamp(path: path)
         // Only a value is remembered: a read that made nothing is tried again however the stamp stands.
-        if let now, now == stamp, let value { return value }
+        if let now, now == stamp, let value {
+            fresh = false
+            return value
+        }
         reads += 1
         // The stamp taken BEFORE the read: a rewrite between the two is a newer stamp next time, read again, never a
         // newer file hidden behind an older stamp.
         stamp = now
         value = read()
+        fresh = value != nil
         return value
     }
 }

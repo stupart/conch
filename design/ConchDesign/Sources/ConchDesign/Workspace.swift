@@ -122,6 +122,18 @@ public enum WorkspaceFocus {
     public static func isAddressed(_ id: String, in workspace: Workspace) -> Bool {
         addressed(in: workspace) == id
     }
+
+    /// The sessions a surface showing one session reads whole: the reader's pick, the one it shows (`viewed`), and the
+    /// session each of those runs inside, whose name the way back to it says. Of every other session it reads only what
+    /// these rules read, so a change anywhere else — another agent's activity line, another conversation's next message
+    /// — has nothing to redraw there (the Mac's conversation pane, `PublishedState.forPane`, 2026-11-02).
+    public static func shown(in workspace: Workspace, pinned: String?) -> Set<String> {
+        var shown = Set([pinned, viewed(in: workspace, pinned: pinned)].compactMap { $0 })
+        for id in shown {
+            if let parent = workspace.session(id)?.parentID { shown.insert(parent) }
+        }
+        return shown
+    }
 }
 
 // MARK: - How each session is presented

@@ -69,8 +69,15 @@ enum BuildFreshness {
         return current > launchStamp.addingTimeInterval(1)
     }
 
+    private static let executablePath = Bundle.main.executableURL?.path
+
+    /// One `lstat`: the time `attributesOfItem` read, without the dictionary of every attribute it bridged it into. It
+    /// is asked on every state poll, four a second, and was 22 of the poll's 73 samples in a 30 s sample of the live app
+    /// (2026-11-02).
     private static func executableModified() -> Date? {
-        guard let url = Bundle.main.executableURL else { return nil }
-        return (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+        guard let executablePath else { return nil }
+        var info = stat()
+        guard lstat(executablePath, &info) == 0 else { return nil }
+        return Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec) + TimeInterval(info.st_mtimespec.tv_nsec) / 1_000_000_000)
     }
 }

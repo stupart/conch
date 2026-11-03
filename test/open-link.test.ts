@@ -175,7 +175,10 @@ describe("every open site in the Mac app goes through the one door that reports 
 
   test("the conversation stack resolves the agent's link against the session and shows the failure where it was clicked", () => {
     const stack = mac("ConversationStackView.swift");
-    expect(stack).toContain(".environment(\\.openURL, OpenURLAction { url in");
+    // The stack's one action, made once (`StackLinks`, 2026-11-02): it hands every link to what the newest body says.
+    expect(stack).toContain(".environment(\\.openURL, links.action)");
+    expect(stack).toContain("private(set) lazy var action = OpenURLAction { [weak self] url in\n        self?.open(url)\n        return .handled");
+    expect(stack).toContain("let _ = links.open = { url in");
     expect(stack).toContain("store.openLink(LinkTarget.text(of: url), cwd: cwd, rowId: conversation.sessionId)");
     expect(stack).toContain("LinkFailureLine(message: $linkFailure)");
     expect(stack).toContain("var cwd: String? = nil");

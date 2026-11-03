@@ -93,6 +93,8 @@ struct ConversationStackView: View {
     /// resolved target — shown here, where the click happened, never as a
     /// Finder alert (A13).
     @State private var linkFailure: String?
+    /// The stack's one `OpenURLAction`, made once (`StackLinks`).
+    @State private var links = StackLinks()
     /// Sticks to the bottom only when already there, so reading history is not
     /// yanked away by an arriving message.
     @State private var pinnedToBottom = true
@@ -312,6 +314,14 @@ struct ConversationStackView: View {
     var body: some View {
         // Read when the selection needs it, from this body's conversation: nothing is worked out here.
         let _ = selection.source = selectionSource
+        // What a link pressed anywhere in the stack does, as of this body: against this session's folder, its failure
+        // said under the stack. The action that calls it is made once (`StackLinks`).
+        let _ = links.open = { url in
+            linkFailure = nil
+            store.openLink(LinkTarget.text(of: url), cwd: cwd, rowId: conversation.sessionId) {
+                linkFailure = $0
+            }
+        }
         ScrollViewReader { proxy in
             ScrollView {
                 // Eager, still, for the live tail. A lazy stack leaves the viewport at an offset
@@ -426,13 +436,9 @@ struct ConversationStackView: View {
             // which answered -50 in a Finder alert: only web links are URLs;
             // a path is the agent's prose and means "from where the session
             // runs", which only the row knows.
-            .environment(\.openURL, OpenURLAction { url in
-                linkFailure = nil
-                store.openLink(LinkTarget.text(of: url), cwd: cwd, rowId: conversation.sessionId) {
-                    linkFailure = $0
-                }
-                return .handled
-            })
+            //
+            // The same action at every body (`StackLinks`), never one made here.
+            .environment(\.openURL, links.action)
             .onChange(of: revisionVector) { _, _ in
                 // Capture the position from before SwiftUI lays out the added
                 // height. Geometry measured after growth briefly says "not at
@@ -1560,6 +1566,26 @@ private struct MemoRow<Key: Equatable, Content: View>: View, Equatable {
     static func == (a: Self, b: Self) -> Bool { a.key == b.key }
 
     var body: some View { content() }
+}
+
+/// The conversation's link action, made once for the stack's life; what it does is the newest body's (`open`).
+///
+/// The action sits in the environment of every text in the stack, and an `OpenURLAction` made in `body` is a new closure
+/// each time it runs, so SwiftUI told every one of them its environment had changed. `MemoRow` keeps a row's body from
+/// running, but not that: each selectable text's `SelectionOverlay` was updated again — its font set, its string's line
+/// breaks rewritten, its NSTextField measured anew — on every body, four times a second at rest. In a 30 s sample of the
+/// live app (2026-11-02, 19 rows, 8 working) those updates were 267 samples of the main thread's 4,400 busy, with 124
+/// more in texts checking their environment and ~120 in the platform views adopting it and the layout after. Measured
+/// offscreen on 40 selectable rows memoised as the stack's are: 40 overlay updates a body with an action made in it, 0
+/// with this one.
+@MainActor
+private final class StackLinks {
+    var open: (URL) -> Void = { _ in }
+
+    private(set) lazy var action = OpenURLAction { [weak self] url in
+        self?.open(url)
+        return .handled
+    }
 }
 
 /// SwiftUI exposes scrolling commands on macOS 14, but not whether the person

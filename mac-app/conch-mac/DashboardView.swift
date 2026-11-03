@@ -144,10 +144,16 @@ struct DashboardView: View {
                         if page == .lagoon {
                             LagoonPane()
                         } else {
+                            // Drawn again only when something it reads changed (`ConversationPane ==`): the session
+                            // it shows, and of every other only what picks that session (`PublishedState.forPane`).
                             ConversationPane(
-                                state: state,
+                                state: state?.forPane(pinned: selectedSessionID),
+                                store: store,
+                                rowMessages: store.rowMessages,
+                                debugInspectRequest: store.debugInspectRequest,
                                 onSelectSession: actions.onSelectSession
                             )
+                            .equatable()
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -720,6 +726,8 @@ private struct SessionLedger: View {
                                                     state.rows.first(where: { $0.id == id })?.label
                                                 }
                                             )
+                                            // Drawn again only when what it shows changed (`DashboardRow ==`).
+                                            .equatable()
                                             // A started session sits under its starter (C15).
                                             .padding(.leading, row.startedBySessionId == nil ? 0 : 30)
                                             let agents = folderRows.filter { $0.parentSessionId == row.id }
@@ -729,6 +737,7 @@ private struct SessionLedger: View {
                                                     selectedID: selectedSessionID,
                                                     onSelect: { actions.onSelectSession($0) }
                                                 )
+                                                .equatable()
                                                 .padding(.leading, row.startedBySessionId == nil ? 0 : 30)
                                             }
                                           }
@@ -1466,6 +1475,26 @@ private struct DashboardRow: View {
     }
 }
 
+/// A row is drawn again when something it shows changed, and only then.
+///
+/// Every publish redrew every row: the ledger hands each one closures, which never compare equal, so a single agent's
+/// activity line moving on — about once a second for each one at work — redrew all twenty-odd. Measured offscreen on
+/// the app's own window with Tyler's sessions file (2026-11-02, 21 rows, two publishes a second from a session not on
+/// screen): the sidebar was half of what the window spent on a publish, and its row bodies went from 312 in ten seconds
+/// to 20, the publishing row's alone. The closures are left out of this: each is the window's own action on this row
+/// (`DashboardActions`), which reaches the same store and workspace whichever render made it, and the row it was made
+/// with shows the same id, name and quiet as this one whenever the two compare equal. `renameDraft` is a binding into
+/// the window's state, the field's own text; a rename beginning or ending is `isRenaming`. `now` is compared by what is
+/// drawn from it, the row's age: the list's clock is a new one at each of its bodies, so `now` moves with every
+/// publish, while "12m" stays "12m".
+extension DashboardRow: Equatable {
+    static func == (a: Self, b: Self) -> Bool {
+        a.row == b.row && a.age == b.age && a.isSelected == b.isSelected && a.isFollowing == b.isFollowing
+            && a.isRenaming == b.isRenaming && a.rowMessage == b.rowMessage && a.everythingQuiet == b.everythingQuiet
+            && (a.onFork == nil) == (b.onFork == nil) && a.startedByLabel == b.startedByLabel
+    }
+}
+
 /// Internal, not file-private: the composer's destination chip draws one too.
 struct AgentBadge: View {
     let backend: String?
@@ -1878,16 +1907,26 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
 
 private struct ConversationPane: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The state as the pane reads it (`PublishedState.forPane`).
     let state: PublishedState?
+    /// Held, not watched: what the pane draws from the store comes in as the values below, so a publish that changes
+    /// none of them leaves the pane alone (`==`). Watched, every publish of any session re-ran the pane's body and
+    /// everything under it.
+    let store: StateStore
+    /// The rows' words (`StateStore.rowMessages`): the tools line's Restart says "Restarting…" from them.
+    let rowMessages: [SessionRow.ID: String]
+    /// A debug request to open the capability inspector (`StateStore.debugInspectRequest`).
+    let debugInspectRequest: String?
     let onSelectSession: (SessionRow) -> Void
 
-    @EnvironmentObject private var store: StateStore
     /// The one owner of which session is being looked at, which one the voice is on, where a
     /// message goes, and how each session is presented (ConchDesign/Workspace.swift).
     @EnvironmentObject private var workspace: WorkspaceModel
     @StateObject private var transcriptContent = TranscriptContentModel()
-    /// Shared with the conversation fog (M3): one draft per session wherever it is typed.
-    @ObservedObject private var composerDrafts = ComposerDraftStore.shared
+    /// Shared with the conversation fog (M3): one draft per session wherever it is typed. Held, not watched: the pane only
+    /// hands it a dictation and a preview's seed, and the composer that draws a draft watches it itself
+    /// (`SessionComposer`). Watched here, every keystroke re-ran the whole pane's body and everything under it.
+    private let composerDrafts = ComposerDraftStore.shared
     /// Where the one input is: this window lays its composer out only while it is here (ComposerDock).
     @ObservedObject private var dock = ComposerDock.shared
     /// The Workbench's tabs and pages (`WorkbenchStore`): live browser tabs, its agents' and Tyler's own, in the
@@ -2707,7 +2746,7 @@ private struct ConversationPane: View {
                 debugExpandInspector = false
             }
         }
-        .onChange(of: store.debugInspectRequest) { _, wanted in
+        .onChange(of: debugInspectRequest) { _, wanted in
             guard let wanted else { return }
             store.debugInspectRequest = nil
             // A trailing "!" asks for every row open — a capture proving what
@@ -2736,7 +2775,7 @@ private struct ConversationPane: View {
         if showsToolsNotice(row), let stale = row.toolsStale {
             SessionToolsNotice(
                 stale,
-                isRestarting: store.isRestarting(row.id),
+                isRestarting: rowMessages[row.id] == StateStore.restartingMessage,
                 restart: row.canRestart ? { restartForTools(row) } : nil
             )
         }
@@ -3398,6 +3437,56 @@ private struct ConversationPane: View {
         .animation(.easeOut(duration: 0.15), value: note)
     }
 
+}
+
+/// The pane is drawn again when what it reads changed, and only then: its state (`PublishedState.forPane`) and the store's
+/// values it is handed. Its closure is the window's `selectSession`, which reaches the same workspace and settings whichever
+/// render it came from, so it is left out, as the conversation's rows leave theirs (`MemoRow`). What the pane watches
+/// itself (the workspace, the Workbench, the dock, the approvals) still redraws it as it always did.
+extension ConversationPane: Equatable {
+    static func == (a: Self, b: Self) -> Bool {
+        a.store === b.store && a.rowMessages == b.rowMessages && a.debugInspectRequest == b.debugInspectRequest
+            && a.state == b.state
+    }
+}
+
+extension PublishedState {
+    /// The state as the conversation pane reads it: whole for the session it shows (`WorkspaceFocus.shown`), and of every
+    /// other session only what decides which session that is.
+    ///
+    /// The pane was handed the whole state, so every publish redrew it and everything under it, whatever changed: with
+    /// eight agents at work that is another session's activity line or its conversation's next message several times a
+    /// second, none of which the pane draws. Offscreen on the app's own window with Tyler's sessions file (2026-11-02, two
+    /// publishes a second from a session not on screen), the pane's body ran 24 times in ten seconds, now none; with the
+    /// sidebar's rows (`DashboardRow ==`) the main thread on those publishes went from ~29 ms a second to ~22 (medians of
+    /// five runs). Of another session it reads only what the focus rules read (`Workspace`): its row without the activity
+    /// line, the sidebar's alone. Of the rest it reads the voice (`live`), the reply, the mode, whose audio this is, what
+    /// the daemon can do, and the model menus; nothing else — not `ts`, which moves on every publish, nor the screen, the
+    /// deliveries, the Workbench's requests or the dismissed rows. A pick the daemon lists no row for is a subagent the
+    /// pane builds from whichever conversation started it (`subagentRow`): that gets the whole state, as before.
+    /// test/app-cpu.test.ts holds the pane to reading only what is here.
+    func forPane(pinned: SessionRow.ID?) -> PublishedState {
+        if let pinned, row(pinned) == nil { return self }
+        let shown = WorkspaceFocus.shown(in: Workspace(self), pinned: pinned)
+        return PublishedState(
+            v: v,
+            ownerDeviceId: ownerDeviceId,
+            ts: 0,
+            mode: mode,
+            live: live,
+            reply: reply,
+            preview: preview,
+            conversation: conversation.flatMap { shown.contains($0.sessionId) ? $0 : nil },
+            conversations: conversations?.filter { shown.contains($0.key) },
+            rows: rows.map { shown.contains($0.id) ? $0 : $0.withoutActivity() },
+            dismissed: [],
+            dismissedRows: [],
+            audioControl: audioControl,
+            features: features,
+            sessionSettings: sessionSettings,
+            seaGlass: seaGlass
+        )
+    }
 }
 
 /// One deliverable in the strip above the pane.
@@ -4134,6 +4223,12 @@ private struct AgentGroup: View {
         guard LedgerVisual(row: agent) == .working else { return nil }
         return SidebarActivity.line(agent.activity?.text, working: agent.status == .working, usageLimited: agent.usageLimit != nil)
     }
+}
+
+/// Drawn again when its agents or the selection changed, as a session's row is (`DashboardRow ==`); `onSelect` is handed
+/// the agent it is pressed on, so it carries nothing of the render that made it.
+extension AgentGroup: Equatable {
+    static func == (a: Self, b: Self) -> Bool { a.agents == b.agents && a.selectedID == b.selectedID }
 }
 
 /// Which conversation a session's pane draws (`ConversationSource`), watching the history reader

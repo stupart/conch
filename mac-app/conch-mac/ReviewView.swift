@@ -182,8 +182,12 @@ private struct ReviewSurface: View {
     /// An Atlas page a wiki link led to is up, with its line, which carries the controls as a page's address line does
     /// (`ReviewContent`'s `onTrail`).
     @State private var controlsOnTrail = false
+    /// Bumped when the file the link names comes or goes, or turns from a file to a folder (`watchDisk`).
+    @State private var diskChanges = 0
 
     var body: some View {
+        // Read, so a change on disk draws the pane again: the folder, the file or its absence below decides by it.
+        let _ = diskChanges
         VStack(spacing: 0) {
             ZStack(alignment: .top) {
                 if let link = item.link, case let .folder(folder) = DeliverableSource(link: link) {
@@ -238,6 +242,27 @@ private struct ReviewSurface: View {
         // The notes waiting to go, and Send, along the pane's foot (`AnnotateTrayHost`).
         .overlay(alignment: .bottom) { if annotates { AnnotateTrayHost(annotator: annotator) } }
         .animation(.easeOut(duration: 0.16), value: annotates && (annotator.annotating || !annotator.batch.isEmpty))
+        .task(id: item.link) { await watchDisk() }
+    }
+
+    /// Looks at the file every quarter second while it is shown, and draws the pane again when it comes or goes.
+    ///
+    /// The pane decides what to draw from the disk, in `body` (`DeliverableSource`): a file that vanished must say so, and
+    /// one written after it was filed must show. It used to be drawn again four times a second whatever happened, because
+    /// the Workbench republished on every poll (`WorkbenchStore.accept`, 2026-11-02), and so it followed the disk without
+    /// being asked. With that gone it is asked: one `stat` a quarter second, and a redraw only when the answer changes.
+    private func watchDisk() async {
+        guard let path = item.link.flatMap(DeliverableSource.localPath(of:)) else { return }
+        var last = DeliverableSource.Disk(path: path)
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            let now = DeliverableSource.Disk(path: path)
+            if now != last {
+                last = now
+                diskChanges &+= 1
+            }
+        }
     }
 
     /// The stage control, and nothing else.
@@ -1527,6 +1552,29 @@ enum DeliverableSource: Equatable {
 
         let expanded = NSString(string: link).expandingTildeInPath
         return URL(fileURLWithPath: expanded, isDirectory: false).standardizedFileURL
+    }
+}
+
+extension DeliverableSource {
+    /// What the disk says about a local link, as far as `init(link:)` decides by it and it can change under a pane that
+    /// shows it: whether something is there, and whether it is a folder.
+    struct Disk: Equatable {
+        let exists: Bool
+        let isDirectory: Bool
+
+        init(path: String) {
+            var isDirectory: ObjCBool = false
+            exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+            self.isDirectory = isDirectory.boolValue
+        }
+    }
+
+    /// The path `init(link:)` looks at for a link; nil for a web link, which the disk has no say in.
+    static func localPath(of link: String) -> String? {
+        if let url = URL(string: link), let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" {
+            return nil
+        }
+        return localFileURL(for: link).path
     }
 }
 

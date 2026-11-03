@@ -50,6 +50,35 @@ final class FileStampTests: XCTestCase {
         XCTAssertEqual(poll.reads, 2)
     }
 
+    /// Each answer says whether it was read just then: once per publish, and never for the value read before, which the
+    /// poll has already taken in (`StateStore.revisit`, 2026-11-02).
+    func testAnAnswerSaysWhetherItWasReadJustNow() throws {
+        let url = directory.appendingPathComponent("state.json")
+        var poll = ConchStampedRead<String>()
+        let read = { try? String(contentsOf: url, encoding: .utf8) }
+        XCTAssertFalse(poll.fresh, "nothing answered yet")
+        XCTAssertNil(poll.value(at: url.path, read: read))
+        XCTAssertFalse(poll.fresh, "no file: nothing was made, so nothing is new")
+        try publish("one", to: url)
+        XCTAssertEqual(poll.value(at: url.path, read: read), "one")
+        XCTAssertTrue(poll.fresh, "the first read of a publish")
+        for _ in 0..<3 {
+            XCTAssertEqual(poll.value(at: url.path, read: read), "one")
+            XCTAssertFalse(poll.fresh, "the same publish again: the value read before")
+        }
+        try publish("two", to: url)
+        XCTAssertEqual(poll.value(at: url.path, read: read), "two")
+        XCTAssertTrue(poll.fresh, "a new publish is read, and new")
+        XCTAssertEqual(poll.value(at: url.path, read: read), "two")
+        XCTAssertFalse(poll.fresh)
+        // Published again but unreadable: no value, so nothing new to take in, and the next poll tries again.
+        try publish("three", to: url)
+        XCTAssertNil(poll.value(at: url.path) { nil })
+        XCTAssertFalse(poll.fresh)
+        XCTAssertEqual(poll.value(at: url.path, read: read), "three")
+        XCTAssertTrue(poll.fresh, "the retry that reads it is new")
+    }
+
     /// A read that made nothing — a file this build can't decode, or none at all — is tried again at the next poll,
     /// never remembered as the answer.
     func testAFailedReadIsTriedAgain() throws {
