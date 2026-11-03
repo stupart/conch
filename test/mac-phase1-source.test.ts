@@ -274,7 +274,10 @@ describe("the Mac composer belongs to one session", () => {
     expect(composer).toMatch(/@Binding var attachments: \[URL\]/);
     expect(composer).not.toMatch(/@State private var (draft|attachments)/);
     expect(composer).toContain("static let shared = ComposerDraftStore()");
-    expect(dashboard).toMatch(/@ObservedObject private var composerDrafts = ComposerDraftStore\.shared/);
+    // The pane holds the one store without watching it (2026-11-02): it only hands it a dictation and a preview's seed,
+    // and watching it re-ran the whole pane on every keystroke. The composer below, which draws the draft, watches it.
+    expect(dashboard).toMatch(/private let composerDrafts = ComposerDraftStore\.shared/);
+    expect(dashboard).not.toMatch(/@ObservedObject private var composerDrafts/);
     // Bound in the composer's one construction (`SessionComposer`), the window's and the panel's, to the session's
     // entry in the one store: wherever the input is, it is the same draft.
     const session = composer.slice(composer.indexOf("struct SessionComposer: View {"));
@@ -362,8 +365,9 @@ describe("Mac conversation links keep the native clickable path", () => {
     // action handed a schemeless link straight to LaunchServices, which
     // answered -50 in a Finder alert. The stack's own OpenURLAction is what
     // resolves a path against the session's folder and reports a failure;
-    // test/open-link.test.ts pins its shape.
-    expect(conversation).toContain(".environment(\\.openURL, OpenURLAction { url in");
+    // test/open-link.test.ts pins its shape. Made once, never in `body` (`StackLinks`, test/app-cpu.test.ts).
+    expect(conversation).toContain(".environment(\\.openURL, links.action)");
+    expect(conversation).toContain("lazy var action = OpenURLAction {");
   });
 
   test("both transcript renderers agree on one reading measure", () => {
@@ -553,7 +557,7 @@ describe("§3's anatomy, where the app had drifted from it", () => {
     // border-radius:12px;box-shadow:var(--shPanel);overflow:hidden}` — §3's prose in values.
     const pane = dashboard.slice(
       // (Inside the page switch since the lagoon, 2026-10-04: the panel's chrome wraps whichever page is in front.)
-      dashboard.indexOf("ConversationPane(\n                                state: state,"),
+      dashboard.indexOf("ConversationPane(\n                                state: state?.forPane(pinned: selectedSessionID),"),
       dashboard.indexOf("if store.isLogDrawerOpen {"),
     );
     expect(pane.length).toBeGreaterThan(200);

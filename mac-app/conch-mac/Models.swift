@@ -1612,6 +1612,22 @@ extension SessionRow {
         )
     }
 
+    /// The row with no activity line: how the conversation pane is handed a session it isn't showing, whose line moves
+    /// on every second or so while it works and is drawn only in the sidebar (`PublishedState.forPane`).
+    func withoutActivity() -> SessionRow {
+        guard activity != nil else { return self }
+        return SessionRow(
+            id: id, label: label, backend: backend, accountLabel: accountLabel, claudeAccountId: claudeAccountId,
+            codexAccountId: codexAccountId, execution: execution, context: context, usageLimit: usageLimit, settings: settings,
+            status: status, at: at, needsResponse: needsResponse, detail: detail,
+            review: review, reviews: reviews, paused: paused, pauseExempt: pauseExempt, live: live, active: active,
+            snippet: snippet, transcriptPath: transcriptPath, voice: voice, prioritized: prioritized, navSelected: navSelected,
+            revealable: revealable, noTerminal: noTerminal, messageRoute: messageRoute, attachable: attachable,
+            waitingOnAgents: waitingOnAgents, approval: approval, parentSessionId: parentSessionId,
+            startedBySessionId: startedBySessionId, cwd: cwd, workDirs: workDirs, activity: nil, toolsStale: toolsStale
+        )
+    }
+
     /// What a working agent is doing right now (`rows[].activity`): its running step, or its words from the last minute.
     struct Activity: Decodable, Equatable, Sendable {
         let text: String

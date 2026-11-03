@@ -66,3 +66,75 @@ describe("an unchanged poll leaves every @Published property alone", () => {
     expect(reconcile).not.toContain("outbox.prune(");
   });
 });
+
+/**
+ * The same rule, everywhere the poll reaches (2026-11-02, Tyler: "yea go for it", on cutting the app's CPU).
+ *
+ * `WorkbenchStore.accept` runs on every poll, four a second, and stored `profileNames` and mutated `actedIn` in place on
+ * each. The conversation pane watches that store, so it re-ran its body and diffed everything under it four times a
+ * second with nothing on screen changing: in a 15 s sample of the live app, SwiftUI transactions were 946 of the main
+ * thread's 1,240 busy samples, a steady 40-65 ms a second whether the sessions file had moved or not. Offscreen, on the
+ * app's own window and Tyler's sessions file, the window at rest went from 50 ms of main thread a second to 2
+ * (app-cpu.test.ts has the rest).
+ */
+describe("the Workbench's poll leaves its @Published properties alone too", () => {
+  const workbench = swift("Workbench.swift");
+  const accept = section(workbench, "func accept(_ snapshot: PublishedState) {", "\n    }\n");
+
+  test("the profiles' names and the tabs acted in are stored only when they differ", () => {
+    expect(accept).toContain("if names != profileNames { profileNames = names }");
+    expect(accept).not.toMatch(/\n\s*profileNames = /);
+    // On a copy: `formIntersection` on the property itself republishes whether or not it removed anything.
+    expect(accept).toContain("let stillActedIn = actedIn.intersection(ids)");
+    expect(accept).toContain("if stillActedIn != actedIn { actedIn = stillActedIn }");
+    expect(accept).not.toContain("actedIn.formIntersection(");
+    // The rest of what it stores was already guarded.
+    expect(accept).toContain("if listed != profiles {");
+    expect(accept).toContain("if open != tabs { tabs = open }");
+  });
+
+  test("a page made for a tab already listed is said, since the pane draws a tab only once its page exists", () => {
+    expect(accept).toContain("made = makePage(for: tab) != nil || made");
+    expect(accept).toContain("if made { objectWillChange.send() }");
+  });
+});
+
+describe("a snapshot already taken in is only revisited", () => {
+  test("the reader says whether the snapshot was read just now, after reading it", () => {
+    const reader = section(store, "private actor StateSnapshotReader {", "\n}\n");
+    expect(at(reader, "snapshot: snapshot.value(at: url.path) { StateSnapshotFile.read(from: url) },")).toBeLessThan(at(reader, "fresh: snapshot.fresh,"));
+  });
+
+  test("a fresh snapshot is accepted; the same one again is revisited", () => {
+    const poll = section(store, "pollingTask = Task { @MainActor [weak self, reader] in", "frontWindow = FrontWindowObserver");
+    expect(poll).toContain("if result.fresh { accept(snapshot) } else { revisit(snapshot) }");
+    expect(poll).not.toMatch(/\n\s*accept\(snapshot\)\n/);
+  });
+
+  test("a revisit does what moves with the clock or with something done here since, and nothing else", () => {
+    const revisit = section(store, "private func revisit(_ snapshot: PublishedState) {", "\n    }\n");
+    // The tabs' sleep is by the clock, and commands end between publishes.
+    expect(revisit).toContain("WorkbenchStore.shared.accept(snapshot)");
+    // A bubble's ten minutes run out by the clock: only while there is one.
+    expect(revisit).toContain("if !outbox.entries.isEmpty { reconcileOutbox(with: snapshot) }");
+    // An overlay a failed command put back with an older baseline completes against this same snapshot.
+    expect(revisit).toContain("if !labelOverrides.isEmpty || !optimisticDismissals.isEmpty || !optimisticRestores.isEmpty {");
+    expect(at(revisit, "reconcilePresentationOverlays(with: snapshot)")).toBeLessThan(at(revisit, "rebuildPresentedState()"));
+    expect(revisit).toContain("if snapshot.showing == nil { screenGate.forget() }");
+    expect(revisit).toContain("refreshLivenessPresentation(at: Date())");
+    // What follows from the snapshot alone is not worked out again.
+    for (const once of ["applyDeliveryOutcomes(", "windowPreviewer.handle(", "pageCaptures.handle(", "updateNewerDaemonWarning()", "sourceState = "]) {
+      expect(revisit).not.toContain(once);
+    }
+  });
+});
+
+describe("the audio banners are stored only when they change", () => {
+  test("each banner is compared before it is stored", () => {
+    const banners = section(swift("AudioHolderStore.swift"), "private func refreshBanners() {", "\n    }\n");
+    expect(banners).toContain("if controlledBy != controller { controlledBy = controller }");
+    expect(banners).toContain("if silentHosts != silent { silentHosts = silent }");
+    expect(banners).toContain("if takeableHosts != takeable { takeableHosts = takeable }");
+    expect(banners).not.toMatch(/\n\s*(controlledBy|silentHosts|takeableHosts) = /);
+  });
+});

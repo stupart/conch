@@ -270,7 +270,7 @@ describe("a tab left alone sleeps, and wakes on demand", () => {
     expect(accept).toContain("rest(busy: Set(snapshot.browserRequests.map(\\.tab)))");
     // Before any page is made, and none is made for a tab asleep.
     expect(accept.indexOf("rest(busy:")).toBeLessThan(accept.indexOf("makePage(for: tab)"));
-    expect(accept).toContain("for tab in open where pages[tab.id] == nil && !asleep.contains(tab.id) { makePage(for: tab) }");
+    expect(accept).toContain("for tab in open where pages[tab.id] == nil && !asleep.contains(tab.id) { made = makePage(for: tab) != nil || made }");
     // Seen, touched in, or answered a command in: used.
     expect(between(workbench, "func show(_ id: String?) {", "\n    }\n")).toContain("for seen in [shown, id].compactMap({ $0 }) { lastUse[seen] = Date() }");
     expect(between(workbench, "private func noteTouch(_ event: NSEvent) {", "func watch(_ view: NSView) {")).toContain("lastUse[page.id] = Date()");

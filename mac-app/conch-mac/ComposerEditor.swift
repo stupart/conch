@@ -611,7 +611,15 @@ private final class Measure {
     private let storage = NSTextStorage()
     private let layout = NSLayoutManager()
     private let container = NSTextContainer(size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
-    private var last: (text: String, width: CGFloat, height: CGFloat)?
+    /// The text last measured, and its height at each width it has been asked for: a few, since a live resize asks at a
+    /// new width every frame.
+    ///
+    /// One width used to be kept, and SwiftUI can ask at more than one (the width it offers, and with none offered the
+    /// width the field has), so a text that had not changed was laid out again at each in turn: in a 30 s sample of the
+    /// live app (2026-11-02) `height(of:at:)` was 42 samples, 34 of them `setAttributedString` and `ensureLayout`. The
+    /// font is the field's own (`ComposerEditor.attributes`), so the text and the width are the whole key.
+    private var measured: (text: String, heights: [CGFloat: CGFloat])?
+    private static let widthsKept = 8
 
     init() {
         container.lineFragmentPadding = 0
@@ -620,14 +628,20 @@ private final class Measure {
     }
 
     func height(of text: NSAttributedString, at width: CGFloat) -> CGFloat {
-        if let last, last.width == width, last.text == text.string { return last.height }
+        let string = text.string
+        if let measured, measured.text == string, let height = measured.heights[width] { return height }
         storage.setAttributedString(text)
         // An empty field is one line of its own type, not of the default 12 pt face an empty storage has.
         if text.length == 0 { storage.setAttributedString(NSAttributedString(string: " ", attributes: ComposerEditor.attributes)) }
         container.size = NSSize(width: width, height: CGFloat.greatestFiniteMagnitude)
         layout.ensureLayout(for: container)
         let height = ComposerEditing.height(used: layout.usedRect(for: container).height, lineSpacing: ConchType.readingLineSpacing)
-        last = (text.string, width, height)
+        if var kept = measured, kept.text == string, kept.heights.count < Self.widthsKept {
+            kept.heights[width] = height
+            measured = kept
+        } else {
+            measured = (string, [width: height])
+        }
         return height
     }
 }

@@ -231,6 +231,35 @@ final class WorkspaceTests: XCTestCase {
         XCTAssertNil(WorkspaceFocus.target(in: space, pinned: "agent"))
     }
 
+    // MARK: - What a surface showing one session reads whole
+
+    /// The pick, what is shown, and the session each runs inside: nothing else (2026-11-02). Any other session changing
+    /// — eight agents at work, an activity line a second each — is nothing the conversation pane draws.
+    func testTheShownSessionsAreThePickWhatIsShownAndTheirParents() {
+        let space = workspace(
+            [
+                WorkspaceSession(id: "other"),
+                WorkspaceSession(id: "parent", isActive: true),
+                WorkspaceSession(id: "agent", parentID: "parent"),
+                WorkspaceSession(id: "talking", isLive: true),
+            ],
+            voice: true
+        )
+        // A pick: it, and nothing else, since it is what is shown.
+        XCTAssertEqual(WorkspaceFocus.shown(in: space, pinned: "other"), ["other"])
+        // A subagent picked: its session too, whose name the way back says.
+        XCTAssertEqual(WorkspaceFocus.shown(in: space, pinned: "agent"), ["agent", "parent"])
+        // No pick: what the chain shows.
+        XCTAssertEqual(WorkspaceFocus.shown(in: space, pinned: nil), ["talking"])
+        // A pick that names no session: kept (the surface may build it from elsewhere), with what is shown in its place.
+        XCTAssertEqual(WorkspaceFocus.shown(in: space, pinned: "gone"), ["gone", "talking"])
+        XCTAssertEqual(WorkspaceFocus.shown(in: workspace([]), pinned: nil), [])
+        // Always what `viewed` answers, so the surface and the rules can't disagree about what is on screen.
+        for pinned in [nil, "other", "agent", "gone"] {
+            XCTAssertTrue(WorkspaceFocus.shown(in: space, pinned: pinned).contains(WorkspaceFocus.viewed(in: space, pinned: pinned)!))
+        }
+    }
+
     // MARK: - The four questions may have different answers
 
     /// Dictating to one session while reading another is the normal case, not a glitch:

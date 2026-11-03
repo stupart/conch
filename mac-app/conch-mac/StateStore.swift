@@ -136,7 +136,7 @@ final class StateStore: ObservableObject {
                 if !staleBuild, BuildFreshness.installedIsNewer { staleBuild = true }
                 let result = await reader.read(includeLog: isLogDrawerOpen)
                 if let snapshot = result.snapshot {
-                    accept(snapshot)
+                    if result.fresh { accept(snapshot) } else { revisit(snapshot) }
                 }
                 if !result.logLines.isEmpty {
                     appendLogLines(result.logLines)
@@ -1464,6 +1464,31 @@ final class StateStore: ObservableObject {
         }
     }
 
+    /// The snapshot the last poll took in, polled again (`ConchStampedRead.fresh`): only what moves with the clock, or with
+    /// something done here since, is looked at again.
+    ///
+    /// `accept` ran on every poll, four a second, the file unchanged or not, and most of what it does follows from the
+    /// snapshot alone: the presented state rebuilt and compared, deeply, row by row and conversation by conversation,
+    /// with the one already shown (`hasSamePresentation`); every conversation's messages read against the outbox;
+    /// delivery outcomes, preview and capture requests already handled. In a 30 s sample of the live app (2026-11-02)
+    /// the poll was 73 samples of the main thread, 44 of them `accept`. What is left here is what can change between two
+    /// polls of one snapshot: the tabs' sleep and the commands answered since (`WorkbenchStore.accept`), a bubble's ten
+    /// minutes running out (`reconcileOutbox`, which has nothing to do with no bubble), and an overlay a failed command put
+    /// back with an older baseline, which completes against this same snapshot. Everything else `accept` does would come
+    /// out as it did last time: an outcome, a request or a bubble's own copy can only arrive in a new publish, and every
+    /// overlay change here rebuilds the presented state itself.
+    private func revisit(_ snapshot: PublishedState) {
+        if snapshot.showing == nil { screenGate.forget() }
+        WorkbenchStore.shared.accept(snapshot)
+        if !outbox.entries.isEmpty { reconcileOutbox(with: snapshot) }
+        if !labelOverrides.isEmpty || !optimisticDismissals.isEmpty || !optimisticRestores.isEmpty {
+            reconcilePresentationOverlays(with: snapshot)
+            rebuildPresentedState()
+        }
+        // As `accept` does for a timestamp that has not moved.
+        refreshLivenessPresentation(at: Date())
+    }
+
     /// Say why a send didn't land, even when the answer came too late for its own socket.
     ///
     /// `whenNotDelivered` only ever fires while the request is open, and the daemon closes it
@@ -2061,6 +2086,8 @@ private struct FixedLineRing {
 
 private struct StatePollResult: Sendable {
     let snapshot: PublishedState?
+    /// `snapshot` was read from a publish just now; false when it is the one the last poll already took in.
+    let fresh: Bool
     let logLines: [String]
 }
 
@@ -2080,6 +2107,8 @@ private actor StateSnapshotReader {
         let url = snapshotURL
         return StatePollResult(
             snapshot: snapshot.value(at: url.path) { StateSnapshotFile.read(from: url) },
+            // After the read above: arguments are evaluated in order.
+            fresh: snapshot.fresh,
             logLines: includeLog ? logReader.readDelta() : []
         )
     }

@@ -251,7 +251,10 @@ final class DeliverableAnnotator: ObservableObject {
             found.insert(note.id)
             if let shown = located.shown { at[note.id] = shown }
         }
-        placed = at
+        // Stored only when it moved: this runs on every scroll, zoom and resize of the picture or document, notes or none,
+        // and `@Published` fires on assignment, equal or not, so the pane drew itself again on every frame of a scroll
+        // (2026-11-02).
+        if placed != at { placed = at }
         if kind == .document { batch.looked(on: place, found: found) }
     }
 
@@ -317,8 +320,11 @@ final class DeliverableAnnotator: ObservableObject {
             picture(of: shown, outline: .words, in: web, for: draft?.id)
         case let .placed(found, missing, loaded, hover, viewport, url):
             place = url
-            placed = found.mapValues { AgentInk.viewRect(client: $0, viewport: viewport, viewWidth: web.bounds.width) }
-            pointer = annotating ? hover.map { .element(AgentInk.viewRect(client: $0.rect, viewport: viewport, viewWidth: web.bounds.width), $0.label) } : nil
+            // Each only when it moved, as on a picture (`placeNatively`): the page says this on every scroll and settled change.
+            let at = found.mapValues { AgentInk.viewRect(client: $0, viewport: viewport, viewWidth: web.bounds.width) }
+            if placed != at { placed = at }
+            let under: Pointer? = annotating ? hover.map { .element(AgentInk.viewRect(client: $0.rect, viewport: viewport, viewWidth: web.bounds.width), $0.label) } : nil
+            if pointer != under { pointer = under }
             // Only once the page has loaded: a page still building has not lost anything yet.
             if loaded { batch.mark(found: Set(found.keys), missing: Set(missing)) }
         }

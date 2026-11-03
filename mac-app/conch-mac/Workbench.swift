@@ -188,6 +188,14 @@ final class WorkbenchStore: ObservableObject {
 
     /// The sessions file, read: a page made for each new tab and closed for each gone, and the commands taken in hand.
     /// A daemon with no browser publishes no tabs at all, which says nothing, and closes nothing.
+    ///
+    /// Run on every poll, four a second, whether or not the file moved (the tabs' sleep is a matter of time), so every
+    /// `@Published` here is stored only when it changed, the rule `StateStore.refreshLivenessPresentation` keeps.
+    /// `@Published` fires on assignment, equal or not: `profileNames` was stored, and `actedIn` mutated in place, on every
+    /// poll, and the conversation pane, which watches this store, re-ran its body and diffed everything under it four
+    /// times a second with nothing on screen changing. Sampled on the live app (2026-11-02, 19 rows, nothing touched),
+    /// SwiftUI transactions were 946 of the main thread's 1,240 busy samples over 15 s, a steady 40-65 ms a second
+    /// whether the sessions file had moved or not; `ConversationPane.body` ran ten times as often as the window's.
     func accept(_ snapshot: PublishedState) {
         guard let published = snapshot.browserTabs else { return }
         let listed = (snapshot.browserProfiles ?? []).map { WorkbenchProfileList.Profile(id: $0.id, name: $0.name) }
@@ -196,7 +204,8 @@ final class WorkbenchStore: ObservableObject {
             // Which sites each is signed in to, kept from now on (Settings › Browser, and the logins inventory's report).
             BrowserSignInsStore.shared.keep(only: listed.isEmpty ? [Workbench.defaultProfile] : listed.map(\.id))
         }
-        profileNames = Dictionary(listed.map { ($0.id, $0.name) }, uniquingKeysWith: { _, last in last })
+        let names = Dictionary(listed.map { ($0.id, $0.name) }, uniquingKeysWith: { _, last in last })
+        if names != profileNames { profileNames = names }
         // A pause the daemon has taken is its to say again; one it hasn't yet still shows as Tyler set it.
         for (id, paused) in pausing where published.contains(where: { $0.id == id && ($0.paused == true) == paused }) || !published.contains(where: { $0.id == id }) {
             pausing[id] = nil
@@ -209,7 +218,9 @@ final class WorkbenchStore: ObservableObject {
         }
         let ids = Set(all.map(\.id))
         closed.formIntersection(ids)
-        actedIn.formIntersection(ids)
+        // On a copy: a mutating call on the property itself republishes whether or not it removed anything.
+        let stillActedIn = actedIn.intersection(ids)
+        if stillActedIn != actedIn { actedIn = stillActedIn }
         for (id, page) in pages where !ids.contains(id) {
             page.close()
             pages[id] = nil
@@ -224,7 +235,11 @@ final class WorkbenchStore: ObservableObject {
         if open != tabs { tabs = open }
         // Before any page is made, so a tab idle since before the app opened is never made only to sleep.
         rest(busy: Set(snapshot.browserRequests.map(\.tab)))
-        for tab in open where pages[tab.id] == nil && !asleep.contains(tab.id) { makePage(for: tab) }
+        var made = false
+        for tab in open where pages[tab.id] == nil && !asleep.contains(tab.id) { made = makePage(for: tab) != nil || made }
+        // A page made for a tab already listed (the launch's wait over, `pagesWait`) changes nothing published, yet the pane
+        // draws a tab's page only once it exists (`page(for:)`). Said, so it does: the republish on every poll used to.
+        if made { objectWillChange.send() }
         for tab in all { pages[tab.id]?.agentsPaused = tab.paused }
         let arrived = Workbench.arrivals(open, known: known, now: Date())
         known = ids

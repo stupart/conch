@@ -274,15 +274,22 @@ final class AudioHolderStore: ObservableObject {
         pairings.first { $0.id == id }
     }
 
+    /// Each stored only when it changed. This runs on every change to this Mac's published state, and `@Published` fires
+    /// on assignment, equal or not: three stores republished the store each time, and the dashboard and the notices that
+    /// watch it ran their bodies again for banners that had not moved (2026-11-02, `StateStore.refreshLivenessPresentation`
+    /// has the rule).
     private func refreshBanners() {
         let holder = localState?.audioControl.holder ?? "local"
-        controlledBy = holder == "local" ? nil : (pairing(holder)?.endpoint.host ?? String(holder.prefix(8)))
-        silentHosts = localOwner.isEmpty ? [] : pairings
+        let controller = holder == "local" ? nil : (pairing(holder)?.endpoint.host ?? String(holder.prefix(8)))
+        if controlledBy != controller { controlledBy = controller }
+        let silent = localOwner.isEmpty ? [] : pairings
             .filter { online.contains($0.id) && documents[$0.id]?.audioControl.holder == localOwner }
             .map(\.endpoint.host)
-        takeableHosts = localOwner.isEmpty ? [] : pairings
+        if silentHosts != silent { silentHosts = silent }
+        let takeable = localOwner.isEmpty ? [] : pairings
             .filter { online.contains($0.id) && documents[$0.id]?.audioControl.holder != localOwner }
             .map(\.endpoint.host)
+        if takeableHosts != takeable { takeableHosts = takeable }
     }
 }
 
