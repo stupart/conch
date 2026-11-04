@@ -1028,6 +1028,8 @@ final class TalkController: NSObject, ObservableObject {
     /// `-conchFixtureSession`): `-conchFixtureHearing <words>` with
     /// `-conchFixtureTyped <words>` is the composer mid-dictation, and
     /// `-conchFixtureOutgoing sent|failed|delivered` a message in that state.
+    /// `-conchFixtureTyped <words>` alone is a draft typed and waiting: `/c` is
+    /// the slash typeahead open on it.
     func showFixture() {
         let defaults = UserDefaults.standard
         guard let session = defaults.string(forKey: "conchFixtureSession") else { return }
@@ -1036,6 +1038,8 @@ final class TalkController: NSObject, ObservableObject {
             committed = defaults.string(forKey: "conchFixtureTyped") ?? committed
             livePartial.text = hearing
             phase = .listening
+        } else if let typed = defaults.string(forKey: "conchFixtureTyped") {
+            committed = typed
         }
         guard let state = defaults.string(forKey: "conchFixtureOutgoing") else { return }
         let text = "Ship it once the tests pass, and update the changelog."

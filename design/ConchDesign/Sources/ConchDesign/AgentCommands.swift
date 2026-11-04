@@ -22,6 +22,15 @@ public struct AgentCommand: Identifiable, Equatable, Sendable {
         let argument = argument.trimmingCharacters(in: .whitespacesAndNewlines)
         return argument.isEmpty ? line : "\(line) \(argument)"
     }
+
+    /// A `$skill` is a mention inside a message (Codex), not a command on its own: words always follow it. Known by how
+    /// the line is spelled, so nothing that offers it has to know whose agent it is.
+    public var isMention: Bool { line.hasPrefix("$") }
+
+    /// What goes after it, said where it will be typed: its own hint, or the message a mention sits in. nil takes nothing.
+    public var argumentPlaceholder: String? { argumentHint ?? (isMention ? "your message" : nil) }
+
+    public var takesArgument: Bool { argumentPlaceholder != nil }
 }
 
 public enum AgentCommands {
@@ -34,7 +43,8 @@ public enum AgentCommands {
         ("/cost", "Show token usage and cost for this session", nil),
         ("/status", "Show version, model, account and connection", nil),
         ("/usage", "Show plan usage and rate limits", nil),
-        ("/model", "Choose the model in a picker in the terminal; Model… above takes a name", nil),
+        // Said without the palette's "Model… above": the composer offers this line too, where there is no above.
+        ("/model", "Choose the model in a picker in the terminal, or name one after it", nil),
         ("/permissions", "View or change tool permissions, in the terminal", nil),
         ("/mcp", "MCP server status and sign-in, in the terminal", nil),
         ("/plugin", "Manage plugins, in the terminal", nil),
@@ -82,6 +92,29 @@ public enum AgentCommands {
         return codex
             ? "$\(entity.name)"
             : "/" + (owner.map { "\($0):" } ?? "") + entity.name
+    }
+
+    /// The person's own commands, from the same read: Claude Code's `commands/*.md` and Codex's `prompts/*.md`, typed as
+    /// the daemon's reader spells them. One switched off with its plugin is left out, as an unavailable skill is.
+    public static func custom(in capabilities: AgentCapabilities?) -> [AgentCommand] {
+        guard let capabilities else { return [] }
+        return capabilities.entities.compactMap { entity in
+            guard entity.kind == "command", let command = entity.command, !entity.isUnavailable else { return nil }
+            return AgentCommand(
+                line: command.invocation,
+                detail: entity.description ?? "Your \(entity.name) command",
+                argumentHint: command.argumentHint
+            )
+        }
+    }
+
+    /// Everything a session's agent can be typed, once each, in the order a tie keeps: its own commands, its skills,
+    /// then the person's own. The first of two lines spelled alike wins; Claude Code itself prefers a skill to a command
+    /// of the same name.
+    public static func all(for backend: String?, capabilities: AgentCapabilities?) -> [AgentCommand] {
+        var seen = Set<String>()
+        return (slash(for: backend) + skills(in: capabilities, backend: backend) + custom(in: capabilities))
+            .filter { seen.insert($0.line).inserted }
     }
 
     /// Skills a person may invoke, from the same read the inspector uses.

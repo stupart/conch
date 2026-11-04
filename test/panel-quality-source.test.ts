@@ -141,7 +141,8 @@ test("the panel's keys: Esc, Command-Return, Previous and Next, Collapse, and th
   expect(components).toContain("view.window?.makeFirstResponder(nil)\n                // Left, the field no longer wants the keys; the host decides whether the panel keeps them.\n                field.onLeave?()");
   expect(fog.match(/onLeave: onLeaveReply\)/g)?.length).toBe(2);
   const esc = member(read("mac-app/conch-mac/ComposerDock.swift"), "private func key(_ event: NSEvent) -> Bool {");
-  expect(esc).toContain("guard event.keyCode == 53, floating.firstResponder is NSTextView else { return false }");
+  // With the composer's command list open, that Esc closes the list first (2026-11-04, the slash typeahead).
+  expect(esc).toContain("guard event.keyCode == 53, !typeaheadOpen, floating.firstResponder is NSTextView else { return false }");
   expect(esc).toContain("floating.makeFirstResponder(nil)");
   expect(esc).toContain("panels?.takeKeysBack()");
   expect(esc).toContain("floating.orderOut(nil)\n            floating.orderFrontRegardless()");
