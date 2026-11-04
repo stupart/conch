@@ -4686,3 +4686,119 @@ describe("Approve when the agent asks: filed by the loop, and the held message d
     expect(h.texts).toEqual([]);
   });
 });
+
+/**
+ * A slash command from the composer (2026-11-04: the composers now offer them as you type). A message is confirmed by
+ * its words reaching the transcript and pressed again when they don't; a command can't be, since `/status`, `/context`,
+ * `/model` and `/permissions` write nothing there, and a Return pressed again lands in the picker the command opened.
+ * So a command is typed once, never pressed again, never put on the clipboard, and confirmed by its input box where
+ * conch can read it. A message keeps every rule it had.
+ */
+describe("a slash command is typed once and confirmed by the screen", () => {
+  // Claude Code 2.1.280 as a Terminal tab shows it: the box is the ❯ line under a rule.
+  const screenWith = (box: string) => [
+    "❯ an earlier message", "", "⏺ Done.", "",
+    "─────────────────────────────────────────── alpha ─", `❯ ${box}`,
+    "────────────────────────────────────────────────────", "  ⏵⏵ bypass permissions on",
+  ].join("\n");
+  const quiet = () => transcript(user({ type: "text", text: "an earlier message" }));
+  const delivery = (events: RecordObservation[]) => events.filter(({ kind }) => kind === "delivery");
+
+  test("a transcript that never moves costs a message two Returns and the clipboard, and a command neither", async () => {
+    const path = quiet();
+    // The message: as before.
+    const message = harness();
+    expect(await message.voice.handle(inject("status please", { transcriptPath: path })))
+      .toEqual({ delivered: false, reason: "delivery-unconfirmed", onClipboard: true });
+    expect(message.keys).toEqual(["Enter", "Enter"]);
+    expect(message.clipboard).toEqual(["status please"]);
+
+    // The command: typed once, by the provider door, and nothing after it.
+    const events: RecordObservation[] = [];
+    const command = harness({ observeRecords: (event) => events.push(event) });
+    expect(await command.voice.handle(inject("/status", { transcriptPath: path, opId: "op-status" }))).toBe(true);
+    expect(command.commands).toEqual(["/status"]);
+    expect(command.texts).toEqual([]);
+    expect(command.keys).toEqual([]);
+    expect(command.clipboard).toEqual([]);
+    expect(command.errors).toEqual([]);
+    // Nothing on screen to read: sent once typed and submitted, as it always was, under the sender's own id.
+    expect(delivery(events).map(({ state, code }) => [state, code]))
+      .toEqual([["accepted", "provider-command-accepted"], ["delivered", "transport-submitted"]]);
+    expect(new Set(delivery(events).map(({ actionId }) => actionId))).toEqual(new Set(["op-status"]));
+  });
+
+  test("an emptied input box confirms it", async () => {
+    const events: RecordObservation[] = [];
+    const h = harness({ observeRecords: (event) => events.push(event), screen: () => screenWith("") });
+    expect(await h.voice.handle(inject("/context", { transcriptPath: quiet() }))).toBe(true);
+    expect(h.keys).toEqual([]);
+    expect(delivery(events).at(-1)).toMatchObject({ state: "delivered", code: "command-left-box" });
+    expect(h.logs).toContain('typed /context into "alpha" via tmux — its input box emptied');
+  });
+
+  test("a picker drawn over the box is no reason to doubt it, nor to press anything", async () => {
+    // `/model` with no name: Claude Code's picker takes the box's place.
+    const picker = ["⏺ Done.", "", " Select model", " ❯ 1. Default (recommended) ✔", "   2. Opus", "", " Enter to confirm · Esc to exit"].join("\n");
+    const events: RecordObservation[] = [];
+    const h = harness({ observeRecords: (event) => events.push(event), screen: () => picker });
+    expect(await h.voice.handle(inject("/model", { transcriptPath: quiet() }))).toBe(true);
+    expect(h.keys).toEqual([]);
+    expect(delivery(events).at(-1)).toMatchObject({ state: "delivered", code: "transport-submitted" });
+  });
+
+  test("still in the box after every look, it is staged: no Return again, nothing on the clipboard, nothing back in the draft", async () => {
+    const events: RecordObservation[] = [];
+    let looks = 0;
+    const h = harness({ observeRecords: (event) => events.push(event), screen: () => { looks += 1; return screenWith("/status"); } });
+    const before = getLiveState().dictated?.id ?? 0;
+    expect(await h.voice.handle(inject("/status", { transcriptPath: quiet() }))).toBe("staged");
+    expect(looks).toBe(3);
+    expect(h.commands).toEqual(["/status"]);
+    expect(h.keys).toEqual([]);
+    expect(h.clipboard).toEqual([]);
+    expect(h.said).toEqual([]);
+    // The line is in the session's box; another copy in the draft would be typed after it.
+    expect(getLiveState().dictated?.id ?? 0).toBe(before);
+    expect(delivery(events).at(-1)).toMatchObject({ state: "staged", code: "command-still-in-box" });
+    expect(h.errors).toEqual([[
+      "session-command", "Typed /status, and it is still in the session's input box: press Return there", "s1", { line: "/status", route: "tmux" },
+    ]]);
+  });
+
+  test("nothing is typed into an open dialog, and the line goes back to the draft", async () => {
+    const h = harness({ window: () => ({ sessionId: "s1", status: "waiting" }) as SessionInfo });
+    expect(await h.voice.handle(inject("/compact"))).toEqual({ delivered: false, reason: "session-awaiting-answer" });
+    expect(h.commands).toEqual([]);
+    expect(h.keys).toEqual([]);
+    expect(h.clipboard).toEqual([]);
+    expect(getLiveState().dictated).toEqual({ text: "/compact", id: expect.any(Number), sessionId: "s1" });
+    expect(h.errors).toEqual([[
+      "session-command", "Did not type /compact into the session: a dialog is open in it, and Return would answer it", "s1",
+      { line: "/compact", code: "session-awaiting-answer" },
+    ]]);
+  });
+
+  test("nor into a terminal the session has left", async () => {
+    const stopped: DeadTarget = { reason: "session-stopped", detail: "pid 10231 is `claude attach f31f0d15`, and the job is gone" };
+    const h = harness({ deadTarget: async () => stopped });
+    expect(await h.voice.handle(inject("/compact", { pid: 10231 }))).toEqual({ delivered: false, reason: "session-stopped" });
+    expect(h.commands).toEqual([]);
+    expect(getLiveState().dictated).toEqual({ text: "/compact", id: expect.any(Number), sessionId: "s1" });
+  });
+
+  test("an answer to a permission whose summary starts with a slash is an answer, never a command", async () => {
+    const h = harness();
+    expect(await h.voice.handle(inject("/compact", { approve: { kind: "once", id: "tool:gone" } })))
+      .toEqual({ delivered: false, reason: "that permission is no longer waiting" });
+    expect(h.commands).toEqual([]);
+    expect(h.texts).toEqual([]);
+  });
+
+  test("a path is a message, as before", async () => {
+    const h = harness();
+    expect(await h.voice.handle(inject("/Users/you/shot.png what is this?"))).toBe(true);
+    expect(h.commands).toEqual([]);
+    expect(h.texts).toEqual(["/Users/you/shot.png what is this?"]);
+  });
+});

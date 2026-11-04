@@ -77,7 +77,8 @@ export function accountCapabilities(backend: Backend, account: ClaudeAccount, cw
 const inventory = (backend: Backend, account: ClaudeAccount) => accountCapabilities(backend, account);
 export function toolsItems(entities: AgentCapabilityEntity[]): AccountToolItem[] {
   return entities.flatMap((e): AccountToolItem[] => {
-    if (e.kind === "mcp-tool" || e.scope === "local" || e.scope === "project") return [];
+    // Commands are the composer's to offer (the slash typeahead); this page's tabs are plugins, skills and servers.
+    if (e.kind === "mcp-tool" || e.kind === "command" || e.scope === "local" || e.scope === "project") return [];
     const metadata = e.kind === "plugin" ? e.plugin : e.kind === "skill" ? e.skill : e.mcpServer;
     const enabled = metadata.enabledForNextSession;
     const id = e.kind === "plugin" ? e.plugin.pluginId : e.kind === "skill" ? e.id : e.name;

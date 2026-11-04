@@ -120,6 +120,9 @@ const SPOKEN_PREVIEW_CHARS = 24;
 /** How long a Return gets to clear the input box before the box is read. */
 const INPUT_BOX_SETTLE_MS = 600;
 
+/** How many times a command's input box is read before conch says the line is still in it: 1.8 s at most. */
+const COMMAND_BOX_LOOKS = 3;
+
 /** How long Claude Code gets to record a picker's answers after the last key; under 3 s measured. */
 const ANSWER_RECORD_WAIT_MS = 5_000;
 const ANSWER_RECORD_POLL_MS = 300;
@@ -1386,13 +1389,19 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
    * read (Codex, a terminal conch can't see, no box on screen), which leaves today's rules.
    */
   async function inputBoxHolds(event: TurnEvent, words: string, backend?: SessionInfo["backend"]): Promise<boolean | null> {
-    // A session with no transcript yet is known by its row's agent instead, when the caller names it.
-    const boxOf = event.transcriptPath ? adapterForTranscript(event.transcriptPath).inputBoxText
-      : backend ? adapterFor(backend).inputBoxText : null;
+    const boxOf = inputBoxReader(event, backend);
     if (!boxOf || !readSessionScreen) return null;
     const screen = await readSessionScreen(event.pid);
     const box = screen === null ? null : boxOf(screen);
     return box === null ? null : inputBoxHoldsWords(box, words);
+  }
+
+  /** How this session's agent draws its input box, or null when conch has no reading of it (Codex) or no screen to read. */
+  function inputBoxReader(event: TurnEvent, backend?: SessionInfo["backend"]): ((screen: string) => string | null) | null {
+    if (!readSessionScreen) return null;
+    // A session with no transcript yet is known by its row's agent instead, when the caller names it.
+    return event.transcriptPath ? adapterForTranscript(event.transcriptPath).inputBoxText
+      : backend ? adapterFor(backend).inputBoxText : null;
   }
 
   /** Press Return while the words still sit in the session's input box: twice at most. */
@@ -1551,6 +1560,100 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
   }
 
   /**
+   * One of the agent's own commands (B4), typed and submitted ONCE through the door B2 built for `/model`
+   * (`injectProviderCommand`): never typed again, and never put on the clipboard.
+   *
+   * A message is confirmed by its words reaching the transcript, and pressed again when they don't. A command never
+   * could be: `/status`, `/context`, `/model` and `/permissions` write nothing there, so through that loop every one
+   * would look lost, and a Return pressed again lands in the picker the command just opened, or sends whatever is
+   * typed next. So it was trusted once typed and submitted. Now the composers offer commands as they are typed
+   * (2026-11-04, Tyler: "can u get me access to slash commands on the mobile app and desktop app?"), it is confirmed
+   * by the screen where conch can read the session's input box: the box emptied, so the agent took it. Still holding
+   * the line after a few looks, the Return was lost, and it is said to be staged — in the box, waiting for a Return in
+   * the terminal — rather than sent, or pressed again. Where the box can't be read (Codex, a terminal conch can't see,
+   * a picker drawn over it) it is sent once typed and submitted, as it always was.
+   *
+   * Nothing is typed into an open dialog, whose Return would answer it, nor into a terminal that no longer holds the
+   * session: refused as a message is, with the line back in the draft.
+   */
+  async function typeCommand(event: TurnEvent): Promise<boolean | "staged" | inject.SendFailure> {
+    const line = event.announce.trim();
+    // Under the sender's id, as a message's receipt is (`deliverToSession`): the journal and the phone's outcome then
+    // describe one send.
+    const receipt = createRecordOperation(
+      deps.observeRecords,
+      { ...recordScope(event.sessionId, event.transcriptPath), ...(event.opId ? { actionId: event.opId } : {}) },
+      "delivery",
+      line.length,
+    );
+    receipt.emit("accepted", "provider-command-accepted");
+    const target = deps.window(event.sessionId);
+    const refuse = (reason: string, why: string): inject.SendFailure => {
+      receipt.emit("failed", reason);
+      publishDictation(line, event.sessionId);
+      log(`did not type ${line} into "${event.label}": ${why}`);
+      recordDaemonError("session-command", `Did not type ${line} into the session: ${why}`, event.sessionId, { line, code: reason });
+      return { delivered: false, reason };
+    };
+    if (target?.status === "waiting" && await stillWaiting(event.sessionId)) {
+      return approvalShowing(event.sessionId, event.transcriptPath ?? target.transcriptPath, "waiting")
+        ? refuse("session-awaiting-permission", "a permission prompt is open in it, and Return would answer it")
+        : refuse("session-awaiting-answer", "a dialog is open in it, and Return would answer it");
+    }
+    const dead = await deadTargetOf(event);
+    if (dead) return refuse(dead.reason, dead.detail);
+
+    let delivery: Awaited<ReturnType<typeof injectProviderCommand>>;
+    try { delivery = await injectProviderCommand(cfg, { pid: event.pid }, line); }
+    catch (error) { receipt.emit("unknown", "delivery-outcome-unknown"); throw error; }
+    if (delivery.kind !== "delivered") {
+      receipt.emit("failed", delivery.reason);
+      log(`could not type ${line} into "${event.label}": ${delivery.reason}`);
+      recordDaemonError(
+        "session-command",
+        `Could not type ${line} into the session: ${delivery.reason}`,
+        event.sessionId,
+        { line },
+      );
+      return false;
+    }
+    const seen = await commandLeftTheBox(event, line, target?.backend);
+    if (seen === "in-box") {
+      receipt.emit("staged", "command-still-in-box");
+      log(`typed ${line} into "${event.label}" via ${delivery.via}, and it is still in its input box — not pressing Return again`);
+      recordDaemonError(
+        "session-command",
+        `Typed ${line}, and it is still in the session's input box: press Return there`,
+        event.sessionId,
+        { line, route: delivery.via },
+      );
+      return "staged";
+    }
+    receipt.emit("delivered", seen === "left" ? "command-left-box" : "transport-submitted");
+    log(`typed ${line} into "${event.label}" via ${delivery.via}${seen === "left" ? " — its input box emptied" : ""}`);
+    return true;
+  }
+
+  /**
+   * What the screen says of a command just typed and submitted: its input box emptied (`left`), it still holds the
+   * line after every look (`in-box`), or conch has no reading of the box (`unread`). Looks only; never a key.
+   */
+  async function commandLeftTheBox(
+    event: TurnEvent,
+    line: string,
+    backend?: SessionInfo["backend"],
+  ): Promise<"left" | "in-box" | "unread"> {
+    if (!inputBoxReader(event, backend)) return "unread";
+    for (let look = 0; look < COMMAND_BOX_LOOKS; look += 1) {
+      await (deps.sleep ?? Bun.sleep)(INPUT_BOX_SETTLE_MS);
+      const holds = await inputBoxHolds(event, line, backend).catch(() => null);
+      if (holds === null) return "unread";
+      if (!holds) return "left";
+    }
+    return "in-box";
+  }
+
+  /**
    * An inject that THREW comes back as a failure that says so: in words on the row, on the card and on the phone,
    * with a record in errors.jsonl, and a message's words back in the draft. It used to leave as a bare `false`, which
    * the apps show as "Not delivered." with nothing behind it, and nothing on record but the daemon log: Tyler's Allow
@@ -1604,28 +1707,11 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       // and no confirm-by-transcript loop — that loop re-presses Return when
       // the transcript does not grow, and a bare `/model` is a picker, so the
       // retries would choose for you.
-      if (isProviderCommandLine(event.announce)) {
-        const line = event.announce.trim();
-        const receipt = createRecordOperation(deps.observeRecords, recordScope(event.sessionId, event.transcriptPath), "delivery", line.length);
-        receipt.emit("accepted", "provider-command-accepted");
-        let delivery: Awaited<ReturnType<typeof injectProviderCommand>>;
-        try { delivery = await injectProviderCommand(cfg, { pid: event.pid }, line); }
-        catch (error) { receipt.emit("unknown", "delivery-outcome-unknown"); throw error; }
-        receipt.emit(delivery.kind === "delivered" ? "delivered" : "failed", delivery.kind === "delivered" ? "transport-submitted" : delivery.reason);
-        if (delivery.kind === "delivered") {
-          log(`typed ${line} into "${event.label}" via ${delivery.via}`);
-          return true;
-        } else {
-          log(`could not type ${line} into "${event.label}": ${delivery.reason}`);
-          recordDaemonError(
-            "session-command",
-            `Could not type ${line} into the session: ${delivery.reason}`,
-            event.sessionId,
-            { line },
-          );
-        }
-        return false;
-      }
+      //
+      // Only a plain message is a command. An answer to a question card or a
+      // permission carries a readable summary in `announce`, and an option
+      // named `/compact` would have been typed into the picker as a command.
+      if (isProviderCommandLine(event.announce) && !event.answers && !event.approve) return typeCommand(event);
 
       // An answer to the question the session is waiting on (the Mac's question
       // card): typed as the picker's own keys. Pasting the option's words and

@@ -70,7 +70,7 @@ public struct AgentCapabilities: Decodable, Equatable, Sendable {
 
     public struct Entity: Decodable, Equatable, Identifiable, Sendable {
         public let id: String
-        /// "plugin" | "skill" | "mcp-server" | "mcp-tool"
+        /// "plugin" | "skill" | "command" | "mcp-server" | "mcp-tool"
         public let kind: String
         public let name: String
         public let displayName: String
@@ -84,6 +84,7 @@ public struct AgentCapabilities: Decodable, Equatable, Sendable {
         /// Per-kind facts. Exactly one is present, matching `kind`.
         public let plugin: Plugin?
         public let skill: Skill?
+        public let command: Command?
         public let mcpServer: McpServer?
         public let mcpTool: McpTool?
 
@@ -139,6 +140,17 @@ public struct AgentCapabilities: Decodable, Equatable, Sendable {
         public let argumentHint: String?
         public let model: String?
         public let bytes: Int
+    }
+
+    /// A command the person wrote: Claude Code's `commands/*.md`, Codex's `prompts/*.md`. Offered as they type (`SlashTypeahead`).
+    public struct Command: Decodable, Equatable, Sendable {
+        public let path: String
+        /// How it is typed — `/ship`, `/kit:audit`, `/prompts:draftpr` — as the daemon's reader for its agent spells it.
+        public let invocation: String
+        public let ownerPluginId: String?
+        public let enabledForNextSession: Bool?
+        public let argumentHint: String?
+        public let model: String?
     }
 
     public struct McpServer: Decodable, Equatable, Sendable {

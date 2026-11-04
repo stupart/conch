@@ -253,6 +253,10 @@ struct ComposerView: View {
     /// Present when the session is a background job no window is attached to:
     /// the way to a terminal that can type to it, beside the reason there is none.
     var onOpenInTerminal: (() -> Void)? = nil
+    /// This session's skills and commands, read when a draft first begins like a command: the read ⌘K makes on open.
+    /// Absent, nothing typed here can reach the agent's own commands (no terminal to type them into), and the composer
+    /// offers none.
+    var commandCapabilities: (() async -> AgentCapabilities?)? = nil
     let onSend: (String) -> Task<Bool, Never>
     let onInterrupt: () -> Void
     let onTalk: () -> Void
@@ -277,6 +281,21 @@ struct ComposerView: View {
     /// A key was typed into the field while it was read-only for a dictation: the caption says why nothing happened,
     /// until the words land.
     @State private var typedWhileDictating = false
+    /// The agent's commands offered as they are typed (`SlashTypeahead`, shared with the phone): ↑ ↓ to move, Tab or
+    /// Return to choose, Esc to close. 2026-11-04, Tyler: "can u get me access to slash commands on the mobile app and
+    /// desktop app?"
+    @State private var typeahead = SlashTypeahead()
+    /// Where the field's caret is, as it reports it; nil until it has (the end of the draft).
+    @State private var caret: Int?
+    /// Where a chosen command puts the caret (`ComposerEditor.typeahead`).
+    @State private var caretRequest: ComposerCaretRequest?
+    /// The session's skills and commands, once read, and whose.
+    @State private var commandRead: CommandRead?
+
+    private struct CommandRead: Equatable {
+        let session: String
+        let capabilities: AgentCapabilities?
+    }
 
     var body: some View {
         // No gap: `#ta` carries its own 4 of bottom padding and `.cbar` its own 34 height,
@@ -289,6 +308,19 @@ struct ComposerView: View {
                     onRemove: { url in attachments.removeAll { $0 == url } },
                     onDismiss: { id in videos.dismiss(id, from: sessionID) }
                 )
+            }
+
+            // The commands the first word could be, as a section of this card above the field rather than a popup of
+            // their own: the card that holds the words grows to hold them, as it does for attachments.
+            if typeaheadShowing {
+                SlashTypeaheadList(
+                    matches: typeahead.matches,
+                    selected: typeahead.selected,
+                    surface: chrome == .panel ? .glass : .card,
+                    onChoose: choose
+                )
+                // Under the tiles, the highlight keeps the 6 it has from the card's edge, not the strip's 2.
+                .padding(.top, attachments.isEmpty && arrivals.isEmpty ? 0 : 4)
             }
 
             // The field first, controls beneath — the phone's layout, adopted.
@@ -473,6 +505,90 @@ struct ComposerView: View {
             // session does not steal focus from whatever you were reading.
             fieldFocused = true
         }
+        .onAppear(perform: refreshTypeahead)
+        // The floating input's Esc lets go of the field; with the list open, it closes the list first (ComposerDock).
+        .onChange(of: typeaheadShowing) { _, open in if chrome != .bare { ComposerDock.shared.typeaheadOpen = open } }
+        .onDisappear { if chrome != .bare, typeaheadShowing { ComposerDock.shared.typeaheadOpen = false } }
+        .onChange(of: draft) { _, _ in refreshTypeahead() }
+        .onChange(of: caret) { _, _ in refreshTypeahead() }
+        .onChange(of: commandRead) { _, _ in refreshTypeahead() }
+        .onChange(of: sessionID) { _, _ in
+            // Another session's draft is another document: its own caret, and its own agent's commands.
+            caret = nil
+            typeahead = SlashTypeahead()
+            refreshTypeahead()
+        }
+        // Read the first time a draft here begins like a command, as ⌘K reads on open (35-48 ms against real config).
+        .task(id: commandsWanted) {
+            guard let session = commandsWanted, let commandCapabilities else { return }
+            let read = await commandCapabilities()
+            guard !Task.isCancelled, session == sessionID else { return }
+            commandRead = CommandRead(session: session, capabilities: read)
+        }
+    }
+
+    // MARK: The slash typeahead
+
+    /// Offered where the agent's own commands can be typed, and not while a dictation fills the field.
+    private var typeaheadEnabled: Bool {
+        commandCapabilities != nil && !rendersStatically && dictation == nil && messageUnavailableReason == nil
+    }
+
+    private var typeaheadShowing: Bool { typeaheadEnabled && typeahead.isShowing }
+
+    /// The session's agent's own commands at once, its skills and the person's own once they are read.
+    private var commandCatalog: [AgentCommand] {
+        AgentCommands.all(for: backend, capabilities: commandRead?.session == sessionID ? commandRead?.capabilities : nil)
+    }
+
+    /// The session whose skills and commands are wanted and not yet read.
+    private var commandsWanted: String? {
+        typeaheadEnabled && SlashTypeahead.mayBeginCommand(draft) && commandRead?.session != sessionID ? sessionID : nil
+    }
+
+    private func refreshTypeahead() {
+        typeahead.setCatalog(commandCatalog)
+        typeahead.update(draft: draft, caret: caret)
+    }
+
+    /// The editor's keys while the list shows: false hands the key back to the field.
+    private func typeaheadKey(_ key: ComposerKey) -> Bool {
+        // Against the draft and caret as they are now, not as the last update left them.
+        typeahead.update(draft: draft, caret: caret)
+        guard typeaheadShowing else { return false }
+        switch key {
+        case .up: typeahead.move(-1)
+        case .down: typeahead.move(1)
+        case .escape: typeahead.dismiss()
+        case .tab, .enter:
+            guard let choice = typeahead.choose(in: draft) else { return false }
+            if !choice.unchanged {
+                fill(choice)
+            } else if key == .enter {
+                // Already the whole command, with nothing to add: Return sends it, as it would with no list.
+                send()
+            }
+        }
+        return true
+    }
+
+    /// A row clicked: filled, never sent, even a line already whole.
+    private func choose(_ command: AgentCommand) {
+        typeahead.highlight(command)
+        if let choice = typeahead.choose(command, in: draft), !choice.unchanged { fill(choice) }
+        fieldFocused = true
+    }
+
+    private func fill(_ choice: SlashTypeahead.Choice) {
+        draft = choice.draft
+        caret = choice.caret
+        caretRequest = ComposerCaretRequest(at: choice.caret, serial: (caretRequest?.serial ?? 0) + 1)
+        fieldFocused = true
+    }
+
+    /// The argument a chosen command waits for, drawn after the caret until something is typed there.
+    private var argumentPlaceholder: String? {
+        typeaheadEnabled ? SlashTypeahead.placeholder(for: draft, caret: caret, in: typeahead.catalog) : nil
     }
 
     private var composerField: some View {
@@ -511,6 +627,7 @@ struct ComposerView: View {
                     // Typing into a draft the dictation is about to be added to would put the words somewhere the
                     // field is not showing them; they wait, and Return sends the lot once the words land.
                     .readOnly(dictation != nil) { typedWhileDictating = true }
+                    .typeahead(onKey: typeaheadKey, onCaret: { caret = $0 }, caret: caretRequest)
                     // Typing here is a claim on this session. Without it the
                     // pane keeps following the live session, so starting a
                     // sentence to one agent and having another begin working
@@ -559,6 +676,18 @@ struct ComposerView: View {
                         .accessibilityElement()
                         .accessibilityLabel(dictation.joinsDraft ? "Dictating" : "Listening")
                         .accessibilityValue(dictation.text)
+                } else if let argumentPlaceholder {
+                    // What the chosen command takes, after the caret: the draft drawn clear in the field's own type, so the
+                    // hint starts where the next letter will, then the hint in the placeholder's ink. Gone at the first key.
+                    (Text(draft).foregroundStyle(.clear) + Text(argumentPlaceholder).foregroundStyle(ConchPalette.textDim))
+                        .font(ConchType.readingBody)
+                        .lineLimit(1)
+                        .frame(height: Self.lineHeight, alignment: .topLeading)
+                        .padding(.top, Self.fieldInsetTop)
+                        .padding(.bottom, Self.fieldInsetBottom)
+                        .padding(.horizontal, Self.fieldInsetX)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
                 } else if draft.isEmpty {
                     Text(messageUnavailableReason ?? "Message \(sessionLabel)")
                         .font(ConchType.readingBody)
@@ -994,6 +1123,11 @@ struct SessionComposer: View {
             noTerminal: row.noTerminal,
             messageRoute: row.messageRoute,
             onOpenInTerminal: row.attachable ? { store.openInTerminal(row) } : nil,
+            // The agent's commands as they are typed, where they can be typed: ⌘K's rule, a session's own pane conch can
+            // reach, and a terminal to type into.
+            commandCapabilities: row.parentSessionId == nil && row.revealable && row.noTerminal == nil
+                ? { await store.capabilities(backend: row.backend ?? "claude", cwd: "", sessionId: row.id).capabilities }
+                : nil,
             onSend: { text in
                 let delivery = store.send(.inject(sessionId: row.id, label: row.label, text: text))
                 onSent?(text, delivery)

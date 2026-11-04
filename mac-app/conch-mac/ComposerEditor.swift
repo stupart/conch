@@ -39,6 +39,12 @@ struct ComposerEditor: NSViewRepresentable {
     var isReadOnly = false
     /// A key typed, or text pasted or dropped, while the field is read-only.
     var onRefusedTyping: () -> Void = {}
+    /// The slash typeahead's keys, offered before the field acts on them (`typeahead(onKey:onCaret:caret:)`).
+    var onTypeaheadKey: (ComposerKey) -> Bool = { _ in false }
+    /// Where the caret is, in UTF-16 as the text view counts it, each time it moves.
+    var onCaret: (Int) -> Void = { _ in }
+    /// Somewhere the composer wants the caret: after a chosen command, or the space its argument goes behind.
+    var caretRequest: ComposerCaretRequest?
 
     /// While a dictation fills the field (ComposerView draws it over this one): nothing typed, pasted or dropped lands,
     /// and Cmd-Z has nothing to take back, so the draft and its history are exactly as they were when the words land, and
@@ -52,6 +58,17 @@ struct ComposerEditor: NSViewRepresentable {
         var editor = self
         editor.isReadOnly = readOnly
         editor.onRefusedTyping = refused
+        return editor
+    }
+
+    /// The slash typeahead (`SlashTypeahead`), wired in: ↑ ↓ Tab Return and Esc go to it first while it shows (it answers
+    /// false otherwise, and the field does what it always did), it hears where the caret is, and a chosen command puts the
+    /// caret where it asks.
+    func typeahead(onKey: @escaping (ComposerKey) -> Bool, onCaret: @escaping (Int) -> Void, caret: ComposerCaretRequest?) -> ComposerEditor {
+        var editor = self
+        editor.onTypeaheadKey = onKey
+        editor.onCaret = onCaret
+        editor.caretRequest = caret
         return editor
     }
 
@@ -163,6 +180,11 @@ struct ComposerEditor: NSViewRepresentable {
             // what it sent). It catches up as one edit when the dictation is over, the dictation's words with it.
             coordinator.receive(text)
         }
+        // After the words, which a chosen command changes in the same update.
+        if let caretRequest, caretRequest != coordinator.placedCaret, !isReadOnly {
+            coordinator.placedCaret = caretRequest
+            coordinator.place(caret: caretRequest.at)
+        }
         coordinator.focus(isFocused)
     }
 
@@ -188,6 +210,8 @@ struct ComposerEditor: NSViewRepresentable {
         private var held: (base: String, theirs: String, composing: NSRange)?
         /// `isFocused` as last seen, so only a change to true asks for the keyboard.
         private var sawFocused = false
+        /// The last caret the composer asked for, so each request is carried out once.
+        var placedCaret: ComposerCaretRequest?
         /// The field's own history: the window's is shared with every other field in it.
         let undo = UndoManager()
         /// What Cmd-Z finds while the field is read-only: nothing, so the real history is still whole after.
@@ -292,6 +316,7 @@ struct ComposerEditor: NSViewRepresentable {
             view.setSelectedRange(selection)
             view.scrollRangeToVisible(selection)
             lastPushed = text
+            caretMovedOutside()
         }
 
         /// Another session's draft: the text, the caret at its end, no composition and no history from the last one.
@@ -311,6 +336,42 @@ struct ComposerEditor: NSViewRepresentable {
             view.setSelectedRange(end)
             view.scrollRangeToVisible(end)
             lastPushed = text
+            caretMovedOutside()
+        }
+
+        /// The caret where the composer asked, inside the words there are.
+        func place(caret: Int) {
+            guard let view = textView, !view.hasMarkedText() else { return }
+            let at = NSRange(location: min(max(caret, 0), (view.string as NSString).length), length: 0)
+            applying = true
+            view.setSelectedRange(at)
+            applying = false
+            view.scrollRangeToVisible(at)
+            caretMovedOutside()
+        }
+
+        // MARK: The caret
+
+        /// Typed, clicked or arrowed: where it is now. Not while the field is making a change of its own, which happens
+        /// inside SwiftUI's update (`caretMovedOutside` reports those once it is over).
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard !applying, let view = textView else { return }
+            parent.onCaret(Self.caret(of: view))
+        }
+
+        /// Reported after the update that moved it: publishing inside one is SwiftUI's "publishing changes from within view
+        /// updates".
+        private func caretMovedOutside() {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let view = self.textView else { return }
+                self.parent.onCaret(Self.caret(of: view))
+            }
+        }
+
+        /// The end of the selection: where typing would go on from.
+        private static func caret(of view: NSTextView) -> Int {
+            let range = view.selectedRange()
+            return range.location + range.length
         }
 
         // MARK: Keys
@@ -321,6 +382,9 @@ struct ComposerEditor: NSViewRepresentable {
         /// Return that commits a composition commits it and sends nothing.
         func textView(_ view: NSTextView, doCommandBy selector: Selector) -> Bool {
             let event = (view as? ComposerTextView)?.keyEvent ?? NSApp.currentEvent
+            // The typeahead first, while it shows: it answers false when it doesn't, and the key does what it always did.
+            // Never mid-composition, where Return and Esc belong to the input method.
+            if !view.hasMarkedText(), let key = ComposerKey(selector, event: event), parent.onTypeaheadKey(key) { return true }
             guard Self.isReturn(selector, event: event) else { return false }
             let flags = event?.modifierFlags ?? []
             switch ComposerEditing.returnKey(shift: flags.contains(.shift), option: flags.contains(.option), composing: view.hasMarkedText()) {
@@ -390,6 +454,34 @@ struct ComposerEditor: NSViewRepresentable {
             return measure.height(of: storage, at: width)
         }
     }
+}
+
+/// A key the slash typeahead may take before the field does (`ComposerEditor.typeahead`).
+enum ComposerKey: Equatable {
+    case up, down, tab, enter, escape
+
+    /// As AppKit names it to the text view. Return only unmodified: Shift- and Option-Return still break the line, and
+    /// ⌘↩ still sends.
+    init?(_ selector: Selector, event: NSEvent?) {
+        switch selector {
+        case #selector(NSResponder.moveUp(_:)): self = .up
+        case #selector(NSResponder.moveDown(_:)): self = .down
+        case #selector(NSResponder.insertTab(_:)): self = .tab
+        // Esc reaches a text view as either, by the key bindings in force.
+        case #selector(NSResponder.cancelOperation(_:)), #selector(NSTextView.complete(_:)): self = .escape
+        case #selector(NSResponder.insertNewline(_:)):
+            let flags = (event?.modifierFlags ?? []).intersection([.shift, .option, .command, .control])
+            guard flags.isEmpty else { return nil }
+            self = .enter
+        default: return nil
+        }
+    }
+}
+
+/// Where the composer wants the caret, once: a new `serial` is a new request, even to the same place.
+struct ComposerCaretRequest: Equatable {
+    let at: Int
+    let serial: Int
 }
 
 /// The composer's text view: what it reports, and the drops it turns away.

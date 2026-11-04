@@ -32,6 +32,13 @@ struct SessionView: View {
             }
         }
     }
+    /// The agent's commands offered as the first word is typed (`SlashTypeahead`, the Mac composer's rules): a tap fills
+    /// the line, and nothing goes until Send. 2026-11-04, Tyler: "can u get me access to slash commands on the mobile app
+    /// and desktop app?"
+    @State private var typeahead = SlashTypeahead()
+    /// The session's skills and commands, read the first time a draft begins like a command, as Commands reads them.
+    @State private var commandRead: AgentCapabilities?
+    @State private var readCommands = false
     /// Whether the end of the conversation is on screen. Set by the anchor's
     /// own visibility, which is how iOS answers what NSScrollView answers on
     /// the Mac.
@@ -382,6 +389,14 @@ struct SessionView: View {
         .onChange(of: pickedPhoto) { _, item in
             guard let item else { return }
             Task { await attach(item) }
+        }
+        .onAppear(perform: refreshTypeahead)
+        .onChange(of: talk.draft(for: sessionId)) { _, _ in refreshTypeahead() }
+        .onChange(of: commandRead) { _, _ in refreshTypeahead() }
+        .task(id: commandsWanted) {
+            guard commandsWanted, let row else { return }
+            commandRead = await bridge.capabilities(backend: row.backend ?? "claude", cwd: "", sessionId: row.id)?.inventory
+            readCommands = true
         }
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
@@ -852,12 +867,27 @@ struct SessionView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .accessibilityLabel("Hearing: \(talk.livePartial.text)")
                 }
+                // The commands the first word could be, as a section of this card above the field, as on the Mac.
+                if typeaheadShowing {
+                    SlashTypeaheadList(matches: typeahead.matches, selected: nil, onChoose: chooseCommand)
+                }
                 // The field says why Send is off on a row with no terminal.
                 TextField(row?.messageUnavailableReason ?? "Type or talk…", text: draftBinding, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(Type.body)
                     .foregroundStyle(Palette.textPrimary)
                     .lineLimit(1...7)
+                    // What a chosen command takes, after the caret: the draft drawn clear in the field's own type, then
+                    // the hint. Gone at the first letter typed after it.
+                    .overlay(alignment: .topLeading) {
+                        if let argumentPlaceholder {
+                            (Text(talk.draft(for: sessionId)).foregroundStyle(.clear) + Text(argumentPlaceholder).foregroundStyle(Palette.textFaint))
+                                .font(Type.body)
+                                .lineLimit(1)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                    }
                     .focused($typing)
                     // `.return`, not `.send`: the field is multiline, so the key
                     // inserts a newline. Labelling it "send" made it say one
@@ -975,6 +1005,39 @@ struct SessionView: View {
         }
         .padding(.top, 10)
         .background(.ultraThinMaterial.opacity(0.06))
+    }
+
+    // MARK: The slash typeahead
+
+    /// Where the agent's own commands can be typed: the Commands sheet's rule, and a terminal to type them into.
+    private var typeaheadEnabled: Bool {
+        guard let row else { return false }
+        return row.parentSessionId == nil && row.revealable && row.noTerminal == nil
+    }
+
+    private var typeaheadShowing: Bool { typeaheadEnabled && typeahead.isShowing }
+
+    /// A draft begins like a command and this session's skills and commands are not read yet.
+    private var commandsWanted: Bool {
+        typeaheadEnabled && !readCommands && SlashTypeahead.mayBeginCommand(talk.draft(for: sessionId))
+    }
+
+    /// The field does not say where its caret is, so the end: a thumb types there.
+    private func refreshTypeahead() {
+        typeahead.setCatalog(AgentCommands.all(for: row?.backend, capabilities: commandRead))
+        typeahead.update(draft: talk.draft(for: sessionId), caret: nil)
+    }
+
+    /// A row tapped: the line filled, the keyboard kept. Never sent.
+    private func chooseCommand(_ command: AgentCommand) {
+        if let choice = typeahead.choose(command, in: talk.draft(for: sessionId)), !choice.unchanged {
+            talk.setDraft(choice.draft, for: sessionId)
+        }
+        typing = true
+    }
+
+    private var argumentPlaceholder: String? {
+        typeaheadEnabled ? SlashTypeahead.placeholder(for: talk.draft(for: sessionId), caret: nil, in: typeahead.catalog) : nil
     }
 
     /// The draft, editable. Reading and writing the same string speech uses is

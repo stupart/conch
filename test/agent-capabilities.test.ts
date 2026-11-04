@@ -636,3 +636,99 @@ identity = { url = "https://allowed.test/mcp" }
     });
   });
 });
+
+/**
+ * The person's own commands, read beside the skills so the composers can offer them as they are typed (2026-11-04):
+ * Claude Code's `commands/*.md` (theirs, a project's on the way to the session's folder, a plugin's) and Codex's
+ * `prompts/*.md`, each with how it is typed.
+ */
+describe("commands a person wrote", () => {
+  const invocations = (entities: AgentCapabilityEntity[]) =>
+    entities.flatMap((item) => item.kind === "command" ? [item.command.invocation] : []).sort();
+
+  test("Claude: the user's, a project's and a plugin's, by name, with their frontmatter or first line", () => {
+    const f = fixture();
+    const statePath = join(f.root, ".claude.json");
+    write(join(f.claudeHome, "commands", "ship.md"), "---\ndescription: Ship the branch\nargument-hint: [pr title]\nallowed-tools: Bash(git:*)\n---\nPush it.\n");
+    write(join(f.claudeHome, "commands", "frontend", "component.md"), "# Component\n\nScaffold a component in this repo.\n");
+    write(join(f.claudeHome, "commands", "not a name.md"), "Spaces don't type as one word.\n");
+    write(join(f.claudeHome, "commands", "notes.txt"), "Not a command.\n");
+    write(join(f.cwd, ".claude", "commands", "triage.md"), "Triage the open issues.\n");
+    const packagePath = join(f.root, "packages", "kit", "1.0.0");
+    write(join(packagePath, ".claude-plugin", "plugin.json"), { name: "kit" });
+    write(join(packagePath, "commands", "audit.md"), "---\ndescription: Audit the diff\n---\n");
+    write(join(f.claudeHome, "plugins", "installed_plugins.json"), {
+      plugins: { "kit@market": [{ scope: "user", installPath: packagePath, version: "1.0.0" }] },
+    });
+    write(join(f.claudeHome, "settings.json"), { enabledPlugins: { "kit@market": false } });
+    write(statePath, {});
+
+    const result = readAgentCapabilities({
+      backend: "claude", cwd: f.cwd, claudeHome: f.claudeHome, claudeStatePath: statePath,
+      claudeManagedSettingsPath: null, claudeManagedMcpPath: null,
+    });
+    expect(result.complete).toBe(true);
+    expect(isAgentCapabilitiesRead(result)).toBe(true);
+    expect(invocations(result.entities)).toEqual(["/component", "/kit:audit", "/ship", "/triage"]);
+
+    const ship = entity(result.entities, "command", "ship");
+    expect(ship.description).toBe("Ship the branch");
+    expect(ship.scope).toBe("user");
+    expect(ship.kind === "command" && ship.command).toMatchObject({
+      argumentHint: "[pr title]", allowedTools: ["Bash(git:*)"], enabledForNextSession: null,
+    });
+    // No frontmatter: the first line of prose, past the heading.
+    expect(entity(result.entities, "command", "component").description).toBe("Scaffold a component in this repo.");
+    expect(entity(result.entities, "command", "triage").scope).toBe("project");
+    // A plugin's rides with it: switched off, so is the command.
+    const audit = entity(result.entities, "command", "audit");
+    expect(audit.parentId).toBe(entity(result.entities, "plugin", "kit").id);
+    expect(audit.evidence.available.state).toBe("no");
+    // Never counted as skills.
+    expect(result.entities.filter((item) => item.kind === "skill")).toEqual([]);
+  });
+
+  test("Codex: its custom prompts, as /prompts:name", () => {
+    const f = fixture();
+    write(join(f.codexHome, "prompts", "draftpr.md"), "---\ndescription: Draft a PR description\nargument-hint: FILES=<paths>\n---\nDraft it.\n");
+    write(join(f.codexHome, "prompts", "nested", "ignored.md"), "Codex reads only the folder's own files.\n");
+    const result = readAgentCapabilities({
+      backend: "codex", cwd: f.cwd, codexHome: f.codexHome, agentsHome: f.agentsHome,
+      codexAdminSkills: join(f.root, "no-admin"), codexManagedConfigPath: null, codexRequirementsPath: null,
+    });
+    expect(isAgentCapabilitiesRead(result)).toBe(true);
+    expect(invocations(result.entities)).toEqual(["/prompts:draftpr"]);
+    const draft = entity(result.entities, "command", "draftpr");
+    expect(draft.description).toBe("Draft a PR description");
+    expect(draft.kind === "command" && draft.command.argumentHint).toBe("FILES=<paths>");
+  });
+
+  test("an argument hint in brackets survives, where YAML would read it as a list", () => {
+    const f = fixture();
+    const statePath = join(f.root, ".claude.json");
+    write(statePath, {});
+    write(join(f.claudeHome, "commands", "fix.md"), "---\nargument-hint: [pr-number] [priority]\n---\nFix it.\n");
+    skill(join(f.claudeHome, "skills", "review", "SKILL.md"), "review", "argument-hint: [path]\n");
+    const result = readAgentCapabilities({
+      backend: "claude", cwd: f.cwd, claudeHome: f.claudeHome, claudeStatePath: statePath,
+      claudeManagedSettingsPath: null, claudeManagedMcpPath: null,
+    });
+    const fix = entity(result.entities, "command", "fix");
+    expect(fix.kind === "command" && fix.command.argumentHint).toBe("[pr-number] [priority]");
+    const review = entity(result.entities, "skill", "review");
+    expect(review.kind === "skill" && review.skill.argumentHint).toBe("[path]");
+  });
+
+  test("a command without its metadata is refused at the wire", () => {
+    const f = fixture();
+    write(join(f.claudeHome, "commands", "ship.md"), "Ship it.\n");
+    const statePath = join(f.root, ".claude.json");
+    write(statePath, {});
+    const result = readAgentCapabilities({
+      backend: "claude", cwd: f.cwd, claudeHome: f.claudeHome, claudeStatePath: statePath,
+      claudeManagedSettingsPath: null, claudeManagedMcpPath: null,
+    });
+    const broken = { ...result, entities: result.entities.map((item) => item.kind === "command" ? { ...item, command: undefined } : item) };
+    expect(isAgentCapabilitiesRead(broken)).toBe(false);
+  });
+});

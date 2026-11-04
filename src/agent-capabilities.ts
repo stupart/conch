@@ -13,7 +13,7 @@ import { adapterFor, agentAdapters } from "./agent-adapter.ts";
 import { codexThreadDbPaths, openReadOnly } from "./codex-threads.ts";
 
 export type AgentCapabilityBackend = "claude" | "codex";
-export type AgentCapabilityKind = "plugin" | "skill" | "mcp-server" | "mcp-tool";
+export type AgentCapabilityKind = "plugin" | "skill" | "command" | "mcp-server" | "mcp-tool";
 export type AgentCapabilityScope =
   | "user"
   | "project"
@@ -113,6 +113,23 @@ export interface SkillCapabilityMetadata {
   bytes: number;
 }
 
+/**
+ * A command the person wrote, typed into the session by name: Claude Code's `commands/*.md` (their own, a project's, a
+ * plugin's) and Codex's `prompts/*.md`. Read beside the skills since the composers began offering commands as they are
+ * typed (2026-11-04); the skills library reads them its own way (skills-library.ts).
+ */
+export interface CommandCapabilityMetadata {
+  path: string;
+  /** How it is typed: `/name`, `/plugin:name`, `/prompts:name`. Spelled by the agent's own reader, so nothing generic has to know whose it is. */
+  invocation: string;
+  ownerPluginId?: string;
+  enabledForNextSession: boolean | null;
+  argumentHint?: string;
+  model?: string;
+  allowedTools: string[];
+  bytes: number;
+}
+
 export type McpTransportKind = "stdio" | "http" | "sse" | "websocket" | "unknown";
 
 export interface McpServerCapabilityMetadata {
@@ -143,6 +160,7 @@ export interface McpToolCapabilityMetadata {
 export type AgentCapabilityEntity =
   | AgentCapabilityBase & { kind: "plugin"; plugin: PluginCapabilityMetadata }
   | AgentCapabilityBase & { kind: "skill"; skill: SkillCapabilityMetadata }
+  | AgentCapabilityBase & { kind: "command"; command: CommandCapabilityMetadata }
   | AgentCapabilityBase & { kind: "mcp-server"; mcpServer: McpServerCapabilityMetadata }
   | AgentCapabilityBase & { kind: "mcp-tool"; mcpTool: McpToolCapabilityMetadata };
 
@@ -577,6 +595,18 @@ function parseFrontmatter(text: string): JsonRecord | null {
   return result;
 }
 
+/**
+ * An `argument-hint` as written. Its usual form, `[message]` or `[pr-number] [priority]`, reads as a YAML list, and was
+ * dropped as one: put back in its brackets, so a skill or command that takes an argument still says so.
+ */
+function argumentHintValue(value: unknown): string | undefined {
+  if (Array.isArray(value)) {
+    const items = stringArray(value);
+    return items.length ? `[${items.join(", ")}]` : undefined;
+  }
+  return stringValue(value);
+}
+
 function allowedTools(value: unknown): string[] {
   if (Array.isArray(value)) return stringArray(value);
   if (typeof value !== "string") return [];
@@ -595,8 +625,8 @@ export function readSkillMetadata(path: string): SkillMetadata {
     userInvocable: booleanValue(frontmatter?.["user-invocable"]) ?? true,
     modelInvocable: !(booleanValue(frontmatter?.["disable-model-invocation"]) ?? false),
     allowedTools: allowedTools(frontmatter?.["allowed-tools"]),
-    ...(stringValue(frontmatter?.["argument-hint"])
-      ? { argumentHint: stringValue(frontmatter?.["argument-hint"]) }
+    ...(argumentHintValue(frontmatter?.["argument-hint"])
+      ? { argumentHint: argumentHintValue(frontmatter?.["argument-hint"]) }
       : {}),
     ...(stringValue(frontmatter?.model) ? { model: stringValue(frontmatter?.model) } : {}),
     bytes,
@@ -722,6 +752,129 @@ function scanSkillRoot(options: SkillScanOptions): number {
       count += 1;
       for (const diagnostic of diagnostics) options.collector.diagnostic(diagnostic);
     }
+  }
+  return count;
+}
+
+export interface CommandMetadata {
+  name: string;
+  description?: string;
+  argumentHint?: string;
+  model?: string;
+  allowedTools: string[];
+  bytes: number;
+}
+
+/**
+ * A command's `.md`, read from its head: its name is its file's, its description its frontmatter's, else its first line
+ * of prose, as Claude Code lists it (and as the skills library reads one, `commandMetadata`).
+ */
+export function readCommandMetadata(path: string): CommandMetadata {
+  const { text, bytes } = readHead(path, SKILL_HEAD_BYTES);
+  const frontmatter = parseFrontmatter(text);
+  const lines = text.replaceAll("\r\n", "\n").split("\n");
+  const close = frontmatter ? lines.findIndex((line, index) => index > 0 && line.trim() === "---") : -1;
+  const prose = lines.slice(close + 1).map((line) => line.trim())
+    .find((line) => line && !line.startsWith("#") && !line.startsWith("<!--"));
+  const description = stringValue(frontmatter?.description) ?? prose;
+  const argumentHint = argumentHintValue(frontmatter?.["argument-hint"]);
+  const model = stringValue(frontmatter?.model);
+  return {
+    name: basename(path).replace(/\.md$/, ""),
+    ...(description ? { description } : {}),
+    ...(argumentHint ? { argumentHint } : {}),
+    ...(model ? { model } : {}),
+    allowedTools: allowedTools(frontmatter?.["allowed-tools"]),
+    bytes,
+  };
+}
+
+/** A name that types as one word the daemon takes for a command (`isProviderCommandLine`): a file named otherwise is left out. */
+const COMMAND_NAME = /^[A-Za-z][\w-]*$/;
+
+interface CommandScanOptions {
+  backend: AgentCapabilityBackend;
+  root: string;
+  scope: AgentCapabilityScope;
+  collector: Collector;
+  /** How the command in `name.md` is typed. */
+  invocation: (name: string) => string;
+  /** Claude Code also lists `commands/<group>/*.md`, under the group; Codex reads only the folder's own files. */
+  grouped: boolean;
+  parentId?: string;
+  ownerPluginId?: string;
+  parentEnabled?: boolean | null;
+}
+
+/** The `.md` commands in one folder, as `scanSkillRoot` reads skills: one entity each, its invocation spelled by the caller. */
+function scanCommandRoot(options: CommandScanOptions): number {
+  const files: string[] = [];
+  for (const entry of directoryEntries(options.root, options.collector, "command directory")) {
+    const path = join(options.root, entry.name);
+    if ((entry.isFile() || entry.isSymbolicLink()) && entry.name.endsWith(".md")) files.push(path);
+    else if (options.grouped && entry.isDirectory() && !entry.name.startsWith(".")) {
+      for (const inner of directoryEntries(path, options.collector, "command directory")) {
+        if ((inner.isFile() || inner.isSymbolicLink()) && inner.name.endsWith(".md")) files.push(join(path, inner.name));
+      }
+    }
+  }
+  let count = 0;
+  for (const path of files.sort()) {
+    let metadata: CommandMetadata;
+    try {
+      if (!statSync(path).isFile()) continue;
+      metadata = readCommandMetadata(path);
+    } catch (error) {
+      options.collector.diagnostic({
+        severity: "error",
+        code: "unreadable-command",
+        message: `Command file could not be read: ${error instanceof Error ? error.message : String(error)}`,
+        sourcePath: path,
+      }, true);
+      continue;
+    }
+    if (!COMMAND_NAME.test(metadata.name)) continue;
+    const invocation = options.invocation(metadata.name);
+    const id = capabilityId(
+      options.backend,
+      "command",
+      metadata.name,
+      options.parentId ? `${options.parentId}:${metadata.name}` : resolve(path),
+    );
+    const enabled = options.parentEnabled === undefined ? null : options.parentEnabled;
+    const scope = options.parentId ? "plugin" : options.scope;
+    const entity: AgentCapabilityEntity = {
+      id,
+      subject: { id, type: "agent-capability", title: invocation },
+      backend: options.backend,
+      kind: "command",
+      name: metadata.name,
+      displayName: metadata.name,
+      ...(metadata.description ? { description: metadata.description } : {}),
+      ...(options.parentId ? { parentId: options.parentId } : {}),
+      scope,
+      sources: [{ kind: "directory", path, scope }],
+      evidence: evidence(
+        "A command file exists in a configured discovery directory.",
+        enabled === false
+          ? unavailable("Configuration disables the plugin this command comes with.")
+          : unknownAvailable(),
+        undefined,
+        "filesystem",
+      ),
+      diagnostics: [],
+      command: {
+        path,
+        invocation,
+        ...(options.ownerPluginId ? { ownerPluginId: options.ownerPluginId } : {}),
+        enabledForNextSession: enabled,
+        ...(metadata.argumentHint ? { argumentHint: metadata.argumentHint } : {}),
+        ...(metadata.model ? { model: metadata.model } : {}),
+        allowedTools: metadata.allowedTools,
+        bytes: metadata.bytes,
+      },
+    };
+    if (options.collector.add(entity)) count += 1;
   }
   return count;
 }
@@ -1215,6 +1368,18 @@ export function readClaude(
           ownerPluginId: pluginId,
           parentEnabled: enabled,
         });
+        // Its commands, typed as its skills are: `/plugin:name`.
+        scanCommandRoot({
+          backend: "claude",
+          root: join(installPath, "commands"),
+          scope: "plugin",
+          collector,
+          invocation: (name) => `/${pluginName}:${name}`,
+          grouped: true,
+          parentId: id,
+          ownerPluginId: pluginId,
+          parentEnabled: enabled,
+        });
         const mcpFile = manifestPath(installPath, manifest, "mcpServers", ".mcp.json");
         if (existsSync(mcpFile)) {
           const parsed = readJson(mcpFile, collector, "Claude plugin MCP configuration");
@@ -1269,6 +1434,26 @@ export function readClaude(
       collector,
       usage: skillUsage,
       visibility,
+    });
+  }
+  // The person's own commands, and each project's on the way to this folder: typed as `/name`, whatever group folder
+  // holds one.
+  scanCommandRoot({
+    backend: "claude",
+    root: join(claudeHome, "commands"),
+    scope: "user",
+    collector,
+    invocation: (name) => `/${name}`,
+    grouped: true,
+  });
+  for (const directory of projectDirectories(options.cwd)) {
+    scanCommandRoot({
+      backend: "claude",
+      root: join(directory, ".claude", "commands"),
+      scope: "project",
+      collector,
+      invocation: (name) => `/${name}`,
+      grouped: true,
     });
   }
 
@@ -1746,6 +1931,15 @@ export function readCodex(
         : { parentEnabled: configRead.projectTrust.trusted }),
     });
   }
+  // Codex's custom prompts, typed as `/prompts:name`: only the folder's own files.
+  scanCommandRoot({
+    backend: "codex",
+    root: join(codexHome, "prompts"),
+    scope: "user",
+    collector,
+    invocation: (name) => `/prompts:${name}`,
+    grouped: false,
+  });
   const adminSkills = options.codexAdminSkills ?? "/etc/codex/skills";
   scanSkillRoot({
     backend: "codex",
@@ -1907,8 +2101,9 @@ export function readCodexThreadConfiguration(
 const KIND_ORDER: Record<AgentCapabilityKind, number> = {
   plugin: 0,
   skill: 1,
-  "mcp-server": 2,
-  "mcp-tool": 3,
+  command: 2,
+  "mcp-server": 3,
+  "mcp-tool": 4,
 };
 
 function observedEvidence(
@@ -2204,6 +2399,7 @@ export function isAgentCapabilitiesRead(value: unknown): value is AgentCapabilit
       || !entity.diagnostics.every(validDiagnostic)) return false;
     if (entity.kind === "plugin" && !record(entity.plugin)) return false;
     if (entity.kind === "skill" && !record(entity.skill)) return false;
+    if (entity.kind === "command" && !record(entity.command)) return false;
     if (entity.kind === "mcp-server" && !record(entity.mcpServer)) return false;
     if (entity.kind === "mcp-tool" && !record(entity.mcpTool)) return false;
   }

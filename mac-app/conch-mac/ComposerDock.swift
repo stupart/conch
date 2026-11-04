@@ -39,6 +39,8 @@ final class ComposerDock: ObservableObject {
     @Published private(set) var shown = true
     /// Bumped when the input lands back in the window with the keyboard it left with (`SessionComposer.focusRequest`).
     @Published private(set) var focusRequests = 0
+    /// The input's slash typeahead is showing (`ComposerView`): Esc closes it before it lets go of the field.
+    var typeaheadOpen = false
     /// How the floating composer lays out, apart from the rest: it changes every frame the panel is dragged or resized,
     /// and conch's window, which watches the dock, must not lay out again with it.
     let layout = ComposerFloatingLayout()
@@ -676,7 +678,9 @@ final class ComposerDock: ObservableObject {
                 return true
             }
         }
-        guard event.keyCode == 53, floating.firstResponder is NSTextView else { return false }
+        // With the field's command list open, Esc is the list's, to close it (`ComposerView.typeaheadKey`); the next one
+        // lets go of the field.
+        guard event.keyCode == 53, !typeaheadOpen, floating.firstResponder is NSTextView else { return false }
         floating.makeFirstResponder(nil)
         wantsFocus = false
         pinReply()
