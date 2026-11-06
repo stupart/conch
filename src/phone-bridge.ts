@@ -2,6 +2,7 @@ import { decodeFailureTicketRequest } from "./failure-tickets.ts";
 import { connect } from "node:net";
 import { ControlFrameError, ControlFrameReader, decodeControlText, encodeControlFrame, readControlBody } from "./control-framing.ts";
 import { validateHistoryRequest } from "./history.ts";
+import { validateRuntimeControlMessage } from "./settings.ts";
 import { ownUpload, type UploadChunk, type UploadResult } from "./phone-uploads.ts";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -80,8 +81,9 @@ export function mintPairingCode(now = Date.now()): PairingCode {
 export interface PhoneBridgeDependencies {
   /** Latest published state, exactly as written to the sessions file. */
   getState(): unknown;
-  /** Forward one control line to the daemon's Unix socket; resolve its reply. */
-  forwardControl(line: string): Promise<string>;
+  /** Forward one control line to the daemon's Unix socket; resolve its reply. `maxReplyBytes` is for a read whose reply
+   * runs past a control frame (`isPhoneCapabilitiesRead`). */
+  forwardControl(line: string, options?: { maxReplyBytes?: number }): Promise<string>;
   /** Latest assistant reply for ANY session, raw markdown, read on demand. */
   replyFor(sessionId: string): Promise<string>;
   /** Connected phone count, so the daemon can reclaim audio when it hits zero. */
@@ -230,6 +232,36 @@ export function isPhoneHistoryRead(path: string, bytes: Uint8Array): boolean {
     if (value?.kind === "control-envelope") value = value.body;
     return validateHistoryRequest(value).ok;
   } catch { return false; }
+}
+
+/**
+ * What one session's capabilities read may bring back to the phone: the Mac app's own ceiling for a reply
+ * (ConchSocketClient's `maximumReplyLineBytes`), and half what the phone holds of one in memory.
+ *
+ * A Claude session on Tyler's Mac reads 240 KB of skills, plugins, MCP servers and tools, where a control frame is
+ * 64 KiB. Every read from the phone failed ("Could not read session capabilities", 2026-11-04), so its
+ * slash typeahead, Commands sheet and inspector had none of the person's skills (2026-11-06, Tyler: "can you add my
+ * skills to / slash commands on the mobile and mac app").
+ */
+export const PHONE_READ_REPLY_MAX_BYTES = 1024 * 1024;
+
+/** A session's capabilities, asked for over `/control`: a read of config files, so the relay need not keep its reply to
+ * answer a resend, and its reply may run past a control frame. */
+export function isPhoneCapabilitiesRead(path: string, bytes: Uint8Array): boolean {
+  try {
+    if (new URL(path, "https://conch.invalid").pathname !== "/control") return false;
+    const text = decodeControlText(bytes);
+    encodeControlFrame(text);
+    let value = JSON.parse(text);
+    if (value?.kind === "control-envelope") value = value.body;
+    const validated = validateRuntimeControlMessage(value);
+    return validated.ok && validated.value.kind === "agent-capabilities";
+  } catch { return false; }
+}
+
+/** Every read the relay may run again on a resend rather than hold a reply for: history and capabilities. */
+export function isPhoneRead(path: string, bytes: Uint8Array): boolean {
+  return isPhoneHistoryRead(path, bytes) || isPhoneCapabilitiesRead(path, bytes);
 }
 
 /** Bun reports a connection-dropped frame with 0; backpressure (-1) is alive. */
@@ -717,8 +749,10 @@ export class PhoneBridgeApplication {
           return Response.json({ error: "only the Mac app sends that" }, { status: 403 });
         }
         const historyRead = historyRoute || isPhoneHistoryRead(url.pathname, Buffer.from(body));
+        const capabilitiesRead = !historyRead && isPhoneCapabilitiesRead(url.pathname, Buffer.from(body));
         try {
-          const reply = await this.#dependencies.forwardControl(body);
+          const reply = await this.#dependencies.forwardControl(body,
+            capabilitiesRead ? { maxReplyBytes: PHONE_READ_REPLY_MAX_BYTES } : undefined);
           if (historyRead) encodeControlFrame(reply);
           // Say that the PHONE did this. Controls from every surface arrive on
           // one socket, so when conch "unpaused itself" there was no way to
@@ -1126,12 +1160,13 @@ export function forwardToDaemonSocket(
   socketPath: string,
   line: string,
   timeoutMs = 4000,
+  maxReplyBytes?: number,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     let request: Buffer;
     try { request = encodeControlFrame(line); } catch (error) { reject(error); return; }
     const socket = connect({ path: socketPath });
-    const frame = new ControlFrameReader();
+    const frame = new ControlFrameReader(maxReplyBytes);
     let settled = false;
     const finish = (error?: unknown, reply?: string): void => {
       if (settled) return;

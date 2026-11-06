@@ -76,7 +76,7 @@ final class SlashTypeaheadTests: XCTestCase {
         ]
         // A prefix beats a word start, and the shorter prefix the longer.
         XCTAssertEqual(typed("/audit", in: catalog).matches.map(\.line), ["/audit", "/auditor", "/review-kit:audit"])
-        // Just the sigil: everything, in the catalog's order (its own commands, then skills, then the person's).
+        // Just the sigil: everything, in the catalog's order (theirs, the agent's own, then plugins').
         XCTAssertEqual(typed("/").matches, Self.claude)
         // A word inside the line.
         XCTAssertEqual(typed("/kit", in: catalog).matches.map(\.line), ["/review-kit:audit"])
@@ -90,11 +90,13 @@ final class SlashTypeaheadTests: XCTestCase {
         XCTAssertFalse(typed("/summ").isShowing)
     }
 
-    func testTheCatalogIsBuiltInsThenSkillsThenTheirOwnOnceEach() throws {
+    func testTheCatalogIsTheirOwnThenBuiltInsThenPluginsOnceEach() throws {
         let inventory = try JSONDecoder().decode(AgentCapabilities.self, from: Data(Self.inventory.utf8))
         let all = AgentCommands.all(for: nil, capabilities: inventory).map(\.line)
-        XCTAssertEqual(Array(all.prefix(AgentCommands.claude.count)), AgentCommands.claude.map(\.0))
-        XCTAssertEqual(Array(all.dropFirst(AgentCommands.claude.count)), ["/notes", "/ship", "/kit:audit"])
+        // Their own skill and command first, so `/` alone shows them; a plugin's after the agent's own.
+        XCTAssertEqual(Array(all.prefix(2)), ["/notes", "/ship"])
+        XCTAssertEqual(Array(all.dropFirst(2).prefix(AgentCommands.claude.count)), AgentCommands.claude.map(\.0))
+        XCTAssertEqual(Array(all.dropFirst(2 + AgentCommands.claude.count)), ["/kit:audit"])
         // `/notes` is a skill and a command both: listed once, as the skill.
         XCTAssertEqual(AgentCommands.all(for: nil, capabilities: inventory).first { $0.line == "/notes" }?.detail, "Keep notes")
         // A command switched off with its plugin is left out.
@@ -102,6 +104,17 @@ final class SlashTypeaheadTests: XCTestCase {
         let ship = try XCTUnwrap(AgentCommands.custom(in: inventory).first { $0.line == "/ship" })
         XCTAssertEqual(ship.argumentHint, "[pr title]")
         XCTAssertEqual(ship.detail, "Ship the branch")
+    }
+
+    func testACodexSessionsOwnSkillLeadsAndItsSystemSkillsDoNot() throws {
+        func skill(_ name: String, scope: String) -> String {
+            #"{"id":"skill:\#(name)","kind":"skill","name":"\#(name)","displayName":"\#(name)","description":"\#(name)","parentId":null,"scope":"\#(scope)","sources":[],"evidence":\#(Self.evidence("unknown")),"diagnostics":[],"skill":{"path":"/s/\#(name)","ownerPluginId":null,"enabledForNextSession":null,"visibility":"on","userInvocable":true,"modelInvocable":true,"allowedTools":[],"argumentHint":null,"model":null,"bytes":10}}"#
+        }
+        let json = #"{"context":{"backend":"codex","cwd":"/Users/t/p","projectTrust":null,"threadConfiguration":null},"entities":[\#(skill("imagegen", scope: "system")),\#(skill("notes", scope: "user"))],"diagnostics":[],"complete":true}"#
+        let inventory = try JSONDecoder().decode(AgentCapabilities.self, from: Data(json.utf8))
+        let all = AgentCommands.all(for: "codex", capabilities: inventory).map(\.line)
+        XCTAssertEqual(all.first, "$notes")
+        XCTAssertEqual(all.last, "$imagegen")
     }
 
     func testPickerCommandsStillSayInTheTerminal() {
@@ -224,9 +237,11 @@ final class SlashTypeaheadTests: XCTestCase {
         #"{"configured":{"state":"yes","basis":"filesystem","detail":"on disk"},"available":{"state":"\#(state)","basis":"none","detail":""},"loaded":{"state":"unknown","basis":"none","detail":""},"observed":{"state":"unknown","basis":"none","detail":""}}"#
     }
 
-    private static func command(_ name: String, _ invocation: String, _ description: String, hint: String? = nil, available: String = "unknown") -> String {
+    private static func command(_ name: String, _ invocation: String, _ description: String, hint: String? = nil, available: String = "unknown", plugin: String? = nil) -> String {
         let hintJSON = hint.map { "\"\($0)\"" } ?? "null"
-        return #"{"id":"command:\#(name)","kind":"command","name":"\#(name)","displayName":"\#(name)","description":"\#(description)","parentId":null,"scope":"user","sources":[],"evidence":\#(evidence(available)),"diagnostics":[],"command":{"path":"/c/\#(name).md","invocation":"\#(invocation)","ownerPluginId":null,"enabledForNextSession":null,"argumentHint":\#(hintJSON),"model":null,"allowedTools":[],"bytes":10}}"#
+        let scope = plugin == nil ? "user" : "plugin"
+        let owner = plugin.map { "\"\($0)\"" } ?? "null"
+        return #"{"id":"command:\#(name)","kind":"command","name":"\#(name)","displayName":"\#(name)","description":"\#(description)","parentId":null,"scope":"\#(scope)","sources":[],"evidence":\#(evidence(available)),"diagnostics":[],"command":{"path":"/c/\#(name).md","invocation":"\#(invocation)","ownerPluginId":\#(owner),"enabledForNextSession":null,"argumentHint":\#(hintJSON),"model":null,"allowedTools":[],"bytes":10}}"#
     }
 
     private static var inventory: String {
@@ -235,8 +250,8 @@ final class SlashTypeaheadTests: XCTestCase {
             notes,
             command("ship", "/ship", "Ship the branch", hint: "[pr title]"),
             command("notes", "/notes", "A command of the same name"),
-            command("audit", "/kit:audit", "Audit the diff"),
-            command("off", "/kit:off", "Its plugin is off", available: "no"),
+            command("audit", "/kit:audit", "Audit the diff", plugin: "kit@market"),
+            command("off", "/kit:off", "Its plugin is off", available: "no", plugin: "kit@market"),
         ].joined(separator: ",")
         return #"{"context":{"backend":"claude","cwd":"/Users/t/p","projectTrust":null,"threadConfiguration":null},"entities":[\#(entities)],"diagnostics":[],"complete":true}"#
     }
