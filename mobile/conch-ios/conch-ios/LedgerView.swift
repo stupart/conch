@@ -203,11 +203,9 @@ struct LedgerView: View {
                                             .foregroundStyle(Palette.textFaint)
                                             .frame(width: 22)
                                             .accessibilityHidden(true)
-                                        Text(row.label)
+                                        TailFadeText(row.label)
                                             .font(Type.sessionName)
                                             .foregroundStyle(Palette.textDim)
-                                            .lineLimit(1)
-                                            .truncationMode(.middle)
                                         Spacer(minLength: 8)
                                         Button("Restore") {
                                             runSessionCommand(.restore, id: row.id, label: row.label)
@@ -868,11 +866,11 @@ struct SessionRowView: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 7) {
-                    Text(row.label)
+                    // The beginning of the name, faded at the end as the Mac's sidebar has it, never "Conch…ategy".
+                    // 2026-11-06, Tyler: "make it so the mobile app doesn't have ... in the middle of the titles".
+                    TailFadeText(row.label)
                         .font(Type.sessionName)
                         .foregroundStyle(row.usageLimit == nil ? Palette.textPrimary : Palette.textDim)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
                     AgentBadge(backend: row.backend)
                     // Jumps the queue: its turns are read before the others', as the Mac's diamond says.
                     if row.prioritized {

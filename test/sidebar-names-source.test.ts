@@ -52,6 +52,19 @@ describe("the name has the line", () => {
     expect(code(agents)).not.toMatch(/(?<!Fade)Text\(agent\.label\)/);
   });
 
+  // 2026-11-06, Tyler: "make it so the mobile app doesn't have ... in the middle of the titles of the sessions". The
+  // phone's ledger still middle-truncated them: "Conch…ategy".
+  test("the phone keeps a session's beginning too, in its ledger and its dismissed list", () => {
+    const ledger = read("mobile/conch-ios/conch-ios/LedgerView.swift");
+    const phoneRow = section(ledger, "struct SessionRowView: View {", "\nstruct AgentBadge: View {");
+    expect(phoneRow).toContain("TailFadeText(row.label)");
+    expect(code(phoneRow)).not.toMatch(/(?<!Fade)Text\(row\.label\)/);
+    expect(code(phoneRow)).not.toContain(".truncationMode(.middle)");
+    const dismissed = section(ledger, "ForEach(state.dismissedRows) { row in", 'Button("Restore")');
+    expect(dismissed).toContain("TailFadeText(row.label)");
+    expect(code(dismissed)).not.toContain(".truncationMode(.middle)");
+  });
+
   test("the fade is a mask over the line, only when the line overflows, never an ellipsis", () => {
     const fade = section(design, "public struct TailFadeText: View {", "\n}\n");
     expect(fade).toContain("ViewThatFits(in: .horizontal) {");

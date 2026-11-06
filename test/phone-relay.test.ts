@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createControlServer, type ControlServer } from "../src/control-server.ts";
 import type { TurnEvent } from "../src/hook.ts";
-import { createPhoneBridgeApplication, forwardToDaemonSocket, MAC_APP_ONLY_KINDS } from "../src/phone-bridge.ts";
+import { createPhoneBridgeApplication, forwardToDaemonSocket, MAC_APP_ONLY_KINDS, PHONE_READ_REPLY_MAX_BYTES } from "../src/phone-bridge.ts";
 import { PRACTICE_REQUEST_KINDS } from "../src/practice.ts";
 import { SETUP_REQUEST_KINDS } from "../src/setup.ts";
 import {
@@ -71,7 +71,7 @@ function requestBody(path: string, secret: string, body = "", authorized = true)
 
 async function connectedHarness(options: {
   state?: () => unknown;
-  forward?: (line: string) => Promise<string>;
+  forward?: (line: string, options?: { maxReplyBytes?: number }) => Promise<string>;
   cache?: RelayResponseCache;
   send?: (wire: string, sent: string[]) => Promise<void>;
   onProtocolFailure?: () => void;
@@ -864,6 +864,30 @@ describe("the relay retry cache over a long-lived daemon", () => {
     await harness.peer.receive(JSON.stringify(mutation));
     expect(responseStatus(await openSent(harness.phone, harness.sent))).toBe(200);
     expect(cache.size).toBe(1);
+    harness.peer.close();
+  });
+
+  // A Claude session's skills, plugins and tools read 240 KB; the cache keeps a mutation's reply only up to 64 KiB, so
+  // every capability read from the phone came back "too large to confirm safely" and its typeahead had no skills.
+  test("a session's capabilities are read fresh, whole past 64 KiB, and hold no retry entry", async () => {
+    const cache = new RelayResponseCache();
+    const inventory = JSON.stringify({ kind: "agent-capabilities", inventory: { entities: [], padding: "s".repeat(240_000) } });
+    const asked: (number | undefined)[] = [];
+    const harness = await connectedHarness({ cache, forward: async (_line, options) => {
+      asked.push(options?.maxReplyBytes);
+      return inventory;
+    } });
+    const read = { kind: "agent-capabilities", backend: "claude", cwd: "", sessionId: "session-1" };
+    for (let retry = 0; retry < 2; retry++) {
+      const frame = await harness.phone.seal({ id: "capabilities", method: "POST", kind: "request" },
+        requestBody("/control", harness.relay.secret, JSON.stringify(read)));
+      await harness.peer.receive(JSON.stringify(frame));
+      const frames = await openSent(harness.phone, harness.sent);
+      expect(responseStatus(frames)).toBe(200);
+      expect(new TextDecoder().decode(responseBody(frames, "capabilities"))).toBe(inventory);
+    }
+    expect(asked).toEqual([PHONE_READ_REPLY_MAX_BYTES, PHONE_READ_REPLY_MAX_BYTES]);
+    expect(cache.size).toBe(0);
     harness.peer.close();
   });
 

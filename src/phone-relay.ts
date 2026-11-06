@@ -10,7 +10,7 @@ import {
 import { conchHome } from "./home.ts";
 import { breadcrumb } from "./loop-watchdog.ts";
 import { dirname, join } from "node:path";
-import { isPhoneHistoryRead, type PhoneBridgeApplication, type PhoneStateSink } from "./phone-bridge.ts";
+import { isPhoneRead, type PhoneBridgeApplication, type PhoneStateSink } from "./phone-bridge.ts";
 import {
   RELAY_CHUNK_BYTES,
   RELAY_MAX_FRAME_BYTES,
@@ -675,7 +675,7 @@ export class MacRelayPeer {
       },
     });
 
-    if (opened.header.method === "POST" && !isPhoneHistoryRead(payload.path, body)) {
+    if (opened.header.method === "POST" && !isPhoneRead(payload.path, body)) {
       const control = controlMessage(payload.path, body);
       const run = async (): Promise<CachedRelayResponse> => {
         const result = invoke();

@@ -2241,7 +2241,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       phoneApplication = createPhoneBridgeApplication(
         {
           getState: () => lastPublishedPanelState,
-          forwardControl: (line) => forwardToDaemonSocket(
+          forwardControl: (line, options) => forwardToDaemonSocket(
             cfg.socketPath,
             line,
             // An inject is not a query. It focuses a pane, types, CONFIRMS the
@@ -2255,6 +2255,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
             // trust a send that worked, and invites sending twice. Everything
             // else stays on the short budget, where a quick answer is the point.
             injectTimeoutFor(line),
+            options?.maxReplyBytes,
           ),
           onClientsChanged: (count) => {
             if (audioLease.clientsChanged(count)) {
