@@ -169,6 +169,30 @@ test("a second account's session is read, dialog and all, from the default folde
   await expect(accountRegistrySnapshot(work.configDir)).rejects.toThrow("Account profiles must have separate directories");
 });
 
+// 2026-11-06: after a restart, seashell read as two windows, #996 and #1372. The second was the session, resumed in
+// Default; the first, the retired Blueprint profile's entry from the last boot, its pid by then a Terminal tab's login.
+test("a profile's leftover entry whose pid is someone else's now is dropped once the conversation runs elsewhere", async () => {
+  const old = addClaudeAccount("Old");
+  const home = readClaudeAccounts()[0]!.configDir;
+  const id = "44444444-4444-4444-8444-444444444444";
+  const lstart = (pid: number) => Bun.spawnSync(["ps", "-o", "lstart=", "-p", String(pid)], { env: { ...process.env, LC_ALL: "C", TZ: "UTC" } }).stdout.toString().trim();
+  const other = Bun.spawn(["sleep", "30"], { stdout: "ignore", stderr: "ignore" });
+  try {
+    const entry = (pid: number, procStart: string) => JSON.stringify({ sessionId: id, pid, procStart, cwd: "/work/demo", kind: "interactive", entrypoint: "cli", status: "idle" });
+    mkdirSync(join(home, "sessions"), { recursive: true });
+    mkdirSync(join(old.configDir, "sessions"), { recursive: true });
+    writeFileSync(join(home, "sessions", `${process.pid}.json`), entry(process.pid, lstart(process.pid)));
+    writeFileSync(join(old.configDir, "sessions", `${other.pid}.json`), entry(other.pid, "Mon Oct 26 16:32:49 2026"));
+    const rows = (await accountRegistrySnapshot(home))!.infos.filter((s) => s.agentSessionId === id || s.sessionId === id);
+    expect(rows).toEqual([expect.objectContaining({ sessionId: id, pid: process.pid, claudeAccountId: "default" })]);
+    // With nothing live holding it, the leftover is still read, as a lone dead entry always was.
+    rmSync(join(home, "sessions", `${process.pid}.json`));
+    expect((await accountRegistrySnapshot(home))!.infos.filter((s) => s.sessionId === id).map((s) => s.pid)).toEqual([other.pid]);
+  } finally {
+    other.kill();
+  }
+});
+
 test("wire validation rejects unsafe paths, invalid ids, and accounts on Codex", () => {
   expect(validateRuntimeControlMessage({ kind: "claude-accounts", action: "add", label: "Work", configDir: "relative" }).ok).toBe(false);
   expect(validateRuntimeControlMessage({ kind: "claude-accounts", action: "remove", id: "../../secret" }).ok).toBe(false);
