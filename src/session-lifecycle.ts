@@ -392,6 +392,20 @@ const LAUNCH_OVERRIDES: Record<SessionBackend, ReadonlySet<string>> = {
 };
 
 /**
+ * How to bring back a session whose process is already gone (`registryProcessAlive`): its conversation, folder and
+ * account, and the options a start from the sheet gets, persisted defaults included, since there is no command line
+ * left to read its own from. Restart on one (2026-11-06) read the flags of whatever held its pid now, then had
+ * its close refused for finding someone else's process.
+ */
+export function resumeRequest(
+  session: Parameters<typeof restartRequest>[0],
+): StartSessionRequest {
+  const { request } = restartRequest(session, []);
+  const { [BYPASS_OPTION]: _ranWith, ...options } = request.options ?? {};
+  return { ...request, options };
+}
+
+/**
  * How to bring a live session back after closing it: the same agent, folder
  * and conversation, plus every flag on its command line that the start table
  * knows, each validated the way a start from the sheet is. Anything else that

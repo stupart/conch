@@ -458,6 +458,21 @@ describe("one session, two terminals", () => {
     rmSync(f.claudeDir, { recursive: true, force: true });
   });
 
+  test("a leftover file whose pid another process holds now is dropped when the session runs again", async () => {
+    const f = fixture();
+    // Before the restart, 39889 was this session; now it is someone else's, which the start time says.
+    f.write(39889, { sessionId: "back", name: "before the restart", startedAt: 1_000, procStart: "Mon Oct 26 16:32:49 2026" });
+    f.write(21210, { sessionId: "back", name: "brought back", startedAt: 9_000, procStart: "Fri Nov  6 21:52:36 2026" });
+    const now = new Map([[39889, Date.UTC(2026, 10, 6, 0, 8, 16)], [21210, Date.UTC(2026, 10, 6, 21, 52, 36)]]);
+    const processIdentity = (pid: number) => now.has(pid)
+      ? { pid, birth: `${now.get(pid)! / 1000}.000000`, birthTimeMs: now.get(pid)!, executable: "/x", ttyDevice: null }
+      : null;
+    const snap = await registrySnapshot(f.claudeDir, { ...opts(f.claudeDir), processIdentity });
+    expect(snap!.infos.map((s) => s.pid)).toEqual([21210]);
+    expect(snap!.infos[0]).toMatchObject({ sessionId: "back", procStart: "Fri Nov  6 21:52:36 2026" });
+    rmSync(f.claudeDir, { recursive: true, force: true });
+  });
+
   test("a shared id resolves to one stable process, not whichever file came back first", async () => {
     const f = fixture();
     // Directory order is an APFS hash — not creation order, not sorted — so the

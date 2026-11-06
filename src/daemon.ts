@@ -2,7 +2,6 @@ import { backgroundStartupPid, backgroundTrustReport, managedBackgroundSession }
 import { BackgroundGuard } from "./background-recovery.ts";
 import { RestartGuard, bootTime } from "./restart-recovery.ts";
 import { dismissedWriter, loadDismissed } from "./dismissed-store.ts";
-import { defaultIsPidAlive } from "./codex-sessions.ts";
 import { handleAccountTools } from "./account-tools.ts";
 import { readBenchmarks } from "./benchmarks.ts";
 import { createSkillIndexes } from "./skill-indexes.ts";
@@ -25,7 +24,7 @@ import { RecordsRuntime } from "./records-runtime.ts";
 import { createRecordOperation, createRecordReceiptObserver, type RecordObserver } from "./records-receipts.ts";
 import { historySessionFor, recordSessionFor } from "./records-routing.ts";
 import type { RecordsPriorityHints } from "./records-indexer.ts";
-import { bindSessionProcess, readProcessIdentity } from "./process-identity.ts";
+import { bindSessionProcess, readProcessIdentity, registryProcessAlive } from "./process-identity.ts";
 import {
   createControlServer,
   acquireControlOwnership,
@@ -206,6 +205,7 @@ import {
   readProcessArgs,
   refreshSessionForClose,
   restartRequest,
+  resumeRequest,
   acceptClaudeTrust,
   sessionFolder,
   startClaudeAccountLogin,
@@ -2533,10 +2533,11 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       ledger.forgetGone(liveIds);
       // Every conversation running anywhere, so nothing is brought back while it still runs somewhere else. By
       // its process, not its registry file: an agent killed outright leaves its file behind, and that conversation
-      // is not running. A row with no pid to check (an app-hosted Codex thread) counts as running.
-      const alive = (pid?: number): boolean => Boolean(pid && defaultIsPidAlive(pid));
+      // is not running. A row with no pid to check (an app-hosted Codex thread) counts as running. Its own process, by
+      // the start time the registry gives: after a restart the dead file's pid is often someone else's now.
+      const alive = (pid?: number, procStart?: string): boolean => Boolean(pid && registryProcessAlive(pid, procStart));
       const running = new Set(registryLive
-        .filter((s) => (!s.pid && !s.agentPid) || alive(s.pid) || alive(s.agentPid))
+        .filter((s) => (!s.pid && !s.agentPid) || alive(s.pid, s.procStart) || alive(s.agentPid))
         .flatMap((s) => [s.sessionId, s.agentSessionId ?? s.sessionId]));
       // By the name the list shows, so "brought back" names what the person knows it as, never a conversation id.
       const named = registryLive.map((s) => ({ ...s, label: labelForSessionId(s.sessionId) }));
@@ -2545,7 +2546,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         const background = backgroundGuard.backgroundPids();
         if (!background) return; // a server that couldn't be read decides nothing
         const restartable = named.filter((s) => !s.parentSessionId && !s.jobId && s.messageRoute !== "codex-app"
-          && s.pid !== undefined && alive(s.pid) && !background.has(s.pid));
+          && s.pid !== undefined && alive(s.pid, s.procStart) && !background.has(s.pid));
         return restartGuard.observe(restartable, running);
       }).catch((error) => log(`session recovery: ${error}`));
     }
@@ -3089,6 +3090,23 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         );
       }
       throw new Error(session.noTerminal ?? "session has no routable pid");
+    }
+    // Its process is gone: exited, or its pid someone else's since a restart. A restart has nothing to close and no
+    // command line to carry over, so it is the resume a start from the sheet makes. A close still goes on to be refused
+    // by its identity check, as before.
+    if (restart && !session.jobId && session.pid && !registryProcessAlive(session.pid, session.procStart)) {
+      const request = resumeRequest(session);
+      if (session.cwd && adapterFor(session.backend).folderTrusted(session.cwd) === false) request.trustFolder = true;
+      terminalSessionCommand(request); // throws on anything invalid
+      try {
+        await launchSession(request);
+      } catch (error) {
+        throw new Error(`its process had already ended, and it could not be resumed (${(error as Error).message}); resume it from Start`);
+      }
+      if (toolsStale.delete(sessionId)) publishedStateWriter.request();
+      void renderSessionPanel();
+      log(`restarted "${labelForSessionId(sessionId)}": its process (pid ${session.pid}) had already ended, so it was resumed`);
+      return { notCarriedOver: [] };
     }
     // Everything a restart needs is read and validated while the session is
     // still running: a relaunch that can't be built must never cost the close.

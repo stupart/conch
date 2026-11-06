@@ -2386,6 +2386,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         pid: event.pid,
         ...(same && row?.jobId ? { jobId: row.jobId } : {}),
         ...(same && row?.processIdentity ? { processIdentity: row.processIdentity } : {}),
+        ...(same && row?.procStart ? { procStart: row.procStart } : {}),
       });
     } catch {
       return null; // a check that breaks must not cost the send

@@ -1,4 +1,4 @@
-import type { ProcessIdentity } from "./process-identity.ts";
+import { readProcessIdentity, registryProcessAlive, type ProcessIdentity, type ProcessIdentityProbe } from "./process-identity.ts";
 import { conchHome } from "./home.ts";
 import { basename, dirname, join } from "node:path";
 import {
@@ -57,6 +57,9 @@ export interface RegistrySnapshotOptions extends CodexSessionRegistryOptions, At
   /** Whether a registry entry's process is alive, for dropping a dead one a live one shares an id with. Injectable so a
    * test's made-up pids don't depend on what the Mac happens to be running; defaults to asking the system. */
   isPidAlive?: (pid: number) => boolean;
+  /** The process holding a pid now, to tell an entry's own from a reused number (`registryProcessAlive`). Defaults to
+   * the kernel's answer, and to none when `isPidAlive` is a test's: made-up pids come with made-up start times. */
+  processIdentity?: ProcessIdentityProbe;
 }
 
 export interface SessionInfo {
@@ -117,6 +120,12 @@ export interface SessionInfo {
   /** The folder(s) the agent said it actually works in (`conch_working_folders`), when not `cwd`. */
   workDirs?: string[];
   pid?: number;
+  /**
+   * When Claude Code says `pid` started (`procStart`, UTC `ps -o lstart=`): with the pid, which process it is. An entry
+   * that outlived its process can name a pid another process holds now (`registryProcessAlive`). A Claude row's own
+   * process only; not a background job's, whose `pid` is the window attached to it.
+   */
+  procStart?: string;
   /** Daemon-captured process binding; never inferred from PID liveness alone. */
   processIdentity?: ProcessIdentity;
   /** Claude Code's own live state: "busy" | "idle" | "shell" | "waiting" (authoritative for working-vs-waiting; see `registryToPanel`). */
@@ -584,6 +593,7 @@ async function toInfo(
     // instead — that's `window` above, from the registry or from
     // `attachedWindow`'s `ps` fallback, never the job's own `entry.pid`.
     pid: background ? window?.pid ?? 0 : entry.pid,
+    ...(!backend && !background && typeof entry.procStart === "string" ? { procStart: entry.procStart } : {}),
     ...(background && typeof entry.jobId === "string" && entry.jobId ? { jobId: entry.jobId } : {}),
     ...(background && Number.isSafeInteger(entry.pid) ? { agentPid: entry.pid } : {}),
     // A window parked on a job stopped writing its status the moment it parked,
@@ -913,7 +923,10 @@ export async function registrySnapshot(
   // one is the session; the dead one, only when something live holds its id, is debris and is dropped. A lone dead
   // entry is read as before.
   const isPidAlive = options.isPidAlive ?? defaultIsPidAlive;
-  const alive = (entry: { pid: number }) => Number.isSafeInteger(entry.pid) && entry.pid > 0 && isPidAlive(entry.pid);
+  const identity = options.processIdentity ?? (options.isPidAlive ? () => null : readProcessIdentity);
+  // Its own process, not just its number: after a restart a dead entry's pid is often someone else's.
+  const alive = (entry: { pid: number; procStart?: unknown }) =>
+    registryProcessAlive(entry.pid, entry.procStart, { alive: isPidAlive, identity });
   const heldAlive = new Set(claudeEntries.filter((entry) => entry.kind !== "bg" && alive(entry)).map((entry) => entry.sessionId));
   for (let index = claudeEntries.length - 1; index >= 0; index -= 1) {
     const entry = claudeEntries[index];

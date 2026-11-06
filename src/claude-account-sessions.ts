@@ -1,6 +1,7 @@
 import { statSync } from "node:fs";
 import { windowKey, processParentTable } from "./window-key.ts";
 import { readClaudeAccounts, type ClaudeAccount } from "./claude-accounts.ts";
+import { registryProcessAlive } from "./process-identity.ts";
 import { findTranscript, registrySnapshot, codexRegistrySnapshot, withStartedBy, type RegistrySnapshot } from "./sessions.ts";
 import { readResumableSessionsResult, type ReadResumableSessionsOptions, type ResumableSessionsRead } from "./resumable.ts";
 
@@ -28,6 +29,15 @@ export async function accountRegistrySnapshot(defaultDir: string, accounts = rea
     for (const id of snapshot.liveIds) combined.liveIds.add(id);
     combined.infos.push(...snapshot.infos.map(session => ({ ...session, codexAccountId: account.id, codexHome: account.configDir, accountLabel: account.label })));
   }
+  // A dead entry is debris once something live holds its conversation, across profiles as within one (`registrySnapshot`).
+  // After a restart, a retired profile's entry from the last boot, its pid someone else's now, and the session resumed
+  // in Default read as two windows of one conversation, the dead one first (seashell's #996 beside #1372, 2026-11-06).
+  const conversation = (info: RegistrySnapshot["infos"][number]) => info.agentSessionId ?? info.sessionId;
+  const ownProcess = (info: RegistrySnapshot["infos"][number]) =>
+    info.backend !== "codex" && !info.jobId && Boolean(info.pid) && registryProcessAlive(info.pid, info.procStart);
+  const held = new Set(combined.infos.filter(ownProcess).map(conversation));
+  combined.infos = combined.infos.filter((info) =>
+    info.backend === "codex" || info.jobId || !info.pid || !held.has(conversation(info)) || ownProcess(info));
   // Imported/copied histories may reuse a conversation UUID in two profiles.
   // Preserve each live window's identity instead of letting one overwrite the other.
   const counts = new Map<string, number>();
