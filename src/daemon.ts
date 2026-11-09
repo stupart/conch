@@ -393,6 +393,7 @@ import {
   type AgentCapabilityObservation,
 } from "./agent-capabilities.ts";
 import { resolveAgentInstall } from "./agent-install.ts";
+import { AgentUpdater, agentUpdaterDeps } from "./agent-updates.ts";
 import { accessibilityTrusted } from "./accessibility.ts";
 // First-run setup's requests (setup.ts), over what `conch doctor`, `conch install` and `install-plugin` already do.
 import { createSetup, loginShellHas, MIC_CHECK_QUIET_WITHIN_MS, runInstallerInLoginShell } from "./setup.ts";
@@ -3546,6 +3547,19 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   };
   const terminalMirror = createTerminalMirror();
   /**
+   * Keeping the agent CLIs up to date (agent-updates.ts, `agent-auto-update`): Settings › Providers shows it and starts an
+   * "Update now". A session is only ever read here, for "still on an older version"; conch never restarts one over this.
+   */
+  const agentUpdater = new AgentUpdater(agentUpdaterDeps({
+    configDir: dirname(daemonSettingsPath),
+    enabled: () => cfg.agentAutoUpdate,
+    log,
+    sessions: () => [...panelSessions.values()].flatMap((session) => {
+      const executable = session.processIdentity?.executable;
+      return executable ? [{ backend: session.backend, executable }] : [];
+    }),
+  }));
+  /**
    * The logins inventory (login-inventory.ts): read when the Mac app's Settings › Logins or `conch logins` asks, then kept
    * for a few minutes. Project-scoped MCP servers are read for the folders conch's live sessions work in, for the account
    * each runs as.
@@ -3583,6 +3597,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     }, readClaudeAccounts(cfg.claudeDir), readCodexAccounts()),
     accountTools: message => handleAccountTools(message, cfg.claudeDir),
     loginInventory: message => loginInventory.handle(message),
+    agentUpdates: message => agentUpdater.handle(message),
     skillsLibrary: message => skillsLibrary.handle(message),
     benchmarks: (message) => readBenchmarks(undefined, undefined, message.offset ?? 0),
     claudeAccounts: async (message) => {
@@ -4371,6 +4386,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   log(`listening on ${cfg.socketPath} — wire hooks with \`conch install\``);
   if (pause.paused) log("starting in manual mode (persisted) — p or `conch resume` turns auto on");
   checkForUpdate(); // fire and forget; never blocks the daemon coming up
+  agentUpdater.start(); // the same: its first look is minutes from now
   rendererLifecycle.enter();
   setState(restState());
   void renderSessionPanel(); // show the dashboard immediately

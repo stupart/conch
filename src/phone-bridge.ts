@@ -190,7 +190,7 @@ function historyRequest(pathname: string, value: unknown): ReturnType<typeof val
  * it is added. test/phone-mac-only.test.ts holds every branch the control server takes before a
  * session is resolved to one side or the other.
  */
-export const MAC_APP_ONLY_KINDS: ReadonlySet<string> = new Set(["review-preview", "screen-observation", "page-capture", "page-capture-answer", "login-inventory", "claude-session-sign-ins"]);
+export const MAC_APP_ONLY_KINDS: ReadonlySet<string> = new Set(["review-preview", "screen-observation", "page-capture", "page-capture-answer", "login-inventory", "claude-session-sign-ins", "agent-updates"]);
 export const MAC_APP_ONLY_DECODERS: Readonly<Record<string, (value: unknown) => unknown>> = {
   decodeBrowserMessage,
   decodeBrowserOpenRequest,

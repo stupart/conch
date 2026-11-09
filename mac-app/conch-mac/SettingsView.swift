@@ -433,6 +433,7 @@ private struct ConchSettingRowView: View {
         "announce-max-chars": "Announcement length limit",
         "say-rate": "Fallback voice speed (wpm)",
         "failure-autofix": "Fix new failures on their own",
+        "agent-auto-update": "Update Claude Code and Codex automatically",
     ]
 
     private var displayName: String {

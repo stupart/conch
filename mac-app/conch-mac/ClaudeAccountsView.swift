@@ -430,6 +430,8 @@ struct ClaudeAccountsView: View {
                     ProviderAccountSection(providerId: "claude")
                     SettingsHairline()
                     ProviderAccountSection(providerId: "codex")
+                    SettingsHairline()
+                    AgentUpdatesSection()
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -437,6 +439,84 @@ struct ClaudeAccountsView: View {
         }
         .foregroundStyle(SwapPalette.foreground)
         .background(SwapPalette.background)
+    }
+}
+
+/// Keeping Claude Code and Codex up to date (src/agent-updates.ts, 2026-11-09): each agent's version, how it's installed and
+/// what conch last did, Update now, and the one switch for all of them. Shown under the accounts, since this page is where
+/// you go to look after an agent.
+private struct AgentUpdatesSection: View {
+    @StateObject private var store = AgentUpdatesStore()
+
+    private struct Marks: AgentUpdateMarks {
+        func mark(_ backend: String) -> Image? {
+            Image(backend == "codex" ? "AgentCodex" : "AgentClaude")
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SettingsSubheading(title: "Updates") {
+                Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 14)).foregroundStyle(SwapPalette.secondaryText)
+            }
+            if let reply = store.reply {
+                TimelineView(.periodic(from: .now, by: 30)) { context in
+                    AgentUpdatesCard(reply: reply, now: context.date, marks: Marks(),
+                                     onUpdate: { backend in Task { await store.updateNow(backend) } },
+                                     onSetAuto: { value in Task { await store.setAuto(value) } })
+                }
+            } else {
+                Text(store.problem ?? "Reading what's installed…")
+                    .font(ConchTypography.font(size: 12)).foregroundStyle(SwapPalette.secondaryText)
+            }
+            if let problem = store.problem, store.reply != nil {
+                Text(problem).font(ConchTypography.font(size: 11)).foregroundStyle(SwapPalette.severity(95))
+            }
+        }
+        .task {
+            await store.load()
+            // The card keeps its "Updating…" and "Checked 12 min ago" honest while it's on screen.
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(15))
+                guard !Task.isCancelled else { return }
+                await store.load()
+            }
+        }
+    }
+}
+
+/// The agents' updates as the daemon last said. Update now runs in its own turn on the daemon's one-at-a-time queue; its
+/// reply can take as long as a Homebrew upgrade.
+@MainActor
+final class AgentUpdatesStore: ObservableObject {
+    @Published private(set) var reply: AgentUpdatesReply?
+    @Published private(set) var problem: String?
+    private let client = ConchSocketClient()
+
+    func load() async { await send(.status, timeout: 10) }
+
+    func updateNow(_ backend: String) async { await send(.updateNow(backend), timeout: 20 * 60) }
+
+    func setAuto(_ on: Bool) async {
+        struct SetConfig: Encodable { let kind = "set-config"; let key = "agent-auto-update"; let value: Bool }
+        _ = await client.request(SetConfig(value: on), timeout: 10)
+        await load()
+    }
+
+    private func send(_ request: AgentUpdatesRequest, timeout: TimeInterval) async {
+        switch await client.request(request, timeout: timeout) {
+        case let .reply(data):
+            if let decoded = try? JSONDecoder().decode(AgentUpdatesReply.self, from: data), decoded.kind == "agent-updates" {
+                reply = decoded
+                problem = nil
+            } else {
+                problem = "Showing updates needs an updated Conch daemon."
+            }
+        case .connectFailed:
+            problem = "Start the Conch daemon to see updates."
+        case .timeout:
+            problem = "The daemon took too long. It may still be updating."
+        }
     }
 }
 

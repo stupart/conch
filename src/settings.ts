@@ -1,5 +1,6 @@
 import { accountToolsRequestError, isAccountToolsReply, type AccountToolsRequest, type AccountToolsReply } from "./account-tools.ts";
 import { isLoginInventoryReply, loginInventoryRequestError, type LoginInventoryReply, type LoginInventoryRequest } from "./login-inventory.ts";
+import { agentUpdatesRequestError, isAgentUpdatesReply, type AgentUpdatesReply, type AgentUpdatesRequest } from "./agent-updates-wire.ts";
 import { benchmarksRequestError, isBenchmarksReply, type BenchmarksReply, type BenchmarksRequest } from "./benchmarks.ts";
 import { isSkillsLibraryReply, skillsLibraryRequestError, type SkillsLibraryReply, type SkillsLibraryRequest } from "./skills-library.ts";
 import { claudeHandoffError } from "./claude-account-handoff.ts";
@@ -83,6 +84,7 @@ export const SETTING_KEYS = [
   "whisper-idle-unload",
   "screen-log",
   "failure-autofix",
+  "agent-auto-update",
 ] as const;
 
 export type SettingKey = typeof SETTING_KEYS[number];
@@ -122,7 +124,8 @@ export type SettingField =
   | "sayRate"
   | "whisperIdleUnloadMins"
   | "screenLog"
-  | "failureAutofix";
+  | "failureAutofix"
+  | "agentAutoUpdate";
 export type HandoffOrder = "newest" | "oldest" | "urgency";
 export type PhoneLanMode = "auto" | "on" | "off";
 export type SettingValue = number | boolean | string;
@@ -673,6 +676,21 @@ export const SETTING_DESCRIPTORS = [
     apply: "live",
     help: "when a failure ticket opens, start a background Claude session in conch's checkout to fix it and open a PR (never merged); one at a time, at most 3 a day",
   },
+  {
+    // On: Tyler (2026-11-09), after finding his Claude Code 12 releases behind and missing a new model: "can we have a
+    // way for this to happen through conch automatically?". Only a Homebrew cask conch can name (agent-updates.ts);
+    // anything else is left alone. Read live: off stops the next check and the next upgrade at once. Not one agents may
+    // set (`AGENT_TUNABLE_SETTINGS`): it changes what runs on this Mac.
+    key: "agent-auto-update",
+    field: "agentAutoUpdate",
+    env: "CONCH_AGENT_AUTO_UPDATE",
+    kind: "boolean",
+    default: true,
+    parse: parseBoolean,
+    bounds: null,
+    apply: "live",
+    help: "keep Claude Code and Codex up to date when they're installed as Homebrew casks; checks every few hours, never restarts a session",
+  },
 ] as const satisfies readonly SettingDescriptor[];
 
 export const SETTING_REGISTRY: ReadonlyMap<string, SettingDescriptor> = new Map(
@@ -985,6 +1003,8 @@ export type RuntimeControlMessage =
   | AccountToolsRequest
   /** The logins inventory (login-inventory.ts): the Mac app's and the CLI's alone; the phone bridge refuses it. */
   | LoginInventoryRequest
+  /** The agent CLIs' updates (agent-updates.ts), status or "Update now": the Mac app's alone, and the phone bridge refuses it. */
+  | AgentUpdatesRequest
   /** Settings › Skills (skills-library.ts): every skill on this Mac, the public indexes', Add and Try. */
   | SkillsLibraryRequest
   /** Settings › Benchmarks (benchmarks.ts): the catalog this build carries. */
@@ -1142,6 +1162,7 @@ export type RuntimeControlResponse =
   | SkillsLibraryReply
   | BenchmarksReply
   | LoginInventoryReply
+  | AgentUpdatesReply
   | HistoryResponse
   | { kind: "resumable"; sessions: ResumableSession[]; complete: boolean }
   | {
@@ -1245,6 +1266,7 @@ export function isControlMessageCandidate(value: unknown): boolean {
     || value.kind === "account-tools" || value.kind === "claude-accounts" || value.kind === "codex-accounts"
     || value.kind === "claude-session-sign-ins"
     || value.kind === "login-inventory"
+    || value.kind === "agent-updates"
     || value.kind === "skills-library" || value.kind === "benchmarks"
     || value.kind === "session-start"
     || value.kind === "session-close"
@@ -1448,6 +1470,12 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
     const err = benchmarksRequestError(value);
     if (err) return { ok: false, err };
     return { ok: true, value: { kind: "benchmarks", ...(typeof value.offset === "number" ? { offset: value.offset } : {}) } };
+  }
+  if (value.kind === "agent-updates") {
+    const err = agentUpdatesRequestError(value);
+    if (err) return { ok: false, err };
+    return { ok: true, value: { kind: "agent-updates", action: value.action as AgentUpdatesRequest["action"],
+      ...(value.backend === undefined ? {} : { backend: value.backend as AgentUpdatesRequest["backend"] }) } };
   }
   if (value.kind === "login-inventory") {
     const err = loginInventoryRequestError(value);
@@ -1758,6 +1786,7 @@ export function validateControlMessage(value: unknown): ParseResult<AnyControlMe
     || value.kind === "account-tools" || value.kind === "claude-accounts" || value.kind === "codex-accounts"
     || value.kind === "claude-session-sign-ins"
     || value.kind === "login-inventory"
+    || value.kind === "agent-updates"
     || value.kind === "skills-library" || value.kind === "benchmarks"
     || value.kind === "session-start"
     || value.kind === "session-close"
@@ -1846,6 +1875,8 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
     ? { ok: true, value } : { ok: false, err: "invalid skills library response" };
   if (value.kind === "benchmarks") return isBenchmarksReply(value)
     ? { ok: true, value } : { ok: false, err: "invalid benchmarks response" };
+  if (value.kind === "agent-updates") return isAgentUpdatesReply(value)
+    ? { ok: true, value } : { ok: false, err: "invalid agent updates response" };
   if (value.kind === "login-inventory") return isLoginInventoryReply(value)
     ? { ok: true, value } : { ok: false, err: "invalid login inventory response" };
   if (value.kind === "claude-session-sign-ins") return isSessionSignInsReply(value)
