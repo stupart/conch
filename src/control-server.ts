@@ -6,6 +6,7 @@ import type { ClaudeSessionSignInRequest, ClaudeSessionSignInsReply } from "./cl
 import { ControlFrameError, ControlFrameReader, encodeControlFrame } from "./control-framing.ts";
 import type { HistoryPageRequest, HistoryItemRequest, HistoryResponse } from "./history.ts";
 import { fitLoginInventoryReply, type LoginInventoryReply, type LoginInventoryRequest } from "./login-inventory.ts";
+import type { AgentUpdatesReply, AgentUpdatesRequest } from "./agent-updates-wire.ts";
 import type { BenchmarksReply, BenchmarksRequest } from "./benchmarks.ts";
 import type { SkillsLibraryReply, SkillsLibraryRequest } from "./skills-library.ts";
 import { createServer, connect } from "node:net";
@@ -310,6 +311,7 @@ export function dispatchControlMessage(
     || validated.value.kind === "account-tools" || validated.value.kind === "claude-accounts" || validated.value.kind === "codex-accounts"
     || validated.value.kind === "claude-session-sign-ins"
     || validated.value.kind === "login-inventory"
+    || validated.value.kind === "agent-updates"
     || validated.value.kind === "skills-library" || validated.value.kind === "benchmarks"
     || validated.value.kind === "session-start"
     || validated.value.kind === "session-close"
@@ -359,6 +361,8 @@ export interface RuntimeControlDispatchOptions {
   accountTools?(message: AccountToolsRequest): Promise<AccountToolsReply>;
   /** The logins inventory (login-inventory.ts): what is installed and signed in on this Mac, as whom. Read only. */
   loginInventory?(message: LoginInventoryRequest): Promise<LoginInventoryReply>;
+  /** Agent CLI updates (agent-updates.ts): status for the app's Settings, or an "Update now". */
+  agentUpdates?(message: AgentUpdatesRequest): AgentUpdatesReply | Promise<AgentUpdatesReply>;
   /** The skills library (skills-library.ts): every skill, the public indexes', and Add's and Try's writes. */
   skillsLibrary?(message: SkillsLibraryRequest): Promise<SkillsLibraryReply>;
   /** The benchmark catalog (benchmarks.ts). Read only. */
@@ -456,6 +460,10 @@ export async function applyRuntimeControlMessage(
     if (message.kind === "benchmarks") {
       if (!options.benchmarks) throw new Error("Benchmarks require an updated conch daemon");
       return options.benchmarks(message);
+    }
+    if (message.kind === "agent-updates") {
+      if (!options.agentUpdates) throw new Error("Agent updates require an updated conch daemon");
+      return await options.agentUpdates(message);
     }
     if (message.kind === "login-inventory") {
       if (!options.loginInventory) throw new Error("The logins inventory requires an updated conch daemon");
@@ -1402,7 +1410,7 @@ function isRuntimeControlCandidate(value: unknown): boolean {
   return socketRecord(value) && (
     value.kind === "account-tools" || value.kind === "claude-accounts" || value.kind === "codex-accounts" || value.kind === "session-start" || value.kind === "session-close" || value.kind === "session-fork"
     || value.kind === "claude-session-sign-ins"
-    || value.kind === "login-inventory"
+    || value.kind === "login-inventory" || value.kind === "agent-updates"
     || value.kind === "skills-library" || value.kind === "benchmarks"
     || value.kind === "history-page" || value.kind === "history-item"
     || value.kind === "app-error" || value.kind === "resumable"
@@ -1500,11 +1508,11 @@ export function createControlServer(options: ControlServerOptions): ControlServe
         // The logins inventory (login-inventory.ts) names no session: what is installed and signed in on this Mac, as whom.
         // The Mac app's and the CLI's to ask, never a phone's (phone-bridge.ts `MAC_APP_ONLY_KINDS`). Validated as every
         // runtime message is (settings.ts), and answered in one frame (`fitLoginInventoryReply`).
-        if (socketRecord(body) && body.kind === "login-inventory") {
+        if (socketRecord(body) && (body.kind === "login-inventory" || body.kind === "agent-updates")) {
           const inventory = await dispatchRuntimeRequest(body, (message) => application.runtime(message));
           let frame: Buffer;
           try {
-            frame = encodeControlFrame(JSON.stringify(inventory.handled ? inventory.response : { kind: "session-error", error: "invalid login inventory request" }));
+            frame = encodeControlFrame(JSON.stringify(inventory.handled ? inventory.response : { kind: "session-error", error: `invalid ${String(body.kind)} request` }));
           } catch {
             frame = encodeControlFrame(JSON.stringify({ kind: "session-error", error: "the logins inventory was too large to send" }));
           }

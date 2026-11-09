@@ -80,6 +80,7 @@ describe("a third backend is one row", () => {
     resumeArgs: (id) => ` --continue ${id}`,
     forkArgs: null,
     teleportArgs: null,
+    ownInstallerRoots: () => [],
     bypassPermissionsFlag: "--trust-me",
     startOptions: [],
     trustFolderArgs: (cwd) => ` --trust ${cwd}`,

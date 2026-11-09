@@ -8,10 +8,9 @@ import { isNewer } from "./version-check.ts";
  * SURFACE and ADVISE only (see the mac 2026-09-23 measurement: 6 sessions on
  * a Caskroom `claude` 14 versions behind the 2 running the desktop app's
  * bundled copy — `brew outdated` sees neither, since both casks self-update).
- * conch never runs an upgrade itself: swapping the binary underneath a
- * running voice loop mid-session is not something to do to someone
- * automatically (see version-check.ts's own reasoning). It only tells you,
- * once asked, and hands you the exact command for THIS install.
+ * This module tells you, once asked, and hands you the exact command for THIS
+ * install. Actually upgrading a cask is agent-updates.ts's job (Tyler,
+ * 2026-11-09), and it never touches a running session.
  */
 
 export type InstallLocationKind = "homebrew-cask" | "npm-global" | "claude-desktop-app" | "other";

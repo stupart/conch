@@ -68,6 +68,8 @@ function macOnlyBodies(): Array<{ kind: string; body: Record<string, unknown> }>
     [VIDEO_TRANSCRIPT_KIND]: { path: "/Users/t/.cache/conch/uploads/mac-1.wav" },
     // The logins inventory: who this Mac is signed in as, everywhere, and asking for it runs the Mac's CLIs.
     "login-inventory": { action: "refresh" },
+    // "Update now": a phone can't run an upgrade on the Mac (agent-updates.ts).
+    "agent-updates": { action: "update-now", backend: "claude" },
   };
   const kinds = [...SETUP_REQUEST_KINDS, ...PRACTICE_REQUEST_KINDS, ...narrationKinds(), VIDEO_TRANSCRIPT_KIND, ...MAC_APP_ONLY_KINDS];
   return kinds.flatMap((kind) => [

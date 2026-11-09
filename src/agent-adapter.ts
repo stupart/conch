@@ -154,6 +154,11 @@ export interface AgentAdapter {
   readonly trustTypedAtLaunch: boolean;
   /** Has the agent already been told it trusts this folder? Null when unreadable — say nothing. */
   folderTrusted(cwd: string): boolean | null;
+  /**
+   * Where the agent's own installer puts itself, resolved: a binary under one of these updates itself, so conch leaves it
+   * alone (agent-updates.ts). `[]` where the agent has none.
+   */
+  ownInstallerRoots(home: string, env: NodeJS.ProcessEnv): readonly string[];
 
   // ── labels (provider-rename.ts) ───────────────────────────────────────────
   /** The agent's own rename command, typed into its prompt; null where it has none. */
@@ -369,6 +374,8 @@ export const claudeAdapter: AgentAdapter = {
   hookTrustArgs: null,
   trustTypedAtLaunch: true,
   folderTrusted: (cwd) => claudeFolderTrusted(cwd),
+  // Its native installer: `$XDG_DATA_HOME/claude/versions/<version>` behind `~/.local/bin/claude` (2.1.309's `Fmn`).
+  ownInstallerRoots: (home, env) => [join(env.XDG_DATA_HOME ?? join(home, ".local", "share"), "claude", "versions")],
   renameCommand: (label) => `/rename ${label}`,
   transcriptFormat: "claude",
   findTranscript: (sessionId, { claudeDir }) => {
@@ -488,6 +495,8 @@ export const codexAdapter: AgentAdapter = {
   hookTrustArgs: (trust) => ` -c ${shellQuote(trust)}`,
   trustTypedAtLaunch: false,
   folderTrusted: (cwd) => codexFolderTrusted(cwd),
+  // Its standalone install, under Codex's home (codex-cli 0.164.0: `packages/standalone`).
+  ownInstallerRoots: (home, env) => [join(env.CODEX_HOME ?? join(home, ".codex"), "packages", "standalone")],
   // Codex has no equivalent command (provider-rename.ts returned `unsupported`).
   renameCommand: () => null,
   transcriptFormat: "codex",

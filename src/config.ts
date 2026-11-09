@@ -130,6 +130,8 @@ export interface Config {
   screenLog: boolean;
   /** Start a fix session for a failure ticket as it opens (`failure-tickets.ts`). Off unless turned on. */
   failureAutofix: boolean;
+  /** Keep the agent CLIs current (settings `agent-auto-update`, agent-updates.ts). Read live. */
+  agentAutoUpdate: boolean;
   socketPath: string;
   claudeDir: string;
   /** TTS engine: owned stdin/stdout worker (default) | legacy HTTP server | say */
@@ -233,6 +235,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     meetingAutopause: settings["meeting-autopause"].value as boolean,
     screenLog: settings["screen-log"].value as boolean,
     failureAutofix: settings["failure-autofix"].value as boolean,
+    agentAutoUpdate: settings["agent-auto-update"].value as boolean,
     socketPath: env.CONCH_SOCKET ?? "/tmp/conch.sock",
     claudeDir: env.CLAUDE_CONFIG_DIR ?? join(HOME, ".claude"),
     ttsEngine: parseTtsEngine(env.CONCH_TTS),
