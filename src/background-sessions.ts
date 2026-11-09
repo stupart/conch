@@ -51,9 +51,13 @@ export async function managedBackgroundSession(pid: number, probe: Probe = probe
 /**
  * How typing a yes into Claude's trust prompt went: typed; not needed, because the session reached its input box
  * without asking (the folder was already trusted — a non-default account's trust can't be read beforehand, so the
- * app asks anyway); never shown before the wait ran out, the session still there; or the session is gone.
+ * app asks anyway); never shown before the wait ran out, the session still there; shown, and still there when the wait
+ * ran out however the keys went; or the session is gone.
  */
-export type BackgroundTrustOutcome = "answered" | "not asked" | "never appeared" | "the session ended";
+export type BackgroundTrustOutcome = "answered" | "not asked" | "never appeared" | "still asking" | "the session ended";
+
+/** How long a key is given to show on the prompt before the screen is believed. */
+const TRUST_KEY_SETTLE_MS = 500;
 
 /**
  * Only the exact Claude trust prompt, and only after the user agreed in Conch.
@@ -63,6 +67,13 @@ export type BackgroundTrustOutcome = "answered" | "not asked" | "never appeared"
  * after 30 s, and said so to no one: the session sat on the prompt. A failed look is a reason to look again; only the
  * pane being gone ends the wait early. 60 s: a resumed conversation can take far longer than a fresh one to reach
  * the prompt (2026-10-02, a resume left waiting). `waitMs` and `intervalMs` are for tests.
+ *
+ * One key at a time, from what the screen shows, and answered only once the prompt has gone (2026-11-09, Tyler: "Making a
+ * new claude session just failed"). Down and Enter went in one breath the moment the prompt was drawn, and the answer
+ * was taken as given: Claude Code draws its menu before it is listening, so both could be lost, conch logged "answered",
+ * and the session sat on the prompt until the app gave up on it. One restored on 2026-11-05 sat there for four days. A
+ * lost Down with a heard Enter would have been worse, "No, exit" being the default. So Enter goes only with Yes
+ * highlighted on two looks running, which a Down landing late cannot get past.
  */
 export async function acceptBackgroundTrust(
   pane: string,
@@ -72,23 +83,35 @@ export async function acceptBackgroundTrust(
   const target = paneTarget(pane);
   if (!target) throw new Error("Invalid background pane");
   const deadline = Date.now() + waitMs;
+  let pressed = false;
+  let yesLooks = 0;
   for (;;) {
     let pause = intervalMs;
     const screen = await probe([...target.tmux, "capture-pane", "-p", "-t", target.pane], [0]);
     if (screen === null) {
       if (await paneGone(target, probe)) return "the session ended";
     } else if (screen.includes("Yes, I trust this folder") && screen.includes("No, exit")) {
-      // Claude's default is No, and Down wraps to Yes, without a terminal window or any global keyboard focus. Yes
-      // already highlighted is a Down that landed from a send that reported failure: Enter alone, never Down again.
+      // Claude's default is No, and Down wraps to Yes, without a terminal window or any global keyboard focus.
       const yesHighlighted = screen.split("\n").some((line) => line.includes("Yes, I trust this folder") && line.includes("❯"));
-      const keys = yesHighlighted ? ["Enter"] : ["Down", "Enter"];
-      if (await probe([...target.tmux, "send-keys", "-t", target.pane, ...keys], [0]) !== null) return "answered";
-      // Keys that may have landed late are given time to show before the screen is believed again.
-      pause = Math.max(intervalMs, 2_000);
+      yesLooks = yesHighlighted ? yesLooks + 1 : 0;
+      const key = !yesHighlighted ? "Down" : yesLooks >= 2 ? "Enter" : undefined;
+      pause = Math.max(intervalMs, TRUST_KEY_SETTLE_MS);
+      if (key) {
+        pressed = true;
+        yesLooks = 0;
+        // A send that reported failure may still have landed: given longer to show before the screen is believed again.
+        if (await probe([...target.tmux, "send-keys", "-t", target.pane, key], [0]) === null) pause = Math.max(intervalMs, 2_000);
+      }
+    } else if (pressed) {
+      // Gone after a key of ours: if that was the session going too, the next look at the pane says so.
+      return await paneGone(target, probe) ? "the session ended" : "answered";
     } else if (claudeInputBoxText(screen) !== null) {
       return "not asked";
     }
-    if (Date.now() + pause > deadline) return await paneGone(target, probe) ? "the session ended" : "never appeared";
+    if (Date.now() + pause > deadline) {
+      if (await paneGone(target, probe)) return "the session ended";
+      return pressed ? "still asking" : "never appeared";
+    }
     await Bun.sleep(pause);
   }
 }
@@ -109,6 +132,7 @@ async function paneGone(target: { tmux: string[]; pane: string }, probe: Probe):
  */
 export function backgroundTrustReport(name: string, outcome: BackgroundTrustOutcome): { line: string; error?: string } {
   const line = `trust prompt in ${name}: ${outcome}`;
+  if (outcome === "still asking") return { line, error: `Claude's trust prompt in ${name} did not take the yes from the app, so the session is still waiting on it: open its startup terminal.` };
   if (outcome !== "never appeared") return { line };
   return { line, error: `Claude's trust prompt never appeared in ${name}, so the yes from the app was not typed. It may be waiting at a login or other prompt: open its startup terminal.` };
 }
