@@ -1036,6 +1036,12 @@ export type RuntimeControlMessage =
     options?: Record<string, string | boolean>;
     /** The new conversation's first message (`startPromptError`): the skills library's Try. */
     prompt?: string;
+    /**
+     * An agent's start (`conch_start`): answer once conch has seen the session running, with its id and label, or with
+     * why it didn't start, rather than as soon as its window opened. `label`, only with it: the new session's label.
+     */
+    wait?: true;
+    label?: string;
   }
   /** `restart`: close it, then resume the same conversation with the same start flags. */
   | { kind: "session-close"; sessionId: string; restart?: true }
@@ -1182,6 +1188,12 @@ export type RuntimeControlResponse =
     teleported?: true;
     /** The terminal will ask you to trust this folder before the agent starts. */
     awaitingTrust?: boolean;
+    /**
+     * With `wait`: `sessionId` and `label` once conch has seen it as a session of its own, else `running`, where it runs
+     * though conch can't see it as a session yet (a Terminal tty, or conch's background host).
+     */
+    label?: string;
+    running?: string;
   }
   | {
     /**
@@ -1642,6 +1654,16 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
       : { ...(value.options as Record<string, string | boolean>) };
     const promptError = startPromptError({ prompt: value.prompt as string | undefined, resumeSessionId, teleportSessionId });
     if (promptError) return { ok: false, err: promptError };
+    if (value.wait !== undefined && value.wait !== true) return { ok: false, err: "wait must be true when present" };
+    let label: string | undefined;
+    if (value.label !== undefined) {
+      if (value.wait !== true) return { ok: false, err: "label names a session conch waits to see start: send it with wait" };
+      const validated = validateSessionLabel(value.label);
+      if (!validated.ok) return validated;
+      label = validated.value;
+    }
+    // A handoff answers with the id it prepared, and is never an agent's.
+    if (value.wait === true && value.claudeSourceAccountId !== undefined) return { ok: false, err: "an account handoff isn't waited on" };
     return {
       ok: true,
       value: {
@@ -1660,6 +1682,8 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
         ...(cwd ? { cwd } : {}),
         ...(options ? { options } : {}),
         ...(typeof value.prompt === "string" ? { prompt: value.prompt.trim() } : {}),
+        ...(value.wait === true ? { wait: true as const } : {}),
+        ...(label ? { label } : {}),
       },
     };
   }
@@ -2006,6 +2030,11 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
     if ((value.backend !== "claude" && value.backend !== "codex") || typeof value.resumed !== "boolean") {
       return { ok: false, err: "invalid session started response" };
     }
+    for (const key of ["label", "running"] as const) {
+      if (value[key] !== undefined && (typeof value[key] !== "string" || (value[key] as string).length > 4_096)) {
+        return { ok: false, err: `invalid session started response: ${key}` };
+      }
+    }
     return {
       ok: true,
       value: {
@@ -2016,6 +2045,8 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
         resumed: value.resumed,
         ...(value.teleported === true ? { teleported: true as const } : {}),
         ...(value.awaitingTrust === true ? { awaitingTrust: true } : {}),
+        ...(typeof value.label === "string" ? { label: value.label } : {}),
+        ...(typeof value.running === "string" ? { running: value.running } : {}),
       },
     };
   }

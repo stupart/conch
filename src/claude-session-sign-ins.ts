@@ -317,6 +317,46 @@ export function claudeSignInForLaunch(
 }
 
 /**
+ * The sign-in a person or an agent names, by its id or by its label in any case: `conch start --sign-in` and
+ * `conch_start`'s `signIn` (2026-11-10, Tyler, choosing which account a session runs on: "one session [uses] another
+ * account to create a fable agent using conch for me since [this one is] out of credits"). One that isn't in the list
+ * is refused with the sign-ins there are, so the next try can name one; it never falls back to the rotating login.
+ */
+export function resolveSessionSignIn(query: string, signIns: readonly ClaudeSessionSignIn[]): ClaudeSessionSignIn {
+  const asked = query.trim();
+  const found = signIns.find((one) => one.id === asked) ?? signIns.find((one) => one.label.toLowerCase() === asked.toLowerCase());
+  if (found) return found;
+  // What was asked, said back without anything token-shaped: a token pasted here by mistake isn't repeated.
+  const said = redactTokens(asked.replace(new RegExp(CONTROL.source, "g"), " ")).slice(0, 80);
+  throw new Error(`no Claude sign-in is called "${said}". ${signInsListed(signIns)}`);
+}
+
+/**
+ * The sign-in a start names (`--sign-in`, `conch_start`'s `signIn`), resolved; refused for any agent but Claude, whose
+ * sign-ins these are. `signIns` is read only when one is named and the agent is Claude.
+ */
+export function signInForStart(backend: string, query: string, signIns: () => readonly ClaudeSessionSignIn[]): ClaudeSessionSignIn {
+  if (backend !== "claude") throw new Error("a sign-in is for a Claude session: Codex signs in with its own accounts");
+  return resolveSessionSignIn(query, signIns());
+}
+
+/** `conch start --help`'s words for `--sign-in`, for the agent whose sign-ins these are; nothing for another. */
+export function signInStartUsage(backend: string): { synopsis: string; help: string } | undefined {
+  if (backend !== "claude") return;
+  return {
+    synopsis: " [--sign-in <name|id>]",
+    help: "  --sign-in <name|id>\n      One of conch's Claude sign-ins (the Mac app's Settings › Providers), by its name or id, in place of Default's own, rotating login",
+  };
+}
+
+/** The sign-ins there are, by label and id, for a refusal: never anything more. */
+export function signInsListed(signIns: readonly ClaudeSessionSignIn[]): string {
+  return signIns.length
+    ? `conch has ${signIns.map((one) => `"${one.label}" (${one.id})`).join(", ")}; leave it out for Default's own, rotating login.`
+    : "conch has no Claude sign-ins yet: add one in the Mac app's Settings › Providers, or leave it out for Default's own, rotating login.";
+}
+
+/**
  * What the launched shell reads the token with. `/usr/bin/security`, always, outside conch's tests. In them it is the
  * stand-in a test names in `CONCH_SIGN_IN_SECURITY`, or `/usr/bin/false`: a launch prefix a test runs never reads the
  * real Keychain.

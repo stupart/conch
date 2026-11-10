@@ -44,6 +44,9 @@ import { RelabelHints, type LabelSource } from "./label-drift.ts";
 import { backendOfClient, McpCallLog, type McpCaller, type McpCallObservation, type McpCallOutcome } from "./mcp-usage.ts";
 import { compactSessionList, detailedSession, rowMatches, type SessionsView } from "./mcp-sessions.ts";
 import { assistantTail, TAIL_WAIT_MAX_S, waitForTail, type AssistantTail } from "./transcript-tail.ts";
+import { readSessionSignIns, signInForStart, type ClaudeSessionSignIn } from "./claude-session-sign-ins.ts";
+import { adapterFor } from "./agent-adapter.ts";
+import { startOptionsError, startPromptError, START_PROMPT_MAX } from "./session-lifecycle.ts";
 
 /** A session works in a few folders, not a filesystem. */
 const WORKING_FOLDERS_MAX = 8;
@@ -54,6 +57,9 @@ const WORKING_FOLDERS_MAX = 8;
  * timeout.
  */
 export const CONCH_FORK_REPLY_MS = 45_000;
+
+/** How long `conch_start` waits for the daemon: the same start and the same wait for it to be seen (`startLiveSession`). */
+export const CONCH_START_REPLY_MS = CONCH_FORK_REPLY_MS;
 import {
   checkLocalFile,
   checkReviewLink,
@@ -460,6 +466,33 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
             maxLength: 80,
             description: "Optional. The fork's label in conch, e.g. \"Marketing pass\"; else \"<its label> · fork\".",
           },
+        },
+        additionalProperties: false,
+      },
+    },
+    {
+      name: "conch_start",
+      description: text.tools.conch_start,
+      inputSchema: {
+        type: "object",
+        properties: {
+          backend: { type: "string", enum: ["claude", "codex"], description: "Optional. claude (Claude Code, the default) or codex." },
+          folder: { type: "string", minLength: 1, description: "Optional. The folder it works in, absolute or relative to your cwd; your own cwd when omitted." },
+          signIn: {
+            type: "string",
+            minLength: 1,
+            description: "Optional, Claude only. One of conch's Claude sign-ins, by its label (any case) or id, as conch_sessions lists them in claudeSignIns. Omitted: Default's own, rotating login.",
+          },
+          model: { type: "string", minLength: 1, description: "Optional. A model alias or name, e.g. \"fable\", \"opus\" or \"claude-fable-5\"; else the agent's default." },
+          effort: { type: "string", minLength: 1, description: "Optional. Claude: low, medium, high, xhigh or max. Codex: its reasoning effort (none, minimal, low, medium, high, xhigh, max…)." },
+          prompt: {
+            type: "string",
+            minLength: 1,
+            maxLength: START_PROMPT_MAX,
+            description: `Optional. Its first message, one line of at most ${START_PROMPT_MAX} characters, not starting with "-": it starts working on it at once.`,
+          },
+          host: { type: "string", enum: ["terminal", "background"], description: "Optional. terminal (a Terminal window, the default) or background (conch's background host, no window)." },
+          label: { type: "string", minLength: 1, maxLength: 80, description: "Optional. Its label in conch, e.g. \"Fable · research\"." },
         },
         additionalProperties: false,
       },
@@ -965,9 +998,11 @@ export interface McpDependencies {
   labelSource?(session: Readonly<SessionInfo>): LabelSource;
   sendControlMessage(
     socketPath: string,
-    message: ControlMessage | HistoryRequest | Extract<RuntimeControlMessage, { kind: "session-fork" }>,
+    message: ControlMessage | HistoryRequest | Extract<RuntimeControlMessage, { kind: "session-fork" | "session-start" }>,
     timeoutMs?: number,
   ): Promise<ControlResult>;
+  /** conch's Claude sign-ins, ids and labels only (claude-session-sign-ins.ts): `conch_start`'s, and `conch_sessions`' list. */
+  readSessionSignIns?(): readonly ClaudeSessionSignIn[];
   getSettingDescriptor: typeof getSettingDescriptor;
   parseSetting: typeof parseSetting;
   transcriptMark(transcriptPath: string): Promise<number>;
@@ -1030,6 +1065,7 @@ export const defaultMcpDependencies: McpDependencies = {
     ));
   },
   splitSentences,
+  readSessionSignIns: () => readSessionSignIns(),
   now: Date.now,
   parentPid: () => sessionParentPid(),
   capturePage: requestPageCapture,
@@ -1351,6 +1387,19 @@ export function mcpCallCaller(
 }
 
 /** Your own session, for a tool whose `session` was omitted; refused when conch can't verify it. */
+/**
+ * The Claude sign-ins `conch_start` can start a session on, for `conch_sessions`' list: label and id, nothing more, and
+ * nothing when there are none or the list can't be read (a sessions list must not fail over it).
+ */
+function claudeSignInsListed(dependencies: McpDependencies): { claudeSignIns?: Array<{ label: string; id: string }> } {
+  try {
+    const signIns = (dependencies.readSessionSignIns ?? readSessionSignIns)();
+    return signIns.length ? { claudeSignIns: signIns.map(({ label, id }) => ({ label, id })) } : {};
+  } catch {
+    return {};
+  }
+}
+
 async function ownSession(
   tool: string,
   config: McpRuntimeConfig,
@@ -1728,7 +1777,7 @@ export function createMcpToolHandlers(
       };
       const mode = isRecord(state.mode) ? { paused: state.mode.paused === true, muted: state.mode.muted === true } : undefined;
       const extra = { caller, ...(mode ? { mode } : {}), ...(published ? {} : { source: "the registry: conch's daemon is not running" }) };
-      if (!detail) return compactSessionList(view, query, extra);
+      if (!detail) return compactSessionList(view, query, { ...extra, ...claudeSignInsListed(dependencies) });
       const rows = view.rows.filter((row): row is Record<string, unknown> => isRecord(row) && typeof row.id === "string");
       const exact = rows.filter((row) => row.id === query);
       const matches = exact.length ? exact : rows.filter((row) => rowMatches(row, query!));
@@ -1786,6 +1835,116 @@ export function createMcpToolHandlers(
         running: response.running ?? "a new window",
         ...dropped,
         note: "the fork's agent is running, but hasn't yet given conch an id it can see (Claude Code may wait for its first message); it appears in conch_sessions once it has. Don't fork again",
+      };
+    },
+
+    // 2026-11-10, Tyler, on choosing which account a session runs on: "one session [uses] another account to create a
+    // fable agent using conch for me since [this one is] out of credits". The daemon's own start (`startLiveSession`),
+    // answered once conch sees the session running, as conch_fork is; its reply is then conch_transcript_tail's to wait on.
+    async conch_start(argumentsValue) {
+      const argumentsObject = toolArguments(argumentsValue);
+      allowOnly(argumentsObject, ["backend", "folder", "signIn", "model", "effort", "prompt", "host", "label"], {
+        account: "signIn, one of conch's Claude sign-ins by label or id", cwd: "folder", message: "prompt",
+      });
+      const backend = optionalString(argumentsObject, "backend")?.trim() ?? "claude";
+      if (backend !== "claude" && backend !== "codex") throw new ToolInputError("backend must be claude or codex");
+      const adapter = adapterFor(backend);
+      const host = optionalString(argumentsObject, "host")?.trim();
+      if (host !== undefined && host !== "terminal" && host !== "background") throw new ToolInputError("host must be terminal or background");
+      const label = optionalString(argumentsObject, "label")?.trim();
+      if (label !== undefined && label.length > 80) throw new ToolInputError("label must be at most 80 characters");
+      // Your own cwd unless you name another: this process's cwd is the calling session's.
+      const folder = resolve(process.cwd(), optionalString(argumentsObject, "folder")?.trim() ?? ".");
+      if (!(await stat(folder).catch(() => null))?.isDirectory()) throw new ToolInputError(`refused: ${folder} is not a folder that exists`);
+      // A sign-in by its label or id; one conch doesn't have is refused with those it has, never started on the
+      // rotating login instead. Only its id goes to the daemon, and only ids and labels come back.
+      const askedSignIn = optionalString(argumentsObject, "signIn")?.trim();
+      let signIn: ClaudeSessionSignIn | undefined;
+      if (askedSignIn !== undefined) {
+        let unreadable: unknown;
+        const signIns = () => {
+          try {
+            return (dependencies.readSessionSignIns ?? readSessionSignIns)();
+          } catch (error) {
+            unreadable = error;
+            throw error;
+          }
+        };
+        try {
+          signIn = signInForStart(backend, askedSignIn, signIns);
+        } catch (error) {
+          if (unreadable) throw new Error(`failed: conch couldn't read its Claude sign-ins (${errorMessage(unreadable)}), so nothing was started`);
+          throw refusal(`refused: ${errorMessage(error)}`);
+        }
+      }
+      const options: Record<string, string> = {};
+      const model = optionalString(argumentsObject, "model")?.trim();
+      if (model !== undefined) options.model = model;
+      const effort = optionalString(argumentsObject, "effort")?.trim();
+      if (effort !== undefined) {
+        // The agent's own effort option: Claude Code's `effort`, Codex's `reasoning-effort`.
+        const entry = adapter.startOptions.find((option) => /(^|-)effort$/.test(option.name));
+        if (!entry?.choices?.includes(effort)) throw new ToolInputError(`effort for ${adapter.displayName} is one of ${entry?.choices?.join(", ") ?? "nothing: it takes none"}`);
+        options[entry.name] = effort;
+      }
+      const prompt = optionalString(argumentsObject, "prompt")?.trim();
+      const invalid = startOptionsError({ backend, options }) ?? startPromptError({ prompt });
+      if (invalid) throw new ToolInputError(`refused: ${invalid}`);
+      const result = await dependencies.sendControlMessage(
+        config.socketPath,
+        {
+          kind: "session-start",
+          backend,
+          cwd: folder,
+          ...(host ? { host: host as "terminal" | "background" } : {}),
+          ...(signIn ? { claudeSignInId: signIn.id } : {}),
+          ...(Object.keys(options).length ? { options } : {}),
+          ...(prompt ? { prompt } : {}),
+          ...(label ? { label } : {}),
+          wait: true,
+        },
+        CONCH_START_REPLY_MS,
+      );
+      if (!result.ok) {
+        throw new Error(result.reason === "daemon-down"
+          ? "failed: conch daemon is not running, so nothing was started"
+          : `failed: conch's daemon didn't answer the start in time${result.diagnostic ? ` (${result.diagnostic})` : ""}. It may still have started: check conch_sessions before starting another`);
+      }
+      let response: ControlResponse;
+      try {
+        response = unwrapControlResult(result);
+      } catch (error) {
+        throw new Error(`failed: the session didn't start: ${errorMessage(error)}`);
+      }
+      if (response.kind === "session-needs-trust") {
+        throw refusal(`refused: ${adapter.displayName} doesn't trust ${response.cwd} yet, so conch started nothing there. Ask the user to start`
+          + " it from conch's New session sheet, which asks them whether to trust the folder, or name a folder it trusts");
+      }
+      if (response.kind !== "session-started") throw new Error("ack-unknown: daemon reply did not match the start request");
+      const started = {
+        backend,
+        folder,
+        // Which account, by the name the Mac shows it under.
+        account: signIn ? signIn.label : "Default (its rotating login)",
+        ...(model ? { model } : {}),
+      };
+      if (response.sessionId) {
+        return {
+          outcome: "started",
+          sessionId: response.sessionId,
+          ...(response.label ? { label: response.label } : {}),
+          ...started,
+          note: "conch sees it running, as a session of its own in conch's Mac app and phone",
+          ...(prompt ? {
+            next: `to bring back its answer: conch_transcript_tail {session: "${response.sessionId}", wait: 30}, then again with since: the cursor it returned, until its status is waiting (needs: it is asking the user something). Its text then is the answer; sentences gives more of it`,
+          } : {}),
+        };
+      }
+      return {
+        outcome: "running",
+        running: response.running ?? "a new window",
+        ...started,
+        note: "its agent is running, but conch can't see it as a session yet; it appears in conch_sessions once it does. Don't start another",
       };
     },
 
