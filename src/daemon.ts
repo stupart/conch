@@ -418,6 +418,7 @@ import { conchPluginServerRunnable, pluginInstalledFor, repairPluginPrograms, ru
 import { MacNotices, Notifier, withNotices, type NoticeRequest } from "./notify-user.ts";
 import { PushDevices, tokenTail } from "./push-devices.ts";
 import { loadPushKey, readPushKeyRecord, removePushKey, setPushKey } from "./push-key.ts";
+import { RotationSignInWatch, signInNotice } from "./rotation-sign-in-watch.ts";
 
 /**
  * The turn-based voice loop.
@@ -3216,8 +3217,27 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   }
 
   // One Claude login rotating across Max accounts (claude-rotation.ts): claude-swap's auto-switcher while it's on.
-  const rotation = new RotationSupervisor((line) => log(line));
+  /**
+   * An account in the rotation whose sign-in has died is said once, out loud enough to reach Tyler (rotation-sign-in-
+   * watch.ts): one sat unusable for about six days with nothing pointing at Settings › Providers. Through `notifier`, so
+   * it reaches the Mac with no push key; logged, and filed as the daemon files an error.
+   */
+  const rotationSignIns = new RotationSignInWatch({
+    read: () => readSwapDashboard(),
+    tell: async (accounts) => {
+      const { title, body } = signInNotice(accounts);
+      log(`claude rotation: ${accounts.map((one) => `${one.label} (${one.status})`).join(", ")} need${accounts.length === 1 ? "s" : ""} signing in again`);
+      recordDaemonError("claude-rotation-sign-in", body, undefined, { accounts: accounts.map((one) => ({ number: one.number, status: one.status })) });
+      await notifier.notify({ title, body, source: "conch", target: "providers" });
+    },
+  });
+  const rotation = new RotationSupervisor((line) => {
+    log(line);
+    // Whatever the switcher says (a switch, a failover, a quarantine): read the list again soon.
+    rotationSignIns.soon();
+  });
   rotation.set(cfg.claudeRotation);
+  rotationSignIns.set(cfg.claudeRotation);
   // `open` and $BROWSER in the sessions conch starts, into the Workbench while `browser-open-in-conch` is on
   // (browser-open.ts): the shim folder written for the setting, and the sessions started from now on routed through it.
   const setUpBrowsers = (on: boolean): void => {
@@ -3228,7 +3248,10 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   const configController = createConfigController(cfg, {
     settingsPath: daemonSettingsPath,
     onLiveChange: (key, value) => {
-      if (key === "claude-rotation") rotation.set(value === true);
+      if (key === "claude-rotation") {
+        rotation.set(value === true);
+        rotationSignIns.set(value === true);
+      }
       if (key === "browser-open-in-conch") setUpBrowsers(value === true);
       // Off means quiet now, not after the sentence: the reading in progress stops, and every later one is
       // refused at `speak` (cfg.speak is already false here).
@@ -3954,6 +3977,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
           adding = await startAddingAccount({ ...(message.email ? { email: message.email } : {}), report: log }) ?? undefined;
           done = adding ? undefined : { ok: false, output: "Claude's sign-in didn't start. Check that Claude Code is installed, then try again." };
         }
+        // An account signed in again, added or removed: the sign-in watch sees it soon, so a later break is told afresh.
+        rotationSignIns.soon();
         const installed = swapExecutable() !== undefined;
         const accounts = await Promise.all(offeredClaudeAccounts(readClaudeAccounts(cfg.claudeDir)).map(account => cachedClaudeAccountStatus(account, false)));
         return { kind: "claude-accounts", accounts, ...(adding ? { adding } : {}),
@@ -4499,6 +4524,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     // A clean stop: what closes after this, conch doesn't see, so a restart after it offers rather than starts.
     restartGuard.stopped();
     rotation.stop();
+    rotationSignIns.stop();
     failureDesk.stop();
     clearInterval(browserPrune);
     clearInterval(browserAsks);
