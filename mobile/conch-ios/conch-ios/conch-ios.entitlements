@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Push (daemon notify-user.ts, 2026-11-10): Apple delivers conch's notices to this app with it in the background
+	     or closed. "development" for what Xcode installs (scripts/install-iphone.sh, Debug); an App Store or TestFlight
+	     export re-signs it as "production". The phone tells the Mac which (PushEnvironment). -->
+	<key>aps-environment</key>
+	<string>development</string>
+</dict>
+</plist>

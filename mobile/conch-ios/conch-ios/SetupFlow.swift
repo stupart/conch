@@ -7,8 +7,9 @@ import UIKit
 // The iPhone's own setup, after a code is scanned or typed: Connecting (names the Mac, with Cancel), Connected, the
 // microphone asked in context, a short tour, and back to the Mac. The screens are ConchDesign's (OnboardingPhone.swift);
 // this hosts them, keeps where the phone is, and tells the Mac each stage as it's reached (`setup-stage`), which is how
-// the Mac's setup window follows along and moves on by itself at the end. There is no notifications screen: the app
-// sends no notifications yet (decision 11).
+// the Mac's setup window follows along and moves on by itself at the end. There is no notifications screen: a phone can
+// be pinged only once its Mac has a push key (decision 11), so the ledger offers them then (PushNotifications.swift,
+// 2026-11-10), not setup.
 
 /// The phone's setup, kept where a relaunch finds it, and the Mac kept up to date with it.
 @MainActor

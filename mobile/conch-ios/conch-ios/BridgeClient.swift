@@ -581,6 +581,49 @@ final class BridgeClient: ObservableObject {
         }
     }
 
+    // MARK: Push (daemon notify-user.ts)
+
+    /// Whether this Mac can push to the phone (it has an APNs key), and whether it has this install's token. Nil from a
+    /// Mac without push (404) or with no answer: the phone offers nothing then (`PushNotifications`).
+    func pushState(install: String, within limit: Duration = .seconds(8)) async -> (ready: Bool, registered: Bool)? {
+        var components = URLComponents()
+        components.path = "/push"
+        components.queryItems = [URLQueryItem(name: "install", value: install)]
+        guard let path = components.string,
+              let response = try? await perform(authorizedRequest(method: "GET", path: path), within: limit),
+              response.status == 200,
+              let reply = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any]
+        else { return nil }
+        return (reply["ready"] as? Bool ?? false, reply["registered"] as? Bool ?? false)
+    }
+
+    /// This phone's APNs device token, which environment's it is, the app it's for, and whether iOS shows conch's
+    /// notifications, for the Mac to push to. The same authenticated route as everything else, sealed on the relay.
+    /// True once the Mac has it.
+    func registerPush(
+        token: String,
+        environment: String,
+        topic: String,
+        alerts: Bool,
+        device: String,
+        install: String,
+        within limit: Duration = .seconds(8)
+    ) async -> Bool {
+        let message: [String: Any] = [
+            "kind": "push-token",
+            "install": install,
+            "device": device,
+            "token": token,
+            "environment": environment,
+            "topic": topic,
+            "alerts": alerts,
+        ]
+        guard let body = try? JSONSerialization.data(withJSONObject: message),
+              let response = try? await perform(authorizedRequest(method: "POST", path: "/push-token", body: body), within: limit)
+        else { return false }
+        return response.status == 200
+    }
+
     /// `pause` or `resume`: every session, or with `sessionId` just that one — quiet it, or let it
     /// speak (out of a global quiet, it alone). The daemon's scoped route, as the Mac's P sends it.
     func send(mode action: String, sessionId: String = "", label: String = "") async -> Bool {
