@@ -9,6 +9,7 @@ import {
   claudeSignInForLaunch,
   readSessionSignIns,
   redactTokens,
+  resolveSessionSignIn,
   removeSessionSignIn,
   runKeychainCommand,
   SessionSignInLedger,
@@ -31,9 +32,12 @@ import {
   backgroundSessionCommand,
   restartRequest,
   startClaudeSetupToken,
+  startRequestFromArgv,
+  startUsage,
   terminalSessionCommand,
   type StartSessionRequest,
 } from "../src/session-lifecycle.ts";
+import { adapterFor } from "../src/agent-adapter.ts";
 import { startBackgroundProcess } from "../src/background-sessions.ts";
 import { resolveTmux } from "../src/tmux-binary.ts";
 import { validateControlMessage, validateControlResponse } from "../src/settings.ts";
@@ -583,5 +587,73 @@ describe("restart, fork and resume keep it", () => {
     await guard.observe([{ sessionId: SESSION, label: "demo", backend: "claude", claudeSignInId: "abc-1" }], new Set([SESSION]));
     const ledger = JSON.parse(readFileSync(file, "utf8")) as RestartLedger;
     expect(ledger.records.map((record) => record.request.claudeSignInId)).toEqual(["abc-1"]);
+  });
+});
+
+// 2026-11-10, Tyler, choosing which account a session runs on: "one session [uses] another account to create a fable
+// agent using conch for me since [this one is] out of credits". The Mac's sheet could pick a sign-in; now the CLI can too.
+describe("conch start --sign-in", () => {
+  const listed = [
+    { id: "abc-1", label: "Work Max", addedAt: 1 },
+    { id: "def-2", label: "Personal", addedAt: 2 },
+  ];
+
+  test("names a sign-in by its label, in any case, or by its id; the request holds only the id", () => {
+    expect(startRequestFromArgv(["claude", "--sign-in", "Work Max"], () => listed).claudeSignInId).toBe("abc-1");
+    expect(startRequestFromArgv(["claude", "--sign-in", "work max"], () => listed).claudeSignInId).toBe("abc-1");
+    expect(startRequestFromArgv(["--sign-in", "  PERSONAL "], () => listed).claudeSignInId).toBe("def-2");
+    expect(startRequestFromArgv(["claude", "--sign-in", "def-2", "--model", "fable", "--cwd", "/work/demo"], () => listed))
+      .toEqual({ backend: "claude", claudeSignInId: "def-2", cwd: "/work/demo", options: { model: "fable" } });
+    // An id beats a label that happens to spell another sign-in's id.
+    expect(resolveSessionSignIn("abc-1", [{ id: "zzz-9", label: "abc-1", addedAt: 1 }, ...listed]).id).toBe("abc-1");
+    // Nothing is read when no sign-in is named.
+    expect(startRequestFromArgv(["claude"], () => { throw new Error("read"); })).toEqual({ backend: "claude" });
+  });
+
+  test("one conch doesn't have is refused with the labels and ids it has, never started on the rotating login", () => {
+    expect(() => startRequestFromArgv(["claude", "--sign-in", "Wrok"], () => listed))
+      .toThrow(`no Claude sign-in is called "Wrok". conch has "Work Max" (abc-1), "Personal" (def-2); leave it out for Default's own, rotating login.`);
+    expect(() => startRequestFromArgv(["claude", "--sign-in", "Work"], () => []))
+      .toThrow("conch has no Claude sign-ins yet: add one in the Mac app's Settings › Providers");
+    // A token pasted where a name goes is not said back.
+    let said = "";
+    try { resolveSessionSignIn(`${FAKE_TOKEN}\nmore`, listed); } catch (error) { said = (error as Error).message; }
+    expect(said).toContain("no Claude sign-in is called");
+    expect(said).not.toMatch(TOKEN_SHAPED);
+    expect(said).not.toContain("\n");
+  });
+
+  test("it is Claude's, and needs a value", () => {
+    expect(() => startRequestFromArgv(["codex", "--sign-in", "Work Max"], () => listed)).toThrow("a sign-in is for a Claude session: Codex signs in with its own accounts");
+    expect(() => startRequestFromArgv(["claude", "--sign-in"], () => listed)).toThrow("--sign-in needs a sign-in's name or id");
+    expect(startUsage(adapterFor("claude"))).toContain("[--sign-in <name|id>]");
+    expect(startUsage(adapterFor("codex"))).not.toContain("--sign-in");
+  });
+
+  test("by default it reads conch's own list, and the command it builds holds the id, never a token", async () => {
+    const signIn = await saved("Work Max");
+    delete process.env.CLAUDE_CONFIG_DIR;
+    for (const host of ["--terminal", "--background"]) {
+      const request = startRequestFromArgv(["claude", "--sign-in", "WORK MAX", host, "--cwd", "/work/demo", "--model", "fable"]);
+      expect(request.claudeSignInId).toBe(signIn.id);
+      expect(JSON.stringify(request)).not.toMatch(TOKEN_SHAPED);
+      const command = host === "--background" ? backgroundSessionCommand(request) : terminalSessionCommand(request);
+      expect(command).toContain(`-a '${signIn.id}' -w`);
+      expect(command).toContain(`CONCH_CLAUDE_SIGN_IN='${signIn.id}'`);
+      expect(command).toContain("--model 'fable'");
+      expect(command).toEndWith(` 3< <(printf '%s' "$conch_sign_in")`);
+      expect(command).not.toMatch(TOKEN_SHAPED);
+    }
+    // Removed between: the launch refuses in words rather than signing in as the rotating login.
+    const request = startRequestFromArgv(["claude", "--sign-in", "Work Max"]);
+    await removeSessionSignIn(signIn.id, { keychain: recordingKeychain().run });
+    expect(() => terminalSessionCommand(request)).toThrow("has been removed");
+    expect(() => startRequestFromArgv(["claude", "--sign-in", "Work Max"])).toThrow("conch has no Claude sign-ins yet");
+  });
+
+  test("the CLI says which sign-in it started on, by name", () => {
+    const cli = readFileSync(join(import.meta.dir, "..", "src", "cli.ts"), "utf8");
+    expect(cli).toContain("signed in as \"${signIn}\"");
+    expect(cli).toContain("readSessionSignInsQuietly()?.find((one) => one.id === request.claudeSignInId)?.label");
   });
 });

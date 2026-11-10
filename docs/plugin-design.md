@@ -40,7 +40,9 @@ DEFERRED tools (need a socket-protocol extension AND answers to open questions �
 - `conch_prioritize`, `conch_dismiss` — need new `session-command` control message (prioritize/dismiss
   exist only as dashboard actions today).
 - `review_to_front` — needs new `review-to-front` control message (reuses G5's latch).
-- `conch_spawn`, `conch_close` — no primitive exists; genuinely open (Q3/Q4), destructive.
+- `conch_spawn`, `conch_close` — no primitive exists; genuinely open (Q3/Q4), destructive. 2026-11-10: spawning
+  shipped as `conch_start` (the daemon's start, in Terminal or conch's background host, in the caller's cwd unless it
+  names a folder, on a sign-in when asked); `conch_close` is still open.
 
 ## Open questions (for Tyler)
 

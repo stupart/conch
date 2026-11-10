@@ -69,6 +69,7 @@ const TOOL_NAMES = [
   "conch_config",
   "conch_transcript_tail",
   "conch_fork",
+  "conch_start",
   "review_to_front",
   "conch_history",
   "conch_item",
@@ -320,6 +321,12 @@ function fakeHarness(options: FakeOptions = {}): {
           response: { kind: "session-forked", sessionId: message.sessionId, forkId: "fork-1", label: message.label ?? "Build label · fork" },
         };
       }
+      if (message.kind === "session-start") {
+        return {
+          ok: true,
+          response: { kind: "session-started", backend: message.backend, resumed: false, sessionId: "started-1", label: message.label ?? "Build" },
+        };
+      }
       if (message.kind === "get-config") {
         return {
           ok: true,
@@ -379,6 +386,7 @@ function recordingHandlers(
     conch_config: handler("conch_config"),
     conch_transcript_tail: handler("conch_transcript_tail"),
     conch_fork: handler("conch_fork"),
+    conch_start: handler("conch_start"),
     review_to_front: handler("review_to_front"),
     conch_history: handler("conch_history"),
     conch_item: handler("conch_item"),
@@ -553,6 +561,7 @@ describe("MCP tool discovery", () => {
       conch_config: ["key", "value", "unset"],
       conch_transcript_tail: ["session", "sentences", "since", "wait"],
       conch_fork: ["session", "label"],
+      conch_start: ["backend", "folder", "signIn", "model", "effort", "prompt", "host", "label"],
       review_to_front: ["summary", "link", "kind", "focus", "key", "session", "approval", "scene"],
       conch_history: ["session", "branch", "before", "limit"],
       conch_item: ["session", "item", "bodyCursor"],
@@ -581,6 +590,7 @@ describe("MCP tool discovery", () => {
       conch_config: [],
       conch_transcript_tail: ["session"],
       conch_fork: [],
+      conch_start: [],
       // session is optional now: it defaults to the CALLING session.
       review_to_front: ["summary"],
       conch_history: ["session"],

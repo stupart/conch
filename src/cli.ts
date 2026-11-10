@@ -939,7 +939,10 @@ switch (command) {
       console.error(error instanceof Error ? error.message : String(error));
       process.exit(1);
     }
-    const where = request.cwd ?? "~";
+    // The sign-in by its name, as the Mac's rows say it (`--sign-in`): never anything of its token.
+    const { readSessionSignInsQuietly } = await import("./claude-session-sign-ins.ts");
+    const signIn = request.claudeSignInId ? readSessionSignInsQuietly()?.find((one) => one.id === request.claudeSignInId)?.label : undefined;
+    const where = `${request.cwd ?? "~"}${signIn ? `, signed in as "${signIn}"` : ""}`;
     if ("backgroundId" in started) {
       console.log(`[conch] started ${adapter.displayName} in the background (${started.backgroundId}), in ${where}`);
       break;

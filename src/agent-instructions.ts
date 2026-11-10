@@ -130,6 +130,10 @@ If you can't publish, end your reply with one \`conch:review <summary> | <link>\
     // the wrong account; conch said "opened", the fork had died at once, and the agent told Tyler it was open.
     conch_fork:
       "Fork a live session at the user's request: the same conversation again as a new session beside it, under the same account, in the same folder and with the same flags, holding its deliverables, as the Fork in conch's Mac app does. Your own session unless session names another; label names the fork. Returns once conch sees the fork running (its id and label), or the error that stopped it: say a fork is open only when this says so. Use it rather than `conch start --resume`.",
+    // 2026-11-10, Tyler, on choosing which account a session runs on: "one session [uses] another account to create a
+    // fable agent using conch for me since [this one is] out of credits". One start, then one wait for the answer.
+    conch_start:
+      "Start a new session at the user's request, on the account they choose: Claude Code (or Codex) in a folder, your own cwd unless folder names another. signIn picks one of conch's Claude sign-ins by label or id (conch_sessions lists them as claudeSignIns; one conch doesn't have is refused with the list); without it, Default's own, rotating login. model (e.g. fable), effort, a first message (prompt), host (terminal or background) and label are optional. Returns once conch sees it running, with its sessionId and label, or the error that stopped it: say it started only when this says so. To have it do something and bring back the answer: give the task as prompt, then call conch_transcript_tail with its sessionId and wait: 30, passing back the cursor as since, until its status is waiting; that text is its answer. Use it rather than `conch start`.",
     // 2026-10-05: when and why first, then what to pass, then what the result means; the mechanics are in the
     // parameters (mcp.ts) and the skill (`REVIEW_TO_FRONT_DESCRIPTION_MAX` says why).
     review_to_front:

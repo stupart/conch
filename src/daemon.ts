@@ -174,6 +174,7 @@ import {
 } from "./conversation.ts";
 import type { PendingApproval } from "./approval.ts";
 import { awaitForkStart, FORK_ADOPT_WITHIN_MS, forkRequest, inheritedState, pendingForkFor, type PendingFork } from "./session-fork.ts";
+import { startedSessionFor } from "./session-start-wait.ts";
 import { lastTabLines, tabAgentState, terminalTabCommands } from "./agent-alive.ts";
 import { MCP_TOOL_NAMES } from "./mcp-toolset.ts";
 import { listMcpServerProcesses, readMcpServerReports, toolsStaleFor, withToolsStale, type ToolsStale } from "./mcp-servers.ts";
@@ -215,6 +216,7 @@ import {
   resumeRequest,
   acceptClaudeTrust,
   sessionFolder,
+  defaultTtyForPid,
   startClaudeAccountLogin,
   startClaudeSetupToken,
   startCodexAccountTerminal,
@@ -3403,6 +3405,75 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       adoptingForks = false;
     }
   };
+  /**
+   * Start a session for an agent (`conch_start`) and answer once conch sees it running: its id and label; that it runs,
+   * and where, when conch can't see it as a session yet; or why it stopped, with what its tab said. 2026-11-10, Tyler, on
+   * choosing which account a session runs on: "one session [uses] another account to create a fable agent using conch
+   * for me since [this one is] out of credits". The asking agent then reads its reply with `conch_transcript_tail`.
+   *
+   * A new conversation's id is the agent's own to choose, so the session is known by where it runs, the tab or the
+   * background host this start opened (session-start-wait.ts), and waited on as an agent's fork is (`awaitForkStart`).
+   */
+  const startLiveSession = async (request: StartSessionRequest, label?: string): Promise<{ sessionId?: string; label?: string; running?: string; backgroundId?: string }> => {
+    const asked = { backend: request.backend, at: Date.now(), before: new Set(panelSessions.keys()) };
+    const launched = await launchSession(request);
+    const tty = launched?.tty;
+    const backgroundId = launched?.backgroundId;
+    const where = tty ? `Terminal (${tty})` : backgroundId ? `conch's background host (${backgroundId})` : "a new Terminal window";
+    log(`started ${request.backend} for an agent in ${where}, in ${request.cwd ?? conchHome()}`);
+    void renderSessionPanel();
+    // Terminal took the command but couldn't say which tab: nothing to know the session by.
+    if (!tty && !backgroundId) return { running: where };
+    let looking = true;
+    const adopted = (async () => {
+      while (looking) {
+        const found = await startedSessionFor([...panelSessions.values()], { ...asked, ...(tty ? { tty } : { backgroundId }) }, {
+          ttyOf: defaultTtyForPid,
+          backgroundPid: (name) => backgroundStartupPid(name),
+        });
+        if (found) return { forkId: found.sessionId, label: labelForSessionId(found.sessionId) };
+        await Bun.sleep(1_000);
+      }
+      throw new Error("stopped looking");
+    })();
+    adopted.catch(() => {});
+    const executable = adapterFor(request.backend).executable;
+    let lastLook = Date.now();
+    try {
+      const seen = await awaitForkStart({
+        adopted,
+        noun: "the new session",
+        // A background host's session ends with its agent: gone is gone, and anything else is not known from here.
+        state: async () => tty
+          ? tabAgentState(await terminalTabCommands(tty), executable)
+          : await tmuxSessionAlive(conchTmux(), backgroundId!) === false ? "gone" : "unknown",
+        lastWords: async () => tty ? lastTabLines(await readTerminalTab(tty)) : undefined,
+        look: () => {
+          if (Date.now() - lastLook < 3_000) return;
+          lastLook = Date.now();
+          void renderSessionPanel();
+        },
+        where,
+        sleep: (ms) => Bun.sleep(ms),
+        now: Date.now,
+      });
+      if (!("forkId" in seen)) return { running: seen.running, ...(backgroundId ? { backgroundId } : {}) };
+      let named = seen.label;
+      if (label && label !== named) {
+        const renamed = renameSessionLabel(seen.forkId, named, label);
+        relabelRuntimeSession(seen.forkId, named, renamed.label);
+        named = renamed.label;
+        void renderSessionPanel();
+      }
+      log(`the ${request.backend} session an agent started is "${named}"`);
+      return { sessionId: seen.forkId, label: named, ...(backgroundId ? { backgroundId } : {}) };
+    } catch (error) {
+      log(`the ${request.backend} session an agent started didn't start: ${(error as Error).message.split("\n")[0]}`);
+      throw error;
+    } finally {
+      looking = false;
+    }
+  };
   // 2026-10-05, Tyler, after using #502: "I don't really get the point of the approve button... maybe we only show it if
   // the AI sets some sort of flag in the review that it's asking for me to approve some work?" So Approve is offered
   // only on a result whose agent asked (`asksApproval`), and approving it tells that agent: once the 10 s undo window
@@ -3981,7 +4052,9 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       return reply;
     },
     start: async (message) => {
-      const request = { ...message, bypassPermissions: cfg.bypassPermissions };
+      // `wait` and `label` are the answer's (an agent's `conch_start`), not the launch's.
+      const { wait, label, ...asked } = message;
+      const request = { ...asked, bypassPermissions: cfg.bypassPermissions };
       if (message.host === "background" && message.resumeSessionId && !message.claudeSourceAccountId && message.options?.["fork-session"] !== true) {
         // A retired profile's conversation is listed, and resumed, as Default's: one still running there is running.
         const retired = new Set(readClaudeAccounts(cfg.claudeDir).filter((one) => one.retired).map((one) => one.id));
@@ -3994,7 +4067,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
           && (session.pid || session.agentPid || session.messageRoute));
         if (alreadyRunning) throw new Error("This conversation is already running. Close it before resuming in Background, or continue in its current session.");
       }
-      if (message.claudeSourceAccountId === undefined) return launchSession(request);
+      if (message.claudeSourceAccountId === undefined) return wait ? startLiveSession(request, label) : launchSession(request);
       await requireClaudeHandoffSupport();
       const target = requireClaudeAccount(message.claudeAccountId!);
       const status = await readClaudeAccountStatus(target, true);
