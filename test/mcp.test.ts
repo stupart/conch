@@ -87,6 +87,7 @@ const TOOL_NAMES = [
   "browser_ask",
   "browser_close",
   "atlas_show",
+  "conch_notify",
 ] as const satisfies readonly McpToolName[];
 
 const DEFERRED_TOOL_NAMES = [
@@ -404,6 +405,7 @@ function recordingHandlers(
     browser_ask: handler("browser_ask"),
     browser_close: handler("browser_close"),
     atlas_show: handler("atlas_show"),
+    conch_notify: handler("conch_notify"),
   };
 }
 
@@ -579,6 +581,7 @@ describe("MCP tool discovery", () => {
       browser_ask: ["tab", "reason"],
       browser_close: ["tab"],
       atlas_show: ["path", "markdown", "summary"],
+      conch_notify: ["body", "title", "session", "link"],
     };
     const expectedRequired: Record<McpToolName, string[]> = {
       conch_sessions: [],
@@ -610,6 +613,7 @@ describe("MCP tool discovery", () => {
       browser_ask: ["reason"],
       browser_close: ["tab"],
       atlas_show: ["path", "markdown"],
+      conch_notify: ["body"],
     };
 
     for (const tool of result.tools) {
@@ -3085,5 +3089,82 @@ describe("atlas_show", () => {
       expect(text).toContain("isn't a plain file");
       expect(h.calls.daemon).toEqual([]);
     });
+  });
+});
+
+/**
+ * `conch_notify` (notify-user.ts, 2026-11-10, Tyler: "let sessions send me messages on my phone via conch that ping and
+ * show notification"): checked here, limited and delivered by the daemon, and its answer handed back as it said it.
+ */
+describe("conch_notify", () => {
+  const config = { claudeDir: "/virtual/claude", socketPath: "/virtual/conch.sock" };
+  const sent = (result: Record<string, unknown>) => {
+    const messages: unknown[] = [];
+    return {
+      messages,
+      notify: async (_socket: string, message: unknown) => {
+        messages.push(message);
+        return { ok: true as const, reply: result };
+      },
+    };
+  };
+  const delivered = {
+    kind: "notify-result", outcome: "sent", notice: "n1",
+    phone: { outcome: "pushed", detail: "pushed to iPhone" }, mac: { outcome: "shown", detail: "shown on the Mac" },
+    said: "Pushed to the phone (iPhone) and shown on the Mac.",
+  };
+
+  test("from the verified caller: titled with its name, the tap opens it, and the daemon's answer comes back as it said it", async () => {
+    const h = fakeHarness({ parentPid: 4321 });
+    const daemon = sent(delivered);
+    h.dependencies.notify = daemon.notify;
+    const response = await callTool(createMcpToolHandlers(config, h.dependencies), "conch_notify", { body: "The deploy  finished.", link: "https://example.com/pr/1" });
+    expect(rpcResult(response)).not.toMatchObject({ isError: true });
+    expect(JSON.parse(toolText(response))).toEqual({
+      outcome: "sent", notice: "n1", phone: delivered.phone, mac: delivered.mac, said: delivered.said,
+    });
+    expect(daemon.messages).toEqual([{
+      kind: "notify-user", title: "Build label", body: "The deploy finished.", from: "session-123", sessionId: "session-123", link: "https://example.com/pr/1",
+    }]);
+  });
+
+  test("an unverified caller may still ping, under one shared limit, opening the session it names or none", async () => {
+    const h = fakeHarness({ parentPid: 0 });
+    const daemon = sent(delivered);
+    h.dependencies.notify = daemon.notify;
+    const handlers = createMcpToolHandlers(config, h.dependencies);
+    await callTool(handlers, "conch_notify", { body: "Blocked on you: which branch?", title: "Release" });
+    await callTool(handlers, "conch_notify", { body: "Done.", session: "Build" });
+    expect(daemon.messages).toEqual([
+      { kind: "notify-user", title: "Release", body: "Blocked on you: which branch?", from: "unverified" },
+      { kind: "notify-user", title: "Build label", body: "Done.", from: "unverified", sessionId: "session-123" },
+    ]);
+  });
+
+  test("too long, not http(s), a repeat or one too many: refused, and the first two never reach the daemon", async () => {
+    const h = fakeHarness({ parentPid: 4321 });
+    const daemon = sent(delivered);
+    h.dependencies.notify = daemon.notify;
+    const handlers = createMcpToolHandlers(config, h.dependencies);
+    for (const args of [{ body: "x".repeat(281) }, { body: "ok", link: "file:///etc/hosts" }, { body: "ok", title: "x".repeat(81) }, { body: "ok", extra: 1 }]) {
+      const response = await callTool(handlers, "conch_notify", args);
+      expect(rpcResult(response), JSON.stringify(args).slice(0, 60)).toMatchObject({ isError: true });
+    }
+    expect(daemon.messages).toEqual([]);
+    for (const outcome of ["duplicate", "rate-limited"]) {
+      const limited = fakeHarness({ parentPid: 4321 });
+      limited.dependencies.notify = sent({ kind: "notify-result", outcome, said: `Not sent: ${outcome}.` }).notify;
+      const response = await callTool(createMcpToolHandlers(config, limited.dependencies), "conch_notify", { body: "ok" });
+      expect(rpcResult(response)).toMatchObject({ isError: true });
+      expect(toolText(response)).toBe(`refused: Not sent: ${outcome}.`);
+    }
+  });
+
+  test("no daemon: failed, and nothing claimed", async () => {
+    const h = fakeHarness({ parentPid: 4321 });
+    h.dependencies.notify = async () => ({ ok: false, reason: "daemon-down" });
+    const response = await callTool(createMcpToolHandlers(config, h.dependencies), "conch_notify", { body: "ok" });
+    expect(rpcResult(response)).toMatchObject({ isError: true });
+    expect(toolText(response)).toContain("conch daemon is not running, so nothing was sent");
   });
 });

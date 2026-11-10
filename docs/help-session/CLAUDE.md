@@ -84,6 +84,12 @@ that one rule is what keeps the loop from hearing itself.
 - **No QR code on the Phone app tab** — the QR needs a relay and
   `phone-relay-url` is empty: `conch set phone-relay-url <url>`. Pairing over
   the LAN with the host and the six-digit code works without one.
+- **A session's ping never reaches the iPhone** — `conch_notify`'s result says
+  where it went and why not elsewhere, and the log has a `notice "…"` line for
+  each. Settings › Phone app › Notifications shows the rest: no APNs key set
+  up there, no iPhone that has turned conch's notifications on (conch on the
+  iPhone › Settings › Notifications), or Apple's last refusal. Apple's own
+  delivery to the phone is outside this Mac's files; say so.
 - **A session started from the app never shows up** — Terminal is sitting on
   Claude Code's "do you trust this folder?" (or Codex's) prompt. Look at the
   Terminal window.

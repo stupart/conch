@@ -7,6 +7,7 @@ import type { TurnEvent } from "../src/hook.ts";
 import { createPhoneBridgeApplication, forwardToDaemonSocket, MAC_APP_ONLY_KINDS } from "../src/phone-bridge.ts";
 import { PRACTICE_REQUEST_KINDS } from "../src/practice.ts";
 import { SETUP_REQUEST_KINDS } from "../src/setup.ts";
+import { NOTICE_REQUEST_KINDS } from "../src/notice-wire.ts";
 import {
   MacRelayPeer,
   RELAY_RESPONSE_CACHE_LIMIT,
@@ -306,7 +307,8 @@ describe("Mac phone relay adapter", () => {
   test("the Mac app's own requests are refused over the relay, and never reach the daemon", async () => {
     const forwarded: string[] = [];
     const h = await connectedHarness({ forward: async (line) => { forwarded.push(line); return JSON.stringify({ kind: "ack" }); } });
-    const kinds = [...SETUP_REQUEST_KINDS, ...PRACTICE_REQUEST_KINDS, "narration-start", ...MAC_APP_ONLY_KINDS];
+    // Notices too (notify-user.ts): an APNs key never crosses the relay, and a phone sends itself no notices.
+    const kinds = [...SETUP_REQUEST_KINDS, ...PRACTICE_REQUEST_KINDS, "narration-start", ...MAC_APP_ONLY_KINDS, ...NOTICE_REQUEST_KINDS];
     let sequence = 0;
     const send = async (body: unknown) => {
       const sealed = await h.phone.seal(
@@ -324,6 +326,34 @@ describe("Mac phone relay adapter", () => {
     // The phone's own still go through the same way.
     expect(await send({ type: "pause", sessionId: "", label: "", announce: "" })).toBe(200);
     expect(forwarded).toHaveLength(1);
+  });
+
+  // Push (notify-user.ts, 2026-11-10): the phone's device token reaches the Mac over the relay as over the LAN, through
+  // the one application handler, and only with the pairing's own bearer.
+  test("a phone's push token crosses the relay to the Mac's push hooks", async () => {
+    const registered: unknown[] = [];
+    const h = await connectedHarness({ bridge: { push: {
+      status: () => ({ ready: true, registered: false }),
+      register: (registration) => { registered.push(registration); return { ready: true }; },
+    } } });
+    const registration = {
+      install: "11111111-2222-3333-4444-555555555555", device: "iPhone", token: "ab".repeat(32),
+      environment: "production", topic: "com.example.conch.ios", alerts: true,
+    };
+    let sequence = 0;
+    const send = async (body: unknown, authorized = true) => {
+      const sealed = await h.phone.seal(
+        { id: `push-token-${++sequence}`, method: "POST", kind: "request" },
+        requestBody("/push-token", h.relay.secret, JSON.stringify(body), authorized),
+      );
+      await h.peer.receive(JSON.stringify(sealed));
+      return responseStatus(await openSent(h.phone, h.sent));
+    };
+    expect(await send(registration, false)).toBe(401);
+    expect(await send({ ...registration, token: "nope" })).toBe(400);
+    expect(registered).toEqual([]);
+    expect(await send(registration)).toBe(200);
+    expect(registered).toEqual([registration]);
   });
 
   // The phone turns the Mac's reason into the sentence it shows, so the relay has to carry

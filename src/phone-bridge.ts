@@ -1,4 +1,6 @@
 import { decodeFailureTicketRequest } from "./failure-tickets.ts";
+import { decodeNoticeRequest } from "./notice-wire.ts";
+import { decodePushRegistration, PUSH_REGISTRATION_MAX_BYTES, type PushRegistration } from "./push-devices.ts";
 import { connect } from "node:net";
 import { ControlFrameError, ControlFrameReader, decodeControlText, encodeControlFrame, readControlBody } from "./control-framing.ts";
 import { validateHistoryRequest } from "./history.ts";
@@ -100,7 +102,19 @@ export interface PhoneBridgeDependencies {
   transcribe?(wavPath: string): Promise<{ segments: Array<{ start: number; end: number; text: string }>; error?: string }>;
   /** The phone's first-run setup (`phone-setup.ts`). Without it `/setup-stage` is unknown, as on an older Mac. */
   setup?: PhoneSetupHooks;
+  /** Push to the phone (notify-user.ts). Without it `/push` and `/push-token` are unknown, as on an older Mac. */
+  push?: PhonePushHooks;
   log(message: string): void;
+}
+
+/**
+ * The phone's half of push (2026-11-10): whether this Mac can push at all (`/push`, which the phone asks before it
+ * offers to turn notifications on), and its device token once they're on (`/push-token`, push-devices.ts).
+ */
+export interface PhonePushHooks {
+  /** Whether this Mac has a push key, and whether `install` is registered. */
+  status(install: string | null): { ready: boolean; registered: boolean };
+  register(registration: PushRegistration): { ready: boolean };
 }
 
 /** Where the phone's setup reports and the transports' key exchanges go. */
@@ -200,6 +214,10 @@ export const MAC_APP_ONLY_DECODERS: Readonly<Record<string, (value: unknown) => 
   decodeVideoTranscriptRequest,
   // Failure tickets hold every session's names, folders and words, and Fix starts a session: the Mac's (failure-tickets.ts).
   decodeFailureTicketRequest,
+  // Notices (notify-user.ts): an APNs key goes from the Mac app to the Keychain and never through a phone or the relay,
+  // a phone sends itself no notices (an agent does, from this Mac), and only the Mac app says whether it showed one.
+  // The phone's own part, its device token, has a route of its own (`/push-token`).
+  decodeNoticeRequest,
 };
 
 /** A control body only the Mac app may send, as the control server would read it (one envelope unwrapped, as it does). */
@@ -557,6 +575,27 @@ export class PhoneBridgeApplication {
         if (!decoded.ok) return Response.json({ kind: "setup-stage-error", error: decoded.err }, { status: 400 });
         const answer = setup.report(decoded.value);
         return Response.json({ kind: "setup-stage-ack", ...answer, mac: setup.macName() });
+      })();
+    }
+
+    // Push (notify-user.ts): whether this Mac can push, and the phone's device token once its notifications are on.
+    // Its own route rather than a control: the phone's to send, by its install id, and nothing the daemon's socket
+    // should take from anyone else.
+    if (url.pathname === "/push" && req.method === "GET") {
+      const push = this.#dependencies.push;
+      if (!push) return new Response("not found", { status: 404 });
+      const install = url.searchParams.get("install");
+      return Response.json({ kind: "push-state", ...push.status(install && /^[A-Za-z0-9-]{8,64}$/.test(install) ? install : null) });
+    }
+    if (url.pathname === "/push-token" && req.method === "POST") {
+      const push = this.#dependencies.push;
+      if (!push) return new Response("not found", { status: 404 });
+      return (async () => {
+        const body = await readBoundedJSON(req, PUSH_REGISTRATION_MAX_BYTES);
+        if (!body.ok) return Response.json({ kind: "push-token-error", error: body.error }, { status: body.tooLarge ? 413 : 400 });
+        const decoded = decodePushRegistration(body.value);
+        if (!decoded.ok) return Response.json({ kind: "push-token-error", error: decoded.err }, { status: 400 });
+        return Response.json({ kind: "push-token-ack", ...push.register(decoded.value) });
       })();
     }
 

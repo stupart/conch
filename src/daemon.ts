@@ -405,6 +405,9 @@ import { resolveAgentBinaries } from "./doctor-checks.ts";
 import { codexHooksAreWiredAt, isConchHookCommand, runCodexInstall, runInstall } from "./install.ts";
 import { appendCapped, childCeilingFrom, installChildCeiling, RESTART_POLICY, runawayGuards } from "./runaway.ts";
 import { pluginInstalledFor, runInstallPlugin } from "./plugin-install.ts";
+import { MacNotices, Notifier, withNotices, type NoticeRequest } from "./notify-user.ts";
+import { PushDevices, tokenTail } from "./push-devices.ts";
+import { loadPushKey, readPushKeyRecord, removePushKey, setPushKey } from "./push-key.ts";
 
 /**
  * The turn-based voice loop.
@@ -1974,6 +1977,53 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     },
     log,
   });
+  /**
+   * Telling the user something wherever he is (notify-user.ts): an agent's `conch_notify`, and conch's own alerts. To the
+   * phone through Apple once a push key is set up (push-key.ts) and a phone has turned notifications on
+   * (push-devices.ts); to the Mac through its app, on the sessions file alone, like `pageCaptures`.
+   */
+  const pushDevices = new PushDevices();
+  const macNotices = new MacNotices({ publish: () => writeSessionsFile(), appRunning: macAppRunning, now: Date.now });
+  const notifier = new Notifier({
+    keyRecord: () => readPushKeyRecord(),
+    loadKey: () => loadPushKey(),
+    devices: pushDevices,
+    mac: macNotices,
+    log,
+    now: Date.now,
+  });
+  /** The socket's notice requests (control-server.ts `notices`): the Mac app's push setup and answers, and `conch_notify`. */
+  async function handleNoticeRequest(request: NoticeRequest): Promise<unknown> {
+    if (request.kind === "notice-answer") {
+      macNotices.answer(request);
+      return { kind: "ack" };
+    }
+    if (request.kind === "notify-user") {
+      return notifier.notify({
+        title: request.title, body: request.body, source: "agent", limitKey: request.from,
+        ...(request.sessionId ? { sessionId: request.sessionId } : {}),
+        ...(request.link ? { link: request.link } : {}),
+      });
+    }
+    if (request.action === "set") {
+      // The key itself is never logged: only its id.
+      const record = await setPushKey({ keyId: request.keyId, teamId: request.teamId, key: request.key });
+      notifier.keyChanged();
+      log(`push: APNs key ${record.keyId} (team ${record.teamId}) set up`);
+    }
+    if (request.action === "remove") {
+      const removed = await removePushKey();
+      notifier.keyChanged();
+      if (removed) log(`push: APNs key ${removed.keyId} removed`);
+    }
+    if (request.action === "test") {
+      const test = await notifier.notify({
+        title: "conch", body: "A test from conch on your Mac. When a session needs you, it reaches you here.", source: "conch", mac: false,
+      });
+      return { ...notifier.status(), test };
+    }
+    return notifier.status();
+  }
   // An ask waiting on a sign-in is answered when the Mac app's report says the tab's profile signed in to its site.
   const browserAsks = setInterval(() => browser.checkAsks(), BROWSER_ASK_CHECK_MS);
   browserAsks.unref?.();
@@ -2284,6 +2334,19 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
             exchange: (event) => phoneSetup.exchange(event),
             macName: computerName,
           },
+          // The phone's device token, once its notifications are on (notify-user.ts). Logged by its tail only.
+          push: {
+            status: (install) => ({
+              ready: notifier.ready(),
+              registered: install !== null && pushDevices.list().some((one) => one.install === install),
+            }),
+            register: (registration) => {
+              if (pushDevices.register(registration)) {
+                log(`push: ${registration.device} registered (${registration.environment}, ${tokenTail(registration.token)}${registration.alerts ? "" : ", notifications off"})`);
+              }
+              return { ready: notifier.ready() };
+            },
+          },
           requestPreview: createPreviewRequester({
             held: (sessionId) => {
               const state = ledger.sessionStates.get(sessionId);
@@ -2427,7 +2490,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
    */
   function writeSessionsFile(): void {
     if (lastPublishedPanelState) {
-      const state = { ...withBrowserState(withCaptureRequests(lastPublishedPanelState, pageCaptures.requests()), browserWorkbench), mcpToolset: MCP_TOOLSET };
+      const state = { ...withNotices(withBrowserState(withCaptureRequests(lastPublishedPanelState, pageCaptures.requests()), browserWorkbench), macNotices.list()), mcpToolset: MCP_TOOLSET };
       publishSessionsFile(withToolsStale(state, toolsStale));
     }
   }
@@ -4258,6 +4321,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     videoTranscripts: createVideoTranscripts({ uploads: phoneUploads.directory, transcribe: (wav) => transcribeWavSegments(cfg, wav) }),
     onReviewPreview: (message) => windowPreviews.answer(message),
     failureTickets: failureDesk,
+    notices: handleNoticeRequest,
     // A send the socket refused before it reached the voice loop: the Mac app drops that reply, so it is filed here.
     onFailure: recordDaemonError,
     pageCapture,
