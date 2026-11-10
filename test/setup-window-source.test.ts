@@ -234,7 +234,9 @@ describe("notifications are asked the first time they're needed", () => {
     const post = member(app, "func postOnce(for item: ReviewItem) {");
     expect(post).toContain("case .notAsked:");
     expect(post).toContain("guard isQuiet() else { break }");
-    expect(app.match(/center\.requestAuthorization\(/g)?.length).toBe(3); // first need, one waiting at launch, Allow now
+    // First need, one waiting at launch, Allow now, and a notice's own first need (NoticeDelivery.swift, 2026-11-10).
+    expect(app.match(/center\.requestAuthorization\(/g)?.length).toBe(4);
+    expect(member(app, "private func deliver(_ notice: ConchNotice")).toMatch(/case \.notAsked:[\s\S]*center\.requestAuthorization\(/);
     expect(app).toContain("ReviewNotifications.shared.isQuiet = { MainActor.assumeIsolated { store.state?.mode.paused == true } }");
   });
 });
