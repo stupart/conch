@@ -7,8 +7,9 @@ import SwiftUI
 
 // MARK: - The flow
 
-/// One screen of the phone's own setup, in order. There is no notifications screen: the iPhone app sends no
-/// notifications yet, and asking for them before it does would be dishonest (decision 11).
+/// One screen of the phone's own setup, in order. There is no notifications screen: a phone gets notices only once its
+/// Mac has a push key, and asking for them before that would be dishonest (decision 11). The ledger offers them once the
+/// Mac can push (`PushOffer`, 2026-11-10).
 public enum PhoneSetupScreen: String, CaseIterable, Codable, Sendable {
     /// Scanned: the key exchange with the Mac is under way.
     case connecting

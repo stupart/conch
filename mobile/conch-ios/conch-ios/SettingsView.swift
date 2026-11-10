@@ -63,6 +63,12 @@ struct SettingsView: View {
                             .listRowBackground(Palette.bg)
                         }
 
+                        // Notices from the Mac (PushNotifications.swift): where they stand here, and the ask.
+                        Section("Notifications") {
+                            PushSettingsRow(push: PushNotifications.shared, bridge: bridge)
+                                .listRowBackground(Palette.bg)
+                        }
+
                         ForEach($entries) { $entry in
                             SettingRow(setting: $entry, onReset: { await reset(entry.key) }) { value in
                                 await apply(entry.key, value)
