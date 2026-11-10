@@ -498,6 +498,9 @@ final class StateStore: ObservableObject {
     /// Draws the pages agents ask conch to capture (`conch_capture`).
     private lazy var pageCaptures = PageCaptureRequests(socket: socketClient)
 
+    /// Posts the notices the daemon names for this Mac (`conch_notify`, conch's own alerts).
+    private lazy var notices = NoticeDelivery(socket: socketClient)
+
     /// The conch-staged observer (docs/screen-context.md): tell the daemon what conch just put on
     /// screen and whose it is, so `showing` and `conch_on_screen` can say. Fire and forget, like
     /// markReviewViewed. Without `staged` it is conch's window showing a session, which counts only
@@ -1449,6 +1452,8 @@ final class StateStore: ObservableObject {
         applyDeliveryOutcomes(snapshot.deliveries)
         windowPreviewer.handle(snapshot.previewRequests, rows: snapshot.rows)
         pageCaptures.handle(snapshot.captureRequests)
+        // A session or conch telling Tyler something: posted once, and the daemon told it showed (`NoticeDelivery`).
+        notices.handle(snapshot.notices)
         // The Workbench's pages, made, closed and driven from the same file (`WorkbenchStore`).
         WorkbenchStore.shared.accept(snapshot)
         reconcileOutbox(with: snapshot)
@@ -1712,6 +1717,7 @@ final class StateStore: ObservableObject {
             showing: sourceState.showing,
             previewRequests: sourceState.previewRequests,
             captureRequests: sourceState.captureRequests,
+            notices: sourceState.notices,
             browserProfiles: sourceState.browserProfiles,
             browserTabs: sourceState.browserTabs,
             browserRequests: sourceState.browserRequests,
