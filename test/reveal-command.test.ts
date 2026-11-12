@@ -124,8 +124,9 @@ test("the iPhone gates messages separately while terminal-only controls remain d
   // the next assertion pins directly.
   expect(models).toMatch(/case id, label, status,[^\n]*\bnoTerminal\b[^\n]*attachable/);
   expect(models).toContain("noTerminal = try? c.decodeIfPresent(String.self, forKey: .noTerminal)");
+  // A parked agent's question says "Parked" first (parked-jobs.ts); the reason there is no terminal stays the last word.
   expect(read("mobile/conch-ios/conch-ios/LedgerView.swift"))
-    .toContain("row.review?.summary ?? row.detail ?? row.noTerminal");
+    .toContain("?? (row.parked ? SidebarRowText.parked(row.detail) : row.detail) ?? row.noTerminal");
 
   const session = read("mobile/conch-ios/conch-ios/SessionView.swift");
   const end = session.indexOf('Button("End session…"');

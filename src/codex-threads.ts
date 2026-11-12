@@ -68,8 +68,11 @@ export interface CodexThreadsOptions {
   lockProbe?: (paths: string[]) => string | null | Promise<string | null>;
   /** Each pid's command line, to name a lock's holder. Injectable: a test's fake process table. */
   processArgs?: (pids: number[]) => ReadonlyMap<number, string> | null | Promise<ReadonlyMap<number, string> | null>;
-  /** Live foreground TUIs that explicitly resumed a thread in this profile. */
-  terminalSessions?: (codexHome: string) => Promise<ReadonlyMap<string, number>>;
+  /**
+   * Live foreground TUIs that explicitly resumed a thread in this profile, given each app-server-held thread's
+   * holder (the server a TUI attached to it is connected to).
+   */
+  terminalSessions?: (codexHome: string, servers: ReadonlyMap<string, number>) => Promise<ReadonlyMap<string, number>>;
   /** Desktop ownership, rather than mere existence of its IPC socket. */
   appThreads?: (codexHome: string, threadIds: readonly string[]) => Promise<ReadonlySet<string>>;
 }
@@ -344,10 +347,10 @@ export async function readCodexOpenThreadIds(
   // time, so a test's process table answers as it is now.
   const held = await (probe ?? sharedLockProbe(dir))(names.map((name) => join(dir, name)));
   if (held === null) {
-    // The probe itself failed — lsof missing, or something unexpected. Fall
-    // back to the old assumption rather than silently emptying the ledger:
-    // showing a session that has gone is a smaller failure than hiding one
-    // that has not.
+    // The probe itself failed — lsof missing, or something unexpected — with
+    // no earlier answer to stand on (`cachedLockProbe`). Fall back to the old
+    // assumption rather than silently emptying the ledger: showing a session
+    // that has gone is a smaller failure than hiding one that has not.
     return new Map(names.map((name) => [idOf(name), 0]));
   }
   // `lsof -F pn` names a process once (`p<pid>`), then each file it has open
@@ -422,9 +425,20 @@ export interface CachedLockProbeOptions {
  * five-second turn poll and every Codex parent's helper lookup ask for the same
  * files at the same moment.
  *
- * A failed probe (null) is remembered too: a probe that timed out on a loaded
- * Mac is the one to stop re-running every 250 ms, and its fallback — every lock
- * file counted as held — is already the documented degraded answer.
+ * A failed probe (null) proves nothing either way, so it answers with the last
+ * probe that succeeded, when nothing that answer could see has changed since:
+ * the same lock files, and every holder it named still running. Read as "every
+ * lock held by someone unnamed" (the fallback in `readCodexOpenThreadIds`), a
+ * failure made every open thread a row with no pid and no reason, and the
+ * daemon reported each one. `lsof` walks every open file on the Mac and does not
+ * finish its two seconds in a maintenance wake: "notes and research", its lock held
+ * by the shared app-server, logged "Codex row has no pid" 230 times, and all
+ * eleven on 2026-10-23 landed 22-24 s into a DarkWake on battery. The next good
+ * probe cleared the warning's latch, so the next wake reported it again.
+ * Only with no such answer to fall back on does a failure reach that fallback.
+ *
+ * Either way it is remembered for the window: a probe that timed out on a loaded
+ * Mac is the one to stop re-running every 250 ms.
  */
 export function cachedLockProbe(
   probe: LockProbe,
@@ -435,6 +449,8 @@ export function cachedLockProbe(
   const alive = options.alive ?? processAlive;
   const identity = options.identity ?? lockFileIdentity;
   let answered: { key: string; at: number; answer: string | null; holders: number[] } | undefined;
+  // The newest answer a probe actually gave: what a failed one stands on.
+  let proven: { key: string; at: number; answer: string; holders: number[] } | undefined;
   let running: { key: string; answer: Promise<string | null> } | undefined;
   return (paths) => {
     const key = [...paths].sort().map((path) => `${path}\0${identity(path) ?? "gone"}`).join("\n");
@@ -449,9 +465,12 @@ export function cachedLockProbe(
     const answer: Promise<string | null> = Promise.resolve()
       .then(() => probe(paths))
       .then((result) => {
+        const stands = result === null && proven?.key === key && proven.holders.every((pid) => alive(pid));
+        const told = stands ? proven!.answer : result;
         // The newest probe's answer wins; one that started earlier and finished later does not.
-        if (!answered || answered.at <= at) answered = { key, at, answer: result, holders: holderPids(result) };
-        return result;
+        if (result !== null && (!proven || proven.at <= at)) proven = { key, at, answer: result, holders: holderPids(result) };
+        if (!answered || answered.at <= at) answered = { key, at, answer: told, holders: holderPids(told) };
+        return told;
       })
       .finally(() => {
         if (running?.answer === answer) running = undefined;
@@ -1153,7 +1172,9 @@ async function codexThreadsPass(
       return holder && APP_SERVER_ARGS.test(args?.get(holder) ?? "");
     }).map(row => String(row.id));
     const terminals = serverThreads.length
-      ? await (options.terminalSessions ?? readCodexTerminalSessions)(codexHome) : new Map<string, number>();
+      ? await (options.terminalSessions ?? readCodexTerminalSessions)(
+        codexHome, new Map(serverThreads.map(id => [id, holders.get(id)!])),
+      ) : new Map<string, number>();
     const appCandidates = serverThreads.filter(id => !terminals.has(id));
     const appThreads = appCandidates.length
       ? await (options.appThreads ?? readCodexAppThreads)(codexHome, appCandidates) : new Set<string>();

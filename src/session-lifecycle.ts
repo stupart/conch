@@ -1,5 +1,5 @@
 import { paneTarget } from "./tmux-binary.ts";
-import { FOCUS_GUARD_LINES, focusedAction, focusSessionWindow, readTerminalTab, withUITransaction, type OsaRunner } from "./inject.ts";
+import { FOCUS_GUARD_LINES, focusedAction, focusSessionWindow, MAC_KEY_CODES, readTerminalTab, withUITransaction, type OsaRunner } from "./inject.ts";
 import { runUICommand, type UICommandScope } from "./pasteboard.ts";
 import { terminalTabLookup } from "./terminal-tab.ts";
 import { processMatchesProvider, readProcessIdentity, sameProcessIdentity, type ProcessIdentity, type ProcessIdentityProbe } from "./process-identity.ts";
@@ -21,6 +21,7 @@ import type { SessionInfo } from "./sessions.ts";
 import { acceptBackgroundTrust, managedBackgroundSession, startBackgroundProcess, type BackgroundTrustOutcome } from "./background-sessions.ts";
 import { probeCommand } from "./probe.ts";
 import { sessionBrowserAssignments } from "./browser-open.ts";
+import { stillRunningReason, stopTasksMessage, stopTasksSignature, type StopTasksQuestion } from "./exit-screen.ts";
 
 export type { SessionBackend };
 
@@ -150,6 +151,13 @@ export interface SessionLifecycleDependencies {
   exitPollIntervalMs?: number;
   backgroundSession?: typeof managedBackgroundSession;
   probe?: typeof probeCommand;
+  /**
+   * What a closing session's screen shows now: its background pane, or its Terminal tab. A test standing in for Terminal
+   * (`spawn`) reads nothing it didn't say is there.
+   */
+  readScreen?(at: { pane: string } | { tty: string }): Promise<string | null>;
+  /** The person pressed Restart rather than Close: the words that ask them to press it again say which. */
+  restart?: boolean;
 }
 
 /** Extra launch constraints for a cloud id passed as a CLI option's value. */
@@ -812,21 +820,91 @@ const CLOSE_EXIT_WAIT_MS = 15_000;
 const EXIT_POLL_INTERVAL_MS = 100;
 /** Between raising the tab and pressing Ctrl-D, as injection waits for a raise to settle. */
 const RAISE_SETTLE_MS = 300;
+/**
+ * The longest one look at a closing session's screen may take: before the keys, and once the exit wait has run out.
+ * A tmux capture takes milliseconds; a Terminal tab on a Mac this busy is a screen that couldn't be read, which a close
+ * says, rather than one more wait in front of the reply.
+ */
+const SCREEN_LOOK_MS = 2_000;
+/** After Escape, before the screen is believed: long enough for Claude Code to draw what Escape took it back to. */
+const ESCAPE_SETTLE_MS = 400;
+/** How often the exit wait looks at the screen for a question Claude Code asked instead of leaving. */
+const SCREEN_WATCH_MS = 1_000;
+/** Between two keys of one press, as Claude Code's "press again" takes a second Ctrl-D within its 800 ms. */
+const EXIT_KEY_GAP_MS = 150;
 
 /**
- * The longest a Terminal close's own timed steps can run: the raise, the settle, the presses, the exit wait.
+ * The longest a Terminal close's own timed steps can run: the raise, the settle, the presses, the exit wait, and a look
+ * at the screen either side of them. Every key a close presses shares the one presses budget, Escape and whatever it
+ * leads to included, and the exit wait's own looks stop short of its end.
  * Whatever waits on a close's reply (the Mac app, the phone bridge) has to wait longer than this, with room for the
  * lookups before it (two tmux servers' panes at up to 2 s each, a `ps`), or it reports a close that worked as failed.
  */
-export const CLOSE_TIMED_STEPS_MS = CLOSE_AUTOMATION_TIMEOUT_MS + RAISE_SETTLE_MS + CLOSE_AUTOMATION_TIMEOUT_MS + CLOSE_EXIT_WAIT_MS;
+export const CLOSE_TIMED_STEPS_MS = CLOSE_AUTOMATION_TIMEOUT_MS + RAISE_SETTLE_MS + CLOSE_AUTOMATION_TIMEOUT_MS + CLOSE_EXIT_WAIT_MS
+  + 2 * SCREEN_LOOK_MS;
 
 /** "10 s", or "5 ms" for a test's short budget. */
 function duration(ms: number): string {
   return ms >= 1_000 ? `${Math.round(ms / 1_000)} s` : `${ms} ms`;
 }
 
-/** What the presses step leaves the exit wait to judge: the tab they went to, and whether osascript was stopped. */
-type ExitKeysSent = { tty: string; pressTimedOut: boolean } | { tty?: undefined; pressTimedOut?: undefined };
+/** A key a close presses, by tmux's name for it. */
+type ExitKey = "C-d" | "C-c" | "Escape" | "Enter";
+
+/** What a message calls each key. */
+const EXIT_KEY_NAMES: Readonly<Record<ExitKey, string>> = { "C-d": "Ctrl-D", "C-c": "Ctrl-C", Escape: "Escape", Enter: "Return" };
+
+/** The same keys in a raised Terminal tab, as System Events presses them. */
+const TERMINAL_EXIT_KEYS: Readonly<Record<ExitKey, string>> = {
+  "C-d": 'tell application "System Events" to keystroke "d" using control down',
+  "C-c": 'tell application "System Events" to keystroke "c" using control down',
+  Escape: `tell application "System Events" to key code ${MAC_KEY_CODES.Escape}`,
+  Enter: `tell application "System Events" to key code ${MAC_KEY_CODES.Enter}`,
+};
+
+/**
+ * What the presses step leaves the exit wait to judge: the tab they went to (none for a background session's pane),
+ * whether osascript was stopped before it said the keys went, how the session was asked to leave, and a way to look at
+ * its screen again.
+ */
+interface ExitKeysSent {
+  tty?: string;
+  pressTimedOut?: boolean;
+  /** The last key pressed: Ctrl-D; Ctrl-C, twice, where the screen says that quits; Return on "Exit and stop tasks"; or
+   * the Escape before any of them, when Terminal didn't say it went. */
+  left: ExitKey;
+  look(): Promise<string | null>;
+}
+
+/**
+ * The stop-tasks questions closes have put to the person, by the session process they were asked in: what each named.
+ * A close that finds the same question still on that screen is the person's answer to it, given by pressing Close again
+ * after reading it. A question the screen shows that no close has put to them is put first, and nothing is pressed: in a
+ * background pane nobody watches, the work it would stop may be the reason the session is still open.
+ */
+const stopTasksAsked = new Map<string, string>();
+
+function askedKey(pid: number, dependencies: SessionLifecycleDependencies): string {
+  return `${pid}@${dependencies.expectedIdentity?.birth ?? ""}`;
+}
+
+/** Put a stop-tasks question to the person: remembered, so the next close of the same session can answer it. */
+function askToStopTasks(pid: number, question: StopTasksQuestion, dependencies: SessionLifecycleDependencies): Error {
+  stopTasksAsked.set(askedKey(pid, dependencies), stopTasksSignature(question));
+  return new Error(stopTasksMessage(question, dependencies.restart));
+}
+
+/** Where a close reads a session's screen: injected, nothing under a stand-in Terminal, else the pane or the tab. */
+function screenReader(dependencies: SessionLifecycleDependencies): (at: { pane: string } | { tty: string }) => Promise<string | null> {
+  if (dependencies.readScreen) return (at) => dependencies.readScreen!(at);
+  if (dependencies.spawn) return async () => null;
+  return async (at) => {
+    if ("tty" in at) return readTerminalTab(at.tty, terminalOsa({ ...dependencies, automationTimeoutMs: SCREEN_LOOK_MS }));
+    const target = paneTarget(at.pane);
+    if (!target) return null;
+    return (dependencies.probe ?? probeCommand)([...target.tmux, "capture-pane", "-p", "-t", target.pane], [0], SCREEN_LOOK_MS);
+  };
+}
 
 /**
  * Ctrl-D asks the CLI to leave through its normal EOF path; no signal is sent
@@ -838,21 +916,36 @@ type ExitKeysSent = { tty: string; pressTimedOut: boolean } | { tty?: undefined;
  * sessions go ahead meanwhile; then the tab close, queued as its own transaction once the pid is gone. The reply
  * does not wait for that last one: the session has closed by then, and a queue of other UI work must not turn into
  * a client giving up on a close that worked.
+ *
+ * Where the screen can be read, the wait watches it too. Claude Code answers Ctrl-D with a question when an exit would
+ * stop background work, within a second; that question goes back to the person then, not after 15 s, and the session
+ * is left on it for the next close to answer (`sendExitKeys`).
  */
 export async function closeTerminalSession(
   pid: number,
   dependencies: SessionLifecycleDependencies = {},
 ): Promise<void> {
   const sent = await withUITransaction(() => sendExitKeys(pid, dependencies));
-  if (!(await waitForExit(pid, dependencies))) {
-    const waited = duration(exitWait(dependencies).totalMs);
-    throw new Error(!sent.tty
-      ? `Ctrl-D was sent, but the background session is still running after ${waited}. It may be finishing up.`
-      : sent.pressTimedOut
-      ? "Terminal was slow to take Ctrl-D, and the session is still running. Check its Terminal tab."
-      // The tab stays open on purpose: whatever the process is still doing is on it, for you to look at.
-      : `Ctrl-D was sent, but the session is still running after ${waited}. It may be finishing up; check its Terminal tab.`);
+  const { exitBlocker, inputBoxText } = adapterFor(dependencies.backend);
+  // Not once it has been answered: the question can stay drawn for a moment after Return, while the tasks stop.
+  const watch = exitBlocker && sent.left !== "Enter" ? async () => {
+    const shown = exitBlocker(await sent.look() ?? "");
+    if (shown?.kind === "stop-tasks") throw askToStopTasks(pid, shown, dependencies);
+  } : undefined;
+  if (!(await waitForExit(pid, dependencies, watch))) {
+    const screen = await sent.look();
+    const shown = screen === null ? null : exitBlocker?.(screen) ?? null;
+    if (shown?.kind === "stop-tasks") throw askToStopTasks(pid, shown, dependencies);
+    // The tab stays open on purpose: whatever the process is still doing is on it, for you to look at.
+    const key = EXIT_KEY_NAMES[sent.left];
+    if (sent.pressTimedOut) throw new Error(`Terminal was slow to take ${key}, and the session is still running. Check its Terminal tab.`);
+    const pressed = sent.left === "Enter" ? `"Exit and stop tasks" was chosen`
+      : sent.left === "C-c" ? "Ctrl-C was pressed twice, as its screen says to quit" : `${key} was sent`;
+    const box = screen !== null && sent.left === "C-d" ? inputBoxText?.(screen) ?? null : null;
+    throw new Error(`${pressed}, but the ${sent.tty ? "" : "background "}session is still running after ${duration(exitWait(dependencies).totalMs)}. `
+      + stillRunningReason(screen, shown, box) + (sent.tty ? " Check its Terminal tab." : ""));
   }
+  stopTasksAsked.delete(askedKey(pid, dependencies));
   if (sent.tty) {
     const { tty } = sent;
     void withUITransaction(() => closeSessionTabAndReturn(tty, terminalOsa(dependencies))).catch(() => {});
@@ -867,7 +960,26 @@ function terminalOsa(dependencies: SessionLifecycleDependencies): OsaRunner {
   );
 }
 
-/** The close's first UI transaction: raise the tab and press Ctrl-D, or send it into a background session's pane. */
+/** A close's way into a session: what its screen shows, and keys into it. `press` is true when osascript was stopped
+ * before it said the keys went (they may have). */
+interface ExitRoute {
+  tty?: string;
+  look(): Promise<string | null>;
+  press(keys: readonly ExitKey[]): Promise<boolean>;
+}
+
+/**
+ * The close's first UI transaction: what to press, then pressing it, into a background session's pane or a raised
+ * Terminal tab.
+ *
+ * Ctrl-D, unless the screen says it won't do (`exitBlocker`, Claude Code only):
+ *   - Claude Code asking before it stops background work: put to the person, nothing pressed, the first time; Return on
+ *     "Exit and stop tasks" when a close has already put this same question and it is still on screen, highlighted.
+ *     Never "Move to background and exit".
+ *   - its background-sessions view, where Ctrl-D does nothing: Escape, which "returns to it" (the conversation), then
+ *     Ctrl-D there; still in the view, Ctrl-C twice, as the view itself says quits (2026-10-23, Tyler, by hand: it quit
+ *     cleanly).
+ */
 async function sendExitKeys(
   pid: number,
   dependencies: SessionLifecycleDependencies = {},
@@ -881,19 +993,51 @@ async function sendExitKeys(
       || !sameProcessIdentity(expected, probe(pid))) throw new Error("session process identity changed or is unavailable; refresh before closing");
   };
   verify();
+  const route = await exitRoute(pid, verify, dependencies);
+  const adapter = adapterFor(dependencies.backend);
+  const leave: ExitKey[] = Array.from({ length: adapter.exitKeystrokes }, () => "C-d");
+  const blockerOf = adapter.exitBlocker;
+  const sent = (pressTimedOut: boolean, left: ExitKeysSent["left"]): ExitKeysSent => ({
+    ...(route.tty ? { tty: route.tty, pressTimedOut } : {}), left, look: () => route.look(),
+  });
+  let shown = blockerOf ? blockerOf(await route.look() ?? "") : null;
+  if (shown?.kind === "stop-tasks") {
+    if (stopTasksAsked.get(askedKey(pid, dependencies)) !== stopTasksSignature(shown)) throw askToStopTasks(pid, shown, dependencies);
+    if (shown.exitHighlighted) return sent(await route.press(["Enter"]), "Enter");
+  }
+  if (shown) {
+    // Escape is the question's own "Esc to cancel" (Stay: the highlight had moved off Exit, and Ctrl-D asks it again
+    // with the highlight back on it, for the next close), and the view's own "esc returns to it".
+    if (await route.press(["Escape"])) return sent(true, "Escape");
+    await (dependencies.sleep ?? Bun.sleep)(ESCAPE_SETTLE_MS);
+    shown = blockerOf!(await route.look() ?? "");
+  }
+  if (shown?.kind === "background-view" && shown.quitsOnCtrlC) return sent(await route.press(["C-c", "C-c"]), "C-c");
+  return sent(await route.press(leave), "C-d");
+}
+
+/** A background session's pane, or the Terminal tab on the session's tty, raised before its first key. */
+async function exitRoute(pid: number, verify: () => void, dependencies: SessionLifecycleDependencies): Promise<ExitRoute> {
+  const sleep = dependencies.sleep ?? Bun.sleep;
+  const read = screenReader(dependencies);
   const background = await (dependencies.backgroundSession ?? (dependencies.spawn ? async () => undefined : managedBackgroundSession))(pid);
   if (background) {
     // On whichever server it is (`paneTarget`): conch's own, or the default one for a session started before it.
     const target = paneTarget(background.pane);
     if (!target) throw new Error("Could not stop the background session");
-    for (let press = 0; press < adapterFor(dependencies.backend).exitKeystrokes; press++) {
-      verify();
-      if (await (dependencies.probe ?? probeCommand)([...target.tmux, "send-keys", "-t", target.pane, "C-d"], [0]) === null) {
-        throw new Error("Could not stop the background session");
-      }
-      if (press + 1 < adapterFor(dependencies.backend).exitKeystrokes) await (dependencies.sleep ?? Bun.sleep)(150);
-    }
-    return {};
+    return {
+      look: () => read({ pane: background.pane }),
+      async press(keys) {
+        for (const [index, key] of keys.entries()) {
+          if (index) await sleep(EXIT_KEY_GAP_MS);
+          verify();
+          if (await (dependencies.probe ?? probeCommand)([...target.tmux, "send-keys", "-t", target.pane, key], [0]) === null) {
+            throw new Error("Could not stop the background session");
+          }
+        }
+        return false;
+      },
+    };
   }
   const tty = await (dependencies.ttyForPid ?? defaultTtyForPid)(pid);
   if (!tty || tty === "??") throw new Error("session is not attached to a Terminal tty");
@@ -904,36 +1048,44 @@ async function sendExitKeys(
   // Cmd-Tab in between used to send a global Ctrl-D into whatever had come forward. The guard
   // re-reads the frontmost app and the front tab's tty inside the script that presses the key.
   const timeoutMs = dependencies.automationTimeoutMs ?? CLOSE_AUTOMATION_TIMEOUT_MS;
-  const osa = terminalOsa({ ...dependencies, automationTimeoutMs: timeoutMs });
-  const raised = await focusSessionWindow(tty, osa);
-  // A timeout says so with an empty stderr; a sealed UI scope names itself there and is reported as it was.
-  if (raised.timedOut && !raised.stderr) {
-    throw new Error(`Terminal didn't respond within ${duration(timeoutMs)}, so conch didn't send Ctrl-D. The session is still open.`);
-  }
-  const focused = checkedTerminalResult(raised);
-  if (focused.text.trim() !== "ok") throw new Error("session Terminal tab was not found");
-  await (dependencies.sleep ?? Bun.sleep)(RAISE_SETTLE_MS);
-  verify();
-  // As many presses as this agent's exit takes (`exitKeystrokes`), in ONE script so
-  // the second lands inside Claude Code's 800ms "press again" window, and each one
-  // behind the front-window guard: the gap between presses is as open to a Cmd-Tab
-  // as the gap after the raise.
-  const press = 'tell application "System Events" to keystroke "d" using control down';
-  const presses = [press];
-  for (let i = 1; i < adapterFor(dependencies.backend).exitKeystrokes; i += 1) {
-    presses.push("delay 0.15", ...FOCUS_GUARD_LINES, press);
-  }
-  const pressed = await focusedAction(tty, osa, presses);
-  // Stopped part-way, osascript may already have pressed: a slow Terminal takes the keys and answers late.
-  // Nothing proves either way here, so the exit wait decides, and only a pid still running is a failure.
-  if (pressed.timedOut && !pressed.stderr) return { tty, pressTimedOut: true };
-  const closed = checkedTerminalResult(pressed);
-  if (closed.text.trim() !== "ok") {
-    throw new Error(closed.text.trim() === "front-window-changed"
-      ? "another window came to the front on the Mac; Ctrl-D was not sent"
-      : "session Terminal tab was not found");
-  }
-  return { tty, pressTimedOut: false };
+  let pressesEnd: number | undefined;
+  return {
+    tty,
+    look: () => read({ tty }),
+    async press(keys) {
+      if (pressesEnd === undefined) {
+        const raised = await focusSessionWindow(tty, terminalOsa({ ...dependencies, automationTimeoutMs: timeoutMs }));
+        // A timeout says so with an empty stderr; a sealed UI scope names itself there and is reported as it was.
+        if (raised.timedOut && !raised.stderr) {
+          throw new Error(`Terminal didn't respond within ${duration(timeoutMs)}, so conch didn't send ${EXIT_KEY_NAMES[keys[0]!]}. The session is still open.`);
+        }
+        const focused = checkedTerminalResult(raised);
+        if (focused.text.trim() !== "ok") throw new Error("session Terminal tab was not found");
+        await sleep(RAISE_SETTLE_MS);
+        pressesEnd = Date.now() + timeoutMs;
+      }
+      verify();
+      // Every key of a press in ONE script, so a second Ctrl-D lands inside Claude Code's 800ms "press again" window,
+      // and each one behind the front-window guard: the gap between presses is as open to a Cmd-Tab as the gap after
+      // the raise. A second press (after Escape) has what is left of the first one's time.
+      const lines = keys.flatMap((key, index) => index
+        ? [`delay ${EXIT_KEY_GAP_MS / 1000}`, ...FOCUS_GUARD_LINES, TERMINAL_EXIT_KEYS[key]]
+        : [TERMINAL_EXIT_KEYS[key]]);
+      const left = pressesEnd - Date.now();
+      if (left <= 0) return true;
+      const pressed = await focusedAction(tty, terminalOsa({ ...dependencies, automationTimeoutMs: left }), lines);
+      // Stopped part-way, osascript may already have pressed: a slow Terminal takes the keys and answers late.
+      // Nothing proves either way here, so the exit wait decides, and only a pid still running is a failure.
+      if (pressed.timedOut && !pressed.stderr) return true;
+      const closed = checkedTerminalResult(pressed);
+      if (closed.text.trim() !== "ok") {
+        throw new Error(closed.text.trim() === "front-window-changed"
+          ? `another window came to the front on the Mac; ${EXIT_KEY_NAMES[keys[0]!]} was not sent`
+          : "session Terminal tab was not found");
+      }
+      return false;
+    },
+  };
 }
 
 /**
@@ -1002,17 +1154,22 @@ function exitWait(dependencies: SessionLifecycleDependencies): { attempts: numbe
  * True once the pid is gone, or is no longer the process that was asked to leave; false when the wait ran out. Never
  * inside a UI transaction. Bounded by the clock as well as by the count, so slow `ps` calls on a loaded Mac can't
  * stretch it past what the Mac and phone wait for the reply.
+ *
+ * `watch` looks at the screen about once a second, and only while a look can finish before the wait does; it ends the
+ * wait by throwing what it saw.
  */
-async function waitForExit(pid: number, dependencies: SessionLifecycleDependencies): Promise<boolean> {
+async function waitForExit(pid: number, dependencies: SessionLifecycleDependencies, watch?: () => Promise<void>): Promise<boolean> {
   const pidIsAlive = dependencies.pidIsAlive ?? defaultPidIsAlive;
   const sleep = dependencies.sleep ?? Bun.sleep;
   const { attempts, intervalMs, totalMs } = exitWait(dependencies);
   const deadline = Date.now() + totalMs;
+  const watchEvery = Math.max(1, Math.round(SCREEN_WATCH_MS / intervalMs));
   for (let attempt = 1; ; attempt += 1) {
     if (!(await pidIsAlive(pid))) return true;
     if (dependencies.expectedIdentity && !sameProcessIdentity(dependencies.expectedIdentity,
       (dependencies.processIdentity ?? readProcessIdentity)(pid))) return true;
     if (attempt >= attempts || Date.now() >= deadline) return false;
+    if (watch && attempt % watchEvery === 0 && Date.now() + SCREEN_LOOK_MS < deadline) await watch();
     await sleep(intervalMs);
   }
 }

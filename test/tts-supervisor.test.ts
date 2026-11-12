@@ -558,6 +558,16 @@ describe("D1 wiring inside runDaemon", () => {
     expect(kokoro).toBeGreaterThan(state);
   });
 
+  // 2026-10-23, Tyler: "why has Kokoro been working if voice has been off? does it compute it anyways?" The voice kept
+  // in manual mode synthesised "Ready." every ten minutes all night. Health checks are for what is spoken unasked.
+  test("the worker is health-checked only in auto mode with Read replies aloud on, from boot and on every change", () => {
+    expect(daemonSource).toContain("const kokoroHealthByMode = (paused: boolean): void => ttsWorker.setHealthChecks(cfg.speak && !paused);");
+    const helper = between("const kokoroByMode = (paused: boolean", "pause = new PauseController({");
+    expect(helper).toContain("kokoroHealthByMode(paused);");
+    const boot = between("if (pause.paused && !keepVoiceLoaded(true)) kokoroByMode(true, 0);", "void voiceEnv?.start()");
+    expect(boot).toContain("kokoroHealthByMode(pause.paused);");
+  });
+
   test("a daemon booting in manual mode unloads before either engine starts, unless manual mode keeps the voice", () => {
     const boot = between("ttsSupervisor = new TtsSupervisor({", "const whisperBinaryAvailable");
     const unload = boot.indexOf("if (pause.paused && !keepVoiceLoaded(true)) kokoroByMode(true, 0)");

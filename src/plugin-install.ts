@@ -3,12 +3,14 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
   statSync,
 } from "node:fs";
 import { conchHome } from "./home.ts";
+import { stableExecPath } from "./install.ts";
 import { dirname, join, resolve } from "node:path";
 import claudeMarketplaceSource from "../plugin/.claude-plugin/marketplace.json" with { type: "text" };
 import agentsMarketplaceSource from "../plugin/.agents/plugins/marketplace.json" with { type: "text" };
@@ -606,11 +608,15 @@ export interface InstallPluginOptions {
 }
 
 export async function runInstallPlugin(
-  absBun: string,
+  bun: string,
   absCli: string,
   env: Readonly<Record<string, string | undefined>> = process.env,
   options: InstallPluginOptions = {},
 ): Promise<boolean> {
+  // Every caller passes `process.execPath`, which is bun's Cellar path: the plugin named
+  // /opt/homebrew/Cellar/bun/1.4.2/bin/bun, and once Homebrew moved bun to 1.4.4 every new session started without
+  // conch's tools (2026-10-23). The hooks learnt this on 2026-10-03 (`stableExecPath`); the plugin is told the same.
+  const absBun = stableExecPath(bun);
   const agents = options.agents ?? ["claude", "codex"];
   // Bun exposes bundled module URLs under /$bunfs in a compiled executable,
   // but they are not ordinary files that cpSync can walk. The existence check
@@ -664,6 +670,118 @@ export async function runInstallPlugin(
     "Start a NEW Claude Code / Codex session — the conch-control skill and conch_* tools are now available.",
   );
   return claude.ok && codex.ok;
+}
+
+/** The two MCP configs a plugin copy carries: Claude Code reads `.mcp.json`, Codex `.codex-mcp.json`. */
+const PLUGIN_MCP_FILES = [".mcp.json", ".codex-mcp.json"] as const;
+
+/**
+ * Every copy of conch's plugin an agent runs: the dist, each Claude account's installed copy (its ledger's
+ * `installPath`) and Codex's cache (`plugins/cache/<marketplace>/conch/<version>`). The agents run their copy, not the
+ * dist, so repairing the dist alone changes nothing a session loads.
+ */
+function installedPluginDirs(
+  homes: { claudeDirs: readonly string[]; codexDir: string },
+  env: Readonly<Record<string, string | undefined>>,
+): string[] {
+  const dirs = new Set([join(pluginDistDir(env), "plugins", "conch")]);
+  for (const claudeDir of homes.claudeDirs) for (const dir of claudePluginCopies(claudeDir)) dirs.add(dir);
+  const codexCache = join(homes.codexDir, "plugins", "cache");
+  for (const marketplace of safeReaddir(codexCache)) {
+    for (const version of safeReaddir(join(codexCache, marketplace, "conch"))) dirs.add(join(codexCache, marketplace, "conch", version));
+  }
+  return [...dirs];
+}
+
+/** The copies of conch's plugin one Claude account runs: its ledger's `installPath`s for `conch@…`. */
+function claudePluginCopies(claudeDir: string): string[] {
+  const dirs: string[] = [];
+  try {
+    const ledger = JSON.parse(readFileSync(join(claudeDir, "plugins", "installed_plugins.json"), "utf8")) as { plugins?: Record<string, unknown> };
+    for (const [id, installs] of Object.entries(ledger.plugins ?? {})) {
+      if (!id.startsWith("conch@") || !Array.isArray(installs)) continue;
+      for (const install of installs) if (typeof install?.installPath === "string") dirs.push(install.installPath);
+    }
+  } catch {
+    // No ledger, or one that can't be read: that account has no copy.
+  }
+  return dirs;
+}
+
+function safeReaddir(dir: string): string[] {
+  try {
+    return readdirSync(dir);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Repair, never add: point the MCP server in every copy of conch's plugin at a bun that survives Homebrew
+ * (`stableExecPath`). A plugin installed before `runInstallPlugin` did that names a Cellar bun, and when Homebrew
+ * deleted it every new session's conch server failed with ENOENT and the session had no conch tools (2026-10-23).
+ * The daemon runs this at start, beside the hooks' repair. How many files were repaired.
+ */
+export async function repairPluginPrograms(
+  homes: { claudeDirs: readonly string[]; codexDir: string },
+  env: Readonly<Record<string, string | undefined>> = process.env,
+  exists: (path: string) => boolean = existsSync,
+): Promise<number> {
+  let repaired = 0;
+  for (const dir of installedPluginDirs(homes, env)) {
+    for (const name of PLUGIN_MCP_FILES) {
+      const path = join(dir, name);
+      let config: { mcpServers?: Record<string, { command?: unknown }> };
+      try {
+        config = JSON.parse(readFileSync(path, "utf8"));
+      } catch {
+        continue;
+      }
+      const server = config.mcpServers?.conch;
+      if (typeof server?.command !== "string") continue;
+      const stable = stableExecPath(server.command, exists);
+      if (stable === server.command) continue;
+      server.command = stable;
+      await Bun.write(path, JSON.stringify(config, null, 2) + "\n");
+      repaired += 1;
+    }
+  }
+  return repaired;
+}
+
+/**
+ * Whether the conch plugin a Claude account runs could start its MCP server now: every installed copy's `.mcp.json`
+ * names a program that is there (a bare name, on PATH), and each absolute path among its arguments is there too, with
+ * `${CLAUDE_PLUGIN_ROOT}` read as the copy's own folder. What `/reload-plugins` would start in a session whose server
+ * failed (mcp-repair.ts): conch only types it when this says the server can start, so a reload that could only fail
+ * again is never typed. Read only.
+ */
+export function conchPluginServerRunnable(
+  claudeDir: string,
+  exists: (path: string) => boolean = existsSync,
+  onPath: (command: string) => boolean = (command) => Bun.which(command) !== null,
+): { ok: true } | { ok: false; why: string } {
+  const copies = claudePluginCopies(claudeDir);
+  if (!copies.length) return { ok: false, why: "conch's plugin isn't installed in this account" };
+  for (const dir of copies) {
+    const path = join(dir, ".mcp.json");
+    let server: { command?: unknown; args?: unknown } | undefined;
+    try {
+      server = (JSON.parse(readFileSync(path, "utf8")) as { mcpServers?: Record<string, { command?: unknown; args?: unknown }> }).mcpServers?.conch;
+    } catch {
+      return { ok: false, why: `${path} can't be read` };
+    }
+    if (typeof server?.command !== "string" || !server.command) return { ok: false, why: `${path} names no program for conch's server` };
+    const expand = (value: string) => value.replaceAll("${CLAUDE_PLUGIN_ROOT}", dir);
+    const command = expand(server.command);
+    if (command.includes("/") ? !exists(command) : !onPath(command)) return { ok: false, why: `${command} isn't there` };
+    for (const arg of Array.isArray(server.args) ? server.args : []) {
+      if (typeof arg !== "string") continue;
+      const value = expand(arg);
+      if (value.startsWith("/") && !exists(value)) return { ok: false, why: `${value} isn't there` };
+    }
+  }
+  return { ok: true };
 }
 
 /**

@@ -177,7 +177,7 @@ describe("native Terminal session lifecycle", () => {
         calls.push(args);
         return settledProcess("ok\n");
       },
-    })).rejects.toThrow("Ctrl-D was sent, but the session is still running after 200 ms. It may be finishing up; check its Terminal tab.");
+    })).rejects.toThrow("Ctrl-D was sent, but the session is still running after 200 ms. Its screen couldn't be read. Check its Terminal tab.");
     await uiQueueDrained();
     expect(calls.some((args) => args.join(" ").includes('tell application "conch"'))).toBe(false);
   });
