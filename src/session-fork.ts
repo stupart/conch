@@ -35,7 +35,7 @@ export const FORK_ADOPT_WITHIN_MS = 5 * 60_000;
  *   forked in conch's background host with the defaults a new session gets.
  */
 export function forkRequest(
-  session: Pick<SessionInfo, "sessionId" | "agentSessionId" | "backend" | "cwd" | "claudeAccountId" | "codexAccountId" | "jobId" | "claudeSignInId">,
+  session: Pick<SessionInfo, "sessionId" | "agentSessionId" | "backend" | "cwd" | "claudeAccountId" | "codexAccountId" | "jobId" | "claudeSignInId" | "claudeConfigDir">,
   args: readonly string[],
 ): ReturnType<typeof restartRequest> {
   if (session.jobId) {

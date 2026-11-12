@@ -120,9 +120,10 @@ describe("asking before a Claude session starts in a folder it doesn't trust", (
     // a fork (`forkLiveSession`, which sets trustFolder as a restart does), and a failure ticket's fix session
     // (failure-tickets.ts, in conch's own checkout, which is trusted already).
     // And the restart guard's (`restart-recovery.ts`), which brings sessions back after the Mac restarts, Restart on a
-    // session whose process is already gone, which resumes it (pid-reuse-after-restart.test.ts), and a start an agent
-    // waits on (`startLiveSession`, `conch_start`), which the trust question comes before as it does any start: nine.
-    expect(daemon.match(/await launchSession\(|=> launchSession\(/g)?.length).toBe(9);
+    // session whose process is already gone, which resumes it (pid-reuse-after-restart.test.ts), a start an agent
+    // waits on (`startLiveSession`, `conch_start`), which the trust question comes before as it does any start, and Not
+    // in conch's Resume (elsewhere.ts), in the folder the agent already runs in: ten.
+    expect(daemon.match(/await launchSession\(|=> launchSession\(/g)?.length).toBe(10);
     // Every launch goes through launchSession: its own call is the only direct one.
     expect(daemon.match(/await startTerminalSession\(/g)?.length).toBe(1);
   });

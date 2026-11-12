@@ -3,16 +3,21 @@ import { windowKey, processParentTableWith } from "./window-key.ts";
 import { readClaudeAccounts, type ClaudeAccount } from "./claude-accounts.ts";
 import { registryProcessAlive } from "./process-identity.ts";
 import { findTranscript, registrySnapshot, codexRegistrySnapshot, withStartedBy, type RegistrySnapshot } from "./sessions.ts";
+import { defaultIsPidAlive } from "./codex-sessions.ts";
+import type { ClaudeSwapRun } from "./claude-swap-runs.ts";
+import { canonicalDir } from "./elsewhere.ts";
 import { readResumableSessionsResult, type ReadResumableSessionsOptions, type ResumableSessionsRead } from "./resumable.ts";
 import { parkedSessions, type ParkedSessionsOptions } from "./parked-jobs.ts";
 
 /** Read each provider root once, retaining the account that owns its sessions.
- * The optional Codex list preserves the legacy default-only reader for callers. */
+ * The optional Codex list preserves the legacy default-only reader for callers. `runs` are claude-swap's per-terminal
+ * folders (claude-swap-runs.ts), read after the accounts. */
 export async function accountRegistrySnapshot(
   defaultDir: string,
   accounts = readClaudeAccounts(defaultDir),
   codexAccounts?: ClaudeAccount[],
   parkedOptions?: ParkedSessionsOptions,
+  runs: readonly ClaudeSwapRun[] = [],
 ): Promise<RegistrySnapshot | null> {
   const combined: RegistrySnapshot = { infos: [], liveIds: new Set(), complete: true };
   let available = false;
@@ -30,6 +35,24 @@ export async function accountRegistrySnapshot(
       accountLabel: account.label,
       transcriptPath: session.transcriptPath ?? findTranscript(account.configDir, session.agentSessionId ?? session.sessionId),
     }));
+  }
+  // A claude-swap run (`cswap run 3 -- claude`) is a row like a profile's (2026-11-12), named by its account's number,
+  // with its own folder carried so a restart or fork comes back in it (`restartRequest`). It has no conch account id:
+  // nothing that lists, signs in or removes conch's accounts sees it. Only its live sessions: nobody prunes a run
+  // folder's entries once its terminal has gone, so a dead one is debris, never a row.
+  const profiles = new Set(accounts.map((account) => canonicalDir(account.configDir)));
+  for (const run of runs) {
+    if (profiles.has(canonicalDir(run.configDir))) continue;
+    const snapshot = await registrySnapshot(run.configDir, { skipCodex: true, processParents: async () => null });
+    if (!snapshot) continue;
+    available = true;
+    combined.complete &&= snapshot.complete;
+    const live = snapshot.infos.filter((session) => [session.pid, session.agentPid].some((pid) => pid && defaultIsPidAlive(pid)));
+    for (const session of live) combined.liveIds.add(session.sessionId);
+    combined.infos.push(...live.map((session) => ({
+      ...session, claudeConfigDir: run.configDir, accountLabel: run.label,
+      transcriptPath: session.transcriptPath ?? findTranscript(run.configDir, session.agentSessionId ?? session.sessionId),
+    })));
   }
   for (const account of codexAccounts ?? []) {
     const snapshot = await codexRegistrySnapshot(account.configDir, { processParents: async () => null });

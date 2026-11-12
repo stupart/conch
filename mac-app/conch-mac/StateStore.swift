@@ -879,6 +879,27 @@ final class StateStore: ObservableObject {
     /// Fork it: the same conversation again as a new session beside this one, holding the deliverables it holds now
     /// (daemon `forkLiveSession`). Tyler, 2026-10-09: "we should make it easier to fork sessions in app and have them
     /// bring over a snapshot of the current conch plugin review / deliverables". The original keeps running.
+    /// Not in conch's action on an agent (src/elsewhere.ts), once the ledger has asked: nil when it was done, else
+    /// what went wrong, for the agent's row. A resume opens where new sessions open (`conch.session.host`).
+    func actOnElsewhere(_ agent: ElsewhereAgent, action: ElsewhereAgent.Action, host: String) async -> String? {
+        let request = ConchElsewhereRequest(action: action == .addAccount ? "add-account" : "resume", id: agent.id,
+                                            host: action == .resume ? host : nil)
+        let failure: String?
+        switch await socketClient.request(request, timeout: Self.sessionLifecycleTimeout) {
+        case let .reply(data):
+            let reply = try? JSONDecoder().decode(ConchSidebarReply.self, from: data)
+            failure = reply?.kind == "elsewhere-done" ? nil : Self.nonempty(reply?.error) ?? "Unexpected reply from daemon"
+        case .connectFailed:
+            failure = "Daemon not running"
+            forceLivenessProbe()
+        case .timeout:
+            failure = "Daemon did not reply"
+            forceLivenessProbe()
+        }
+        if let failure { reportAppError(operation: "elsewhere", message: failure) }
+        return failure
+    }
+
     func forkSession(_ row: SessionRow) {
         rowMessages[row.id] = "Forking…"
         let socketClient = socketClient
@@ -1674,7 +1695,8 @@ final class StateStore: ObservableObject {
             // The sidebar's Still running (src/resource-ledger.ts).
             resources: sourceState.resources,
             // The sidebar's teams (ConchDesign/Teams.swift).
-            teams: sourceState.teams
+            teams: sourceState.teams,
+            elsewhere: sourceState.elsewhere
         )
         if state?.hasSamePresentation(as: next) != true {
             state = next

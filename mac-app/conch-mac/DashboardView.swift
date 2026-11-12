@@ -111,7 +111,8 @@ struct DashboardView: View {
                         renameDraft: $renameDraft,
                         rowMessages: store.rowMessages,
                         undoDismissal: store.undoDismissal,
-                        actions: actions
+                        actions: actions,
+                        onElsewhere: { await store.actOnElsewhere($0, action: $1, host: $2) }
                     )
                     .equatable()
                     .frame(width: sidebarWidth)
@@ -584,6 +585,8 @@ private struct SessionLedger: View {
     let rowMessages: [SessionRow.ID: String]
     let undoDismissal: SessionDismissUndo?
     let actions: DashboardActions
+    /// Not in conch's action on an agent, once asked (StateStore `actOnElsewhere`): nil when done, else why not.
+    var onElsewhere: (ElsewhereAgent, ElsewhereAgent.Action, String) async -> String? = { _, _, _ in "Not connected to conch" }
 
     /// Which row the ledger keeps in view. The same question the pane answers, so it asks the
     /// same rule (ConchDesign/Workspace.swift) rather than keeping a chain — and a label
@@ -612,6 +615,14 @@ private struct SessionLedger: View {
     }
     /// Dismissed sessions start folded away, as the lab starts them (`showDismissed: false`).
     @State private var showsDismissed = false
+    /// Not in conch (2026-11-12): folded away to begin with and remembered like a folder, Tyler's "maybe new section at
+    /// bottom of left sidebar that's usually collapsed".
+    @AppStorage("conch.elsewhereOpen") private var showsElsewhere = false
+    /// Where a resume opens: where the New session sheet opens sessions.
+    @AppStorage("conch.session.host") private var sessionHost = "terminal"
+    /// The agent whose action is being asked about, and conch's word on each one acted on.
+    @State private var confirmingElsewhere: ElsewhereAgent?
+    @State private var elsewhereMessages: [String: String] = [:]
     @State private var scroller = LedgerScroller()
     /// A session the lagoon's panel is on, to bring into view once its folder is unfolded (`reveal`).
     @State private var revealing: LedgerReveal?
@@ -650,6 +661,24 @@ private struct SessionLedger: View {
         // than the move (mac-phase1-source.test.ts guards the form).
         withAnimation(ConchMotion.morph.animation(reduceMotion: reduceMotion)) { folderOrder = next }
         return true
+    }
+
+    /// Not in conch's button: Resume and Add ask first (`ElsewhereText.confirmation`); Resume… opens New session.
+    private func act(on agent: ElsewhereAgent) {
+        switch agent.action {
+        case .startSheet: actions.onStartSession()
+        case .resume, .addAccount: confirmingElsewhere = agent
+        case nil: break
+        }
+    }
+
+    private func confirmElsewhere(_ agent: ElsewhereAgent) {
+        guard let action = agent.action else { return }
+        elsewhereMessages[agent.id] = action == .resume ? "Resuming in conch…" : "Adding its profile…"
+        Task { @MainActor in
+            let failure = await onElsewhere(agent, action, sessionHost)
+            elsewhereMessages[agent.id] = failure ?? (action == .resume ? "Opening in conch" : "Added: it becomes a row in a moment")
+        }
     }
 
     private func rows(in folder: SessionFolder) -> [SessionRow] {
@@ -872,6 +901,7 @@ private struct SessionLedger: View {
                                         }
                                     }
                                 }
+                                elsewhereSection
                                 RemoteMacGroups(onSelect: onSelectRemote)
                             }
                             .padding(.horizontal, 8)
@@ -925,6 +955,8 @@ private struct SessionLedger: View {
                 ScrollView {
                     VStack {
                         DashboardEmptyState(hasSnapshot: state != nil)
+                        // With no session in conch is when the ones outside it matter most.
+                        elsewhereSection.padding(.horizontal, 8)
                         RemoteMacGroups(onSelect: onSelectRemote)
                     }
                 }
@@ -946,7 +978,49 @@ private struct SessionLedger: View {
         } message: { _ in
             Text("Its sessions keep running; they just stop being grouped as a team.")
         }
+        // Not in conch's Resume and Add, asked first: what happens, and that the original is never stopped.
+        .alert(
+            confirmingElsewhere.flatMap { ElsewhereText.confirmation($0, background: sessionHost == "background")?.title } ?? "",
+            isPresented: Binding(get: { confirmingElsewhere != nil }, set: { if !$0 { confirmingElsewhere = nil } }),
+            presenting: confirmingElsewhere
+        ) { agent in
+            Button(ElsewhereText.confirmation(agent, background: sessionHost == "background")?.confirm ?? "OK") { confirmElsewhere(agent) }
+            Button("Cancel", role: .cancel) {}
+        } message: { agent in
+            Text(ElsewhereText.confirmation(agent, background: sessionHost == "background")?.message ?? "")
+        }
     }
+
+    /// Not in conch (2026-11-12): what discovery found running on this Mac with no row, at the bottom of the list, folded
+    /// away until opened, and counted on its header (src/elsewhere.ts; ConchDesign/Elsewhere.swift says what each is).
+    @ViewBuilder
+    private var elsewhereSection: some View {
+        if let agents = state?.elsewhere, !agents.isEmpty {
+            FolderHeader(
+                name: ElsewhereText.header,
+                count: agents.count,
+                isCollapsed: !showsElsewhere,
+                alwaysCounts: true,
+                accessibilityName: ElsewhereText.headerAccessibility(count: agents.count, collapsed: !showsElsewhere),
+                onToggle: { showsElsewhere.toggle() }
+            )
+            .id("elsewhere-header")
+            if showsElsewhere {
+                ForEach(agents) { agent in
+                    ElsewhereRow(
+                        agent,
+                        mark: Image(agent.backend == "codex" ? "AgentCodex" : "AgentClaude").renderingMode(.template),
+                        nameFont: ConchTypography.font(size: 13),
+                        lineFont: ConchTypography.font(size: 11),
+                        message: elsewhereMessages[agent.id],
+                        onAction: { act(on: agent) }
+                    )
+                    .id("elsewhere:\(agent.id)")
+                }
+            }
+        }
+    }
+
 
     /// Every id the list draws right now, each a `.id` a scroll can land on: a session's own row (its
     /// sub-agents are drawn inside it), a named folder's header, and the Dismissed group's header and,
@@ -1126,6 +1200,10 @@ private struct FolderHeader: View {
     let isCollapsed: Bool
     /// Another folder's header is being dragged over this one and will take its slot.
     var isDropTarget = false
+    /// The count shows open as well as folded: Not in conch's, which says how many there are either way.
+    var alwaysCounts = false
+    /// What VoiceOver reads in place of the name and count.
+    var accessibilityName: String? = nil
     let onToggle: () -> Void
 
     @State private var hovering = false
@@ -1145,7 +1223,7 @@ private struct FolderHeader: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: 4)
-                if isCollapsed {
+                if isCollapsed || alwaysCounts {
                     Text("\(count)")
                         .font(ConchTypography.font(size: 10, weight: .medium))
                         .monospacedDigit()
@@ -1167,7 +1245,7 @@ private struct FolderHeader: View {
         )
         .onHover { hovering = $0 }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(isCollapsed ? "\(name), \(count) sessions, collapsed" : name)
+        .accessibilityLabel(accessibilityName ?? (isCollapsed ? "\(name), \(count) sessions, collapsed" : name))
         .accessibilityAddTraits(.isHeader)
     }
 }

@@ -32,6 +32,8 @@ struct PublishedState: Decodable, Equatable {
     var speechEngine: SpeechEngineReport?
     /// Sessions brought back after the Mac restarted, and ones held to bring back (src/restart-recovery.ts).
     var restore: Restore?
+    /// Agents on the Mac that conch has no row for (src/elsewhere.ts): the list's Not in conch, shown, never acted on here.
+    var elsewhere: [ElsewhereAgent] = []
 
     struct Restore: Decodable, Equatable {
         struct Session: Decodable, Equatable {
@@ -430,6 +432,7 @@ struct PublishedState: Decodable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case v, ts, mode, live, rows, dismissed, dismissedRows, reply, conversations
         case ownerDeviceId, deliveries, sessionSettings, naturalVoices, speechEngine, features, restore
+        case elsewhere
     }
 
     init() {}
@@ -482,6 +485,12 @@ struct PublishedState: Decodable, Equatable {
         naturalVoices = try? c.decodeIfPresent(NaturalVoicesReport.self, forKey: .naturalVoices)
         speechEngine = try? c.decodeIfPresent(SpeechEngineReport.self, forKey: .speechEngine)
         restore = try? c.decodeIfPresent(Restore.self, forKey: .restore)
+        // One agent the phone can't read costs only itself.
+        if var agents = try? c.nestedUnkeyedContainer(forKey: .elsewhere) {
+            while !agents.isAtEnd {
+                if let agent = try? agents.decode(ElsewhereAgent.self) { elsewhere.append(agent) } else { _ = try? agents.decode(AnyIgnored.self) }
+            }
+        }
         // Declared since deliverables were versioned and never read, so everything the daemon gates on
         // it (Background sessions, the viewed state) read as unsupported on every Mac.
         features = try? c.decodeIfPresent(Features.self, forKey: .features)

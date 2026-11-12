@@ -27,6 +27,8 @@ struct LedgerView: View {
     #endif
     /// Folders folded shut, by name, one per line; remembered, as the Mac's sidebar does.
     @AppStorage("conch.collapsedFolders") private var collapsedFolders = ""
+    /// Not in conch, folded away until opened, as on the Mac (2026-11-12).
+    @AppStorage("conch.elsewhereOpen") private var showsElsewhere = false
     /// The session being renamed from its row's menu, and the name being typed.
     @State private var renamingRow: PublishedState.Row?
     @State private var renameDraft = ""
@@ -237,6 +239,40 @@ struct LedgerView: View {
                             } footer: {
                                 Text("Dismissed sessions keep running on your Mac.")
                                     .foregroundStyle(Palette.textFaint)
+                            }
+                        }
+
+                        // Not in conch: agents on the Mac conch has no row for, each with why. Shown here,
+                        // brought in from the Mac, which asks first (src/elsewhere.ts).
+                        if !state.elsewhere.isEmpty {
+                            Section {
+                                ForEach(showsElsewhere ? state.elsewhere : []) { agent in
+                                    ElsewhereRow(agent, mark: Image(agent.backend == "codex" ? "AgentCodex" : "AgentClaude").renderingMode(.template),
+                                                 nameFont: Type.sessionName, lineFont: Type.caption)
+                                        .listRowBackground(Palette.bg)
+                                        .listRowSeparatorTint(Palette.divider)
+                                }
+                            } header: {
+                                Button { showsElsewhere.toggle() } label: {
+                                    HStack(spacing: 6) {
+                                        Text(ElsewhereText.header)
+                                        Spacer(minLength: 8)
+                                        Text("\(state.elsewhere.count)").monospacedDigit()
+                                        Image(systemName: showsElsewhere ? "chevron.down" : "chevron.right")
+                                            .font(.system(size: 10, weight: .semibold))
+                                    }
+                                    .font(Type.caption)
+                                    .foregroundStyle(Palette.textFaint)
+                                    .textCase(nil)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(ElsewhereText.headerAccessibility(count: state.elsewhere.count, collapsed: !showsElsewhere))
+                            } footer: {
+                                if showsElsewhere {
+                                    Text("Bring these into conch from Not in conch on your Mac.")
+                                        .foregroundStyle(Palette.textFaint)
+                                }
                             }
                         }
                     }
