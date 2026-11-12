@@ -662,7 +662,8 @@ export function formatCompute(compute: Record<string, unknown>, baseline?: Recor
       const minute = (window.perMinute ?? {}) as Record<string, unknown>;
       const was = at(baseline, `testDaemon.${name}.cpuPercent`);
       const published = (minute.writtenKB as Record<string, number> | undefined)?.["sessions-file"];
-      lines.push(`    ${label.padEnd(11)} ${String(window.cpuPercent).padStart(5)}%${typeof was === "number" ? ` (baseline ${was}%)` : ""}  ${window.rssMB} MB  ${perMinute(minute.fsCalls)} file calls  ${perMinute(minute.spawns)} processes  ${perMinute(minute.publishedWrites)} sessions-file writes${published ? ` (${kb(published * 1024)}/min)` : ""}`);
+      const sqlite = typeof minute.sqliteCommits === "number" ? `  ${perMinute(minute.sqliteCommits)} SQLite commits (${perMinute(minute.sqliteFsyncs)} fsync'd)` : "";
+      lines.push(`    ${label.padEnd(11)} ${String(window.cpuPercent).padStart(5)}%${typeof was === "number" ? ` (baseline ${was}%)` : ""}  ${window.rssMB} MB  ${perMinute(minute.fsCalls)} file calls${typeof minute.stats === "number" ? ` (${perMinute(minute.stats)} stats)` : ""}  ${perMinute(minute.spawns)} processes  ${perMinute(minute.publishedWrites)} sessions-file writes${published ? ` (${kb(published * 1024)}/min)` : ""}${sqlite}`);
       const sites = Object.entries((minute.fsBySite ?? {}) as Record<string, number>).slice(0, 5);
       if (sites.length) lines.push(`      file calls from: ${sites.map(([site, count]) => `${site} ${n(Math.round(count))}`).join(" · ")}`);
       const spawned = Object.entries((minute.spawned ?? {}) as Record<string, number>).slice(0, 4);

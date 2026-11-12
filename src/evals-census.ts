@@ -25,6 +25,12 @@ if (out && src) install(out, src);
 interface Census {
   /** `<call> <label>` → calls. */
   calls: Record<string, number>;
+  /**
+   * `commit <database>` → SQLite commits, and `fsync <database>` → those that waited on an fsync of the log (WAL with
+   * `synchronous` FULL or EXTRA; a NORMAL commit leaves that to a checkpoint). Counted where conch's own code commits:
+   * an outermost `transaction()`, or a write statement run outside one.
+   */
+  sqlite: Record<string, number>;
   /** `<function> (<conch file>)` → file calls made there: where the reads and stats come from. */
   sites: Record<string, number>;
   /** `<label>` → bytes written there. */
@@ -34,7 +40,13 @@ interface Census {
 }
 
 function install(outPath: string, srcDir: string): void {
-  const census: Census = { calls: {}, sites: {}, written: {}, spawned: {} };
+  // Each thread its own files: a worker runs this preload too, once the main thread is already using its shims.
+  let thread = "main";
+  try {
+    const { isMainThread, threadId } = require("node:worker_threads") as typeof import("node:worker_threads");
+    if (!isMainThread) thread = `t${threadId}`;
+  } catch {}
+  const census: Census = { calls: {}, sites: {}, written: {}, spawned: {}, sqlite: {} };
   (globalThis as { __conchEvalsCensus?: Census }).__conchEvalsCensus = census;
   let given: Array<[string, string]> = [];
   try { given = JSON.parse(process.env.CONCH_EVALS_CENSUS_PATHS ?? "[]"); } catch {}
@@ -103,13 +115,69 @@ function install(outPath: string, srcDir: string): void {
       ...names.map((name) => `export const ${name} = wrap(${JSON.stringify(name)}, real.${name});`),
       `export default { ${names.join(", ")} };`,
     ];
-    const path = `${outPath}.${file}.mjs`;
+    const path = `${outPath}.${thread}.${file}.mjs`;
     realFs.writeFileSync(path, lines.join("\n"));
     return path;
   };
-  Object.assign(census, { __count: count, __wrote: wrote, __opened: opened, __closed: closed });
+  const committed = (database: string, synchronous: number) => {
+    const name = basename(database || "memory");
+    census.sqlite[`commit ${name}`] = (census.sqlite[`commit ${name}`] ?? 0) + 1;
+    if (synchronous >= 2) census.sqlite[`fsync ${name}`] = (census.sqlite[`fsync ${name}`] ?? 0) + 1;
+  };
+  Object.assign(census, { __count: count, __wrote: wrote, __opened: opened, __closed: closed, __committed: committed });
   const fsShim = shim(realFs as unknown as Record<string, unknown>, "node:fs", "fs");
   const fsPromisesShim = shim(realFsPromises as unknown as Record<string, unknown>, "node:fs/promises", "fs-promises");
+  // A records worker is a thread of its own, which `--preload` doesn't reach: conch's Workers are started with this
+  // census as their preload.
+  const workersShim = `${outPath}.${thread}.worker-threads.mjs`;
+  realFs.writeFileSync(workersShim, [
+    `import * as real from "node:worker_threads";`,
+    `export * from "node:worker_threads";`,
+    `export class Worker extends real.Worker {`,
+    `  constructor(url, options = {}) { super(url, { ...options, preload: [...(options.preload ?? []), ${JSON.stringify(import.meta.path)}] }); }`,
+    `}`,
+    `export default { ...real, Worker };`,
+  ].join("\n"));
+  // SQLite, counted at its commits. The connection's `synchronous` is followed through the pragmas conch sets
+  // (SQLite's default, FULL, until one does).
+  const sqliteShim = `${outPath}.${thread}.sqlite.mjs`;
+  realFs.writeFileSync(sqliteShim, [
+    `import * as real from "bun:sqlite";`,
+    `export * from "bun:sqlite";`,
+    `const census = globalThis.__conchEvalsCensus;`,
+    `const WRITE = /^\\s*(INSERT|UPDATE|DELETE|REPLACE)\\b/i;`,
+    `export class Database extends real.Database {`,
+    `  constructor(file, ...rest) { super(file, ...rest); this.__file = typeof file === "string" ? file : ""; this.__sync = 2; }`,
+    `  __note(sql) {`,
+    `    const sync = /PRAGMA\\s+synchronous\\s*=\\s*(\\w+)/i.exec(sql);`,
+    `    if (sync) { const value = sync[1].toUpperCase(); this.__sync = ({ OFF: 0, NORMAL: 1, FULL: 2, EXTRA: 3 })[value] ?? Number(value); }`,
+    `    else if (WRITE.test(sql) && !this.inTransaction) census.__committed(this.__file, this.__sync);`,
+    `  }`,
+    `  exec(sql, ...rest) { this.__note(String(sql)); return super.exec(sql, ...rest); }`,
+    `  run(sql, ...rest) { this.__note(String(sql)); return super.run(sql, ...rest); }`,
+    `  __statement(statement, sql) {`,
+    `    if (!WRITE.test(sql)) return statement;`,
+    `    const db = this;`,
+    `    return new Proxy(statement, { get(target, key) {`,
+    `      const value = Reflect.get(target, key, target);`,
+    `      if (typeof value !== "function") return value;`,
+    `      if (key !== "run" && key !== "get" && key !== "all" && key !== "values") return value.bind(target);`,
+    `      return (...args) => { const outer = !db.inTransaction; const result = value.apply(target, args); if (outer) census.__committed(db.__file, db.__sync); return result; };`,
+    `    } });`,
+    `  }`,
+    `  query(sql) { return this.__statement(super.query(sql), String(sql)); }`,
+    `  prepare(sql, ...rest) { return this.__statement(super.prepare(sql, ...rest), String(sql)); }`,
+    `  transaction(fn) {`,
+    `    const tx = super.transaction(fn);`,
+    `    const db = this;`,
+    `    const counted = (run) => function (...args) { const outer = !db.inTransaction; const result = run.apply(this, args); if (outer) census.__committed(db.__file, db.__sync); return result; };`,
+    `    const wrapped = counted(tx);`,
+    `    for (const mode of ["deferred", "immediate", "exclusive"]) if (typeof tx[mode] === "function") wrapped[mode] = counted(tx[mode]);`,
+    `    return wrapped;`,
+    `  }`,
+    `}`,
+    `export default Database;`,
+  ].join("\n"));
 
   plugin({
     name: "conch-evals-census",
@@ -120,7 +188,9 @@ function install(outPath: string, srcDir: string): void {
         return {
           contents: text
             .replace(/(from\s+|import\(\s*)(["'])(?:node:)?fs\/promises\2/g, `$1${JSON.stringify(fsPromisesShim)}`)
-            .replace(/(from\s+|import\(\s*)(["'])(?:node:)?fs\2/g, `$1${JSON.stringify(fsShim)}`),
+            .replace(/(from\s+|import\(\s*)(["'])(?:node:)?fs\2/g, `$1${JSON.stringify(fsShim)}`)
+            .replace(/(from\s+|import\(\s*)(["'])(?:node:)?worker_threads\2/g, `$1${JSON.stringify(workersShim)}`)
+            .replace(/(from\s+|import\(\s*)(["'])bun:sqlite\2/g, `$1${JSON.stringify(sqliteShim)}`),
           loader: "ts",
         };
       });
@@ -154,11 +224,6 @@ function install(outPath: string, srcDir: string): void {
   } catch {}
 
   // Each thread its own file; the real fs, so the census never counts itself.
-  let thread = "main";
-  try {
-    const { isMainThread, threadId } = require("node:worker_threads") as typeof import("node:worker_threads");
-    if (!isMainThread) thread = `t${threadId}`;
-  } catch {}
   const file = `${outPath}.${thread}.json`;
   const dump = () => {
     try {
@@ -166,7 +231,7 @@ function install(outPath: string, srcDir: string): void {
       realFs.writeFileSync(`${file}.tmp`, JSON.stringify({
         at: Date.now(), pid: process.pid, thread,
         cpuMicros: cpu.user + cpu.system, rss: process.memoryUsage().rss,
-        calls: census.calls, sites: census.sites, written: census.written, spawned: census.spawned,
+        calls: census.calls, sites: census.sites, written: census.written, spawned: census.spawned, sqlite: census.sqlite,
       }));
       realFs.renameSync(`${file}.tmp`, file);
     } catch {}
