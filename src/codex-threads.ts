@@ -1075,6 +1075,12 @@ export function codexThreadName(row: Record<string, any>, index: ReadonlyMap<str
   return row.history_mode === "paginated" ? null : index.get(String(row.id)) ?? null;
 }
 
+/**
+ * How long a helper whose turn is over stays listed, paused, while its parent isn't working: long enough to bridge a
+ * parent handing it the next task, short enough that a finished one doesn't sit under its parent all day.
+ */
+export const CODEX_HELPER_PAUSED_MS = 10 * 60_000;
+
 /** A live helper (`thread_spawn`) thread, as Codex records it. */
 export interface CodexHelperThread {
   threadId: string;
@@ -1100,13 +1106,20 @@ export interface CodexHelperThread {
  * `$CODEX_HOME/sessions/` (36 of 36 threads here), so a fixture parent reads a
  * fixture home and a path from anywhere else reads nothing.
  *
+ * A held lock stopped meaning "running" with codex-cli 0.164: a parent keeps a finished helper's thread open so it can
+ * hand it more work, and holds its lock for as long as the parent runs. On 2026-11-12 three helpers of a Codex thread
+ * (pid 2001), each with its last turn `completed` fifteen hours earlier, were still listed under it with no pid.
+ * So a held helper is listed while its own turn runs, while its parent is working (which may hand it the next task), or
+ * for `CODEX_HELPER_PAUSED_MS` after it last moved, when the apps show it paused; otherwise it is finished, as a Claude
+ * subagent that has returned is.
+ *
  * ponytail: direct children only. No helper on this machine has spawned its
  * own (0 of 19 edges start at a helper); walk the edges if one ever does.
  */
 export async function readCodexHelperThreads(
   parentThreadId: string,
   parentRolloutPath: string,
-  options: Pick<CodexThreadsOptions, "lockProbe" | "now"> = {},
+  options: Pick<CodexThreadsOptions, "lockProbe" | "now"> & { parentBusy?: boolean } = {},
 ): Promise<CodexHelperThread[]> {
   const at = parentRolloutPath.lastIndexOf("/sessions/");
   if (at <= 0) return [];
@@ -1134,7 +1147,7 @@ export async function readCodexHelperThreads(
   const status = readCodexTurnStatuses(history, live.map((row) => String(row.id)));
   const index = readCodexSessionIndex(codexHome);
   const now = options.now ?? Date.now();
-  return live.map((row) => {
+  return live.map((row): CodexHelperThread => {
     const name = codexThreadLabel({ ...row, name: codexThreadName(row, index) });
     return {
       threadId: String(row.id),
@@ -1144,7 +1157,7 @@ export async function readCodexHelperThreads(
       updatedAt: Number(row.updated_at_ms ?? 0),
       transcriptPath: String(row.rollout_path ?? ""),
     };
-  });
+  }).filter((helper) => helper.status === "busy" || options.parentBusy || now - helper.updatedAt <= CODEX_HELPER_PAUSED_MS);
 }
 
 /**

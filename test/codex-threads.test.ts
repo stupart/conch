@@ -1127,6 +1127,31 @@ describe("Codex helpers nest under their parent", () => {
     }
   });
 
+  test("a held helper whose turn is over is listed only while it might be handed more (2026-11-12)", async () => {
+    // Codex 0.164+ keeps a finished helper's thread open, lock and all, for as long as its parent runs.
+    const home = realCodexHome({
+      threads: [
+        { id: "parent" },
+        { id: "old", source: spawnedBy("parent"), agent_nickname: "Hypatia", updated_at_ms: NOW - 15 * 3_600_000 },
+        { id: "recent", source: spawnedBy("parent"), agent_nickname: "Euler", updated_at_ms: NOW - 5 * 60_000 },
+      ],
+      edges: [["parent", "old", "open"], ["parent", "recent", "open"]],
+      turns: [["old", 9, "completed"], ["recent", 4, "completed"]],
+      locks: ["parent", "old", "recent"],
+    });
+    try {
+      const table = processTable(home, [{ pid: 2001, args: "codex --no-daemon resume parent", holds: ["parent", "old", "recent"] }]);
+      const names = async (parentBusy: boolean) =>
+        (await readCodexHelperThreads("parent", rollout(home, "parent"), { ...table, now: NOW, parentBusy })).map((h) => h.name);
+      // The parent's turn is over: the one finished fifteen hours ago is gone; the one paused five minutes ago stays.
+      expect(await names(false)).toEqual(["Euler"]);
+      // The parent is working, and may hand either the next task.
+      expect((await names(true)).sort()).toEqual(["Euler", "Hypatia"]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test("a parent whose rollout is not under a Codex home has no helpers to read", async () => {
     expect(await readCodexHelperThreads("parent", "/r/rollout-x.jsonl")).toEqual([]);
   });
