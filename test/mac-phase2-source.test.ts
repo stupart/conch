@@ -47,6 +47,10 @@ describe("Mac Phase 2 session lifecycle", () => {
     expect(store).toContain("private static let sessionCloseTimeout: TimeInterval = 45");
     expect(store).toContain("private static let sessionRestartTimeout: TimeInterval = 55");
     expect(store).toContain("timeout: restart ? Self.sessionRestartTimeout : Self.sessionCloseTimeout");
+    // A session command waits as long as the daemon's own budget, not the socket's 1 s (2026-11-11: dismiss and restore
+    // filed "daemon did not reply" for a daemon a second behind).
+    expect(store).toContain("private static let sessionCommandTimeout: TimeInterval = 4");
+    expect(store).toContain("socketClient.request(request, timeout: Self.sessionCommandTimeout, whenDelivered: steered?.whenDelivered)");
     expect(dashboard).toMatch(/Menu \{[\s\S]*Button\("Close session…", role: \.destructive\)/);
     expect(dashboard).toMatch(/\.alert\([\s\S]*Button\("Cancel", role: \.cancel\)[\s\S]*Button\("Close Session", role: \.destructive\)/);
     expect(dashboard).toContain("store.closeSession(row)");
