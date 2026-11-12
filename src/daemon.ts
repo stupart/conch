@@ -2596,13 +2596,10 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
    */
   function writeSessionsFile(): void {
     if (lastPublishedPanelState) {
+      const published = { ...withNotices(withBrowserState(withCaptureRequests(lastPublishedPanelState, pageCaptures.requests()), browserWorkbench), macNotices.list()), mcpToolset: MCP_TOOLSET };
       // What sessions left running, in full (resource-ledger.ts): this Mac's alone, like `toolsStale`. The phone has
       // each row's count, which `lastPublishedPanelState` carries.
-      const state = {
-        ...withNotices(withBrowserState(withCaptureRequests(lastPublishedPanelState, pageCaptures.requests()), browserWorkbench), macNotices.list()),
-        mcpToolset: MCP_TOOLSET,
-        resources: resourceLedger.published(),
-      };
+      const state = { ...published, resources: resourceLedger.published() };
       // Not written when it would say what the file already says (`SessionsFilePublisher`).
       sessionsFile.publish(withToolsStale(state, toolsStale));
     }
