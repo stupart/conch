@@ -1268,6 +1268,13 @@ private struct ClaudeSignInWebView: NSViewRepresentable {
         func webViewDidClose(_ webView: WKWebView) {
             webView.removeFromSuperview()
         }
+
+        /// The window the page is told it is in (`PageWindow`): the sheet's, not WebKit's 0 × 0, which a sign-in takes
+        /// for a headless browser.
+        @objc(_webView:getWindowFrameWithCompletionHandler:)
+        func webViewWindowFrame(_ webView: WKWebView, completionHandler: @escaping (CGRect) -> Void) {
+            completionHandler(MainActor.assumeIsolated { PageWindow.frame(of: webView) })
+        }
     }
 }
 

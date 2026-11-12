@@ -3,6 +3,28 @@ import ConchDesign
 import SwiftUI
 import WebKit
 
+/// What a page in one of conch's web views is told of the window it is in: `window.outerWidth`, `outerHeight`, `screenX`
+/// and `screenY`, which WebKit asks the app for through its private UI delegate (`_webView:getWindowFrameWithCompletion
+/// Handler:`) and leaves at 0 × 0 in the screen's corner when nobody answers. Measured 2026-11-11 in a web view set up as
+/// a Workbench tab's: `outerWidth` and `outerHeight` 0, `screenX` 0, and bot.sannysoft.com's window test reading them
+/// so; a page that reads 0 × 0 takes it for a headless browser. Every web view conch shows a site in answers
+/// (`WorkbenchInput.reportedWindowFrame`): the window it is shown in, or, parked off screen, conch's own window.
+enum PageWindow {
+    @MainActor
+    static func frame(of view: WKWebView) -> CGRect {
+        let window = view.window
+        let parked = window == nil || window is WorkbenchParkingWindow || window is PageCaptureWindow || window.map { $0.frame.maxX < -1_000 } == true
+        let dashboard = ReviewNotifications.shared.reviewWindow
+        return WorkbenchInput.reportedWindowFrame(
+            page: view.bounds.size,
+            hosting: window?.frame,
+            parked: parked,
+            dashboard: dashboard?.isVisible == true ? dashboard?.frame : nil,
+            screen: (dashboard?.screen ?? NSScreen.main)?.visibleFrame
+        )
+    }
+}
+
 struct DeliverableNavigationFailure: Equatable {
     let title: String
     let link: String
@@ -47,9 +69,13 @@ struct DeliverableWebView: NSViewRepresentable {
         /// The same KVO shape as the loading state beside it, for the same reason: WebKit is
         /// the only thing that knows where a page went, and a redirect or an in-page link
         /// moves it without anyone calling us.
+        /// A Figma file shown as its embed (`FigmaLink.embedPage`): the file's own address, which the page holding the embed
+        /// stands for. The bar says the file, and ⌘3 opens it in Figma.
+        var embedded: String?
+
         func observeCurrentURL(of webView: WKWebView) {
-            urlObservation = webView.observe(\.url, options: [.initial, .new]) { view, _ in
-                let here = view.url?.absoluteString
+            urlObservation = webView.observe(\.url, options: [.initial, .new]) { [weak self] view, _ in
+                let here = view.url == FigmaLink.embedBase ? self?.embedded ?? view.url?.absoluteString : view.url?.absoluteString
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.parent.currentLink != here else { return }
                     self.parent.currentLink = here
@@ -150,6 +176,12 @@ struct DeliverableWebView: NSViewRepresentable {
                 refuseNavigation(to: destination, message: message, inSubframe: inSubframe)
                 decisionHandler(.cancel)
             }
+        }
+
+        /// The window the page is told it is in (`PageWindow`).
+        @objc(_webView:getWindowFrameWithCompletionHandler:)
+        func webViewWindowFrame(_ webView: WKWebView, completionHandler: @escaping (CGRect) -> Void) {
+            completionHandler(MainActor.assumeIsolated { PageWindow.frame(of: webView) })
         }
 
         func webView(
@@ -289,6 +321,10 @@ struct DeliverableWebView: NSViewRepresentable {
         if annotator != nil { context.coordinator.annotate = AnnotateWebBridge.install(in: configuration) }
 
         let webView = DeliverableWKWebView(frame: .zero, configuration: configuration)
+        // Safari's agent, as conch's browser gives (2026-11-11): this view keeps the Default profile's cookies, and a site
+        // that set them for Safari then saw WebKit's bare agent (no `Version/… Safari/…`) here, the same sign-in from
+        // two browsers at once, which Cloudflare's clearance and Google's sign-in both take badly.
+        webView.customUserAgent = SafariUserAgent.current
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true
@@ -333,6 +369,8 @@ struct DeliverableWebView: NSViewRepresentable {
         context.coordinator.loadedLink = link
         context.coordinator.loadedReloadID = reloadID
         context.coordinator.surfacedURL = DeliverableLink.url(for: link)
+        let url = DeliverableLink.url(for: link)
+        context.coordinator.embedded = FigmaLink.isFile(url) ? url.absoluteString : nil
         context.coordinator.activeNavigation = load(link, in: webView)
     }
 
@@ -361,6 +399,12 @@ struct DeliverableWebView: NSViewRepresentable {
 
     private func load(_ link: String, in webView: WKWebView) -> WKNavigation? {
         let url = DeliverableLink.url(for: link)
+        // A Figma file is shown here, as Figma's embed on the link's frame, signed in as this view's store is (2026-11-11,
+        // Tyler: "Make figma show in the deliverables area instead of automatically sending me to figma"): Figma's viewer
+        // for the file, where the file's own address is its whole editor.
+        if let embed = FigmaLink.embedPage(for: url) {
+            return webView.loadHTMLString(embed, baseURL: FigmaLink.embedBase)
+        }
         if !url.isFileURL {
             return webView.load(URLRequest(url: url))
         }

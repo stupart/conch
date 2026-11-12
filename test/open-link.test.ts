@@ -584,7 +584,8 @@ describe("the phone: the same dead tap, said and recorded", () => {
       "view.navigationDelegate = context.coordinator",
       "view.uiDelegate = context.coordinator",
       "context.coordinator.onFailure = onFailure",
-      "view.load",
+      // A Figma file loads as its embed (`PageLoadFailure.load`), anything else as itself.
+      ".load(",
     );
     const delegate = slice(sheet, "private final class PageLoadFailure", "struct LinkFailureLine");
     expect(delegate).toContain("didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {");

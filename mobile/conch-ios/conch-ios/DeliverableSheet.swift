@@ -708,11 +708,14 @@ struct DeliverableSheet: View {
             }
             Spacer(minLength: 0)
             if url.scheme == "http" || url.scheme == "https" {
+                // A Figma file's way out is Figma's: its link, which the Figma app takes when it is on the phone. The page
+                // shown is the embed, whose own address is only the frame's holder (`FigmaLink.embedBase`).
+                let figma = FigmaLink.isFile(url) && (page.view?.url == nil || page.view?.url == FigmaLink.embedBase)
                 Button {
                     linkFailure = nil
-                    bridge.openLink(page.view?.url ?? url, sessionId: sessionId) { linkFailure = $0 }
+                    bridge.openLink(figma ? url : page.view?.url ?? url, sessionId: sessionId) { linkFailure = $0 }
                 } label: {
-                    Label("Open in Safari", systemImage: "safari")
+                    Label(figma ? "Open in Figma" : "Open in Safari", systemImage: figma ? "arrow.up.forward.app" : "safari")
                         .frame(minHeight: 44)
                 }
             }
@@ -988,7 +991,7 @@ private struct BridgedWebView: UIViewRepresentable {
         context.coordinator.view = view
         context.coordinator.onFailure = onFailure
         context.coordinator.ink = ink.flatMap { PageInk(page: view, marks: $0.marks, entry: url, key: $0.key, agent: $0.agent) }
-        view.load(URLRequest(url: url))
+        PageLoadFailure.load(url, in: view)
         return view
     }
 
@@ -1080,10 +1083,21 @@ private final class PageLoadFailure: NSObject, ObservableObject, WKNavigationDel
         }
     }
 
-    /// Reload what is there, or load `url` again when nothing ever arrived.
+    /// Reload what is there, or load `url` again when nothing ever arrived. A Figma file's embed is loaded again whole.
     func reload(_ url: URL) {
         guard let view else { return }
-        if view.url == nil { view.load(URLRequest(url: url)) } else { view.reload() }
+        if view.url == nil || FigmaLink.isFile(url) { Self.load(url, in: view) } else { view.reload() }
+    }
+
+    /// A page by its address; a Figma file as Figma's embed, as the Mac's deliverable pane shows it (2026-11-11, Tyler:
+    /// "Make figma show in the deliverables area instead of automatically sending me to figma"): its viewer, on the
+    /// link's frame, framed at figma.com's own address (`FigmaLink.embedBase`), and never the Figma app.
+    static func load(_ url: URL, in view: WKWebView) {
+        if let embed = FigmaLink.embedPage(for: url) {
+            view.loadHTMLString(embed, baseURL: FigmaLink.embedBase)
+        } else {
+            view.load(URLRequest(url: url))
+        }
     }
 
     /// `target="_blank"` and `window.open` ask for a new window, which a sheet
