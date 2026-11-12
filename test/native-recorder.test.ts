@@ -141,7 +141,12 @@ describe("a native capture", () => {
     const recording = startNativeRecording({
       argv: [standIn(root), "--mode", "zeros"], path: join(root, "c.raw"), format: gate, onDigitalSilence: () => silent++,
     });
-    await Bun.sleep(1_400);
+    // Two seconds of zeros take one at the stand-in's pace, after it starts, which a loaded Mac can stretch: wait for
+    // the report rather than a fixed 1.4s, then let more zeros come, which must not report it again.
+    const deadline = Date.now() + 10_000;
+    while (silent === 0 && Date.now() < deadline) await Bun.sleep(20);
+    expect(silent).toBe(1);
+    await Bun.sleep(300);
     recording.kill("SIGINT");
     await recording.exited;
     expect(silent).toBe(1);
@@ -153,7 +158,11 @@ describe("a native capture", () => {
     const recording = startNativeRecording({
       argv: [standIn(root), "--mode", "orphan"], path: join(root, "c.raw"), format: { kind: "raw", gate: { startPct: 0, prerollSecs: 0 } },
     });
-    await Bun.sleep(300);
+    // Its copy is writing to the helper's stream, so the stand-in has spawned it and is listening for SIGINT. A fixed
+    // 300 ms could interrupt a stand-in a loaded Mac had not started yet, which died of the signal (130) instead.
+    const stream = join(root, "c.raw.stream");
+    const deadline = Date.now() + 10_000;
+    while (statSync(stream).size === 0 && Date.now() < deadline) await Bun.sleep(20);
     recording.kill("SIGINT");
     const started = Date.now();
     expect(await recording.exited).toBe(0);
