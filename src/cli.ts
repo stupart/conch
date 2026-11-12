@@ -46,7 +46,7 @@ Getting started:
 
 Everyday:
   conch wake [name] | recite [name] | pause | resume  talk again | reread | manual (hold) | auto
-  conch sessions | resources | resumable [query] | start [claude|codex] [options]  live | what they left running (resources help) | past | open one in Terminal (start --help)
+  conch sessions | resources | resumable [query] | start [claude|codex] [options] | team  live | what they left running (resources help) | past | open one in Terminal (start --help) | teams of agents (team --help)
   conch rename <session> <name> | model <session> <model> | message <session> "<text>" | agent help | bug <title> --happened <what> --expected <what>  save a name | type /model into it | from an agent's shell, message another session (message --help) | agents' tools, from a session's shell | file a private bug about conch
 
 Voice and settings:
@@ -784,6 +784,27 @@ switch (command) {
     // The resource ledger (resource-ledger.ts): what sessions started that is still running, and Tyler's word on it.
     const { runResourcesCli } = await import("./resources-cli.ts");
     process.exitCode = await runResourcesCli(rest, cfg.socketPath);
+    break;
+  }
+  case "team":
+  case "teams": {
+    // Teams (teams.ts, team-desk.ts): start one on a task, pass it another, ask conch for a member. From Tyler's Terminal
+    // or from an agent's shell, which the daemon walks up to its session.
+    const { runTeamCommand, runsInsideAgent } = await import("./team-cli.ts");
+    const { forwardToDaemonSocket } = await import("./phone-bridge.ts");
+    const { teamsConfigDir } = await import("./team-desk.ts");
+    process.exitCode = await runTeamCommand(rest, {
+      request: (line, timeoutMs) => forwardToDaemonSocket(cfg.socketPath, line, timeoutMs),
+      callerPid: process.ppid,
+      fromAgent: runsInsideAgent(process.env),
+      cwd: process.cwd(),
+      configDir: teamsConfigDir(),
+      stdin: () => Bun.stdin.text(),
+      stdinIsTTY: process.stdin.isTTY === true,
+      readFile: (path) => Bun.file(path).text(),
+      out: (line) => console.log(line),
+      err: (line) => console.error(line),
+    });
     break;
   }
   case "failures": {

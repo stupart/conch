@@ -1737,7 +1737,9 @@ final class StateStore: ObservableObject {
             // The gear's dot and Settings › Failures' count.
             failures: sourceState.failures,
             // The sidebar's Still running (src/resource-ledger.ts).
-            resources: sourceState.resources
+            resources: sourceState.resources,
+            // The sidebar's teams (ConchDesign/Teams.swift).
+            teams: sourceState.teams
         )
         if state?.hasSamePresentation(as: next) != true {
             state = next

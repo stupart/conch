@@ -181,6 +181,7 @@ import { SUBAGENT_ROW_PREFIX } from "./agent-activity.ts";
 import type { PendingApproval } from "./approval.ts";
 import { awaitForkStart, FORK_ADOPT_WITHIN_MS, forkRequest, inheritedState, pendingForkFor, type PendingFork } from "./session-fork.ts";
 import { startedSessionFor } from "./session-start-wait.ts";
+import { TeamDesk, teamDeskPaths, teamFolderExists } from "./team-desk.ts";
 import { lastTabLines, tabAgentState, terminalTabCommands } from "./agent-alive.ts";
 import { MCP_TOOL_NAMES } from "./mcp-toolset.ts";
 import { listMcpServerProcesses, readMcpServerReports, toolsStaleFor, withToolsStale, type ToolsStale } from "./mcp-servers.ts";
@@ -387,6 +388,7 @@ import {
   resolveSettingFromLoaded,
   settingsPathFor,
   unsetSetting,
+  validateRuntimeControlMessage,
   writeSetting,
   type ConfigAck,
   type ConfigControlMessage,
@@ -2181,6 +2183,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
    * agents' MCP servers, filed by kind. Fix starts a background Claude session on one, in the checkout this daemon runs
    * from, on the Default account, through `launchSession` like any other start: the brief is its first message.
    */
+  /** The teams' desk, once it is built below (it needs the runtime's start); a render before then publishes no teams. */
+  let teamDeskReady: TeamDesk | undefined;
   const failureDesk = new FailureDesk({
     errorsPath: APP_ERRORS_PATH,
     mcpUsagePath: mcpUsagePath(),
@@ -3215,6 +3219,10 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       lastPublishedPanelState.failures = failureDesk.digest();
       // Each live row's "3 still running" (resource-ledger.ts): a fresh build carries none until this puts them back.
       lastPublishedPanelState = withStillRunning(lastPublishedPanelState, resourceLedger.rowCounts(), resourceLedger.rowLevels());
+      // The teams at work (team-desk.ts): the sidebar draws their members under them. Absent with none, and before the
+      // desk is built (the first renders run earlier in startup).
+      const teams = teamDeskReady?.published();
+      if (teams?.length) lastPublishedPanelState.teams = teams;
       // Setup's practice session, first among the rows while it runs, and `features.practice` always (practice.ts).
       if (practice) lastPublishedPanelState = practice.publish(lastPublishedPanelState);
       // Each working row's line, through its throttle: a fresh build carries none until this puts them back.
@@ -4335,6 +4343,57 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       fileRecordedFailures();
     },
   };
+  /**
+   * Teams (teams.ts, team-desk.ts). 2026-11-12, Tyler: "would be nice to add 'teams' to conch settings to where we can
+   * set up team structures with specialized agents, rules for how they'll work together, and a hierarchy and then i can
+   * spin up or pass tasks to team types." A member starts as `conch_start` starts a session (#601): this daemon's own
+   * `session-start` with `wait`, checked as any socket's is, its folder's trust asked as the sheet asks it, and answered
+   * once conch sees it running. The user's task for a running team reaches its lead as the composer sends the user's
+   * words; an agent's would be a peer message, which this daemon can't send yet (`deliverFromSession` stays unwired).
+   */
+  const teamDesk = new TeamDesk({
+    ...teamDeskPaths(),
+    now: Date.now,
+    log,
+    start: async (request) => {
+      const checked = validateRuntimeControlMessage({ kind: "session-start", ...request, wait: true });
+      if (!checked.ok) throw new Error(checked.err);
+      const reply = await applyRuntimeControlMessage(checked.value, runtimeControlDispatchOptions);
+      if (reply.kind === "session-needs-trust") return { needsTrust: reply.cwd };
+      if (reply.kind !== "session-started") throw new Error("the start answered something other than a session");
+      return reply.sessionId ? { sessionId: reply.sessionId, ...(reply.label ? { label: reply.label } : {}) } : { running: reply.running ?? "a new Terminal window" };
+    },
+    folderTrusted: (backend, cwd) => runtimeControlDispatchOptions.folderTrusted?.(backend, cwd) ?? null,
+    isFolder: teamFolderExists,
+    // A member conch no longer has is gone (after `MEMBER_GONE_MS`); one with no status yet is waiting.
+    sessionStatus: (sessionId) => panelSessions.has(sessionId)
+      ? lastPublishedPanelState?.rows.find((row) => row.id === sessionId)?.status ?? "waiting"
+      : undefined,
+    callerOf: async (pid) => {
+      const binding = await sessionForCallerPid(pid, { infos: [...panelSessions.values()], claudeDir: cfg.claudeDir });
+      if (binding.status === "verified") {
+        return { sessionId: binding.session.sessionId, label: labelForSessionId(binding.session.sessionId), ...(binding.session.cwd ? { cwd: binding.session.cwd } : {}) };
+      }
+      // No session at all up the tree is the user's own Terminal; any other reason is a session conch can't place.
+      return binding.reason === `no live session conch knows started pid ${pid}` ? null : { unverified: binding.reason };
+    },
+    deliverFromUser: async (sessionId, text) => {
+      const session = panelSessions.get(sessionId);
+      if (!session || dismissedSessionIds.has(sessionId)) return { delivered: false, error: "its session is no longer here" };
+      const outcome = await enqueue(approvedInjectEvent({
+        sessionId: session.sessionId,
+        cwd: session.cwd,
+        pid: session.pid,
+        transcriptPath: session.transcriptPath ?? findTranscript(cfg.claudeDir, session.sessionId),
+      }, labelForSessionId(sessionId), text));
+      if (outcome === true || outcome === "staged") return { delivered: true };
+      const reason = typeof outcome === "object" && outcome && "reason" in outcome ? String(outcome.reason ?? "") : "";
+      return { delivered: false, ...(reason ? { error: reason } : {}) };
+    },
+    signIns: () => readSessionSignInsQuietly() ?? [],
+    changed: () => void renderSessionPanel(),
+  });
+  teamDeskReady = teamDesk;
   // Device operations remain whole: the server decodes, the daemon owns effects.
   function deviceCommand(message: DeviceCommand): DeviceControlResponse {
     if (message.kind === "audio-sink") {
@@ -4650,6 +4709,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       return reply;
     },
     resources,
+    teams: teamDesk,
     // A send the socket refused before it reached the voice loop: the Mac app drops that reply, so it is filed here.
     onFailure: recordDaemonError,
     pageCapture,

@@ -99,6 +99,10 @@ struct PublishedState: Decodable, Equatable, Sendable {
     /// Only the sessions file carries it; nil from an older daemon.
     let resources: PublishedResources?
 
+    /// The teams running (src/team-desk.ts; ConchDesign/Teams.swift, 2026-11-12): the sidebar groups each one's members
+    /// under its header. Empty from an older daemon, which has none.
+    let teams: [TeamSummary]
+
     /// How many tickets are open, being fixed, and new since Settings › Failures was last shown: conch's own, which an
     /// agent's calls (`agents`) aren't. `alert` is the newest conch bug worth the window's banner (src/failure-triage.ts).
     struct FailureDigest: Decodable, Equatable, Sendable {
@@ -298,6 +302,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         case restore
         case failures
         case resources
+        case teams
     }
 
     init(
@@ -332,7 +337,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
         seaGlass: Int? = nil,
         restore: RestoreReport? = nil,
         failures: FailureDigest? = nil,
-        resources: PublishedResources? = nil
+        resources: PublishedResources? = nil,
+        teams: [TeamSummary] = []
     ) {
         self.v = v
         self.ownerDeviceId = ownerDeviceId
@@ -367,6 +373,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         self.restore = restore
         self.failures = failures
         self.resources = resources
+        self.teams = teams
     }
 
     init(from decoder: Decoder) throws {
@@ -422,6 +429,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
         restore = try? container.decodeIfPresent(RestoreReport.self, forKey: .restore)
         failures = try? container.decodeIfPresent(FailureDigest.self, forKey: .failures)
         resources = try? container.decodeIfPresent(PublishedResources.self, forKey: .resources)
+        // One team this build can't read is left out, never the rest with it.
+        teams = Self.decodeLossyArray(TeamSummary.self, from: container, forKey: .teams)
     }
 
     private static func decodeLossyArray<Element: Decodable>(
@@ -478,6 +487,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
             && failures == other.failures
             // The sidebar's Still running.
             && resources == other.resources
+            // The sidebar's team headers, and which rows sit under them.
+            && teams == other.teams
             // The deliverables strip draws a tab for each.
             && browserTabs == other.browserTabs
             && browserProfiles == other.browserProfiles

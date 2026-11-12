@@ -63,6 +63,12 @@ keeps quiet while you're typing, away or in a meeting: [docs/voice.md](docs/voic
 work you're looking at. Or record a Show: up to two minutes of your screen with your drawing and your voice, sent to the
 session as a storyboard. (Show needs macOS 15.)
 
+**Teams of agents.** In Settings › Teams, set up team types: roles (each with its agent, model, effort, account,
+permissions, prompt and skills, how many may work at once, and whom it reports to) and the rules for how they work
+together. Start a team on a task and its members show up together in the sidebar under the team; pass it the next task
+from there. A team's lead asks conch for members (`conch team add`) instead of starting subagents you can't see. conch
+ships three to start from: build + review, research → spec → build, and a design crit loop.
+
 **Help with conch.** Stuck, or not sure how something works? The New session sheet's **Help with conch** (or
 `conch help-session`) opens a Claude Code session that knows where conch keeps its settings, errors and logs on your
 Mac, and why the loop usually goes quiet.
@@ -152,6 +158,7 @@ conch is local-first. It has no server and no account of its own.
 | `conch` | Open the terminal dashboard (see below) |
 | `conch sessions` / `conch resumable [query]` | List live sessions / past sessions you can resume |
 | `conch start [claude \| codex] [options]` | Open a new session in Terminal (`conch start --help`) |
+| `conch team [start <type> "<task>" \| task <team> "<task>" \| add <role> "<task>" \| members \| brief]` | Teams of agents: start one on a task, give it another, ask for a member, see who is on it (`conch team --help`) |
 | `conch wake [name]` / `conch recite [name]` | Open the mic for a session / read its latest reply aloud |
 | `conch pause` / `conch resume` | Manual (hold finished turns quietly) / auto |
 | `conch rename <session> <name>` | Give a session a name in conch |

@@ -2699,6 +2699,8 @@ try renderSkillsLibrary()
 try renderWorkflowsLibrary()
 // What sessions left running (StillRunningGallery.swift).
 try renderStillRunning()
+// Settings › Teams and a team in the sidebar (TeamsGallery.swift).
+try MainActor.assumeIsolated { try renderTeams() }
 
 // MARK: - Infinite scroll
 

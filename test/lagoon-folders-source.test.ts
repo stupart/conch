@@ -29,7 +29,8 @@ function between(text: string, start: string, end: string): string {
 describe("one rule for the sidebar's folders and the lagoon's", () => {
   test("the sidebar draws SessionGrouping.sidebar, with the order under its key", () => {
     const folders = between(dashboard, "private var sessionFolders: [SessionFolder] {", "\n    }\n");
-    expect(folders).toContain("SessionGrouping.sidebar((state?.rows ?? []).map(\\.groupedAs), home: NSHomeDirectory(), order: folderOrder)");
+    // A running team's members are drawn under the team (2026-11-12, ConchDesign/Teams.swift); the lagoon's folders stay folders.
+    expect(folders).toContain("SessionGrouping.sidebar((state?.rows ?? []).map(\\.groupedAs), home: NSHomeDirectory(), order: folderOrder, teams: Teams.sidebarTeams(state?.teams ?? []))");
     // No second copy of the rule left in the view: grouping, the home folder's name and the order are all sidebar()'s.
     expect(dashboard).not.toContain("SessionGrouping.folders(");
     expect(dashboard).not.toContain("SessionGrouping.ordered(");

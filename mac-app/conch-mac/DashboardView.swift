@@ -623,8 +623,19 @@ private struct SessionLedger: View {
     /// The rows grouped by the folder they run in. A folder the reader collapsed keeps its
     /// rows out of the list entirely, which is why the count moves onto its header. The rule is
     /// `SessionGrouping.sidebar`, which the lagoon is sent the names of (`LagoonSnapshot.folders`).
+    /// A running team's members are grouped under the team instead (2026-11-12, ConchDesign/Teams.swift); the lagoon's
+    /// `folders`, agreed with the brand repo as folders, stay folders.
     private var sessionFolders: [SessionFolder] {
-        SessionGrouping.sidebar((state?.rows ?? []).map(\.groupedAs), home: NSHomeDirectory(), order: folderOrder)
+        SessionGrouping.sidebar((state?.rows ?? []).map(\.groupedAs), home: NSHomeDirectory(), order: folderOrder, teams: Teams.sidebarTeams(state?.teams ?? []))
+    }
+
+    /// The team whose header asked for Pass task… (ConchDesign/TeamsViews.swift `TeamTaskSheet`).
+    @State private var passingTaskTo: TeamSummary?
+    /// The team whose header asked to End team, while that is confirmed.
+    @State private var endingTeam: TeamSummary?
+
+    private func team(_ id: String) -> TeamSummary? {
+        state?.teams.first(where: { $0.id == id })
     }
 
     /// A folder header dropped on another takes its slot (SessionGrouping.order). Anything
@@ -708,7 +719,35 @@ private struct SessionLedger: View {
                                 // checkouts of one repo and a child whose folder differs from
                                 // its parent's — is ConchDesign/SessionGrouping.swift.
                                 ForEach(sessionFolders) { folder in
-                                    if !folder.name.isEmpty {
+                                    if let team = folder.team {
+                                        // A running team's members under its name and task, wherever each works
+                                        // (2026-11-12). Dragged and dropped as a folder's header is.
+                                        TeamHeader(
+                                            name: team.name,
+                                            task: team.task,
+                                            count: folder.sessionIDs.count,
+                                            isCollapsed: collapsedFolders.contains(folder.id),
+                                            isDropTarget: dropTargetFolderID == folder.id,
+                                            onToggle: { toggleFolder(folder.id) }
+                                        )
+                                        .contextMenu {
+                                            Button("Pass task…") { passingTaskTo = self.team(team.id) }
+                                            Button("Open Settings › Teams") { SettingsRouter.shared.open(.teams) }
+                                            Divider()
+                                            Button("End team…") { endingTeam = self.team(team.id) }
+                                        }
+                                        .draggable(folder.id)
+                                        .dropDestination(for: String.self) { items, _ in
+                                            dropFolder(items, onto: folder.id)
+                                        } isTargeted: { over in
+                                            if over {
+                                                dropTargetFolderID = folder.id
+                                            } else if dropTargetFolderID == folder.id {
+                                                dropTargetFolderID = nil
+                                            }
+                                        }
+                                        .id("folder:\(folder.id)")
+                                    } else if !folder.name.isEmpty {
                                         FolderHeader(
                                             name: folder.name,
                                             count: folder.sessionIDs.count,
@@ -893,6 +932,20 @@ private struct SessionLedger: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(ConchPalette.bg)
+        // A team header's Pass task…: the next task, into its lead's prompt as Tyler's message (src/team-desk.ts).
+        .sheet(item: $passingTaskTo) { team in
+            TeamTaskSheet(team: team, send: { task in
+                await TeamsStore.passTask(team: team.id, task: task, transport: TeamsSocket.send)
+            }, done: { passingTaskTo = nil })
+        }
+        // End team: the grouping ends, never the sessions, so it is confirmed but not destructive to work.
+        .confirmationDialog(endingTeam.map { "End \($0.name)?" } ?? "",
+                            isPresented: Binding(get: { endingTeam != nil }, set: { if !$0 { endingTeam = nil } }),
+                            presenting: endingTeam) { team in
+            Button("End team") { Task { _ = await TeamsStore.end(team: team.id, transport: TeamsSocket.send) } }
+        } message: { _ in
+            Text("Its sessions keep running; they just stop being grouped as a team.")
+        }
     }
 
     /// Every id the list draws right now, each a `.id` a scroll can land on: a session's own row (its
