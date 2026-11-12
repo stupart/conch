@@ -121,3 +121,9 @@ the whisper model is downloaded on first run into `~/.cache/conch/models`. An ex
 install (its checkout at `~/whisper-cli`, or its Homebrew formula) is found and its model reused. To point at something
 else, set `CONCH_WHISPER_CLI`, `CONCH_WHISPER_SERVER`, `CONCH_WHISPER_MODEL`, `CONCH_VAD_MODEL`, `CONCH_MICROPHONE`, `CONCH_SOX` or
 `CONCH_SEASHELL_ROOT`; they win over the app's own copies (`src/speech-engine.ts`).
+
+**While seashell records a meeting** (its `.background-watch.json` says `recording`), conch keeps its own transcription
+small and behind seashell's: no live previews while you dictate (the final text still arrives when you stop), and a
+cold `whisper-cli` run gets half the threads at a lower CPU priority. conch does not send its audio to seashell's
+whisper-server or read seashell's microphone stream: neither is published for another app to use
+(`src/seashell-activity.ts`).

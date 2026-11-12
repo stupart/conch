@@ -120,6 +120,7 @@ import { ServerSupervisor } from "./server-supervisor.ts";
 import { reapOrphanedWhisper, recordSpawnedWhisper } from "./whisper-orphan.ts";
 import { reapOrphanedSox } from "./sox-orphan.ts";
 import { microphoneAttribution, microphoneRecorders } from "./microphone-helper.ts";
+import { seashellActivity } from "./seashell-activity.ts";
 import { PauseOriginLedger } from "./pause-origin.ts";
 import { TtsSupervisor } from "./tts-supervisor.ts";
 import { ManagedTtsWorker, TTS_WORKER_HEALTH_CHECK_MS } from "./tts-worker.ts";
@@ -4394,6 +4395,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   // conch Microphone (microphone-helper.ts): under the app's (or the terminal's) Microphone permission, as sox was; under
   // launchd, from its installed copy under its own, asked for now. Only the socket's owner does, so two never both ask.
   microphoneRecorders.setLog(log);
+  // While seashell records a meeting, conch's whisper work stays small and behind it (seashell-activity.ts).
+  seashellActivity.setLog(log);
   void microphoneRecorders.start(cfg.microphoneHelper || null, microphoneAttribution(startedByFromEnv()))
     .catch((error) => log(`conch Microphone check failed: ${error}`));
   recordsMayStart = true;

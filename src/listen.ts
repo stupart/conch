@@ -25,6 +25,7 @@ import { TranscriptionGate } from "./transcription-gate.ts";
 import { SpeechEndpointer } from "./speech-endpoint.ts";
 import { microphoneRecorders, MICROPHONE_PERMISSION_EXIT_CODE } from "./microphone-helper.ts";
 import { startNativeRecording, type RecorderProcess } from "./native-recorder.ts";
+import { seashellActivity } from "./seashell-activity.ts";
 
 // Anything smaller than this is silence (raw 16kHz 16-bit mono = 32KB/s).
 export const MIN_PCM_BYTES = 16_000; // ~0.5s
@@ -1028,6 +1029,9 @@ function armContinuousRecorder(
       && serverUp()
       && !partialBusy
       && now - lastPartialAt >= PARTIAL_TRANSCRIPTION_INTERVAL_MS
+      // While seashell records a meeting, previews wait: they are the only
+      // whisper work conch repeats while someone talks (seashell-activity.ts).
+      && seashellActivity.policy().partials
     ) {
       const partial = transcribePartial(readPcm(raw), partialPieces);
       if (!partial) return;
