@@ -6,8 +6,12 @@ import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import {
   armBargeRecorder,
+  CAPTURE_PREROLL_SECS,
   CAPTURE_WATCHDOG_INTERVAL_MS,
+  capturePrerollSecs,
+  captureStopTailMs,
   createDictationSession,
+  endpointQuietSecs,
   hasActiveRecorders,
   rawCaptureFileGrew,
   soxCaptureArgs,
@@ -22,9 +26,9 @@ test("any raw capture growth starts speech independently of transcription MIN", 
 });
 
 describe("sox capture arguments", () => {
-  test("puts configured mic gain immediately before silence", () => {
+  test("puts configured mic gain first, then the pre-roll, then a start-only silence", () => {
     const args = soxCaptureArgs(
-      { micGainDb: 12, endSilenceSecs: 3.5, endThresholdPct: 2 },
+      { micGainDb: 12, endSilenceSecs: 3.5 },
       "/tmp/conch-test.raw",
       2,
     );
@@ -34,28 +38,74 @@ describe("sox capture arguments", () => {
       "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw",
       "/tmp/conch-test.raw",
       "gain", "12",
-      "silence", "-l",
-      "1", "0.15", "2%",
-      "1", "3.5", "2%",
+      "channels", "1", "remix", "1", "1", "delay", "0", "0.300",
+      "silence", "1", "0.15", "2%",
+      "remix", "2",
     ]);
   });
 
-  test("keeps the existing arguments unchanged when mic gain is zero", () => {
+  test("sox never ends a capture: no stop clause, and no -l to carry its cumulative pause count", () => {
+    // 2026-11-11: SoX 14.4.2's `silence -l` added every quiet moment inside
+    // speech to one total and closed the capture every 4-7s of talk.
+    const args = soxCaptureArgs({ micGainDb: 0, endSilenceSecs: 3.5 }, "/tmp/conch-test.raw", 2);
+    const silence = args.indexOf("silence");
+    expect(args.slice(silence, silence + 4)).toEqual(["silence", "1", "0.15", "2%"]);
+    expect(args[silence + 4]).toBe("remix");
+    expect(args).not.toContain("-l");
+  });
+
+  test("leaves gain out when it is zero", () => {
     const args = soxCaptureArgs(
-      { micGainDb: 0, endSilenceSecs: 3.5, endThresholdPct: 2 },
+      { micGainDb: 0, endSilenceSecs: 3.5 },
       "/tmp/conch-test.raw",
       2,
     );
 
-    expect(args).toEqual([
-      "sox", "-d", "-q",
-      "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw",
-      "/tmp/conch-test.raw",
-      "silence", "-l",
-      "1", "0.15", "2%",
-      "1", "3.5", "2%",
-    ]);
+    expect(args.slice(14, 22)).toEqual(["channels", "1", "remix", "1", "1", "delay", "0", "0.300"]);
     expect(args).not.toContain("gain");
+  });
+
+  test("the pre-roll never takes more than half the end silence", () => {
+    expect(capturePrerollSecs({ endSilenceSecs: 3.5 })).toBe(CAPTURE_PREROLL_SECS);
+    expect(capturePrerollSecs({ endSilenceSecs: 0.4 })).toBe(0.2);
+    const args = soxCaptureArgs({ micGainDb: 0, endSilenceSecs: 0.4 }, "/tmp/conch-test.raw", 2);
+    expect(args).toContain("0.200");
+  });
+
+  test("the pause that ends a capture is measured in the file, a pre-roll and a read behind the mic", () => {
+    // 3.5s at the mic: 0.3s of pre-roll, then half an 8 KB sox block (0.128s) and half a 100ms watch tick.
+    expect(endpointQuietSecs({ endSilenceSecs: 3.5 })).toBeCloseTo(3.5 - 0.3 - 0.128 - 0.05, 6);
+    // Never under a quarter of a very short end silence.
+    expect(endpointQuietSecs({ endSilenceSecs: 0.4 })).toBeCloseTo(0.1, 6);
+  });
+});
+
+describe("stopping a capture behind its pre-roll", () => {
+  test("words the user meant to keep wait out the pre-roll; discards and shutdown do not", () => {
+    const cfg = { endSilenceSecs: 3.5 };
+    expect(captureStopTailMs(cfg, "dictation-spacebar", true)).toBe(300);
+    expect(captureStopTailMs(cfg, "max", true)).toBe(300);
+    expect(captureStopTailMs(cfg, "dictation-spacebar", false)).toBe(0);
+    for (const reason of ["shutdown", "abort", "manual-reply", "timeout"]) {
+      expect(captureStopTailMs(cfg, reason, true)).toBe(0);
+    }
+  });
+
+  test("a tail delays the SIGINT instead of dropping it", async () => {
+    const signals: unknown[] = [];
+    stopSoxProcess({ kill: (received: unknown) => signals.push(received) } as never, { tailMs: 30 });
+    expect(signals).toEqual([]);
+    await Bun.sleep(80);
+    expect(signals).toEqual(["SIGINT"]);
+  });
+
+  test("an immediate stop ignores the tail", () => {
+    const signals: unknown[] = [];
+    stopSoxProcess({
+      kill: (received: unknown) => signals.push(received),
+      exited: new Promise<number>(() => {}),
+    } as never, { tailMs: 300, immediate: true });
+    expect(signals).toEqual(["SIGINT", "SIGKILL"]);
   });
 });
 
