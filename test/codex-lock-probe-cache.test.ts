@@ -155,6 +155,32 @@ describe("failures", () => {
     expect(probe.runs).toBe(1);
   });
 
+  test("a probe that fails stands on the last one that answered, while nothing it saw has changed (2026-10-23)", async () => {
+    // `lsof` ran out of time in maintenance wakes, and "every lock held by someone unnamed" made every open thread a
+    // row with no pid and no reason: "Codex row has no pid", 22-24 s into each DarkWake, all night.
+    const probe = countingProbe("p6163\nn/locks/a.lock\n");
+    const files = new Map([[A, "inode-1"], [B, "inode-2"]]);
+    const running = new Set([6163]);
+    const cached = cachedLockProbe(probe, {
+      ttlMs: 0,
+      identity: (path) => files.get(path) ?? null,
+      alive: (pid) => running.has(pid),
+    });
+    expect(await cached([A])).toBe("p6163\nn/locks/a.lock\n");
+    probe.answer = null;
+    expect(await cached([A])).toBe("p6163\nn/locks/a.lock\n");
+    expect(probe.runs).toBe(2);
+    // Not once a lock file has appeared: that answer was about other files.
+    expect(await cached([A, B])).toBeNull();
+    // Nor once a holder it named has exited.
+    running.delete(6163);
+    expect(await cached([A])).toBeNull();
+    // Nor once its file was replaced where it was.
+    running.add(6163);
+    files.set(A, "inode-3");
+    expect(await cached([A])).toBeNull();
+  });
+
   test("a probe that throws does not wedge the next ask", async () => {
     let runs = 0;
     const cached = cachedLockProbe(() => {

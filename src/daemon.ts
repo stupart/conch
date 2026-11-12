@@ -65,6 +65,7 @@ export {
 } from "./control-server.ts";
 import {
   createVoiceLoop,
+  idleSeconds,
   lastReplyFor,
   shouldHandleTurnAudibly,
   type AudioSink,
@@ -133,7 +134,7 @@ import {
   stopSoxProcess,
 } from "./listen.ts";
 import { createNarration, NARRATION_QUIET_WITHIN_MS } from "./narration.ts";
-import { INJECT_DEBUG_LOG, INJECT_DEBUG_LOG_MAX_BYTES, readSessionScreen, readTerminalTab, revealSessionWindow, withUIHold } from "./inject.ts";
+import { findTmuxPane, INJECT_DEBUG_LOG, INJECT_DEBUG_LOG_MAX_BYTES, readSessionScreen, readTerminalTab, revealSessionWindow, withUIHold } from "./inject.ts";
 import { createTerminalMirror } from "./terminal-mirror.ts";
 import { openSessionApp } from "./session-app-open.ts";
 import { adapterFor, transcriptFormatFor } from "./agent-adapter.ts";
@@ -174,6 +175,10 @@ import { awaitForkStart, FORK_ADOPT_WITHIN_MS, forkRequest, inheritedState, pend
 import { lastTabLines, tabAgentState, terminalTabCommands } from "./agent-alive.ts";
 import { MCP_TOOL_NAMES } from "./mcp-toolset.ts";
 import { listMcpServerProcesses, readMcpServerReports, toolsStaleFor, withToolsStale, type ToolsStale } from "./mcp-servers.ts";
+import {
+  conchMcpFailureFor, failedServerStale, hasConchMcpServer, mcpFailureWords, RELOAD_PLUGINS, RELOAD_VERIFY_MS, repairBlocker,
+  routeBlocker, submitSlashCommand, waitForServer, type McpConnectionFailure, type McpRepairAttempt,
+} from "./mcp-repair.ts";
 import { readSwapDashboard } from "./claude-swap.ts";
 import {
   addSignedInAccountToRotation, cancelAddingAccount, defaultLoginEmail, finishAddingAccount, installClaudeSwap, listedEmails,
@@ -287,6 +292,7 @@ import {
   type ConchState,
 } from "./status.ts";
 import { assertCodexAccountIdle, assertClaudeAccountIdle, accountRegistrySnapshot, accountResumableSessions, findAccountTranscript as findTranscript, sessionTranscript } from "./claude-account-sessions.ts";
+import { ParkedJobAttacher } from "./parked-jobs.ts";
 import { transcriptFolder } from "./review-roots.ts";
 import { defaultCodexDir, readCodexAccounts, addCodexAccount, removeCodexAccount, requireCodexAccount, cachedCodexAccount, invalidateCodexAccount, codexAccountForLaunch } from "./codex-accounts.ts";
 import { installProfileSignal } from "./daemon-profile.ts";
@@ -402,7 +408,7 @@ import { createPractice, practiceGate, PRACTICE_LABEL, PRACTICE_SESSION_ID, type
 import { resolveAgentBinaries } from "./doctor-checks.ts";
 import { codexHooksAreWiredAt, isConchHookCommand, runCodexInstall, runInstall } from "./install.ts";
 import { appendCapped, childCeilingFrom, installChildCeiling, RESTART_POLICY, runawayGuards } from "./runaway.ts";
-import { pluginInstalledFor, runInstallPlugin } from "./plugin-install.ts";
+import { conchPluginServerRunnable, pluginInstalledFor, repairPluginPrograms, runInstallPlugin } from "./plugin-install.ts";
 
 /**
  * The turn-based voice loop.
@@ -667,7 +673,9 @@ export function shouldReportMissingCodexPid(
 /**
  * Every account's conch hooks and status line, pointed at a bun that still exists (`repairConchHooks`,
  * `repairAccountUsage`). A Homebrew upgrade deletes the bun they named, and every prompt in that account then failed
- * with "UserPromptSubmit hook error" while conch heard nothing from it (2026-10-03). Repair only, never add.
+ * with "UserPromptSubmit hook error" while conch heard nothing from it (2026-10-03). The plugin's MCP server too, in
+ * every agent's copy (`repairPluginPrograms`): the same upgrade left new sessions without conch's tools (2026-10-23).
+ * Repair only, never add.
  */
 async function repairHookPrograms(): Promise<void> {
   let accounts: ReturnType<typeof readClaudeAccounts>;
@@ -685,6 +693,12 @@ async function repairHookPrograms(): Promise<void> {
       log(`could not repair conch's hooks in ${account.label}: ${(error as Error).message}`);
       fileDaemonFailure("hook-repair", `Could not repair conch's hooks: ${(error as Error).message}`, undefined, { account: account.id });
     }
+  }
+  try {
+    const plugin = await repairPluginPrograms({ claudeDirs: accounts.map((account) => account.configDir), codexDir: join(conchHome(), ".codex") });
+    if (plugin) log(`repaired conch's MCP server in ${plugin} plugin file${plugin === 1 ? "" : "s"}: its bun had moved`);
+  } catch (error) {
+    log(`could not repair conch's plugin: ${(error as Error).message}`);
   }
 }
 
@@ -811,7 +825,7 @@ export function injectTimeoutFor(line: string): number {
     if (kind === "inject") return 25_000;
     // A truthful close waits for the agent pid to disappear after Ctrl-D; the
     // bridge must not invent a failure while that clean shutdown is in flight.
-    // Its timed steps take up to 35.3 s on a slow Terminal (`CLOSE_TIMED_STEPS_MS`),
+    // Its timed steps take up to 39.3 s on a slow Terminal (`CLOSE_TIMED_STEPS_MS`),
     // plus the lookups before them; the Mac app waits as long (`sessionCloseTimeout`).
     // A restart then opens a Terminal window, which a start alone gets 8s for.
     if (kind === "session-close") return JSON.parse(line)?.restart === true ? 55_000 : 45_000;
@@ -1293,8 +1307,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   // background with the uv the app carries when missing or wrong), or a legacy
   // mlx-audio tool that can import Kokoro. Until then `say` speaks. The worker
   // reports every start that fails and every one that comes up warm, and asks
-  // itself for a tiny line when idle, so voiceEnv heals whatever breaks later
-  // (voice-heal.ts), not only what was broken at start.
+  // itself for a tiny line when idle in auto mode, so voiceEnv heals whatever
+  // breaks later (voice-heal.ts), not only what was broken at start.
   let voiceEnv: VoiceEnvManager | null = null;
   let naturalVoices: NaturalVoicesStatus | undefined;
   const ttsWorker = new ManagedTtsWorker({
@@ -1372,8 +1386,15 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   const KOKORO_KEEP_IN_MANUAL_MIN_BYTES = 16 * 1024 ** 3;
   const keepVoiceLoaded = (paused: boolean): boolean =>
     cfg.speak && (!paused || totalmem() >= KOKORO_KEEP_IN_MANUAL_MIN_BYTES);
+  // 2026-10-23, Tyler: "why has Kokoro been working if voice has been off? does it compute it anyways?" It did: the
+  // voice kept for him in manual mode synthesised "Ready." every ten minutes all night, for nobody. The health check is
+  // there so a turn's announcement never finds a wedged worker. In manual mode nothing is announced; a recite that
+  // found one would lose one line's timeout (SYNTH_ATTEMPT_TIMEOUT_MS, 4 s) before `say` read it, and a worker that
+  // dies is restarted either way. So it checks only while something will be spoken unasked.
+  const kokoroHealthByMode = (paused: boolean): void => ttsWorker.setHealthChecks(cfg.speak && !paused);
   const kokoroByMode = (paused: boolean, graceMs = KOKORO_MANUAL_GRACE_MS): void => {
     const keep = keepVoiceLoaded(paused);
+    kokoroHealthByMode(paused);
     for (const engine of [ttsWorker, ttsSupervisor]) {
       if (!keep) engine?.unloadAfter(graceMs, cfg.speak ? "unloaded — manual mode; reloads in auto mode" : "unloaded — Read replies aloud is off");
       else engine?.prewarm(paused ? "manual mode, kept for what you ask to hear" : "auto mode");
@@ -2107,9 +2128,17 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   failureDesk.start(5_000, Number(process.env.CONCH_FAILURE_CHECK_MS) || FIX_CHECK_INTERVAL_MS);
   // Cut four: the voice loop owns wake → speak → listen → deliver. Built after
   // every daemon helper it is handed; the closures above reach it lazily.
+  /** Background agents parked waiting on you, brought back for a reply (parked-jobs.ts). */
+  const parkedJobs = new ParkedJobAttacher({
+    row: (sessionId) => panelSessions.get(sessionId),
+    refresh: () => renderSessionPanel(),
+    label: labelForSessionId,
+    log,
+  });
   const voice = createVoiceLoop({
     cfg,
     log,
+    bringBackParked: (event) => parkedJobs.forDelivery(event),
     // A window key names its session's hook reports: the hook knows the session, not the window.
     promptSubmitted: (sessionId, since, words, pid) => promptSubmissions.submitted(parseWindowKey(sessionId).sessionId, since, words, pid),
     promptSubmittedBy: (since, words) => promptSubmissions.reportedBy(since, words),
@@ -2434,25 +2463,123 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   /**
    * Which live sessions' conch MCP servers can't get this build's tools (mcp-servers.ts), from the servers' own reports
    * and the `conch mcp` processes: once a minute, a `ps` and a small folder read. Only the sessions file carries it.
+   *
+   * The same look finds a session with no conch server at all whose server failed to start (mcp-repair.ts): its row
+   * gets a `failed` verdict, and conch types `/reload-plugins` into it when that is safe (`repairFailedMcpServers`).
    */
   let toolsStale = new Map<string, ToolsStale>();
   const toolsWatchedSince = Date.now();
+  /** The sessions whose conch server failed to start, by session id, as the last look found them. */
+  let mcpFailures = new Map<string, McpConnectionFailure>();
+  /**
+   * What conch did about each failure, by its log file (one per session process): a reload is typed once per failure,
+   * never once a minute. Memory only: a daemon restart may type it once more, no more often than that.
+   */
+  const mcpRepairAttempts = new Map<string, McpRepairAttempt>();
+  let mcpRepairing = false;
   async function refreshToolsStale(): Promise<void> {
     const reports = readMcpServerReports();
     const processes = await listMcpServerProcesses();
     const now = Date.now();
     const next = new Map<string, ToolsStale>();
+    const failures = new Map<string, McpConnectionFailure>();
     for (const session of panelSessions.values()) {
       const stale = toolsStaleFor({
         sessionPid: session.pid, reports, processes, currentTools: MCP_TOOL_NAMES, currentToolset: MCP_TOOLSET, now, since: toolsWatchedSince,
       });
-      if (stale) next.set(session.sessionId, stale);
+      if (stale) {
+        next.set(session.sessionId, stale);
+        continue;
+      }
+      const failure = conchMcpFailureFor(session, reports, processes);
+      if (!failure) continue;
+      failures.set(session.sessionId, failure);
+      next.set(session.sessionId, failedServerStale(failure, MCP_TOOL_NAMES, mcpRepairAttempts.get(failure.file)));
     }
+    for (const [id, failure] of failures) {
+      if (mcpFailures.get(id)?.file !== failure.file) log(`conch's MCP server failed to start in "${labelForSessionId(id)}" (${mcpFailureWords(failure.error)})`);
+    }
+    mcpFailures = failures;
+    if (failures.size) void repairFailedMcpServers();
     if (JSON.stringify([...next]) === JSON.stringify([...toolsStale])) return;
-    const newly = [...next.keys()].filter((id) => !toolsStale.has(id));
+    const newly = [...next.keys()].filter((id) => !toolsStale.has(id) && !failures.has(id));
     toolsStale = next;
     if (newly.length) log(`conch tools out of date in ${newly.length} session${newly.length === 1 ? "" : "s"}: ${newly.map((id) => labelForSessionId(id)).join(", ")}`);
     publishedStateWriter.request();
+  }
+
+  /** Each failed server the last look found, one at a time; a look that comes while they run leaves them to it. */
+  async function repairFailedMcpServers(): Promise<void> {
+    if (mcpRepairing) return;
+    mcpRepairing = true;
+    try {
+      for (const [sessionId, failure] of mcpFailures) {
+        await repairFailedMcpServer(sessionId, failure).catch((error) => log(`could not reload conch's tools in "${labelForSessionId(sessionId)}": ${error}`));
+      }
+    } finally {
+      mcpRepairing = false;
+    }
+  }
+
+  /**
+   * Type `/reload-plugins` into a session whose conch MCP server failed to start, and check a server came of it
+   * (mcp-repair.ts). Only once per failure; only once the plugin's program is there, or the reload would fail the same
+   * way; only into a session at rest whose prompt is empty, never mid-turn or over words someone typed; and into a
+   * Terminal window, which has to come to the front for it, only while nobody is using the Mac. Anything that stops it
+   * short of typing leaves it for the next look, and the row goes on saying what's missing and how to fix it.
+   */
+  async function repairFailedMcpServer(sessionId: string, failure: McpConnectionFailure): Promise<void> {
+    const session = panelSessions.get(sessionId);
+    if (!session) return;
+    const blocked = repairBlocker({
+      attempted: mcpRepairAttempts.has(failure.file),
+      dismissed: dismissedSessionIds.has(sessionId),
+      runnable: conchPluginServerRunnable(session.claudeConfigDir ?? cfg.claudeDir),
+      status: lastPanelModel?.rows.find((row) => row.sessionId === sessionId)?.status,
+    });
+    if (blocked) return;
+    const pid = session.pid;
+    const route = !pid ? null : (await findTmuxPane(pid)) ? "tmux" : "terminal";
+    if (routeBlocker({ route, keystrokeFallback: cfg.keystrokeFallback, idleSeconds: route === "terminal" ? await idleSeconds() : null })) return;
+    // Out of the voice loop's way: a reply being heard goes in first.
+    if (!pid || voice.capturing()) return;
+    // A minute is long enough for someone to have typed the reload themselves.
+    const pids = [session.pid, session.agentPid].filter((one): one is number => typeof one === "number" && one > 0);
+    const serving = async () => hasConchMcpServer(pids, readMcpServerReports(), await listMcpServerProcesses());
+    if (await serving() !== false) return;
+    const label = labelForSessionId(sessionId);
+    const words = mcpFailureWords(failure.error);
+    const delivered = (result: { via: string }) => result.via === "tmux" || result.via === "osascript-focused";
+    const typed = await withUIHold((ui) => submitSlashCommand(RELOAD_PLUGINS, {
+      read: () => readSessionScreen(pid),
+      press: async (keys) => delivered(await ui.keys(cfg, pid, keys)),
+      // Typed and NOT submitted: the prompt must hold exactly this before Enter.
+      type: async (text) => delivered(await ui.text({ ...cfg, autoSubmit: false }, pid, text, { clipboardFallback: false })),
+      sleep: (ms) => Bun.sleep(ms),
+    })).catch((error) => ({ ok: false as const, reason: error instanceof Error ? error.message : String(error), typed: true }));
+    if (!typed.ok && !typed.typed) return;
+    const settle = (attempt: McpRepairAttempt): void => {
+      mcpRepairAttempts.set(failure.file, attempt);
+      if (attempt.ok) {
+        toolsStale.delete(sessionId);
+        mcpFailures.delete(sessionId);
+      } else {
+        toolsStale.set(sessionId, failedServerStale(failure, MCP_TOOL_NAMES, attempt));
+        recordDaemonError("mcp-repair", `Could not start conch's MCP server again in "${label}": ${attempt.reason}`, sessionId, { log: failure.file, error: failure.error });
+      }
+      publishedStateWriter.request();
+    };
+    if (!typed.ok) {
+      log(`could not reload conch's tools in "${label}": ${typed.reason}`);
+      return settle({ at: Date.now(), ok: false, reason: typed.reason });
+    }
+    if (await waitForServer(async () => await serving() === true)) {
+      log(`reloaded conch's tools in "${label}": its MCP server had failed to start (${words})`);
+      return settle({ at: Date.now(), ok: true });
+    }
+    const reason = `no conch MCP server appeared within ${Math.round(RELOAD_VERIFY_MS / 1000)}s of ${RELOAD_PLUGINS}`;
+    log(`typed ${RELOAD_PLUGINS} in "${label}", but ${reason}; it stays without conch's tools`);
+    settle({ at: Date.now(), ok: false, reason });
   }
   /** One look at a time: a `ps` that hung added another every minute (`listMcpServerProcesses` now has a leash too). */
   let toolsStaleLook: Promise<void> | null = null;
@@ -2822,7 +2949,10 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       panelAgents = new Map(nested.map((agent) => [agent.sessionId, agent]));
       // This snapshot passed the reconciler's current() check; indexing never uses the eight-row preview cap.
       prioritizeRecords([...panelSessions.values(), ...nested], navSelectedId ?? nextActiveSessionId);
-      // Re-arms only when the set of live transcripts changes; see session-watch.ts.
+      // Its own breadcrumb: without one, five days of freezes in the watchers below were logged as the indexer's
+      // ("records: handing the indexer its priorities", 10-19 to 10-23; session-watch.ts).
+      breadcrumb("panel: watching the live transcripts");
+      // Changes only the paths that came or went, a watcher per turn; see session-watch.ts.
       accountSourcesWatch.update([
         ...readClaudeAccounts(cfg.claudeDir).flatMap(account => [account.configDir, join(account.configDir, "sessions")]),
         ...readCodexAccounts().flatMap(account => [account.configDir, join(account.configDir, "thread-writer-locks")]),
@@ -3134,8 +3264,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       }
       terminalSessionCommand(relaunch.request); // throws on anything invalid, before the close
     }
-    // A background job is stopped by id (claude stop), window or not.
-    await closeSession(session);
+    // A background job is stopped by id (claude stop), window or not. `restart` only words what a second press would do.
+    await closeSession(session, { restart });
     // Its out-of-date tools were its old process's: the app's Restart must not come back offering itself before the next
     // look (`refreshToolsStale`, once a minute) judges the new one.
     if (toolsStale.delete(sessionId)) publishedStateWriter.request();
@@ -3440,7 +3570,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       const session = panelSessions.get(target.sessionId);
       if (!session?.jobId) return Promise.resolve(false);
       return attachTerminalSession(session.jobId, session.cwd, {}, session.claudeAccountId).then(() => {
-        log(`opened "${target.label}" in Terminal (claude attach ${session.jobId})`);
+        // A parked one (parked-jobs.ts) comes back with it: Claude Code respawns a job something attaches to.
+        log(`opened ${session.parked ? "parked " : ""}"${target.label}" in Terminal (claude attach ${session.jobId})${session.parked ? ", bringing it back" : ""}`);
         return true;
       }, (error) => {
         recordDaemonError(
@@ -4327,6 +4458,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   }
   // D1: a daemon booting in manual mode loads Kokoro only if it keeps it there (keepVoiceLoaded); auto mode will.
   if (pause.paused && !keepVoiceLoaded(true)) kokoroByMode(true, 0);
+  kokoroHealthByMode(pause.paused);
   if (cfg.ttsEngine === "worker") {
     // Checking the environment, building it on a first run, loading and the
     // first Metal/G2P warmup all take time. None of it holds the turn queue:

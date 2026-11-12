@@ -1321,6 +1321,9 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     /// A Claude Code background job no window is attached to: "Open in
     /// Terminal" can attach one. Older daemons never send it.
     let attachable: Bool
+    /// A background agent Claude Code stopped when it asked you something (src/parked-jobs.ts): `detail` is the
+    /// question, a send brings it back first, and it says "Parked" before its question. Older daemons never send it.
+    let parked: Bool
     /// Working only because agents it started are still running; its own turn is over, so
     /// it can be talked to. Older daemons never send it.
     let waitingOnAgents: Bool
@@ -1409,6 +1412,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         case revealable
         case noTerminal, messageRoute
         case attachable
+        case parked
         case waitingOnAgents
         case approval
         case parentSessionId
@@ -1449,6 +1453,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         noTerminal: String? = nil,
         messageRoute: String? = nil,
         attachable: Bool = false,
+        parked: Bool = false,
         waitingOnAgents: Bool = false,
         approval: PendingApproval? = nil,
         parentSessionId: String? = nil,
@@ -1487,6 +1492,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         self.noTerminal = noTerminal
         self.messageRoute = messageRoute
         self.attachable = attachable
+        self.parked = parked
         self.waitingOnAgents = waitingOnAgents
         self.approval = approval
         self.parentSessionId = parentSessionId
@@ -1534,6 +1540,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         messageRoute = try? container.decodeIfPresent(String.self, forKey: .messageRoute)
         attachable =
             (try? container.decodeIfPresent(Bool.self, forKey: .attachable)) ?? false
+        parked = (try? container.decodeIfPresent(Bool.self, forKey: .parked)) ?? false
         waitingOnAgents =
             (try? container.decodeIfPresent(Bool.self, forKey: .waitingOnAgents)) ?? false
         approval = try? container.decodeIfPresent(PendingApproval.self, forKey: .approval)
@@ -1580,6 +1587,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             noTerminal: noTerminal,
             messageRoute: messageRoute,
             attachable: attachable,
+            parked: parked,
             waitingOnAgents: waitingOnAgents,
             approval: approval,
             parentSessionId: parentSessionId,
@@ -1606,7 +1614,7 @@ extension SessionRow {
             detail: (status == .needs ? detail : nil) ?? Workbench.rowAskLine(reason: reason),
             review: review, reviews: reviews, paused: paused, pauseExempt: pauseExempt, live: live, active: active,
             snippet: snippet, transcriptPath: transcriptPath, voice: voice, prioritized: prioritized, navSelected: navSelected,
-            revealable: revealable, noTerminal: noTerminal, messageRoute: messageRoute, attachable: attachable,
+            revealable: revealable, noTerminal: noTerminal, messageRoute: messageRoute, attachable: attachable, parked: parked,
             waitingOnAgents: waitingOnAgents, approval: approval, parentSessionId: parentSessionId,
             startedBySessionId: startedBySessionId, cwd: cwd, workDirs: workDirs, activity: activity, toolsStale: toolsStale
         )
@@ -1622,7 +1630,7 @@ extension SessionRow {
             status: status, at: at, needsResponse: needsResponse, detail: detail,
             review: review, reviews: reviews, paused: paused, pauseExempt: pauseExempt, live: live, active: active,
             snippet: snippet, transcriptPath: transcriptPath, voice: voice, prioritized: prioritized, navSelected: navSelected,
-            revealable: revealable, noTerminal: noTerminal, messageRoute: messageRoute, attachable: attachable,
+            revealable: revealable, noTerminal: noTerminal, messageRoute: messageRoute, attachable: attachable, parked: parked,
             waitingOnAgents: waitingOnAgents, approval: approval, parentSessionId: parentSessionId,
             startedBySessionId: startedBySessionId, cwd: cwd, workDirs: workDirs, activity: nil, toolsStale: toolsStale
         )

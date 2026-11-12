@@ -33,6 +33,19 @@ final class SidebarRowTests: XCTestCase {
         XCTAssertEqual(SidebarRowText.subtitle(message: " ", blockedOn: " Allow rm? ", startedBy: nil), "Allow rm?")
     }
 
+    /// A background agent Claude Code parked when it asked (2026-10-24) says so before its question, and is still a
+    /// question line: a parked row with nothing recorded says it waits on you rather than drawing no line.
+    func testAParkedRowSaysSoBeforeItsQuestion() {
+        let question = "confirm: start onboarding walkthrough or next step?"
+        XCTAssertEqual(SidebarRowText.parked(question), "Parked · confirm: start onboarding walkthrough or next step?")
+        XCTAssertEqual(SidebarRowText.parked(nil), "Parked · waiting on you")
+        XCTAssertEqual(SidebarRowText.parked("  "), "Parked · waiting on you")
+        XCTAssertEqual(
+            SidebarRowText.secondLine(message: nil, blockedOn: SidebarRowText.parked(question), activity: nil, startedBy: nil)?.kind,
+            .question
+        )
+    }
+
     // MARK: What a working agent is doing (2026-10-03)
 
     func testAWorkingRowSaysWhatItsAgentIsDoing() {

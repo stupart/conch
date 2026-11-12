@@ -145,6 +145,12 @@ export function readClaudeTitle(path: string): string | undefined {
   return titles.custom ?? titles.generated;
 }
 
+/** Claude Code's name for a project folder: the cwd with every character but a letter or digit made a dash. It names
+ * the folder under `projects/` and the one under its cache (`mcp-repair.ts`). */
+export function claudeProjectSlug(cwd: string): string {
+  return cwd.replace(/[^a-zA-Z0-9]/g, "-");
+}
+
 /**
  * Where a live session's transcript sits, for a session the registry describes
  * by id and cwd but never points at.
@@ -160,7 +166,6 @@ export function liveTranscriptPath(
   sessionId: string,
 ): string | undefined {
   if (!cwd || !sessionId) return undefined;
-  const slug = cwd.replace(/[^a-zA-Z0-9]/g, "-");
-  const path = join(claudeDir, "projects", slug, `${sessionId}.jsonl`);
+  const path = join(claudeDir, "projects", claudeProjectSlug(cwd), `${sessionId}.jsonl`);
   return existsSync(path) ? path : undefined;
 }

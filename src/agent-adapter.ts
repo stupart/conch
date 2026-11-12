@@ -20,6 +20,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { liveBackgroundAgents, subagentRowId } from "./agent-activity.ts";
+import { claudeExitBlocker, type ExitBlocker } from "./exit-screen.ts";
 import {
   readClaude,
   readCodex,
@@ -115,6 +116,11 @@ export interface AgentAdapter {
    * empty, null when no box is on screen or the agent's box is unknown (Codex).
    */
   readonly inputBoxText: ((screen: string) => string | null) | null;
+  /**
+   * What the agent's screen shows in place of leaving after a close's Ctrl-D, when it is one conch knows how to answer
+   * (exit-screen.ts); null where none has been seen (Codex).
+   */
+  readonly exitBlocker: ((screen: string) => ExitBlocker | null) | null;
   /** The agent's own spelling of "resume this id"; the id arrives shell-quoted. */
   resumeArgs(quotedSessionId: string): string;
   /**
@@ -327,6 +333,7 @@ export const claudeAdapter: AgentAdapter = {
   exitKeystrokes: 2,
   questionKeys: claudeQuestionKeys,
   inputBoxText: claudeInputBoxText,
+  exitBlocker: claudeExitBlocker,
   resumeArgs: (id) => ` --resume ${id}`,
   forkArgs: null,
   teleportArgs: (id) => ` --teleport ${id}`,
@@ -430,6 +437,7 @@ export const codexAdapter: AgentAdapter = {
   // Codex's request_user_input picker hasn't been measured; its answer stays a message.
   questionKeys: null,
   inputBoxText: null,
+  exitBlocker: null,
   resumeArgs: (id) => ` resume ${id}`,
   // `codex fork --help`, codex-cli 0.159.2: "Fork a previous interactive session", the id as a positional.
   forkArgs: (id) => ` fork ${id}`,

@@ -13,6 +13,7 @@ import { conchHome } from "./home.ts";
 import { dirname, join } from "node:path";
 import { awaitWithWatchdog, type WatchdogWarning } from "./audio-watchdog.ts";
 import { Breaker, duration } from "./runaway.ts";
+import { awakeTimeout, wasSuspended } from "./awake-time.ts";
 import workerSource from "./tts-worker.py" with { type: "text" };
 
 export const TTS_WORKER_PROTOCOL_VERSION = 1;
@@ -21,7 +22,8 @@ export const TTS_WORKER_RETRY_DELAYS_MS = [0, 500, 1_500, 3_000] as const;
 export const TTS_WORKER_PERIODIC_RETRY_MS = 30_000;
 /**
  * How often a warm worker that has served nothing lately is asked for one tiny line, so a worker that died or wedged
- * after its start is found and restarted before a turn needs it. Its WAV is deleted, never played.
+ * after its start is found and restarted before a turn needs it. Its WAV is deleted, never played. Only while
+ * something will be spoken unasked (setHealthChecks), and only after this long awake: never in the tick a sleep ends.
  */
 export const TTS_WORKER_HEALTH_CHECK_MS = 10 * 60_000;
 export const TTS_WORKER_HEALTH_CHECK_TIMEOUT_MS = 30_000;
@@ -161,7 +163,7 @@ interface PendingRequest {
   health: boolean;
   settled: Promise<unknown>;
   output: string;
-  timer: ReturnType<typeof setTimeout>;
+  clearTimer: () => void;
   signal?: AbortSignal;
   abort: () => void;
   resolve: (result: TtsWorkerSynthesisResult) => void;
@@ -186,6 +188,8 @@ export interface ManagedTtsWorkerOptions {
   onReady?: () => void;
   /** Ask an idle warm worker for one tiny line this often (0 or absent: never). A failure restarts it. */
   healthCheckMs?: number;
+  /** Wall-clock, for telling sleep from a hang (awake-time.ts); a test seam. */
+  now?: () => number;
   /** Complete command test seam; the production command is assembled when omitted. */
   command?: string[];
   spawn?: (command: string[]) => TtsWorkerProcess;
@@ -346,19 +350,25 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
   private periodicTimer: ReturnType<typeof setTimeout> | null = null;
   private unloadTimer: ReturnType<typeof setTimeout> | null = null;
   private healthTimer: ReturnType<typeof setInterval> | null = null;
+  /** Off while nothing will be spoken unasked (setHealthChecks). */
+  private healthChecks = true;
   /** When the worker last answered: a start, a line, or a health check. */
   private lastAnswerAt = 0;
+  /** When the health tick last came back late: the Mac slept, and is awake (perhaps only for a DarkWake) since. */
+  private awakeSince = 0;
   private requestCounter = 0;
   private python: string | null;
   private readonly outputFiles = new Set<string>();
   private readonly lifecycle = new AbortController();
   private readonly log: WatchdogWarning;
   private readonly restarts: Breaker;
+  private readonly now: () => number;
 
   constructor(private readonly options: ManagedTtsWorkerOptions) {
     this.status = options.enabled ? "starting" : "disabled";
     this.python = options.python ?? null;
     this.restarts = options.restarts ?? new Breaker({ name: "kokoro", what: "restarting the Kokoro voice worker" });
+    this.now = options.now ?? Date.now;
     const logger = options.log ?? console.warn;
     this.log = (message) => {
       try { logger(message); } catch {}
@@ -443,6 +453,19 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
     this.unloadTimer.unref?.();
   }
 
+  /**
+   * Whether an idle warm worker is health-checked (D1): only while something will be spoken unasked, which is auto
+   * mode with Read replies aloud on. A voice kept warm in manual mode for what you ask to hear idles instead of
+   * synthesising "Ready." every ten minutes for nobody; one that dies is still restarted (childExited), and back in
+   * auto mode one that has answered nothing for a check's interval is checked at the next tick.
+   */
+  setHealthChecks(on: boolean): void {
+    if (this.healthChecks === on) return;
+    this.healthChecks = on;
+    if (!on) this.clearHealth();
+    else if (this.isReady()) this.armHealth();
+  }
+
   /** Auto mode (D1): reload an unloaded worker; a warm one just loses its pending unload. */
   prewarm(why: string): void {
     this.clearUnloadTimer();
@@ -489,18 +512,19 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
       this.failPending(error);
       this.hardRestart("cancelled synthesis");
     };
-    const timer = setTimeout(() => {
+    // Time awake, not wall-clock: a line the Mac slept through is not a hung worker (awake-time.ts).
+    const clearTimer = awakeTimeout(() => {
       if (this.pending?.id !== id) return;
       this.failPending(new TtsWorkerTimeoutError());
       this.hardRestart("synthesis timeout");
-    }, Math.max(1, Math.ceil(request.timeoutMs)));
+    }, request.timeoutMs, { now: this.now });
     this.pending = {
       id,
       generation,
       health,
       settled: result,
       output,
-      timer,
+      clearTimer,
       signal: request.signal,
       abort,
       resolve,
@@ -644,7 +668,7 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
         this.status = "ready";
         this.lastError = null;
         this.voices = frame.voices.filter((voice) => VOICE_NAME.test(voice));
-        this.lastAnswerAt = Date.now();
+        this.lastAnswerAt = this.now();
         this.log(
           `kokoro worker warm and synthesis-ready (pid ${this.child?.pid ?? frame.pid ?? "?"}, `
           + `load ${Math.round(frame.load_ms ?? 0)}ms, warmup ${Math.round(frame.warmup_ms ?? 0)}ms)`,
@@ -691,6 +715,8 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
       timeoutAction: "killed",
       onTimeout: () => this.retireIfCurrent(child, generation, true),
       warn: this.log,
+      // A load the Mac slept through has not timed out: it had seconds of a DarkWake, not two minutes.
+      deadline: (fire, ms) => awakeTimeout(fire, ms, { now: this.now }),
     });
     if (outcome.status === "cancelled") {
       throw this.lifecycle.signal.reason ?? new TtsWorkerUnavailableError("Kokoro worker startup cancelled");
@@ -903,7 +929,7 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
   private completePending(result: TtsWorkerSynthesisResult): void {
     const pending = this.takePending();
     if (!pending) return;
-    this.lastAnswerAt = Date.now();
+    this.lastAnswerAt = this.now();
     this.outputFiles.delete(pending.output); // ownership transfers to speak.ts
     pending.resolve(result);
   }
@@ -920,7 +946,7 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
     const pending = this.pending;
     if (!pending) return null;
     this.pending = null;
-    clearTimeout(pending.timer);
+    pending.clearTimer();
     pending.signal?.removeEventListener("abort", pending.abort);
     return pending;
   }
@@ -946,11 +972,23 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
    * for one tiny line. It answers, and its WAV is deleted unplayed; it errs, and it is restarted; it hangs, and the
    * request's own watchdog restarts it. A restart that fails reports through onStartFailed like any other, so the
    * voices heal from there (voice-env.ts).
+   *
+   * Never into a sleep. A tick that comes back late (awake-time.ts) is the Mac waking, often only for a DarkWake of a
+   * few seconds, and the check waits until this process has been awake a whole interval since. Overnight that is
+   * never, which is the point: the line it would start there is the one the next sleep cuts in half.
    */
   private armHealth(): void {
     const every = this.options.healthCheckMs ?? 0;
-    if (every <= 0 || this.healthTimer || this.stopped()) return;
-    this.healthTimer = setInterval(() => void this.healthCheck(every), Math.max(10, Math.min(every, 60_000)));
+    if (every <= 0 || !this.healthChecks || this.healthTimer || this.stopped()) return;
+    const period = Math.max(10, Math.min(every, 60_000));
+    let lastTick = this.now();
+    this.healthTimer = setInterval(() => {
+      const now = this.now();
+      const gap = now - lastTick;
+      lastTick = now;
+      if (wasSuspended(gap, period)) this.awakeSince = now;
+      else void this.healthCheck(every);
+    }, period);
     this.healthTimer.unref?.();
   }
 
@@ -960,7 +998,8 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
   }
 
   private async healthCheck(every: number): Promise<void> {
-    if (!this.isReady() || this.pending || this.recovery || Date.now() - this.lastAnswerAt < every) return;
+    const quietSince = Math.max(this.lastAnswerAt, this.awakeSince);
+    if (!this.isReady() || this.pending || this.recovery || this.now() - quietSince < every) return;
     const voice = this.voices[0] ?? this.options.voices[0] ?? "af_heart";
     try {
       const result = await this.request({

@@ -29,6 +29,9 @@ public struct ToolsStale: Decodable, Equatable, Sendable {
         self.why = why
     }
 
+    /// Its server never started (basis "failed", src/mcp-repair.ts): it has none of conch's tools, not old ones.
+    public var serverFailed: Bool { basis == "failed" }
+
     private enum CodingKeys: String, CodingKey { case missing, basis, serverStartedAt, why }
 
     /// Leniently, like the rest of a row: anything but `missing` may be absent or a newer shape. A verdict with no tools
@@ -49,6 +52,10 @@ public struct ToolsStale: Decodable, Equatable, Sendable {
 /// The words for an out-of-date session, wherever the app says it.
 public enum ToolsStaleWords {
     public static let headline = "conch's tools are out of date"
+    /// A session whose conch MCP server failed to start (2026-10-23: Homebrew deleted the bun the plugin named, and
+    /// sessions started then had no conch tools at all). "Out of date" would be wrong: it has none, old or new.
+    public static let failedHeadline = "conch's tools didn't load"
+    public static let failedDetail = "its MCP server failed to start"
     /// Beside Restart: what a restart costs, which is the thing a person wants to know before pressing it.
     public static let keepsConversation = "keeps the conversation"
     /// Where conch can't restart it itself (no terminal to type into).
@@ -88,9 +95,20 @@ public enum ToolsStaleWords {
         return list(names)
     }
 
-    /// The line: "conch's tools are out of date · missing the browser tools, fork and Atlas pages".
+    /// The line: "conch's tools are out of date · missing the browser tools, fork and Atlas pages", or for a server that
+    /// never started, "conch's tools didn't load · its MCP server failed to start".
     public static func line(_ stale: ToolsStale) -> String {
-        "\(headline) · missing \(missing(stale.missing))"
+        "\(headline(stale)) · \(detail(stale))"
+    }
+
+    /// The line's first, stronger half.
+    public static func headline(_ stale: ToolsStale) -> String {
+        stale.serverFailed ? failedHeadline : headline
+    }
+
+    /// The line's second half: what is missing, or that the server never started.
+    public static func detail(_ stale: ToolsStale) -> String {
+        stale.serverFailed ? failedDetail : "missing \(missing(stale.missing))"
     }
 
     /// The tooltip: every tool by name, why a running session can't take them, and what a restart does.
@@ -103,6 +121,9 @@ public enum ToolsStaleWords {
         lines.append(canRestart
             ? "Restart closes it cleanly and resumes the same conversation in a new Terminal window, with conch's current tools."
             : "Close it and resume it to get conch's current tools; its conversation comes back with it.")
+        if stale.serverFailed {
+            lines.append("Or type /reload-plugins in it, which starts the server again without a restart.")
+        }
         return lines.joined(separator: "\n")
     }
 
@@ -244,8 +265,8 @@ public struct SessionToolsNotice: View {
     }
 
     private var words: some View {
-        (Text(verbatim: ToolsStaleWords.headline).fontWeight(.medium).foregroundStyle(ConchColor.textPrimary)
-            + Text(verbatim: " · missing \(ToolsStaleWords.missing(stale.missing))").foregroundStyle(ConchColor.textSecondary))
+        (Text(verbatim: ToolsStaleWords.headline(stale)).fontWeight(.medium).foregroundStyle(ConchColor.textPrimary)
+            + Text(verbatim: " · \(ToolsStaleWords.detail(stale))").foregroundStyle(ConchColor.textSecondary))
             .font(.system(size: 11))
             .accessibilityLabel(ToolsStaleWords.line(stale))
     }
@@ -318,7 +339,9 @@ public struct InspectorToolsRow: View {
                 Text(verbatim: "conch tools")
                     .font(.system(size: 11))
                     .foregroundStyle(ConchColor.textTertiary)
-                Text(verbatim: "out of date · missing \(ToolsStaleWords.missing(stale.missing))")
+                Text(verbatim: stale.serverFailed
+                    ? "didn't load · \(ToolsStaleWords.failedDetail)"
+                    : "out of date · \(ToolsStaleWords.detail(stale))")
                     .font(.system(size: 11))
                     .foregroundStyle(ConchColor.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)

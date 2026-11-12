@@ -399,7 +399,9 @@ struct ComposerView: View {
                 .padding(.leading, 8)
                 .layoutPriority(-1)
 
-                if noTerminal != nil, let onOpenInTerminal {
+                // Given only for a job no window is attached to: one with no terminal yet, or one parked waiting on
+                // you, which a send brings back as well (src/parked-jobs.ts).
+                if let onOpenInTerminal {
                     Button(action: onOpenInTerminal) {
                         Label("Open in Terminal", systemImage: "terminal")
                             .font(ConchTypography.font(size: 11, weight: .medium))
