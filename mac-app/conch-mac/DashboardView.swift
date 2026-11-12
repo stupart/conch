@@ -795,7 +795,7 @@ private struct SessionLedger: View {
                                 // we can have less loose ends for things that are meaning to run temporarily." Beside the
                                 // sessions, above the dismissed ones; nothing when nothing runs. conch stops nothing itself.
                                 if let resources = state.resources, !resources.items.isEmpty {
-                                    StillRunningSection(resources: resources, now: timeline.date, decide: Self.decideResource)
+                                    StillRunningSection(resources: resources, now: now, decide: Self.decideResource)
                                         .id("still-running")
                                 }
 
@@ -3576,7 +3576,9 @@ extension PublishedState {
             rows: rows,
             dismissed: [],
             dismissedRows: dismissedRows,
-            browserTabs: browserTabs?.filter { $0.ask != nil }
+            browserTabs: browserTabs?.filter { $0.ask != nil },
+            // What sessions left running: the list draws it beside them (`StillRunningSection`).
+            resources: resources
         )
     }
 }
