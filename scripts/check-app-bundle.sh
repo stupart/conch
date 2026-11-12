@@ -38,17 +38,19 @@ for helper in conch-daemon whisper-cli whisper-server sox conch-microphone tmux;
   [[ "$archs" == "$app_archs" ]] || fail "$path is built for '$archs' but the app is '$app_archs'"
 done
 
+# Each check reads a tool's whole output before grep does: `tool | grep -q` under pipefail fails a good
+# bundle whenever grep stops at its match while the tool is still writing, and the tool dies of SIGPIPE.
 entitlements() { codesign -d --entitlements - --xml "$1" 2>/dev/null; }
-entitlements "$HELPERS/conch-daemon" | grep -q 'com.apple.security.cs.allow-jit' \
+grep -q 'com.apple.security.cs.allow-jit' <<<"$(entitlements "$HELPERS/conch-daemon")" \
   || fail "$HELPERS/conch-daemon lacks com.apple.security.cs.allow-jit (JavaScriptCore and bun:ffi need it)"
-entitlements "$HELPERS/sox" | grep -q 'com.apple.security.device.audio-input' \
+grep -q 'com.apple.security.device.audio-input' <<<"$(entitlements "$HELPERS/sox")" \
   || fail "$HELPERS/sox lacks com.apple.security.device.audio-input (it would record silence)"
-entitlements "$HELPERS/conch-microphone" | grep -q 'com.apple.security.device.audio-input' \
+grep -q 'com.apple.security.device.audio-input' <<<"$(entitlements "$HELPERS/conch-microphone")" \
   || fail "$HELPERS/conch-microphone lacks com.apple.security.device.audio-input (it would record silence)"
 # macOS keeps conch Microphone's permission by this identifier and the name in its Info.plist.
-codesign -dv "$HELPERS/conch-microphone" 2>&1 | grep -qx 'Identifier=ai.blueprintstudio.conch.microphone' \
+grep -qx 'Identifier=ai.blueprintstudio.conch.microphone' <<<"$(codesign -dv "$HELPERS/conch-microphone" 2>&1)" \
   || fail "$HELPERS/conch-microphone is not signed as ai.blueprintstudio.conch.microphone"
-otool -s __TEXT __info_plist -v "$HELPERS/conch-microphone" | grep -q '<key>ConchHelperProtocol</key>' \
+grep -q '<key>ConchHelperProtocol</key>' <<<"$(otool -s __TEXT __info_plist -v "$HELPERS/conch-microphone")" \
   || fail "$HELPERS/conch-microphone has no embedded Info.plist with ConchHelperProtocol"
 
 vad="$RESOURCES/models/ggml-silero-v6.2.0.bin"
@@ -66,7 +68,7 @@ if tr ' ' '\n' <<<"$app_archs" | grep -qx "$(uname -m)"; then
   reported="$("$HELPERS/conch-daemon" version)"
   [[ "$reported" == "conch $version" ]] || fail "the bundled daemon reports '$reported', expected 'conch $version'"
   "$HELPERS/whisper-cli" --help >/dev/null 2>&1 || fail "$HELPERS/whisper-cli does not run"
-  "$HELPERS/sox" -h 2>/dev/null | grep -q 'AUDIO DEVICE DRIVERS: coreaudio' || fail "$HELPERS/sox has no CoreAudio driver"
+  grep -q 'AUDIO DEVICE DRIVERS: coreaudio' <<<"$("$HELPERS/sox" -h 2>/dev/null)" || fail "$HELPERS/sox has no CoreAudio driver"
   # The recorder's own conversion over 336 synthetic input shapes; it opens no microphone.
   "$HELPERS/conch-microphone" --mix-check --no-disclaim >/dev/null || fail "$HELPERS/conch-microphone failed its --mix-check"
   [[ "$(env -i PATH=/usr/bin:/bin "$HELPERS/tmux" -V)" == "tmux $TMUX_VERSION" ]] || fail "$HELPERS/tmux does not report tmux $TMUX_VERSION"
