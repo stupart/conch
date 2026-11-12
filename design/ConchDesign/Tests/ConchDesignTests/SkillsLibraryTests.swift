@@ -66,6 +66,12 @@ final class SkillsLibraryTests: XCTestCase {
             .init(title: "Claude · Work", isOff: true),
         ])
         XCTAssertEqual(SkillsLibrary.primaryLocation(skill)?.path, "/2", "the reader opens the copy that's on")
+        // Its line counts its copies, and says how many texts they hold only when they differ (2026-11-11).
+        XCTAssertEqual(SkillsLibrary.detail(skill), "kit plugin · 3 copies")
+        let drifted = InstalledSkillInfo(id: "skill:own:b", name: "b", origin: "user", locations: [
+            location("claude", "Default", path: "/a"), location("claude", "Work", path: "/b"),
+        ], versions: 2)
+        XCTAssertEqual(SkillsLibrary.detail(drifted), "2 copies, 2 versions")
     }
 
     func testAFilterNeedsEveryWordAndACopyInScope() {

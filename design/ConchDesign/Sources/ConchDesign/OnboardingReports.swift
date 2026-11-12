@@ -414,11 +414,11 @@ public enum OnboardingReports {
                                      starting: Bool = false) -> PracticeStartState {
         if starting { return .starting }
         switch microphone {
-        case .denied?, .notAsked?, .needsRelaunch?:
+        case .denied?, .notAsked?, .needsRelaunch?, .grantedToAnotherBuild?:
             return .needsMicrophone(action: (microphone?.action ?? .ask).title)
         case .restricted?:
             return .problem("Whoever manages this Mac has turned the microphone off for conch.")
-        case .granted?, .unknown?, nil:
+        case .granted?, .unknown?, .unanswered?, nil:
             break
         }
         switch speech?.state {

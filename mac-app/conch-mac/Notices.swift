@@ -40,7 +40,7 @@ struct WorkspaceNotices: View {
                 .font(ConchTypography.font(size: 11.5))
                 .textSelection(.enabled)
             Spacer(minLength: 8)
-            Button("Relaunch", action: store.relaunchForNewBuild)
+            Button("Relaunch") { store.relaunchForNewBuild() }
                 .buttonStyle(.plain)
                 .font(ConchTypography.font(size: 11, weight: .medium))
                 .foregroundStyle(ConchPalette.statusQuiet)
