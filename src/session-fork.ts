@@ -126,6 +126,8 @@ export interface ForkStartWatch {
   look(): void;
   /** Where it runs, in words: "Terminal (ttys012)". */
   where: string;
+  /** What it is, in an error: "the fork" when absent; "the new session" for an agent's start (session-start-wait.ts). */
+  noun?: string;
   sleep(ms: number): Promise<void>;
   now(): number;
 }
@@ -145,6 +147,7 @@ export async function awaitForkStart(
   let adopted: { forkId: string; label: string } | undefined;
   void watch.adopted.then((value) => { adopted = value; }, () => {});
   let seenRunning = false;
+  const noun = watch.noun ?? "the fork";
   const gone = async (how: string): Promise<never> => {
     const words = await watch.lastWords().catch(() => undefined);
     throw new Error(`${how}, in ${watch.where}${words ? `. Its tab shows:\n${words}` : ""}`);
@@ -156,10 +159,10 @@ export async function awaitForkStart(
     const state = await watch.state();
     if (state === "running") seenRunning = true;
     // Gone stays gone; a moment's grace only for a tab whose agent conch has not seen yet.
-    if (state === "gone" && (seenRunning || waited >= graceMs)) await gone("the fork's agent exited as soon as it started");
+    if (state === "gone" && (seenRunning || waited >= graceMs)) await gone(`${noun}'s agent exited as soon as it started`);
     if (waited >= withinMs) {
       // Still only its shell: the command never ran (a folder that has gone, a shell that stopped on an error).
-      if (state === "starting" && !seenRunning) await gone("the fork's tab never started its agent");
+      if (state === "starting" && !seenRunning) await gone(`${noun}'s tab never started its agent`);
       return { running: watch.where };
     }
     watch.look();

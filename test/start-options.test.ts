@@ -350,7 +350,10 @@ describe("conch start", () => {
     const source = read("src/daemon.ts");
     const from = source.indexOf("start: async (message) =>");
     expect(from).toBeGreaterThan(-1);
-    expect(source.slice(from, source.indexOf("folderTrusted:", from))).toContain("...message");
+    const handler = source.slice(from, source.indexOf("folderTrusted:", from));
+    // Everything the request carries, but what is the answer's rather than the launch's (an agent's `conch_start`).
+    expect(handler).toContain("const { wait, label, ...asked } = message;");
+    expect(handler).toContain("const request = { ...asked, bypassPermissions: cfg.bypassPermissions };");
   });
 });
 
