@@ -45,15 +45,16 @@ final class PermissionsTests: XCTestCase {
         XCTAssertEqual(ConchPermissionReading.automation([("Terminal", ok), ("System Events", denied)]), .denied)
         XCTAssertEqual(ConchPermissionReading.automation([("Terminal", unasked), ("System Events", denied)]), .denied)
         XCTAssertEqual(ConchPermissionReading.automation([("Terminal", ok), ("System Events", unasked)]), .notAsked)
-        // macOS answers only for a running app.
+        // macOS answers only for a running app: not a dead end, since Allow… opens it in the background and asks.
         XCTAssertEqual(
             ConchPermissionReading.automation([("Terminal", closed), ("System Events", ok)]),
-            .unknown("Terminal isn't open, so macOS can't say yet.")
+            .unanswered("Terminal isn't open, so macOS can't say yet.")
         )
         XCTAssertEqual(
             ConchPermissionReading.automation([("Terminal", closed), ("System Events", closed)]),
-            .unknown("Terminal and System Events aren't open, so macOS can't say yet.")
+            .unanswered("Terminal and System Events aren't open, so macOS can't say yet.")
         )
+        XCTAssertEqual(ConchPermissionStatus.unanswered("Terminal isn't open.").action, .ask)
         // A refusal from the app that is running still counts while the other is closed.
         XCTAssertEqual(ConchPermissionReading.automation([("Terminal", closed), ("System Events", denied)]), .denied)
         XCTAssertEqual(ConchPermissionReading.automation([("Terminal", -50), ("System Events", ok)]), .unknown("macOS didn't say."))
@@ -84,6 +85,106 @@ final class PermissionsTests: XCTestCase {
         XCTAssertEqual(ConchPermissionAction.openSettings.title, "Open Settings")
         XCTAssertEqual(ConchPermissionAction.reopen.title, "Reopen conch")
         XCTAssertEqual(ConchPermissionAction.ask.title, "Allow…")
+    }
+
+    // MARK: Every state can be finished (2026-11-11)
+
+    /// Tyler: "it says i need to connect permissions but can't." No state that isn't already settled is left without a
+    /// button, and every button has words for its help.
+    func testEveryUnsettledStateHasAButtonThatSaysWhatItDoes() {
+        let states: [ConchPermissionStatus] = [.denied, .notAsked, .needsRelaunch, .unanswered("Terminal isn't open."), .grantedToAnotherBuild]
+        for permission in ConchPermission.allCases {
+            for state in states {
+                let action = try? XCTUnwrap(state.action, "\(permission) \(state)")
+                XCTAssertNotNil(action, "\(permission): \(state) has no button")
+                XCTAssertFalse(action?.help(for: permission).isEmpty ?? true)
+            }
+        }
+        // Settled: nothing conch can do, and nothing offered.
+        for state in [ConchPermissionStatus.granted, .restricted] {
+            XCTAssertNil(state.action)
+            for permission in ConchPermission.allCases { XCTAssertNil(state.secondaryAction(for: permission)) }
+        }
+    }
+
+    /// A refused Automation prompt is never shown again, and System Settings can't add conch to Automation by hand:
+    /// Reset… beside Open Settings is the way out. The Microphone's list is the person's own too; Accessibility and
+    /// Screen Recording are switched in System Settings itself.
+    func testResetIsOfferedWhereMacOSWontAskAgain() {
+        XCTAssertEqual(ConchPermissionStatus.denied.secondaryAction(for: .automation), .reset)
+        XCTAssertEqual(ConchPermissionStatus.denied.secondaryAction(for: .microphone), .reset)
+        XCTAssertEqual(ConchPermissionStatus.grantedToAnotherBuild.secondaryAction(for: .automation), .reset)
+        XCTAssertNil(ConchPermissionStatus.denied.secondaryAction(for: .accessibility))
+        XCTAssertNil(ConchPermissionStatus.denied.secondaryAction(for: .screenRecording))
+        XCTAssertNil(ConchPermissionStatus.notAsked.secondaryAction(for: .automation), "not asked yet: Allow… asks")
+        XCTAssertEqual(ConchPermissionAction.reset.title, "Reset…")
+        // conch's own entry, in the list tccutil names, and nobody else's.
+        XCTAssertEqual(ConchPermission.automation.resetArguments(bundleId: "ai.example.conch"), ["reset", "AppleEvents", "ai.example.conch"])
+        XCTAssertEqual(ConchPermission.microphone.resetArguments(bundleId: "ai.example.conch"), ["reset", "Microphone", "ai.example.conch"])
+        let confirm = ConchPermission.automation.resetConfirmation
+        XCTAssertEqual(confirm.title, "Reset conch's Automation answer?")
+        XCTAssertTrue(confirm.message.contains("Terminal and System Events"))
+        XCTAssertTrue(confirm.message.contains("Nothing else changes."))
+    }
+
+    /// The hard states explain themselves under the status, in the words of the fix.
+    func testTheHardStatesSayWhatToDo() throws {
+        let automation = try XCTUnwrap(ConchPermissionStatus.denied.guidance(for: .automation))
+        XCTAssertTrue(automation.contains("won't ask again"))
+        XCTAssertTrue(automation.contains("can't add it by hand"))
+        XCTAssertTrue(automation.contains("Reset…"))
+        XCTAssertTrue(try XCTUnwrap(ConchPermissionStatus.denied.guidance(for: .microphone)).contains("Reset…"))
+        let stale = try XCTUnwrap(ConchPermissionStatus.grantedToAnotherBuild.guidance(for: .screenRecording))
+        XCTAssertTrue(stale.contains("off and on again"))
+        XCTAssertTrue(stale.contains("reopen conch"))
+        XCTAssertFalse(stale.contains("Reset…"), "Screen Recording has no reset")
+        XCTAssertTrue(try XCTUnwrap(ConchPermissionStatus.grantedToAnotherBuild.guidance(for: .automation)).contains("Reset…"))
+        XCTAssertTrue(try XCTUnwrap(ConchPermissionStatus.needsRelaunch.guidance(for: .accessibility)).contains("sessions keep running"))
+        XCTAssertNil(ConchPermissionStatus.granted.guidance(for: .microphone))
+        XCTAssertNil(ConchPermissionStatus.notAsked.guidance(for: .microphone))
+        XCTAssertEqual(ConchPermissionStatus.grantedToAnotherBuild.tone, .needsYou)
+        XCTAssertEqual(ConchPermissionStatus.grantedToAnotherBuild.action, .openSettings)
+    }
+
+    /// A no to this build after a yes to another is a grant System Settings shows on for the wrong build.
+    func testAGrantRememberedForAnotherBuildIsSaidAsThat() {
+        XCTAssertEqual(ConchPermissionGrantMemory.status(.denied, lastAllowedBuild: "old", thisBuild: "new"), .grantedToAnotherBuild)
+        XCTAssertEqual(ConchPermissionGrantMemory.status(.denied, lastAllowedBuild: "same", thisBuild: "same"), .denied)
+        XCTAssertEqual(ConchPermissionGrantMemory.status(.denied, lastAllowedBuild: nil, thisBuild: "new"), .denied)
+        XCTAssertEqual(ConchPermissionGrantMemory.status(.denied, lastAllowedBuild: "old", thisBuild: nil), .denied, "unsigned: nothing to compare")
+        // Only a no is reinterpreted: an answer macOS hasn't given, or a grant, is what it is.
+        XCTAssertEqual(ConchPermissionGrantMemory.status(.notAsked, lastAllowedBuild: "old", thisBuild: "new"), .notAsked)
+        XCTAssertEqual(ConchPermissionGrantMemory.status(.granted, lastAllowedBuild: "old", thisBuild: "new"), .granted)
+        // Remembered once allowed, a reopen away included; a no keeps what was.
+        XCTAssertEqual(ConchPermissionGrantMemory.remember(.granted, lastAllowedBuild: "old", thisBuild: "new"), "new")
+        XCTAssertEqual(ConchPermissionGrantMemory.remember(.needsRelaunch, lastAllowedBuild: nil, thisBuild: "new"), "new")
+        XCTAssertEqual(ConchPermissionGrantMemory.remember(.denied, lastAllowedBuild: "old", thisBuild: "new"), "old")
+        XCTAssertTrue(ConchPermissionGrantMemory.stillOff(.screenRecording).contains("off and on again, then reopen conch."))
+        XCTAssertTrue(ConchPermissionGrantMemory.stillOff(.microphone).hasSuffix("off and on again."))
+        XCTAssertNotNil(ConchPermissionHost.signatureCaution(adHoc: true))
+        XCTAssertNil(ConchPermissionHost.signatureCaution(adHoc: false))
+    }
+
+    /// A press macOS answers without a prompt says so, instead of doing nothing anyone can see.
+    func testAnAskThatShowedNoPromptSaysWhy() throws {
+        let ok: Int32 = 0, denied = ConchPermissionReading.notPermitted, closed = ConchPermissionReading.procNotFound
+        XCTAssertNil(ConchPermissionReading.automationAskOutcome([("Terminal", ok), ("System Events", ok)]))
+        XCTAssertTrue(try XCTUnwrap(ConchPermissionReading.automationAskOutcome([("Terminal", denied), ("System Events", ok)])).contains("Reset…"))
+        XCTAssertTrue(try XCTUnwrap(ConchPermissionReading.automationAskOutcome([("Terminal", ok), ("System Events", closed)])).hasPrefix("System Events wouldn't open"))
+        XCTAssertNotNil(ConchPermissionReading.automationAskOutcome([("Terminal", ConchPermissionReading.wouldRequireConsent)]))
+        XCTAssertNil(ConchPermissionReading.microphoneAskOutcome(granted: true, before: 0))
+        XCTAssertNil(ConchPermissionReading.microphoneAskOutcome(granted: false, before: 0), "asked and refused: the row says Not allowed")
+        XCTAssertNotNil(ConchPermissionReading.microphoneAskOutcome(granted: false, before: 2), "refused before: no prompt came")
+    }
+
+    /// A stale grant is off for the features that need it, and the window's line says the fix.
+    func testAStaleGrantIsATroubleWithItsFix() {
+        var statuses = Dictionary(uniqueKeysWithValues: ConchPermission.allCases.map { ($0, ConchPermissionStatus.granted) })
+        statuses[.microphone] = .grantedToAnotherBuild
+        let notice = ConchPermissionNotice.current(noted: [], statuses: statuses, daemonIsConchs: true)
+        XCTAssertEqual(notice?.trouble, .hearing)
+        XCTAssertEqual(notice?.action, .openSettings)
+        XCTAssertEqual(notice?.text, "Microphone is on for an earlier build of conch, not this one: turn conch off and on again in System Settings.")
     }
 
     /// Each Open Settings lands on the permission's own list, not Privacy & Security's front page.

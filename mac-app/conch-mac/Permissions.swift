@@ -4,6 +4,7 @@ import AVFoundation
 import ConchDesign
 import CoreGraphics
 import CoreServices
+import Security
 import SwiftUI
 
 /// Where conch's four macOS permissions stand, read without ever asking, and the one thing to do about each.
@@ -30,6 +31,12 @@ final class PermissionCenter: ObservableObject {
     @Published private(set) var dismissed: Set<ConchPermissionTrouble> = []
     /// What went wrong doing a row's one thing, said under it.
     @Published private(set) var notes: [ConchPermission: String] = [:]
+    /// What a row's press is doing, or did, said under it in conch's quiet voice (2026-11-11): every button now shows
+    /// something happen, where a press that macOS answered silently looked like a button that did nothing.
+    @Published private(set) var progress: [ConchPermission: String] = [:]
+    /// When System Settings was opened for each, so coming back to find one still off can say the off-and-on fix.
+    private var settingsOpened: [ConchPermission: Date] = [:]
+    private let defaults = UserDefaults.standard
 
     private var observers: [NSObjectProtocol] = []
     private var reading: Task<Void, Never>?
@@ -37,7 +44,8 @@ final class PermissionCenter: ObservableObject {
     private init() {
         // What this process can say at once, so a row doesn't say "Checking…" about what is already known; Automation's
         // answers, and a new process's, follow off the main thread.
-        statuses = Self.readHere()
+        statuses = [:]
+        statuses = shown(Self.readHere())
         observers.append(NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
         ) { [weak self] _ in
@@ -61,10 +69,37 @@ final class PermissionCenter: ObservableObject {
             if delay > .zero { try? await Task.sleep(for: delay) }
             guard !Task.isCancelled else { return }
             let read = await Task.detached(priority: .utility) { PermissionCenter.readAll() }.value
-            guard !Task.isCancelled, let self, statuses != read else { return }
-            statuses = read
+            guard !Task.isCancelled, let self else { return }
+            let next = shown(read)
+            if statuses != next { statuses = next }
         }
     }
+
+    /// What macOS said, as the rows show it: a no to this build after a yes to another is said as that
+    /// (`ConchPermissionGrantMemory`), and the build is remembered once it is allowed. A row whose System Settings was
+    /// opened says the off-and-on fix once conch is back and it is still off; one that is allowed loses its lines.
+    private func shown(_ read: [ConchPermission: ConchPermissionStatus]) -> [ConchPermission: ConchPermissionStatus] {
+        var shown = read
+        for (permission, status) in read {
+            let key = Self.allowedBuildKey(permission)
+            let remembered = defaults.string(forKey: key)
+            shown[permission] = ConchPermissionGrantMemory.status(status, lastAllowedBuild: remembered, thisBuild: BuildSignature.requirement)
+            let next = ConchPermissionGrantMemory.remember(status, lastAllowedBuild: remembered, thisBuild: BuildSignature.requirement)
+            if next != remembered { defaults.set(next, forKey: key) }
+            if status == .granted {
+                settingsOpened[permission] = nil
+                progress[permission] = nil
+                notes[permission] = nil
+            } else if let opened = settingsOpened[permission], -opened.timeIntervalSinceNow > 3, NSApp.isActive,
+                      shown[permission]?.isOff == true {
+                progress[permission] = ConchPermissionGrantMemory.stillOff(permission)
+            }
+        }
+        return shown
+    }
+
+    /// Where the signature of the build last allowed each permission is kept.
+    static func allowedBuildKey(_ permission: ConchPermission) -> String { "conch.permissions.allowedBuild.\(permission.rawValue)" }
 
     /// Something stopped for want of a permission: said in the window until the permission is on, or it is put away.
     func note(_ trouble: ConchPermissionTrouble) {
@@ -79,9 +114,11 @@ final class PermissionCenter: ObservableObject {
         noted.removeAll { $0 == trouble }
     }
 
-    /// A row's, or a notice's, one button: the only place conch asks macOS for anything, and only on a press.
+    /// A row's, or a notice's, one button: the only place conch asks macOS for anything, and only on a press. Each says
+    /// what it is doing under its row, or what went wrong.
     func perform(_ action: ConchPermissionAction, for permission: ConchPermission, store: StateStore) {
         notes[permission] = nil
+        progress[permission] = nil
         switch action {
         case .openSettings:
             // macOS lists an app under Accessibility and Screen Recording only once it has asked. Asking here puts conch
@@ -95,18 +132,33 @@ final class PermissionCenter: ObservableObject {
             default:
                 break
             }
+            settingsOpened[permission] = Date()
             openSettings(permission, store: store)
         case .ask:
             switch permission {
             case .microphone:
-                AVCaptureDevice.requestAccess(for: .audio) { _ in
-                    Task { @MainActor in PermissionCenter.shared.refresh() }
+                let before = AVCaptureDevice.authorizationStatus(for: .audio).rawValue
+                progress[permission] = "Asking macOS…"
+                AVCaptureDevice.requestAccess(for: .audio) { granted in
+                    Task { @MainActor in
+                        let center = PermissionCenter.shared
+                        center.progress[.microphone] = nil
+                        center.notes[.microphone] = ConchPermissionReading.microphoneAskOutcome(granted: granted, before: before)
+                        center.refresh()
+                    }
                 }
             case .automation:
-                // Off the main thread: each prompt waits for Tyler's answer.
-                Task.detached(priority: .userInitiated) {
-                    _ = PermissionCenter.automation(ask: true)
-                    await MainActor.run { PermissionCenter.shared.refresh() }
+                // macOS answers only for an app that is open: Terminal and System Events are opened in the background
+                // first, so the press is never one that macOS can't answer. Off the main thread: each prompt waits for
+                // Tyler's answer.
+                progress[permission] = "Asking macOS…"
+                Task { @MainActor in
+                    await PermissionCenter.openAutomationTargets()
+                    let answers = await Task.detached(priority: .userInitiated) { PermissionCenter.automation(ask: true) }.value
+                    let center = PermissionCenter.shared
+                    center.progress[.automation] = nil
+                    center.notes[.automation] = ConchPermissionReading.automationAskOutcome(answers)
+                    center.refresh()
                 }
             case .accessibility:
                 // macOS never says this wasn't asked; Settings is where it is turned on.
@@ -117,12 +169,92 @@ final class PermissionCenter: ObservableObject {
                 // this way the first time a Terminal window needs it, after a press that opened it; its row's reading
                 // is never `notAsked`, so nothing else reaches here. System Settings stays the row's own button, never opened unasked.
                 _ = ScreenRecordingGrant.granted()
+                progress[permission] = "Asked macOS. If nothing appeared, Open Settings and turn conch on under Screen Recording."
                 refresh(after: .seconds(1))
             }
         case .reopen:
-            // The store's own relaunch: a new conch up before this one quits.
+            // The store's own relaunch: the daemon handed over, then a new conch up before this one quits.
+            progress[permission] = "Reopening conch…"
             ScreenRecordingGrant.reopen(store) { [weak self] in
+                self?.progress[permission] = nil
                 self?.notes[permission] = "Couldn't reopen conch. Quit it from the menu bar and open it again."
+            }
+        case .reset:
+            reset(permission)
+        }
+    }
+
+    /// Reset…: macOS forgets conch's answer for one list (`tccutil reset <service> <bundle id>`), once Tyler confirms
+    /// what it does, and conch reads again. A refused prompt is never shown twice, and System Settings › Automation can't
+    /// add an app by hand: this is the only way back to macOS's question (2026-11-11). Only the person's own lists,
+    /// Automation's and the Microphone's (`isResettable`), which need no administrator.
+    private func reset(_ permission: ConchPermission) {
+        guard permission.isResettable else { return }
+        guard let bundleId = Bundle.main.bundleIdentifier else {
+            notes[permission] = "Couldn't reset: this build of conch has no bundle identifier."
+            return
+        }
+        let words = permission.resetConfirmation
+        let alert = NSAlert()
+        alert.messageText = words.title
+        alert.informativeText = words.message
+        alert.addButton(withTitle: "Reset")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        progress[permission] = "Resetting…"
+        let arguments = permission.resetArguments(bundleId: bundleId)
+        Task { @MainActor in
+            let failure = await Task.detached(priority: .userInitiated) { PermissionCenter.tccutil(arguments) }.value
+            let center = PermissionCenter.shared
+            center.progress[permission] = nil
+            if let failure {
+                center.notes[permission] = "Couldn't reset: \(failure)"
+            } else {
+                // Forgotten: whatever build was allowed before, macOS will ask about this one.
+                center.defaults.removeObject(forKey: Self.allowedBuildKey(permission))
+                center.progress[permission] = permission == .automation
+                    ? "Reset. conch asks the next time it needs Terminal, or press Allow… to be asked now."
+                    : "Reset. Press Allow… and macOS asks again."
+            }
+            center.refresh()
+        }
+    }
+
+    /// `/usr/bin/tccutil` with `arguments`, bounded at ten seconds: nil when it worked, else its own words.
+    nonisolated static func tccutil(_ arguments: [String]) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+        process.arguments = arguments
+        let errors = Pipe()
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = errors
+        process.standardInput = FileHandle.nullDevice
+        do { try process.run() } catch { return error.localizedDescription }
+        let deadline = Date().addingTimeInterval(10)
+        while process.isRunning, Date() < deadline { usleep(20_000) }
+        if process.isRunning {
+            process.terminate()
+            return "tccutil didn't answer."
+        }
+        guard process.terminationStatus != 0 else { return nil }
+        let said = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return said.isEmpty ? "tccutil stopped with status \(process.terminationStatus)." : said
+    }
+
+    /// Terminal and System Events, opened where they aren't running: in the background, hidden, not activated, so the
+    /// Automation ask has an app to ask about. Waits up to five seconds for each.
+    static func openAutomationTargets() async {
+        for target in automationTargets where NSRunningApplication.runningApplications(withBundleIdentifier: target.bundleId).isEmpty {
+            guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: target.bundleId) else { continue }
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = false
+            configuration.hides = true
+            configuration.addsToRecentItems = false
+            _ = try? await NSWorkspace.shared.openApplication(at: url, configuration: configuration)
+            let deadline = Date().addingTimeInterval(5)
+            while NSRunningApplication.runningApplications(withBundleIdentifier: target.bundleId).isEmpty, Date() < deadline {
+                try? await Task.sleep(for: .milliseconds(100))
             }
         }
     }
@@ -216,6 +348,37 @@ final class PermissionCenter: ObservableObject {
     }
 }
 
+/// This build's code signature, as macOS checks a privacy grant against it (2026-11-11): the designated requirement a
+/// grant is recorded with, and whether it is signed only for this Mac. Read once.
+enum BuildSignature {
+    static let requirement: String? = {
+        guard let code = staticCode() else { return nil }
+        var requirement: SecRequirement?
+        guard SecCodeCopyDesignatedRequirement(code, [], &requirement) == errSecSuccess, let requirement else { return nil }
+        var text: CFString?
+        guard SecRequirementCopyString(requirement, [], &text) == errSecSuccess else { return nil }
+        return text as String?
+    }()
+
+    /// Ad hoc: macOS sees each such rebuild as a new app.
+    static let isAdHoc: Bool = {
+        guard let code = staticCode() else { return false }
+        var information: CFDictionary?
+        guard SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &information) == errSecSuccess,
+              let values = information as? [String: Any],
+              let flags = values[kSecCodeInfoFlags as String] as? UInt32 else { return false }
+        return flags & SecCodeSignatureFlags.adhoc.rawValue != 0
+    }()
+
+    private static func staticCode() -> SecStaticCode? {
+        var code: SecCode?
+        guard SecCodeCopySelf([], &code) == errSecSuccess, let code else { return nil }
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess else { return nil }
+        return staticCode
+    }
+}
+
 extension DaemonHost {
     /// Who started the daemon conch talks to, which is who macOS asks about its typing and listening: "app" for conch's
     /// own, else the daemon's own record ("terminal", "launchd"); nil with no daemon, or no record.
@@ -249,7 +412,9 @@ struct ConchPermissionsView: View {
                 ConchPermissionList(
                     statuses: center.statuses,
                     notes: center.notes,
+                    progress: center.progress,
                     caution: ConchPermissionHost.caution(startedBy: daemon.startedBy),
+                    moreCautions: [ConchPermissionHost.signatureCaution(adHoc: BuildSignature.isAdHoc)].compactMap { $0 },
                     cautionAction: daemon.startedBy == "launchd" ? (title: "Let the app own it", run: { daemon.takeOverFromLaunchd() }) : nil,
                     titleFont: ConchTypography.font(size: 14, weight: .medium),
                     detailFont: ConchTypography.font(size: 12),
@@ -310,15 +475,10 @@ enum ScreenRecordingGrant {
         return false
     }
 
-    /// conch reopened, as a grant only reaches a new process: the store's own relaunch (a new instance up before this one
-    /// quits). `failed` when it didn't happen.
+    /// conch reopened, as a grant only reaches a new process: the store's own relaunch, which hands its daemon over
+    /// first and opens a new instance before this one quits. `failed` when it didn't happen.
     static func reopen(_ store: StateStore?, failed: @escaping @MainActor () -> Void) {
         guard let store else { return failed() }
-        store.relaunchForNewBuild()
-        Task { @MainActor in
-            // The failure is set from the open's own completion: a moment is plenty, and a reopen that worked has quit.
-            try? await Task.sleep(for: .seconds(5))
-            if store.relaunchFailure != nil { failed() }
-        }
+        store.relaunchForNewBuild(failed: failed)
     }
 }

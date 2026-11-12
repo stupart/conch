@@ -76,7 +76,7 @@ describe("never a prompt at launch: every answer is read silently, and asked for
 
   test("launch reads, and never performs", () => {
     const init = member(permissionsCode, "private init() {");
-    expect(init).toContain("statuses = Self.readHere()");
+    expect(init).toContain("statuses = shown(Self.readHere())");
     expect(init).toContain("refresh()");
     expect(init).not.toContain("perform(");
     const refresh = member(permissionsCode, "func refresh(after delay: Duration = .zero) {");
@@ -264,5 +264,74 @@ describe("the daemon names a keystroke macOS refused for Accessibility", () => {
     expect(trust).toContain("AXIsProcessTrusted: { args: [], returns: FFIType.bool }");
     expect(trust).not.toMatch(/WithOptions|Prompt"/);
     expect(read("src/daemon.ts")).toContain('import { accessibilityTrusted } from "./accessibility.ts";');
+  });
+});
+
+// Every state completable (2026-11-11). Tyler: "it says i need to connect permissions but can't." The rules for which
+// state gets which button are ConchDesign's (PermissionsTests); these pin what the buttons do in the app.
+describe("every button does something visible", () => {
+  test("Reset… asks first, then runs tccutil on conch's own entry, and says what happened", () => {
+    const reset = member(permissionsCode, "private func reset(_ permission: ConchPermission) {");
+    const confirm = reset.indexOf("alert.runModal() == .alertFirstButtonReturn");
+    const run = reset.indexOf("PermissionCenter.tccutil(arguments)");
+    expect(confirm).toBeGreaterThan(-1);
+    expect(run).toBeGreaterThan(confirm);
+    expect(reset).toContain("guard permission.isResettable else { return }");
+    expect(reset).toContain("let arguments = permission.resetArguments(bundleId: bundleId)");
+    expect(reset).toContain('center.notes[permission] = "Couldn\'t reset: \\(failure)"');
+    expect(reset).toContain('progress[permission] = "Resetting…"');
+    const tccutil = member(permissionsCode, "nonisolated static func tccutil(_ arguments: [String]) -> String? {");
+    expect(tccutil).toContain('URL(fileURLWithPath: "/usr/bin/tccutil")');
+    expect(tccutil).toContain("let deadline = Date().addingTimeInterval(10)");
+    // Nothing else in the app resets a permission.
+    expect(filesWith("tccutil")).toEqual(["Permissions.swift"]);
+    expect(perform).toContain("case .reset:\n            reset(permission)");
+  });
+
+  test("Automation's ask opens Terminal and System Events in the background first, and says when macOS showed nothing", () => {
+    const ask = perform.slice(perform.indexOf("case .automation:"), perform.indexOf("case .accessibility:\n                // macOS never says"));
+    expect(ask.indexOf("await PermissionCenter.openAutomationTargets()")).toBeLessThan(ask.indexOf("automation(ask: true)"));
+    expect(ask).toContain("ConchPermissionReading.automationAskOutcome(answers)");
+    const open = member(permissionsCode, "static func openAutomationTargets() async {");
+    expect(open).toContain("configuration.activates = false");
+    expect(open).toContain("configuration.hides = true");
+  });
+
+  test("each press puts words under its row while it works", () => {
+    for (const words of ['"Asking macOS…"', '"Reopening conch…"']) expect(perform).toContain(words);
+    expect(permissionsCode).toContain("progress: center.progress,");
+    expect(read("mac-app/conch-mac/OnboardingController.swift")).toContain("progress: center.progress[permission],");
+  });
+
+  test("coming back from System Settings to a switch still off says the off-and-on fix; the build allowed is remembered", () => {
+    const shown = member(permissionsCode, "private func shown(_ read: [ConchPermission: ConchPermissionStatus]) -> [ConchPermission: ConchPermissionStatus] {");
+    expect(shown).toContain("ConchPermissionGrantMemory.status(status, lastAllowedBuild: remembered, thisBuild: BuildSignature.requirement)");
+    expect(shown).toContain("ConchPermissionGrantMemory.stillOff(permission)");
+    expect(perform).toContain("settingsOpened[permission] = Date()");
+    expect(permissionsCode).toContain("SecCodeCopyDesignatedRequirement(code, [], &requirement)");
+    expect(permissionsCode).toContain("moreCautions: [ConchPermissionHost.signatureCaution(adHoc: BuildSignature.isAdHoc)]");
+  });
+});
+
+describe("Reopen conch hands the daemon over before the new conch looks for one", () => {
+  const store = code(read("mac-app/conch-mac/StateStore.swift"));
+  const relaunch = member(store, "func relaunchForNewBuild(failed: (@MainActor () -> Void)? = nil) {");
+  const host = code(read("mac-app/conch-mac/DaemonHost.swift"));
+
+  test("the daemon this app runs stops, and is gone, before the new instance opens", () => {
+    expect(relaunch.indexOf("await daemon?.stopForRelaunch()")).toBeGreaterThan(-1);
+    expect(relaunch.indexOf("await daemon?.stopForRelaunch()")).toBeLessThan(relaunch.indexOf("NSWorkspace.shared.openApplication(at: bundle"));
+    const stop = member(host, "func stopForRelaunch() async -> Bool {");
+    expect(stop).toContain("guard let task = process else { return false }");
+    expect(stop).toContain("while task.isRunning || socketAnswers(), Date() < deadline {");
+  });
+
+  test("this conch quits only once the new one is up; a reopen that failed brings its daemon back and says why", () => {
+    expect(relaunch).toContain("guard let error else { NSApp.terminate(nil); return }");
+    expect(relaunch).toContain("if handedOver { daemon?.start() }");
+    expect(relaunch).toContain("failed?()");
+    // The canvas, the permission rows and the stale-build line all reopen through it.
+    expect(code(read("mac-app/conch-mac/CanvasSend.swift"))).toContain("store.relaunchForNewBuild(failed: failed)");
+    expect(code(read("mac-app/conch-mac/Notices.swift"))).toContain('Button("Relaunch") { store.relaunchForNewBuild() }');
   });
 });

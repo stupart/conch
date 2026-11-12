@@ -1026,7 +1026,8 @@ struct OnboardingRootView: View {
             ForEach(Array(permissions.enumerated()), id: \.element) { index, permission in
                 if index > 0 { OnboardingDivider(leading: 54) }
                 ConchPermissionRow(permission: permission, status: center.statuses[permission] ?? .unknown("Checking…"),
-                                   note: center.notes[permission], onAction: { model.permissionAction(permission, $0) })
+                                   note: center.notes[permission], progress: center.progress[permission],
+                                   onAction: { model.permissionAction(permission, $0) })
                     .padding(.horizontal, ConchSpace.x4)
                     .padding(.vertical, 12)
             }
