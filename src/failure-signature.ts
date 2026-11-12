@@ -13,9 +13,12 @@ import { createHash } from "node:crypto";
  * left in a draft): evidence for the ticket's example, never part of its identity.
  */
 
-/** Where a failure record came from: the daemon, an app, a hook process, or an agent's call to one of conch's tools. */
-export type FailureOrigin = "daemon" | "mac" | "ios" | "hook" | "mcp";
-export const FAILURE_ORIGINS: readonly FailureOrigin[] = ["daemon", "mac", "ios", "hook", "mcp"];
+/**
+ * Where a failure record came from: the daemon, an app, a hook process, an agent's call to one of conch's tools, or a
+ * bug someone filed by hand with `conch bug` (bug-report.ts, 2026-11-11).
+ */
+export type FailureOrigin = "daemon" | "mac" | "ios" | "hook" | "mcp" | "bug";
+export const FAILURE_ORIGINS: readonly FailureOrigin[] = ["daemon", "mac", "ios", "hook", "mcp", "bug"];
 
 /** The longest normalized message a signature keeps: one sentence, as a ticket's title shows it. */
 export const SIGNATURE_MESSAGE_MAX = 160;

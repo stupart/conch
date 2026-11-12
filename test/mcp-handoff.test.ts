@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { AGENT_INSTRUCTIONS } from "../src/agent-instructions.ts";
 import { HANDOFF_FROM_ENV, HANDOFF_PARENT_ENV, handoffParentPid, type HandoffChild } from "../src/mcp-handoff.ts";
 import { MCP_TOOLSET, toolsetFingerprint } from "../src/mcp-toolset.ts";
-import { initializeResult, MCP_TOOLS, runMcpServer, type McpToolHandlers } from "../src/mcp.ts";
+import { initializeResult, MCP_LISTED_TOOLS, MCP_TOOLS, runMcpServer, type McpToolHandlers } from "../src/mcp.ts";
 
 /**
  * New tools for a session already running (mcp-handoff.ts): the server hands its stdio over to a fresh server of the
@@ -96,10 +96,12 @@ const newer = [...MCP_TOOLS.map(({ name, description }) => ({ name, description 
 
 describe("handing over to a newer conch's server", () => {
   test("this build's toolset is its tools' own, and the server says its list can change", () => {
-    expect(MCP_TOOLSET).toBe(toolsetFingerprint(MCP_TOOLS));
+    // The listed tools' (2026-11-11): what a session started now is given, and what the daemon publishes.
+    expect(MCP_TOOLSET).toBe(toolsetFingerprint(MCP_LISTED_TOOLS));
     expect(MCP_TOOLSET).toMatch(/^[0-9a-f]{16}$/);
     expect(toolsetFingerprint(newer)).not.toBe(MCP_TOOLSET);
-    expect(Object.keys(AGENT_INSTRUCTIONS.tools)).toContain("atlas_show");
+    // A tool that moved to the CLI is still one this server answers, for a session that has it.
+    expect(MCP_TOOLS.map((tool) => tool.name)).toContain("atlas_show");
     expect(initializeResult({ protocolVersion: "2025-06-18" }).capabilities).toEqual({ tools: { listChanged: true } });
   });
 
@@ -124,7 +126,7 @@ describe("handing over to a newer conch's server", () => {
   });
 
   test("the same tools installed (the daemon is the newer one): the fresh server goes, nothing changes, and it isn't tried again", async () => {
-    const fresh = freshServer(MCP_TOOLS.map(({ name, description }) => ({ name, description })));
+    const fresh = freshServer(MCP_LISTED_TOOLS.map(({ name, description }) => ({ name, description })));
     const c = client({ published: () => "newer-toolset", spawn: () => fresh.child });
     await c.start();
     expect(fresh.child.killed).toBe(true);
@@ -231,7 +233,7 @@ describe("the real server, end to end", () => {
     server.stdin.end();
     const out = (await new Response(server.stdout).text()).trim().split("\n").map((line) => JSON.parse(line));
     expect(out.map((message) => message.id)).toEqual([1, 2]);
-    expect(out[1].result.tools.map((tool: { name: string }) => tool.name)).toContain("atlas_show");
+    expect(out[1].result.tools.map((tool: { name: string }) => tool.name)).toEqual(["review_to_front", "conch_run"]);
     expect(out.some((message) => message.method === "notifications/tools/list_changed")).toBe(false);
     await server.exited;
   }, 30_000);

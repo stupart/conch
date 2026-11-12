@@ -17,6 +17,7 @@ import { startedSessionFor, type PendingStart } from "../src/session-start-wait.
 import { validateControlMessage, validateControlResponse, type ControlResult, type RuntimeControlMessage } from "../src/settings.ts";
 import type { ClaudeSessionSignIn } from "../src/claude-session-sign-ins.ts";
 import type { SessionInfo } from "../src/sessions.ts";
+import { AGENT_COMMANDS } from "../src/agent-instructions.ts";
 
 // 2026-11-10, Tyler, choosing which account a session runs on: "one session [uses] another account to create a fable
 // agent using conch for me since [this one is] out of credits". `conch_start` starts a session through the daemon, on a
@@ -82,7 +83,7 @@ describe("conch_start: a new session, on the account asked for, answered once it
       account: "Work Max",
       model: "fable",
       note: expect.stringContaining("conch sees it running"),
-      next: expect.stringContaining(`conch_transcript_tail {session: "new-1", wait: 30}`),
+      next: expect.stringContaining("conch agent tail new-1 --wait 30"),
     });
     expect(reply.json().next).toContain("until its status is waiting");
     // Long enough for the daemon's own launch and wait, and under Codex's 60 s tool timeout.
@@ -179,15 +180,19 @@ describe("conch_start: a new session, on the account asked for, answered once it
     expect(broken.sessions).toEqual([]);
   });
 
-  test("its schema and description say how to pick the account and how to bring back the answer", () => {
+  // 2026-11-11: `conch agent start` is how an agent starts one; the tool stays for sessions started before, saying so.
+  test("its schema stays, and the command's help says how to pick the account and how to bring back the answer", () => {
     const tool = MCP_TOOLS.find((one) => one.name === "conch_start")!;
     expect(Object.keys(tool.inputSchema.properties)).toEqual(["backend", "folder", "signIn", "model", "effort", "prompt", "host", "label"]);
-    expect(tool.description).toContain("at the user's request");
-    expect(tool.description).toContain("conch_sessions lists them as claudeSignIns");
-    expect(tool.description).toContain("Default's own, rotating login");
-    expect(tool.description).toContain("say it started only when this says so");
-    expect(tool.description).toContain("call conch_transcript_tail with its sessionId and wait: 30, passing back the cursor as since, until its status is waiting");
-    expect(tool.description.length).toBeLessThan(1_200);
+    expect(tool.description).toContain("`conch agent start");
+    const help = AGENT_COMMANDS.find((command) => command.name === "start")!;
+    expect(help.tool).toBe("conch_start");
+    expect(help.help).toContain("At the user's request");
+    expect(help.help).toContain("--sign-in is one of conch's Claude sign-ins by label or id (sessions lists them)");
+    expect(help.help).toContain("Default's own rotating login");
+    expect(help.help).toContain("say it started only from that");
+    expect(help.help).toContain("To bring back its answer, tail it with --wait");
+    expect(help.usage).toContain("--sign-in ACCOUNT");
   });
 });
 

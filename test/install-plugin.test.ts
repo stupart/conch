@@ -4,10 +4,12 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
 } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { AGENT_INSTRUCTIONS, renderAgentsMd, renderSkillMd } from "../src/agent-instructions.ts";
 import {
+  buildConchLauncher,
   buildInstallCommands,
   buildMcpInvocation,
   buildMcpJson,
@@ -405,6 +407,38 @@ describe("each harness can start the MCP server the marketplace serves from git"
       for (const launch of [codexLaunch(distRoot, root), claudeLaunch(distRoot, root)]) {
         expect({ command: launch.command, args: launch.args }).toEqual(expected);
       }
+    }
+    // 2026-11-11: and `conch agent …` from the session's shell runs the same conch, through the plugin's bin/conch.
+    expect(readFileSync(join(root, "source", "plugins", "conch", "bin", "conch"), "utf8")).toBe(buildConchLauncher(absBun, absCli));
+    expect(readFileSync(join(root, "compiled", "plugins", "conch", "bin", "conch"), "utf8")).toContain("exec '/opt/homebrew/bin/conch' \"$@\"");
+    expect(statSync(join(root, "compiled", "plugins", "conch", "bin", "conch")).mode & 0o111).toBe(0o111);
+  });
+
+  /**
+   * 2026-11-11: most of conch's tools are `conch agent …` commands, so a session's shell has to find conch. Claude Code
+   * puts a plugin's bin on its sessions' PATH; the marketplace's copy (served from git) finds the installed conch and
+   * never itself, and an install writes one naming the conch that installed it.
+   */
+  test("the plugin's bin/conch runs the installed conch, never itself, with the words it was given", async () => {
+    expect(buildConchLauncher("/absolute/runtime/bun", "/absolute/repo/src/cli.ts")).toContain("exec '/absolute/runtime/bun' 'run' '/absolute/repo/src/cli.ts' \"$@\"");
+    expect(buildConchLauncher("/odd path/it's/conch", "/$bunfs/root/src/cli.ts", true)).toContain("exec '/odd path/it'\\''s/conch' \"$@\"");
+    const template = join(import.meta.dir, "..", "plugin", "plugins", "conch", "bin", "conch");
+    expect(statSync(template).mode & 0o111).toBe(0o111);
+    const root = mkdtempSync("/tmp/conch-launcher-");
+    roots.push(root);
+    const other = join(root, "elsewhere");
+    await Bun.write(join(other, "conch"), "#!/bin/sh\necho \"installed conch: $*\"\n");
+    Bun.spawnSync(["chmod", "755", join(other, "conch")]);
+    const pluginBin = join(import.meta.dir, "..", "plugin", "plugins", "conch", "bin");
+    // Its own folder first on PATH, as it would be if Claude Code put it there: skipped, and the next conch runs.
+    const ran = Bun.spawnSync(["sh", template, "agent", "whoami"], { env: { PATH: `${pluginBin}:${other}:/usr/bin:/bin`, HOME: root }, stdout: "pipe", stderr: "pipe" });
+    expect(ran.exitCode).toBe(0);
+    expect(new TextDecoder().decode(ran.stdout).trim()).toBe("installed conch: agent whoami");
+    // With none on PATH it says how to install one, unless this Mac has one where it looks next.
+    if (!existsSync("/opt/homebrew/bin/conch") && !existsSync("/usr/local/bin/conch")) {
+      const none = Bun.spawnSync(["sh", template, "agent", "help"], { env: { PATH: `${pluginBin}:/usr/bin:/bin`, HOME: root }, stdout: "pipe", stderr: "pipe" });
+      expect(none.exitCode).toBe(127);
+      expect(new TextDecoder().decode(none.stderr)).toContain("could not find the conch binary");
     }
   });
 });

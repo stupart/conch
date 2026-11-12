@@ -1,0 +1,43 @@
+#!/bin/sh
+# conch's CLI for the sessions this plugin is loaded in: `conch agent …` (src/agent-cli.ts) and `conch bug`.
+#
+# Claude Code puts a plugin's bin on its sessions' PATH, so this is found even where the user's own PATH has no conch
+# (a GUI-launched Claude Code inherits no login shell's). It runs the conch that is installed, never itself: its own
+# folder is skipped. `conch install-plugin` replaces it with one naming the conch that installed the plugin.
+set -eu
+
+self_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+old_ifs=$IFS
+IFS=:
+for dir in $PATH; do
+  [ -n "$dir" ] || continue
+  real=$(CDPATH= cd -- "$dir" 2>/dev/null && pwd -P) || continue
+  [ "$real" = "$self_dir" ] && continue
+  if [ -x "$dir/conch" ] && [ ! -d "$dir/conch" ]; then
+    IFS=$old_ifs
+    exec "$dir/conch" "$@"
+  fi
+done
+IFS=$old_ifs
+
+for candidate in \
+  /opt/homebrew/bin/conch \
+  /usr/local/bin/conch \
+  "$HOME/.bun/bin/conch" \
+  "$HOME/.local/bin/conch"
+do
+  if [ -x "$candidate" ]; then
+    exec "$candidate" "$@"
+  fi
+done
+
+# A source checkout, for people running conch without installing it.
+for checkout in "$HOME/conch" "${CONCH_ROOT:-}"; do
+  if [ -n "$checkout" ] && [ -f "$checkout/src/cli.ts" ] && command -v bun >/dev/null 2>&1; then
+    exec bun run "$checkout/src/cli.ts" "$@"
+  fi
+done
+
+echo "conch: could not find the conch binary. Install it with:" >&2
+echo "  brew install stupart/tap/conch && conch setup" >&2
+exit 127

@@ -338,7 +338,7 @@ try {
   const second = await mcp.call("review_to_front", { summary: "Team photo swapped on the about section", link: shot });
   check(second.json?.outcome === "filed" && second.json?.version === 2 && second.json?.artifact === filed?.artifact,
     `the same temp file again is the same artifact's v2, though each copy is its own (v${second.json?.version})`);
-  check(second.json?.relabel?.label === "Remove Rowan from the Morrow site" && /conch_rename/.test(second.json?.relabel?.hint ?? ""),
+  check(second.json?.relabel?.label === "Remove Rowan from the Morrow site" && /conch agent rename/.test(second.json?.relabel?.hint ?? ""),
     `a label the work drifted from is offered for renaming: ${JSON.stringify(second.json?.relabel)}`);
 
   // The Mac app is heard from: its health check, then conch's window in front.

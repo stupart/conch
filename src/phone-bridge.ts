@@ -1,5 +1,6 @@
 import { decodeFailureTicketRequest } from "./failure-tickets.ts";
 import { decodeNoticeRequest } from "./notice-wire.ts";
+import { decodeBugReportRequest } from "./bug-report.ts";
 import { decodePushRegistration, PUSH_REGISTRATION_MAX_BYTES, type PushRegistration } from "./push-devices.ts";
 import { connect } from "node:net";
 import { ControlFrameError, ControlFrameReader, decodeControlText, encodeControlFrame, readControlBody } from "./control-framing.ts";
@@ -218,6 +219,8 @@ export const MAC_APP_ONLY_DECODERS: Readonly<Record<string, (value: unknown) => 
   // a phone sends itself no notices (an agent does, from this Mac), and only the Mac app says whether it showed one.
   // The phone's own part, its device token, has a route of its own (`/push-token`).
   decodeNoticeRequest,
+  // Bug reports (bug-report.ts) become failure tickets, which are the Mac's: a phone files none.
+  decodeBugReportRequest,
 };
 
 /** A control body only the Mac app may send, as the control server would read it (one envelope unwrapped, as it does). */

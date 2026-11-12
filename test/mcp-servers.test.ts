@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } fro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MCP_TOOL_NAMES, MCP_TOOLSET } from "../src/mcp-toolset.ts";
-import { createMcpToolHandlers, defaultMcpDependencies, dispatchJsonRpc, MCP_TOOLS, runMcpServer } from "../src/mcp.ts";
+import { createMcpToolHandlers, defaultMcpDependencies, dispatchJsonRpc, MCP_LISTED_TOOLS, MCP_TOOLS, runMcpServer } from "../src/mcp.ts";
 import {
   HANDOFF_GRACE_MS,
   isConchMcpCommand,
@@ -59,7 +59,7 @@ describe("each server's report", () => {
     });
     const file = join(dir, "6001.json");
     const read = () => JSON.parse(readFileSync(file, "utf8")) as McpServerReport;
-    expect(read()).toMatchObject({ v: 1, pid: 6001, sessionPid: 4321, toolset: MCP_TOOLSET, tools: MCP_TOOLS.map((tool) => tool.name), handoff: false });
+    expect(read()).toMatchObject({ v: 1, pid: 6001, sessionPid: 4321, toolset: MCP_TOOLSET, tools: MCP_LISTED_TOOLS.map((tool) => tool.name), handoff: false });
     expect(read()).not.toHaveProperty("client");
     feed.enqueue(new TextEncoder().encode(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { clientInfo: { name: "claude-code" } } })}\n`));
     for (let i = 0; i < 50 && !read().client; i += 1) await Bun.sleep(5);
@@ -103,14 +103,17 @@ describe("which sessions can't get the current tools", () => {
   });
 
   test("a reporting server with an older toolset is stale once it has had its chance to hand over; a hand-off's server at once", () => {
-    const older = report({ toolset: "older", tools: MCP_TOOL_NAMES.filter((name) => name !== "conch_fork") });
+    // 2026-11-11: a server from before `conch_run` has every tool that moved to the CLI, and only lacks that one.
+    const older = report({ toolset: "older", tools: MCP_TOOLS.map((tool) => tool.name).filter((name) => name !== "conch_run") });
     expect(judge({ reports: [older], since: NOW - 60_000 })).toBeUndefined();
     expect(judge({ reports: [older], since: NOW - HANDOFF_GRACE_MS - 1 })).toMatchObject({
-      missing: ["conch_fork"], basis: "reported", why: expect.stringContaining("could take a newer conch's tools but hasn't"),
+      missing: ["conch_run"], basis: "reported", why: expect.stringContaining("could take a newer conch's tools but hasn't"),
     });
     expect(judge({ reports: [{ ...older, handoff: false }], since: NOW - 60_000 })).toMatchObject({
-      missing: ["conch_fork"], why: expect.stringContaining("started by a hand-off"),
+      missing: ["conch_run"], why: expect.stringContaining("started by a hand-off"),
     });
+    // Holding more than is listed now (a hand-off's server still lists the moved tools for its session) is not stale.
+    expect(judge({ reports: [report({ toolset: "older", tools: MCP_TOOLS.map((tool) => tool.name) })], since: NOW - HANDOFF_GRACE_MS - 1 })).toBeUndefined();
     // After a hand-off the fresh server's report is the one that counts.
     expect(judge({ reports: [older, report({ pid: 5002, startedAt: NOW - 1_000 })], since: NOW - HANDOFF_GRACE_MS - 1 })).toBeUndefined();
   });
@@ -118,7 +121,8 @@ describe("which sessions can't get the current tools", () => {
   test("a server too old to report, started before the hand-off, is stale with what it is missing by when it started", () => {
     const stale = judge({ processes: [{ pid: 94816, ppid: 4321, startedAt: Date.parse("2026-09-22T12:14:19Z") }], since: NOW - 60_000 });
     expect(stale).toMatchObject({ basis: "estimated", serverStartedAt: "2026-09-22T12:14:19.000Z" });
-    expect(stale!.missing).toEqual(expect.arrayContaining(["browser_open", "browser_close", "atlas_show", "conch_fork"]));
+    // What it lacks of what a session is listed now: the CLI's tool. Everything else it has, or is a command now.
+    expect(stale!.missing).toEqual(["conch_run"]);
     expect(stale!.missing).not.toContain("review_to_front");
     expect(stale!.why).toContain("before a running server could take a newer conch's tools");
     expect(stale!.fix).toContain("restart this session");
@@ -153,7 +157,7 @@ describe("which sessions can't get the current tools", () => {
     });
     const response = await dispatchJsonRpc({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "conch_sessions", arguments: {} } }, handlers);
     const listed = JSON.parse((response?.result as { content: Array<{ text: string }> }).content[0]!.text);
-    expect(listed.sessions.find((one: { id: string }) => one.id === "a").toolsStale.missing).toContain("conch_fork");
+    expect(listed.sessions.find((one: { id: string }) => one.id === "a").toolsStale.missing).toContain("conch_run");
     expect(listed.sessions.find((one: { id: string }) => one.id === "b")).not.toHaveProperty("toolsStale");
   });
 

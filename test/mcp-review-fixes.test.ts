@@ -12,6 +12,7 @@ import {
   type McpToolHandlers,
 } from "../src/mcp.ts";
 import { McpCallLog, readMcpCalls } from "../src/mcp-usage.ts";
+import { AGENT_COMMANDS } from "../src/agent-instructions.ts";
 import { FORK_WAIT_MS } from "../src/session-fork.ts";
 import { readDeliverableKind } from "../src/deliverables.ts";
 import { assistantTail, tailCursor, waitForTail } from "../src/transcript-tail.ts";
@@ -128,12 +129,15 @@ describe("conch_fork: the daemon's fork, answered once it is running", () => {
     expect((await call(handlers, "conch_fork", { label: "x".repeat(81) })).text).toContain("label must be at most 80 characters");
   });
 
-  test("its schema and description say what it does and where the old way went wrong", () => {
+  // 2026-11-11: `conch agent fork`; the tool keeps its schema for sessions that still have it.
+  test("its schema stays, and the command's help says what it does and where the old way went wrong", () => {
     const tool = MCP_TOOLS.find((one) => one.name === "conch_fork")!;
     expect(Object.keys(tool.inputSchema.properties)).toEqual(["session", "label"]);
-    expect(tool.description).toContain("under the same account, in the same folder and with the same flags");
-    expect(tool.description).toContain("say a fork is open only when this says so");
-    expect(tool.description).toContain("rather than `conch start --resume`");
+    expect(tool.description).toContain("`conch agent fork [session] [--label L]`");
+    const fork = AGENT_COMMANDS.find((command) => command.name === "fork")!;
+    expect(fork.help).toContain("same account, folder and flags, holding its deliverables");
+    expect(fork.help).toContain("say a fork is open only when it says so");
+    expect(fork.help).toContain("rather than `conch start --resume`");
   });
 });
 
