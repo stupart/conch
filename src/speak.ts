@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { conchHome } from "./home.ts";
+import { readKeptFile } from "./kept-file.ts";
 import { dirname, join } from "node:path";
 import {
   audioTimeoutMs,
@@ -343,15 +344,16 @@ function voiceOverridePath(options: VoiceOverrideOptions): string {
 
 /** Read the tiny label-keyed override file afresh so short-lived CLI/hooks see changes. */
 export function voiceOverrides(options: VoiceOverrideOptions = {}): Record<string, string> {
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(voiceOverridePath(options), "utf8"));
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    return Object.fromEntries(
-      Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
-    );
-  } catch {
-    return {};
-  }
+  // Read again only when the file moved (kept-file.ts): every spoken label asks, and the file is usually absent.
+  return { ...readKeptFile(voiceOverridePath(options), parseVoiceOverrides, {}) };
+}
+
+function parseVoiceOverrides(text: string): Record<string, string> {
+  const parsed: unknown = JSON.parse(text);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  return Object.fromEntries(
+    Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+  );
 }
 
 function writeVoiceOverrides(

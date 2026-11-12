@@ -26,6 +26,7 @@ import { readCodexThreads } from "./codex-threads.ts";
 import { claudeTranscriptGuess, hasConversation, liveTranscriptPath, readClaudeTitles, readClaudeTitlesIfThere, readContinuedIn } from "./claude-title.ts";
 import { parseWindowKey, processParentTable, windowKey, windowPidFromAncestry } from "./window-key.ts";
 import { noteRegistryEntries } from "./transcript-paths.ts";
+import { readKeptFile } from "./kept-file.ts";
 import { HELP_SESSION_LABEL, helpSessionDir } from "./help-session.ts";
 
 const LABELS_FILE = join(conchHome(), ".config/conch/labels.json");
@@ -648,20 +649,21 @@ export function normalizeSessionLabel(label: string): string {
 
 /** Read conch-owned labels; Claude's frequently rewritten registry remains read-only. */
 export function labelOverrides(options: LabelOverrideOptions = {}): Record<string, string> {
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(labelOverridePath(options), "utf8"));
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const entries: Array<[string, string]> = [];
-    for (const [sessionId, value] of Object.entries(parsed)) {
-      if (!sessionId || typeof value !== "string") continue;
-      try {
-        entries.push([sessionId, normalizeSessionLabel(value)]);
-      } catch {}
-    }
-    return Object.fromEntries(entries);
-  } catch {
-    return {};
+  // Read again only when the file moved (kept-file.ts): every row's label asks, on every render.
+  return { ...readKeptFile(labelOverridePath(options), parseLabelOverrides, {}) };
+}
+
+function parseLabelOverrides(text: string): Record<string, string> {
+  const parsed: unknown = JSON.parse(text);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const entries: Array<[string, string]> = [];
+  for (const [sessionId, value] of Object.entries(parsed)) {
+    if (!sessionId || typeof value !== "string") continue;
+    try {
+      entries.push([sessionId, normalizeSessionLabel(value)]);
+    } catch {}
   }
+  return Object.fromEntries(entries);
 }
 
 function writeLabelOverrides(
@@ -727,19 +729,21 @@ function workingFoldersPath(path?: string): string {
 }
 
 export function workingFolderOverrides(path?: string): Record<string, string[]> {
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(workingFoldersPath(path), "utf8"));
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const entries: Array<[string, string[]]> = [];
-    for (const [sessionId, value] of Object.entries(parsed)) {
-      if (!sessionId || !Array.isArray(value)) continue;
-      const folders = value.filter((folder): folder is string => typeof folder === "string" && folder.startsWith("/"));
-      if (folders.length) entries.push([sessionId, folders]);
-    }
-    return Object.fromEntries(entries);
-  } catch {
-    return {};
+  // Read again only when the file moved (kept-file.ts); copied, since rows carry the arrays.
+  const kept = readKeptFile(workingFoldersPath(path), parseWorkingFolders, {});
+  return Object.fromEntries(Object.entries(kept).map(([sessionId, folders]) => [sessionId, [...folders]]));
+}
+
+function parseWorkingFolders(text: string): Record<string, string[]> {
+  const parsed: unknown = JSON.parse(text);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const entries: Array<[string, string[]]> = [];
+  for (const [sessionId, value] of Object.entries(parsed)) {
+    if (!sessionId || !Array.isArray(value)) continue;
+    const folders = value.filter((folder): folder is string => typeof folder === "string" && folder.startsWith("/"));
+    if (folders.length) entries.push([sessionId, folders]);
   }
+  return Object.fromEntries(entries);
 }
 
 /** Absolute paths; `conch_working_folders` has checked they exist. */

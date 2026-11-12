@@ -244,6 +244,7 @@ import {
   type CodexTurnMemory,
 } from "./codex-threads.ts";
 import { watchChangingPaths, watchSessionSources } from "./session-watch.ts";
+import { settleKeptFiles } from "./kept-file.ts";
 import { daemonStateFromUnknown, readState, writeState } from "./daemon-state.ts";
 export { daemonStateFromUnknown } from "./daemon-state.ts";
 import {
@@ -2786,6 +2787,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     breadcrumb("panel: rows and the reply");
     const visible = [...live, ...nested];
     const liveState = getLiveState(); // what conch is doing right now, if anything
+    // Every row's label and voice, each file looked at once (kept-file.ts).
+    settleKeptFiles();
     const orderedRows = buildPanelRows({
       sessions: visible,
       sessionStates,
@@ -2953,6 +2956,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     // Registry and transcript reads can overlap; only the newest complete model
     // may reach the renderer.
     if (current()) {
+      // The model and the published state name every row and its voice: each file looked at once (kept-file.ts).
+      settleKeptFiles();
       // Partial transcription and reading progress can change while the registry
       // or transcript is being read. Sample at commit so an older full render
       // cannot overwrite the lightweight publisher with stale conversation data.
