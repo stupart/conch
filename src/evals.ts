@@ -460,6 +460,8 @@ export interface MachineNote {
   /** 1-minute load average when the run started and ended. */
   loadStart: number;
   loadEnd?: number;
+  /** The 1-, 5- and 15-minute load averages at the start and the end: how busy the Mac had been, not only that minute. */
+  loadAverages?: { start: number[]; end?: number[] };
   /** Why the numbers should, or shouldn't, be trusted as a baseline. */
   note?: string;
   /** The harness's settings, when compute or latency ran. */
@@ -498,6 +500,7 @@ export function machineNote(now = new Date()): MachineNote {
     cores: cpus().length,
     ...(Number.isFinite(memory) && memory > 0 ? { memoryGB: Math.round(memory / 2 ** 30) } : {}),
     loadStart: Math.round(loadavg()[0]! * 100) / 100,
+    loadAverages: { start: loadavg().map((value) => Math.round(value * 100) / 100) },
   };
 }
 
@@ -554,6 +557,11 @@ export function baselineFrom(report: EvalReport, previous: EvalReport | null, fo
   const busy = machineTooBusy(report.machine) && !force;
   const pick = (section: "compute" | "latency") => {
     if (!report[section]) return previous?.[section];
+    // The live daemon's, app's and MCP servers' `ps` numbers are this Mac's moment, never a baseline.
+    if (section === "compute" && report.compute && "live" in report.compute) {
+      const { live: _live, ...rest } = report.compute;
+      report = { ...report, compute: rest };
+    }
     if (busy) {
       kept.push(section);
       return previous?.[section];
@@ -825,6 +833,7 @@ export async function runEvalsCli(argv: readonly string[]): Promise<number> {
     if (measured.latency) report.latency = measured.latency;
   }
   report.machine.loadEnd = Math.round(loadavg()[0]! * 100) / 100;
+  report.machine.loadAverages = { start: report.machine.loadAverages?.start ?? [], end: loadavg().map((value) => Math.round(value * 100) / 100) };
   if (report.compute || report.latency) report.machine.run = { seconds: options.seconds, sessions: options.sessions };
   if ((report.compute || report.latency) && machineTooBusy(report.machine)) report.machine.note = `busy: load ${Math.max(report.machine.loadStart, report.machine.loadEnd)} on ${report.machine.cores} cores; compute and latency are inflated`;
 
