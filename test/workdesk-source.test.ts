@@ -150,10 +150,11 @@ describe("watching an agent work", () => {
     const type = between(execute, 'case "type":', 'case "screenshot":');
     expect(type.indexOf("await markTarget(target, kind: .type)")).toBeLessThan(type.indexOf('op: "type"'));
     // A password field is refused before anything is marked or typed.
-    expect(type).toContain("if let refused = await markTarget(target, kind: .type) { return answer(request, error: refused) }");
+    expect(type).toContain("if case let .failure(refused) = await markTarget(target, kind: .type) { return answer(request, error: refused.words) }");
     const mark = between(workbench, "private func markTarget(", "private func endMark(");
     expect(mark).toContain('op: kind == .type ? "locate-field" : "locate"');
-    expect(mark).toContain("Workbench.markRect(box: box, scale: Double(view.pageZoom * view.magnification))");
+    expect(mark).toContain('found.rect = Workbench.markRect(box: Self.numbers(value["box"]), scale: scale)');
+    expect(mark).toContain("let scale = Double(view.pageZoom * view.magnification)");
     expect(between(workbench, "struct WorkbenchPane: View {", "enum WorkbenchNewTab {")).toContain(".overlay { WorkbenchMarks(mark: page.mark) }");
     // The marks never take a click from the page beneath.
     expect(between(views, "public struct WorkbenchMarks: View {", "public struct WorkbenchBlankPage: View {")).toContain(".allowsHitTesting(false)");
