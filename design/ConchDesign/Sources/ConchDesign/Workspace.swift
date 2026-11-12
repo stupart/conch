@@ -458,14 +458,55 @@ extension Workdesk {
 /// nothing visible with Figma's other pages. The host rule is the daemon's own for `design`
 /// (`inferDeliverableKind`); keyed on the link, not the kind, because an agent may call a
 /// PNG mockup a design, and an older daemon sends no kind at all.
+///
+/// Shown where it was published (2026-11-11). Tyler: "Make figma show in the deliverables area instead of automatically
+/// sending me to figma." A design's pill, its pick in the menu or the panel, handed the file to the Figma app; now it opens
+/// in the deliverable pane (and the panel, and the phone) as Figma's embed (`embedPage`), with "Open in Figma" (⌘3) as the
+/// one way out to the app. The embed is Figma's viewer for a file, on the frame the link names, and it is signed in with
+/// conch's browser profile (the review pane's store), so a private file shows once Tyler has signed in to Figma there.
 public enum FigmaLink {
     private static let fileKinds: Set<String> = ["design", "file", "proto", "board"]
 
-    public static func appURL(for url: URL) -> URL? {
+    /// Whether a link is a Figma file: a design, the older `/file/`, a prototype or a FigJam board, on figma.com.
+    public static func isFile(_ url: URL) -> Bool {
         guard let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http",
               let host = url.host?.lowercased(), host == "figma.com" || host.hasSuffix(".figma.com"),
-              url.pathComponents.count > 2, fileKinds.contains(url.pathComponents[1]),
-              var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+              url.pathComponents.count > 2
+        else { return false }
+        return fileKinds.contains(url.pathComponents[1])
+    }
+
+    /// Figma's embed of a file (`https://www.figma.com/embed?embed_host=conch&url=…`): its viewer, on the link's frame.
+    /// Loaded as a page of its own it only sends you on to the file (measured 2026-09-25), so it is framed (`embedPage`).
+    public static func embedURL(for url: URL) -> URL? {
+        guard isFile(url), var parts = URLComponents(string: "https://www.figma.com/embed") else { return nil }
+        parts.queryItems = [URLQueryItem(name: "embed_host", value: "conch"), URLQueryItem(name: "url", value: url.absoluteString)]
+        // `URLComponents` leaves `/`, `:`, `?` and `=` in a query value as they are, and `&` and `+`; the file's own address
+        // goes in whole, every reserved character encoded, so its node id and options stay its own.
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
+        parts.percentEncodedQuery = "embed_host=conch&url=" + (url.absoluteString.addingPercentEncoding(withAllowedCharacters: allowed) ?? "")
+        return parts.url
+    }
+
+    /// Where the embed's frame is put: a page at figma.com's own address. WebKit keeps a frame from another site away
+    /// from its cookies, so an embed framed by any other page is signed out, and a private file is Figma's sign-in; framed
+    /// at figma.com it is the site's own, signed in as the profile is. The page is nothing but the frame.
+    public static let embedBase = URL(string: "https://www.figma.com/")!
+
+    /// The page that shows a Figma file in conch: its embed, filling the page, on conch's ground while it loads.
+    public static func embedPage(for url: URL) -> String? {
+        guard let embed = embedURL(for: url) else { return nil }
+        let source = embed.absoluteString.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "\"", with: "&quot;")
+        return """
+        <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">\
+        <title>Figma</title><style>html,body{margin:0;height:100%;background:#1e1e1e}\
+        iframe{display:block;border:0;width:100%;height:100%}</style></head>\
+        <body><iframe src="\(source)" allowfullscreen></iframe></body></html>
+        """
+    }
+
+    public static func appURL(for url: URL) -> URL? {
+        guard isFile(url), var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             return nil
         }
         let kind = url.pathComponents[1]

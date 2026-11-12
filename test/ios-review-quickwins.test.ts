@@ -61,9 +61,12 @@ describe("Next walks the ready reviews by the Mac pill's rule", () => {
         read("design/ConchDesign/Sources/ConchDesign/ReviewIdentity.swift"),
         "public enum ReviewIdentity {",
       );
+      // ReviewScene reads a Figma file by its link (2026-11-11).
+      const figma = declaration(read("design/ConchDesign/Sources/ConchDesign/Workspace.swift"), "public enum FigmaLink {");
       const queue = declaration(sheet, "enum ReviewQueue {");
       const out = runSwift([
         scene,
+        figma,
         identity,
         queue,
         // published is nil throughout: these are an older daemon's rows, and the whole point
@@ -322,8 +325,9 @@ describe("the viewers", () => {
     expect(controls).toContain("page.view?.goBack()");
     expect(controls).toContain(".disabled(!page.canGoBack)");
     expect(controls).toContain("page.reload(url)");
-    expect(controls).toContain("bridge.openLink(page.view?.url ?? url, sessionId: sessionId) { linkFailure = $0 }");
-    expect(controls).toContain('Label("Open in Safari", systemImage: "safari")');
+    expect(controls).toContain("bridge.openLink(figma ? url : page.view?.url ?? url, sessionId: sessionId) { linkFailure = $0 }");
+    // A Figma file's embed goes out to Figma, by the file's own link (2026-11-11).
+    expect(controls).toContain('Label(figma ? "Open in Figma" : "Open in Safari", systemImage: figma ? "arrow.up.forward.app" : "safari")');
   });
 
   test("transcript and document text can be selected and copied", () => {
