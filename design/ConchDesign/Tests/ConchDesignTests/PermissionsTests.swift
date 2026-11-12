@@ -114,6 +114,9 @@ final class PermissionsTests: XCTestCase {
         XCTAssertEqual(ConchPermissionStatus.denied.secondaryAction(for: .automation), .reset)
         XCTAssertEqual(ConchPermissionStatus.denied.secondaryAction(for: .microphone), .reset)
         XCTAssertEqual(ConchPermissionStatus.grantedToAnotherBuild.secondaryAction(for: .automation), .reset)
+        // Switched off and on for this build, Screen Recording and Accessibility reach conch on reopening.
+        XCTAssertEqual(ConchPermissionStatus.grantedToAnotherBuild.secondaryAction(for: .screenRecording), .reopen)
+        XCTAssertEqual(ConchPermissionAction.reopen.workingTitle, "Reopening…")
         XCTAssertNil(ConchPermissionStatus.denied.secondaryAction(for: .accessibility))
         XCTAssertNil(ConchPermissionStatus.denied.secondaryAction(for: .screenRecording))
         XCTAssertNil(ConchPermissionStatus.notAsked.secondaryAction(for: .automation), "not asked yet: Allow… asks")
@@ -131,15 +134,22 @@ final class PermissionsTests: XCTestCase {
     func testTheHardStatesSayWhatToDo() throws {
         let automation = try XCTUnwrap(ConchPermissionStatus.denied.guidance(for: .automation))
         XCTAssertTrue(automation.contains("won't ask again"))
-        XCTAssertTrue(automation.contains("can't add it by hand"))
+        XCTAssertTrue(automation.contains("isn't listed there"))
         XCTAssertTrue(automation.contains("Reset…"))
+        // One line's worth: none of them runs past two lines of the row's text column.
+        for permission in ConchPermission.allCases {
+            for state in [ConchPermissionStatus.denied, .grantedToAnotherBuild, .needsRelaunch] {
+                XCTAssertLessThanOrEqual(state.guidance(for: permission)?.count ?? 0, 120, "\(permission) \(state)")
+            }
+        }
         XCTAssertTrue(try XCTUnwrap(ConchPermissionStatus.denied.guidance(for: .microphone)).contains("Reset…"))
         let stale = try XCTUnwrap(ConchPermissionStatus.grantedToAnotherBuild.guidance(for: .screenRecording))
         XCTAssertTrue(stale.contains("off and on again"))
-        XCTAssertTrue(stale.contains("reopen conch"))
         XCTAssertFalse(stale.contains("Reset…"), "Screen Recording has no reset")
         XCTAssertTrue(try XCTUnwrap(ConchPermissionStatus.grantedToAnotherBuild.guidance(for: .automation)).contains("Reset…"))
         XCTAssertTrue(try XCTUnwrap(ConchPermissionStatus.needsRelaunch.guidance(for: .accessibility)).contains("sessions keep running"))
+        XCTAssertNil(ConchPermissionStatus.unanswered("Terminal isn't open.").guidance(for: .automation), "the label and Allow… say it")
+        XCTAssertNil(ConchPermissionStatus.restricted.guidance(for: .microphone), "the label says it")
         XCTAssertNil(ConchPermissionStatus.granted.guidance(for: .microphone))
         XCTAssertNil(ConchPermissionStatus.notAsked.guidance(for: .microphone))
         XCTAssertEqual(ConchPermissionStatus.grantedToAnotherBuild.tone, .needsYou)
@@ -159,8 +169,8 @@ final class PermissionsTests: XCTestCase {
         XCTAssertEqual(ConchPermissionGrantMemory.remember(.granted, lastAllowedBuild: "old", thisBuild: "new"), "new")
         XCTAssertEqual(ConchPermissionGrantMemory.remember(.needsRelaunch, lastAllowedBuild: nil, thisBuild: "new"), "new")
         XCTAssertEqual(ConchPermissionGrantMemory.remember(.denied, lastAllowedBuild: "old", thisBuild: "new"), "old")
-        XCTAssertTrue(ConchPermissionGrantMemory.stillOff(.screenRecording).contains("off and on again, then reopen conch."))
-        XCTAssertTrue(ConchPermissionGrantMemory.stillOff(.microphone).hasSuffix("off and on again."))
+        XCTAssertTrue(ConchPermissionGrantMemory.stillOff(.screenRecording).hasSuffix("turn it off and on again."))
+        XCTAssertTrue(ConchPermissionGrantMemory.stillOff(.microphone).contains("under Microphone"))
         XCTAssertNotNil(ConchPermissionHost.signatureCaution(adHoc: true))
         XCTAssertNil(ConchPermissionHost.signatureCaution(adHoc: false))
     }
@@ -172,9 +182,9 @@ final class PermissionsTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(ConchPermissionReading.automationAskOutcome([("Terminal", denied), ("System Events", ok)])).contains("Reset…"))
         XCTAssertTrue(try XCTUnwrap(ConchPermissionReading.automationAskOutcome([("Terminal", ok), ("System Events", closed)])).hasPrefix("System Events wouldn't open"))
         XCTAssertNotNil(ConchPermissionReading.automationAskOutcome([("Terminal", ConchPermissionReading.wouldRequireConsent)]))
-        XCTAssertNil(ConchPermissionReading.microphoneAskOutcome(granted: true, before: 0))
-        XCTAssertNil(ConchPermissionReading.microphoneAskOutcome(granted: false, before: 0), "asked and refused: the row says Not allowed")
-        XCTAssertNotNil(ConchPermissionReading.microphoneAskOutcome(granted: false, before: 2), "refused before: no prompt came")
+        XCTAssertNil(ConchPermissionReading.microphoneAskOutcome(granted: true, askedBefore: false))
+        XCTAssertNil(ConchPermissionReading.microphoneAskOutcome(granted: false, askedBefore: false), "asked and refused: the row says Not allowed")
+        XCTAssertNotNil(ConchPermissionReading.microphoneAskOutcome(granted: false, askedBefore: true), "refused before: no prompt came")
     }
 
     /// A stale grant is off for the features that need it, and the window's line says the fix.
@@ -185,6 +195,9 @@ final class PermissionsTests: XCTestCase {
         XCTAssertEqual(notice?.trouble, .hearing)
         XCTAssertEqual(notice?.action, .openSettings)
         XCTAssertEqual(notice?.text, "Microphone is on for an earlier build of conch, not this one: turn conch off and on again in System Settings.")
+        // The window's line offers Reset… where Settings does.
+        XCTAssertEqual(notice?.secondary, .reset)
+        XCTAssertNil(ConchPermissionNotice(trouble: .typing, status: .denied).secondary, "Accessibility is switched in System Settings")
     }
 
     /// Each Open Settings lands on the permission's own list, not Privacy & Security's front page.

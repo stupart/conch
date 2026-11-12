@@ -118,37 +118,35 @@ public enum ConchPermissionStatus: Equatable, Sendable {
     /// once pressed Don't Allow nowhere to go. Accessibility and Screen Recording are turned on and off in System
     /// Settings itself, which lists conch once conch has asked, so they have no reset.
     public func secondaryAction(for permission: ConchPermission) -> ConchPermissionAction? {
-        guard permission.isResettable else { return nil }
         switch self {
-        case .denied, .grantedToAnotherBuild: return .reset
+        case .denied where permission.isResettable, .grantedToAnotherBuild where permission.isResettable: return .reset
+        // Turned off and on for this build, these two reach conch only once it starts again.
+        case .grantedToAnotherBuild: return .reopen
         default: return nil
         }
     }
 
-    /// What to do, in a sentence or two, for the states one button doesn't explain; nil where the label says it all.
+    /// What to do, in one line, for the states one button doesn't explain; nil where the label and the button say it all.
+    /// One helper line a row at most (2026-11-11): four lines under Automation made the rows twice as tall.
     public func guidance(for permission: ConchPermission) -> String? {
         switch self {
         case .denied:
             switch permission {
             case .automation:
-                return "macOS asks only once, and won't ask again after a no. If conch is listed under Automation, turn on Terminal and System Events there; System Settings can't add it by hand, so if it isn't, Reset… and conch asks the next time it needs them."
+                return "macOS won't ask again. Turn conch on under Automation; if it isn't listed there, Reset… lets conch ask."
             case .microphone:
-                return "Turn conch on under Microphone. If conch isn't in that list, Reset… and conch asks again."
+                return "Turn conch on under Microphone; if it isn't listed there, Reset… lets conch ask."
             case .accessibility:
-                return "Open Settings adds conch to the Accessibility list; turn it on there. If it is already on, turn it off and on again."
+                return "Open Settings lists conch under Accessibility; turn it on there."
             case .screenRecording:
-                return "Turn conch on under Screen Recording, then reopen conch. If it is already on, turn it off and on again."
+                return "Turn conch on under Screen Recording."
             }
         case .grantedToAnotherBuild:
-            return "macOS remembers the switch for the build of conch that was running when you turned it on, and this one is signed differently. Turn conch off and on again there"
-                + (permission.isResettable ? ", or Reset… and let conch ask again." : " (or remove it with − and press Open Settings again), then reopen conch.")
+            return "That switch is for a build signed differently. Turn conch off and on again there"
+                + (permission.isResettable ? ", or Reset… and let conch ask." : ".")
         case .needsRelaunch:
-            return "macOS hands a new grant only to an app that starts after it. Reopening quits conch and the background service it runs, and starts both again; your sessions keep running."
-        case .unanswered:
-            return "macOS answers only for an app that is open. Allow… opens it in the background, then asks."
-        case .restricted:
-            return "A profile on this Mac decides this one, so neither conch nor System Settings can change it."
-        case .granted, .notAsked, .unknown:
+            return "A new grant reaches conch once it starts again. Your sessions keep running."
+        case .granted, .notAsked, .unknown, .unanswered, .restricted:
             return nil
         }
     }
@@ -191,6 +189,16 @@ public enum ConchPermissionAction: String, CaseIterable, Sendable {
         }
     }
 
+    /// The button while its press is under way: disabled, saying what it is doing.
+    public var workingTitle: String {
+        switch self {
+        case .openSettings: "Opening…"
+        case .ask: "Asking…"
+        case .reopen: "Reopening…"
+        case .reset: "Resetting…"
+        }
+    }
+
     /// What pressing it does, for the button's help: every button says.
     public func help(for permission: ConchPermission) -> String {
         switch self {
@@ -222,6 +230,9 @@ extension ConchPermission {
     public func resetArguments(bundleId: String) -> [String] {
         ["reset", tccService, bundleId]
     }
+
+    /// Said under the row once Reset… worked, while the row offers Allow….
+    public static let resetDone = "Reset: macOS forgot its answer."
 
     /// Reset's confirmation: what macOS forgets, and what happens next.
     public var resetConfirmation: (title: String, message: String) {
@@ -299,9 +310,9 @@ public enum ConchPermissionReading {
     }
 
     /// After the microphone's ask: a no that came back without a prompt was given before.
-    public static func microphoneAskOutcome(granted: Bool, before raw: Int) -> String? {
-        guard !granted else { return nil }
-        return raw == 0 ? nil : "macOS said no without asking: it remembers an earlier no. Open Settings, or Reset… to be asked again."
+    public static func microphoneAskOutcome(granted: Bool, askedBefore: Bool) -> String? {
+        guard !granted, askedBefore else { return nil }
+        return "macOS said no without asking: it remembers an earlier no. Open Settings, or Reset… to be asked again."
     }
 
     /// `errAEEventNotPermitted`, `errAEEventWouldRequireUserConsent` and `procNotFound`, from CoreServices.
@@ -335,8 +346,7 @@ public enum ConchPermissionGrantMemory {
     /// be one System Settings shows on for another build, which conch has no way to read: the off-and-on fix, said where
     /// the person is looking.
     public static func stillOff(_ permission: ConchPermission) -> String {
-        "Still off for this build. If conch's switch under \(permission.title) is already on, turn it off and on again"
-            + (permission == .screenRecording || permission == .accessibility ? ", then reopen conch." : ".")
+        "Still off. If conch's switch under \(permission.title) is already on, it is for another build: turn it off and on again."
     }
 }
 
@@ -394,11 +404,14 @@ public struct ConchPermissionNotice: Equatable, Sendable {
     public let trouble: ConchPermissionTrouble
     public let text: String
     public let action: ConchPermissionAction?
+    /// The way out beside it, as the Settings row offers it: Reset… where macOS won't ask again.
+    public let secondary: ConchPermissionAction?
 
     public var permission: ConchPermission { trouble.permission }
 
     public init(trouble: ConchPermissionTrouble, status: ConchPermissionStatus) {
         self.trouble = trouble
+        secondary = status.secondaryAction(for: trouble.permission)
         switch status {
         case .needsRelaunch:
             text = "\(trouble.permission.title) is on for conch: reopen conch to finish."
@@ -481,32 +494,36 @@ public struct ConchPermissionButton: View {
     let font: Font
     let height: CGFloat
     let quiet: Bool
+    let working: Bool
     let help: String?
     let run: () -> Void
 
     public init(_ action: ConchPermissionAction, font: Font = ConchType.secondary.weight(.semibold), height: CGFloat = 24,
-                quiet: Bool = false, help: String? = nil, run: @escaping () -> Void) {
+                quiet: Bool = false, working: Bool = false, help: String? = nil, run: @escaping () -> Void) {
         self.action = action
         self.font = font
         self.height = height
         self.quiet = quiet
+        self.working = working
         self.help = help
         self.run = run
     }
 
     public var body: some View {
         Button(action: run) {
-            Text(action.title)
+            // Under way, it steps back to the quiet capsule with readable words: faded ink measured too low to read.
+            Text(working ? action.workingTitle : action.title)
                 .font(font)
-                .foregroundStyle(quiet ? ConchColor.textPrimary : ConchColor.onAccent)
+                .foregroundStyle(working ? ConchColor.textSecondary : quiet ? ConchColor.textPrimary : ConchColor.onAccent)
                 .lineLimit(1)
                 .fixedSize()
                 .padding(.horizontal, 11)
                 .frame(height: height)
-                .background(Capsule().fill(quiet ? ConchColor.fill : ConchColor.accent))
+                .background(Capsule().fill(quiet || working ? ConchColor.fill : ConchColor.accent))
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .disabled(working)
         .help(help ?? action.title)
     }
 }
@@ -521,6 +538,8 @@ public struct ConchPermissionRow: View {
     /// What a press is doing, or what it did, in conch's quiet voice: "Reopening conch…", "Reset. macOS asks again…".
     /// Every button says something visible (2026-11-11): a press that changed nothing on screen read as a broken button.
     let progress: String?
+    /// The press under way: its button says so and can't be pressed again (2026-11-11).
+    let working: ConchPermissionAction?
     /// The longer words under the status (`guidance(for:)`). Onboarding's rows leave them to its own guide.
     let showsGuidance: Bool
     let titleFont: Font
@@ -533,6 +552,7 @@ public struct ConchPermissionRow: View {
         status: ConchPermissionStatus,
         note: String? = nil,
         progress: String? = nil,
+        working: ConchPermissionAction? = nil,
         showsGuidance: Bool = false,
         titleFont: Font = ConchType.uiEmphasis,
         detailFont: Font = ConchType.secondary,
@@ -543,6 +563,7 @@ public struct ConchPermissionRow: View {
         self.status = status
         self.note = note
         self.progress = progress
+        self.working = working
         self.showsGuidance = showsGuidance
         self.titleFont = titleFont
         self.detailFont = detailFont
@@ -573,7 +594,8 @@ public struct ConchPermissionRow: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(.top, 1)
-                if showsGuidance, let guidance = status.guidance(for: permission) {
+                // What a press did, or went wrong, takes the helper's place: one line under the status at most.
+                if showsGuidance, progress == nil, note == nil, let guidance = status.guidance(for: permission) {
                     // Under the status, on its words' column (the 7-point dot and its 6-point gap).
                     Text(guidance)
                         .font(statusFont)
@@ -600,10 +622,13 @@ public struct ConchPermissionRow: View {
             // The way out first, the one thing last, at the row's edge where every row's button sits.
             HStack(spacing: ConchSpace.x2) {
                 if let secondary = status.secondaryAction(for: permission) {
-                    ConchPermissionButton(secondary, height: 26, quiet: true, help: secondary.help(for: permission)) { onAction(secondary) }
+                    ConchPermissionButton(secondary, height: 26, quiet: true, working: working == secondary,
+                                          help: secondary.help(for: permission)) { onAction(secondary) }
+                        .disabled(working != nil)
                 }
                 if let action = status.action {
-                    ConchPermissionButton(action, height: 26, help: action.help(for: permission)) { onAction(action) }
+                    ConchPermissionButton(action, height: 26, working: working == action, help: action.help(for: permission)) { onAction(action) }
+                        .disabled(working != nil)
                 }
             }
         }
@@ -628,6 +653,7 @@ public struct ConchPermissionList: View {
     let statuses: [ConchPermission: ConchPermissionStatus]
     let notes: [ConchPermission: String]
     let progress: [ConchPermission: String]
+    let working: [ConchPermission: ConchPermissionAction]
     let cautions: [String]
     let cautionAction: (title: String, run: () -> Void)?
     let titleFont: Font
@@ -640,6 +666,7 @@ public struct ConchPermissionList: View {
         statuses: [ConchPermission: ConchPermissionStatus],
         notes: [ConchPermission: String] = [:],
         progress: [ConchPermission: String] = [:],
+        working: [ConchPermission: ConchPermissionAction] = [:],
         caution: String? = nil,
         moreCautions: [String] = [],
         cautionAction: (title: String, run: () -> Void)? = nil,
@@ -652,6 +679,7 @@ public struct ConchPermissionList: View {
         self.statuses = statuses
         self.notes = notes
         self.progress = progress
+        self.working = working
         self.cautions = [caution].compactMap { $0 } + moreCautions
         self.cautionAction = cautionAction
         self.titleFont = titleFont
@@ -702,6 +730,7 @@ public struct ConchPermissionList: View {
                     status: statuses[permission] ?? .unknown("Checking…"),
                     note: notes[permission],
                     progress: progress[permission],
+                    working: working[permission],
                     showsGuidance: true,
                     titleFont: titleFont,
                     detailFont: detailFont,
@@ -746,8 +775,13 @@ public struct ConchPermissionNoticeBar: View {
                 .foregroundStyle(ConchColor.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 8)
+            if let secondary = notice.secondary {
+                ConchPermissionButton(secondary, font: ConchType.meta.weight(.semibold), height: 22, quiet: true,
+                                      help: secondary.help(for: notice.permission)) { onAction(secondary) }
+            }
             if let action = notice.action {
-                ConchPermissionButton(action, font: ConchType.meta.weight(.semibold), height: 22) { onAction(action) }
+                ConchPermissionButton(action, font: ConchType.meta.weight(.semibold), height: 22,
+                                      help: action.help(for: notice.permission)) { onAction(action) }
             }
             if let onDismiss {
                 Button(action: onDismiss) {
