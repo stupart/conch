@@ -1,6 +1,6 @@
 ---
 name: conch-control
-description: Publish what the user should look at (a page, image, file, folder, build or app state) with review_to_front, and see or steer their other Claude Code and Codex sessions when asked. Use when there is something for the user to look at, or when asked what the other sessions are doing.
+description: Publish what the user should look at (a page, image, file, folder, build or app state) with review_to_front, and see or steer their other Claude Code and Codex sessions with `conch agent` when asked. Use when there is something for the user to look at, or when asked about the other sessions.
 ---
 
 # conch control
@@ -21,21 +21,28 @@ ambiguous, that is the thing to optimise for.
   what the other sessions are doing and tell you to act on them. Then: pull real
   state first, do the one thing asked, and stop.
 
+Publishing is the `review_to_front` tool, or `conch agent publish` in your
+shell, which is the same with nothing to load. In Claude Code the tool waits
+behind ToolSearch, and a compaction unloads it again, so publish from the shell
+there; if you load the tool instead, load it once, not before every publish.
+Everything else conch does for you is a command in your shell, `conch agent …`
+(*conch's CLI*, below).
+
 ## Publishing results
 
-conch shows this session in the user’s Mac app, floating overlay and iPhone. Its Mac app gives you a Workdesk of typed items beside the conversation: deliverables, browser tabs, files, shell, terminal. Show your work there: results with `review_to_front`, pages with `browser_open`.
+conch shows this session in the user’s Mac app, floating overlay and iPhone. Its Mac app gives you a Workdesk of typed items beside the conversation: deliverables, browser tabs, files, shell, terminal. Show your work there: results with `review_to_front`, pages with `conch agent browser open`.
 
 Whenever you produce something the user would look at (a page, screenshot, file, document, plan, diff or PR, build, app state), publish it with `review_to_front` as you go, not only at the end: a short summary and the best artifact link. Tell the user where it landed from the result’s `surfaces`. With no link (an app window, the Simulator), pass its `kind` and say where to look. For a written explanation, use scene kind `conversation` and keep it in your reply.
 
-A link is an http(s) URL, or an absolute path to a file or a folder (shown as its file tree) under this session’s folders: where it started, where it is now, its git repository, `conch_working_folders`, or a temp folder (/tmp, or macOS’s per-user /var/folders/…/T), which conch copies when it files the link, so a cleaned temp folder can’t take it away. Never a hidden file, key or executable.
+A link is an http(s) URL, or a path to a file or a folder (shown as its file tree) under this session’s folders (where it started or is now, its git repository, `conch agent folders`) or a temp folder (/tmp, /var/folders/…/T), which conch copies so cleaning it can’t take it away. Never a hidden file, key or executable.
 
-Browse for the user with conch’s `browser_*` tools so they can watch in the Workdesk; other browser tools are fine when they ask or the task needs them. At a sign-in, ask them to sign in in the tab with `browser_ask`; never type passwords. `conch_capture` shows part of a page. `open <url>` lands in the Workdesk; `CONCH_OPEN_EXTERNAL=1 open <url>` uses the default browser. Show an Atlas page you read or wrote that matters to the user with `atlas_show`.
+Everything else is a command in your shell: `conch agent help` lists them; if your shell can’t reach conch (a sandbox), the `conch_run` tool runs the same words. Browse for the user with `conch agent browser …` so they can watch in the Workdesk; other browser tools are fine when they ask or the task needs them. At a sign-in, ask them to sign in in the tab with `conch agent browser ask`; never type passwords. `conch agent capture <url>` shows part of a page. `open <url>` lands in the Workdesk; `CONCH_OPEN_EXTERNAL=1 open <url>` uses the default browser. Show an Atlas page that matters to the user with `conch agent atlas`.
 
-Publishing makes the result available without interrupting the user: open no apps, move no windows, start no microphone. Publish again whenever it changes in a way worth seeing, not after every edit: the same link or `key` files its next version. `conch_deliverables` lists yours; `review_remove` takes back a wrong one.
+Publishing makes the result available without interrupting the user: open no apps, move no windows, start no microphone. Publish again whenever it changes in a way worth seeing, not after every edit: the same link or `key` files its next version. `conch agent deliverables` lists yours; `conch agent unpublish` takes back a wrong one.
 
-Omit `session` when publishing; never attribute work to another session. Working outside the folder this session started in? Say so once with `conch_working_folders`.
+Omit `session` when publishing; never attribute work to another session. Working outside the folder this session started in? Say so once with `conch agent folders <dir>`.
 
-To control sessions, audio or settings when asked, load the `conch-control` skill and check IDs with `conch_sessions`; respect manual mode and report refusals.
+To control sessions, audio or settings when asked, load the `conch-control` skill and check IDs with `conch agent sessions`; respect manual mode and report refusals. When conch itself gets something wrong, `conch bug` files a private ticket for the user.
 
 If you can't publish, end your reply with one `conch:review <summary> | <link>` line (only the last counts, so link a folder for several things). A refused link is dropped and the summary kept; conch tells the user and you why.
 
@@ -46,17 +53,18 @@ conversation, with a strip of tabs along its top. Every tab is an item of one
 type:
 
 - **deliverable**: something you published, with `review_to_front`,
-  `conch_capture`'s `publish` or `atlas_show`. One tab per artifact, with its
-  older versions under it.
+  `conch agent capture --publish` or `conch agent atlas`. One tab per
+  artifact, with its older versions under it.
 - **browser**: a live page in conch's browser. You open one with
-  `browser_open` (or `open <url>`); the user opens one with the strip's **+**,
-  often to sign in for you.
+  `conch agent browser open <url>` (or `open <url>`); the user opens one with
+  the strip's **+**, often to sign in for you.
 - **files**: your working folder as a tree, with the files you changed marked.
 - **shell**: a shell in that folder, the user's to type in.
 - **terminal**: a button that brings your own terminal forward.
 
 Show your work there as you go: results with `review_to_front`, the pages you
-are working in with `browser_open`, an Atlas page with `atlas_show`. Nothing you
+are working in with `conch agent browser open`, an Atlas page with
+`conch agent atlas`. Nothing you
 add takes the pane from the user while they are using it: a new item waits as a
 tab, and a browser tab you act in comes forward only when the user is looking
 at your session and hasn't touched the Workdesk for a few seconds.
@@ -67,8 +75,9 @@ The plugin is a thin client — it ships this skill, an MCP declaration, and a
 launcher. **It does not install conch itself**, which is a separate Homebrew
 package that carries the daemon, the CLI, and the macOS app.
 
-So if you have no `conch_*` tools at all, or they fail with *"could not find the
-conch binary"*, conch simply isn't installed on this machine. Don't report that
+So if you have no `review_to_front` tool and `conch agent help` isn't found, or
+either fails with *"could not find the conch binary"*, conch simply isn't
+installed on this machine. Don't report that
 as a broken plugin, and don't make the user go read a README — say what's
 missing in one line and **offer to install it**:
 
@@ -82,21 +91,54 @@ On a yes, run the two commands, then tell them to restart Claude Code so the
 MCP server loads. If Homebrew is missing, say so and point at
 https://brew.sh rather than trying to install Homebrew yourself.
 
+## conch's CLI
+
+`conch agent help` lists every command on one screen; `conch agent help
+<command>` (or `<command> --help`) gives one's usage and what it answers. A
+command prints its answer as short lines, a field a line and a list an item a
+line; `--json` prints the whole answer as JSON, with the field names this skill
+uses. A mistake in the words prints what was wrong and the command's usage. The
+exit code says how it ended: 0 done, 1 conch failed, 2 the command was wrong, 3
+conch refused (the message says why and what to do instead).
+
+- **Who you are.** conch knows which session ran a command from the shell's
+  process tree: it walks up from the command to the session process that
+  started it. A Codex app-server hosts many threads under one process, so there
+  the thread is the `CODEX_THREAD_ID` Codex puts in each command's environment,
+  among the threads that app-server hosts. `conch agent whoami` says which
+  session conch takes you for and how it knows. A command on your own session
+  (publish, folders, deliverables, unpublish, the browser, atlas) is refused when
+  conch can't tell, rather than acting for any session; nothing you pass names
+  another session instead.
+- **Paths** are relative to your shell's folder.
+- **A shell that can't reach conch.** Codex's sandbox refuses its commands the
+  unix socket conch listens on; the command says so. Then run the same words
+  through the `conch_run` tool (`{command: "browser read"}`), whose server
+  runs outside the sandbox and knows your session the way the MCP does; paths
+  there are relative to the folder the session started in.
+- **Sessions started before the CLI** still have the old MCP tools
+  (`conch_sessions`, `browser_open`, …) until they restart. They work as they
+  did, and the first call of each says the command it is now.
+
 ## What you can do
-- **See everything** — `conch_sessions` lists every live session in one short entry each: `id`, `label`, `backend`, `status` (`working` / `waiting` / `needs`), `cwd`, `account`, `lastActivity`, `alive`, `agents` (subagents running in it), `you` on your own, and `toolsStale` when its conch MCP server can't get conch's current tools (`missing` names them; restarting that session gives them). Its `caller` says whether conch verified which session YOU are (`verified`, with your id), or `unverified` with the reason. `session` (an id, its first 4+ characters, or part of a label) narrows the list; with `detail: true` it returns that one session's full row (its deliverables, last line, settings, context). Replies stay under 20 KB: a long list says what it left out. Lead with this when the user asks what's happening.
-- **Fork a session, at the user's request** — `conch_fork {session?, label?}` starts the same conversation again as a new session beside it, through conch's own fork (the Mac app's Fork): same account, folder and flags, holding its deliverables. Omit `session` for your own. It answers `outcome: "forked"` with the fork's `forkId` and `label` once conch sees it running, `outcome: "started"` with where it runs when its agent is up but has no id conch can see yet, or the error that stopped it (its tab's last lines when the agent exited). Tell the user a fork is open only from that answer. Don't fork with `conch start --resume … --fork-session`: it doesn't carry the account or flags.
-- **Start a session, at the user's request** — `conch_start {backend?, folder?, signIn?, model?, effort?, prompt?, host?, label?}` starts a new Claude Code (or Codex) session through conch's daemon, in your own cwd unless `folder` names another, in a Terminal window (`host: "terminal"`, the default) or conch's background host (`"background"`, no window). It answers `outcome: "started"` with its `sessionId` and `label` once conch sees it running, `outcome: "running"` with where it runs when its agent is up but conch can't see it as a session yet (don't start another), or the error that stopped it (its tab's last lines when the agent exited). Tell the user it started only from that answer, and use it rather than running `conch start`, which can't tell you either.
-  - **Choosing the account.** `signIn` names one of conch's Claude sign-ins, by its label in any case or its id: each is a different Claude account, added by the user in the Mac app's Settings › Providers. `conch_sessions` lists them as `claudeSignIns` (label and id, never anything more). Leave it out and the session runs on Default's own login, which conch rotates across the user's accounts. A sign-in conch doesn't have, or no longer has, is refused with the ones it has; it never starts on the rotating login instead. Sign-ins are Claude's: with `backend: "codex"` one is refused. Use the account the user named; when they want another account but didn't say which, ask rather than choosing for them.
-  - **Bringing back its answer.** "Have a Fable agent on my other account look into X" is one start and one wait: `conch_start {signIn: "<their account>", model: "fable", prompt: "<the task>"}`, then `conch_transcript_tail {session: <its sessionId>, wait: 30}`, passing back the `cursor` it returns as `since`, until its `status` is `waiting`: its text then is the answer (`sentences` gives more of it). `needs` means it is asking the user something (a permission, a question): say so rather than waiting on. The result's `next` spells out the call. Relay the answer as the other session's, not your own work.
+- **See everything** — `conch agent sessions [query] [--detail]` lists every live session, one line each: its `id`, `status` (`working` / `waiting` / `needs`), `label`, backend and account, `cwd`, how long since its last activity, `← you` on your own, subagents running in it, and `tools stale` when its conch MCP server can't get conch's current tools (restarting that session gives them; when its server never started, conch types `/reload-plugins` into it itself once it is idle). The first line says whether conch verified which session YOU are, or why not. The query (an id, its first 4+ characters, or part of a label) narrows the list; with `--detail` it prints that one session's full row (its deliverables, last line, settings, context). `--json` gives the fields by name (`caller`, `sessions[].id`, `alive`, `agents`, `toolsStale`, `claudeSignIns`). Replies stay under 20 KB: a long list says what it left out. Lead with this when the user asks what's happening.
+- **Fork a session, at the user's request** — `conch agent fork [session] [--label L]` starts the same conversation again as a new session beside it, through conch's own fork (the Mac app's Fork): same account, folder and flags, holding its deliverables. Name no session for your own. It answers `outcome: forked` with the fork's `forkId` and `label` once conch sees it running, `outcome: started` with where it runs when its agent is up but has no id conch can see yet, or the error that stopped it (its tab's last lines when the agent exited). Tell the user a fork is open only from that answer. Don't fork with `conch start --resume … --fork-session`: it doesn't carry the account or flags.
+- **Start a session, at the user's request** — `conch agent start [--backend claude|codex] [--folder DIR] [--sign-in ACCOUNT] [--model M] [--effort E] [--prompt TEXT] [--host terminal|background] [--label L]` starts a new Claude Code (or Codex) session through conch's daemon, in your shell's folder unless `--folder` names another, in a Terminal window (`--host terminal`, the default) or conch's background host (`background`, no window). It answers `outcome: started` with its `sessionId` and `label` once conch sees it running, `outcome: running` with where it runs when its agent is up but conch can't see it as a session yet (don't start another), or the error that stopped it (its tab's last lines when the agent exited). Tell the user it started only from that answer, and use it rather than running `conch start`, which can't tell you either.
+  - **Choosing the account.** `--sign-in` names one of conch's Claude sign-ins, by its label in any case or its id: each is a different Claude account, added by the user in the Mac app's Settings › Providers. `conch agent sessions` lists them under `claude sign-ins` (label and id, never anything more). Leave it out and the session runs on Default's own login, which conch rotates across the user's accounts. A sign-in conch doesn't have, or no longer has, is refused with the ones it has; it never starts on the rotating login instead. Sign-ins are Claude's: with `--backend codex` one is refused. Use the account the user named; when they want another account but didn't say which, ask rather than choosing for them.
+  - **Bringing back its answer.** "Have a Fable agent on my other account look into X" is one start and one wait: `conch agent start --sign-in "<their account>" --model fable --prompt "<the task>"`, then `conch agent tail <its sessionId> --wait 30`, passing back the `cursor` it prints with `--since`, until its `status` is `waiting`: its text then is the answer (`--sentences` gives more of it). `needs` means it is asking the user something (a permission, a question): say so rather than waiting on. The answer's `next` spells out the command. Relay the answer as the other session's, not your own work.
 - **Teams, at the user's request or as a team's member** — a team type (the user's, in the Mac app's Settings › Teams) is a set of roles in a hierarchy with rules for working together; a team is one at work on a task, its members conch sessions grouped under it in the sidebar. From your shell: `conch team` lists the teams running and the types; `conch team start <type> "<task>"` starts one in your cwd (`--cwd` names another) with its lead and the members it starts with, and prints the lead's session id once it runs; `conch team task <team|type> "<task>"` starts a team of a type on a task (a task for a *running* team reaches its lead only from the user, until conch can message between sessions); `conch team members [<team>]` lists a team's members with their session ids and whether each is working or waiting. A refusal exits 3 and says why.
   - **On a team.** Your first message says your role, your team and your task; `conch team brief` prints your whole brief (your role, whom you report to, the team's tree and rules, and how to work with conch): follow its rules. Ask conch for a member with `conch team add <role> "<task>"`, never an untracked subagent: you may ask for the roles below yours, each up to its limit working at once, and it answers with the new member's session id once it runs; read its report with `conch_transcript_tail {session: <its id>, wait: 30}` until its `status` is `waiting`. A member reports by ending its turn with the report. The lead ends the team with `conch team end <team>` when the work is done; its sessions stay open for the user.
-- **Hear or answer one, at the user's request** — `conch_recite {session}` reads a session's latest reply aloud again; `conch_wake {session}` reopens the mic pointed at it so the user can talk to it. Both are audio: neither opens its workspace or stages a scene. `session` is an id or a label — prefer the id from `conch_sessions`. A name that fits more than one session is refused with the candidates; a partial name that fits one resolves, and the result names the session it reached. Omit `session` for your own session, which works only when your `caller` is verified. The result's `audio` line says where that went: this Mac, the phone when it holds the audio, or refused because this Mac has yielded its audio to another Mac (see below). Waking a sibling while the phone holds the audio opens the PHONE's mic at a session the user is not looking at, so say which session you woke.
-- **Speak** — `conch_speak {text}` says something aloud in conch's voice, up to 600 characters and one at a time. Use it to confirm an action or read a short answer the user asked for; do not repeat your reply or narrate progress.
-- **Answer from a transcript** — `conch_transcript_tail {session}` gives you the tail of a session's last reply, with the id and label of the session it read, its `status` and a `cursor`, so you can answer "did the tests pass?" without switching to it. With no reply text yet (the session is mid-turn, its latest entry a tool call) it says so in `note` instead of returning empty text.
-- **Wait for a session** — pass the last `cursor` back as `since`, with `wait` (seconds, up to 30): the call returns as soon as the reply has new text, else `unchanged: true` and "no new text" when the wait runs out. Use that rather than calling `conch_sessions` or `conch_transcript_tail` once a minute. While it waits, your other conch calls queue behind it.
+- **Hear or answer one, at the user's request** — `conch agent recite [session]` reads a session's latest reply aloud again; `conch agent wake [session]` reopens the mic pointed at it so the user can talk to it. Both are audio: neither opens its workspace or stages a scene. The session is an id or a label — prefer the id from `conch agent sessions`. A name that fits more than one session is refused with the candidates, and one that fits none lists the live sessions; a partial name that fits one resolves, and the result names the session it reached. Name none for your own session, which works only when conch has verified which session you are. The result's `audio` line says where that went: this Mac, the phone when it holds the audio, or refused because this Mac has yielded its audio to another Mac (see below). Waking a sibling while the phone holds the audio opens the PHONE's mic at a session the user is not looking at, so say which session you woke.
+- **Speak** — `conch agent speak <text> [--voice V]` says something aloud in conch's voice, up to 600 characters and one at a time. Use it to confirm an action or read a short answer the user asked for; do not repeat your reply or narrate progress.
+- **Ping the user, when they asked to be pinged** — `conch agent notify <body> [--title T] [--session S] [--link URL]` sends a notification with sound to their iPhone (through Apple, so it arrives with conch closed there) and to the Mac; a tap opens the session (yours when `--session` is omitted), and a `--link` (http(s)) rides along as "Open link". Only when the user asked to be told ("ping me when it's deployed"), or when you are blocked on them and they asked to be pinged for that. Not for progress, not for what your reply already says. The body is a sentence or two, at most 280 characters, never cut for you; the title defaults to your session's name. The result's `phone` and `mac` say where it went (`pushed`, `shown`) and why not elsewhere (`not-set-up`: no push key in Settings › Phone app; `no-phone`: no iPhone has turned conch's notifications on; `app-not-running`), and `said` is that in a sentence: tell the user from it.
+- **Answer from a transcript** — `conch agent tail <session>` gives you the tail of a session's last reply, with the id and label of the session it read, its `status` and a `cursor`, so you can answer "did the tests pass?" without switching to it. With no reply text yet (the session is mid-turn, its latest entry a tool call) it says so in `note` instead of returning empty text.
+- **Wait for a session** — pass the last `cursor` back with `--since`, and `--wait` (seconds, up to 30): the command returns as soon as the reply has new text, else `unchanged: true` and "no new text" when the wait runs out. Use that rather than running `conch agent sessions` or `conch agent tail` once a minute.
 - **Publish a result for the user to inspect** —
   `review_to_front {summary, link?, kind?, key?, focus?, scene?, approval?}`. *Publishing results*
-  above says when; this is how.
+  above says when; this is how. `conch agent publish <summary> [link] [--kind K]
+  [--key K] [--focus PATH]... [--scene KIND] [--inspect LINE] [--marks JSON]
+  [--approve LABEL]` does the same from a shell, with nothing to load
+  (`conch agent help publish` has every flag).
 
   **What the user sees.** conch files the result on your session in the Mac app
   and on the iPhone, and the Mac's Ready pill lights. Nothing opens until the
@@ -108,9 +150,12 @@ https://brew.sh rather than trying to install Homebrew yourself.
   follow your work as it goes: a plan, a first screen, the diff, the build.
 
   **Where it landed.** The call waits for conch to file it. `outcome: "filed"`
-  means it is filed, under the `id`, `artifact`, `version`, `kind` and `link`
-  the result gives; a refusal fails the call with conch's reason. `surfaces`
-  says who can see it now, and is what you tell the user, never an assumption:
+  means it is filed, as the `artifact` and `version` the result gives; a
+  refusal fails the call with conch's reason. The result repeats nothing you
+  passed: it has a `link` only when conch filed a different one (its copy of a
+  temp file, or the absolute path of a relative one), and a `kind` only when it
+  read one off the link. `surfaces` says who can see it now, and is what you
+  tell the user, never an assumption:
 
   - `mac`: `showing` (conch's window is in front on the Mac), `running` (the
     Mac app is open; it waits behind the Ready pill) or `not-running` (it will
@@ -125,12 +170,12 @@ https://brew.sh rather than trying to install Homebrew yourself.
   So "It's filed in conch; the Mac app isn't open and your phone isn't
   connected, so you'll see it when you open either" — not "it's on your
   screen". `outcome: "accepted"` with `unconfirmed` comes from an older conch
-  that doesn't say: the handles are predicted, and `conch_deliverables` says
-  what was filed.
+  that doesn't say: the version is predicted, and `conch agent deliverables`
+  says what was filed.
 
-  The result's other fields are explained below: `copiedFrom` and `notCopied`
-  for a link in a temp folder (the paragraph on `link`, at the end of this
-  item), `access`, `snapshot` and `warning` for a live page (*Pages behind a
+  The result's other fields are explained below: `link` and `notCopied` for a
+  link in a temp folder (the paragraph on `link`, at the end of this item),
+  `warning`, with `access` and `snapshot`, for a live page (*Pages behind a
   login*), and `relabel` (*A label that drifted*).
 
   **What to link.** The best single artifact for the result:
@@ -149,18 +194,20 @@ https://brew.sh rather than trying to install Homebrew yourself.
   the phone has none of them. So when you publish a URL, conch looks twice
   while it files it: its Mac app draws the page with the review pane's
   sign-ins (only while the app is running), and conch fetches it with no
-  cookies or credentials at all, as the phone would. `access` says what each
-  was shown: `mac` and `anonymous`, each `page`, `sign-in` or `unchecked`, and
-  `why`. When the Mac drew the page, its picture is attached as `snapshot`, and
-  the phone shows that first, labelled as the Mac's view at that time, with the
-  live page a tap away. `warning` is there when either look was a sign-in page.
-  Act on it, and tell the user what it means for them:
+  cookies or credentials at all, as the phone would. When the Mac drew the
+  page, its picture goes with the publication, and the phone shows that first,
+  labelled as the Mac's view at that time, with the live page a tap away.
+  `warning` is there when either look was a sign-in page, with `access` saying
+  what each was shown (`mac` and `anonymous`, each `page`, `sign-in` or
+  `unchecked`, and `why`) and `snapshot`, the Mac's picture. A page both looks
+  found needs nothing from you, and the result says nothing about it. Act on a
+  warning, and tell the user what it means for them:
 
   - `mac: "sign-in"`: the user sees a login page on the Mac too. Open it with
-    `browser_open` (the Default profile shares the review pane's sign-ins) and
-    ask them to sign in in that tab of their Workdesk once, and conch sees it
-    from then on. Or publish a picture instead: `conch_capture` once they have
-    signed in, or a screenshot.
+    `conch agent browser open` (the Default profile shares the review pane's
+    sign-ins) and ask them to sign in in that tab of their Workdesk once, and
+    conch sees it from then on. Or publish a picture instead: `conch agent
+    capture` once they have signed in, or a screenshot.
   - `mac: "page"` with `anonymous: "sign-in"`: fine on the Mac, and the phone
     shows the attached snapshot; opening the live page there asks for sign-in.
   - `mac: "unchecked"` with `anonymous: "sign-in"`: no snapshot (the Mac app
@@ -201,18 +248,20 @@ https://brew.sh rather than trying to install Homebrew yourself.
   same artifact are its versions, numbered from 1. The artifact is the link (a
   file's real path, a URL without its fragment), else the summary; pass `key`
   to name it yourself when there is no link, or the link changes between
-  versions (`hero-v3.png`, `hero-v4.png`). The result returns `id`,
-  `artifact`, `version` and `kind`, as conch filed them. To show a change (a
+  versions (`hero-v3.png`, `hero-v4.png`). The result returns the `artifact`
+  and `version` conch filed it as; `conch agent deliverables` lists each
+  filing's `id`. To show a change (a
   photo edit, a restyled page), save the after as its own file and publish it
   under the before's `key`: conch compares two versions with a slider or side
   by side, so build no before/after composite. A file overwritten in place
   leaves nothing earlier to compare, unless it sat in a temp folder: conch
   copied each version of that when it was filed.
 
-  **Your own deliverables.** `conch_deliverables` lists the ones your session
-  holds, newest first, each marked `superseded` when a newer version of it is
-  held. `review_remove {id}` takes one filing back and `review_remove
-  {artifact}` every version of it; the user can remove them from the Mac too.
+  **Your own deliverables.** `conch agent deliverables` lists the ones your
+  session holds, newest first, each marked `superseded` when a newer version of
+  it is held. `conch agent unpublish <id>` takes one filing back and `conch
+  agent unpublish --artifact <artifact>` every version of it; the user can
+  remove them from the Mac too.
   A newer version already supersedes an older one, so remove only what should
   not be looked at: a wrong result, or one filed by mistake. Both act on your
   own session only.
@@ -231,8 +280,8 @@ https://brew.sh rather than trying to install Homebrew yourself.
   **A label that drifted.** When what you publish no longer matches your
   session's label (it was named after the first task and the work moved on),
   the result carries `relabel: {label, hint}`, once per label. If your focus
-  has moved, call `conch_rename` with a short new label for what you are doing
-  now. conch never renames a session itself, and never offers this for a label
+  has moved, run `conch agent rename <your id> <label>` with a short new label
+  for what you are doing now. conch never renames a session itself, and never offers this for a label
   the user chose.
 
   **The scene.** Optional: `scene: {v: 1, target: {kind}, inspect?, marks?}`.
@@ -319,7 +368,7 @@ https://brew.sh rather than trying to install Homebrew yourself.
   is sent, so the file you checked is the file the apps open. A file is sent to
   the phone, so it must sit under one of this session's folders: the one it
   started in, the one it is in now and the git repository around that (a
-  worktree's own checkout too), any named with `conch_working_folders`, or a
+  worktree's own checkout too), any named with `conch agent folders`, or a
   temp folder: `/tmp`, or the per-user one `$TMPDIR` names
   (`/var/folders/…/T`), the same two whatever your own `$TMPDIR` says. A
   Markdown copy of an Atlas page under `~/Documents/conch-notes/atlas` passes
@@ -327,7 +376,7 @@ https://brew.sh rather than trying to install Homebrew yourself.
   or folder in a temp folder is copied into conch's own store
   (`~/Library/Application Support/conch/deliverables`) when it is filed (a
   page or a markdown document brings the folder it is in), and filed
-  against the copy: the result's `copiedFrom` names the original, and cleaning
+  against the copy: the result's `link` is the copy, and cleaning
   the temp folder or a reboot can't take it away. Over 64 MB or 500 files it is
   filed where it is, and `notCopied` says why. One under your own folders is
   linked where it is, live, never copied. It must not be hidden, in a hidden
@@ -342,56 +391,57 @@ https://brew.sh rather than trying to install Homebrew yourself.
   that holds them. A link that fails is dropped and the summary still filed:
   the user sees which link and why where the deliverable would be, and in
   Claude Code your next prompt carries a note saying so.
-- **Capture a page** — `conch_capture {url, target?, viewport?, fullPage?, mark?, publish?}`
-  draws a web page in conch's Mac app and returns a PNG of it. Use it whenever
+- **Capture a page** — `conch agent capture <url> [--selector CSS | --quote
+  TEXT] [--size WxH] [--full] [--mark KIND] [--mark-label TEXT] [--publish
+  SUMMARY] [--key K]` draws a web page in conch's Mac app and returns a PNG of
+  it. Use it whenever
   the thing to show is part of a web page (the section you changed, a component
   on a preview deployment, a page on your dev server) instead of driving a
   browser to it, waiting, screenshotting, copying the file and guessing a box's
   numbers by eye.
 
-  - `url`: an http(s) URL, or a local `.html` file under this session's folders
-    or a temp folder (the same rule as a `review_to_front` link).
-  - `target`: `{selector: ".pricing .plan-pro"}` or `{quote: "Start free
-    trial"}`, at most 120 characters, as a mark's frame names one. conch waits
+  - The url: an http(s) URL, or a local `.html` file under this session's
+    folders or a temp folder (the same rule as a `review_to_front` link).
+  - The part: `--selector ".pricing .plan-pro"` or `--quote "Start free
+    trial"`, at most 120 characters, as a mark's frame names one. conch waits
     for the page to load and its fonts, scrolls the target to the middle of the
     view, waits again until the images near it have loaded and it has stopped
     moving (at most a few seconds; a page that never settles is captured anyway
     and the result says `unsettled`), and captures it with a margin. Without a
     target it captures the top of the page.
-  - `viewport`: `{width, height}` in CSS pixels, 1440 by 900 when omitted; a
-    phone is about 390 by 844. `fullPage: true` captures the whole page instead
-    of one view, drawn at its full height (so a section sized to the window
-    grows with it).
-  - The result: `path`, `width` and `height` in pixels, `devicePixelRatio`,
+  - `--size WIDTHxHEIGHT` in CSS pixels, 1440x900 when omitted; a phone is
+    about 390x844. `--full` captures the whole page instead of one view, drawn
+    at its full height (so a section sized to the window grows with it).
+  - The answer: `path` (read the file to see it), `width` and `height` in pixels, `devicePixelRatio`,
     `element` (the target's box in those pixels: `{x, y, w, h}`), `finalUrl`,
     `title`, and `loginWall` when the page showed a sign-in screen instead. A
     target taller than the view comes back `clipped`.
-  - `mark`: `"box"`, `"highlight"`, or `{kind, label}` with kind `box`,
-    `highlight`, `ellipse`, `arrow`, `pin` or `text` (`text` needs its label).
-    The result's `marks` are ready for `review_to_front`'s `scene.marks`, on the
-    image (`frame.image`), in its 0 to 1 numbers.
-  - `publish: {summary, key?}` files the capture as your deliverable in the same
-    call (kind `image`, the mark drawn on it) and returns `filed` with its `id`,
-    `artifact` and `version`, as `review_to_front` would. The artifact defaults
+  - `--mark` is `box`, `highlight`, `ellipse`, `arrow`, `pin` or `text` (`text`
+    needs `--mark-label`, and any mark may have one). The answer's `marks` are
+    ready for `review_to_front`'s `scene.marks`, on the image (`frame.image`),
+    in its 0 to 1 numbers.
+  - `--publish SUMMARY [--key K]` files the capture as your deliverable in the
+    same command (kind `image`, the mark drawn on it) and returns `filed` with
+    its `id`, `artifact` and `version`. The artifact defaults
     to the page and the target, so capturing the same part again after a fix is
-    its next version. It needs a verified `caller`, and a capture of a sign-in
-    screen is never filed.
+    its next version. It needs conch to have verified which session you
+    are, and a capture of a sign-in screen is never filed.
 
   Pages are drawn with the sign-ins of **conch's own review pane**, not the
   user's browser; the Default profile of conch's browser shares them. A page
   behind a login (a Vercel preview, a dashboard) comes back with
   `loginWall: true` and a picture of the sign-in screen: open the URL with
-  `browser_open` and ask the user to sign in in that tab once, then capture
-  again.
+  `conch agent browser open` and ask the user to sign in in that tab once
+  (`conch agent browser ask`), then capture again.
   conch's Mac app must be open; a capture takes a few seconds and at most about
   40, and conch draws at most three at a time.
-- **Use conch's browser** — `browser_open {url, profile?, tab?}` opens a page as
-  a live tab in the user's Workdesk, where they can watch it and take over by
-  clicking and typing in it.
+- **Use conch's browser** — `conch agent browser open <url> [--profile P] [--tab
+  T]` opens a page as a live tab in the user's Workdesk, where they can watch
+  it and take over by clicking and typing in it.
 
   **When.** Whenever you browse on the user's behalf (look something up on a
   site, check a dashboard, fill in a form, test a deployed page), use these
-  tools, so they can see what you do. While a command of yours runs, the tab and
+  commands, so they can see what you do. While a command of yours runs, the tab and
   its address bar show an **Agent** badge, a click is marked where it lands, a
   field visibly fills as you type into it, and the address bar follows where
   you go; a tab they aren't looking at gets a dot. Other browser tools (Claude in
@@ -399,25 +449,26 @@ https://brew.sh rather than trying to install Homebrew yourself.
   task needs them: an extension, devtools, a download, something conch's
   browser can't do.
 
-  - Tabs are your session's own, and need a verified `caller`. Each is signed in
-    with a browser profile, one per account: `profile` names one by name or id,
+  - Tabs are your session's own, and need conch to have verified which session
+    you are. Each is signed in with a browser profile, one per account:
+    `--profile` names one by name or id,
     and `Default` (the default) shares the sign-ins of conch's review pane. A
     tab keeps its profile. Tabs, the user's included, survive a restart of
     conch: each reloads at its last address on its profile.
   - **The user's tabs.** The user opens tabs too, with the Workdesk's **+**, on
     a profile they pick, usually to sign in. Those are your session's as well:
-    `browser_tabs` lists them with `openedBy: "user"`, and a command naming no
-    tab runs in the one used or opened last (`current`). Act in one once they
+    `conch agent browser tabs` lists them with `openedBy: user`, and a command
+    naming no tab runs in the one used or opened last (`current`). Act in one once they
     say so.
   - **Signing in is the user's.** When a page asks for a password, a one-time
-    code or a passkey, stop and ask in the tab itself: `browser_ask {tab?,
-    reason}` with one short line, "Sign in to Acme" (name the profile when it
-    isn't Default: "Sign in to Acme (Work profile)"). conch marks the tab
+    code or a passkey, stop and ask in the tab itself: `conch agent browser
+    ask <reason> [--tab T]` with one short line, "Sign in to Acme" (name the
+    profile when it isn't Default: "Sign in to Acme (Work profile)"). conch marks the tab
     *Needs you*, brings it to the front of their Workdesk, shows their session
     as needing them, and puts Done under the tab's address bar. Say in one line
     what you asked, then wait: when they press Done, or conch sees the tab's
     profile sign in to the site, you get a message ("Done: Sign in to Acme …"),
-    and `browser_tabs` shows the ask's `state`. Use it for anything only they
+    and `conch agent browser tabs` shows the ask's `state`. Use it for anything only they
     should do in a tab: a captcha, a consent screen, picking an account. Your
     own click, type or open in the tab withdraws the ask. Never type a password
     (a password field refuses you), never ask them to tell you one, and never go
@@ -428,47 +479,57 @@ https://brew.sh rather than trying to install Homebrew yourself.
     tab* on, every command of yours that reaches it, closing it included, fails
     with "the user has taken over this tab (…)". Don't retry it. Say what you
     were about to do, and carry on in a tab of your own or wait for them to hand
-    it back; `browser_tabs` marks it `paused`.
-  - `browser_read {tab?}` returns the page's title, URL, visible text (trimmed),
-    its links and buttons each with a short ref (`e12`), and its form fields
-    (label, name, type and value; never a password's or a hidden field's value).
-    Refs last until the page changes: read again after it navigates.
-  - `browser_click {tab?, target}` and `browser_type {tab?, target, text,
-    submit?}` take a ref, a CSS selector, or the visible text of the element (a
-    field's label); a string is tried as each in that order, and `{ref}`,
-    `{selector}` or `{text}` says which. Typing replaces what the field holds;
-    `submit` presses Return.
-  - `browser_screenshot {tab?}` writes a PNG of what the tab shows to conch's
-    capture folder and returns its path, which `review_to_front` can publish.
-  - `browser_tabs` lists your tabs (with each one's last `ask`); `browser_close
-    {tab}` closes one.
+    it back; `conch agent browser tabs` marks it `paused`.
+  - `conch agent browser read [--tab T]` prints the page's title and URL, one
+    page of its words (about 2,000 characters) and its sections, then the
+    links and buttons in those words, each with a short ref (`link e12
+    "Pricing" /pricing`: a same-site link by its path), and its form fields
+    (ref, type, label and value; never a password's or a hidden field's value).
+    Its last line, `more:`, says what else there is. `--page N` is the next
+    page; `--find WORDS` shows only the lines, links, buttons and fields that
+    say them; `--section HEADING` the words under that heading; `--selector
+    CSS` reads only that part of the page; `--full` the whole read, every word,
+    link, button and field. Refs are the same in every view of a page, and last
+    until it changes: read again after it navigates.
+  - `conch agent browser click <target>` and `conch agent browser type <target>
+    <text> [--submit]` take a ref, a CSS selector, or the visible text of the
+    element (a field's label); a bare target is tried as each in that order,
+    and `--ref`, `--selector` or `--text` (`--label` for a field) says which.
+    Typing replaces what the field holds; `--submit` presses Return.
+  - `conch agent browser screenshot [--tab T]` writes a PNG of what the tab
+    shows to conch's capture folder and prints its path, which `review_to_front`
+    can publish.
+  - `conch agent browser tabs` lists your tabs (with each one's last `ask`);
+    `conch agent browser close <tab>` closes one.
   - conch's Mac app must be open.
-- **Show an Atlas page** — `atlas_show {path, markdown, summary?}`. Atlas, the
-  user's wiki, has no web view of a page, so when an Atlas page you read or
-  wrote matters to the user (a plan you are working from, a decision you
-  recorded, a page they asked about), show it this way. Read or write it with
-  your Atlas tools, then pass its Atlas path and its Markdown. conch saves the
+- **Show an Atlas page** — `conch agent atlas <path> --file <markdown file>
+  [--summary LINE]` (`--file -` reads stdin). Atlas, the user's wiki, has no
+  web view of a page, so when an Atlas page you read or wrote matters to the
+  user (a plan you are working from, a decision you recorded, a page they asked
+  about), show it this way. Read or write it with your Atlas tools, save its
+  Markdown to a file, then pass its Atlas path and the file. conch saves the
   copy to `~/Documents/conch-notes/atlas/<path>` (`.md` added when the path has
   no extension) and files it as a `markdown` deliverable keyed `atlas:<path>`,
   so showing the same page again is its next version. The summary always names
   the path: yours, with ` (Atlas: <path>)` added when it doesn't, or
-  `Atlas page <path>`. The result is `review_to_front`'s, plus `copy`, where the
+  `Atlas page <path>`. The answer is `review_to_front`'s, plus `copy`, where the
   file is. Atlas stays the source: conch never fetches Atlas, and never needs a
-  credential of it. Without the tool, do the same by hand: write the Markdown to
-  that path, then `review_to_front {summary, link, kind: "markdown", key:
+  credential of it. Without the command, do the same by hand: write the Markdown
+  to that path, then `review_to_front {summary, link, kind: "markdown", key:
   "atlas:<path>"}`; a Markdown file in that folder passes the link rule wherever
   you work.
-- **Auto / manual** — `conch_mode {action, session?, scope?}` uses `pause` for lossless manual mode and `resume` for auto read-and-listen mode. Without `session` or `scope` it switches only YOUR session; `session` names another one. Switching every session at once — the whole daemon, what the user's `p` key and `conch pause` do — needs `scope: "all"` explicitly, and only when the user asked for exactly that. A `resume` from an agent is refused while the user put conch in manual themselves (the `p` key, the Mac's toggle, `conch pause`) — only a person undoes a person's pause, and a `conch_speak` is held then too: not spoken and not queued, and its result carries `held` saying so.
-- **Rename** — `conch_rename {session, label}` gives a session a name the user actually uses ("call that one 'the api work'").
-- **Say where you work** — `conch_working_folders {folders}` names the folder(s) you are actually working in when they differ from where the session started; conch's file tree, file viewer and sidebar grouping follow them. Once is enough; say it again only if you move.
-- **What's on screen** — `conch_on_screen` says what conch last put on the user's screen and whose it is: the surface, the session and deliverable, a confidence and the reason. It knows only what conch staged itself (the Ready pill, the menu, its own window), so treat it as "last seen", not "looking at now".
-- **Tune** — `conch_config {key, value}` reads any conch setting live and changes these, and only these: `end-silence`, `voice-speed`, `haiku-timeout`, `read-full`, `announce-summary`, `whisper-idle-unload` — the voice and timing knobs. Every other key (the phone, the relay, permissions, meeting detection) is the user's own, by name, forever; the refusal tells you the `conch set` command to hand them. Only touch a setting the user named.
+- **Auto / manual** — `conch agent mode pause|resume [--session S | --all]` uses `pause` for lossless manual mode and `resume` for auto read-and-listen mode. Without `--session` or `--all` it switches only YOUR session; `--session` names another one. Switching every session at once — the whole daemon, what the user's `p` key and `conch pause` do — needs `--all` explicitly, and only when the user asked for exactly that. A `resume` from an agent is refused while the user put conch in manual themselves (the `p` key, the Mac's toggle, `conch pause`) — only a person undoes a person's pause, and a `conch agent speak` is held then too: not spoken and not queued, and its result carries `held` saying so.
+- **Rename** — `conch agent rename <session> <label>` gives a session a name the user actually uses ("call that one 'the api work'").
+- **Say where you work** — `conch agent folders <dir>...` names the folder(s) you are actually working in when they differ from where the session started; conch's file tree, file viewer and sidebar grouping follow them. Once is enough; say it again only if you move.
+- **What's on screen** — `conch agent on-screen` says what conch last put on the user's screen and whose it is: the surface, the session and deliverable, a confidence and the reason. It knows only what conch staged itself (the Ready pill, the menu, its own window), so treat it as "last seen", not "looking at now".
+- **Tune** — `conch agent config [key [value]] [--unset]` reads any conch setting live and changes these, and only these: `end-silence`, `voice-speed`, `haiku-timeout`, `read-full`, `announce-summary`, `whisper-idle-unload` — the voice and timing knobs. Every other key (the phone, the relay, permissions, meeting detection) is the user's own, by name, forever; the refusal tells you the `conch set` command to hand them. Only touch a setting the user named.
+- **File a bug about conch** — `conch bug <title> --happened TEXT --expected TEXT [--area WORD] [--evidence PATH-OR-LINE]...` (also `conch agent bug`) when conch itself got something wrong that its own records can't show: a pill that never lit, a tab that opened under the wrong session, an answer that contradicts what you see. The title is one line; `--happened` and `--expected` are what you saw and what should have happened; `--area` is the command or tool it is about (`capture`, `browser`); `--evidence` (repeat it, up to 6) is a file path or a line of output, kept as written (a file isn't copied). It becomes a failure ticket in Settings › Failures on this Mac, where the user can press Fix: never a GitHub issue or anything public, since conch's repository is public and a ticket holds session names and the user's words. The same bug from another session counts on the same ticket. The answer gives the ticket's number (`ticket: 48`, `outcome: opened`, or `counted` for one that was there): tell the user it. Don't file what conch already said in an error: every failed or refused command is a ticket already. A session files at most 5 an hour, and the same one once.
 
 ## How to behave
-- **Read before you act.** When the ask is vague ("what's the status", "anything need me?"), call `conch_sessions` first and answer from it — don't guess.
-- **Do the one thing, then stop.** "Wake lowtide" → `conch_wake`, confirm in one line. Don't chain extra actions the user didn't ask for.
+- **Read before you act.** When the ask is vague ("what's the status", "anything need me?"), run `conch agent sessions` first and answer from it — don't guess.
+- **Do the one thing, then stop.** "Wake lowtide" → `conch agent wake lowtide`, confirm in one line. Don't chain extra actions the user didn't ask for.
 - **Side-effects are the user's.** Mode, label, and settings changes alter their live environment — do exactly what was asked, name what you did, and never pause or reconfigure on your own initiative.
-- **A tool failure is honest, not fatal.** If a tool returns an error (conch's daemon may be down or a session may have closed), say so plainly and offer the next step — never invent a result.
+- **A failure is honest, not fatal.** If a tool or a command returns an error (conch's daemon may be down or a session may have closed), say so plainly and offer the next step — never invent a result.
 - **Steering a sibling is not the same as doing its work.** When the user asks
   you to act on ANOTHER session, act on it and stop — don't start doing that
   session's job for it. This says nothing about your own work: you are a worker
@@ -476,8 +537,9 @@ https://brew.sh rather than trying to install Homebrew yourself.
 
 ## What conch will refuse
 
-Each of these comes back as a tool error whose text says what to do instead.
-Do not retry the same call; do the alternative, or tell the user in one line.
+Each of these comes back as a tool error (or a command's exit 2 or 3) whose
+text says what to do instead. Do not retry the same call; do the alternative,
+or tell the user in one line.
 
 - `review_to_front` naming **another session's** artifact — omit `session`; you may only surface your own work.
 - `review_to_front` from a caller conch **cannot verify** — leave the result in your reply, or use the `conch:review` line.
@@ -490,24 +552,27 @@ Do not retry the same call; do the alternative, or tell the user in one line.
 - `review_to_front` with an `approval` that is not `{}` or `{label}`, or a
   `label` that is empty or over 40 characters — fix it, or leave `approval`
   out unless you are waiting on the user's yes.
-- `review_remove` with an `id` or `artifact` **your session does not hold** —
-  "nothing removed"; list yours with `conch_deliverables`. It takes exactly
-  one of the two.
+- `conch agent unpublish` with an id or `--artifact` **your session does not
+  hold** — "nothing removed"; list yours with `conch agent deliverables`. It
+  takes exactly one of the two.
 - `review_to_front` with a **scene** that is not `v: 1`, has an unknown kind or field, asks for `kind: "link"` with no link, has an `inspect` that is empty or over 200 characters, or carries `target.ref` — the refusal says which; fix the scene or omit it.
 - `review_to_front` with **marks** that don't fit *Marks* above: an unknown kind or field (a colour is one), numbers outside 0 to 1, geometry the kind doesn't take, a `selector` or `quote` with no link, an image that fails the link check, more than 12, or over 4096 bytes; or `units: "px"` with no `size` on a canvas, on an image conch can't read the size of, or reaching outside the picture. The refusal names the mark (`marks[2]`) and what to fix.
-- `conch_capture` with a `url` that is not an http(s) URL or a local `.html` file that passes the link rule, a `target` that is not exactly one of `selector` or `quote`, a `viewport` outside its limits, a `mark` without a `target`, or `publish` from a caller conch cannot verify. When it runs but can't capture, it fails with why: conch's Mac app isn't running (open it and try again), the page didn't load, the target **wasn't found** (the error names the page's title, its headings, whether it was a sign-in screen, and a picture of what conch saw), or it didn't finish in time.
-- A `browser_*` command that reaches a tab the user **paused agents in** — "the user has taken over this tab (…)": don't retry; say what you were doing and wait for them, or open a tab of your own.
-- `atlas_show` with a `path` that isn't an Atlas path (parts of letters, digits, `.`, `_` or `-`, none starting with a dot, no `..`), empty `markdown` or over 2 MB, or from a caller conch cannot verify; nothing is written then. A copy that is in the way and isn't a plain file (a symlink) fails with why, and is left alone.
-- A `session` name that **matches several sessions** — the refusal lists them by id and label; pass the id.
-- `conch_wake` / `conch_recite` **without `session`** when your caller is unverified — pass the session's id.
-- `conch_start` with a `signIn` conch **doesn't have** — the refusal lists the sign-ins it has, by label and id; pick one, or leave it out for the rotating login. A `signIn` with `backend: "codex"`, a `folder` that isn't one, an `effort` the agent doesn't offer, or a `prompt` over 2,000 characters, on more than one line or starting with `-`, is refused too. A folder the agent doesn't trust yet is refused rather than started on its trust prompt: the user starts that one from conch's New session sheet, which asks them.
+- `conch agent capture` with a url that is not an http(s) URL or a local `.html` file that passes the link rule, both `--selector` and `--quote`, a `--size` outside its limits, a `--mark` without a part to mark, or `--publish` from a session conch cannot verify. When it runs but can't capture, it fails with why: conch's Mac app isn't running (open it and try again), the page didn't load, the target **wasn't found** (the error names the page's title, its headings, whether it was a sign-in screen, and a picture of what conch saw), or it didn't finish in time.
+- A `conch agent browser` command that reaches a tab the user **paused agents in** — "the user has taken over this tab (…)": don't retry; say what you were doing and wait for them, or open a tab of your own.
+- `conch agent atlas` with a path that isn't an Atlas path (parts of letters, digits, `.`, `_` or `-`, none starting with a dot, no `..`), an empty Markdown file or one over 2 MB, or from a session conch cannot verify; nothing is written then. A copy that is in the way and isn't a plain file (a symlink) fails with why, and is left alone.
+- A session name that **matches several sessions** — the refusal lists them by id and label; pass the id. One that matches none lists the live sessions.
+- `conch agent wake` / `conch agent recite` **naming no session** when conch can't verify which session you are — pass the session's id.
+- A command on **your own session** (`publish`, `folders`, `deliverables`, `unpublish`, `atlas`, `browser …`, `capture --publish`) from a shell conch can't tie to one session — the refusal says why (`conch agent whoami` too). Run it through the `conch_run` tool, or leave the result in your reply.
+- `conch agent start` with a `--sign-in` conch **doesn't have** — the refusal lists the sign-ins it has, by label and id; pick one, or leave it out for the rotating login. A `--sign-in` with `--backend codex`, a `--folder` that isn't one, an `--effort` the agent doesn't offer, or a `--prompt` over 2,000 characters, on more than one line or starting with `-`, is refused too. A folder the agent doesn't trust yet is refused rather than started on its trust prompt: the user starts that one from conch's New session sheet, which asks them.
 - `conch team add` for a role that isn't **below yours**, past its **limit working at once**, or from a session that isn't on the team; `conch team task` from a session to a running team (conch can't yet pass one session's words into another: the user can, from Settings › Teams); `conch team start` in a folder an agent hasn't been told to trust (`--trust-folder` when the user said to trust it). Each refusal says why and what to do instead.
-- `conch_config` setting or unsetting a key that is **not on the list** above — the refusal names the `conch set <key> <value>` (or `conch unset <key>`) command the user can run themselves.
-- `conch_speak` with more than **600 characters** — refused with the count, never silently cut. Say the short version; the rest is in your reply.
-- `conch_speak` while your previous one is still being spoken — "**already speaking** for this session". Wait, or put the words in your reply.
-- `conch_mode` for every session without `scope: "all"` — a bare `pause` is your own session. `scope: "all"` together with `session`, or any scope other than `"all"`, is refused too.
-- `conch_mode` when this server has no calling session it can verify and you named none — pass `session`, or `scope: "all"`.
-- `conch_wake` / `conch_recite` on a Mac that has **yielded** its audio to another Mac — the send succeeds, but the result's `audio` line says the daemon refused it: nothing opens or speaks on this Mac until the other Mac's app releases the audio or the lease expires.
+- `conch agent config` setting or unsetting a key that is **not on the list** above — the refusal names the `conch set <key> <value>` (or `conch unset <key>`) command the user can run themselves.
+- `conch agent speak` with more than **600 characters** — refused with the count, never silently cut. Say the short version; the rest is in your reply.
+- `conch agent speak` while your previous one is still being spoken — "**already speaking** for this session". Wait, or put the words in your reply.
+- `conch agent notify` with more than **280 characters**, a `--link` that isn't http(s), the **same words** again within the hour, or more than **4 in an hour** from one session — refused, saying which. Put it in your reply instead.
+- `conch agent mode` for every session without `--all` — a bare `pause` is your own session. `--all` together with `--session` is refused too.
+- `conch agent mode` when conch can't verify which session you are and you named none — pass `--session`, or `--all`.
+- `conch bug` more than **5 times an hour** from one session, or the same bug again within the hour — the second answer names the ticket you filed (`outcome: duplicate`); more than that is refused.
+- `conch agent wake` / `conch agent recite` on a Mac that has **yielded** its audio to another Mac — the send succeeds, but the result's `audio` line says the daemon refused it: nothing opens or speaks on this Mac until the other Mac's app releases the audio or the lease expires.
 
 ## Two Macs, the phone, and the help session
 
@@ -519,8 +584,8 @@ holding, a wake opens the phone's mic. Read the `audio` line in every wake and
 recite result and repeat it to the user in your own words.
 
 When conch itself misbehaves — silent mic, nothing announced, a pairing error,
-a daemon that seems down — do not debug conch from a worker session. Tell the
-user to open the help session: `conch help-session` on the command line, or
+a daemon that seems down — do not debug conch from a worker session. File what
+you saw with `conch bug` (above), and tell the user to open the help session: `conch help-session` on the command line, or
 **Help with conch** in the Mac app's New session sheet. It is a Claude session
 in a folder conch keeps for the purpose, with the log, the errors file, and the
 published state in front of it, and it is the place conch problems go.

@@ -1638,6 +1638,9 @@ export function createControlServer(options: ControlServerOptions): ControlServe
           let frame: Buffer;
           try { frame = encodeControlFrame(JSON.stringify(reply)); }
           catch { frame = encodeControlFrame(JSON.stringify({ kind: "resource-error", error: "That was too large to send." })); }
+          sock.end(frame);
+          return;
+        }
         // Teams (team-desk.ts) name no session: Settings › Teams and `conch team` ask for the types and the teams running,
         // start one, pass it a task, ask for a member. The Mac app's and the CLI's, never a phone's (phone-bridge.ts
         // `MAC_APP_ONLY_DECODERS`): a start opens sessions on this Mac. A start a member waits on is answered when it runs.

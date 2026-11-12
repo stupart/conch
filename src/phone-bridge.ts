@@ -228,11 +228,11 @@ export const MAC_APP_ONLY_DECODERS: Readonly<Record<string, (value: unknown) => 
   decodeBugReportRequest,
   // `conch message` names its sender by a process on this Mac (peer-message-send.ts), which a phone has none of.
   decodePeerMessageRequest,
-  // What sessions left running, with their commands and folders, and a Stop: the Mac's (resource-ledger.ts).
-  decodeResourceRequest,
   // Teams start sessions on this Mac and hold their tasks: the Mac's and its CLI's (team-desk.ts). The phone sees the
   // teams running in the sessions file, as the sidebar groups them.
   decodeTeamRequest,
+  // What sessions left running, with their commands and folders, and a Stop: the Mac's (resource-ledger.ts).
+  decodeResourceRequest,
 };
 
 /** A control body only the Mac app may send, as the control server would read it (one envelope unwrapped, as it does). */

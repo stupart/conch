@@ -3631,7 +3631,9 @@ extension PublishedState {
             dismissedRows: dismissedRows,
             browserTabs: browserTabs?.filter { $0.ask != nil },
             // What sessions left running: the list draws it beside them (`StillRunningSection`).
-            resources: resources
+            resources: resources,
+            // The teams at work: the list groups each one's members under its header.
+            teams: teams
         )
     }
 }
