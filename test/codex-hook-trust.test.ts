@@ -144,12 +144,12 @@ describe("hooks/list", () => {
 describe("a background Codex launch", () => {
   const trust = `hooks.state={"/Users/someone/.codex/hooks.json:stop:0:0"={trusted_hash="${HASH(4)}"}}`;
 
-  test("carries no update check and conch's hook trust, before the subcommand; Terminal and Claude carry neither", () => {
+  test("carries no update check and conch's hook trust, before the subcommand; Terminal only its own server, Claude neither", () => {
     const request = { ...startRequestFromArgv(["codex", "--background", "--resume", "thread-1", "--cwd", "/work"]), hookTrust: trust };
     expect(terminalSessionCommand(request)).toBe(
       `cd -- '/work' && exec codex --no-daemon -c check_for_update_on_startup=false -c '${trust}' resume 'thread-1'`,
     );
-    expect(terminalSessionCommand({ ...request, host: "terminal", hookTrust: undefined })).toBe(`cd -- '/work' && exec codex resume 'thread-1'`);
+    expect(terminalSessionCommand({ ...request, host: "terminal", hookTrust: undefined })).toBe(`cd -- '/work' && exec codex --no-daemon resume 'thread-1'`);
     expect(terminalSessionCommand({ backend: "claude", host: "background", resumeSessionId: "abc", cwd: "/work", hookTrust: trust }))
       .toBe("cd -- '/work' && exec claude --resume 'abc'");
   });
@@ -163,7 +163,7 @@ describe("a background Codex launch", () => {
     // `ps -o args=` of a background session conch started: quoting gone, one word per space.
     const args = `--no-daemon -c check_for_update_on_startup=false -c ${trust} --dangerously-bypass-approvals-and-sandbox resume thread-1 -c model_provider=openai`.split(" ");
     const built = restartRequest({ sessionId: "thread-1", backend: "codex", cwd: "/work" }, args);
-    expect(built.notCarriedOver).toEqual(["--no-daemon", "-c model_provider=openai"]);
+    expect(built.notCarriedOver).toEqual(["-c model_provider=openai"]);
     expect(built.request).toEqual({ backend: "codex", resumeSessionId: "thread-1", cwd: "/work",
       options: { "bypass-permissions": true } });
   });

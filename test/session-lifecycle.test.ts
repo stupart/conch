@@ -53,7 +53,7 @@ describe("native Terminal session lifecycle", () => {
     expect(terminalSessionCommand({ backend: "claude", cwd: "/tmp/repo", resumeSessionId: "abc'123" }))
       .toBe("cd -- '/tmp/repo' && exec claude --resume 'abc'\\''123'");
     expect(terminalSessionCommand({ backend: "codex", cwd: "/tmp/repo", resumeSessionId: "thread-1" }))
-      .toBe("cd -- '/tmp/repo' && exec codex resume 'thread-1'");
+      .toBe("cd -- '/tmp/repo' && exec codex --no-daemon resume 'thread-1'");
     expect(terminalSessionCommand({ backend: "codex", cwd: "/tmp/repo" })).not.toContain("tmux");
   });
 
@@ -71,7 +71,7 @@ describe("native Terminal session lifecycle", () => {
       },
     );
     expect(argv[0]).toBe("osascript");
-    expect(argv.at(-1)).toBe("cd -- '/tmp/repo' && exec codex resume 'thread-1'");
+    expect(argv.at(-1)).toBe("cd -- '/tmp/repo' && exec codex --no-daemon resume 'thread-1'");
     expect(argv.join(" ")).not.toContain("tmux");
   });
 

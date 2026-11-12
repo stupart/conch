@@ -10,6 +10,19 @@ can sit idle with no log database open). That terminal gets the PID and the
 normal terminal delivery/focus controls, even if a desktop copy also exists.
 Picker/`--last` launches and ambiguous command lines are not guessed from cwd.
 
+A plain `codex` (no `-c`, `--profile` or `--no-daemon`) attaches to the shared
+daemon and starts one when none runs (codex-cli 0.167.2,
+`codex-rs/tui/src/daemon_startup.rs`). Such a window names no thread on its
+command line, its log rows carry no thread ID, and the daemon's logs name a
+connection number rather than a process, so nothing ties it to its thread. That
+is why conch opens every Terminal Codex session with `--no-daemon` (the adapter's
+`terminalFlags`), as it already did in the background: the window holds its own
+thread's lock and is credited by it, whatever the daemon does. The one exception
+is a resume of a thread an app-server already holds, where a private server
+could not take the lock: that window joins the server with `codex resume <id>`
+(`sharedServer`) and is credited by the proof above. A background resume of one
+is refused with a message instead, since nobody would see the error in its pane.
+
 Remaining app-server threads are checked with read-only `thread-owner-discovery`
 on the desktop follower socket. Only acknowledged owners receive `codex-app`.
 The existence of the socket alone is insufficient. Probes are coalesced and cached

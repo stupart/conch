@@ -31,8 +31,9 @@ import {
   type AgentThreadConfiguration,
   type ReadAgentCapabilitiesOptions,
 } from "./agent-capabilities.ts";
+import { defaultCodexDir } from "./codex-accounts.ts";
 import { findCodexTranscript, type CodexSessionRegistryOptions } from "./codex-sessions.ts";
-import { codexFolderTrusted, readCodexHelperThreads } from "./codex-threads.ts";
+import { codexFolderTrusted, codexHomeDir, codexThreadServer, readCodexHelperThreads } from "./codex-threads.ts";
 import type { AgentQuestion, ConversationFormat, QuestionAnswer } from "./conversation.ts";
 import {
   readClaudeCandidates,
@@ -146,6 +147,17 @@ export interface AgentAdapter {
   readonly startOptions: readonly StartOption[];
   /** Extra CLI flags for a Conch-owned detached terminal. */
   readonly backgroundFlags: string;
+  /**
+   * Extra CLI flags for a session conch opens in Terminal, so the window conch types into is the one process that
+   * holds its conversation. Dropped for a resume into a server that already holds it (`sharedServer`).
+   */
+  readonly terminalFlags: string;
+  /**
+   * The server process already holding a conversation open for writing, where the agent has such servers (Codex's
+   * app-server); null where it has none. `home` is the account's, the agent's default when undefined. A Terminal resume
+   * of one joins it there (`sharedServer`).
+   */
+  readonly conversationServer: ((conversationId: string, home: string | undefined) => Promise<number | undefined>) | null;
   /** A per-launch "trust this folder" override, or "" where the agent takes none on its command line. */
   trustFolderArgs(cwd: string): string;
   /**
@@ -330,6 +342,8 @@ export const claudeAdapter: AgentAdapter = {
   displayName: "Claude Code",
   executable: "claude",
   backgroundFlags: "",
+  terminalFlags: "",
+  conversationServer: null,
   exitKeystrokes: 2,
   questionKeys: claudeQuestionKeys,
   inputBoxText: claudeInputBoxText,
@@ -424,6 +438,20 @@ export const codexAdapter: AgentAdapter = {
   // nobody sees it or answers it (codex-cli 0.164.0, with 0.165.0 out). Per
   // launch, never config.toml: a Terminal session still offers the update.
   backgroundFlags: " --no-daemon -c check_for_update_on_startup=false",
+  // A Terminal session gets a private server too. A plain `codex` (no `-c`, `--profile` or `--no-daemon`) attaches
+  // to Codex's shared app-server daemon, and starts one if none runs (codex-cli 0.167.2,
+  // `codex-rs/tui/src/daemon_startup.rs`, `exclusion`). The daemon then holds the thread's lock, and nothing on disk
+  // says which window shows which thread: the TUI's command line names none, its log rows carry no thread id, and the
+  // daemon's name a connection number, not a process. Two sessions Tyler started from conch on 2026-11-12 read
+  // "hosted by codex app-server (pid 90170), which has no terminal to type into", and he said: "i can see codex
+  // sessions in conch but can't message them". With its own server the TUI holds its own lock, so it is credited to
+  // its own window, and a daemon updating or restarting underneath can't take that away.
+  terminalFlags: " --no-daemon",
+  // A redirected conch (a test) reads no real Codex home unless the account names one (`codexHomeDir`).
+  conversationServer: async (id, home) => {
+    const dir = home ?? (codexHomeDir() === null ? undefined : defaultCodexDir());
+    return dir ? codexThreadServer(dir, id) : undefined;
+  },
   exitKeystrokes: 1,
   // Codex's request_user_input picker hasn't been measured; its answer stays a message.
   questionKeys: null,

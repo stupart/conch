@@ -20,7 +20,7 @@ test("each agent gets the flag it actually accepts", () => {
   expect(command({ bypassPermissions: true }))
     .toContain("claude --dangerously-skip-permissions");
   expect(command({ backend: "codex", bypassPermissions: true }))
-    .toContain("codex --dangerously-bypass-approvals-and-sandbox");
+    .toContain("codex --no-daemon --dangerously-bypass-approvals-and-sandbox");
 });
 
 test("resumed sessions get it too", () => {
@@ -36,7 +36,7 @@ test("the flag precedes a Codex subcommand, not its positional id", () => {
   // after it reads as a second positional. Verified against the real binary:
   // `codex --dangerously-bypass-approvals-and-sandbox resume --help` parses.
   expect(command({ backend: "codex", bypassPermissions: true, resumeSessionId: "abc" }))
-    .toBe("cd -- '/w' && exec codex --dangerously-bypass-approvals-and-sandbox resume 'abc'");
+    .toBe("cd -- '/w' && exec codex --no-daemon --dangerously-bypass-approvals-and-sandbox resume 'abc'");
 });
 
 test("the daemon hands its setting to the launcher", () => {

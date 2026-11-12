@@ -41,7 +41,7 @@ test("Codex metadata and terminal launch keep credentials, resume and restart in
   expect(command).toContain("-u OPENAI_API_KEY");
   expect(command).toContain("work'\\''s codex'");
   expect(command).not.toContain("CLAUDE_CONFIG_DIR");
-  expect(terminalSessionCommand({ ...request, resumeSessionId: "abc" })).toContain("codex resume 'abc'");
+  expect(terminalSessionCommand({ ...request, resumeSessionId: "abc" })).toContain("codex --no-daemon resume 'abc'");
   expect(startRequestFromArgv(["codex", "--account", account.id]).codexAccountId).toBe(account.id);
   expect(restartRequest({ ...request, sessionId: "abc" }, []).request.codexAccountId).toBe(account.id);
   for (const action of ["login", "cloud"] as const) {

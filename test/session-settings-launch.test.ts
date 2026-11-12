@@ -11,7 +11,7 @@ describe("a new session gets model and effort only when the person picked them",
   test("no pick, no flag: the agent's own config decides", () => {
     for (const backend of ["claude", "codex"] as const) {
       const command = terminalSessionCommand({ backend, cwd: "/w" });
-      expect(command).toBe(`cd -- '/w' && exec ${backend}`);
+      expect(command).toBe(`cd -- '/w' && exec ${backend}${backend === "codex" ? " --no-daemon" : ""}`);
       expect(command).not.toMatch(/--model|--effort|model=|model_reasoning_effort/);
       // Other choices do not bring a model along with them.
       const withSandbox = terminalSessionCommand({ backend, cwd: "/w", options: backend === "codex" ? { sandbox: "read-only" } : { "permission-mode": "plan" } });
@@ -26,12 +26,12 @@ describe("a new session gets model and effort only when the person picked them",
 
   test("Codex: -c overrides for this launch, never --model and never config.toml", () => {
     expect(terminalSessionCommand({ backend: "codex", cwd: "/w", options: { model: "gpt-6-luna", "reasoning-effort": "max" } }))
-      .toBe(`cd -- '/w' && exec codex -c 'model="gpt-6-luna"' -c 'model_reasoning_effort="max"'`);
+      .toBe(`cd -- '/w' && exec codex --no-daemon -c 'model="gpt-6-luna"' -c 'model_reasoning_effort="max"'`);
     expect(terminalSessionCommand({ backend: "codex", cwd: "/w", options: { "reasoning-effort": "xhigh" } }))
-      .toBe(`cd -- '/w' && exec codex -c 'model_reasoning_effort="xhigh"'`);
+      .toBe(`cd -- '/w' && exec codex --no-daemon -c 'model_reasoning_effort="xhigh"'`);
     // After `resume <id>`, like every other option.
     expect(terminalSessionCommand({ backend: "codex", cwd: "/w", resumeSessionId: "t1", options: { model: "gpt-6-sol" } }))
-      .toBe(`cd -- '/w' && exec codex resume 't1' -c 'model="gpt-6-sol"'`);
+      .toBe(`cd -- '/w' && exec codex --no-daemon resume 't1' -c 'model="gpt-6-sol"'`);
     expect(terminalSessionCommand({ backend: "codex", cwd: "/w", options: { model: "gpt-6-sol" } })).not.toContain("--model");
   });
 
@@ -61,7 +61,7 @@ describe("a new session gets model and effort only when the person picked them",
     expect(notCarriedOver).toEqual(['-c projects."/w".trust_level="trusted"', '-c model="bad']);
     // What it renders is what it started with.
     expect(terminalSessionCommand(request)).toBe(
-      `cd -- '/w' && exec codex resume 't1' -c 'model="gpt-6-luna"' -c 'model_reasoning_effort="max"' --sandbox 'read-only'`,
+      `cd -- '/w' && exec codex --no-daemon resume 't1' -c 'model="gpt-6-luna"' -c 'model_reasoning_effort="max"' --sandbox 'read-only'`,
     );
     expect(restartRequest({ sessionId: "s1", backend: "claude", cwd: "/w" }, ["--model", "fable", "--effort", "max"]).request.options)
       .toEqual({ "bypass-permissions": false, model: "fable", effort: "max" });

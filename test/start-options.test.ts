@@ -151,7 +151,7 @@ describe("the rendered command", () => {
       resumeSessionId: "t1",
       options: { profile: "work", "ask-for-approval": "never", sandbox: "workspace-write", "bypass-permissions": false },
     })).toBe(
-      "cd -- '/w' && exec codex resume 't1' --sandbox 'workspace-write' --ask-for-approval 'never' --profile 'work'",
+      "cd -- '/w' && exec codex --no-daemon resume 't1' --sandbox 'workspace-write' --ask-for-approval 'never' --profile 'work'",
     );
   });
 
@@ -159,13 +159,13 @@ describe("the rendered command", () => {
     expect(terminalSessionCommand({ backend: "claude", cwd: "/w", bypassPermissions: true, options: { "bypass-permissions": false } }))
       .toBe("cd -- '/w' && exec claude");
     expect(terminalSessionCommand({ backend: "codex", cwd: "/w", bypassPermissions: false, options: { "bypass-permissions": true } }))
-      .toBe("cd -- '/w' && exec codex --dangerously-bypass-approvals-and-sandbox");
+      .toBe("cd -- '/w' && exec codex --no-daemon --dangerously-bypass-approvals-and-sandbox");
   });
 
   test("no options, or a false toggle, renders nothing extra", () => {
     expect(terminalSessionCommand({ backend: "claude", cwd: "/w", options: {} })).toBe("cd -- '/w' && exec claude");
     expect(terminalSessionCommand({ backend: "codex", cwd: "/w", bypassPermissions: true, options: { "bypass-permissions": false } }))
-      .toBe("cd -- '/w' && exec codex");
+      .toBe("cd -- '/w' && exec codex --no-daemon");
   });
 
   /**
@@ -188,10 +188,10 @@ describe("the rendered command", () => {
     test("Tyler's intent — full access, trusted folder, no approvals — is one coherent form", () => {
       // Both halves are the bypass flag's own job, so it is the whole command.
       expect(terminalSessionCommand({ backend: "codex", cwd: projects, bypassPermissions: true, trustFolder: true }))
-        .toBe(`cd -- '${projects}' && exec codex --dangerously-bypass-approvals-and-sandbox ${trusted}`);
+        .toBe(`cd -- '${projects}' && exec codex --no-daemon --dangerously-bypass-approvals-and-sandbox ${trusted}`);
       expect(terminalSessionCommand({
         backend: "codex", cwd: projects, bypassPermissions: true, trustFolder: true, resumeSessionId: "0199-abc",
-      })).toBe(`cd -- '${projects}' && exec codex --dangerously-bypass-approvals-and-sandbox ${trusted} resume '0199-abc'`);
+      })).toBe(`cd -- '${projects}' && exec codex --no-daemon --dangerously-bypass-approvals-and-sandbox ${trusted} resume '0199-abc'`);
     });
 
     test("Claude's equivalent, fresh and resumed, pinned the same way", () => {
@@ -260,7 +260,7 @@ describe("the rendered command", () => {
     test("without the bypass flag the pair is Codex's own supported form, and still renders", () => {
       expect(terminalSessionCommand({
         backend: "codex", cwd: "/w", options: { sandbox: "danger-full-access", "ask-for-approval": "never" },
-      })).toBe("cd -- '/w' && exec codex --sandbox 'danger-full-access' --ask-for-approval 'never'");
+      })).toBe("cd -- '/w' && exec codex --no-daemon --sandbox 'danger-full-access' --ask-for-approval 'never'");
       // Claude has no such pair; its bypass renders beside everything else.
       expect(terminalSessionCommand({
         backend: "claude", cwd: "/w", options: { "bypass-permissions": true, "permission-mode": "plan" },

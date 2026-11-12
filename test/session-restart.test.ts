@@ -52,12 +52,12 @@ describe("what a restart relaunches", () => {
     const built = restartRequest(codexRow, ["resume", codexRow.sessionId, "-c", "model_provider=openai", "--sandbox", "workspace-write"]);
     expect(built.notCarriedOver).toEqual(["-c model_provider=openai"]);
     expect(command(built)).toBe(
-      "cd -- '/Users/t/assets' && exec codex resume '01a08ea0-9e2a-7563-863d-c9158fb22d16' --sandbox 'workspace-write'",
+      "cd -- '/Users/t/assets' && exec codex --no-daemon resume '01a08ea0-9e2a-7563-863d-c9158fb22d16' --sandbox 'workspace-write'",
     );
   });
 
   test("an opening prompt is not a setting", () => {
-    expect(command(restartRequest(codexRow, ["yolo"]))).toEndWith("exec codex resume '01a08ea0-9e2a-7563-863d-c9158fb22d16'");
+    expect(command(restartRequest(codexRow, ["yolo"]))).toEndWith("exec codex --no-daemon resume '01a08ea0-9e2a-7563-863d-c9158fb22d16'");
   });
 
   test("two windows on one id: resumes the conversation id, not the window key", () => {
