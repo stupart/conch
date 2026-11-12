@@ -1057,6 +1057,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     latestTurnBySession,
     reportedMissingCodexPid,
   } = ledger;
+  /** Codex threads on the shared daemon already logged as out of conch's reach (the registry pass below). */
+  const reportedSharedCodexThreads = new Set<string>();
   const eventQueue = new EventQueue({
     handle,
     handoffOrder: () => cfg.handoffOrder,
@@ -2916,6 +2918,12 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     }
     if (snap) observeElsewhere(registryLive);
     for (const session of registryLive) {
+      // A thread on Codex's shared daemon that no window can be proven to show: the row says so, and so does the log,
+      // once per thread, since it is why nothing conch sends reaches it (codex-threads.ts `appServerNoTerminal`).
+      if (session.noTerminal?.includes("Codex's shared server") && !reportedSharedCodexThreads.has(session.sessionId)) {
+        reportedSharedCodexThreads.add(session.sessionId);
+        log(`codex: "${labelForSessionId(session.sessionId)}" is on Codex's shared app-server with no window conch can prove shows it, so conch can't type into it; resume it from conch to get one`);
+      }
       if (shouldReportMissingCodexPid(session, reportedMissingCodexPid)) {
         recordDaemonError(
           "session-routing",

@@ -14,6 +14,7 @@ import {
   codexThreadStatus,
   detectCodexApprovals,
   detectCodexTurnEnds,
+  hostedByAppServer,
   isInterAgentEnvelope,
   readCodexHelperThreads,
   readCodexOpenThreadIds,
@@ -864,6 +865,12 @@ describe("where keystrokes for a Codex thread may go: its lock's holder", () => 
         { pid: 2383, args: "codex fix the app-server bug", holds: ["tui"] },
       ]);
       const byId = new Map((await rows(home, table)).map((row) => [row.sessionId, row]));
+      // The shared daemon's says what to do; the app's server's doesn't pretend a resume would help. Both still say who hosts it.
+      const shared = byId.get("daemon")!.noTerminal!;
+      expect(shared).toContain("resume this from conch's Start sheet");
+      expect(hostedByAppServer(shared, 5150)).toBe(true);
+      expect(hostedByAppServer(byId.get("desktop")!.noTerminal, 74676)).toBe(true);
+      expect(hostedByAppServer(shared, 515)).toBe(false);
       expect(byId.get("desktop")).toMatchObject({
         pid: 0,
         noTerminal: "hosted by codex app-server (pid 74676), which has no terminal to type into",

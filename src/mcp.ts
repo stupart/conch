@@ -134,7 +134,7 @@ import {
   type BrowserTarget,
 } from "./browser-workbench.ts";
 import { compactRead, READ_SELECTOR_MAX, READ_WORDS_MAX, readView, ReadViewError } from "./browser-read.ts";
-import { appServerNoTerminal } from "./codex-threads.ts";
+import { hostedByAppServer } from "./codex-threads.ts";
 import { ATLAS_MARKDOWN_MAX_BYTES, ATLAS_PATH_MAX, atlasCopiesFolder, atlasFiling, atlasPagePath, writeAtlasCopy } from "./atlas-copies.ts";
 import {
   HANDOFF_FROM_ENV,
@@ -1420,7 +1420,7 @@ async function callerBinding(
     return unverified("this server has no parent session process");
   }
   const infos = (await dependencies.registrySnapshot(config.claudeDir))?.infos ?? [];
-  const appServer = hasParent && infos.some((session) => session.noTerminal === appServerNoTerminal(parentPid));
+  const appServer = hasParent && infos.some((session) => hostedByAppServer(session.noTerminal, parentPid));
   if (threadId !== undefined || appServer) {
     if (threadId === undefined) {
       return unverified(

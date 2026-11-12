@@ -557,7 +557,7 @@ export function codexThreadRoute(
 ): { pid: number; noTerminal?: string } {
   if (holder === undefined) return { pid: 0, noTerminal: CODEX_THREAD_CLOSED };
   if (holder > 0 && args !== undefined && APP_SERVER_ARGS.test(args)) {
-    return { pid: 0, noTerminal: appServerNoTerminal(holder) };
+    return { pid: 0, noTerminal: appServerNoTerminal(holder, SHARED_DAEMON_ARGS.test(args)) };
   }
   return { pid: holder };
 }
@@ -567,11 +567,28 @@ export const CODEX_THREAD_CLOSED = "closed: no Codex process has this thread ope
 
 /**
  * Why a row an app-server hosts has no terminal. It names the pid, which is
- * also how the MCP server knows its parent is a shared app-server (`mcp.ts`).
+ * also how the MCP server knows its parent is a shared app-server (`mcp.ts`,
+ * by `hostedByAppServer`).
+ *
+ * On Codex's shared daemon it also says what to do. A window Tyler can see is
+ * attached there, so "no terminal" alone read as conch being wrong (2026-11-12,
+ * "i can see codex sessions in conch but can't message them"): what conch lacks
+ * is any record of which window shows which thread, and a resume from conch
+ * opens one it can tell (`sharedServer` in session-lifecycle.ts).
  */
-export function appServerNoTerminal(pid: number): string {
-  return `hosted by codex app-server (pid ${pid}), which has no terminal to type into`;
+export function appServerNoTerminal(pid: number, shared = false): string {
+  return `hosted by codex app-server (pid ${pid}), which has no terminal to type into`
+    + (shared ? `. It is Codex's shared server, and a Codex window attached to it doesn't say which conversation it shows; resume this from conch's Start sheet to get a window conch can type into` : "");
 }
+
+/** Whether a row's reason says the app-server `pid` hosts it (`appServerNoTerminal`, either form). */
+export function hostedByAppServer(noTerminal: string | undefined, pid: number): boolean {
+  const base = appServerNoTerminal(pid);
+  return noTerminal === base || noTerminal?.startsWith(`${base}.`) === true;
+}
+
+/** Codex's shared daemon, as against the ChatGPT app's own server: it listens on a unix socket, managed or not. */
+const SHARED_DAEMON_ARGS = /\sapp-server\b.*\s(?:--listen\s+unix:|--managed-daemon\b)/;
 
 /**
  * `app-server` as the subcommand: followed by an option, `daemon`, or nothing.
