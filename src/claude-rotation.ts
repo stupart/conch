@@ -237,6 +237,13 @@ export function describeSwapEvent(line: string): string | undefined {
       return "every Claude account in the rotation is at its limit; waiting for the first reset";
     case "account-quarantined":
       return `${who(event)} left the rotation: its sign-in has expired (sign it in again to bring it back)`;
+    case "no-switch":
+      // 2026-11-12: the switcher sat on an account that had run out for eight minutes, saying this every tick to no
+      // one, because the one account with room had a `cswap run` session on it (claude-swap.ts `liveRunSessionSlots`).
+      // The rest of no-switch's reasons are the switcher deciding not to, which is its job.
+      return event.reason === "no-viable-target"
+        ? "claude-swap wants to move off the account in use but has nowhere to go: each other account is at its limit, can't be signed in, or has a `cswap run` session on it"
+        : undefined;
     case "error":
       return event.transient === true ? undefined : `claude-swap: ${typeof event.message === "string" ? event.message.slice(0, 200) : "an error"}`;
     default:
@@ -253,11 +260,36 @@ export class RotationSupervisor {
   #wanted = false;
   #restarts = 0;
   #timer: ReturnType<typeof setTimeout> | undefined;
+  /** The no-switch line said last, and when: said again only after a switch, or half an hour on (it comes every tick). */
+  #stuck: { line: string; at: number } | undefined;
 
   constructor(
     private readonly report: (line: string) => void,
     private readonly executable: () => string | undefined = () => swapExecutable(),
+    /** A switch the switcher made, by account number (limit-recovery.ts waits for sessions to follow it). */
+    private readonly onSwitch: (to: number | undefined, from: number | undefined) => void = () => {},
   ) {}
+
+  /** One line of `cswap auto --json`: said when it is worth saying, a switch passed on. */
+  heard(line: string, now = Date.now()): void {
+    const said = describeSwapEvent(line);
+    let event: Record<string, unknown> | undefined;
+    try { event = JSON.parse(line); } catch {}
+    if (event?.event === "switch" && event.dry_run !== true && event.dryRun !== true) {
+      this.#stuck = undefined;
+      const slot = (ref: unknown): number | undefined => {
+        const number = (ref as Record<string, unknown> | undefined)?.number;
+        return typeof number === "number" ? number : undefined;
+      };
+      this.onSwitch(slot(event.to), slot(event.from));
+    }
+    if (!said) return;
+    if (event?.event === "no-switch") {
+      if (this.#stuck?.line === said && now - this.#stuck.at < 30 * 60_000) return;
+      this.#stuck = { line: said, at: now };
+    }
+    this.report(said);
+  }
 
   get running(): boolean {
     return this.#child !== undefined;
@@ -292,9 +324,9 @@ export class RotationSupervisor {
       for await (const chunk of child.stdout) {
         buffer += decoder.decode(chunk, { stream: true });
         for (let end; (end = buffer.indexOf("\n")) >= 0;) {
-          const said = describeSwapEvent(buffer.slice(0, end));
+          const line = buffer.slice(0, end);
           buffer = buffer.slice(end + 1);
-          if (said) this.report(said);
+          this.heard(line);
         }
       }
     })().catch(() => {});

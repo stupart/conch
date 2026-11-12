@@ -61,6 +61,29 @@ describe("what conch says about the switcher", () => {
     expect(describeSwapEvent("not json")).toBeUndefined();
   });
 
+  // 2026-11-12: the switcher sat on an account that had run out for eight minutes, saying "no-viable-target" every tick
+  // to no one. The one account with room had a `cswap run` session on it, which it skips.
+  test("a switcher with nowhere to go says so, once, until it switches or half an hour has passed", () => {
+    const stuck = JSON.stringify({ schemaVersion: 1, event: "no-switch", ts: "2026-11-12T00:46:00Z", reason: "no-viable-target" });
+    expect(describeSwapEvent(stuck)).toContain("has nowhere to go");
+    expect(describeSwapEvent(stuck)).toContain("`cswap run` session");
+    expect(describeSwapEvent(JSON.stringify({ event: "no-switch", reason: "below-threshold" }))).toBeUndefined();
+    const said: string[] = [];
+    const switched: Array<[number | undefined, number | undefined]> = [];
+    const supervisor = new RotationSupervisor((line) => said.push(line), () => undefined, (to, from) => switched.push([to, from]));
+    const at = Date.parse("2026-11-12T00:46:00Z");
+    for (let tick = 0; tick < 5; tick++) supervisor.heard(stuck, at + tick * 60_000);
+    expect(said).toHaveLength(1);
+    supervisor.heard(stuck, at + 31 * 60_000);
+    expect(said).toHaveLength(2);
+    supervisor.heard(SWITCH, at + 32 * 60_000);
+    expect(switched).toEqual([[2, 1]]);
+    supervisor.heard(stuck, at + 33 * 60_000);
+    expect(said).toHaveLength(4);
+    supervisor.heard(SWITCH.replace('"dryRun":false', '"dryRun":true'), at + 34 * 60_000);
+    expect(switched).toHaveLength(1);
+  });
+
   test("the supervisor runs `cswap auto --json` while on, reports its switches, and stops when off", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cswap-"));
     const cswap = join(dir, "cswap");
