@@ -46,7 +46,7 @@ Getting started:
 
 Everyday:
   conch wake [name] | recite [name] | pause | resume  talk again | reread | manual (hold) | auto
-  conch sessions | resumable [query] | start [claude|codex] [options]  live | past | open one in Terminal (start --help)
+  conch sessions | resources | resumable [query] | start [claude|codex] [options]  live | what they left running (resources help) | past | open one in Terminal (start --help)
   conch rename <session> <name> | model <session> <model>  save a name | type /model into it
 
 Voice and settings:
@@ -742,6 +742,12 @@ switch (command) {
     const { code, lines } = runMcpUsageCli(rest);
     for (const line of lines) (code === 0 ? console.log : console.error)(line);
     if (code) process.exitCode = code;
+    break;
+  }
+  case "resources": {
+    // The resource ledger (resource-ledger.ts): what sessions started that is still running, and Tyler's word on it.
+    const { runResourcesCli } = await import("./resources-cli.ts");
+    process.exitCode = await runResourcesCli(rest, cfg.socketPath);
     break;
   }
   case "failures": {

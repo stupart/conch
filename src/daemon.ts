@@ -3,6 +3,9 @@ import { BackgroundGuard } from "./background-recovery.ts";
 import { RestartGuard, bootTime } from "./restart-recovery.ts";
 import { dismissedWriter, loadDismissed } from "./dismissed-store.ts";
 import { defaultIsPidAlive } from "./codex-sessions.ts";
+import { ResourceLedger, withStillRunning, type LedgerSession } from "./resource-ledger.ts";
+import { handleResourceRequest, loadResourceMemory, psProcessTable, RESOURCE_SAMPLE_MS, ResourceSampler, stopResource } from "./resource-sampler.ts";
+import { readClaudeTitle } from "./claude-title.ts";
 import { handleAccountTools } from "./account-tools.ts";
 import { readBenchmarks } from "./benchmarks.ts";
 import { createSkillIndexes } from "./skill-indexes.ts";
@@ -295,6 +298,7 @@ import { codexHookCommand, conchInvocation, runInstall as installAccountHooks, r
 import { setUpSessionBrowsers } from "./browser-open.ts";
 import {
   addressParkedWindow,
+  labelOverrides,
   processConversation,
   sessionGoneFromSnapshot,
   sessionLabel,
@@ -1032,6 +1036,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   let panelOrder: string[] = [];
   let panelLabels = new Map<string, string>();
   let panelSessions = new Map<string, SessionInfo>();
+  /** The live sessions as the resource ledger reads them, from the last registry read (`reconcileSessionSnapshot`). */
+  let resourceSessions: { sessions: LedgerSession[]; complete: boolean } | null = null;
   /**
    * Which sign-in each session runs on, as its hook said (claude-session-sign-ins.ts): its row reads as that account,
    * and a restart, fork or recovery relaunches on it.
@@ -2421,11 +2427,18 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
    * Workbench's profiles, tabs and commands (`browserWorkbench`). Only this
    * Mac's app reads the file; the phone, and a second Mac through it, read `lastPublishedPanelState`, which never has them.
    * And this build's MCP toolset (`mcpToolset`), which an MCP server of an older one reads to hand over (mcp-handoff.ts),
-   * and on each row whose session's MCP server can't get it, `toolsStale` (`refreshToolsStale`).
+   * and on each row whose session's MCP server can't get it, `toolsStale` (`refreshToolsStale`). And `resources`, what
+   * sessions left running (resource-ledger.ts).
    */
   function writeSessionsFile(): void {
     if (lastPublishedPanelState) {
-      const state = { ...withBrowserState(withCaptureRequests(lastPublishedPanelState, pageCaptures.requests()), browserWorkbench), mcpToolset: MCP_TOOLSET };
+      // What sessions left running, in full (resource-ledger.ts): this Mac's alone, like `toolsStale`. The phone has
+      // each row's count, which `lastPublishedPanelState` carries.
+      const state = {
+        ...withBrowserState(withCaptureRequests(lastPublishedPanelState, pageCaptures.requests()), browserWorkbench),
+        mcpToolset: MCP_TOOLSET,
+        resources: resourceLedger.published(),
+      };
       publishSessionsFile(withToolsStale(state, toolsStale));
     }
   }
@@ -2469,6 +2482,71 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     breadcrumb("published state: sending it to the phone");
     phoneApplication?.publish();
   });
+
+  /**
+   * The resource ledger (resource-ledger.ts, resource-sampler.ts): what each session started that is still running,
+   * and, once its lifetime is over, the question to Tyler. Tyler, 2026-11-11: "maybe we need like a resource ledger as
+   * part of conch so things are linked to the sessions that made them or are using them and we can have less loose ends
+   * for things that are meaning to run temporarily." One look every 30 s; conch never stops anything on its own.
+   */
+  const resourceLedger = new ResourceLedger({
+    memory: loadResourceMemory(),
+    // A session conch never saw live (an orphan's environment names one from before this daemon): conch's own label for
+    // it, else the title Claude Code gave its transcript. Asked once per session; the ledger keeps the answer.
+    labelFor: (agentSessionId) => {
+      const own = labelOverrides()[agentSessionId];
+      if (own) return own;
+      const transcript = findTranscript(cfg.claudeDir, agentSessionId);
+      return transcript ? readClaudeTitle(transcript) : undefined;
+    },
+  });
+  // conch's own processes: this daemon and, when the app hosts it, the app. Nothing under them is a session's.
+  const conchPids = new Set([process.pid, ...(process.env.CONCH_APP_BUNDLE && process.ppid > 1 ? [process.ppid] : [])]);
+  const resourceSampler = new ResourceSampler({
+    ledger: resourceLedger,
+    sessions: () => resourceSessions,
+    // ponytail: its own `ps` each look, until the daemon's shared process look lands (perf/daemon-efficiency); then
+    // pass that look here as `table`.
+    table: psProcessTable(),
+    ownPids: conchPids,
+    uid: process.getuid?.(),
+    intervalMs: RESOURCE_SAMPLE_MS,
+    onChange: publishResources,
+    log,
+  });
+  /** The rows' "3 still running", into the published state the phone shares, and the full list into the sessions file. */
+  function publishResources(): void {
+    if (lastPublishedPanelState) {
+      lastPublishedPanelState = withStillRunning(lastPublishedPanelState, resourceLedger.rowCounts());
+    }
+    publishedStateWriter.request();
+  }
+  const resourceTimer = setInterval(() => {
+    breadcrumb("timer: resource ledger look (30 s)");
+    void resourceSampler.sample();
+  }, RESOURCE_SAMPLE_MS);
+  resourceTimer.unref?.();
+  setTimeout(() => void resourceSampler.sample(), 20_000).unref?.();
+  const resources = {
+    handle: (request: import("./resource-ledger.ts").ResourceRequest) => handleResourceRequest(request, {
+      ledger: resourceLedger,
+      sampler: resourceSampler,
+      // The Mac app sends no pid: it is Tyler. A CLI sends its own: walked up to its session, or a terminal no session started.
+      caller: async (callerPid) => {
+        if (callerPid === undefined) return { person: true };
+        const bound = await sessionForCallerPid(callerPid, { infos: [...panelSessions.values()], claudeDir: cfg.claudeDir });
+        if (bound.status === "verified") {
+          const session = resourceSessions?.sessions.find((each) => each.sessionId === bound.session.sessionId);
+          return { session: session ?? { sessionId: bound.session.sessionId, agentSessionId: bound.session.agentSessionId, pids: bound.session.pid ? [bound.session.pid] : [], label: labelForSessionId(bound.session.sessionId) } };
+        }
+        return /^no live session conch knows started/.test(bound.reason) ? { person: true } : { reason: bound.reason };
+      },
+      stop: (entry) => stopResource(entry, { table: psProcessTable() }),
+      listenerPid: async (port) => (await portListeners(port))[0]?.pid,
+      onChange: publishResources,
+      log,
+    }),
+  };
 
   /**
    * What recently became of sends that named themselves, published so a client can resolve
@@ -2515,6 +2593,21 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
 
   function reconcileSessionSnapshot(snap: Awaited<ReturnType<typeof registrySnapshot>>): void {
     const registryLive = snap?.infos ?? [];
+    // The resource ledger's sessions: each with its processes, so what runs under one is that one's.
+    if (snap) {
+      resourceSessions = {
+        complete: snap.complete,
+        sessions: registryLive.filter((s) => s.pid || s.agentPid).map((s) => ({
+          sessionId: s.sessionId,
+          ...(s.agentSessionId ? { agentSessionId: s.agentSessionId } : {}),
+          pids: [s.pid, s.agentPid].filter((pid): pid is number => Boolean(pid && pid > 1)),
+          label: labelForSessionId(s.sessionId),
+          ...(s.status ? { status: s.status } : {}),
+          ...(s.statusUpdatedAt ? { statusUpdatedAt: s.statusUpdatedAt } : {}),
+          ...(s.startedBySessionId ? { startedBySessionId: s.startedBySessionId } : {}),
+        })),
+      };
+    }
     for (const session of registryLive) {
       if (shouldReportMissingCodexPid(session, reportedMissingCodexPid)) {
         recordDaemonError(
@@ -2885,6 +2978,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       if (guards.length) lastPublishedPanelState.guards = guards;
       // Failure tickets: how many are open and unseen, for the gear's dot and Settings › Failures (failure-tickets.ts).
       lastPublishedPanelState.failures = failureDesk.digest();
+      // Each live row's "3 still running" (resource-ledger.ts): a fresh build carries none until this puts them back.
+      lastPublishedPanelState = withStillRunning(lastPublishedPanelState, resourceLedger.rowCounts());
       // Setup's practice session, first among the rows while it runs, and `features.practice` always (practice.ts).
       if (practice) lastPublishedPanelState = practice.publish(lastPublishedPanelState);
       // Each working row's line, through its throttle: a fresh build carries none until this puts them back.
@@ -4185,6 +4280,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     videoTranscripts: createVideoTranscripts({ uploads: phoneUploads.directory, transcribe: (wav) => transcribeWavSegments(cfg, wav) }),
     onReviewPreview: (message) => windowPreviews.answer(message),
     failureTickets: failureDesk,
+    resources,
     // A send the socket refused before it reached the voice loop: the Mac app drops that reply, so it is filed here.
     onFailure: recordDaemonError,
     pageCapture,
