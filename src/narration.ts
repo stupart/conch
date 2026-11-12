@@ -127,7 +127,7 @@ export function createNarration(deps: NarrationDeps): Narration {
         const wav = join(folder, "narration.wav");
         let recorder: NarrationRecorder;
         try {
-          // For Tyler alone, as the app keeps a canvas: the folders 0700, the file 0600 before sox writes a byte.
+          // For Tyler alone, as the app keeps a canvas: the folders 0700, the file 0600 before the recorder writes a byte.
           mkdirSync(folder, { recursive: true });
           chmodSync(deps.root, 0o700);
           chmodSync(folder, 0o700);

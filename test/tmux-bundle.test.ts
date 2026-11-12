@@ -291,7 +291,7 @@ describe("the app carries tmux", () => {
 
   test("every shipping script's bundle check covers tmux: signed, Hardened Runtime, the app's architectures, notices, system-only links", () => {
     const check = read("scripts/check-app-bundle.sh");
-    expect(check).toContain("for helper in conch-daemon whisper-cli whisper-server sox tmux; do");
+    expect(check).toContain("for helper in conch-daemon whisper-cli whisper-server sox conch-microphone tmux; do");
     for (const notice of NOTICES) expect(check).toContain(`ThirdParty/tmux/${notice}`);
     expect(check).toContain('[[ "$(env -i PATH=/usr/bin:/bin "$HELPERS/tmux" -V)" == "tmux $TMUX_VERSION" ]]');
     expect(check).toContain(`outside="$(otool -L "$HELPERS/tmux" | tail -n +2 | awk '{print $1}' | grep -vE '^(/System/Library/Frameworks/|/usr/lib/)' || true)"`);

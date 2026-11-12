@@ -410,6 +410,7 @@ private struct ConchSettingRowView: View {
     private static let displayNames: [String: String] = [
         "end-silence": "End-of-speech pause",
         "mic-gain": "Microphone gain",
+        "recorder": "Microphone recorder",
         "hold-submit-delay": "Hold before sending",
         "listen-window": "Listening window",
         "typing-grace": "Typing grace period",
