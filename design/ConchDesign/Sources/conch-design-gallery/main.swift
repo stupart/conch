@@ -2660,6 +2660,8 @@ try render("reply-bar-swoop", width: 1860) {
 // First-run setup (OnboardingGallery.swift).
 try MainActor.assumeIsolated { try renderOnboarding() }
 try renderFailureTickets()
+// Messages between agent sessions (PeerMessagesGallery.swift).
+try renderPeerMessages()
 
 // MARK: - Infinite scroll
 

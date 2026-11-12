@@ -1,4 +1,5 @@
 import { decodeFailureTicketRequest, type FailureDesk } from "./failure-tickets.ts";
+import { decodePeerMessageRequest, type PeerMessageReply, type PeerMessageRequest } from "./peer-message-send.ts";
 import type { AccountToolsRequest, AccountToolsReply } from "./account-tools.ts";
 import { PROMPT_DIGEST } from "./delivery-evidence.ts";
 import { validAccountId, type ClaudeAccountRequest, type ClaudeAccountsReply } from "./claude-accounts.ts";
@@ -742,6 +743,9 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
   if (value.backgroundWork !== undefined && value.backgroundWork !== true) {
     return { ok: false, err: "backgroundWork must be true when present" };
   }
+  // The daemon's own mark on `conch message`'s delivery (peer-message-send.ts): a socket that set it would skip the
+  // framing that names the sender and the limits on how often.
+  if (value.peer !== undefined) return { ok: false, err: "peer is set by conch message, never by a client" };
   if (value.review !== undefined) {
     if (!socketRecord(value.review) || typeof value.review.summary !== "string") {
       return { ok: false, err: "review must contain a string summary" };
@@ -1349,6 +1353,8 @@ export interface ControlServerOptions {
    * request is answered as unavailable.
    */
   failureTickets?: Pick<FailureDesk, "list" | "act">;
+  /** `conch message` (peer-message-send.ts): one session's message into another's prompt. Absent: refused. */
+  peerMessages?: { send(request: PeerMessageRequest): Promise<PeerMessageReply> };
   /**
    * A failure this server answered for itself, filed as the daemon files its own (`recordDaemonError`): an inject
    * refused before the voice loop saw it, whose refusal the Mac app's socket client drops unread.
@@ -1540,6 +1546,19 @@ export function createControlServer(options: ControlServerOptions): ControlServe
           try { frame = encodeControlFrame(JSON.stringify(reply)); }
           catch { frame = encodeControlFrame(JSON.stringify({ kind: "failure-ticket-error", error: "That was too large to send." })); }
           sock.end(frame);
+          return;
+        }
+        // `conch message` (peer-message-send.ts) names its own target and sender, so it is read before session
+        // resolution, and answered once the message is delivered or refused. The CLI's alone: a phone's is refused
+        // (phone-bridge.ts `MAC_APP_ONLY_KINDS`), since it would claim a session's process it isn't.
+        const peerRequest = decodePeerMessageRequest(body);
+        if (peerRequest) {
+          const reply: PeerMessageReply = "error" in peerRequest
+            ? { kind: "peer-message-refused", code: "invalid", error: peerRequest.error }
+            : options.peerMessages
+              ? await options.peerMessages.send(peerRequest)
+              : { kind: "peer-message-refused", code: "unsupported", error: "This conch can't deliver messages between sessions." };
+          sock.end(encodeControlFrame(JSON.stringify(reply)));
           return;
         }
         // C9b Cut B: the audio-holder commands are decoded here, after the

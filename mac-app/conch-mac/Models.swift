@@ -788,6 +788,8 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
         enum Kind: String, Decodable, Sendable {
             case image, document, systemNote = "system_note", interruption
             case commandOutput = "command_output"
+            /// A message from another agent session; the item's `peer` says who (ConchDesign `PeerMessageRow`).
+            case peerMessage = "peer_message"
             case task, unknown
 
             static func parse(_ raw: String?) -> Kind {
@@ -918,6 +920,9 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
     /// Something Tyler sent through conch itself — a canvas, a Show, a phone video — summed up by the daemon, and
     /// drawn as one quiet row instead of its message. Nil from an older daemon, which keeps today's rows.
     let receipt: ConchSentReceipt?
+    /// A message between agent sessions (2026-11-12): one another session sent this one (a material row), or one this
+    /// session sent (its tool row). Drawn as `PeerMessageRow`, never as Tyler's bubble. Nil from an older daemon.
+    let peer: ConchPeerMessage?
 
     /// What a question card shows: every question, or the one.
     var allQuestions: [AgentQuestion] { questions ?? question.map { [$0] } ?? [] }
@@ -936,7 +941,8 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
         question: AgentQuestion? = nil,
         questions: [AgentQuestion]? = nil,
         material: Material? = nil,
-        receipt: ConchSentReceipt? = nil
+        receipt: ConchSentReceipt? = nil,
+        peer: ConchPeerMessage? = nil
     ) {
         self.id = id
         self.rev = rev
@@ -950,10 +956,11 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
         self.questions = questions
         self.material = material
         self.receipt = receipt
+        self.peer = peer
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, rev, kind, text, at, tool, plan, change, question, questions, material, receipt
+        case id, rev, kind, text, at, tool, plan, change, question, questions, material, receipt, peer
     }
 
     init(from decoder: Decoder) throws {
@@ -970,6 +977,7 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
         questions = try? c.decodeIfPresent([AgentQuestion].self, forKey: .questions)
         material = try? c.decodeIfPresent(Material.self, forKey: .material)
         receipt = try? c.decodeIfPresent(ConchSentReceipt.self, forKey: .receipt)
+        peer = try? c.decodeIfPresent(ConchPeerMessage.self, forKey: .peer)
     }
 }
 

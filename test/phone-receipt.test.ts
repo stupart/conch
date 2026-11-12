@@ -22,6 +22,7 @@ const SENTENCES: Record<string, string> = {
   "automation-permission-denied": "Not delivered — macOS is blocking conch from controlling Terminal. Turn conch on under Privacy & Security → Automation.",
   "accessibility-permission-denied": "Not delivered — conch can't type into Terminal: allow conch in Accessibility.",
   "window-not-focusable": "Not delivered — couldn't reach that session's window.",
+  "would-take-focus": "Not delivered — that session is in a Terminal window, and conch brings one to the front only for what you send.",
   "clipboard-fallback": "Not delivered — couldn't reach that session's window.",
   "session-not-routable": "Not delivered — conch can't tell which window that session is in.",
   "front-window-changed": "Not delivered — another window came to the front on your Mac, so conch stopped typing.",

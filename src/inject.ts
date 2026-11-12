@@ -29,7 +29,9 @@ export interface InjectTextResult {
     | "clipboard-unavailable"
     /** The clipboard holds something conch could not put back, so it left it alone. */
     | "clipboard-unpreservable"
-    | "submit-failed";
+    | "submit-failed"
+    /** Typing would have brought the session's Terminal window to the front, and this send may not (`raiseWindow`). */
+    | "would-take-focus";
 }
 
 /**
@@ -71,6 +73,11 @@ export interface InjectTextOptions {
   pasteTmuxText?(pane: string, text: string): Promise<{ exitCode: number }>;
   /** Filled with this send's step lines, as the debug log gets them, for a caller that records a send gone wrong. */
   steps?: string[];
+  /**
+   * Set false to type only where nothing comes to the front: a tmux pane. A session in a Terminal window is then
+   * refused (`would-take-focus`) rather than raised. For words no person at the Mac sent (`conch message`).
+   */
+  raiseWindow?: boolean;
 }
 
 // Keyboard focus and the pasteboard are global resources. This FIFO is separate
@@ -447,6 +454,10 @@ async function injectTextInTransaction(
     }
   }
 
+  if (options.raiseWindow === false) {
+    step("no tmux pane, and this send may not raise the session's window");
+    return failed("would-take-focus");
+  }
   if (!cfg.keystrokeFallback) return clipboard("keystroke-fallback-off");
 
   const tty = await ttyForPid(sessionPid);

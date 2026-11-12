@@ -655,6 +655,20 @@ extension ConversationItem {
     /// recorded item is the same thing read from a different place, so it becomes one
     /// rather than growing a second set of rows for the redesign to inherit.
     init(recorded: HistoryItem, text: String) {
+        // Another session's message, kept as `inter_agent` in conch's tag (src/peer-messages.ts `peerRecordText`): the
+        // same peer row as a live one. A Codex team's own traffic is `inter_agent` too, and stays as it was.
+        if recorded.kind == "inter_agent", let read = ConchPeerMessage.recorded(text) {
+            self.init(
+                id: recorded.id,
+                rev: recorded.revision,
+                kind: .material,
+                text: read.body,
+                at: recorded.at,
+                material: Material(kind: .peerMessage, title: read.peer.heading(), detail: nil),
+                peer: read.peer
+            )
+            return
+        }
         let kind: Kind = switch recorded.kind {
         case "message": recorded.role == "user" ? .user : .assistant
         case "tool_call", "tool_result": .tool

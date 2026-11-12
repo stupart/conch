@@ -1,6 +1,6 @@
 import { open } from "node:fs/promises";
 import { transcriptFormatFor } from "./agent-adapter.ts";
-import { readConversationTail } from "./conversation.ts";
+import { readConversationTail, startsTurn } from "./conversation.ts";
 
 /**
  * The whole of the turn in progress, exactly as the Mac dashboard shows it.
@@ -92,7 +92,8 @@ async function codexTurnText(transcriptPath: string, maxBytes: number | undefine
     const collected: string[] = [];
     for (let index = conversation.order.length - 1; index >= 0; index -= 1) {
       const item = conversation.items[conversation.order[index]!];
-      if (item?.kind === "user") break; // the reply starts after this
+      // The reply starts after this: what Tyler said, or what another session sent (peer-messages.ts).
+      if (startsTurn(item)) break;
       const chunk = item?.kind === "assistant" ? item.text.trim() : "";
       if (chunk) collected.push(chunk);
     }

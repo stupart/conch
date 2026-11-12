@@ -41,6 +41,7 @@ import {
   applySessionCommand,
   applyRuntimeControlMessage,
   applyConfigControlMessage,
+  scopePublishedInjectEvent,
 } from "./control-server.ts";
 export {
   type ConfigController,
@@ -169,7 +170,11 @@ import {
   publishedConversation,
   readConversationTail,
   withHeldQuestion,
+  withPeerSessions,
 } from "./conversation.ts";
+import { peerDirectory } from "./peer-messages.ts";
+import { createPeerMessenger, fileJournal, replyCursorOf } from "./peer-message-send.ts";
+import { SUBAGENT_ROW_PREFIX } from "./agent-activity.ts";
 import type { PendingApproval } from "./approval.ts";
 import { awaitForkStart, FORK_ADOPT_WITHIN_MS, forkRequest, inheritedState, pendingForkFor, type PendingFork } from "./session-fork.ts";
 import { lastTabLines, tabAgentState, terminalTabCommands } from "./agent-alive.ts";
@@ -2683,6 +2688,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     // together means a viewer can show whichever session it is focused on
     // without the daemon having to guess which that is.
     breadcrumb("panel: conversations");
+    // Who is at the other end of each message between sessions, as the rows name them now (peer-messages.ts).
+    const peerSessions = peerDirectory(visible, new Map(orderedRows.map((row) => [row.sessionId, row.label])), SUBAGENT_ROW_PREFIX);
     const conversationsBySession = Object.fromEntries(
       (await Promise.all(
         publishedReads.map(async ({ session, path }) => {
@@ -2693,7 +2700,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
           return [
             session.sessionId,
             publishedConversation(
-              withHeldQuestion(read, voice.heldQuestionFor(session.sessionId)),
+              withPeerSessions(withHeldQuestion(read, voice.heldQuestionFor(session.sessionId)), peerSessions),
               { windowSize: PUBLISHED_CONVERSATION_WINDOW },
             ),
           ] as const;
@@ -2795,7 +2802,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         previewRaw,
         previewReply?.shared,
       );
-      model.conversation = conversation ? publishedConversation(conversation) : null;
+      model.conversation = conversation ? publishedConversation(withPeerSessions(conversation, peerSessions)) : null;
       model.conversations = conversationsBySession;
       model.settingsOverlay = settingsOverlay?.model() ?? null;
       model.sessionActionsOverlay = sessionActionsOverlay?.model() ?? null;
@@ -4174,6 +4181,9 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       turn: practiceGate(practiceTurns, (event) => dispatchSocketTurnEvent(event, socketTurnCallbacks)),
       device: deviceCommand,
     },
+    // `conch message`: the messenger is made below the server, and delivers through the same practice gate and turn
+    // dispatch as `turn` above.
+    peerMessages: { send: (request) => peerMessenger.send(request) },
     onDelivery: rememberDelivery,
     // The Mac app heard from (its health check every 5 s, a screen report): `surfaces.mac` for a publication.
     onMacApp: () => macApp.seen(Date.now()),
@@ -4191,6 +4201,42 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     browser,
     setup,
     practice: practiceTurns,
+  });
+  // `conch message` (peer-message-send.ts): from a session the caller's process belongs to, to one it names among
+  // the rows conch publishes, through the inject a send from the apps takes, scoped to that row as the socket scopes it.
+  const peerMessenger = createPeerMessenger({
+    caller: (pid) => sessionForCallerPid(pid, { infos: [...panelSessions.values()], claudeDir: cfg.claudeDir }),
+    sessions: () => (lastPublishedPanelState?.rows ?? []).flatMap((row) => {
+      const session = panelSessions.get(row.id);
+      if (!session) return [];
+      return [{
+        sessionId: session.sessionId,
+        label: row.label,
+        ...(session.agentSessionId ? { agentSessionId: session.agentSessionId } : {}),
+        ...(session.name ? { name: session.name } : {}),
+        ...(session.cwd ? { cwd: session.cwd } : {}),
+        ...(session.pid ? { pid: session.pid } : {}),
+        ...(session.parentSessionId ? { parentSessionId: session.parentSessionId } : {}),
+        ...(session.transcriptPath ? { transcriptPath: session.transcriptPath } : {}),
+      }];
+    }),
+    deliver: async (event) => {
+      const row = lastPublishedPanelState?.rows.find((candidate) => candidate.id === event.sessionId);
+      const session = panelSessions.get(event.sessionId);
+      const scoped = scopePublishedInjectEvent(event, { rows: row ? [{ id: row.id, label: row.label }] : [] }, {
+        label: row?.label, cwd: session?.cwd, pid: session?.pid, transcriptPath: findTranscript(cfg.claudeDir, event.sessionId),
+      });
+      return scoped.ok
+        ? practiceGate(practiceTurns, (scopedEvent) => dispatchSocketTurnEvent(scopedEvent, socketTurnCallbacks))(scoped.value)
+        : { delivered: false, reason: "session-not-routable" };
+    },
+    replyCursor: async (session) => {
+      const path = session.transcriptPath ?? findTranscript(cfg.claudeDir, session.sessionId);
+      return path ? { transcriptPath: path, cursor: await replyCursorOf(path, session.sessionId, panelSessions.get(session.sessionId)) } : undefined;
+    },
+    autoSubmit: () => cfg.autoSubmit,
+    journal: fileJournal(),
+    log,
   });
 
   let shutdownStarted = false;
