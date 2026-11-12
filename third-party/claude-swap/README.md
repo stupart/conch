@@ -16,8 +16,15 @@ as `ClaudeSwapLicense.txt` and available under Providers → How accounts and us
 `cswap list --json` command (`src/claude_swap/json_output.py`). The optional
 claude-swap installation owns authentication, cache/backoff and API requests.
 Conch does not vendor its credential, switching, autoswitch or OAuth modules.
-This adapter is retained but not invoked by the current Providers screen, which reads Claude Code’s official status-line output via `src/claude-account-usage.ts`. For adapter callers, refresh is explicit; the command can refresh credentials/cache as part of its
-normal collection, but Conch never invokes a switch or imports a credential.
+Since account rotation shipped (2026-10-09, #537) the daemon invokes it: the
+Claude section of Providers asks for `rotation-status` when it opens, and every
+rotation reply carries `readSwapDashboard()`, which is the list of accounts that
+screen shows. A launch profile's own usage still comes from Claude Code’s official
+status-line output via `src/claude-account-usage.ts`. Refresh is explicit; the
+command can refresh credentials/cache as part of its normal collection.
+`src/claude-rotation.ts` runs claude-swap’s own commands (`add`, `switch`,
+`remove`, and `auto --json` while `claude-rotation` is on), and claude-swap swaps
+the Default profile’s login; Conch never reads or imports a credential itself.
 
 Usage accounts and Conch launch profiles are deliberately not joined by email
 or slot number. Slots can be reused and the same email can belong to different

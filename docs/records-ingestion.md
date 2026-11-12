@@ -25,8 +25,9 @@ are retained. File changes and repeated hints coalesce by source identity. Selec
 sources precede live sources, then backfill; background work gets a turn after eight
 foreground batches. Finishing a buffered large record can delay that aging step.
 
-One incomplete record may accumulate across ticks, up to 8 MiB. Parsing that single
-record happens in the worker. Larger records pause that source with `oversized`
+One incomplete record may accumulate across ticks, up to 32 MiB (8 MiB until
+2026-09-23, #385, when a 15 MB Codex `compacted` line stopped two rollouts). Parsing
+that single record happens in the worker. Larger records pause that source with `oversized`
 coverage and leave its cursor unchanged. Live sources poll every second; historical
 sources and discovery reconcile every 30 seconds. These are bounded work budgets,
 not guarantees about disk latency.
