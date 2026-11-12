@@ -144,7 +144,7 @@ public enum SkillCopies {
         case "project": return "project \(what)"
         case "plugin":
             let name = location.pluginId.map { String($0.split(separator: "@")[0]) } ?? "a plugin"
-            return "plugin \(name)" + (location.pluginVersion.map { " \($0)" } ?? "")
+            return "\(name) plugin" + (location.pluginVersion.map { " \($0)" } ?? "")
         case "claude.ai": return "from claude.ai"
         case "system": return "built into Codex"
         default: return "managed"
