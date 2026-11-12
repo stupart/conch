@@ -654,7 +654,7 @@ final class TalkController: NSObject, ObservableObject {
     static var vocabulary: [String] = baseVocabulary
 
     static func learnSessionNames(_ names: [String]) {
-        // Split on non-letters: "client-dashboard" is two words to a speech
+        // Split on non-letters: "admin-dashboard" is two words to a speech
         // recogniser, and offering it whole helps neither half.
         let words = names
             .flatMap { $0.split(whereSeparator: { !$0.isLetter }) }

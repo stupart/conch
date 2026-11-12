@@ -268,11 +268,11 @@ describe("a page on the Mac's localhost is said, not loaded", () => {
         "for link in [",
         '  "http://localhost:5173/", "http://127.0.0.1:3000", "http://[::1]:8080/x", "http://0.0.0.0:4000",',
         '  "http://app.localhost:5173", "http://LOCALHOST", "http://127.example.com", "http://192.168.1.20:5173",',
-        '  "https://example.com", "http://tylers-mac.local:5173",',
+        '  "https://example.com", "http://mac.local:5173",',
         "] { print(MacLocalPage.isLoopback(URL(string: link)!)) }",
         'let page = URL(string: "http://localhost:5173/onboarding?step=2#top")!',
         'print(MacLocalPage.onLAN(page, pairedHost: "192.168.1.20:8674", isRelay: false)?.absoluteString ?? "nil")',
-        'print(MacLocalPage.onLAN(page, pairedHost: "tylers-mac.local", isRelay: false)?.absoluteString ?? "nil")',
+        'print(MacLocalPage.onLAN(page, pairedHost: "mac.local", isRelay: false)?.absoluteString ?? "nil")',
         // A relay pairing never rewrites, even given a host it could parse.
         'print(MacLocalPage.onLAN(page, pairedHost: "192.168.1.20:8674", isRelay: true)?.absoluteString ?? "nil")',
       ]);
@@ -280,7 +280,7 @@ describe("a page on the Mac's localhost is said, not loaded", () => {
         "true", "true", "true", "true", "true", "true",
         "false", "false", "false", "false",
         "http://192.168.1.20:5173/onboarding?step=2#top",
-        "http://tylers-mac.local:5173/onboarding?step=2#top",
+        "http://mac.local:5173/onboarding?step=2#top",
         "nil",
       ]);
     },

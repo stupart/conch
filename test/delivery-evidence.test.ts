@@ -24,7 +24,7 @@ describe("a prompt's fingerprint", () => {
 
   // Claude Code 2.1.280 writes a long paste down in tags, and conch pastes every long send.
   test("a paste's tags are not part of its words", () => {
-    const words = "Need you to do some flight and hotel searches for the trip. ".repeat(20).trim();
+    const words = "Need you to do some price and plan comparisons for the team. ".repeat(20).trim();
     expect(promptDigest(`\n\n<pasted_content id="04a6">\n${words}\n</pasted_content id="04a6">\n`)).toBe(promptDigest(words));
   });
 });

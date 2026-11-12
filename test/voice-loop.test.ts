@@ -518,7 +518,7 @@ describe("operation-owned record observations", () => {
  * flipped pins. Only events that start an exchange reset them now.
  */
 describe("a shared transcript confirms only this window's send (finding 9)", () => {
-  const KEY = "4eb30ede-6c1e-4f5a-9d2b-1f0c2a3b4c5d#39889";
+  const KEY = "5e5e5e08-0008-4000-8000-000000000008#39889";
   const preamble = (bridge: string | undefined, leafUuid: string) => [
     { type: "last-prompt", leafUuid },
     ...(bridge ? [{ type: "bridge-session", bridgeSessionId: `cse_${bridge}` }] : []),
@@ -869,7 +869,7 @@ describe("a first message to a new session is confirmed by the agent, never by i
  */
 describe("words a process took into a new conversation are delivered, not lost", () => {
   const P = 94777;
-  const words = "do we have a dev server running or its off now? also is the metadata right for the prime page?";
+  const words = "do we have a dev server running or its off now? also is the metadata right for the about page?";
   const row = () => ({ sessionId: "s1", backend: "claude", status: "idle", pid: P }) as SessionInfo;
   const screenWith = (box: string) => [
     "─────────────────────────────────────────── alpha ─", `❯ ${box}`,
@@ -1005,14 +1005,14 @@ describe("words a process took into a new conversation are delivered, not lost",
     const looked: string[] = [];
     try {
       const h = harness({
-        window: () => ({ ...row(), sessionId: "25d17f50", jobId: "25d17f50", kind: "bg" }) as SessionInfo,
+        window: () => ({ ...row(), sessionId: "5e5e5e11", jobId: "5e5e5e11", kind: "bg" }) as SessionInfo,
         promptSubmitted: () => false,
-        processConversation: async () => ({ sessionId: "2f266f8d", parkedJobId: "25d17f50" }),
+        processConversation: async () => ({ sessionId: "5e5e5e10", parkedJobId: "5e5e5e11" }),
         transcriptFor: (id) => { looked.push(id); return undefined; },
         inject: () => ({ via: "osascript-focused" }),
       });
-      await h.voice.handle(inject(words, { sessionId: "25d17f50", transcriptPath: path, pid: P }));
-      expect(looked).not.toContain("2f266f8d");
+      await h.voice.handle(inject(words, { sessionId: "5e5e5e11", transcriptPath: path, pid: P }));
+      expect(looked).not.toContain("5e5e5e10");
     } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
   });
 
@@ -1045,8 +1045,8 @@ describe("words a process took into a new conversation are delivered, not lost",
 });
 
 /**
- * 2026-10-05 20:54, as it was on disk. The row "Prime page wireframe in blueprint studio" was job 25d17f50,
- * finished, shown in window 94777. The words typed there became a NEW background job, 4d3ed8b9, which Claude
+ * 2026-10-05 20:54, as it was on disk. The row "About page wireframe for the new website" was job 5e5e5e11,
+ * finished, shown in window 94777. The words typed there became a NEW background job, 5e5e5e12, which Claude
  * Code started on a spare process from that window: its hook reported them with pid 0, the window's registry
  * file never changed, and the job's transcript was not the one conch counted. conch called the send lost and
  * put the words on the clipboard. Tyler: "just had a message say it failed to send but it worked".
@@ -1055,16 +1055,16 @@ describe("words a process took into a new conversation are delivered, not lost",
  */
 describe("a send typed into a viewer on a finished job, taken by the job Claude Code starts for it", () => {
   const VIEWER = 94777;
-  const FINISHED = "25d17f50-8442-4bee-9c24-e35921c88188";
-  const NEW_JOB = "4d3ed8b9-447c-41fc-b72b-226933443b1a";
-  const OTHER = "f31f0d15-df08-4ddf-80f6-c8c6ee8a59c6";
-  const words = "do we have a dev server running or its off now? also do we have all the metadata correct for the prime page?";
+  const FINISHED = "5e5e5e11-0011-4000-8000-000000000011";
+  const NEW_JOB = "5e5e5e12-0012-4000-8000-000000000012";
+  const OTHER = "5e5e5e13-0013-4000-8000-000000000013";
+  const words = "do we have a dev server running or its off now? also do we have all the metadata correct for the about page?";
   /** The finished job's row, shown in the viewer window: the route is the window's pid. */
   const jobRow = () => ({
-    sessionId: FINISHED, backend: "claude", kind: "bg", jobId: "25d17f50", status: "idle", pid: VIEWER,
+    sessionId: FINISHED, backend: "claude", kind: "bg", jobId: "5e5e5e11", status: "idle", pid: VIEWER,
   }) as SessionInfo;
   /** A window running its own conversation, not a viewer. */
-  const windowRow = () => ({ sessionId: "2f266f8d", backend: "claude", kind: "interactive", status: "idle", pid: VIEWER }) as SessionInfo;
+  const windowRow = () => ({ sessionId: "5e5e5e10", backend: "claude", kind: "interactive", status: "idle", pid: VIEWER }) as SessionInfo;
   const codeOf = (events: RecordObservation[]) => events.filter(({ kind }) => kind === "delivery").at(-1);
 
   /**
@@ -1093,7 +1093,7 @@ describe("a send typed into a viewer on a finished job, taken by the job Claude 
         promptSubmittedBy: (from, said) => seen.reportedBy(from, said),
         liveSessionIds: () => rows,
         processConversation: async (pid) => (pid === VIEWER
-          ? { sessionId: "2f266f8d", ...(options.parkedJobId ? { parkedJobId: options.parkedJobId } : {}) }
+          ? { sessionId: "5e5e5e10", ...(options.parkedJobId ? { parkedJobId: options.parkedJobId } : {}) }
           : undefined),
         inject: (text) => {
           since = Date.now();
@@ -1147,8 +1147,8 @@ describe("a send typed into a viewer on a finished job, taken by the job Claude 
 
   test("only a viewer: a window running its own conversation gets no such rule", async () => {
     // The window's own registry file says it is parked on a job: a viewer, though the row is the window.
-    expect((await send({ row: windowRow, rows: ["2f266f8d", OTHER], parkedJobId: "25d17f50" })).outcome).toBe(true);
-    const own = await send({ row: windowRow, rows: ["2f266f8d", OTHER] });
+    expect((await send({ row: windowRow, rows: ["5e5e5e10", OTHER], parkedJobId: "5e5e5e11" })).outcome).toBe(true);
+    const own = await send({ row: windowRow, rows: ["5e5e5e10", OTHER] });
     expect(own.outcome).toEqual(unconfirmed);
     expect(own.receipt).toMatchObject({ state: "unknown", code: "delivery-unconfirmed" });
     expect(own.h.clipboard).toEqual([words]);
@@ -3397,7 +3397,7 @@ describe("FIX8 continuous handoff and truthful delivery", () => {
  * answered with its keys, and an ask nothing attributes is left alone.
  */
 describe("a shared transcript answers only this window's permission (finding 4)", () => {
-  const SESSION = "4eb30ede-6c1e-4f5a-9d2b-1f0c2a3b4c5d";
+  const SESSION = "5e5e5e08-0008-4000-8000-000000000008";
   const KEY_A = `${SESSION}#39889`;
   const KEY_B = `${SESSION}#21210`;
   const preamble = (bridge: string | undefined, leafUuid: string) => [
@@ -4182,10 +4182,10 @@ describe("a session that starts again in a new process", () => {
  */
 describe("a send to a terminal the session has left", () => {
   const stoppedJob: DeadTarget = {
-    reason: "session-stopped", jobId: "f31f0d15",
-    detail: "pid 10231 is `claude attach f31f0d15`, and job f31f0d15 is not in Claude Code's daemon roster",
+    reason: "session-stopped", jobId: "5e5e5e13",
+    detail: "pid 10231 is `claude attach 5e5e5e13`, and job 5e5e5e13 is not in Claude Code's daemon roster",
   };
-  const attachRow = { sessionId: "s1", pid: 10231, jobId: "f31f0d15", kind: "bg", status: "idle" } as SessionInfo;
+  const attachRow = { sessionId: "s1", pid: 10231, jobId: "5e5e5e13", kind: "bg", status: "idle" } as SessionInfo;
 
   test("is refused before a key, off the clipboard, with its reason, and the words go back to the draft", async () => {
     const asked: Array<[string, TargetToCheck]> = [];
@@ -4203,13 +4203,13 @@ describe("a send to a terminal the session has left", () => {
     // The words are back in the composer for this session.
     expect(getLiveState().dictated).toEqual({ text: "did the fix land?", id: expect.any(Number), sessionId: "s1" });
     // The check was asked about the pid it would have typed at, with what the row knows of it.
-    expect(asked).toEqual([[h.cfg.claudeDir, { pid: 10231, jobId: "f31f0d15" }]]);
+    expect(asked).toEqual([[h.cfg.claudeDir, { pid: 10231, jobId: "5e5e5e13" }]]);
     expect(h.said).toEqual(["That session isn't running in its terminal any more. Resume it, and I'll pick it up. Your words are in the draft."]);
     expect(h.logs).toContain(`not typing into "alpha": ${stoppedJob.detail}`);
     expect(h.errors).toHaveLength(1);
     const [operation, , sessionId, state] = h.errors[0] as [string, string, string, Record<string, unknown>];
     expect([operation, sessionId]).toEqual(["inject", "s1"]);
-    expect(state).toMatchObject({ code: "session-stopped", pid: 10231, jobId: "f31f0d15", detail: stoppedJob.detail });
+    expect(state).toMatchObject({ code: "session-stopped", pid: 10231, jobId: "5e5e5e13", detail: stoppedJob.detail });
   });
 
   test("the check reads the session's own account, whose roster holds its jobs", async () => {
@@ -4707,7 +4707,7 @@ describe("a slash command is typed once and confirmed by the screen", () => {
   });
 
   test("nor into a terminal the session has left", async () => {
-    const stopped: DeadTarget = { reason: "session-stopped", detail: "pid 10231 is `claude attach f31f0d15`, and the job is gone" };
+    const stopped: DeadTarget = { reason: "session-stopped", detail: "pid 10231 is `claude attach 5e5e5e13`, and the job is gone" };
     const h = harness({ deadTarget: async () => stopped });
     expect(await h.voice.handle(inject("/compact", { pid: 10231 }))).toEqual({ delivered: false, reason: "session-stopped" });
     expect(h.commands).toEqual([]);

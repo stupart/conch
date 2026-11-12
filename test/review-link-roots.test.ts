@@ -12,7 +12,7 @@ import { checkLocalFile, checkReviewLink } from "../src/snippet.ts";
 
 /**
  * A session's deliverable link may sit under any of its folders, not only the one it is in now
- * (review-roots.ts). On 2026-09-30 a session started in ~/Projects/Blueprint/Internal published
+ * (review-roots.ts). On 2026-09-30 a session started in ~/Projects/Acme/Internal published
  * `conch:review … | …/Internal/review-2026-09-30` twice, then cd'd into
  * monorepo/.worktrees/<task>, and its next three had the link dropped without a word:
  * `parsed.link: null` at 06:46, 06:49 and 07:25 in /tmp/conch-hook.log.

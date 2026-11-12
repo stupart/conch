@@ -102,7 +102,7 @@ describe("conch_fork: the daemon's fork, answered once it is running", () => {
   test("the daemon's error is the agent's, and a fork that didn't start is never said to be open", async () => {
     const died = createMcpToolHandlers(CONFIG, fakes({
       async sendControlMessage() {
-        return forked({ kind: "session-error", error: "the fork's agent exited as soon as it started, in Terminal (ttys012). Its tab shows:\nNo conversation found with session ID: 162f2800" });
+        return forked({ kind: "session-error", error: "the fork's agent exited as soon as it started, in Terminal (ttys012). Its tab shows:\nNo conversation found with session ID: 5e5e5e09" });
       },
     }));
     const reply = await call(died, "conch_fork", {});

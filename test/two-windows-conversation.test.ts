@@ -33,7 +33,7 @@ import { promptSince, transcriptMark, userRespondedSince } from "../src/snippet.
  * from those parts exactly as `claude --resume` produces it: a shared prefix,
  * then two branches forking from one leaf.
  */
-const SESSION = "4eb30ede-6c1e-4f5a-9d2b-1f0c2a3b4c5d";
+const SESSION = "5e5e5e08-0008-4000-8000-000000000008";
 const KEY_A = `${SESSION}#39889`;
 const KEY_B = `${SESSION}#21210`;
 const BRIDGE_A = "01AVNxcSSv8WYQiPjYsXYH2L";
@@ -52,8 +52,8 @@ const preamble = (leafUuid: string, bridge?: string) => [
       sessionId: SESSION,
       bridgeSessionId: `cse_${bridge}`,
       lastSequenceNum: 0,
-      ownerAccountUuid: "5f84ce23-59c1-48fc-876b-49acdc232e46",
-      ownerOrganizationUuid: "99958ebf-d07f-4576-ad7c-508422eb882a",
+      ownerAccountUuid: "5e5e5e17-0017-4000-8000-000000000017",
+      ownerOrganizationUuid: "5e5e5e18-0018-4000-8000-000000000018",
     }]
     : []),
 ];

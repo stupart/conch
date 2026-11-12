@@ -281,7 +281,7 @@ function forgetCodexDatabase(path: string): void {
  *
  * conch labels a Claude session by directory basename, which works because
  * those live in different repos. Every one of Tyler's Codex threads runs from
- * his home directory, so that rule would render every row "tylerstupart".
+ * his home directory, so that rule would render every row "you".
  */
 export function codexThreadLabel(row: {
   name?: string | null;

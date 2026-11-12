@@ -3003,8 +3003,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     // Two front-ends have independent cursors and only one conversation is
     // published, so if this followed the TUI's parked row the Mac app would ask
     // for one session and receive another — measured exactly that: the daemon
-    // published client-dashboard while the app focused asset generator, and the
-    // stack silently fell back to the old pane every time. This chain mirrors
+    // published one session while the app focused another, and the stack
+    // silently fell back to the old pane every time. This chain mirrors
     // the app's own fallback (active row, else the first), so they agree.
     const conversationSessionId = nextActiveSessionId
       ?? orderedRows[0]?.sessionId

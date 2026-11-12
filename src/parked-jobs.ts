@@ -15,8 +15,8 @@ import { conchTmux, resolveTmux } from "./tmux-binary.ts";
  * A background agent (`claude --bg`, listed by `claude agents`) that stops to ask you something is `blocked` in its
  * job record, `<claude config>/jobs/<shortId>/state.json`, and Claude Code then stops its process. conch listed only
  * sessions with a live process, so an agent dropped out of every conch surface the moment it asked: on 2026-10-24
- * Tyler found two that had been waiting on him since Oct 21 ("Agent - Design system a…" and "Type scale -
- * Design system a…"), with nothing anywhere showing them. `claude attach <shortId>` brings one back —
+ * Tyler found two that had been waiting on him since Oct 21 ("Agent - Settings page a…" and "Copy edits -
+ * Settings page a…"), with nothing anywhere showing them. `claude attach <shortId>` brings one back —
  * Claude Code respawns its process and the agent is an ordinary live background job again — and that is how they were
  * found: in a hidden `tmux -L conch` window, each was a live, waiting row within ~12 s, with nothing sent to it.
  *

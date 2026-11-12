@@ -132,7 +132,7 @@ final class SidebarRowTests: XCTestCase {
     // MARK: VoiceOver
 
     func testVoiceOverHearsTheWholeNameTheStateAndTheAgent() {
-        let name = "flight and hotel research for the Seashell Bay trip in October"
+        let name = "palette and type research for the settings page redesign in Q4"
         let label = SidebarRowText.accessibilityLabel(
             name: name, state: "Ready for you — work to look at", agent: "Codex", voice: nil, startedBy: nil
         )

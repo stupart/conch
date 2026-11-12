@@ -2542,8 +2542,8 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
        * background job that has finished takes a new prompt as a new job: Claude Code claims a spare process,
        * gives it a new id and the words, and the window's own registry file never changes. Nothing ties that
        * job to the window, so its hook reports the words under an id the send never addressed, with pid 0.
-       * That happened on 2026-10-05: job 4d3ed8b9 took a send typed into window 94777, which was showing the
-       * finished job 25d17f50, and conch called the send lost and put the words on the clipboard. Tyler:
+       * That happened on 2026-10-05: job 5e5e5e12 took a send typed into window 94777, which was showing the
+       * finished job 5e5e5e11, and conch called the send lost and put the words on the clipboard. Tyler:
        * "just had a message say it failed to send but it worked".
        *
        * So, for a send typed into a viewer only, these exact words reported at or after the send began count

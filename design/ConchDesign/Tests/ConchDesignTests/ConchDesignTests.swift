@@ -179,7 +179,7 @@ final class ConchDesignTests: XCTestCase {
     /// the window's deliverable pane's once the panel went (2026-11-11).
     func testAPanelPickShowsAPageDocumentPictureOrLiveUrlInThePanel() {
         let gone: (String) -> Bool = { _ in false }
-        let live = URL(string: "http://localhost:3111/invite")!
+        let live = URL(string: "http://localhost:3000/invite")!
         let page = URL(fileURLWithPath: "/tmp/site/index.html")
         func shows(_ deliverable: String?, _ link: URL?, kind: ReviewScene.Kind = .auto, fileExists: (String) -> Bool = { _ in true }) -> Bool {
             ReviewScene.panelShowsContent(kind: kind, deliverable: deliverable, link: link, fileExists: fileExists)

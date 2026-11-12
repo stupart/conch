@@ -170,7 +170,7 @@ test("a second account's session is read, dialog and all, from the default folde
 });
 
 // 2026-11-06: after a restart, seashell read as two windows, #996 and #1372. The second was the session, resumed in
-// Default; the first, the retired Blueprint profile's entry from the last boot, its pid by then a Terminal tab's login.
+// Default; the first, the retired profile's entry from the last boot, its pid by then a Terminal tab's login.
 test("a profile's leftover entry whose pid is someone else's now is dropped once the conversation runs elsewhere", async () => {
   const old = addClaudeAccount("Old");
   const home = readClaudeAccounts()[0]!.configDir;

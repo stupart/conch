@@ -142,21 +142,21 @@ describe("the rules, over probes", () => {
   const live = new Set([100, 200, 300]);
   const probes = (over: TargetProbes = {}): TargetProbes => ({
     alive: (pid) => live.has(pid),
-    commandLine: async (pid) => pid === 100 ? "/opt/homebrew/bin/claude attach f31f0d15" : "claude --dangerously-skip-permissions",
+    commandLine: async (pid) => pid === 100 ? "/opt/homebrew/bin/claude attach 5e5e5e13" : "claude --dangerously-skip-permissions",
     identity: () => null,
     ...over,
   });
 
   test("the window of a job that is still running only closed: nothing to say beyond what inject says", async () => {
-    const home = claudeHome({ workers: { f31f0d15: { pid: 200 } } });
-    expect(await deadTarget(home, { pid: 999, jobId: "f31f0d15" }, probes())).toBeNull();
+    const home = claudeHome({ workers: { "5e5e5e13": { pid: 200 } } });
+    expect(await deadTarget(home, { pid: 999, jobId: "5e5e5e13" }, probes())).toBeNull();
   });
 
   test("a row's job counts even when the window is not an attach (a registry-parked window)", async () => {
     const home = claudeHome({ workers: {} });
-    expect(await deadTarget(home, { pid: 300, jobId: "25d17f50" }, probes())).toMatchObject({
-      reason: "session-stopped", jobId: "25d17f50",
-      detail: "pid 300 is the window on job 25d17f50, and job 25d17f50 is not in Claude Code's daemon roster",
+    expect(await deadTarget(home, { pid: 300, jobId: "5e5e5e11" }, probes())).toMatchObject({
+      reason: "session-stopped", jobId: "5e5e5e11",
+      detail: "pid 300 is the window on job 5e5e5e11, and job 5e5e5e11 is not in Claude Code's daemon roster",
     });
   });
 
@@ -193,7 +193,7 @@ describe("the rules, over probes", () => {
   });
 
   test("with no roster at all, the job's own registry entry decides; key files are never opened", async () => {
-    const bg = (pid: number) => JSON.stringify({ pid, sessionId: "f31f0d15-df08-4ddf-80f6-c8c6ee8a59c6", kind: "bg", jobId: "f31f0d15" });
+    const bg = (pid: number) => JSON.stringify({ pid, sessionId: "5e5e5e13-0013-4000-8000-000000000013", kind: "bg", jobId: "5e5e5e13" });
     const read: string[] = [];
     const reading = (over: TargetProbes = {}) => probes({
       readText: (path) => { read.push(path); try { return readFileSync(path, "utf8"); } catch { return null; } },
@@ -215,14 +215,14 @@ describe("the rules, over probes", () => {
     // A torn file could be the job's own.
     expect(await deadTarget(claudeHome(undefined, { "300.json": other, "301.json": "{\"pid\":30" }), { pid: 100 }, reading())).toBeNull();
     // No roster and no registry: nothing to go on.
-    expect(jobLiveness(join(root, "nowhere"), "f31f0d15", probes())).toEqual({ state: "unknown" });
+    expect(jobLiveness(join(root, "nowhere"), "5e5e5e13", probes())).toEqual({ state: "unknown" });
   });
 
   test("a job is found by its short id or its session id's prefix", () => {
-    const home = claudeHome({ workers: { f31f0d15: { pid: 200, sessionId: "f31f0d15-df08-4ddf-80f6-c8c6ee8a59c6" } } });
-    expect(jobLiveness(home, "f31f0d15", probes())).toEqual({ state: "live" });
-    expect(jobLiveness(home, "f31f0d15-df08-4ddf-80f6-c8c6ee8a59c6", probes())).toEqual({ state: "live" });
-    expect(jobLiveness(home, "25d17f50", probes())).toMatchObject({ state: "gone" });
+    const home = claudeHome({ workers: { "5e5e5e13": { pid: 200, sessionId: "5e5e5e13-0013-4000-8000-000000000013" } } });
+    expect(jobLiveness(home, "5e5e5e13", probes())).toEqual({ state: "live" });
+    expect(jobLiveness(home, "5e5e5e13-0013-4000-8000-000000000013", probes())).toEqual({ state: "live" });
+    expect(jobLiveness(home, "5e5e5e11", probes())).toMatchObject({ state: "gone" });
   });
 
   test("Claude Code's start times read as UTC epoch seconds", () => {

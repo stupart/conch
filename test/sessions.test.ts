@@ -588,9 +588,9 @@ describe("processConversation — the conversation a process holds now, from its
   });
 
   test("says a window is parked on a job: its id is its own from before it parked", async () => {
-    const root = account({ "94777.json": { pid: 94777, sessionId: "2f266f8d", parkedJobId: "25d17f50" } });
+    const root = account({ "94777.json": { pid: 94777, sessionId: "5e5e5e10", parkedJobId: "5e5e5e11" } });
     try {
-      expect(await processConversation([root], 94777)).toEqual({ sessionId: "2f266f8d", parkedJobId: "25d17f50" });
+      expect(await processConversation([root], 94777)).toEqual({ sessionId: "5e5e5e10", parkedJobId: "5e5e5e11" });
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 

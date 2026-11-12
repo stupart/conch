@@ -11,8 +11,8 @@ import { validateControlMessage, validateControlResponse } from "../src/settings
  * retyping the command. Command lines below are the live ones measured
  * 2026-09-23 (`ps -o args=`, after the executable).
  */
-const claudeRow = { sessionId: "2f266f8d-2cab-4137-b09e-77fc1066fbc1", backend: "claude" as const, cwd: "/Users/t/morrow" };
-const codexRow = { sessionId: "01a08ea0-9e2a-7563-863d-c9158fb22d16", backend: "codex" as const, cwd: "/Users/t/assets" };
+const claudeRow = { sessionId: "5e5e5e10-0010-4000-8000-000000000010", backend: "claude" as const, cwd: "/Users/t/morrow" };
+const codexRow = { sessionId: "5e5e5e19-0019-7000-8000-000000000019", backend: "codex" as const, cwd: "/Users/t/assets" };
 const command = (built: ReturnType<typeof restartRequest>) => terminalSessionCommand(built.request);
 
 describe("what a restart relaunches", () => {
@@ -20,7 +20,7 @@ describe("what a restart relaunches", () => {
     const built = restartRequest(claudeRow, ["--dangerously-skip-permissions", "--resume", "Morrow", "Prime"]);
     expect(built.notCarriedOver).toEqual([]);
     expect(command(built)).toBe(
-      "cd -- '/Users/t/morrow' && exec claude --dangerously-skip-permissions --resume '2f266f8d-2cab-4137-b09e-77fc1066fbc1'",
+      "cd -- '/Users/t/morrow' && exec claude --dangerously-skip-permissions --resume '5e5e5e10-0010-4000-8000-000000000010'",
     );
   });
 
@@ -52,12 +52,12 @@ describe("what a restart relaunches", () => {
     const built = restartRequest(codexRow, ["resume", codexRow.sessionId, "-c", "model_provider=openai", "--sandbox", "workspace-write"]);
     expect(built.notCarriedOver).toEqual(["-c model_provider=openai"]);
     expect(command(built)).toBe(
-      "cd -- '/Users/t/assets' && exec codex --no-daemon resume '01a08ea0-9e2a-7563-863d-c9158fb22d16' --sandbox 'workspace-write'",
+      "cd -- '/Users/t/assets' && exec codex --no-daemon resume '5e5e5e19-0019-7000-8000-000000000019' --sandbox 'workspace-write'",
     );
   });
 
   test("an opening prompt is not a setting", () => {
-    expect(command(restartRequest(codexRow, ["yolo"]))).toEndWith("exec codex --no-daemon resume '01a08ea0-9e2a-7563-863d-c9158fb22d16'");
+    expect(command(restartRequest(codexRow, ["yolo"]))).toEndWith("exec codex --no-daemon resume '5e5e5e19-0019-7000-8000-000000000019'");
   });
 
   test("two windows on one id: resumes the conversation id, not the window key", () => {

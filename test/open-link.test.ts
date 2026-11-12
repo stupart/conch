@@ -62,10 +62,10 @@ const publishedRows = (sessions: SessionInfo[]) =>
 describe("the daemon says what folder a row runs in", () => {
   test("a Codex row carries its cwd; a session without one carries no key", () => {
     const rows = publishedRows([
-      { sessionId: "codex-1", backend: "codex", cwd: "/Users/t/Projects/Blueprint", pid: 7 },
+      { sessionId: "codex-1", backend: "codex", cwd: "/Users/t/Projects/Acme", pid: 7 },
       { sessionId: "claude-1", backend: "claude" },
     ]);
-    expect(rows.find((row) => row.id === "codex-1")?.cwd).toBe("/Users/t/Projects/Blueprint");
+    expect(rows.find((row) => row.id === "codex-1")?.cwd).toBe("/Users/t/Projects/Acme");
     expect("cwd" in rows.find((row) => row.id === "claude-1")!).toBe(false);
   });
 });
@@ -84,7 +84,7 @@ describe("LinkTarget — the resolver every Mac open goes through", () => {
       // The case from 2026-09-11, end to end: the cwd the Mac resolves
       // against is the one the daemon published on the Codex row.
       const [codexRow] = publishedRows([
-        { sessionId: "codex-blueprint", backend: "codex", cwd: "/Users/t/Projects/Blueprint", pid: 9 },
+        { sessionId: "codex-acme", backend: "codex", cwd: "/Users/t/Projects/Acme", pid: 9 },
       ]);
       const rowCwd = JSON.stringify(codexRow?.cwd ?? "");
       const dir = mkdtempSync(join(tmpdir(), "conch-link-target-"));
@@ -94,12 +94,12 @@ describe("LinkTarget — the resolver every Mac open goes through", () => {
         resolver,
         `print(LinkTarget.url(for: "output/x/review-guide.md", cwd: ${rowCwd}).path)`,
         // Then the shapes around it.
-        'print(LinkTarget.url(for: "./output/x/review-guide.md", cwd: "/Users/t/Projects/Blueprint").path)',
-        'print(LinkTarget.url(for: "~/notes.md", cwd: "/Users/t/Projects/Blueprint").path)',
-        'print(LinkTarget.url(for: "/Users/t/Blueprint Studio/guide.md", cwd: "/elsewhere").absoluteString)',
-        'print(LinkTarget.url(for: "file:///Users/t/Blueprint%20Studio/guide.md", cwd: nil).path)',
+        'print(LinkTarget.url(for: "./output/x/review-guide.md", cwd: "/Users/t/Projects/Acme").path)',
+        'print(LinkTarget.url(for: "~/notes.md", cwd: "/Users/t/Projects/Acme").path)',
+        'print(LinkTarget.url(for: "/Users/t/Acme Studio/guide.md", cwd: "/elsewhere").absoluteString)',
+        'print(LinkTarget.url(for: "file:///Users/t/Acme%20Studio/guide.md", cwd: nil).path)',
         // Tyler's actual link, 2026-09-11: absolute, with the space encoded.
-        'print(LinkTarget.url(for: "/Users/t/Blueprint/Asset%20Generator/review-guide.md", cwd: "/Users/t").path)',
+        'print(LinkTarget.url(for: "/Users/t/Acme/Web%20App/review-guide.md", cwd: "/Users/t").path)',
         'print(LinkTarget.url(for: "/Users/t/100%.md", cwd: nil).path)',
         'print(LinkTarget.url(for: "https://example.com/x", cwd: "/Users/t").absoluteString)',
         'print(LinkTarget.text(of: URL(string: "docs/my%20doc.md")!))',
@@ -113,13 +113,13 @@ describe("LinkTarget — the resolver every Mac open goes through", () => {
         const run = Bun.spawnSync([swift!, file], { stdout: "pipe", stderr: "pipe" });
         if (run.exitCode !== 0) throw new Error(`swift exited ${run.exitCode}: ${run.stderr.toString()}`);
         expect(run.stdout.toString().trim().split("\n")).toEqual([
-          "/Users/t/Projects/Blueprint/output/x/review-guide.md",
-          "/Users/t/Projects/Blueprint/output/x/review-guide.md",
+          "/Users/t/Projects/Acme/output/x/review-guide.md",
+          "/Users/t/Projects/Acme/output/x/review-guide.md",
           `${process.env.HOME}/notes.md`,
           // Percent-encoded by URL(fileURLWithPath:), which a monorepo path with spaces needs.
-          "file:///Users/t/Blueprint%20Studio/guide.md",
-          "/Users/t/Blueprint Studio/guide.md",
-          "/Users/t/Blueprint/Asset Generator/review-guide.md",
+          "file:///Users/t/Acme%20Studio/guide.md",
+          "/Users/t/Acme Studio/guide.md",
+          "/Users/t/Acme/Web App/review-guide.md",
           "/Users/t/100%.md",
           "https://example.com/x",
           "docs/my doc.md",
@@ -475,7 +475,7 @@ describe("the phone: the same dead tap, said and recorded", () => {
           "}",
           // Tyler's actual link, from the Mac's errors.jsonl (2026-09-17):
           // absolute, with the space percent-encoded, in a file:// URI.
-          'show("file:///Users/t/Blueprint/Asset%20Generator/review.md")',
+          'show("file:///Users/t/Acme/Web%20App/review.md")',
           'show("https://example.com/x")',
           'show("http://localhost:5173")',
           'show("mailto:t@example.com")',
@@ -489,7 +489,7 @@ describe("the phone: the same dead tap, said and recorded", () => {
         const run = Bun.spawnSync([swift!, file], { stdout: "pipe", stderr: "pipe" });
         if (run.exitCode !== 0) throw new Error(`swift exited ${run.exitCode}: ${run.stderr.toString()}`);
         expect(run.stdout.toString().trim().split("\n")).toEqual([
-          "file:/Users/t/Blueprint/Asset Generator/review.md",
+          "file:/Users/t/Acme/Web App/review.md",
           "open",
           "open",
           "open",

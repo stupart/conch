@@ -1393,7 +1393,7 @@ describe("the reply pane shows the reply, not the announcement", () => {
  */
 describe("a parked background agent's row", () => {
   const parked: SessionInfo = {
-    sessionId: "5e5e5e03-0003-4000-8000-000000000003", name: "Agent - Design system a", cwd: "/work/studio",
+    sessionId: "5e5e5e03-0003-4000-8000-000000000003", name: "Agent - Settings page a", cwd: "/work/studio",
     pid: 0, jobId: "5e5e5e03", kind: "bg", status: "idle", statusUpdatedAt: 1_000,
     claudeAccountId: "default", accountLabel: "Default",
     parked: { since: 1_000, needs: "confirm: start onboarding walkthrough or next step?" },

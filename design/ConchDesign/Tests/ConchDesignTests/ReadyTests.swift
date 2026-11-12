@@ -170,17 +170,17 @@ final class ReadyTests: XCTestCase {
     // MARK: The knock on a local page
 
     func testOnlyAPageOnThisMachineHasAPortToKnockOn() {
-        XCTAssertEqual(LocalServer.port(of: URL(string: "http://localhost:3111/prime")!), 3111)
+        XCTAssertEqual(LocalServer.port(of: URL(string: "http://localhost:3000/pricing")!), 3000)
         XCTAssertEqual(LocalServer.port(of: URL(string: "http://127.0.0.1/")!), 80)
         XCTAssertEqual(LocalServer.port(of: URL(string: "https://localhost/")!), 443)
         XCTAssertEqual(LocalServer.port(of: URL(string: "http://[::1]:5173/")!), 5173)
         XCTAssertEqual(LocalServer.port(of: URL(string: "http://app.localhost:3000")!), 3000)
         XCTAssertEqual(LocalServer.port(of: URL(string: "http://0.0.0.0:8080")!), 8080)
         XCTAssertEqual(LocalServer.port(of: URL(string: "http://127.4.5.6:9000")!), 9000)
-        XCTAssertNil(LocalServer.port(of: URL(string: "https://example.com:3111/")!))
-        XCTAssertNil(LocalServer.port(of: URL(string: "http://128.0.0.1:3111/")!))
+        XCTAssertNil(LocalServer.port(of: URL(string: "https://example.com:4000/")!))
+        XCTAssertNil(LocalServer.port(of: URL(string: "http://128.0.0.1:4000/")!))
         XCTAssertNil(LocalServer.port(of: URL(fileURLWithPath: "/tmp/page.html")))
-        XCTAssertEqual(LocalServer.name(of: URL(string: "http://localhost:3111/prime")!), "localhost:3111")
+        XCTAssertEqual(LocalServer.name(of: URL(string: "http://localhost:3000/pricing")!), "localhost:3000")
         XCTAssertEqual(LocalServer.name(of: URL(string: "http://[::1]:5173/")!), "[::1]:5173")
     }
 

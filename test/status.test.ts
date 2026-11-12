@@ -728,7 +728,7 @@ describe("theater renderer lifecycle", () => {
       live: { state: "idle", label: "", partial: "" },
       rows: [{
         sessionId: "parked",
-        label: "Type scale",
+        label: "Copy edits",
         status: "needs",
         detail: "go on the critic?",
         parked: true,
