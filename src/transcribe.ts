@@ -9,6 +9,7 @@ import {
 import type { Config } from "./config.ts";
 import { recordTelemetry, round } from "./telemetry.ts";
 import { transcriptionPrompt } from "./vocabulary.ts";
+import { transcriptionHardware, whisperComputeArgs, whisperVadArgs } from "./whisper-args.ts";
 import type { TranscriptionEngine } from "./diagnostics.ts";
 
 /**
@@ -582,7 +583,6 @@ async function transcribeWavCli(
   return { text };
 }
 
-/** whisper-cli once, bounded: what it printed and how it exited. With `timestamps`, each line starts with its times. */
 /**
  * `-mc 0` keeps one 30s window's text from steering the next, but it also
  * drops the initial prompt entirely (checked: a prompt changed nothing under
@@ -594,6 +594,13 @@ function contextArgs(cfg: Config): string[] {
   return prompt ? ["--prompt", prompt] : ["-mc", "0"];
 }
 
+/**
+ * whisper-cli, bounded: what it printed and how it exited. With `timestamps`,
+ * each line starts with its times. A Metal run that fails is run once more on
+ * the CPU (seashell 3ad4765: with `-np` whisper.cpp exits with no reason when
+ * the GPU will not initialise), so the cold path cannot fail the same way the
+ * warm one just did.
+ */
 async function runWhisperCli(
   cfg: Config,
   wavPath: string,
@@ -601,17 +608,27 @@ async function runWhisperCli(
   timestamps = false,
 ): Promise<{ raw: string; code: number } | { error: string }> {
   if (!existsSync(wavPath)) return { error: `File not found: ${wavPath}` };
+  const first = await runWhisperCliOnce(cfg, wavPath, options, timestamps, false);
+  if ("error" in first || first.code === 0 || !transcriptionHardware().appleSilicon) return first;
+  (options.warn ?? console.warn)(`⚠ whisper-cli failed on Metal (exit ${first.code}) — retrying on the CPU`);
+  return runWhisperCliOnce(cfg, wavPath, options, timestamps, true);
+}
 
+async function runWhisperCliOnce(
+  cfg: Config,
+  wavPath: string,
+  options: TranscribePcmOptions,
+  timestamps: boolean,
+  cpu: boolean,
+): Promise<{ raw: string; code: number } | { error: string }> {
   const command =
     [
       cfg.whisperCli,
       "-m", cfg.whisperModel,
-      "-vm", cfg.vadModel,
-      "--vad",
-      "--vad-speech-pad-ms", "300",
+      ...whisperVadArgs(cfg.vadModel),
       "-f", wavPath,
       "-l", "en",
-      "-t", "6",
+      ...whisperComputeArgs({ cpu }),
       ...(timestamps ? [] : ["-nt"]),
       "-np",
       ...contextArgs(cfg),
