@@ -22,6 +22,7 @@ import {
   type TranscriptionEngine,
 } from "./diagnostics.ts";
 import { TranscriptionGate } from "./transcription-gate.ts";
+import { SpeechEndpointer } from "./speech-endpoint.ts";
 
 // Anything smaller than this is silence (raw 16kHz 16-bit mono = 32KB/s).
 export const MIN_PCM_BYTES = 16_000; // ~0.5s
@@ -60,6 +61,26 @@ export function pcmLevel(pcm: Uint8Array): number {
   if (rms <= 0) return 0;
   const db = 20 * Math.log10(rms);
   return Math.min(1, Math.max(0, (db + 50) / 50));
+}
+
+/**
+ * What a raw capture has grown by since `offset`, at most `limit` bytes: the
+ * endpoint watch reads each new piece once rather than the whole file.
+ */
+export function readPcmFrom(path: string, offset: number, limit = 1_048_576): Uint8Array {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    const size = fstatSync(fd).size;
+    const length = Math.max(0, Math.min(limit, size - offset));
+    const out = new Uint8Array(length);
+    if (length) readSync(fd, out, 0, length, offset);
+    return out;
+  } catch {
+    return new Uint8Array(0);
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 /** The last `bytes` of a raw capture, or the whole file when it is shorter. */
@@ -127,17 +148,22 @@ interface Capture {
   killCause: RecorderKillCause;
   sizeAtKill: number | null;
   controllerOwned?: boolean;
+  /** conch heard the pause that ends it and stopped sox: a natural end, as sox's own was. */
+  endpointed?: boolean;
 }
 
 // Every capture path runs the identical sox recipe — headerless 16kHz mono PCM,
-// endpointed by sox's `silence` effect. Only the START threshold differs
-// (barge-in sits above speaker bleed). `-l` keeps the trailing below-threshold
-// audio: voices trail off at the end of sentences, and without it sox trimmed
-// the last words as "silence" (observed live: final couple words missing).
-// SoX 14.4.2's `-l` never ended a pause when sound resumed, so every pause in
-// an utterance added to one total and a capture closed once they reached the
-// end silence — mid-sentence, every few seconds of natural speech. conch.app's
-// sox carries the fix (mac-app/third-party/sox/); another sox still has it.
+// started by sox's `silence` effect once speech crosses the start threshold.
+// Only that threshold differs (barge-in sits above speaker bleed).
+//
+// sox no longer ends the capture. Its `silence` stop clause needed `-l` to keep
+// the trailing words (voices trail off below the threshold, and without it sox
+// trimmed them), and SoX 14.4.2's `-l` never ends a pause when sound resumes:
+// every quiet moment inside speech added to one total, and the capture closed
+// once they reached `end-silence` — every 4–7s of continuous talk, live, each
+// cut showing "Transcribing…" mid-sentence. conch measures the pause itself
+// now (speech-endpoint.ts), on every sox, and stops the recorder when an
+// unbroken one has lasted `end-silence`; the trailing quiet stays in the file.
 //
 // The start had the mirror-image problem. `silence` begins a capture only once
 // speech has stayed above the threshold for 0.15s, and discards everything
@@ -151,10 +177,10 @@ interface Capture {
 // `remix 1 1` makes two channels, `delay 0 P` holds the second back P seconds,
 // `silence` starts on the live one (any channel above threshold counts), and
 // `remix 2` keeps only the delayed one — so the capture begins P seconds before
-// the trigger. Ending waits until both channels have been quiet, which the
-// delayed one reaches P later, so the end duration is shortened by P and the
-// utterance still ends when it did. Measured: WER 18% → 11.5% (LibriSpeech),
-// 12 of the 14 clipped dictations whole again.
+// the trigger. The file runs P behind the mic, so the pause that ends a capture
+// is measured P shorter in it (endpointQuietSecs), and the utterance still ends
+// when it did. Measured: WER 18% → 11.5% (LibriSpeech), 12 of the 14 clipped
+// dictations whole again.
 export const CAPTURE_PREROLL_SECS = 0.3;
 
 /** The pre-roll for this config: never more than half the end silence it is taken from. */
@@ -163,9 +189,29 @@ export function capturePrerollSecs(cfg: Pick<Config, "endSilenceSecs">): number 
 }
 
 /**
- * A duration for sox's `silence` effect. It reads a bare integer as a sample
- * count — `end-silence 3` became "3", three samples, and every capture closed
- * 0.18s in — so every duration carries a decimal point.
+ * How late, on average, the endpoint watch learns of quiet the mic has heard
+ * beyond the pre-roll: sox writes the capture file in 8 KB blocks of its
+ * output buffer (0.256s; the live partials' audio lengths step by exactly that,
+ * 1.02s, 1.54s, 2.30s…), so the file trails by up to one block, and the watch
+ * reads it every tick.
+ */
+const ENDPOINT_LAG_SECS = 8_192 / 32_000 / 2 + CAPTURE_WATCHDOG_INTERVAL_MS / 1000 / 2;
+
+/**
+ * The unbroken pause, measured in the capture file, that ends a capture. The
+ * file runs the pre-roll behind the mic, and is read a little late
+ * (ENDPOINT_LAG_SECS), so both come off `end-silence`: the capture still ends
+ * `end-silence` after the last word, as it did when sox ended it, and turn-taking
+ * is no slower. Never less than a quarter of `end-silence`, however short that is.
+ */
+export function endpointQuietSecs(cfg: Pick<Config, "endSilenceSecs">): number {
+  return Math.max(cfg.endSilenceSecs / 4, cfg.endSilenceSecs - capturePrerollSecs(cfg) - ENDPOINT_LAG_SECS);
+}
+
+/**
+ * A duration for sox's effects. Its `silence` effect read a bare integer as a
+ * sample count — `end-silence 3` became "3", three samples, and every capture
+ * closed 0.18s in — so every duration carries a decimal point.
  */
 function soxSeconds(seconds: number): string {
   return seconds.toFixed(3);
@@ -176,7 +222,7 @@ const activeControllers = new Set<DictationController>();
 const activeBargeShutdowns = new Map<ReturnType<typeof Bun.spawn>, () => Promise<void>>();
 
 export function soxCaptureArgs(
-  cfg: Pick<Config, "micGainDb" | "endSilenceSecs" | "endThresholdPct"> & Partial<Pick<Config, "soxBin">>,
+  cfg: Pick<Config, "micGainDb" | "endSilenceSecs"> & Partial<Pick<Config, "soxBin">>,
   raw: string,
   startPct: number,
 ): string[] {
@@ -188,9 +234,8 @@ export function soxCaptureArgs(
     raw,
     ...(cfg.micGainDb ? ["gain", String(cfg.micGainDb)] : []),
     "channels", "1", "remix", "1", "1", "delay", "0", soxSeconds(preroll),
-    "silence", "-l",
-    "1", "0.15", `${startPct}%`,
-    "1", soxSeconds(cfg.endSilenceSecs - preroll), `${cfg.endThresholdPct}%`,
+    // Start only: the end is conch's (speech-endpoint.ts, watchEndpoint).
+    "silence", "1", "0.15", `${startPct}%`,
     "remix", "2",
   ];
 }
@@ -294,12 +339,40 @@ function spawnCapture(
   if (trace) tracedRecorders.set(proc, capture);
   // So the next daemon can reap this recorder if we die without shutting down.
   recordSpawnedSox(proc.pid);
+  const endpointWatch = watchEndpoint(cfg, capture);
   void proc.exited.then(() => {
+    clearInterval(endpointWatch);
     activeRecorders.delete(proc);
     tracedRecorders.delete(proc);
     forgetSox(proc.pid);
   });
   return capture;
+}
+
+/**
+ * End the capture when an unbroken pause of `end-silence` has been heard
+ * (speech-endpoint.ts), as sox's `silence` effect used to before its pause
+ * count proved cumulative. It reads only what the file grew by since the last
+ * tick. The stop is a natural end: no kill cause, no stop reason, so every
+ * owner treats it exactly as it treated sox exiting on its own, and no tail
+ * wait — the pre-roll still in the delay is the pause itself.
+ */
+function watchEndpoint(cfg: Config, capture: Capture): ReturnType<typeof setInterval> {
+  const endpointer = new SpeechEndpointer({
+    quietSecs: endpointQuietSecs(cfg),
+    thresholdPct: cfg.endThresholdPct,
+  });
+  let offset = 0;
+  const watch = setInterval(() => {
+    if (capture.killCause || capture.endpointed) return clearInterval(watch);
+    const grown = readPcmFrom(capture.raw, offset);
+    offset += grown.byteLength;
+    if (!endpointer.feed(grown)) return;
+    capture.endpointed = true;
+    clearInterval(watch);
+    stopSoxProcess(capture.proc);
+  }, CAPTURE_WATCHDOG_INTERVAL_MS);
+  return watch;
 }
 
 /**
@@ -462,7 +535,14 @@ export function createDictationSession(
     ...(runtime.clock ? { clock: runtime.clock } : {}),
     transcriber: {
       async transcribe(pcm, context) {
-        hooks.onState?.("transcribing");
+        // "Transcribing" means the mic has closed. Between captures it has not:
+        // the next recorder armed before this one's audio reached the worker,
+        // and said so. Announcing this capture's transcription over it turned
+        // the composer's mic into "Transcribing…" mid-sentence, and it stayed
+        // that way until the next word — so a speaker who paused there saw the
+        // mic as closed, stopped, and the hold sent half a sentence (2026-11-11,
+        // Tyler: "fixing voice so it doesn't end and start transcribing").
+        if (!controller.micOpen) hooks.onState?.("transcribing");
         const trace = context.diagnosticId
           ? { id: context.diagnosticId, rawPath: context.rawPath }
           : undefined;
@@ -545,9 +625,10 @@ export function createDictationSession(
 /**
  * Capture one utterance and transcribe it.
  *
- * sox's `silence` effect does the endpointing, but its trigger is jumpy —
- * the mic-cue tail or a keyboard clack "starts" a recording that closes on
- * the quiet that follows. Defenses, all born from live testing:
+ * sox's `silence` effect starts each capture and conch's endpoint watch ends
+ * it (watchEndpoint), but the start is jumpy — the mic-cue tail or a keyboard
+ * clack "starts" a recording that closes on the quiet that follows. Defenses,
+ * all born from live testing:
  *
  * 1. Re-arm on false starts: a near-empty capture or empty transcript
  *    re-opens the mic until the start window is genuinely spent.

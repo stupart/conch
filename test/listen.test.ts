@@ -11,6 +11,7 @@ import {
   capturePrerollSecs,
   captureStopTailMs,
   createDictationSession,
+  endpointQuietSecs,
   hasActiveRecorders,
   rawCaptureFileGrew,
   soxCaptureArgs,
@@ -25,9 +26,9 @@ test("any raw capture growth starts speech independently of transcription MIN", 
 });
 
 describe("sox capture arguments", () => {
-  test("puts configured mic gain first, then the pre-roll, then silence", () => {
+  test("puts configured mic gain first, then the pre-roll, then a start-only silence", () => {
     const args = soxCaptureArgs(
-      { micGainDb: 12, endSilenceSecs: 3.5, endThresholdPct: 2 },
+      { micGainDb: 12, endSilenceSecs: 3.5 },
       "/tmp/conch-test.raw",
       2,
     );
@@ -38,16 +39,24 @@ describe("sox capture arguments", () => {
       "/tmp/conch-test.raw",
       "gain", "12",
       "channels", "1", "remix", "1", "1", "delay", "0", "0.300",
-      "silence", "-l",
-      "1", "0.15", "2%",
-      "1", "3.200", "2%",
+      "silence", "1", "0.15", "2%",
       "remix", "2",
     ]);
   });
 
+  test("sox never ends a capture: no stop clause, and no -l to carry its cumulative pause count", () => {
+    // 2026-11-11: SoX 14.4.2's `silence -l` added every quiet moment inside
+    // speech to one total and closed the capture every 4-7s of talk.
+    const args = soxCaptureArgs({ micGainDb: 0, endSilenceSecs: 3.5 }, "/tmp/conch-test.raw", 2);
+    const silence = args.indexOf("silence");
+    expect(args.slice(silence, silence + 4)).toEqual(["silence", "1", "0.15", "2%"]);
+    expect(args[silence + 4]).toBe("remix");
+    expect(args).not.toContain("-l");
+  });
+
   test("leaves gain out when it is zero", () => {
     const args = soxCaptureArgs(
-      { micGainDb: 0, endSilenceSecs: 3.5, endThresholdPct: 2 },
+      { micGainDb: 0, endSilenceSecs: 3.5 },
       "/tmp/conch-test.raw",
       2,
     );
@@ -56,21 +65,18 @@ describe("sox capture arguments", () => {
     expect(args).not.toContain("gain");
   });
 
-  test("a whole-number end silence is seconds, not samples", () => {
-    // sox's silence effect reads a bare "3" as three samples: every capture
-    // would close 0.18s in, and dictation would hear nothing at all.
-    const args = soxCaptureArgs({ micGainDb: 0, endSilenceSecs: 3, endThresholdPct: 2 }, "/tmp/conch-test.raw", 2);
-    const end = args.indexOf("silence") + 6;
-    expect(args[end]).toBe("2.700");
-    expect(args[end]).toContain(".");
-  });
-
   test("the pre-roll never takes more than half the end silence", () => {
     expect(capturePrerollSecs({ endSilenceSecs: 3.5 })).toBe(CAPTURE_PREROLL_SECS);
     expect(capturePrerollSecs({ endSilenceSecs: 0.4 })).toBe(0.2);
-    const args = soxCaptureArgs({ micGainDb: 0, endSilenceSecs: 0.4, endThresholdPct: 2 }, "/tmp/conch-test.raw", 2);
+    const args = soxCaptureArgs({ micGainDb: 0, endSilenceSecs: 0.4 }, "/tmp/conch-test.raw", 2);
     expect(args).toContain("0.200");
-    expect(args[args.indexOf("silence") + 6]).toBe("0.200");
+  });
+
+  test("the pause that ends a capture is measured in the file, a pre-roll and a read behind the mic", () => {
+    // 3.5s at the mic: 0.3s of pre-roll, then half an 8 KB sox block (0.128s) and half a 100ms watch tick.
+    expect(endpointQuietSecs({ endSilenceSecs: 3.5 })).toBeCloseTo(3.5 - 0.3 - 0.128 - 0.05, 6);
+    // Never under a quarter of a very short end silence.
+    expect(endpointQuietSecs({ endSilenceSecs: 0.4 })).toBeCloseTo(0.1, 6);
   });
 });
 

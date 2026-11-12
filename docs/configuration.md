@@ -24,7 +24,7 @@ The defaults below are read from `src/settings.ts`; `conch settings` prints the 
 
 | Setting | Variable | Default | What it does |
 |---|---|---|---|
-| `end-silence` | `CONCH_END_SILENCE_SECS` | `3.5` | Seconds of silence that end what you are saying |
+| `end-silence` | `CONCH_END_SILENCE_SECS` | `3.5` | Seconds of unbroken silence that end what you are saying; the pauses inside a sentence never add up to it |
 | `listen-window` | `CONCH_LISTEN_WINDOW_SECS` | `30` | Seconds the mic waits for you to start talking |
 | `hold-submit-delay` | `CONCH_HOLD_SUBMIT_SECS` | `8` | Silence before held dictation is sent |
 | `mic-gain` | `CONCH_MIC_GAIN_DB` | `0` | Software gain on conch's capture, -20 to 30 dB, without changing the macOS input volume |

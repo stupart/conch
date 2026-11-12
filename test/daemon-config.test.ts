@@ -124,6 +124,52 @@ describe("daemon listen status hooks", () => {
     expect(prefix).not.toContain("cancel");
   });
 
+  test("between captures the words just said stay on screen until their transcript joins the prefix", () => {
+    // 2026-11-11: the next recorder arms before the last one is transcribed;
+    // clearing its partial there made the sentence vanish mid-dictation.
+    const reducer = new DictationReducer({ holdSubmit: true });
+    let prefix = "";
+    let state = "";
+    let partial = "";
+    const hooks = listenHooks(
+      "alpha",
+      () => reducer.snapshot.buffer.map((segment) => segment.text).join(" "),
+      {
+        setState(next, _label, text = "") {
+          state = next;
+          partial = text;
+        },
+        setTranscriptPrefix(text) {
+          prefix = text;
+        },
+      },
+    );
+    const screen = (): string => [prefix, partial].filter(Boolean).join(" ");
+
+    hooks.onState?.("armed");
+    hooks.onState?.("capturing");
+    hooks.onPartial?.("the first thought");
+    // The capture ends at a pause; its successor arms while it is transcribed.
+    hooks.onState?.("armed");
+    expect(state).toBe("listening");
+    expect(screen()).toBe("the first thought");
+    // Its transcript is held: the prefix carries it and the stand-in goes, in one step.
+    reducer.consume({ type: "transcript", sequence: 1, text: "The first thought." });
+    hooks.settle();
+    expect(screen()).toBe("The first thought.");
+    expect(partial).toBe("");
+    // The next capture's partial joins after it, and the final drain keeps both.
+    hooks.onState?.("capturing");
+    hooks.onPartial?.("and the second");
+    expect(screen()).toBe("The first thought. and the second");
+    hooks.onState?.("transcribing");
+    expect(state).toBe("transcribing");
+    expect(screen()).toBe("The first thought. and the second");
+    reducer.consume({ type: "transcript", sequence: 2, text: "And the second." });
+    hooks.settle();
+    expect(screen()).toBe("The first thought. And the second.");
+  });
+
   test("footer listen hooks never call the theater-only prefix sink", () => {
     const calls: string[] = [];
     const hooks = listenHooks("permission", undefined, {
