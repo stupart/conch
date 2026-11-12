@@ -130,8 +130,10 @@ test("one opening rule: what conch's window draws, or only conch can show, opens
   expect(components).toContain('static let panelKinds: Set<String> = ["page", "markdown", "text", "image", "pdf", "video", "audio", "url", "folder"]');
   expect(rule).toContain("guard case let .open(url) = choose(kind: kind, link: link, fileExists: fileExists, appWindowOpen: false, revealable: false) else { return false }");
   expect(rule).toContain("if let deliverable { return panelKinds.contains(deliverable) }");
-  expect(member(components, "public static func opensOnlyInConch(deliverable: String?, marked: Bool) -> Bool {")).toContain(
-    'marked || deliverable == "folder"',
+  // A Figma file is drawn as Figma's embed (#608), so it is one of these too, never handed to the app.
+  expect(rule).toContain("if FigmaLink.isFile(url) { return true }");
+  expect(member(components, "public static func opensOnlyInConch(deliverable: String?, marked: Bool, link: URL? = nil) -> Bool {")).toContain(
+    'marked || deliverable == "folder" || link.map(FigmaLink.isFile) == true',
   );
   // Read off the row as stage reads a scene, with the kind the daemon filed.
   const windowContent = member(item, "var windowContent: ReviewItem? {");
@@ -142,7 +144,8 @@ test("one opening rule: what conch's window draws, or only conch can show, opens
   const open = member(item, "static func open(_ row: SessionRow, store: StateStore) async -> Bool {");
   const order = [
     "let marked = !(row.review?.marks.isEmpty ?? true)",
-    "if row.windowContent != nil || ReviewScene.opensOnlyInConch(deliverable: row.review?.kind, marked: marked) {",
+    "let link = ReviewItem(row: row)?.link.map { LinkTarget.url(for: $0, cwd: row.cwd) }",
+    "if row.windowContent != nil || ReviewScene.opensOnlyInConch(deliverable: row.review?.kind, marked: marked, link: link) {",
     "openInWindow(row, store: store)\n            return true",
     "return await stage(row, store: store)",
   ].map((line) => open.indexOf(line));
