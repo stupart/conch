@@ -1,5 +1,6 @@
 import { isAbsolute, resolve } from "node:path";
 import { AGENT_COMMANDS, AGENT_INSTRUCTIONS, renderAgentCommandHelp, renderAgentHelp, type AgentCommandText } from "./agent-instructions.ts";
+import { moreHint } from "./browser-read.ts";
 
 /**
  * `conch agent …`'s words, to the arguments of the handler it runs, and its answer back to words.
@@ -230,10 +231,19 @@ export const AGENT_COMMAND_PARSERS: Readonly<Record<string, CommandParser>> = {
     },
   },
   "browser read": {
-    flags: { tab: "value" },
+    flags: { tab: "value", page: "value", find: "value", section: "value", selector: "value", full: "bool" },
     build(parsed, _context, command) {
       words(parsed, command, 0, 0, "");
-      return defined({ tab: parsed.values.get("tab") });
+      const page = integer(command, "page", parsed.values.get("page"));
+      if (page === 0) fail(command, "--page counts from 1");
+      return defined({
+        tab: parsed.values.get("tab"),
+        page,
+        find: parsed.values.get("find"),
+        section: parsed.values.get("section"),
+        selector: parsed.values.get("selector"),
+        full: parsed.bools.has("full") ? true : undefined,
+      });
     },
   },
   "browser click": {
@@ -683,9 +693,21 @@ function renderSessions(value: Record<string, unknown>, now: number): string[] {
   return lines;
 }
 
-/** `browser read`: the page as an agent reads one, its refs a line each. */
+/**
+ * `browser read`: the page as an agent reads one, its refs a line each, then how to get more. 2026-11-11: a same-site
+ * link shows its path, and the read is one page of the words unless asked for more (browser-read.ts).
+ */
 function renderPage(value: Record<string, unknown>): string[] {
   const lines = [`tab ${String(value.tab ?? "?")}: ${String(value.title ?? "")}`, String(value.url ?? "")];
+  const page = isRecord(value.page) ? value.page : undefined;
+  const where = [
+    typeof value.scope === "string" ? `part ${value.scope}` : "",
+    typeof value.section === "string" ? `section "${value.section}"` : "",
+    typeof value.find === "string" ? `lines that say "${value.find}": ${String(value.lines ?? 0)}` : "",
+    page ? `page ${String(page.at)} of ${String(page.of)}` : "",
+  ].filter(Boolean);
+  if (where.length) lines.push(where.join(" · "));
+  if (Array.isArray(value.sections) && value.sections.length) lines.push(`sections: ${value.sections.map(String).join(" · ")}`);
   if (typeof value.text === "string" && value.text) lines.push("", value.text, "");
   const quoted = (text: unknown) => JSON.stringify(String(text ?? ""));
   for (const link of Array.isArray(value.links) ? value.links.filter(isRecord) : []) lines.push(`link ${String(link.ref)} ${quoted(link.text)}${link.href ? ` ${String(link.href)}` : ""}`);
@@ -694,14 +716,23 @@ function renderPage(value: Record<string, unknown>): string[] {
     const named = field.label ?? field.name;
     lines.push(`field ${String(field.ref)} ${String(field.type ?? "text")}${named ? ` ${quoted(named)}` : ""}${field.value !== undefined ? ` = ${quoted(field.value)}` : ""}${field.checked !== undefined ? ` checked=${String(field.checked)}` : ""}${field.disabled ? " disabled" : ""}`);
   }
-  const extra = Object.fromEntries(Object.entries(value).filter(([key]) => !["tab", "title", "url", "text", "links", "buttons", "fields"].includes(key)));
-  return [...lines, ...renderLines(extra)];
+  const shown = ["tab", "title", "url", "text", "links", "buttons", "fields", "scope", "section", "find", "lines", "page", "sections", "hidden", "more", "headings"];
+  const extra = Object.fromEntries(Object.entries(value).filter(([key]) => !shown.includes(key)));
+  const more = moreHint(value, "cli");
+  return [...lines, ...renderLines(extra), ...(more ? [`more: ${more}`] : [])];
 }
 
 /** An answer as `conch agent` prints it: JSON with --json, else short lines, both in the CLI's words. */
 export function renderAgentAnswer(command: AgentCommandText, value: unknown, json: boolean, now = Date.now()): string {
   const worded = cliWorded(value);
-  if (json) return JSON.stringify(worded);
+  if (json) {
+    // A read's way to more names flags here, not the MCP tool's arguments.
+    if (isRecord(worded) && command.name === "browser read" && typeof worded.more === "string") {
+      const more = moreHint(worded, "cli");
+      return JSON.stringify(more ? { ...worded, more } : worded);
+    }
+    return JSON.stringify(worded);
+  }
   if (typeof worded === "string") return worded;
   if (isRecord(worded) && command.name === "sessions" && Array.isArray(worded.sessions)) return renderSessions(worded, now).join("\n");
   if (isRecord(worded) && command.name === "browser read") return renderPage(worded).join("\n");

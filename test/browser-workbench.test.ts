@@ -151,6 +151,15 @@ describe("the control messages, checked field by field, and the phone's to send 
       .toEqual({ kind: "browser-command", sessionId: "s1", op: "type", tab: "tab-1a2b3c4d", target: { auto: "Email" }, text: "a@b.c", submit: true });
     expect(decodeBrowserMessage({ kind: "browser-command", sessionId: "s1", op: "click", target: { ref: "e3" } }))
       .toEqual({ kind: "browser-command", sessionId: "s1", op: "click", target: { ref: "e3" } });
+    // 2026-11-11: a read of one part names it by a selector, and by nothing else; a read naming nothing reads it all.
+    expect(decodeBrowserMessage({ kind: "browser-command", sessionId: "s1", op: "read", target: { selector: " main .docs " } }))
+      .toEqual({ kind: "browser-command", sessionId: "s1", op: "read", target: { selector: "main .docs" } });
+    expect(decodeBrowserMessage({ kind: "browser-command", sessionId: "s1", op: "read", target: { ref: "e3" } }))
+      .toEqual({ refused: "a read's target is {selector}: the part of the page to read" });
+    expect(decodeBrowserMessage({ kind: "browser-command", sessionId: "s1", op: "read", target: "main" }))
+      .toEqual({ refused: "a read's target is {selector}: the part of the page to read" });
+    expect(decodeBrowserMessage({ kind: "browser-command", sessionId: "s1", op: "read" }))
+      .toEqual({ kind: "browser-command", sessionId: "s1", op: "read" });
     expect(decodeBrowserMessage({ kind: "browser-answer", request: "r1", ack: true })).toEqual({ kind: "browser-answer", request: "r1", ack: true });
     expect(decodeBrowserMessage({ kind: "browser-tab-event", tab: "tab-1a2b3c4d", url: "https://acme.dev/", title: "Acme", closed: true }))
       .toEqual({ kind: "browser-tab-event", tab: "tab-1a2b3c4d", url: "https://acme.dev/", title: "Acme", closed: true });
@@ -490,6 +499,23 @@ describe("an agent's command, held open until the Mac app has run it", () => {
         fields: [{ ref: "e3", type: "password", name: "password" }, { ref: "e4", type: "email", name: "email", value: "t@acme.dev" }],
       });
       expect(JSON.stringify(reply)).not.toMatch(/hunter2|abc123|xyz/);
+    } finally {
+      await h.close();
+    }
+  });
+
+  // 2026-11-11: `browser read --selector`: the part to read goes to the app on the request, and its headings come back.
+  test("a read of one part puts its selector on the app's request, and the part and its headings come back", async () => {
+    const h = await served();
+    try {
+      h.workbench.open("session-1", "https://acme.dev/docs", "default");
+      const [reply, { request }] = await Promise.all([
+        h.command({ sessionId: "session-1", op: "read", target: { selector: "main" } }),
+        h.app(() => ({ result: { url: "https://acme.dev/docs", title: "Docs", text: "Install", links: [], buttons: [], fields: [], headings: [{ level: 2, text: "Install" }], scope: "main" } })),
+      ]);
+      expect(request).toMatchObject({ op: "read", target: { selector: "main" } });
+      if (!reply.ok || reply.reply.kind !== "browser-result") throw new Error(JSON.stringify(reply));
+      expect(reply.reply.result).toMatchObject({ text: "Install", headings: [{ level: 2, text: "Install" }], scope: "main" });
     } finally {
       await h.close();
     }

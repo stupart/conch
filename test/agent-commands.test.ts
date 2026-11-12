@@ -127,6 +127,18 @@ describe("words to arguments", () => {
     expect(refused(["browser"]).message).toContain("browser takes a command: open, read, click, type, screenshot, tabs, ask, close");
   });
 
+  // 2026-11-11: a read is one page of the words unless it asks for another part, or all of it (browser-read.ts).
+  test("browser read: a page, the words to find, a section, a part by selector, or all of it", () => {
+    expect(run(["browser", "read"]).args).toEqual({});
+    expect(run(["browser", "read", "--page", "2", "--tab", "t1"]).args).toEqual({ tab: "t1", page: 2 });
+    expect(run(["browser", "read", "--find", "Sign in"]).args).toEqual({ find: "Sign in" });
+    expect(run(["browser", "read", "--section", "Install", "--selector", "main"]).args).toEqual({ section: "Install", selector: "main" });
+    expect(run(["browser", "read", "--full"]).args).toEqual({ full: true });
+    expect(refused(["browser", "read", "--page", "two"]).message).toBe('--page takes a whole number, not "two"');
+    expect(refused(["browser", "read", "--page", "0"]).message).toBe("--page counts from 1");
+    expect(refused(["browser", "read", "pricing"]).message).toContain('unexpected "pricing"');
+  });
+
   test("aliases an agent might type land on the command", () => {
     expect(run(["tab", "click", "e3"]).tool).toBe("browser_click");
     expect(run(["browser", "shot"]).tool).toBe("browser_screenshot");
@@ -222,6 +234,32 @@ describe("answers, short", () => {
       's-2  waiting  "Beta"  (codex)  3h ago  tools stale (missing conch_run)',
       "claude sign-ins (start --sign-in): Work Max (abc-1)",
     ]);
+  });
+
+  test("browser read, compact: where in the page it is, its sections, the refs, then the way to more in flags", () => {
+    const read = AGENT_COMMANDS.find((command) => command.name === "browser read")!;
+    const answer = {
+      tab: "t1", url: "https://site.dev/docs", title: "Docs", text: "Install\nRun it",
+      page: { at: 1, of: 3 }, sections: ["Install", "Deploy"],
+      links: [{ ref: "e1", text: "Pricing", href: "/pricing" }], buttons: [], fields: [],
+      hidden: { links: 2 }, more: "page: 2 for page 2 of 3; …",
+    };
+    expect(renderAgentAnswer(read, answer, false).split("\n")).toEqual([
+      "tab t1: Docs",
+      "https://site.dev/docs",
+      "page 1 of 3",
+      "sections: Install · Deploy",
+      "",
+      "Install",
+      "Run it",
+      "",
+      'link e1 "Pricing" /pricing',
+      "more: --page 2 for page 2 of 3; 2 more links in this part; --find WORDS, --section HEADING or --selector CSS to narrow it; --full for the whole read",
+    ]);
+    // --json says the way to more in flags too: this is the shell's answer, not the MCP tool's.
+    expect(JSON.parse(renderAgentAnswer(read, answer, true)).more).toStartWith("--page 2 for page 2 of 3");
+    const found = renderAgentAnswer(read, { tab: "t1", url: "https://site.dev/docs", title: "Docs", find: "deploy", lines: 1, text: "Deploy it", links: [], buttons: [], fields: [] }, false);
+    expect(found.split("\n")[2]).toBe('lines that say "deploy": 1');
   });
 
   test("browser read: the page, then its refs a line each, never a password's value", () => {

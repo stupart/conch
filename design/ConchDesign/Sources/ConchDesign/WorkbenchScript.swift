@@ -15,7 +15,8 @@ import Foundation
 ///
 /// Called by `callAsyncJavaScript` with `op` ("read", "click", "type", "locate", "locate-field", "focus-field" or
 /// "end-field"), `how` ("ref", "selector", "text" or "auto"), `what`, `text` and `submit`. It answers an object; `{error}`
-/// when it can't do what was asked, saying why.
+/// when it can't do what was asked, saying why. A `read` with `how` "selector" reads only the part of the page `what`
+/// selects, and says so (`scope`).
 ///
 /// So the user can watch an agent work (2026-10-16): `locate` and `locate-field` find what a click or a type will land
 /// on, scroll it into view, and answer only its box, which the app marks over the page; and `type` fills a field in a
@@ -42,6 +43,8 @@ public enum WorkbenchScript {
     public static let linksMax = 150
     public static let buttonsMax = 100
     public static let fieldsMax = 100
+    /// The headings a `read` lists, which conch cuts the words into sections by (src/browser-read.ts).
+    public static let headingsMax = 60
 
     /// How a type fills its field: this many steps at most, this many milliseconds apart.
     public static let fillSteps = 12
@@ -50,7 +53,7 @@ public enum WorkbenchScript {
     public static let page = #"""
     const W = window, D = document;
     const PASSWORD_REFUSAL = "agents don't type passwords; sign in yourself in the tab";
-    const LIMITS = { text: 12000, links: 150, buttons: 100, fields: 100, hidden: 20, bytes: 45000 };
+    const LIMITS = { text: 12000, links: 150, buttons: 100, fields: 100, hidden: 20, headings: 60, bytes: 45000 };
     const FILL = { steps: 12, ms: 28 };
     const state = W.__conchWorkbench || (W.__conchWorkbench = { refs: new Map() });
     const fail = (message) => { throw { conchWorkbench: message }; };
@@ -117,6 +120,7 @@ public enum WorkbenchScript {
     const LINKS = "a[href]";
     const BUTTONS = 'button, [role="button"], input[type="submit"], input[type="button"], input[type="reset"], input[type="image"], summary';
     const FIELDS = 'input, textarea, select, [contenteditable="true"], [contenteditable=""]';
+    const HEADINGS = 'h1, h2, h3, h4, [role="heading"]';
     const CLICKABLE = LINKS + ", " + BUTTONS + ', [role="link"], [role="tab"], [role="menuitem"], [role="option"], [role="checkbox"], [role="radio"], [role="switch"], label, [onclick]';
     const BUTTON_TYPES = ["submit", "button", "reset", "image"];
     const UNTYPABLE = BUTTON_TYPES.concat(["checkbox", "radio", "file", "hidden", "range", "color"]);
@@ -189,30 +193,49 @@ public enum WorkbenchScript {
         return found;
     };
 
+    // 2026-11-11: a read of one part of the page (`how` "selector", the agent's --selector) brings back that part's
+    // words and the elements inside it, each with the ref a whole read gives it: refs are numbered over the whole page
+    // either way, so a ref from one read never names a different element after the other. Its headings let conch cut
+    // the words into sections (src/browser-read.ts); a whole read averaged 8.6 KB in agents' context, most of it the
+    // words and links of parts they never asked about.
     const read = () => {
+        const scope = how === "selector" && what ? bySelector(what, false) : null;
+        const inside = (el) => !scope || scope === el || Boolean(scope.contains && scope.contains(el));
         state.refs = new Map();
         let next = 0;
         const ref = (el) => { const name = "e" + (++next); state.refs.set(name, el); return name; };
-        const links = [], buttons = [], fields = [];
+        const links = [], buttons = [], fields = [], headings = [];
+        let numbered = 0;
         for (const el of all(LINKS)) {
-            if (links.length >= LIMITS.links) break;
+            if (numbered >= LIMITS.links) break;
             if (!visible(el)) continue;
+            numbered++;
+            const name = ref(el);
+            if (!inside(el)) continue;
             const href = String(el.href || "");
-            const link = { ref: ref(el), text: wordsOf(el) };
+            const link = { ref: name, text: wordsOf(el) };
             if (/^https?:/i.test(href)) link.href = href;
             links.push(link);
         }
+        numbered = 0;
         for (const el of all(BUTTONS)) {
-            if (buttons.length >= LIMITS.buttons) break;
-            if (visible(el)) buttons.push({ ref: ref(el), text: wordsOf(el) });
+            if (numbered >= LIMITS.buttons) break;
+            if (!visible(el)) continue;
+            numbered++;
+            const name = ref(el);
+            if (inside(el)) buttons.push({ ref: name, text: wordsOf(el) });
         }
         let hidden = 0;
+        numbered = 0;
         for (const el of all(FIELDS)) {
-            if (fields.length >= LIMITS.fields) break;
+            if (numbered >= LIMITS.fields) break;
             const type = typeOf(el);
             if (BUTTON_TYPES.indexOf(type) >= 0) continue;
             if (type === "hidden" ? ++hidden > LIMITS.hidden : !visible(el)) continue;
-            const field = { ref: ref(el), type, label: labelOf(el), name: cut(attr(el, "name") || attr(el, "id"), 120) };
+            numbered++;
+            const name = ref(el);
+            if (!inside(el)) continue;
+            const field = { ref: name, type, label: labelOf(el), name: cut(attr(el, "name") || attr(el, "id"), 120) };
             if (el.disabled) field.disabled = true;
             if (isSecret(el)) field.secret = true;
             else if (type === "checkbox" || type === "radio") field.checked = Boolean(el.checked);
@@ -221,12 +244,21 @@ public enum WorkbenchScript {
             else field.value = String(el.value == null ? "" : el.value).slice(0, 500);
             fields.push(field);
         }
-        const body = D.body || D.documentElement;
+        for (const el of all(HEADINGS)) {
+            if (headings.length >= LIMITS.headings) break;
+            if (!visible(el) || !inside(el)) continue;
+            const words = cut(el.innerText || el.textContent, 120);
+            if (!words) continue;
+            const level = /^h[1-6]$/.test(tag(el)) ? Number(tag(el).slice(1)) : Math.min(6, Math.max(1, Number(attr(el, "aria-level")) || 2));
+            headings.push({ level, text: words });
+        }
+        const body = scope || D.body || D.documentElement;
         let text = String((body && (body.innerText || body.textContent)) || "")
             .replace(/[^\S\n]+/g, " ").replace(/ ?\n ?/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
         let truncated = false;
         if (text.length > LIMITS.text) { text = text.slice(0, LIMITS.text); truncated = true; }
-        const page = { text, links, buttons, fields };
+        const page = { text, links, buttons, fields, headings };
+        if (scope) page.scope = what;
         // Inside one control frame with room to spare: the words give way first, then the longest lists.
         const bytes = () => new TextEncoder().encode(JSON.stringify(page)).length;
         for (let rounds = 0; rounds < 40 && bytes() > LIMITS.bytes; rounds++) {

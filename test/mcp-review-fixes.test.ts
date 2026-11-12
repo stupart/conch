@@ -213,8 +213,9 @@ describe("review_to_front's refusals name the fix", () => {
     const tool = MCP_TOOLS.find((one) => one.name === "review_to_front")!;
     const summary = (tool.inputSchema.properties as Record<string, { maxLength?: number; description?: string }>).summary!;
     expect(summary.maxLength).toBe(200);
-    expect(summary.description).toContain("at most 200 characters");
-    expect(tool.description).toContain("one-line summary (at most 200 characters)");
+    // 2026-11-11: said once, on the parameter; the tool's description names the one-line summary and leaves the number here.
+    expect(summary.description).toContain("Over 200 characters is cut");
+    expect(tool.description).toContain("Pass a one-line summary");
   });
 
   test("a kind agents guess is read as what it means, and the result says so", async () => {
