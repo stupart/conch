@@ -145,7 +145,7 @@ describe("the baseline", () => {
   const tokens = measureAgentContext(SOURCE);
 
   test("never this Mac's call log or transcripts", () => {
-    const run: EvalReport = { v: 1, machine: machine(1), tokens: { ...tokens, usage: null, transcripts: { source: "claude-code transcripts", days: 7, files: 1, results: [], toolSearch: { loads: 0, conchToolsLoaded: 0, byTool: {} } } } };
+    const run: EvalReport = { v: 1, machine: machine(1), tokens: { ...tokens, usage: null, transcripts: { source: "claude-code transcripts", days: 7, files: 1, results: [], toolSearch: { loads: 0, conchToolsLoaded: 0, byTool: {} }, skillLoads: {} } } };
     const { baseline } = baselineFrom(run, null);
     expect(baseline.tokens).not.toHaveProperty("usage");
     expect(baseline.tokens).not.toHaveProperty("transcripts");
@@ -200,6 +200,8 @@ describe("tool results from this Mac's records", () => {
       result("t3", "y".repeat(9_000)),
       use("t4", "ToolSearch", { query: "select:mcp__plugin_conch_conch__review_to_front,mcp__plugin_conch_conch__conch_capture" }),
       use("t5", "ToolSearch", { query: "select:Read" }),
+      use("t7", "Skill", { skill: "conch:conch-control" }),
+      use("t8", "Skill", { skill: "other:thing" }),
       // A fork's copy of the same call, and a call from before the window: neither counts.
       use("t1", "mcp__plugin_conch_conch__conch_sessions"),
       result("t1", "x".repeat(300)),
@@ -210,6 +212,7 @@ describe("tool results from this Mac's records", () => {
     expect(scan.sizes.get("conch_sessions")).toEqual([300, 100]);
     expect(scan.sizes.has("Bash")).toBe(false);
     expect(scan.loads).toEqual({ loads: 1, conchToolsLoaded: 2, byTool: { review_to_front: 1, conch_capture: 1 } });
+    expect(scan.skillLoads).toEqual({ "conch-control": 1 });
   });
 });
 
