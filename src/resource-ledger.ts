@@ -537,6 +537,8 @@ export interface PublishedResources {
   items: PublishedResource[];
 }
 
+/** How long a resource shows as stopping after a stop that said it worked. */
+const STOPPING_MS = 3 * 60_000;
 /** How long "Ask later" waits. */
 export const ASK_LATER_MS = 4 * 60 * 60_000;
 /** A session gone from two whole registry reads in a row has ended; one could be a resume in flight. */
@@ -1035,12 +1037,13 @@ export class ResourceLedger {
   /** What a resource's state is now, and why. */
   stateOf(entry: ResourceEntry, now: number): { state: ResourceState; reason?: string; asksAgainAt?: number } {
     const stop = this.stopping.get(entry.identity);
-    if (stop && !stop.error) return { state: "stopping", reason: "stopping" };
+    // Stopping until it is gone, or for three minutes: something that outlives its stop is running again, as it is.
+    if (stop && !stop.error && now - stop.at < STOPPING_MS) return { state: "stopping", reason: "stopping" };
+    const failed = stop?.error ? `couldn't stop it: ${stop.error}` : undefined;
     if (!entry.owner) {
-      return { state: "unowned", reason: entry.preexisting ? "running before conch was watching" : "no session started it" };
+      return { state: "unowned", reason: failed ?? (entry.preexisting ? "running before conch was watching" : "no session started it") };
     }
     const decision = this.memory.decisions[entry.identity];
-    const failed = stop?.error ? `couldn't stop it: ${stop.error}` : undefined;
     if (decision?.kind === "keep") return { state: "kept", reason: failed ?? "you kept it" };
     if (entry.lifetime?.kind === "keep") return { state: "kept", reason: failed ?? "its session said to keep it" };
     const due = this.dueReason(entry, now);
@@ -1205,7 +1208,7 @@ export function decodeResourceRequest(body: unknown): ResourceRequest | { error:
   if (value.kind === "resources") return { kind: "resources" };
   const callerPid = typeof value.callerPid === "number" && Number.isSafeInteger(value.callerPid) && value.callerPid > 1 ? value.callerPid : undefined;
   if (value.kind === "resource-decide") {
-    if (typeof value.id !== "string" || !ID.test(value.id)) return { error: "a resource id is what `conch resources` lists, like p4242 or sim-9acc7dd3" };
+    if (typeof value.id !== "string" || !ID.test(value.id)) return { error: "a resource id is what `conch resources` lists, like p4242 or sim-1a2b3c4d" };
     if (value.action !== "stop" && value.action !== "keep" && value.action !== "later") return { error: "action must be stop, keep or later" };
     return { kind: "resource-decide", id: value.id, action: value.action, ...(callerPid ? { callerPid } : {}) };
   }

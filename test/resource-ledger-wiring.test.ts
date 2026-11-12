@@ -18,8 +18,12 @@ const daemon = read("src/daemon.ts");
 
 describe("the daemon", () => {
   test("looks every 30 s through one sampler fed its own ps until the shared look lands", () => {
-    const block = between(daemon, "const resourceLedger = new ResourceLedger({", "const resources = {");
-    expect(block).toContain("memory: loadResourceMemory()");
+    // The ledger is made early, beside the sessions it reads, before anything that publishes could reach for it.
+    const ledger = between(daemon, "let resourceSessions:", "const resourceLedger = new ResourceLedger({");
+    expect(ledger.length).toBeLessThan(1_000);
+    expect(between(daemon, "const resourceLedger = new ResourceLedger({", "\n  });\n")).toContain("memory: loadResourceMemory()");
+    expect(daemon.indexOf("const resourceLedger = new ResourceLedger({")).toBeLessThan(daemon.indexOf("function writeSessionsFile(): void {"));
+    const block = between(daemon, "const resourceSampler = new ResourceSampler({", "const resources = {");
     expect(block).toContain("table: psProcessTable()");
     expect(block).toContain("intervalMs: RESOURCE_SAMPLE_MS");
     expect(block).toContain("ownPids: conchPids");

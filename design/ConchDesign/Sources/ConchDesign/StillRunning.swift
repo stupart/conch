@@ -76,7 +76,7 @@ public struct ResourceItem: Decodable, Equatable, Sendable, Identifiable {
         }
     }
 
-    /// `p4242`, `sim-9acc7dd3`, `vm-ci`: what Stop names, and what `conch resources` lists.
+    /// `p4242`, `sim-1a2b3c4d`, `vm-ci`: what Stop names, and what `conch resources` lists.
     public let id: String
     /// server, browser, vm, container, simulator, tmux, watcher, shell or process.
     public let kind: String

@@ -1039,6 +1039,24 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   /** The live sessions as the resource ledger reads them, from the last registry read (`reconcileSessionSnapshot`). */
   let resourceSessions: { sessions: LedgerSession[]; complete: boolean } | null = null;
   /**
+   * The resource ledger (resource-ledger.ts, resource-sampler.ts): what each session started that is still running,
+   * and, once its lifetime is over, the question to Tyler. Tyler, 2026-11-11: "maybe we need like a resource ledger as
+   * part of conch so things are linked to the sessions that made them or are using them and we can have less loose ends
+   * for things that are meaning to run temporarily." One look every 30 s; conch never stops anything on its own.
+   * Made here, before anything that builds or publishes the panel could reach for it; its sampler is below.
+   */
+  const resourceLedger = new ResourceLedger({
+    memory: loadResourceMemory(),
+    // A session conch never saw live (an orphan's environment names one from before this daemon): conch's own label for
+    // it, else the title Claude Code gave its transcript. Asked once per session; the ledger keeps the answer.
+    labelFor: (agentSessionId) => {
+      const own = labelOverrides()[agentSessionId];
+      if (own) return own;
+      const transcript = findTranscript(cfg.claudeDir, agentSessionId);
+      return transcript ? readClaudeTitle(transcript) : undefined;
+    },
+  });
+  /**
    * Which sign-in each session runs on, as its hook said (claude-session-sign-ins.ts): its row reads as that account,
    * and a restart, fork or recovery relaunches on it.
    */
@@ -2483,23 +2501,6 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     phoneApplication?.publish();
   });
 
-  /**
-   * The resource ledger (resource-ledger.ts, resource-sampler.ts): what each session started that is still running,
-   * and, once its lifetime is over, the question to Tyler. Tyler, 2026-11-11: "maybe we need like a resource ledger as
-   * part of conch so things are linked to the sessions that made them or are using them and we can have less loose ends
-   * for things that are meaning to run temporarily." One look every 30 s; conch never stops anything on its own.
-   */
-  const resourceLedger = new ResourceLedger({
-    memory: loadResourceMemory(),
-    // A session conch never saw live (an orphan's environment names one from before this daemon): conch's own label for
-    // it, else the title Claude Code gave its transcript. Asked once per session; the ledger keeps the answer.
-    labelFor: (agentSessionId) => {
-      const own = labelOverrides()[agentSessionId];
-      if (own) return own;
-      const transcript = findTranscript(cfg.claudeDir, agentSessionId);
-      return transcript ? readClaudeTitle(transcript) : undefined;
-    },
-  });
   // conch's own processes: this daemon and, when the app hosts it, the app. Nothing under them is a session's.
   const conchPids = new Set([process.pid, ...(process.env.CONCH_APP_BUNDLE && process.ppid > 1 ? [process.ppid] : [])]);
   const resourceSampler = new ResourceSampler({

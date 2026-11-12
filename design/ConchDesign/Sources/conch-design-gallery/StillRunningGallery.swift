@@ -9,10 +9,10 @@ func renderStillRunning() throws {
     let ms = now.timeIntervalSince1970 * 1_000
     let minute = 60_000.0
     let items: [ResourceItem] = [
-        ResourceItem(id: "p43091", kind: "server", title: "vite :5297", command: "node node_modules/.bin/vite --port 5297",
+        ResourceItem(id: "p4101", kind: "server", title: "vite :5173", command: "node node_modules/.bin/vite --port 5173",
                      owner: .init(label: "Landing page", live: false, how: "environment", endedAt: ms - 2 * 1_440 * minute),
                      startedAt: ms - 2 * 1_440 * minute - 30 * minute, cpu: 0.1, memory: 258 * 1_048_576, state: "asking", reason: "its session ended"),
-        ResourceItem(id: "p94214", kind: "server", title: "python http.server :5260", command: "python -m http.server 5260",
+        ResourceItem(id: "p4102", kind: "server", title: "python http.server :8000", command: "python -m http.server 8000",
                      owner: .init(label: "Landing page", live: false, how: "environment", endedAt: ms - 26 * 60 * minute),
                      startedAt: ms - 27 * 60 * minute, cpu: 0, memory: 15 * 1_048_576, state: "asking", reason: "its session ended"),
         ResourceItem(id: "p6100", kind: "watcher", title: "tsc -w -p .", command: "tsc -w -p .",
@@ -22,13 +22,13 @@ func renderStillRunning() throws {
         ResourceItem(id: "vm-ci", kind: "vm", title: "colima ci", command: "limactl hostagent colima-ci",
                      owner: .init(sessionId: "s1", label: "Build farm", live: true, how: "environment"),
                      startedAt: ms - 45 * minute, cpu: 133.2, memory: 12 * 1_073_741_824, state: "running"),
-        ResourceItem(id: "p63965", kind: "server", title: "next :3193 :3194", command: "next dev",
+        ResourceItem(id: "p4103", kind: "server", title: "next :3000 :3001", command: "next dev",
                      owner: .init(sessionId: "s1", label: "Build farm", live: true, how: "tree"),
                      startedAt: ms - 9 * minute, cpu: 88.5, memory: 1.4 * 1_073_741_824, state: "running"),
         ResourceItem(id: "p7001", kind: "browser", title: "headless Chrome :9222", command: "Google Chrome --headless",
                      owner: .init(label: "Scraper", live: false, how: "tree"), startedAt: ms - 6 * 1_440 * minute, cpu: 0, memory: 640 * 1_048_576,
                      state: "kept", reason: "you kept it"),
-        ResourceItem(id: "sim-9acc7dd3", kind: "simulator", title: "Test Phone simulator", command: "launchd_sim",
+        ResourceItem(id: "sim-1a2b3c4d", kind: "simulator", title: "Test Phone simulator", command: "launchd_sim",
                      startedAt: ms - 28 * 60 * minute, cpu: 1.1, memory: 3.1 * 1_073_741_824, state: "unowned", reason: "no session started it"),
     ]
     let resources = PublishedResources(sampledAt: ms, asking: 3, items: items)
