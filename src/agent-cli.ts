@@ -165,7 +165,9 @@ export async function runAgentCli(options: AgentCliOptions): Promise<number> {
 
   const startedAt = now();
   const started = performance.now();
-  const record = async (tool: string, outcome: McpCallOutcome, argumentsValue: unknown, error?: string) => {
+  // 2026-11-11: `bytes`, what the command printed, as the MCP's calls log what they answered (mcp-usage.ts): most of
+  // conch's calls are commands now, and their answers' sizes are what `conch mcp-usage` and `conch evals` report.
+  const record = async (tool: string, outcome: McpCallOutcome, argumentsValue: unknown, error?: string, printed?: string) => {
     const ms = performance.now() - started;
     let who: { session?: string; backend?: "claude" | "codex" } = {};
     try {
@@ -174,7 +176,10 @@ export async function runAgentCli(options: AgentCliOptions): Promise<number> {
     } catch {}
     try {
       log(mcpCallRecord(
-        { ts: startedAt, tool, ms, outcome, ...(error ? { error } : {}), arguments: argumentsValue, via: "cli" },
+        {
+          ts: startedAt, tool, ms, outcome, ...(error ? { error } : {}), arguments: argumentsValue, via: "cli",
+          ...(printed !== undefined ? { bytes: Buffer.byteLength(printed, "utf8") } : {}),
+        },
         who,
         mcpToolVocabulary(),
       ));
@@ -191,8 +196,9 @@ export async function runAgentCli(options: AgentCliOptions): Promise<number> {
   } catch (error) {
     if (!(error instanceof AgentUsageError)) throw error;
     // A command named but called wrong is the agent's input error, logged as the tool's, as a bad tool call was.
-    if (error.command) await record(error.command.tool, "input-error", {}, error.message);
-    err(usageErrorText(error));
+    const printed = usageErrorText(error);
+    if (error.command) await record(error.command.tool, "input-error", {}, error.message, printed);
+    err(printed);
     return AGENT_EXIT["input-error"];
   }
   if (invocation.kind === "help") {
@@ -209,14 +215,14 @@ export async function runAgentCli(options: AgentCliOptions): Promise<number> {
   try {
     const value = await handler(invocation.args, undefined);
     const judged = resultOutcome(value);
-    await record(invocation.tool, judged.outcome, invocation.args, judged.error);
-    out(renderAgentAnswer(invocation.command, value, invocation.json, now()));
+    const printed = renderAgentAnswer(invocation.command, value, invocation.json, now());
+    await record(invocation.tool, judged.outcome, invocation.args, judged.error, printed);
+    out(printed);
     // An answer that is a refusal said as a value (speech held in manual mode, audio another Mac holds) exits as one.
     return AGENT_EXIT[judged.outcome];
   } catch (error) {
     const outcome = callOutcome(error);
     const message = error instanceof Error ? error.message : String(error);
-    await record(invocation.tool, outcome, invocation.args, message);
     let said = cliWording(errorWithCandidates(error));
     if (/daemon (?:is not running|isn't (?:running|reachable))/.test(said)) {
       const refused = await socketRefusal(options.config.socketPath);
@@ -230,7 +236,9 @@ export async function runAgentCli(options: AgentCliOptions): Promise<number> {
     if (outcome === "refused" && /cannot verify which session is calling/.test(said)) {
       said += `. The conch_run tool runs the same command with your MCP server's own proof of who you are (command: ${JSON.stringify(options.argv.join(" "))})`;
     }
-    err(outcome === "input-error" ? `${said}\nusage: conch agent ${invocation.command.usage}` : said);
+    const printed = outcome === "input-error" ? `${said}\nusage: conch agent ${invocation.command.usage}` : said;
+    await record(invocation.tool, outcome, invocation.args, message, printed);
+    err(printed);
     return AGENT_EXIT[outcome];
   }
 }
