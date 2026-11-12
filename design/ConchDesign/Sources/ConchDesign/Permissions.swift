@@ -142,11 +142,14 @@ public enum ConchPermissionStatus: Equatable, Sendable {
                 return "Turn conch on under Screen Recording."
             }
         case .grantedToAnotherBuild:
-            return "That switch is for a build signed differently. Turn conch off and on again there"
-                + (permission.isResettable ? ", or Reset… and let conch ask." : ".")
+            return permission.isResettable
+                ? "Turn conch off and on again there, or Reset… and let conch ask."
+                : "Turn conch off and on again there, then Reopen conch."
         case .needsRelaunch:
-            return "A new grant reaches conch once it starts again. Your sessions keep running."
-        case .granted, .notAsked, .unknown, .unanswered, .restricted:
+            return "Your sessions keep running while conch reopens."
+        case .unanswered:
+            return "Allow… opens it in the background, then asks."
+        case .granted, .notAsked, .unknown, .restricted:
             return nil
         }
     }
@@ -540,6 +543,8 @@ public struct ConchPermissionRow: View {
     let progress: String?
     /// The press under way: its button says so and can't be pressed again (2026-11-11).
     let working: ConchPermissionAction?
+    /// Its buttons step back to the quiet capsule, while a caution above has the first thing to do.
+    let quietButtons: Bool
     /// The longer words under the status (`guidance(for:)`). Onboarding's rows leave them to its own guide.
     let showsGuidance: Bool
     let titleFont: Font
@@ -553,6 +558,7 @@ public struct ConchPermissionRow: View {
         note: String? = nil,
         progress: String? = nil,
         working: ConchPermissionAction? = nil,
+        quietButtons: Bool = false,
         showsGuidance: Bool = false,
         titleFont: Font = ConchType.uiEmphasis,
         detailFont: Font = ConchType.secondary,
@@ -564,6 +570,7 @@ public struct ConchPermissionRow: View {
         self.note = note
         self.progress = progress
         self.working = working
+        self.quietButtons = quietButtons
         self.showsGuidance = showsGuidance
         self.titleFont = titleFont
         self.detailFont = detailFont
@@ -603,9 +610,10 @@ public struct ConchPermissionRow: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.leading, 13)
                 }
+                // In the helper's place and weight, in the primary colour: what a press did, without the line jumping.
                 if let progress {
                     Text(progress)
-                        .font(statusFont.weight(.medium))
+                        .font(statusFont)
                         .foregroundStyle(ConchColor.textPrimary)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.leading, 13)
@@ -627,7 +635,7 @@ public struct ConchPermissionRow: View {
                         .disabled(working != nil)
                 }
                 if let action = status.action {
-                    ConchPermissionButton(action, height: 26, working: working == action, help: action.help(for: permission)) { onAction(action) }
+                    ConchPermissionButton(action, height: 26, quiet: quietButtons, working: working == action, help: action.help(for: permission)) { onAction(action) }
                         .disabled(working != nil)
                 }
             }
@@ -731,6 +739,8 @@ public struct ConchPermissionList: View {
                     note: notes[permission],
                     progress: progress[permission],
                     working: working[permission],
+                    // The caution's button is the first thing to do while it stands.
+                    quietButtons: cautionAction != nil,
                     showsGuidance: true,
                     titleFont: titleFont,
                     detailFont: detailFont,

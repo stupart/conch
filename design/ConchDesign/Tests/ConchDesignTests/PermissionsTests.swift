@@ -148,7 +148,9 @@ final class PermissionsTests: XCTestCase {
         XCTAssertFalse(stale.contains("Reset…"), "Screen Recording has no reset")
         XCTAssertTrue(try XCTUnwrap(ConchPermissionStatus.grantedToAnotherBuild.guidance(for: .automation)).contains("Reset…"))
         XCTAssertTrue(try XCTUnwrap(ConchPermissionStatus.needsRelaunch.guidance(for: .accessibility)).contains("sessions keep running"))
-        XCTAssertNil(ConchPermissionStatus.unanswered("Terminal isn't open.").guidance(for: .automation), "the label and Allow… say it")
+        XCTAssertEqual(ConchPermissionStatus.unanswered("Terminal isn't open.").guidance(for: .automation), "Allow… opens it in the background, then asks.")
+        XCTAssertEqual(ConchPermissionStatus.grantedToAnotherBuild.guidance(for: .screenRecording),
+                       "Turn conch off and on again there, then Reopen conch.", "it says what the Reopen beside it is for")
         XCTAssertNil(ConchPermissionStatus.restricted.guidance(for: .microphone), "the label says it")
         XCTAssertNil(ConchPermissionStatus.granted.guidance(for: .microphone))
         XCTAssertNil(ConchPermissionStatus.notAsked.guidance(for: .microphone))
