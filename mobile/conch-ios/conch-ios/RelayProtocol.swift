@@ -145,12 +145,6 @@ struct RelayPairingPayload: Codable, Equatable, Sendable {
     var roomData: Data { try! RelayBase64URL.decode(roomId) }
     var secretData: Data { try! RelayBase64URL.decode(secret) }
 
-    func pairingCode() throws -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        return Self.codePrefix + RelayBase64URL.encode(try encoder.encode(self))
-    }
-
     static func decodePairingCode(_ code: String) throws -> Self {
         let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.utf8.count <= RelayProtocolLimits.maximumPairingCodeBytes,

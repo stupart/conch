@@ -3,7 +3,7 @@ import { openSessionApp } from "../src/session-app-open.ts";
 import { applyRuntimeControlMessage, dispatchRuntimeControlMessage, type RuntimeControlDispatchOptions } from "../src/control-server.ts";
 import { isControlMessageCandidate, validateControlMessage, validateControlResponse } from "../src/settings.ts";
 
-const id = "01a0ebc6-303d-7762-9df7-7406a1e1272b";
+const id = "5e5e5e21-0021-7000-8000-000000000021";
 const session = { sessionId: id, backend: "codex", messageRoute: "codex-app" } as const;
 const success = { text: "", stderr: "", exitCode: 0, timedOut: false };
 

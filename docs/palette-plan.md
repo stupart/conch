@@ -5,6 +5,12 @@ half of “conch should know about skills and plugins, then toggle them.” The
 broader surface inventory remains in `docs/surfaces.md`; this document turns
 that survey into a palette and reader contract.
 
+Since then, parts of the plan have shipped: the inspector (B1), the
+next-session switch for plugins and MCP servers (B3, #166) and the ⌘K palette
+(B4, #157), all on 2026-09-11; adding skills in Settings › Skills (2026-10-29,
+#581); and slash commands as you type, which added a `command` kind to the
+reader (2026-11-04, #596). The sections below note each where it applies.
+
 ## The boundary for this pass
 
 This pass only reads. It may parse provider configuration, manifests, skill
@@ -56,7 +62,7 @@ The providers should not be forced into one lowest-common-denominator row.
 | Skill inventory/default enablement | **Cheap-to-moderate** from discovery roots plus `skills.config` | **Moderate** because visibility, legacy commands and live detection differ | Show scope, path, metadata, owner and configured default. Loaded/invoked remain separate. |
 | Configuration a particular session ran with | **Cheap for recorded thread fields** | **Blocked for an arbitrary attached session** unless transcript/process evidence supplies it | Codex gets a provider-state receipt; Claude stays unknown rather than inheriting global defaults. |
 | Exact loaded MCP/skill catalog | **Blocked for an unrelated attached TUI** | **Blocked for an unrelated attached host** | Use observed calls as positive history only. An owned host may add a verified live state later. |
-| Enable/disable mutation | **Technically direct but future work**: edit the correct TOML layer and say “takes effect next session” | **Provider-specific real work**: plugin settings, skill visibility and MCP project choices are different actions | No writes in this pass. Future controls need diff preview, scope, atomic write, rollback and post-write readback. |
+| Enable/disable mutation | **Technically direct but future work**: edit the correct TOML layer and say “takes effect next session” | **Provider-specific real work**: plugin settings, skill visibility and MCP project choices are different actions | No writes in this pass. Future controls need diff preview, scope, atomic write, rollback and post-write readback. Shipped for plugins and MCP servers (B3, 2026-09-11, #166): the diff and scope before Apply, a temp file renamed into place, a backup, readback, and the previous bytes restored on a failed check (`src/config-write.ts`). |
 
 The largest rating change is on the Codex side: configured MCP enablement,
 explicit tool policy, trust, plugin/skill locations and the per-thread receipt
@@ -114,7 +120,7 @@ interface AgentCapabilityBase {
   id: string;
   subject: { id: string; type: "agent-capability"; title: string };
   backend: "claude" | "codex";
-  kind: "plugin" | "skill" | "mcp-server" | "mcp-tool";
+  kind: "plugin" | "skill" | "command" | "mcp-server" | "mcp-tool";
   name: string;
   displayName: string;
   parentId?: string;
@@ -130,6 +136,10 @@ interface AgentCapabilityBase {
   diagnostics: AgentCapabilityDiagnostic[];
 }
 ```
+
+`command` came later (2026-11-04, #596): Claude Code's `commands/*.md` (the
+person's, a project's, a plugin's) and Codex's `prompts/*.md`, read beside the
+skills so the composers can offer them as you type.
 
 Each evidence value is `{ state: "yes" | "no" | "unknown", basis, detail,
 at? }`. The bases are `config`, `filesystem`, `provider-state`, `provider-cli`,
@@ -170,6 +180,7 @@ sessionId? }`:
 | Codex config/policy | `$CODEX_HOME/config.toml`, trusted project `.codex/config.toml` roots, `/etc/codex/managed_config.toml`, `/etc/codex/requirements.toml` | Effective plugin/MCP/skill defaults, trust, managed plugin disable and exact/prefix MCP identity constraints. Administrator regex is deliberately not executed on the render path; that policy result remains unknown. |
 | Codex plugins | Effective plugin tables, configured marketplace source paths, selected compatible manifests, skills and `.mcp.json` | Installed/configured plugin rows and owned components. Cache presence without a configured plugin is ignored. |
 | Codex skills | Project `.agents/skills` roots, `$HOME/.agents/skills`, `$CODEX_HOME/skills`, `$CODEX_HOME/skills/.system`, `/etc/codex/skills` | The same frontmatter plus `[[skills.config]]` next-session state. Untrusted project config does not change the effective skill map. |
+| Commands (since #596) | Claude `~/.claude/commands` (and `commands/<group>/`), project `.claude/commands` from repository root through cwd, and each installed plugin's `commands`; Codex `$CODEX_HOME/prompts` | One `command` entity per `.md` file: name, description and argument hint, with its invocation spelled per agent. A plugin's commands follow the plugin's configured state. |
 | Codex thread receipt | `$CODEX_HOME/state_5.sqlite`, only when `sessionId` is supplied | One row's known non-secret configuration fields. The database uses the existing read-only SQLite helper; missing old-schema columns are tolerated. |
 | Observation join | The selected session's already-bounded published conversation | Positive MCP server/tool history. Unknown observed entities are retained instead of discarded or guessed into config. |
 
@@ -266,7 +277,9 @@ overrides.
 The first UI is an inspector over subjects, with context header, provider-
 separated groups, owned child rows, evidence chips and inline diagnostics. It
 must derive controls from provider semantics rather than render one universal
-switch. This pass intentionally exposes no mutation.
+switch. This pass intentionally exposes no mutation. The inspector
+(`CapabilityInspectorView.swift`) has since gained one: B3's next-session switch
+on plugin and MCP server rows (2026-09-11, #166).
 
 ### `/plugins`
 
@@ -277,9 +290,12 @@ configuration, components, diagnostics and the four evidence lanes.
   passive actions.
 - **Open provider `/plugins`** may deliver the command once to a routable idle
   terminal and reveal it. Conch acknowledges delivery, not the picker result.
-- Future **install**, **update**, **remove**, **enable for the next session**
-  and **disable for the next session** must call the supported CLI at an
-  explicit scope, show output, and refresh the provider inventory.
+- **Enable for the next session** and **disable for the next session** shipped
+  (B3, 2026-09-11, #166) as an edit to the agent's own file at user or project
+  scope, the same change its own `plugin enable|disable` makes, with the diff
+  shown before Apply (`src/config-write.ts`).
+- Future **install**, **update** and **remove** must call the supported CLI at
+  an explicit scope, show output, and refresh the provider inventory.
 - Claude may then offer **send `/reload-plugins` and open terminal**, but conch
   cannot certify reload or that an old monitor stopped. Codex changes remain
   next-session for an unrelated TUI.
@@ -297,6 +313,10 @@ evidence.
 - Future **hide from model**, **user-invocable only**, or **enable for the next
   session** must name provider/scope. Plugin skills are controlled through the
   plugin.
+- **Add** shipped in Settings › Skills (2026-10-29, #581) for skills from the
+  public indexes: it shows every file and where it lands before anything is
+  written, and **Try** starts a trial session through the ordinary
+  `session-start`.
 - Live filesystem watching does not prove this attached conversation adopted
   a change, and already-invoked content stays in context. Loaded remains
   unknown.
@@ -312,8 +332,10 @@ config/manifest-named tool policy, observations and evidence.
 - **Disable connection now** exists only inside Claude's interactive `/mcp` or
   an owned runtime that confirms disconnection. Conch cannot honestly expose
   that verb as its own attached-session button.
-- Future **enable/disable for the next session**, **add**, **edit**, and
-  **remove** change a named scope and state the restart/reload boundary.
+- **Enable/disable for the next session** shipped (B3, 2026-09-11, #166): for
+  Claude, the project's MCP lists in `~/.claude.json`; for Codex, the server's
+  `enabled` line in `config.toml`. Future **add**, **edit**, and **remove**
+  change a named scope and state the restart/reload boundary.
 - A runtime failure may become **observed unavailable** with time/error. That
   is not the same as configured off.
 
@@ -337,6 +359,13 @@ One visual palette should group five execution contracts:
 4. **MCP prompts**: show only from a connected-host catalog or positive
    observation. Config files do not enumerate dynamic prompts.
 5. **Session actions**: existing conch controls with structured acks.
+
+Built as the ⌘K palette (B4, 2026-09-11, #157): conch's own actions, session
+actions, the agent's documented slash commands and its user-invocable skills
+for the selected session. MCP prompts are not listed. Since 2026-11-04 (#596)
+the Mac and phone composers also offer the catalog, with the person's own
+commands, as you type `/` (or `$` for a Codex skill); choosing one fills the
+line and never sends it.
 
 When a command opens an interactive picker (`/plugins`, `/skills`, `/mcp`,
 permissions, model selection and similar), conch must not send blind

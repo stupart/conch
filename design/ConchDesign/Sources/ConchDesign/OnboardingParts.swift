@@ -181,7 +181,6 @@ public enum OnboardingType {
     /// The iPhone's text styles at their default size.
     public enum Phone {
         #if os(iOS)
-        public static let largeTitle = Font.largeTitle.weight(.bold)
         public static let title = Font.title.weight(.bold)
         public static let title3 = Font.title3.weight(.semibold)
         public static let headline = Font.headline
@@ -193,7 +192,6 @@ public enum OnboardingType {
         public static let button = Font.headline
         public static let buttonMedium = Font.body.weight(.medium)
         #else
-        public static let largeTitle = Font.system(size: 34, weight: .bold)
         public static let title = Font.system(size: 28, weight: .bold)
         public static let title3 = Font.system(size: 20, weight: .semibold)
         public static let headline = Font.system(size: 17, weight: .semibold)

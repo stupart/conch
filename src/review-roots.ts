@@ -11,7 +11,7 @@ import { readTranscriptTailLines } from "./context-meter.ts";
  * the roots the daemon filed it with).
  *
  * Each of these checked one folder, and not the same one. The Stop hook used the folder the
- * session is in NOW, which moves: a session that started in ~/Projects/Blueprint/Internal and
+ * session is in NOW, which moves: a session that started in ~/Projects/Acme/Internal and
  * cd'd into monorepo/.worktrees/<task> had its link to Internal/review-2026-09-30 dropped without
  * a word, three times on 2026-09-30 (`parsed.link: null` in /tmp/conch-hook.log). The daemon used
  * the folder it STARTED in, so a link under the current folder alone was dropped there instead.

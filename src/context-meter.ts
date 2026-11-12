@@ -102,12 +102,3 @@ export async function readTranscriptTailLines(path: string, tailBytes = 1024 * 1
   if (start > 0) lines.shift();
   return lines;
 }
-
-export async function readSessionContextUsage(
-  path: string,
-  format: ConversationFormat,
-  tailBytes = 1024 * 1024,
-): Promise<SessionContextUsage | null> {
-  const lines = await readTranscriptTailLines(path, tailBytes);
-  return lines ? contextUsageFromLines(lines, format) : null;
-}

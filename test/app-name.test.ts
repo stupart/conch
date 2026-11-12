@@ -79,7 +79,7 @@ test("both bundles are plainly named", () => {
  */
 test("the terminal dashboard still says conch", () => {
   expect(read("src/panel.ts")).toContain('"  \\x1b[1mconch\\x1b[0m"');
-  expect(read("src/cli.ts")).toContain('console.log("conch dashboard');
+  expect(read("src/dashboard-attach.ts")).toContain('`conch dashboard  ·');
   expect(read("src/install.ts")).toContain('console.log("conch setup');
 });
 

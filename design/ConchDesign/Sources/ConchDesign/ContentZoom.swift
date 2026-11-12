@@ -62,7 +62,7 @@ public struct ContentZoom: Equatable, Sendable {
     /// A markdown or plain text: as a page, wrapped to the pane at every scale.
     public static let text = ContentZoom(range: 0.5...3, fits: false)
 
-    /// Two scales this close are one: a pinch that ends 3% off fitted has ended fitted.
+    /// Two scales this close are one: a step that lands 3% off fitted has landed fitted.
     static let snap: CGFloat = 0.04
     /// Steps closer than this to where it is are not a step.
     static let epsilon: CGFloat = 0.005
@@ -107,20 +107,6 @@ public struct ContentZoom: Equatable, Sendable {
         }
         guard let next else { return level }
         return Self.near(next, fit) ? .rest : .scale(next)
-    }
-
-    /// A pinch's `magnification` (AppKit's, 0 for none) applied to where it is: the scale it is drawn at while the
-    /// fingers move. Never `rest` mid-pinch; `settled` decides that once they lift.
-    public func pinched(_ level: ZoomLevel, by magnification: CGFloat, resting fit: CGFloat) -> ZoomLevel {
-        .scale(clamped(level.scale(resting: fit) * (1 + magnification), resting: fit))
-    }
-
-    /// Where a pinch comes to rest: on fitted, or on 100%, when it ended within a few percent of either.
-    public func settled(_ level: ZoomLevel, resting fit: CGFloat) -> ZoomLevel {
-        guard case let .scale(scale) = level else { return level }
-        if Self.near(scale, fit) { return .rest }
-        if Self.near(scale, 1) { return .scale(1) }
-        return level
     }
 
     /// From rest to 100% (or 200%, for what already rests at 100%), and from anywhere else back to rest. A page or a
@@ -196,36 +182,6 @@ public struct ZoomReadout: Equatable, Sendable {
 
     public static func percent(_ scale: CGFloat) -> String {
         "\(Int((scale * 100).rounded()))%"
-    }
-}
-
-/// Where to scroll so the point of the content under the pointer stays under it as the content grows or shrinks: what
-/// makes a pinch, a double-click or a key zoom INTO something rather than away from it.
-public enum ZoomAnchor {
-    /// The visible rect's new origin, in the document's coordinates (y down).
-    ///
-    /// - `anchor`: the point zoomed about, in the document's coordinates before the zoom.
-    /// - `visibleOrigin`: the visible rect's origin before it.
-    /// - `before`, `after`: the content's frame in the document, before and after.
-    /// - `document`, `visible`: the document's size after, and the visible rect's size.
-    public static func origin(
-        keeping anchor: CGPoint,
-        visibleOrigin: CGPoint,
-        from before: CGRect,
-        to after: CGRect,
-        document: CGSize,
-        visible: CGSize
-    ) -> CGPoint {
-        func axis(_ point: CGFloat, _ origin: CGFloat, _ from: (CGFloat, CGFloat), _ to: (CGFloat, CGFloat), _ extent: CGFloat, _ window: CGFloat) -> CGFloat {
-            let onScreen = point - origin
-            let fraction = from.1 > 0 ? (point - from.0) / from.1 : 0.5
-            let moved = to.0 + fraction * to.1
-            return min(max(moved - onScreen, 0), max(extent - window, 0))
-        }
-        return CGPoint(
-            x: axis(anchor.x, visibleOrigin.x, (before.minX, before.width), (after.minX, after.width), document.width, visible.width),
-            y: axis(anchor.y, visibleOrigin.y, (before.minY, before.height), (after.minY, after.height), document.height, visible.height)
-        )
     }
 }
 

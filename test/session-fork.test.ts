@@ -29,7 +29,7 @@ describe("starting a fork", () => {
   });
 
   test("a Claude background job: its conversation, in conch's background host, saying its flags couldn't come", () => {
-    const fork = forkRequest({ ...session, jobId: "f31f0d15", agentSessionId: ID, claudeAccountId: "work" }, []);
+    const fork = forkRequest({ ...session, jobId: "5e5e5e13", agentSessionId: ID, claudeAccountId: "work" }, []);
     expect(fork.request).toEqual({ backend: "claude", host: "background", resumeSessionId: ID, cwd: "/Users/alex/acme-web",
       claudeAccountId: "work", options: { "fork-session": true } });
     expect(fork.notCarriedOver).toEqual(["the flags it was started with (a background job's can't be read)"]);
@@ -124,7 +124,7 @@ describe("an agent's fork, waited on", () => {
   });
 
   /** A watch on a fake clock: each sleep moves it on, and the tab says what `states` says at that time. */
-  function watch(states: (at: number) => TabAgentState, adoptAt?: number, words = "No conversation found with session ID: 162f2800") {
+  function watch(states: (at: number) => TabAgentState, adoptAt?: number, words = "No conversation found with session ID: 5e5e5e09") {
     let clock = 0;
     let adopt: ((seen: { forkId: string; label: string }) => void) | undefined;
     const adopted = new Promise<{ forkId: string; label: string }>((resolve) => { adopt = resolve; });
@@ -156,7 +156,7 @@ describe("an agent's fork, waited on", () => {
   test("the agent exits at once: the error says so, with what its tab showed", async () => {
     const { watch: w } = watch((at) => (at < 2_000 ? "running" : "gone"));
     await expect(awaitForkStart(w)).rejects.toThrow(
-      "the fork's agent exited as soon as it started, in Terminal (ttys012). Its tab shows:\nNo conversation found with session ID: 162f2800",
+      "the fork's agent exited as soon as it started, in Terminal (ttys012). Its tab shows:\nNo conversation found with session ID: 5e5e5e09",
     );
   });
 

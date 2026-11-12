@@ -1,7 +1,7 @@
 /**
  * Finding the Terminal tab a session runs in, in two Apple events however many windows and tabs there are.
  *
- * 2026-10-11, Tyler: "the asset generator and monorepo session won't let me send a message or open the terminal". That
+ * 2026-10-11, Tyler: "the recipe app and backend session won't let me send a message or open the terminal". That
  * session runs in a plain Terminal tab, so conch reaches it through Terminal's AppleScript, and every script that did
  * walked Terminal's windows and tabs asking each tab for its tty: one Apple event per tab, about 25 with eleven windows
  * open. With the Mac's load average past 250, Terminal took 5 to 90 seconds to answer that walk, conch gave up after

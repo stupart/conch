@@ -8,30 +8,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { conchInvocation, isConchHookCommand, renderSupervisorScript, repairConchHooks, runInstall, stableExecPath, staleProgram } from "../src/install.ts";
+import { conchInvocation, isConchHookCommand, repairConchHooks, runInstall, stableExecPath, staleProgram } from "../src/install.ts";
 
-
-describe("the retired supervisor", () => {
-  // These tests used to guard a five-second shell loop that kept the daemon in
-  // a detached tmux session. Both halves of that design were the problem, not
-  // the details these tests were policing:
-  //
-  //  - launchd's KeepAlive already restarts a dead job, so the loop was a
-  //    second supervisor competing with the first. Racing it produced three
-  //    simultaneous daemons on a live machine.
-  //  - a detached tmux pane is a terminal with no reader, so the daemon's own
-  //    dashboard could block inside write(2) with the socket accept loop stuck
-  //    behind it — alive in `ps`, while every phone request timed out.
-  //
-  // launchd now execs the daemon directly. What replaced this coverage is
-  // test/renderer-headless.test.ts: with no TTY the daemon draws nothing, so
-  // the blocking write is unreachable rather than merely unlikely.
-  test("no longer supervises anything", () => {
-    const code = renderSupervisorScript("/opt/homebrew/bin/tmux", "bun src/cli.ts daemon");
-    expect(code).not.toMatch(/while true/);
-    expect(code).not.toMatch(/new-session/);
-  });
-});
 
 describe("installing conch leaves the user's own instruction files alone", () => {
   // `conch install` used to splice a managed review-contract block into the

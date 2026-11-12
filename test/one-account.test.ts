@@ -12,7 +12,7 @@ import { applyMigration, describePlan, mergeMemoryIndex, planMigration, planSett
  * included, is the same afterwards, byte for byte.
  */
 
-const BP = "39b4dccc-1262-45cd-86aa-69038e482db6";
+const BP = "5e5e5e16-0016-4000-8000-000000000016";
 const A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const turn = (id: string, text: string) => JSON.stringify({ type: "user", sessionId: id, cwd: "/work/demo", message: { content: text } }) + "\n";

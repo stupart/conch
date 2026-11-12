@@ -9,8 +9,8 @@ import { withCodexAppServer, type CodexAccount } from "./codex-accounts.ts";
  * on "Hooks need review · 3 hooks are new or changed · 1. Review hooks 2. Trust all and continue 3. Continue without
  * trusting". conch wires its own three into hooks.json on a Codex start (`runCodexInstall`), so from then on every
  * Codex session asks. In Terminal someone is there to answer. In a background session nobody is, and it sat there:
- * Tyler's "atals and nura", resumed in the background on 2026-10-28, never checked in, its pane on that screen for
- * as long as anyone left it ("having trouble with resuming a codex session 'atals and nura'").
+ * Tyler's "budget app and api", resumed in the background on 2026-10-28, never checked in, its pane on that screen for
+ * as long as anyone left it ("having trouble with resuming a codex session 'budget app and api'").
  *
  * So a background start trusts conch's OWN hooks, for that one launch: the ones in this home's hooks.json whose
  * command is exactly the one conch wrote there, at the hash Codex itself gives them (`hooks/list`). It goes on the

@@ -317,7 +317,7 @@ describe("an address naming the hidden window", () => {
 
 describe("a live `claude attach <jobId>` process with no registry entry", () => {
   // Claude Code 2.1.280's `claude attach <jobId>` writes no registry file at
-  // all — ground truth (2026-09-23): job f31f0d15 was open in a visible
+  // all — ground truth (2026-09-23): job 5e5e5e13 was open in a visible
   // Terminal tab (pid 10231, ttys014) with nothing in ~/.claude/sessions
   // naming it, so conch reported BG_NO_TERMINAL for a job someone was looking
   // right at. Only a process-table probe finds that window.
@@ -364,15 +364,15 @@ describe("a live `claude attach <jobId>` process with no registry entry", () => 
 
   test("the ps parser: bare and path-prefixed claude, ignores the daemon's own pty host and lookalikes", () => {
     const ps = [
-      " 10231 claude attach f31f0d15",
+      " 10231 claude attach 5e5e5e13",
       "  9939 /opt/homebrew/bin/claude --bg-pty-host",
       " 20000 /opt/homebrew/bin/claude attach db7b8e98 --verbose",
-      " 30000 not-claude attach f31f0d15",
+      " 30000 not-claude attach 5e5e5e13",
       "   100 claude attach a1",
       "   200 claude attach a1",
     ].join("\n");
     const byJob = parseAttachedJobPids(ps);
-    expect(byJob.get("f31f0d15")).toBe(10231);
+    expect(byJob.get("5e5e5e13")).toBe(10231);
     expect(byJob.get("db7b8e98")).toBe(20000);
     // The higher pid wins when two windows attach the same job.
     expect(byJob.get("a1")).toBe(200);
@@ -383,11 +383,12 @@ describe("a live `claude attach <jobId>` process with no registry entry", () => 
 describe("a window's parkedJobId the daemon set without its conversation ever moving", () => {
   // Ground truth (2026-09-23): 2.1.280's daemon pre-spawns idle "bg-spare" job
   // slots per project directory and left a LIVE window's parkedJobId pointing
-  // at one — job 25d17f50, auto-named "Prime page wireframe in blueprint
-  // studio", transcript just the two metadata records Claude Code writes when
-  // a spare gets auto-named (`ai-title`, `agent-name`) — while the window
-  // (pid 94777, ttys003) kept running `claude --resume 2f266f8d`, 3,632 real
-  // lines, the whole time. Real shapes and ids, shortened for readability.
+  // at one — job 5e5e5e11, auto-named "About page wireframe", transcript
+  // just the two metadata records Claude Code writes when a spare gets
+  // auto-named (`ai-title`, `agent-name`) — while the window (pid 94777,
+  // ttys003) kept running `claude --resume 5e5e5e10`, 3,632 real lines, the
+  // whole time. Real shapes, with made-up ids and titles, shortened for
+  // readability.
   function decoyParked() {
     const f = fixture();
     f.registry(WINDOW, {
@@ -395,7 +396,7 @@ describe("a window's parkedJobId the daemon set without its conversation ever mo
       parkedJobId: "spare-slot", startedAt: 1, status: "idle", statusUpdatedAt: 100,
     });
     f.registry(8936, {
-      sessionId: "spare-slot", kind: "bg", name: "Prime page wireframe", nameSource: "auto",
+      sessionId: "spare-slot", kind: "bg", name: "About page wireframe", nameSource: "auto",
       jobId: "spare-slot", startedAt: 2, status: "idle", statusUpdatedAt: 200,
     });
     f.transcript("resumed", [
@@ -405,8 +406,8 @@ describe("a window's parkedJobId the daemon set without its conversation ever mo
       said("resumed", "a2", "u2", "assistant", "still going"),
     ]);
     f.transcript("spare-slot", [
-      { type: "ai-title", aiTitle: "Prime page wireframe", sessionId: "spare-slot" },
-      { type: "agent-name", agentName: "Prime page wireframe", sessionId: "spare-slot" },
+      { type: "ai-title", aiTitle: "About page wireframe", sessionId: "spare-slot" },
+      { type: "agent-name", agentName: "About page wireframe", sessionId: "spare-slot" },
     ]);
     return f;
   }
@@ -436,12 +437,12 @@ describe("a window's parkedJobId the daemon set without its conversation ever mo
   });
 
   test("once the job holds the conversation, the window is its viewer, even with no continued-in", async () => {
-    // 25d17f50 an hour after the decoy: the conversation continued in the job,
+    // 5e5e5e11 an hour after the decoy: the conversation continued in the job,
     // typed into from the same window, and the window's own transcript was
     // never marked.
     const f = decoyParked();
     f.transcript("spare-slot", [
-      { type: "ai-title", aiTitle: "Prime page wireframe", sessionId: "spare-slot" },
+      { type: "ai-title", aiTitle: "About page wireframe", sessionId: "spare-slot" },
       said("spare-slot", "u1", null, "user", "v10 and v11 are on the review branch"),
       said("spare-slot", "a1", "u1", "assistant", "All three routes compile."),
     ]);
@@ -471,7 +472,7 @@ describe("a window's parkedJobId the daemon set without its conversation ever mo
 describe("a background job nobody has talked to yet", () => {
   // Ground truth (2026-09-23): 2.1.280's daemon keeps idle bg-spare jobs per
   // project directory. 50b4f863 and db7b8e98 (`spare: true`, no transcript)
-  // and 25d17f50 (auto-named, transcript only `ai-title` + `agent-name`) each
+  // and 5e5e5e11 (auto-named, transcript only `ai-title` + `agent-name`) each
   // showed as a session with no terminal and nothing in it.
   const job = (f: ReturnType<typeof fixture>, pid: number, id: string, extra: object = {}) =>
     f.registry(pid, { sessionId: id, kind: "bg", name: id, jobId: id, startedAt: 2, status: "idle", ...extra });
@@ -488,10 +489,10 @@ describe("a background job nobody has talked to yet", () => {
 
   test("a job whose transcript is only metadata is not a row; one user record makes it one", async () => {
     const f = fixture();
-    job(f, 8936, "named", { name: "Prime page wireframe", nameSource: "auto" });
+    job(f, 8936, "named", { name: "About page wireframe", nameSource: "auto" });
     const metadata = [
-      { type: "ai-title", aiTitle: "Prime page wireframe", sessionId: "named" },
-      { type: "agent-name", agentName: "Prime page wireframe", sessionId: "named" },
+      { type: "ai-title", aiTitle: "About page wireframe", sessionId: "named" },
+      { type: "agent-name", agentName: "About page wireframe", sessionId: "named" },
     ];
     f.transcript("named", metadata);
     expect(await ids(f)).toEqual([]);

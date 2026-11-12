@@ -66,24 +66,6 @@ final class ContentZoomTests: XCTestCase {
         XCTAssertEqual(picture.level(after: .zoomOut, from: .rest, resting: 0.5), .scale(0.33))
     }
 
-    // MARK: Pinch
-
-    func testAPinchScalesWhereItIsAndSettlesOnFitOr100Percent() {
-        let pinched = picture.pinched(.rest, by: 0.5, resting: 0.4)
-        XCTAssertEqual(scale(pinched)!, 0.6, accuracy: 0.0001)
-        // Never rest mid-pinch, even back on fitted…
-        XCTAssertEqual(picture.pinched(.rest, by: 0, resting: 0.4), .scale(0.4))
-        // …which is where it lands when the fingers lift near it.
-        XCTAssertEqual(picture.settled(.scale(0.41), resting: 0.4), .rest)
-        XCTAssertEqual(picture.settled(.scale(0.98), resting: 0.4), .scale(1))
-        XCTAssertEqual(picture.settled(.scale(1.03), resting: 0.4), .scale(1))
-        XCTAssertEqual(picture.settled(.scale(0.8), resting: 0.4), .scale(0.8))
-        XCTAssertEqual(picture.settled(.rest, resting: 0.4), .rest)
-        // Clamped as it goes.
-        XCTAssertEqual(picture.pinched(.scale(7), by: 1, resting: 0.4), .scale(8))
-        XCTAssertEqual(page.pinched(.scale(0.6), by: -0.5, resting: 1), .scale(0.5))
-    }
-
     // MARK: Toggle
 
     func testADoubleClickGoesBetweenFitAnd100PercentOr200() {
@@ -128,42 +110,6 @@ final class ContentZoomTests: XCTestCase {
         XCTAssertTrue(picture.readout(.scale(8), resting: 0.5).canZoomOut)
         XCTAssertFalse(page.readout(.scale(0.5), resting: 1).canZoomOut)
         XCTAssertEqual(ZoomReadout.percent(0.666), "67%")
-    }
-
-    // MARK: Anchor
-
-    func testZoomingKeepsThePointUnderThePointerWhereItWas() {
-        // A 400 x 300 picture in an 18 point margin, shown whole in a 436 x 336 view, doubled about its middle.
-        let before = CGRect(x: 18, y: 18, width: 400, height: 300)
-        let after = CGRect(x: 18, y: 18, width: 800, height: 600)
-        let origin = ZoomAnchor.origin(
-            keeping: CGPoint(x: 218, y: 168), visibleOrigin: .zero, from: before, to: after,
-            document: CGSize(width: 836, height: 636), visible: CGSize(width: 436, height: 336)
-        )
-        XCTAssertEqual(origin, CGPoint(x: 200, y: 150))
-        // The middle of the picture is now 418, 318 in the document, and on screen still at 218, 168.
-        XCTAssertEqual(after.minX + 0.5 * after.width - origin.x, 218)
-        XCTAssertEqual(after.minY + 0.5 * after.height - origin.y, 168)
-    }
-
-    func testAPointNearAnEdgeScrollsOnlyAsFarAsThereIsDocument() {
-        let before = CGRect(x: 18, y: 18, width: 400, height: 300)
-        let after = CGRect(x: 18, y: 18, width: 800, height: 600)
-        // About the picture's top left corner: the document's own corner stays put.
-        XCTAssertEqual(ZoomAnchor.origin(
-            keeping: CGPoint(x: 18, y: 18), visibleOrigin: .zero, from: before, to: after,
-            document: CGSize(width: 836, height: 636), visible: CGSize(width: 436, height: 336)
-        ), .zero)
-        // About its bottom right: scrolled to the end, never past it.
-        XCTAssertEqual(ZoomAnchor.origin(
-            keeping: CGPoint(x: 436, y: 336), visibleOrigin: .zero, from: before, to: after,
-            document: CGSize(width: 836, height: 636), visible: CGSize(width: 436, height: 336)
-        ), CGPoint(x: 400, y: 300))
-        // Zoomed back out, smaller than the view: nowhere to scroll.
-        XCTAssertEqual(ZoomAnchor.origin(
-            keeping: CGPoint(x: 500, y: 400), visibleOrigin: CGPoint(x: 300, y: 250), from: after, to: before,
-            document: CGSize(width: 436, height: 336), visible: CGSize(width: 436, height: 336)
-        ), .zero)
     }
 
     // MARK: Aim

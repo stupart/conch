@@ -207,13 +207,6 @@ struct ConversationStack: View {
         return ConversationItem(recorded: recorded, text: whole ?? (recorded.hasFullBody ? recorded.preview + "…" : recorded.preview))
     }
 
-    /// Ask for the page before the oldest row held. The region asks as the reader scrolls up;
-    /// `HistoryStore.follow` asks once on arrival.
-    private func loadOlder() {
-        guard history.paging.canLoadOlder else { return }
-        history.loadOlder(anchor: history.paging.rows.first?.id ?? conversation.items.first?.id)
-    }
-
     /// A live message the daemon cut to its tail, and the text it was cut to.
     private struct CutRow: Equatable {
         let id: String

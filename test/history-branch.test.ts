@@ -21,7 +21,7 @@ import type { HistoryPage } from "../src/history.ts";
  * of it was already green while the join between them was wrong.
  */
 
-const SESSION = "4eb30ede-6c1e-4f5a-9d2b-1f0c2a3b4c5d";
+const SESSION = "5e5e5e08-0008-4000-8000-000000000008";
 const BRIDGE_A = "01AVNxcSSv8WYQiPjYsXYH2L";
 const BRIDGE_B = "01SfEX6bfwCGXtThk1JRNmsE";
 const OWNER = "test-device";

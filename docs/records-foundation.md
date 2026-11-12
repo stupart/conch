@@ -112,10 +112,11 @@ cross-harness forks, retention/purge policy and attachment transport are later w
   9,804 assertions across 180 files; exit 0.
 - The four records fixture files: 62 passed, 269 assertions; exit 0.
 - `bunx tsc --noEmit`: exit 0.
-- `python3 scripts/check-records-mutations.py`: exit 0. Each of idempotent replay,
-  checkpoint atomicity, partial lines, receipt survival and reasoning exclusion
-  failed its targeted test with exit 1 when sabotaged. Each restored test exited 0.
-  The script restores with Python string replacement and verifies exact equality.
+- Five mutation checks, run by a one-off local script that was never committed:
+  each of idempotent replay, checkpoint atomicity, partial lines, receipt survival
+  and reasoning exclusion failed its targeted test with exit 1 when sabotaged, and
+  each restored test exited 0. Restoration used Python string replacement and
+  verified exact equality with the original file.
 - One bounded smoke parse matched two Codex rollouts: 2,097,152 bytes, 136 complete
   lines, zero malformed lines, 38 items, 16 tool calls and 43 response/context
   observations. No Claude files matched the bounded Conch-directory selection;

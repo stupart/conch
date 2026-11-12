@@ -285,7 +285,7 @@ describe("descriptions said as doing", () => {
 
   test("a path outside every working folder is shortened from home, and to its name when its folder says nothing", () => {
     expect(displayPath("/Users/you/notes/today.md", [], "/Users/you")).toBe("~/notes/today.md");
-    expect(displayPath("/var/folders/hj/cg29fnq929v27cj88gsnrskr0000gn/T/conch-next-ideas-design.md", [], "/Users/you"))
+    expect(displayPath("/var/folders/xx/xxxxxxxxxxxxxxxxxxxxxxxx0000gn/T/conch-next-ideas-design.md", [], "/Users/you"))
       .toBe("conch-next-ideas-design.md");
   });
 });

@@ -116,7 +116,7 @@ public enum SessionGrouping {
             ($0.id, workFolder(cwd: $0.cwd, workDirs: $0.workDirs), $0.parentSessionId ?? $0.startedBySessionId)
         })
         .map { folder in
-            // A session started in the home folder headed the list with the account name — "tylerstupart" — which
+            // A session started in the home folder headed the list with the account name — "you" — which
             // reads like a project and is not one. Seen on the live window, not in any test: every fixture used a
             // project path.
             guard folder.id == home else { return folder }

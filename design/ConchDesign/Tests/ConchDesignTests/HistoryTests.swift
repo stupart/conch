@@ -112,12 +112,24 @@ final class HistoryTests: XCTestCase {
     }
 
     func testARevisedItemKeepsItsNewestRevisionWhenPagesOverlap() {
-        let existing = [item("1", revision: 4, preview: "new"), item("2")]
-        let arriving = [item("1", revision: 2, preview: "old"), item("0")]
-        let merged = HistoryPaging.merge(older: arriving, into: existing)
+        // Through the paging itself since 2026-11-11, when `HistoryPaging.merge(older:into:)`, which this used to
+        // call, went with no caller left: every page that arrives keeps the same rule (`absorb`).
+        var paging = HistoryPaging()
+        paging.select(session: "a")
+        paging.apply(
+            page: HistoryPage(items: [item("1", revision: 4, preview: "new"), item("2")], previousCursor: "older", epoch: "1"),
+            generation: paging.beginLoad()
+        )
+        paging.apply(
+            page: HistoryPage(items: [item("0"), item("1", revision: 2, preview: "old")], previousCursor: nil, epoch: "1"),
+            generation: paging.beginLoad(anchor: "1")
+        )
 
-        XCTAssertEqual(merged.map(\.id), ["1", "0", "2"])
-        XCTAssertEqual(merged.first?.revision, 4, "the store's newer revision of an item wins over the older page's")
+        XCTAssertEqual(paging.items.map(\.id), ["0", "1", "2"])
+        XCTAssertEqual(
+            paging.items.first { $0.id == "1" }?.revision, 4,
+            "the store's newer revision of an item wins over the older page's"
+        )
     }
 
     // MARK: - Whether there is anything above the live window at all

@@ -1,5 +1,5 @@
 import { join, dirname } from "node:path";
-import { existsSync, mkdirSync, chmodSync, unlinkSync, rmSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, unlinkSync, rmSync, renameSync } from "node:fs";
 import { conchHome } from "./home.ts";
 import type { Config } from "./config.ts";
 import { CONCH_DATA } from "./config.ts";
@@ -274,7 +274,7 @@ ${mode}
 │ macOS will ask for microphone access the first time something speaks. Allow it.
 │ If you miss the prompt, run \`conch doctor\`.
 │
-│ WHERE TO LOOK — \`conch\` (the terminal dashboard, also what to use over ssh)
+│ WHERE TO LOOK — \`conch\` says where the dashboard is; \`conch sessions\` lists every session, also over ssh
 │ IF IT'S QUIET — \`conch doctor\`
 │
 │ ${footer}
@@ -507,16 +507,11 @@ export async function downloadModel(
  * but launchd gives us no terminal at all, which satisfies that constraint
  * more completely than tmux did.
  *
- * With no TTY the daemon selects the headless renderer and draws nothing. To
- * watch it, run `conch` in a terminal or open the Mac app: both are viewers
- * that attach over the socket, which is what they were always meant to be.
+ * With no TTY the daemon selects the headless renderer and draws nothing. The
+ * Mac app attaches to it over the socket; `conch` in a terminal says so, and
+ * where its log is, since there is no terminal dashboard to attach to
+ * (dashboard-attach.ts, 2026-11-11).
  */
-export function renderSupervisorScript(_tmux: string, _daemonCmd: string): string {
-  // Retained only so an older installed copy can still be recognised and
-  // replaced; nothing generates a supervisor script any more.
-  return "#!/bin/zsh\n# obsolete — conch is supervised by launchd directly\n";
-}
-
 export function serviceRestartCommands(tmux: string | null, uid: number): string[][] {
   return [
     // Clear a session left by an older tmux-hosted install, so its daemon

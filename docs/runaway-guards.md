@@ -102,7 +102,7 @@ answer an error with more work. References are to this branch.
 | The app replacing a frozen daemon | `recoverFrozenDaemon`, `restartPlan` (DaemonHealth.swift:227) | 3 in 10 min, then gives up and says so |
 | Background sessions whose tmux server died | background-recovery.ts:60 | 3 a day per conversation; one pass at a time |
 | Sessions after a Mac restart | restart-recovery.ts:64 | 3 a day per conversation; only across a reboot |
-| Failure-ticket "Fix" sessions (in flight, `.worktrees/failure-tickets`) | failure-tickets.ts:138 | Off by default; 3 a day; one at a time; never for its own failures |
+| Failure-ticket "Fix" sessions (shipped 2026-10-29, #577) | failure-tickets.ts:138 | Off by default; 3 a day; one at a time; never for its own failures |
 | Rebuilding the natural voices | voice-heal.ts:14 | 3 quick tries, then cool-downs of 1, 2, 4 h |
 | Whisper model download | speech-engine.ts | 0, 60 s, 5 min per run, plus a per-day count |
 | claude-swap's `auto` | claude-rotation.ts:305 | 10 s doubling to 5 min (never reset; one process) |

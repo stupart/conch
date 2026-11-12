@@ -44,11 +44,6 @@ extension WorkspaceModel {
         state?.row(viewed(in: Workspace(state)))
     }
 
-    /// The session the voice is on, which is not necessarily the one being read.
-    func addressedRow(in state: PublishedState?) -> SessionRow? {
-        state?.row(addressed(in: Workspace(state)))
-    }
-
     /// Where a message typed now would go; nil when there is nothing to type into.
     func targetRow(in state: PublishedState?) -> SessionRow? {
         state?.row(target(in: Workspace(state)))
