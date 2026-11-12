@@ -145,6 +145,9 @@ export interface Config {
   agentBudgetMemory: string;
   /** Lower the priority of a heavy leftover while agents are over budget (resource-sampler.ts). Off unless turned on. */
   agentAutoBackground: boolean;
+  /** Put Default's sessions stopped at a usage limit back to work while rotation is on (settings `limit-auto-resume`,
+   * limit-recovery.ts). Read live. */
+  limitAutoResume: boolean;
   socketPath: string;
   claudeDir: string;
   /** TTS engine: owned stdin/stdout worker (default) | legacy HTTP server | say */
@@ -255,6 +258,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     agentBudgetCpu: settings["agent-budget-cpu"].value as string,
     agentBudgetMemory: settings["agent-budget-memory"].value as string,
     agentAutoBackground: settings["agent-auto-background"].value as boolean,
+    limitAutoResume: settings["limit-auto-resume"].value as boolean,
     socketPath: env.CONCH_SOCKET ?? "/tmp/conch.sock",
     claudeDir: env.CLAUDE_CONFIG_DIR ?? join(HOME, ".claude"),
     ttsEngine: parseTtsEngine(env.CONCH_TTS),

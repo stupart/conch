@@ -142,7 +142,7 @@ import {
   stopSoxProcess,
 } from "./listen.ts";
 import { createNarration, NARRATION_QUIET_WITHIN_MS } from "./narration.ts";
-import { findTmuxPane, INJECT_DEBUG_LOG, INJECT_DEBUG_LOG_MAX_BYTES, readSessionScreen, readTerminalTab, revealSessionWindow, withUIHold } from "./inject.ts";
+import { findTmuxPane, injectKeys, INJECT_DEBUG_LOG, INJECT_DEBUG_LOG_MAX_BYTES, readSessionScreen, readTerminalTab, revealSessionWindow, withUIHold } from "./inject.ts";
 import { createTerminalMirror } from "./terminal-mirror.ts";
 import { openSessionApp } from "./session-app-open.ts";
 import { adapterFor, transcriptFormatFor } from "./agent-adapter.ts";
@@ -188,12 +188,13 @@ import { startedSessionFor } from "./session-start-wait.ts";
 import { TeamDesk, teamDeskPaths, teamFolderExists } from "./team-desk.ts";
 import { lastTabLines, tabAgentState, terminalTabCommands } from "./agent-alive.ts";
 import { MCP_TOOL_NAMES } from "./mcp-toolset.ts";
-import { listMcpServerProcesses, readMcpServerReports, toolsStaleFor, withToolsStale, type ToolsStale } from "./mcp-servers.ts";
+import { listMcpServerProcesses, pidAlive, readMcpServerReports, toolsStaleFor, withToolsStale, type ToolsStale } from "./mcp-servers.ts";
 import {
   conchMcpFailureFor, failedServerStale, hasConchMcpServer, mcpFailureWords, RELOAD_PLUGINS, RELOAD_VERIFY_MS, repairBlocker,
   routeBlocker, submitSlashCommand, waitForServer, type McpConnectionFailure, type McpRepairAttempt,
 } from "./mcp-repair.ts";
-import { readSwapDashboard } from "./claude-swap.ts";
+import { liveRunSessionSlots, readSwapDashboard } from "./claude-swap.ts";
+import { LIMIT_LOOK_MS, LimitRecovery, type LimitSession } from "./limit-recovery.ts";
 import {
   addSignedInAccountToRotation, cancelAddingAccount, defaultLoginEmail, finishAddingAccount, installClaudeSwap, listedEmails,
   removeFromRotation, RotationSupervisor, startAddingAccount, swapExecutable, switchRotation, type CommandOutcome,
@@ -1097,6 +1098,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       return transcript ? readClaudeTitle(transcript) : undefined;
     },
   });
+  /** The sessions whose transcript last ended at a usage limit, as the last render read them (limit-recovery.ts). */
+  let latestUsageLimits: ReadonlyMap<string, string> = new Map();
   /**
    * Which sign-in each session runs on, as its hook said (claude-session-sign-ins.ts): its row reads as that account,
    * and a restart, fork or recovery relaunches on it.
@@ -3135,6 +3138,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       noteSessionSettings(session, facts?.settings ? { ...facts.settings } : null);
     }));
     transcriptTailFacts.retain(new Set(live.map((session) => session.sessionId)));
+    latestUsageLimits = sessionUsageLimits;
     if (snap?.complete) {
       const liveIds = new Set(registryLive.map((session) => session.sessionId));
       for (const ids of [sessionSettingsSamples, sessionSettingsChanges, sessionSettingsAsked]) {
@@ -3454,9 +3458,76 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     log(line);
     // Whatever the switcher says (a switch, a failover, a quarantine): read the list again soon.
     rotationSignIns.soon();
-  });
+  }, undefined, (to, from) => limitRecovery.noteSwitch(to, from));
   rotation.set(cfg.claudeRotation);
   rotationSignIns.set(cfg.claudeRotation);
+  // Default's sessions stopped on Claude Code's usage-limit menu, put back to work on an account with room
+  // (limit-recovery.ts, 2026-11-12). Only while rotation and `limit-auto-resume` are on; a look costs nothing until a
+  // session's transcript ends at a limit.
+  const limitRecovery = new LimitRecovery({
+    enabled: () => cfg.claudeRotation && cfg.limitAutoResume,
+    sessions: () => [...panelSessions.values()].flatMap((session): LimitSession[] => {
+      if (dismissedSessionIds.has(session.sessionId) || session.parentSessionId) return [];
+      const backend = session.backend ?? "claude";
+      const usageLimit = latestUsageLimits.get(session.sessionId);
+      return [{
+        sessionId: session.sessionId,
+        label: labelForSessionId(session.sessionId),
+        backend,
+        ...(session.pid ? { pid: session.pid } : {}),
+        ...(session.status ? { status: session.status } : {}),
+        // Default's own login, the one claude-swap moves; a profile or a single-session sign-in keeps its account. Read
+        // only for a Claude session (limit-recovery.ts looks for Claude Code's menu alone).
+        rotation: (session.claudeAccountId ?? "default") === "default" && !session.claudeSignInId,
+        ...(usageLimit ? { usageLimit } : {}),
+      }];
+    }),
+    readScreen: (session) => readSessionScreen(session.pid),
+    inPane: async (session) => session.pid !== undefined && await findTmuxPane(session.pid) !== null,
+    idleSeconds,
+    pressKey: async (session, key) => {
+      const pressed = await injectKeys(cfg, session.pid, [key]);
+      return !pressed.failed && !pressed.interrupted && (pressed.via === "tmux" || pressed.via === "osascript-focused");
+    },
+    alive: (session) => session.pid !== undefined && pidAlive(session.pid),
+    dashboard: () => readSwapDashboard(),
+    liveRunSlots: () => liveRunSessionSlots(),
+    switchTo: (slot) => switchRotation(slot),
+    // Manual mode for that session, as its row shows it: conch-wide manual mode is about speech and the mic, and this
+    // setting is the ask. The mic and speech pass; a message typed now would land in a dictation or cut a reading off.
+    typeBlocker: (session) => {
+      if (pausedSessionIds.has(session.sessionId)) return "manual mode";
+      const state = getLiveState().state;
+      if (state === "listening" || state === "recording" || state === "transcribing") return "the mic is open";
+      return state === "speaking" ? "conch is speaking" : null;
+    },
+    // Through the door every send takes (the voice loop's inject): confirmed by the session, refused at a dialog.
+    type: async (session, text) => {
+      const info = panelSessions.get(session.sessionId);
+      if (!info) return "the session has gone";
+      const outcome = await enqueue({
+        type: "inject",
+        sessionId: info.sessionId,
+        label: session.label,
+        ...(info.cwd ? { cwd: info.cwd } : {}),
+        ...(info.pid ? { pid: info.pid } : {}),
+        announce: text,
+        transcriptPath: info.transcriptPath ?? findTranscript(cfg.claudeDir, info.sessionId),
+      });
+      if (outcome === true) return true;
+      if (outcome === "staged") return "it was typed but not sent: auto-submit is off";
+      return typeof outcome === "object" && outcome && "reason" in outcome && typeof outcome.reason === "string" ? outcome.reason : "not delivered";
+    },
+    notify: (notice) => {
+      log(`usage limit: ${notice.text}`);
+      for (const failure of notice.failures) recordDaemonError("claude-limit", failure);
+      // #602's `notifyUser` (a push to the phone and a Mac notification) isn't on main yet: when it lands, this notice
+      // goes through it too, once, from here.
+    },
+    log,
+  });
+  const limitTimer = setInterval(() => void limitRecovery.look(), LIMIT_LOOK_MS);
+  limitTimer.unref?.();
   // `open` and $BROWSER in the sessions conch starts, into the Workbench while `browser-open-in-conch` is on
   // (browser-open.ts): the shim folder written for the setting, and the sessions started from now on routed through it.
   const setUpBrowsers = (on: boolean): void => {
@@ -4191,7 +4262,11 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         };
         if (message.action === "rotation-install") await install();
         if (message.action === "rotation-add") said("added Default's Claude account to the list", done = await addSignedInAccountToRotation());
-        if (message.action === "rotation-switch") said(`switched Claude to account ${message.slot}`, done = await switchRotation(message.slot!));
+        if (message.action === "rotation-switch") {
+          said(`switched Claude to account ${message.slot}`, done = await switchRotation(message.slot!));
+          // Sessions stopped at the limit are resumed onto it once they've had time to follow (limit-recovery.ts).
+          if (done.ok) limitRecovery.noteSwitch(message.slot);
+        }
         if (message.action === "rotation-remove") said(`removed account ${message.slot} from the Claude accounts`, done = await removeFromRotation(message.slot!));
         if (message.action === "rotation-finish-add") done = await finishAddingAccount(message.id!);
         if (message.action === "rotation-add-account" && (swapExecutable() || await install())) {

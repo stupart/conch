@@ -442,6 +442,7 @@ private struct ConchSettingRowView: View {
         "agent-budget-cpu": "Agents' CPU budget (75% or 14 cores)",
         "agent-budget-memory": "Agents' memory budget (60% or 100 GB)",
         "agent-auto-background": "Lower the priority of heavy leftovers",
+        "limit-auto-resume": "Resume sessions stopped at a usage limit",
     ]
 
     private var displayName: String {

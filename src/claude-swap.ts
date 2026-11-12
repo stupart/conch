@@ -1,6 +1,10 @@
 /** Read-only dashboard bridge to claude-swap schema v1 (switching, adding and removing are claude-rotation.ts).
  * See third-party/claude-swap/LICENSE. */
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { rotationEnvironment, swapExecutable } from "./claude-rotation.ts";
+import { conchHome } from "./home.ts";
+import { pidAlive } from "./mcp-servers.ts";
 
 export interface UsageWindow {
   name: string;
@@ -134,4 +138,35 @@ export async function readSwapDashboard(executable = swapExecutable()): Promise<
   } catch {
     return { source: "claude-swap", state: "error", accounts: [], message: "claude-swap did not return usage. Check it in Terminal, then try again." };
   }
+}
+
+/**
+ * The account numbers a `cswap run` session is running on now: a profile folder of claude-swap's
+ * (`~/.claude-swap-backup/sessions/<number>-<email>/`) whose Claude Code registry names a live process. claude-swap
+ * keeps no list of these in `cswap list --json` (0.26.0 or 1.0.0), so this is read as its own switcher reads it
+ * (0.26.0 `session_dir_for`, `scan_live_sessions`).
+ *
+ * Why it matters (2026-11-12): claude-swap's switcher never moves Default onto such an account, since one rotating
+ * sign-in in two folders leaves one of them signed out later (0.26.0 autoswitch.py `_freshen_target`,
+ * "skip-live-session"). It skips it without saying so, which is how it ended up on an account at 90% at 00:29 and stayed
+ * there after that ran out. conch's own switch skips them too, and says so (limit-recovery.ts).
+ */
+export function liveRunSessionSlots(home = conchHome(), alive: (pid: number) => boolean = pidAlive): Set<number> {
+  const slots = new Set<number>();
+  const root = join(home, ".claude-swap-backup", "sessions");
+  let profiles: string[];
+  try { profiles = readdirSync(root); } catch { return slots; }
+  for (const profile of profiles) {
+    const number = /^(\d+)-/.exec(profile)?.[1];
+    if (!number) continue;
+    let records: string[];
+    try { records = readdirSync(join(root, profile, "sessions")).filter((name) => name.endsWith(".json")); } catch { continue; }
+    for (const record of records) {
+      try {
+        const pid = JSON.parse(readFileSync(join(root, profile, "sessions", record), "utf8"))?.pid;
+        if (Number.isSafeInteger(pid) && pid > 0 && alive(pid)) { slots.add(Number(number)); break; }
+      } catch {}
+    }
+  }
+  return slots;
 }

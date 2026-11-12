@@ -98,13 +98,15 @@ const expected = {
   "agent-budget-cpu": ["agentBudgetCpu", "CONCH_AGENT_BUDGET_CPU", "live", "75%"],
   "agent-budget-memory": ["agentBudgetMemory", "CONCH_AGENT_BUDGET_MEMORY", "live", "60%"],
   "agent-auto-background": ["agentAutoBackground", "CONCH_AGENT_AUTO_BACKGROUND", "live", false],
+  // Ships ON (2026-11-12), acting only while claude-rotation is on: sessions stopped on the usage-limit menu, resumed.
+  "limit-auto-resume": ["limitAutoResume", "CONCH_LIMIT_AUTO_RESUME", "live", true],
 } as const;
 
 describe("settings registry", () => {
-  test("contains exactly the 42 curated, default-bearing knobs", () => {
+  test("contains exactly the 43 curated, default-bearing knobs", () => {
     const keys = [...SETTING_REGISTRY.keys()];
     expect(keys.sort()).toEqual(Object.keys(expected).sort());
-    expect(SETTING_DESCRIPTORS).toHaveLength(42);
+    expect(SETTING_DESCRIPTORS).toHaveLength(43);
     for (const [key, [field, env, apply, defaultValue]] of Object.entries(expected)) {
       const descriptor = SETTING_REGISTRY.get(key);
       expect(descriptor).toMatchObject({ field, env, apply, default: defaultValue });
