@@ -251,6 +251,16 @@ public enum WorkflowsLibrary {
         return order.map { SkillsLibrary.Chip(title: $0, isOff: off[$0] ?? false) }
     }
 
+    /// When to use it, as the reader's "Use when" says it: a leading "Use when" or "When" is the label's already.
+    public static func whenToUse(_ text: String) -> String {
+        var trimmed = text.trimmingCharacters(in: .whitespaces)
+        for prefix in ["use when ", "use it when ", "when "] where trimmed.lowercased().hasPrefix(prefix) {
+            trimmed = String(trimmed.dropFirst(prefix.count))
+            break
+        }
+        return trimmed.prefix(1).uppercased() + trimmed.dropFirst()
+    }
+
     /// The line beside a workflow's name: how it is typed, how many phases, whether its copies differ.
     public static func detail(_ workflow: WorkflowInfo) -> String {
         var parts: [String] = []
@@ -296,15 +306,12 @@ public enum WorkflowsLibrary {
         return Double(phase.done) / Double(phase.started)
     }
 
-    /// The whole run's: phases finished, plus the current one's share; nil when nothing has started.
+    /// The whole run's: its agents done of those started, the same count its line says (a bar counting phases showed 44%
+    /// beside "6 of 10 agents done"); nil when nothing has started.
     public static func fraction(_ run: WorkflowRunInfo) -> Double? {
         if !run.isRunning { return 1 }
         guard run.agents.started > 0 else { return nil }
-        let phases = run.phases.count
-        guard phases > 0 else { return Double(run.agents.done) / Double(run.agents.started) }
-        let finished = run.phases.filter { $0.started > 0 && $0.done == $0.started && $0.title != run.currentPhase }.count
-        let current = run.phases.first { $0.title == run.currentPhase }.flatMap(fraction) ?? 0
-        return min(1, (Double(finished) + current) / Double(phases))
+        return Double(run.agents.done) / Double(run.agents.started)
     }
 
     /// When, as a person says it: "just now", "4 min ago", "2 h ago".

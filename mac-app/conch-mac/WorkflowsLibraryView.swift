@@ -213,7 +213,7 @@ struct ConchWorkflowsSettingsView: View {
                 .fixedSize(horizontal: false, vertical: true)
             if let folder = store.accounts.first.map({ ($0.configDir as NSString).appendingPathComponent("workflows") }),
                FileManager.default.fileExists(atPath: folder) {
-                Button("Show ~/.claude/workflows in Finder") { libraryOpen(stateStore, folder, reveal: true) { linkFailure = $0 } }
+                Button("Show \((folder as NSString).abbreviatingWithTildeInPath) in Finder") { libraryOpen(stateStore, folder, reveal: true) { linkFailure = $0 } }
                     .controlSize(.small)
             }
         }
@@ -292,7 +292,8 @@ struct ConchWorkflowsSettingsView: View {
                                        newSession: { starting = workflow },
                                        openSession: { LibrarySessions.show($0) },
                                        reveal: { location in libraryOpen(stateStore, location.path, reveal: true) { linkFailure = $0 } },
-                                       openPlugins: { SettingsRouter.shared.select(.tools) }))
+                                       openPlugins: { SettingsRouter.shared.select(.tools) },
+                                       revealSettings: { revealSettings(for: workflow) }))
                         .id(workflow.id)
                 } else {
                     ReaderPlaceholder(text: "Pick a workflow to read what it does and its script.")
@@ -304,6 +305,14 @@ struct ConchWorkflowsSettingsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(ConchPalette.surface)
         .clipped()
+    }
+
+    /// The settings file of the first account that has it with the feature off, where `enableWorkflows` turns it on.
+    private func revealSettings(for workflow: WorkflowInfo) {
+        guard let account = store.accounts.first(where: { account in
+            account.feature == "off" && workflow.locations.contains { $0.accountId == account.id }
+        }) else { return }
+        libraryOpen(stateStore, (account.configDir as NSString).appendingPathComponent("settings.json"), reveal: true) { linkFailure = $0 }
     }
 
     /// Said on a workflow an account has while the feature is off for that account.

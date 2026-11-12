@@ -13,15 +13,19 @@ public struct WorkflowDetailActions {
     public var openSession: (LibrarySession) -> Void
     public var reveal: (WorkflowLocationInfo) -> Void
     public var openPlugins: () -> Void
+    /// The settings file of an account whose settings turn workflows off, in Finder.
+    public var revealSettings: () -> Void
 
     public init(run: @escaping (LibraryUse) -> Void, type: @escaping (LibraryUse) -> Void, newSession: @escaping () -> Void,
-                openSession: @escaping (LibrarySession) -> Void, reveal: @escaping (WorkflowLocationInfo) -> Void, openPlugins: @escaping () -> Void) {
+                openSession: @escaping (LibrarySession) -> Void, reveal: @escaping (WorkflowLocationInfo) -> Void, openPlugins: @escaping () -> Void,
+                revealSettings: @escaping () -> Void = {}) {
         self.run = run
         self.type = type
         self.newSession = newSession
         self.openSession = openSession
         self.reveal = reveal
         self.openPlugins = openPlugins
+        self.revealSettings = revealSettings
     }
 
     public static let none = WorkflowDetailActions(run: { _ in }, type: { _ in }, newSession: {}, openSession: { _ in }, reveal: { _ in }, openPlugins: {})
@@ -44,10 +48,14 @@ public struct WorkflowDetailPanel: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: ConchSpace.x3) {
-            if let problem = workflow.problem {
-                LibraryNotice(symbol: "exclamationmark.triangle", text: problem, isProblem: true)
+            if let problem = workflow.problem, let location = workflow.locations.first {
+                LibraryNotice(symbol: "exclamationmark.triangle", text: problem, isProblem: true,
+                              action: (title: "Show in Finder", help: "Reveal the file, to rename or fix it", run: { actions.reveal(location) }))
             }
-            if let featureOff { LibraryNotice(symbol: "pause.circle", text: featureOff, isProblem: false) }
+            if let featureOff {
+                LibraryNotice(symbol: "pause.circle", text: featureOff, isProblem: false,
+                              action: (title: "Show settings.json", help: "Reveal the account's settings file, where enableWorkflows turns them on", run: actions.revealSettings))
+            }
             if let description = workflow.description {
                 Text(description)
                     .font(.system(size: 12))
@@ -56,8 +64,8 @@ public struct WorkflowDetailPanel: View {
                     .textSelection(.enabled)
             }
             if let whenToUse = workflow.whenToUse {
-                LibraryFact(label: "When") {
-                    Text(whenToUse).font(.system(size: 11.5)).foregroundStyle(ConchColor.textSecondary)
+                LibraryFact(label: "Use when") {
+                    Text(WorkflowsLibrary.whenToUse(whenToUse)).font(.system(size: 11.5)).foregroundStyle(ConchColor.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -98,11 +106,10 @@ public struct WorkflowDetailPanel: View {
                         if location.origin == "plugin" {
                             LibraryPillButton("Plugins & MCP", symbol: "arrow.up.right", help: "Switch or remove its plugin in Settings › Plugins & MCP", action: actions.openPlugins)
                         }
-                        LibraryPillButton("", symbol: "folder", help: "Reveal its script in Finder") { actions.reveal(location) }
                     }
                 }
             }
-            if workflow.problem == nil {
+            if workflow.problem == nil, !uses.isEmpty {
                 LibraryFact(label: "Sessions") {
                     LibrarySessionChips(uses: uses, onOpen: actions.openSession)
                 }
@@ -113,26 +120,32 @@ public struct WorkflowDetailPanel: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// What the place doesn't already say: a plugin's name, and that it is off with it. The title bar has its path.
     private func copyLine(_ location: WorkflowLocationInfo) -> String {
-        var parts: [String] = [location.origin == "user" ? "your workflow" : location.origin == "project" ? "project workflow"
-            : "plugin \(location.pluginId.map { String($0.split(separator: "@")[0]) } ?? "")"]
+        var parts: [String] = []
+        if location.origin == "plugin" { parts.append("\(location.pluginId.map { String($0.split(separator: "@")[0]) } ?? "its") plugin") }
         if location.enabled == false { parts.append("off with its plugin") }
-        if workflow.problem == nil { parts.append(location.invocation) }
-        parts.append((location.path as NSString).abbreviatingWithTildeInPath)
+        if parts.isEmpty { parts.append(location.file) }
         return parts.joined(separator: " · ")
     }
 }
 
-/// A line that stands out of the reader: a problem in attention's colour, a note in the secondary one.
+/// A line that stands out of the reader: a problem in attention's colour, a note in the secondary one, each with the one
+/// thing to do about it.
 struct LibraryNotice: View {
     let symbol: String
     let text: String
     let isProblem: Bool
+    var action: (title: String, help: String, run: () -> Void)?
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 7) {
+        HStack(alignment: .center, spacing: 7) {
             Image(systemName: symbol).font(.system(size: 10.5, weight: .semibold))
             Text(text).font(.system(size: 11.5)).fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if let action {
+                LibraryPillButton(action.title, help: action.help, action: action.run)
+            }
         }
         .foregroundStyle(isProblem ? ConchColor.attention : ConchColor.textSecondary)
         .padding(.horizontal, 10)
@@ -251,10 +264,18 @@ public struct WorkflowRunRow: View {
         Button(action: onSelect) {
             VStack(alignment: .leading, spacing: LibraryRowInset.lineGap + 1) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Circle()
-                        .fill(run.isRunning ? ConchColor.accent : run.status == "completed" ? ConchColor.ready : ConchColor.quiet)
-                        .frame(width: 6, height: 6)
-                        .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 1 }
+                    // Green while it runs, as an open session's chip is; a check once it completed.
+                    Group {
+                        if run.isRunning {
+                            Circle().fill(ConchColor.ready).frame(width: 6, height: 6)
+                        } else if run.status == "completed" {
+                            Image(systemName: "checkmark").font(.system(size: 8, weight: .bold)).foregroundStyle(ConchColor.textTertiary)
+                        } else {
+                            Circle().fill(ConchColor.quiet).frame(width: 6, height: 6)
+                        }
+                    }
+                    .frame(width: 6)
+                    .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 1 }
                     Text(run.name)
                         .font(.system(size: 12.5, weight: .medium))
                         .foregroundStyle(ConchColor.textPrimary)
