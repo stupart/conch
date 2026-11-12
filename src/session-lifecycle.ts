@@ -6,7 +6,17 @@ import { processMatchesProvider, readProcessIdentity, sameProcessIdentity, type 
 import { conchHome } from "./home.ts";
 import { CODEX_ACCOUNT_ENV_REMOVE, codexAccountForLaunch, type CodexAccount } from "./codex-accounts.ts";
 import { CLAUDE_ACCOUNT_ENV_REMOVE, claudeAccountForLaunch, requireClaudeAccount, type ClaudeAccount } from "./claude-accounts.ts";
-import { claudeSignInForLaunch, setupTokenCommand, signInShellPrefix, signInTokenRedirect, SIGN_IN_LAUNCH_ENV } from "./claude-session-sign-ins.ts";
+import {
+  claudeSignInForLaunch,
+  readSessionSignIns,
+  setupTokenCommand,
+  signInForStart,
+  signInShellPrefix,
+  signInStartUsage,
+  signInTokenRedirect,
+  SIGN_IN_LAUNCH_ENV,
+  type ClaudeSessionSignIn,
+} from "./claude-session-sign-ins.ts";
 import { statSync } from "node:fs";
 import {
   adapterFor,
@@ -267,12 +277,20 @@ export function startUsage(adapter: AgentAdapter): string {
       : `--${entry.name} <value>`;
     return `  ${spelling}${entry.resumeOnly ? "  (with --resume)" : ""}\n      ${entry.help}`;
   });
-  return `usage: conch start [claude|codex] [--cwd <dir>] [--account <id>] [--terminal | --background] [--resume <id> | --teleport <id>] [options]\n`
+  const signIn = signInStartUsage(adapter.backend);
+  return `usage: conch start [claude|codex] [--cwd <dir>] [--account <id>]${signIn?.synopsis ?? ""} [--terminal | --background] [--resume <id> | --teleport <id>] [options]\n`
+    + (signIn ? `${signIn.help}\n` : "")
     + `${adapter.displayName} options:\n${lines.join("\n")}`;
 }
 
-/** `conch start`'s arguments, parsed against the chosen agent's table. Throws with that agent's usage. */
-export function startRequestFromArgv(args: string[]): StartSessionRequest {
+/**
+ * `conch start`'s arguments, parsed against the chosen agent's table. Throws with that agent's usage.
+ *
+ * `--sign-in` names one of conch's Claude sign-ins, by its name in any case or its id (`resolveSessionSignIn`), read from
+ * `signIns`; the request holds only its id, as the Mac's sheet sends it (2026-11-10, Tyler, choosing which account a
+ * session runs on). One that isn't there is refused with the ones that are.
+ */
+export function startRequestFromArgv(args: string[], signIns: () => readonly ClaudeSessionSignIn[] = readSessionSignIns): StartSessionRequest {
   const named = args[0] === "claude" || args[0] === "codex";
   const backend: SessionBackend = args[0] === "codex" ? "codex" : "claude";
   const rest = named ? args.slice(1) : args;
@@ -283,6 +301,12 @@ export function startRequestFromArgv(args: string[]): StartSessionRequest {
     const arg = rest[i] ?? "";
     if (arg === "--background" || arg === "--terminal") {
       request.host = arg === "--background" ? "background" : "terminal";
+      continue;
+    }
+    if (arg === "--sign-in") {
+      const value = rest[++i];
+      if (value === undefined || !value.trim()) throw new Error(`--sign-in needs a sign-in's name or id\n${startUsage(adapter)}`);
+      request.claudeSignInId = signInForStart(backend, value, signIns).id;
       continue;
     }
     const fixed = arg === "--account" ? `${backend}AccountId` as const : arg === "--cwd" ? "cwd" : arg === "--resume" ? "resumeSessionId" : arg === "--teleport" ? "teleportSessionId" : null;
@@ -782,7 +806,7 @@ export async function startHelpSession(
   return cwd;
 }
 
-async function defaultTtyForPid(pid: number): Promise<string> {
+export async function defaultTtyForPid(pid: number): Promise<string> {
   const child = Bun.spawn(["ps", "-o", "tty=", "-p", String(pid)], {
     stdout: "pipe",
     stderr: "ignore",

@@ -382,7 +382,8 @@ export interface RuntimeControlDispatchOptions {
   readInstall?(
     message: Extract<RuntimeControlMessage, { kind: "agent-capabilities" }>,
   ): AgentInstall | undefined | Promise<AgentInstall | undefined>;
-  start(message: Extract<RuntimeControlMessage, { kind: "session-start" }>): void | { sessionId?: string; backgroundId?: string } | Promise<void | { sessionId?: string; backgroundId?: string }>;
+  /** With `wait` (an agent's `conch_start`): the session's id and label once conch has seen it, or where it runs. */
+  start(message: Extract<RuntimeControlMessage, { kind: "session-start" }>): void | StartedSession | Promise<void | StartedSession>;
   /** Whether the agent already trusts a folder; absent or null means unknown. */
   folderTrusted?(backend: SessionBackend, cwd: string, accountId?: string): boolean | null;
   /** The daemon's log: one line for each start asked for (`sessionStartLine`). */
@@ -400,6 +401,9 @@ export interface RuntimeControlDispatchOptions {
   terminalFocus?(message: Extract<RuntimeControlMessage, { kind: "terminal-focus" }>): Promise<TerminalFocusReply>;
   openSessionApp?(message: Extract<RuntimeControlMessage, { kind: "session-open-app" }>): Promise<SessionAppOpenReply>;
 }
+
+/** What a start says it started: a handoff's prepared id, a background host's name, or (waited on) the session seen. */
+export interface StartedSession { sessionId?: string; backgroundId?: string; label?: string; running?: string }
 
 /** Process/UI controls stay outside the synchronous settings controller so AppleScript cannot block config reads. */
 export async function dispatchRuntimeControlMessage(
@@ -440,6 +444,7 @@ export function sessionStartLine(
   return `session-start: ${message.backend} ${message.host ?? "terminal"}${kind} account=${account}`
     + (message.claudeSignInId ? ` sign-in=${message.claudeSignInId}` : "")
     + ` trustFolder=${message.trustFolder === true ? "yes" : "no"} folder=${basename(folder) || folder}`
+    + (message.wait ? " for an agent, waiting to see it" : "")
     + (asking ? " — asking whether to trust it first" : "");
 }
 
@@ -535,6 +540,8 @@ export async function applyRuntimeControlMessage(
         backend: message.backend,
         resumed: Boolean(message.resumeSessionId),
         ...(message.teleportSessionId ? { teleported: true as const } : {}),
+        ...(launched?.label ? { label: launched.label } : {}),
+        ...(launched?.running ? { running: launched.running } : {}),
       };
     }
     if (message.kind === "session-fork") {
