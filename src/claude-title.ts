@@ -1,4 +1,4 @@
-import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync, statSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import { codexThreadLabel } from "./codex-threads.ts";
 
@@ -27,12 +27,33 @@ export interface ClaudeTitles {
  * 64KB tail read finds both records in 0.06ms.
  */
 export function readClaudeTitles(path: string): ClaudeTitles {
-  let tail: string;
+  return readClaudeTitlesIfReadable(path) ?? {};
+}
+
+/** `readClaudeTitles`, or null when there is no transcript there: the `existsSync` a guessed path was checked with. */
+export function readClaudeTitlesIfThere(path: string): ClaudeTitles | null {
+  let stat: Stats;
   try {
-    tail = readTail(path);
+    stat = statSync(path);
   } catch {
-    return {};
+    return null;
   }
+  return readClaudeTitlesIfReadable(path, stat) ?? {};
+}
+
+function readClaudeTitlesIfReadable(path: string, stat?: Stats): ClaudeTitles | null {
+  let tail: KeptTail;
+  try {
+    tail = keptTail(path, stat);
+  } catch {
+    return null;
+  }
+  tail.titles ??= titlesIn(tail.text());
+  // A copy: what a caller is handed is never the kept answer.
+  return { ...tail.titles };
+}
+
+function titlesIn(tail: string): ClaudeTitles {
   const titles: ClaudeTitles = {};
   for (const line of tail.split("\n")) {
     // Cheap reject before the parse: most lines are neither, and a 64KB tail
@@ -72,12 +93,17 @@ export function readClaudeTitles(path: string): ClaudeTitles {
  * conversation carried on here after all.
  */
 export function readContinuedIn(path: string): string | undefined {
-  let tail: string;
+  let tail: KeptTail;
   try {
-    tail = readTail(path);
+    tail = keptTail(path);
   } catch {
     return undefined;
   }
+  if (tail.continuedIn === undefined) tail.continuedIn = continuedInFrom(tail.text()) ?? null;
+  return tail.continuedIn ?? undefined;
+}
+
+function continuedInFrom(tail: string): string | undefined {
   if (!tail.includes('"type":"continued-in"')) return undefined; // nearly every transcript
   const lines = tail.split("\n");
   for (let index = lines.length - 1; index >= 0; index -= 1) {
@@ -105,8 +131,10 @@ export function hasConversation(path: string): boolean {
   try {
     // ponytail: past the tail size it holds a conversation in practice; read the
     // head too if a big metadata-only transcript ever turns up.
-    if (statSync(path).size > CLAUDE_TAIL_BYTES) return true;
-    return readTail(path).split("\n").some((line) => {
+    const stat = statSync(path);
+    if (stat.size > CLAUDE_TAIL_BYTES) return true;
+    const tail = keptTail(path, stat);
+    tail.conversation ??= tail.text().split("\n").some((line) => {
       try {
         const type = JSON.parse(line)?.type;
         return type === "user" || type === "assistant";
@@ -114,23 +142,99 @@ export function hasConversation(path: string): boolean {
         return false;
       }
     });
+    return tail.conversation;
   } catch {
     return true;
   }
 }
 
-/** The last `CLAUDE_TAIL_BYTES` of a transcript, decoded. Throws when unreadable. */
-function readTail(path: string): string {
+/**
+ * The last `CLAUDE_TAIL_BYTES` of a transcript, kept between reads, with what was worked out from them.
+ *
+ * The registry read asks every Claude session's tail for its title and whether it moved (`readContinuedIn`), and the
+ * daemon reads the registry on every render: four times a second while a session works. Each ask opened the file and
+ * read 64 KB again, moved or not; `conch evals` counted 27,848 file calls a minute here in its scripted load (12
+ * sessions, 3 working), 2026-11-11. Now a transcript that has not moved costs one `stat`, and one that grew is read
+ * from where it ended, plus `OVERLAP_BYTES` before it that must match what was kept: a transcript rewritten in place
+ * (not appended to) fails that and is read whole again, as one replaced by a rename does by its inode.
+ *
+ * The answers are worked out from the same 64 KB as before, so a title that has scrolled out of the tail is lost the
+ * way it always was. A same-size rewrite in the same nanosecond would read as unmoved; transcripts are appended to.
+ */
+interface KeptTail {
+  ino: number;
+  size: number;
+  mtimeMs: number;
+  bytes: Buffer;
+  text(): string;
+  titles?: ClaudeTitles;
+  /** null: worked out, and there is none. */
+  continuedIn?: string | null;
+  conversation?: boolean;
+}
+
+const OVERLAP_BYTES = 256;
+/** Tails kept, the least recently read let go first: 64 KB each, so at most 8 MB. */
+const KEPT_TAILS_MAX = 128;
+const keptTails = new Map<string, KeptTail>();
+
+/** For tests: forget every kept tail. */
+export function forgetKeptTails(): void {
+  keptTails.clear();
+}
+
+/** Throws when unreadable. */
+function keptTail(path: string, given?: Stats): KeptTail {
+  const stat = given ?? statSync(path);
+  const known = keptTails.get(path);
+  if (known && known.ino === stat.ino && known.size === stat.size && known.mtimeMs === stat.mtimeMs) {
+    keptTails.delete(path);
+    keptTails.set(path, known);
+    return known;
+  }
+  const bytes = (known && known.ino === stat.ino && grown(path, known, stat.size)) || readLast(path, stat.size);
+  const tail = keptTailOf(stat, bytes);
+  keptTails.delete(path);
+  // A short read (the file shrank under it) is answered but not kept.
+  if (bytes.length === Math.min(stat.size, CLAUDE_TAIL_BYTES)) {
+    keptTails.set(path, tail);
+    if (keptTails.size > KEPT_TAILS_MAX) keptTails.delete(keptTails.keys().next().value!);
+  }
+  return tail;
+}
+
+// The decoded text is not kept: each answer is worked out once per version of the file, and a string can take twice
+// the bytes.
+function keptTailOf(stat: Stats, bytes: Buffer): KeptTail {
+  return { ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, bytes, text: () => new TextDecoder().decode(bytes) };
+}
+
+/** The bytes from `from` to `to`, fewer if the file ended first. */
+function readRange(path: string, from: number, to: number): Buffer {
   const fd = openSync(path, "r");
   try {
-    const size = statSync(path).size;
-    const length = Math.min(size, CLAUDE_TAIL_BYTES);
-    const buffer = Buffer.allocUnsafe(length);
-    readSync(fd, buffer, 0, length, Math.max(0, size - length));
-    return new TextDecoder().decode(buffer);
+    const buffer = Buffer.allocUnsafe(Math.max(0, to - from));
+    const count = readSync(fd, buffer, 0, buffer.length, from);
+    return buffer.subarray(0, count);
   } finally {
     closeSync(fd);
   }
+}
+
+function readLast(path: string, size: number): Buffer {
+  return readRange(path, Math.max(0, size - CLAUDE_TAIL_BYTES), size);
+}
+
+/** The new tail of a file that grew, reading only what it grew by; null when it was not an append. */
+function grown(path: string, known: KeptTail, size: number): Buffer | null {
+  if (size <= known.size || size - known.size >= CLAUDE_TAIL_BYTES) return null;
+  const overlap = Math.min(OVERLAP_BYTES, known.bytes.length);
+  const read = readRange(path, known.size - overlap, size);
+  if (read.length !== size - known.size + overlap) return null;
+  if (!read.subarray(0, overlap).equals(known.bytes.subarray(known.bytes.length - overlap))) return null;
+  const added = read.subarray(overlap);
+  const keep = known.bytes.subarray(Math.max(0, known.bytes.length + added.length - CLAUDE_TAIL_BYTES));
+  return Buffer.concat([keep, added]);
 }
 
 function clean(title: string): string | undefined {
@@ -165,7 +269,20 @@ export function liveTranscriptPath(
   cwd: string | undefined,
   sessionId: string,
 ): string | undefined {
+  const path = claudeTranscriptGuess(claudeDir, cwd, sessionId);
+  return path && existsSync(path) ? path : undefined;
+}
+
+/**
+ * `liveTranscriptPath`'s guess, unchecked, for a caller whose next step reads it anyway and can tell a missing file
+ * from the read (`readClaudeTitlesIfThere`, `readContinuedIn`): the `existsSync` was a second file call a session a
+ * registry read, 6,962 a minute in `conch evals`' scripted load (2026-11-11).
+ */
+export function claudeTranscriptGuess(
+  claudeDir: string,
+  cwd: string | undefined,
+  sessionId: string,
+): string | undefined {
   if (!cwd || !sessionId) return undefined;
-  const path = join(claudeDir, "projects", claudeProjectSlug(cwd), `${sessionId}.jsonl`);
-  return existsSync(path) ? path : undefined;
+  return join(claudeDir, "projects", claudeProjectSlug(cwd), `${sessionId}.jsonl`);
 }

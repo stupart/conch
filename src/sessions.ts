@@ -23,7 +23,7 @@ import {
   type CodexSessionRegistryOptions,
 } from "./codex-sessions.ts";
 import { readCodexThreads } from "./codex-threads.ts";
-import { hasConversation, liveTranscriptPath, readClaudeTitles, readContinuedIn } from "./claude-title.ts";
+import { claudeTranscriptGuess, hasConversation, liveTranscriptPath, readClaudeTitles, readClaudeTitlesIfThere, readContinuedIn } from "./claude-title.ts";
 import { parseWindowKey, processParentTable, windowKey, windowPidFromAncestry } from "./window-key.ts";
 import { noteRegistryEntries } from "./transcript-paths.ts";
 import { HELP_SESSION_LABEL, helpSessionDir } from "./help-session.ts";
@@ -546,10 +546,10 @@ function startedAt(entry: any): number {
  * outranks the one a model wrote, whichever is more recent.
  */
 export function currentName(info: SessionInfo, claudeDir: string): SessionInfo {
-  const path = info.transcriptPath
-    ?? liveTranscriptPath(claudeDir, info.cwd, info.sessionId);
-  if (!path) return info;
-  const titles = readClaudeTitles(path);
+  // The guessed path unchecked: a transcript that isn't there leaves the name as it was, as an unfound one did.
+  const guess = info.transcriptPath ? undefined : claudeTranscriptGuess(claudeDir, info.cwd, info.sessionId);
+  const titles = info.transcriptPath ? readClaudeTitles(info.transcriptPath) : guess ? readClaudeTitlesIfThere(guess) : null;
+  if (!titles) return info;
   // A registry name Claude Code DERIVED is a fallback, not a choice. It used to
   // outrank the generated title — correct when a registry name could only come
   // from a person, wrong once Claude Code started writing `morrow-e9` at startup
@@ -1081,10 +1081,10 @@ function movedToLiveSession(
   live: ReadonlySet<string>,
 ): boolean {
   const seen = new Set<string>([entry.sessionId]);
-  let path = liveTranscriptPath(claudeDir, entry.cwd, entry.sessionId);
-  // ponytail: a second 64KB tail read per session per snapshot (currentName
-  // reads one too); fold them into one read if a profile ever shows it. The
-  // hop bound is a guard for a bogus chain — each real hop is a backgrounding.
+  // Unchecked: `readContinuedIn` of a transcript that isn't there finds nothing, as an unfound one did.
+  let path = claudeTranscriptGuess(claudeDir, entry.cwd, entry.sessionId);
+  // The tail currentName reads too, kept between snapshots (claude-title.ts `keptTail`): one `stat` while the
+  // transcript doesn't move. The hop bound is a guard for a bogus chain — each real hop is a backgrounding.
   for (let hop = 0; hop < 8 && path; hop += 1) {
     const next = readContinuedIn(path);
     if (!next || seen.has(next)) return false;
