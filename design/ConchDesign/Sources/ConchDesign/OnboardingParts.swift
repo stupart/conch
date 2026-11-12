@@ -405,57 +405,6 @@ public struct OnboardingProgressBar: View {
     }
 }
 
-/// A key as it's printed on the keyboard: ⌃, ⌥, ⌘, P.
-public struct Keycap: View {
-    let key: String
-    var size: CGFloat = 12
-    /// Held down right now: the key in the card lights as the real one is pressed, so trying it is its own proof.
-    var lit = false
-
-    public init(_ key: String, size: CGFloat = 12, lit: Bool = false) {
-        self.key = key
-        self.size = size
-        self.lit = lit
-    }
-
-    public var body: some View {
-        Text(key)
-            .font(.system(size: size, weight: .semibold, design: .rounded))
-            .foregroundStyle(lit ? AnyShapeStyle(ConchColor.onAccent) : AnyShapeStyle(ConchColor.textPrimary))
-            .frame(minWidth: size * 1.9)
-            .padding(.horizontal, 4)
-            .frame(height: size * 1.9)
-            .background(
-                RoundedRectangle(cornerRadius: ConchRadius.small, style: .continuous)
-                    .fill(lit ? AnyShapeStyle(ConchColor.accent) : AnyShapeStyle(ConchColor.surfaceRaised))
-                    .shadow(color: .black.opacity(lit ? 0 : 0.12), radius: 0, y: 1)
-            )
-            .offset(y: lit ? 1 : 0)
-            .overlay(RoundedRectangle(cornerRadius: ConchRadius.small, style: .continuous).strokeBorder(ConchColor.hairlineStrong, lineWidth: 0.5))
-    }
-}
-
-/// A shortcut as keycaps: "⌃⌥⌘P" drawn as four keys.
-public struct KeyChord: View {
-    let chord: String
-    var size: CGFloat = 12
-    var lit = false
-
-    public init(_ chord: String, size: CGFloat = 12, lit: Bool = false) {
-        self.chord = chord
-        self.size = size
-        self.lit = lit
-    }
-
-    public var body: some View {
-        HStack(spacing: 3) {
-            ForEach(Array(chord.enumerated()), id: \.offset) { _, key in Keycap(String(key), size: size, lit: lit) }
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(chord)
-    }
-}
-
 // MARK: - Cards and rows
 
 /// Rows grouped on one surface, as System Settings groups them: white on the ground in light, a step up in dark, a

@@ -82,12 +82,9 @@ public enum SidebarRowText {
     /// the question a blocked session is waiting on, or which session started this one. A finished session's summary
     /// does not: its check or dot already says "come and look", the conversation says what it made, and cut to sidebar
     /// width it was a word and an ellipsis ("Screen…") that pushed the name down to "Co…egy". The tooltip carries it.
-    public static func subtitle(message: String?, blockedOn: String?, startedBy: String?) -> String? {
-        secondLine(message: message, blockedOn: blockedOn, activity: nil, startedBy: startedBy)?.text
-    }
-
-    /// `subtitle`'s rule with a working row's activity in it (2026-10-03): conch's word, then the question, then what the
-    /// agent is doing, then its starter. Pass `activity` through `SidebarActivity.line`, which says when a row has one.
+    ///
+    /// A working row's activity is in the rule too (2026-10-03): conch's word, then the question, then what the agent is
+    /// doing, then its starter. Pass `activity` through `SidebarActivity.line`, which says when a row has one.
     ///
     /// Below the question, so a blocked row says what it is blocked on; above the starter, because a started session
     /// already sits indented under its starter, and the tooltip and VoiceOver still name it.

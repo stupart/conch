@@ -106,17 +106,6 @@ final class AgentInkTests: XCTestCase {
         XCTAssertEqual(AgentInk.viewRect(client: client, viewport: .init(left: 10, top: 20, scale: 2, width: 800), viewWidth: 800), CGRect(x: 180, y: 60, width: 80, height: 40))
     }
 
-    /// AppKit's screen is y up from the main display's bottom; a canvas is y down from its display's top left.
-    func testAScreenRectBecomesFractionsOfItsDisplay() {
-        let display = CGRect(x: 1000, y: -200, width: 1000, height: 500)
-        let onScreen = CGRect(x: 1400, y: 50, width: 200, height: 100)
-        let unit = AgentInk.unit(onScreen, on: display)
-        XCTAssertEqual(unit.minX, 0.4, accuracy: 1e-9)
-        XCTAssertEqual(unit.minY, 0.3, accuracy: 1e-9)
-        XCTAssertEqual(unit.width, 0.2, accuracy: 1e-9)
-        XCTAssertEqual(unit.height, 0.2, accuracy: 1e-9)
-    }
-
     // MARK: Drawing it on
 
     /// Agent ink draws on along its own line: an arrow from tail to head, an area across its middle, as wide as it is tall.

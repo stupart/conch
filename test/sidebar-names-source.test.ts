@@ -119,9 +119,8 @@ describe("the details move", () => {
     expect(rule).toContain("if let blockedOn = present(blockedOn) { return SecondLine(text: blockedOn, kind: .question) }");
     expect(rule).toContain("if let activity = SidebarActivity.clean(activity) { return SecondLine(text: activity, kind: .activity) }");
     expect(rule).toContain('return present(startedBy).map { SecondLine(text: "started by \\($0)", kind: .startedBy) }');
-    // The old entry point is the same rule with no activity, so nothing else that asks it changes.
-    expect(section(design, "public static func subtitle(", "\n    }\n"))
-      .toContain("secondLine(message: message, blockedOn: blockedOn, activity: nil, startedBy: startedBy)?.text");
+    // The old entry point, `subtitle`, was this rule with no activity; nothing asked it, and it went (2026-11-12).
+    expect(design).not.toContain("public static func subtitle(");
   });
 
   test("the agent and the age show for the hovered and the selected row; quiet and priority always", () => {

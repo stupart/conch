@@ -1,29 +1,23 @@
 import CoreGraphics
 import Foundation
-import SwiftUI
 
 // Show: the canvas recorded instead of stilled. Tyler: "or we could also have like a 'show' and that's recording it via
 // video instead of only an image." Agents can't watch a video, so what one is sent is its storyboard: frames pulled just
 // after each thing Tyler marked, where he finished saying something or paused, and wherever the screen changed,
-// near-duplicates dropped, a dozen at most, each with its time, what was marked and what he said there. This is the pure
-// part — which moments, which frames, the words — and the pill's record and mic buttons; the recording itself is the Mac
-// app's (`CanvasShow.swift` there), and his voice the daemon's (`src/narration.ts`). The research is §3 and §4 of
+// near-duplicates dropped, a dozen at most, each with its time and what happened there. The research is §3 and §4 of
 // ~/Projects/conch-design/canvas-research-2026-09-25.md.
+//
+// The Show went with the overlays (2026-11-11), and its pill, narration and message with it. What stays is the part a
+// video sent from the phone or the Mac still uses (`VideoStoryboard`): which moments, which frames, their times and what
+// happened at each.
 
 public enum CanvasStoryboard {
-    /// How long a Show can run: two minutes, the last fifteen seconds counted down on the pill.
+    /// How long a Show could run: two minutes. A video's frames stop there too (`VideoStoryboard.longest`).
     public static let longest: TimeInterval = 120
-    public static let warning: TimeInterval = 15
     /// At most this many frames: enough to follow what happened, few enough for an agent to look at every one.
     public static let most = 12
     /// A frame's long edge, the still's and the phone uploads' rule.
     public static let longEdge: CGFloat = 1568
-    /// The recording red (panel-lab's `--rec`): the ring round the screen and the record button's disc, marks both.
-    public static let red = ConchRGBA(0xFF3B30)
-    /// The same red as words, the pill's timer: #FF3B30 measured 3.52:1 on the pill's light glass and 2.40 on its dark
-    /// (overlayGlassStrong over the fog). Apple's accessible red is 5.34 in light; its dark #FF6961 measured 3.02 there,
-    /// so dark is lifted until it clears 4.5, at 4.62 (CanvasPillTests).
-    public static let redText = ConchColorToken("recordingText", .init(0xD70015), .init(0xFFA8A3))
 
     /// A moment in the recording worth a frame.
     public struct Moment: Equatable, Sendable {
@@ -55,32 +49,9 @@ public enum CanvasStoryboard {
     /// A regular look, this often.
     static let every = 3.0
 
-    /// Something Tyler said over a Show, and when, in seconds into the recording: the daemon's transcript of his narration.
-    public struct Said: Equatable, Sendable {
-        public let start: Double
-        public let end: Double
-        public let text: String
-
-        public init(start: Double, end: Double, text: String) {
-            self.start = start
-            self.end = end
-            self.text = text
-        }
-    }
-
-    /// A gap this long between two things said is a pause, and worth a look.
-    static let pause = 0.7
-
-    /// Where narration is looked at: the end of each thing said, and the middle of each pause.
-    public static func moments(of said: [Said]) -> [Double] {
-        let said = said.sorted { $0.start < $1.start }
-        let pauses = zip(said, said.dropFirst()).filter { $1.start - $0.end >= pause }.map { ($0.end + $1.start) / 2 }
-        return (said.map(\.end) + pauses).sorted()
-    }
-
     /// Where a recording `length` seconds long is looked at: just after each burst of Tyler's marks (`ends`, each mark and
-    /// when it was finished, in seconds into the recording); where he finished saying something or paused (`said`, from
-    /// `moments(of:)`), where no burst is near; every three seconds from the start, where neither is; and the last frame.
+    /// when it was finished, in seconds into the recording); where he finished saying something or paused (`said`, the
+    /// moments he finished saying something or paused), where no burst is near; every three seconds from the start, where neither is; and the last frame.
     /// Oldest first, the last frame last.
     public static func moments(ends: [(at: Double, mark: CanvasMark)], said: [Double] = [], length: Double) -> [Moment] {
         let last = max(0, length - 0.05)
@@ -159,7 +130,7 @@ public enum CanvasStoryboard {
 
     // MARK: The words
 
-    /// A length, as the prompt and the pill say it: 0:23, 1:05.
+    /// A length, as a video's prompt and its row say it: 0:23, 1:05.
     public static func clock(_ seconds: Double) -> String {
         let whole = max(0, Int(seconds.rounded(.down)))
         return "\(whole / 60):" + String(format: "%02d", whole % 60)
@@ -169,12 +140,6 @@ public enum CanvasStoryboard {
     public static func stamp(_ seconds: Double) -> String {
         let whole = max(0, Int(seconds.rounded(.down)))
         return String(format: "[%02d:%02d]", whole / 60, whole % 60)
-    }
-
-    /// The pill's timer: how long Show has run; in its last fifteen seconds, how long is left.
-    public static func timer(_ elapsed: TimeInterval) -> String {
-        let left = longest - elapsed
-        return left <= warning ? "\(clock(max(0, left).rounded(.up))) left" : clock(elapsed)
     }
 
     /// What happened at a frame: the marks finished there, each where it is and a note with its words; else the start, a
@@ -191,60 +156,5 @@ public enum CanvasStoryboard {
         case .end:
             return first ? "the screen" : "the end"
         }
-    }
-
-    /// What Tyler said at each frame of `frames` (their times): each thing said goes to the frame nearest where he finished
-    /// saying it, so every word is on one line, with the picture of what he was looking at.
-    static func words(_ said: [Said], at frames: [Double]) -> [String] {
-        var words = [[String]](repeating: [], count: frames.count)
-        for each in said.sorted(by: { $0.start < $1.start }) {
-            guard let nearest = frames.indices.min(by: { abs(frames[$0] - each.end) < abs(frames[$1] - each.end) }) else { break }
-            words[nearest].append(flat(each.text))
-        }
-        return words.map { $0.filter { !$0.isEmpty }.joined(separator: " ") }
-    }
-
-    private static func flat(_ text: String) -> String {
-        text.split(whereSeparator: \.isNewline).joined(separator: " ").trimmingCharacters(in: .whitespaces)
-    }
-
-    /// A frame's line: what he said there, quoted, then what happened.
-    private static func happened(_ moment: Moment, first: Bool, words: String) -> String {
-        (words.isEmpty ? "" : "\"\(words)\" · ") + caption(moment, first: first)
-    }
-
-    /// `storyboard.md`, beside the frames: what the recording was, then a line a frame — its time, its number, what he said
-    /// there, what happened, its file — and, when he narrated, everything he said, as he said it.
-    public static func storyboard(_ frames: [(moment: Moment, file: String)], said: [Said] = [], about label: String, length: Double) -> String {
-        var lines = [
-            "# Tyler showed \(label) (\(clock(length)))",
-            "",
-            said.isEmpty
-                ? "A recording of his screen with his ink over it (his is orange). Agents can't watch video, so these are its frames: one just after each thing he marked, and one wherever the screen changed."
-                : "A recording of his screen with his ink over it (his is orange), and what he said over it. Agents can't watch video, so these are its frames: one just after each thing he marked, where he finished saying something or paused, and wherever the screen changed; each with the words he said there.",
-            "",
-        ]
-        let words = words(said, at: frames.map(\.moment.at))
-        lines += frames.enumerated().map { index, frame in
-            "\(stamp(frame.moment.at)) frame \(String(format: "%02d", index + 1)) — \(happened(frame.moment, first: index == 0, words: words[index])) (\(frame.file))"
-        }
-        if !said.isEmpty {
-            lines += ["", "## What he said", ""]
-            lines += said.sorted { $0.start < $1.start }.map { "\(stamp($0.start)) \(flat($0.text))" }
-        }
-        lines += ["", "The recording itself, for people: show.mp4"]
-        return lines.joined(separator: "\n") + "\n"
-    }
-
-    /// The one message a Show sends, through the composer's path as the still's is: what was shown and how long, the
-    /// storyboard, each frame's path with its time, what he said there and what happened, the recording, for people, and
-    /// — as the still's ends — how to mark an answer on `canvas`.
-    public static func prompt(_ frames: [(moment: Moment, path: String)], said: [Said] = [], about label: String, length: Double, storyboard: String, video: String, canvas: CanvasDocument) -> String {
-        var lines = ["[canvas] Tyler showed \(label) (\(clock(length))).", "Storyboard: \(storyboard)"]
-        let words = words(said, at: frames.map(\.moment.at))
-        lines += frames.enumerated().map { index, frame in "\(stamp(frame.moment.at)) \(frame.path) — \(happened(frame.moment, first: index == 0, words: words[index]))" }
-        lines.append("The recording, for people (agents can't watch video): \(video)")
-        lines.append(CanvasPrompt.answer(canvas))
-        return lines.joined(separator: "\n")
     }
 }

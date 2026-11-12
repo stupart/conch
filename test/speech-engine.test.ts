@@ -553,10 +553,8 @@ describe("the capture and the published state use it", () => {
     const capture = soxCaptureArgs({ micGainDb: 0, endSilenceSecs: 3.5, soxBin: app }, "/tmp/conch-normal-1-2.raw", 2);
     expect(capture[0]).toBe(app);
     expect(isConchSox(capture.join(" "))).toBeTrue();
-    const wav = "/Users/tester/.cache/conch/canvas/0f8fad5b-d9cb-469f-a165-70867728950e/narration.wav";
-    const narration = narrationSoxArgs({ micGainDb: 0, soxBin: app }, wav, 150);
-    expect(narration[0]).toBe(app);
-    expect(isConchSox(narration.join(" "))).toBeTrue();
+    // A whole recording (the microphone check's) runs it too.
+    expect(narrationSoxArgs({ micGainDb: 0, soxBin: app }, "/tmp/conch-mic-check-1-2.wav", 10)[0]).toBe(app);
     // A config without one (older callers, tests) still spawns bare `sox` from PATH.
     expect(soxCaptureArgs({ micGainDb: 0, endSilenceSecs: 3.5 }, "/tmp/conch-normal-1-2.raw", 2)[0]).toBe("sox");
   });

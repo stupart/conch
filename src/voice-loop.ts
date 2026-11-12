@@ -105,9 +105,9 @@ import type { PauseController } from "./pause-controller.ts";
  *
  * The mic must never open while TTS is speaking: every capture start sits
  * behind `reserveNormalMic()` → `speech.quiescent()`, and the speech manager's
- * gate asks `capturing()` — the same answer the stop contract uses. Show's
- * narration (narration.ts) holds the mic through the same gate
- * (`holdNarration`).
+ * gate asks `capturing()` — the same answer the stop contract uses. Setup's
+ * microphone check (setup.ts) holds the mic through the same gate
+ * (`holdMic`).
  */
 
 /**
@@ -426,34 +426,6 @@ export const PERMISSION_LINES: Readonly<Record<string, string>> = {
   "accessibility-permission-denied": "macOS is blocking conch from typing into Terminal. Turn conch on under Privacy and Security, Accessibility.",
 };
 
-/** Setup's practice turn (practice.ts), as the voice loop runs it. */
-export interface PracticeTurn {
-  /** What the live state and the published row call it. */
-  label: string;
-  /** The scripted line, spoken first; absent for another mic window on the same practice. */
-  line?: string;
-  /** How the line is spoken: a ring voice, or the Mac's own while the natural voices aren't ready. */
-  speechCfg: Config;
-  /** False once the practice is stopped: the line and the mic end with it. */
-  stillWanted(): boolean;
-  /**
-   * The line is starting: the queue is held for the practice and the line goes to `speak` now. Until this, whatever
-   * conch is playing is another session's, which stopping the practice must leave alone.
-   */
-  onLine?(): void;
-  /** The line has finished playing (or there was none) and the mic is about to open. */
-  onSpoken?(): void;
-  /** How long it waits for another session's exchange to finish before it says conch is busy. */
-  queueWithinMs?: number;
-}
-
-export type PracticeTurnOutcome =
-  | { heard: string | null; interrupted?: true }
-  | { refused: "phone" | "another-mac" | "busy" | "mic-open" | "closing" };
-
-/** How long a practice turn waits for a session being read aloud to finish. */
-export const PRACTICE_QUEUE_WITHIN_MS = 20_000;
-
 /**
  * A delivered send's receipt code when the words went to a session Claude Code started for them from the viewer
  * they were typed into, not to the conversation addressed: delivered, and the code keeps where.
@@ -571,23 +543,18 @@ export interface VoiceLoop {
   filePublication(event: TurnEvent): Promise<ReviewVerdict>;
   speak(speechCfg: Config, text: string, label?: string, volunteered?: boolean, sessionId?: string): Promise<void>;
   speakBlocker(volunteered: boolean): "voice-off" | "mic-open" | "manual" | null;
-  /** Exactly the mic gate, narration included — never just `micOpen` (see the stop contract in control-server.ts). */
+  /** Exactly the mic gate, a held mic included — never just `micOpen` (see the stop contract in control-server.ts). */
   capturing(): boolean;
   /**
-   * Show's narration (narration.ts): the mic held as an open dictation holds
-   * it, or why not. Released once its recorder is gone; a Stop meanwhile calls
-   * `stopRecorder`.
+   * Setup's microphone check (setup.ts): the mic held as an open dictation
+   * holds it, or why not. Released once its recorder is gone; a Stop meanwhile
+   * calls `stopRecorder`. `label` is what the open mic shows as.
    */
-  holdNarration(quietWithinMs: number, stopRecorder: () => void, label?: string): Promise<{ release(): void } | { refused: string }>;
-  /**
-   * Setup's practice turn (practice.ts): its line through `speak`, then one mic window through the one reservation.
-   * What it heard comes back; it is never delivered, typed or pasted anywhere.
-   */
-  practice(turn: PracticeTurn): Promise<PracticeTurnOutcome>;
+  holdMic(quietWithinMs: number, stopRecorder: () => void, label: string): Promise<{ release(): void } | { refused: string }>;
   /**
    * Why a request is turned away at the door rather than queued, or null. A
-   * dictation asked for while Show's narration has the mic would wait behind it
-   * and open a second mic minutes later, long after it was wanted.
+   * dictation asked for while the mic is held would wait behind it and open a
+   * second mic minutes later, long after it was wanted.
    */
   refusal(event: TurnEvent): string | null;
   /** The permission prompt this session is showing, for the published row. */
@@ -679,15 +646,15 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
   let shuttingDown = false; // set by close(): no fresh mic, no fresh speech past shutdown
   let normalMicReserved = false;
   let bargeHandoffOpen = false;
-  let narrating = false; // Show's narration holds the mic (holdNarration)
-  let stopNarration: (() => void) | null = null; // its recorder's stop: a Stop closes that mic too
+  let heldMic: string | null = null; // what holds the mic (holdMic): setup's microphone check
+  let stopHeldMic: (() => void) | null = null; // its recorder's stop: a Stop closes that mic too
   // The turn currently being handled, used by PauseController's scoped edge.
   let recitingEvent: TurnEvent | null = null;
   let handlingEvent: TurnEvent | null = null;
   let handlingPauseGeneration: number | null = null;
 
   const normalMicOpen = (): boolean => Boolean(
-    activeDictation?.session.micOpen || micOpen || normalMicReserved || bargeHandoffOpen || narrating
+    activeDictation?.session.micOpen || micOpen || normalMicReserved || bargeHandoffOpen || heldMic !== null
   );
   const assertNormalMicClosed = (operation: string): void => assertAudioGate(normalMicOpen, operation);
 
@@ -707,8 +674,8 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
   };
 
   /**
-   * Show's narration holds the mic the way an open dictation does, not by a
-   * policy of its own. It takes the queue, so turns wait behind it exactly as
+   * A held mic (setup's microphone check) is held the way an open dictation
+   * holds it, not by a policy of its own. It takes the queue, so turns wait behind it exactly as
    * they wait behind a dictation, which runs inside the drain; it counts in
    * `normalMicOpen`, so `speak` holds its lines, the speech lane stays shut
    * and a stop sees a mic; and it reserves through the one reservation every
@@ -717,8 +684,8 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
    * for a line to finish, not a whole reply. Held, it shows as a dictation's
    * mic does ("recording"), and a Stop ends it through `stopRecorder`.
    */
-  // `label` is what the open mic shows as: "Show" for a Show's narration, "Microphone check" for setup's (setup.ts).
-  const holdNarration = async (quietWithinMs: number, stopRecorder: () => void, label = "Show"): Promise<{ release(): void } | { refused: string }> => {
+  // `label` is what the open mic shows as: "Microphone check" for setup's (setup.ts).
+  const holdMic = async (quietWithinMs: number, stopRecorder: () => void, label: string): Promise<{ release(): void } | { refused: string }> => {
     const elsewhere = (): string => (audioLease.isPhone() ? "the phone has the audio" : "another Mac has the audio");
     if (audioLease.isPhone() || !audioHolder.isLocal()) return { refused: elsewhere() };
     const deadline = Date.now() + quietWithinMs;
@@ -746,9 +713,9 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       ]),
     });
     if (reserved && quiet) {
-      narrating = true;
+      heldMic = label;
       normalMicReserved = false;
-      stopNarration = stopRecorder;
+      stopHeldMic = stopRecorder;
       // An open mic, shown as a dictation's is: the menu bar and the phone say it is recording. The queue's idle
       // puts the state back at rest once it is released.
       setState("recording", label);
@@ -757,8 +724,8 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         release: () => {
           if (!held) return;
           held = false;
-          narrating = false;
-          stopNarration = null;
+          heldMic = null;
+          stopHeldMic = null;
           // A Stop while it held the mic was for it, never for the turn after it.
           stopKey = false;
           releaseQueue();
@@ -771,59 +738,6 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     if (!reserved) return { refused: shuttingDown ? "conch is shutting down" : elsewhere() };
     return { refused: "conch is speaking" };
   };
-
-  /**
-   * Setup's practice turn (practice.ts): conch's own scripted line, then one mic window, with every gate a turn has.
-   *
-   * - The line goes through `speak`, the funnel every line takes: the open-mic check, the phone's and the other Mac's
-   *   holds, and the speech manager's gate. `volunteered`, because a person pressed Start: manual mode is conch not
-   *   speaking first, and this is the answer to a button, as a recite is.
-   * - The mic is `oneMicWindow`, whose reservation waits on `speech.quiescent()`: it opens once the line has finished
-   *   playing, never over it, and a cue or a canary still sounding holds it shut too.
-   * - The queue is held for the whole exchange, as a turn's is, so no announcement starts between the line and the mic.
-   * - The ear elsewhere (the phone, another Mac) refuses it, with why: the practice never takes the audio back.
-   * What it heard is returned, and nothing else happens to it.
-   */
-  const practice = async (turn: PracticeTurn): Promise<PracticeTurnOutcome> => {
-    if (shuttingDown) return { refused: "closing" };
-    if (audioLease.isPhone()) return { refused: "phone" };
-    if (!audioHolder.isLocal()) return { refused: "another-mac" };
-    const deadline = Date.now() + (turn.queueWithinMs ?? PRACTICE_QUEUE_WITHIN_MS);
-    // A session being read, or its reply listened for, holds the queue: the practice waits its turn.
-    while (eventQueue.busy() && !normalMicOpen() && turn.stillWanted() && Date.now() < deadline) await Bun.sleep(50);
-    if (normalMicOpen()) return { refused: "mic-open" };
-    if (!turn.stillWanted()) return { heard: null, interrupted: true };
-    let outcome: PracticeTurnOutcome = { refused: "busy" };
-    const taken = await eventQueue.exclusive(async () => {
-      outcome = await practiceExchange(turn);
-    });
-    return taken ? outcome : { refused: "busy" };
-  };
-
-  async function practiceExchange(turn: PracticeTurn): Promise<PracticeTurnOutcome> {
-    const pauseGeneration = pause.capture();
-    const wanted = (): boolean => !shuttingDown && !pause.interrupted(pauseGeneration) && turn.stillWanted();
-    // A stale press from a past exchange must not skip this one.
-    stopKey = false;
-    // D2: the mic will open once the line is read, so an idle-unloaded whisper-server reloads under it.
-    prewarmEar();
-    if (turn.line) {
-      resetReadingProgress();
-      turn.onLine?.();
-      await speak(turn.speechCfg, turn.line, turn.label, true);
-      if (!wanted() || consumeStopKey()) return { heard: null, interrupted: true };
-      // The phone may have claimed the audio while conch spoke: its ear, then, not this Mac's.
-      if (audioLease.isPhone()) return { refused: "phone" };
-      if (!audioHolder.isLocal()) return { refused: "another-mac" };
-    }
-    turn.onSpoken?.();
-    const heard = await oneMicWindow(turn.label, wanted, "practice", `listening → "${turn.label}" (practice: it goes nowhere)...`);
-    if (!wanted()) return { heard: null, interrupted: true };
-    const text = (heard ?? []).join(" ").replace(/\s+/g, " ").trim();
-    // Its length, never the words, as every heard line is logged.
-    log(text ? `practice heard ${text.length} chars` : "practice heard nothing");
-    return { heard: text || null };
-  }
 
   /**
    * Why `speak` would drop a line right now, or null when it will reach the
@@ -4458,12 +4372,12 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
   }
 
   /**
-   * One mic window that belongs to no delivery: a permission answer's, or setup's practice turn's. Its cue, then the one
+   * One mic window that belongs to no delivery: a permission answer's. Its cue, then the one
    * reservation every capture uses (`reserveNormalMic`, which waits on `speech.quiescent()`), then a dictation session
    * until the first words, a Stop, an error or silence. What was heard comes back to the caller, which decides what it
    * is; nothing here types, pastes or delivers. `tag` names the window in its traces and barriers.
    */
-  async function oneMicWindow(label: string, stillPending: () => boolean, tag: "permission" | "practice", announce: string): Promise<string[] | null> {
+  async function oneMicWindow(label: string, stillPending: () => boolean, tag: "permission", announce: string): Promise<string[] | null> {
     const pauseGeneration = pause.capture();
     const interruptedByPause = (): boolean => pause.interrupted(pauseGeneration);
     if (shuttingDown || !stillPending()) return null;
@@ -4664,11 +4578,11 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
   // Space remains the guaranteed stop while reciting or mid-exchange. Unlike
   // mode controls, it intentionally drains/submits every already-captured tail.
   function stop(src: string): void {
-    // Show's narration is the mic open: a Stop closes it. Its recorder stops, which releases the mic, and the Show's
-    // own stop still reads what it caught. Nothing is armed for a turn that comes after.
-    if (stopNarration) {
-      stopNarration();
-      log(`⏹ ${src} — closing the narration's mic`);
+    // A held mic is the mic open: a Stop closes it. Its recorder stops, which releases the mic, and its holder still
+    // reads what it caught. Nothing is armed for a turn that comes after.
+    if (stopHeldMic) {
+      stopHeldMic();
+      log(`⏹ ${src} — closing the held mic`);
       return;
     }
     stopKey = true;
@@ -4684,9 +4598,8 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     speak,
     speakBlocker,
     capturing: normalMicOpen,
-    holdNarration,
-    practice,
-    refusal: (event) => (event.type === "wake" && narrating ? "Show's narration has the mic" : null),
+    holdMic,
+    refusal: (event) => (event.type === "wake" && heldMic !== null ? `${heldMic} has the mic` : null),
     pendingApprovalFor: (sessionId, transcriptPath) => approvalShowing(sessionId, transcriptPath),
     heldQuestionFor: (sessionId) => heldQuestionShowing(sessionId),
     stop,

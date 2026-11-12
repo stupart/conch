@@ -409,7 +409,7 @@ const counted = (count: number, noun: string) => `${count} ${noun}${count === 1 
 /** His notes, a line each, as many as a quiet row holds. */
 const noteLines = (notes: readonly string[]) => notes.slice(0, 2).map((note) => quoted(note, 80));
 
-/** The line an agent answers a canvas by (`CanvasPrompt.answer`), and the canvas it names. */
+/** The line an agent answered a canvas by, as the Mac's canvas wrote it until it went (2026-11-11), and the canvas it names. */
 const CANVAS_ANSWER = /^To mark your answer on this canvas, frame your marks \{canvas: "([^"]+)"\}\.$/;
 /** A frame or a spoken line's time (`CanvasStoryboard.stamp`), then what is there. */
 const STAMP = String.raw`\[\d+:\d{2}\]`;
@@ -422,8 +422,8 @@ const VIDEO_UNHEARD = "No transcript: conch sends a video's frames, not its soun
 type ReceiptBlock = { end: number; receipt: SentReceipt };
 
 /**
- * A canvas sent as a still (`CanvasPrompt.text`): its flat.png on its own line, "[canvas] Tyler marked up …", his
- * notes by number, where the clean screen and the marks are, and how to answer on it.
+ * A canvas sent as a still, as the Mac's canvas wrote it until it went (2026-11-11): its flat.png on its own line,
+ * "[canvas] Tyler marked up …", his notes by number, where the clean screen and the marks are, and how to answer on it.
  */
 function canvasStill(lines: readonly string[], start: number): ReceiptBlock | null {
   const picture = lines[start]!;
@@ -453,8 +453,8 @@ function canvasStill(lines: readonly string[], start: number): ReceiptBlock | nu
 }
 
 /**
- * A Show (`CanvasStoryboard.prompt`): "[canvas] Tyler showed … (0:23).", its storyboard, a line a frame with what he
- * said there, the recording, and how to answer on its canvas. Every file in the one canvas folder.
+ * A Show, as the Mac wrote it until it went (2026-11-11): "[canvas] Tyler showed … (0:23).", its storyboard, a line a
+ * frame with what he said there, the recording, and how to answer on its canvas. Every file in the one canvas folder.
  */
 function canvasShow(lines: readonly string[], start: number): ReceiptBlock | null {
   const showed = /^\[canvas\] Tyler showed (.+) \((\d+:\d{2})\)\.$/.exec(lines[start]!);

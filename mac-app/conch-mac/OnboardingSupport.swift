@@ -14,7 +14,6 @@ import ServiceManagement
 struct SetupDaemonRequest: Encodable, Sendable {
     let kind: String
     var agent: String?
-    var via: String?
     var voice: String?
     var seconds: Double?
     var what: String?

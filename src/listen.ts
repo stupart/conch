@@ -426,10 +426,10 @@ function watchEndpoint(cfg: Config, capture: Capture): ReturnType<typeof setInte
 }
 
 /**
- * Show's narration (narration.ts): the same device, rate, format and gain as
- * every capture, but kept whole as a WAV — no `silence` endpointing, since the
- * pauses are what place the words against the recording — and `trim` ends it
- * at `seconds` even if nothing is left alive to stop it.
+ * A recording kept whole (setup's microphone check, setup.ts): the same
+ * device, rate, format and gain as every capture, but kept whole as a WAV — no
+ * `silence` endpointing — and `trim` ends it at `seconds` even if nothing is
+ * left alive to stop it.
  */
 export function narrationSoxArgs(cfg: Pick<Config, "micGainDb"> & Partial<Pick<Config, "soxBin">>, wav: string, seconds: number): string[] {
   return [
@@ -442,9 +442,9 @@ export function narrationSoxArgs(cfg: Pick<Config, "micGainDb"> & Partial<Pick<C
 }
 
 /**
- * A narration's recorder, owned like every other: shutdown, a phone claim and
- * an audio yield stop it with the rest (`killActiveRecorders`), and the next
- * daemon reaps it if this one dies hard. conch Microphone when it records
+ * A whole recording's recorder (the microphone check's), owned like every
+ * other: shutdown, a phone claim and an audio yield stop it with the rest
+ * (`killActiveRecorders`), and the next daemon reaps it if this one dies hard. conch Microphone when it records
  * (microphone-helper.ts), kept whole as a WAV and ended by its own
  * `--seconds`; sox otherwise.
  */

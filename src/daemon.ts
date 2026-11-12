@@ -3,7 +3,6 @@ import { BackgroundGuard, backgroundServersLook } from "./background-recovery.ts
 import { processLook } from "./process-look.ts";
 import { RestartGuard, bootTime } from "./restart-recovery.ts";
 import { dismissedWriter, loadDismissed } from "./dismissed-store.ts";
-import { defaultIsPidAlive } from "./codex-sessions.ts";
 import { ResourceLedger, withStillRunning, type LedgerSession } from "./resource-ledger.ts";
 import { controlResource, controlSession, handleResourceRequest, loadResourceMemory, psProcessTable, RESOURCE_SAMPLE_MS, ResourceSampler, stopResource } from "./resource-sampler.ts";
 import { readClaudeTitle } from "./claude-title.ts";
@@ -49,20 +48,12 @@ import {
 } from "./control-server.ts";
 export {
   type ConfigController,
-  type ConfigControlPersistence,
-  type SocketControlDispatch,
-  type SessionCommandPauseLifecycle,
   type SessionCommandDispatchOptions,
   dispatchSessionControlMessage,
   dispatchControlMessage,
-  type RuntimeControlDispatchOptions,
   dispatchRuntimeControlMessage,
-  type SocketTurnEventValidation,
-  type PublishedInjectScope,
-  scopePublishedInjectEvent,
   validateSocketTurnEvent,
   validateAndScopeSocketTurnEvent,
-  type TargetedAudioCommandContext,
   enrichTargetedAudioCommand,
   type SocketTurnEventCallbacks,
   isLightweightTargetedAudioCommand,
@@ -78,7 +69,6 @@ import {
 } from "./voice-loop.ts";
 export {
   type AudioSink,
-  type NameAddressRoute,
   type NameAddressRouteOptions,
   choiceReplyForConversation,
   downgradeTurnWithLiveBackgroundWork,
@@ -90,8 +80,7 @@ export {
   startsConversationByListening,
 } from "./voice-loop.ts";
 import { currentTurnText } from "./transcript-turn.ts";
-import {
-  existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { hostname, tmpdir, totalmem } from "node:os";
 import { deviceExecutionCatalog } from "./execution-model.ts";
@@ -135,19 +124,16 @@ import { hubCacheDir, modelCacheBytes, verifyModelCache } from "./voice-model-ca
 import { SpeechEngineManager, speechEngineStatusPath, type SpeechEngineStatus } from "./speech-engine.ts";
 import { conchTmux, resolveTmux } from "./tmux-binary.ts";
 import {
-  listenOnce,
   hasActiveRecorders,
   killActiveRecorders,
   spawnNarrationRecorder,
   stopSoxProcess,
 } from "./listen.ts";
-import { createNarration, NARRATION_QUIET_WITHIN_MS } from "./narration.ts";
 import { findTmuxPane, injectKeys, INJECT_DEBUG_LOG, INJECT_DEBUG_LOG_MAX_BYTES, readSessionScreen, readTerminalTab, revealSessionWindow, withUIHold } from "./inject.ts";
 import { createTerminalMirror } from "./terminal-mirror.ts";
 import { openSessionApp } from "./session-app-open.ts";
 import { adapterFor, transcriptFormatFor } from "./agent-adapter.ts";
 import { renameProviderSession } from "./provider-rename.ts";
-import { classify } from "./commands.ts";
 import {
   describeNotice,
   fetchLatestVersion,
@@ -256,7 +242,7 @@ import {
 } from "./codex-threads.ts";
 import { watchChangingPaths, watchSessionSources } from "./session-watch.ts";
 import { settleKeptFiles } from "./kept-file.ts";
-import { daemonStateFromUnknown, readState, writeState } from "./daemon-state.ts";
+import { readState, writeState } from "./daemon-state.ts";
 export { daemonStateFromUnknown } from "./daemon-state.ts";
 import {
   createPhoneBridgeApplication,
@@ -297,7 +283,6 @@ import {
   onLiveDataChange,
   openTheaterReview,
   LEGACY_REVIEWS_FILE,
-  publishDictation,
   SessionsFilePublisher,
   noticeableState,
   REVIEWS_FILE,
@@ -319,7 +304,7 @@ import { hasSidebarGroups, readSidebarGroups, writeSidebarGroups, type SidebarGr
 import { transcriptFolder } from "./review-roots.ts";
 import { defaultCodexDir, readCodexAccounts, addCodexAccount, removeCodexAccount, requireCodexAccount, cachedCodexAccount, invalidateCodexAccount, codexAccountForLaunch } from "./codex-accounts.ts";
 import { installProfileSignal } from "./daemon-profile.ts";
-import { claudeAccountForLaunch, offeredClaudeAccounts, readClaudeAccounts, addClaudeAccount, removeClaudeAccount, requireClaudeAccount, cachedClaudeAccountStatus, readClaudeAccountStatus, invalidateClaudeAccountStatus, type ClaudeAccountStatus } from "./claude-accounts.ts";
+import { claudeAccountForLaunch, offeredClaudeAccounts, readClaudeAccounts, addClaudeAccount, removeClaudeAccount, requireClaudeAccount, cachedClaudeAccountStatus, readClaudeAccountStatus, invalidateClaudeAccountStatus } from "./claude-accounts.ts";
 import { codexHookCommand, conchInvocation, runInstall as installAccountHooks, repairConchHooks } from "./install.ts";
 import { setUpSessionBrowsers } from "./browser-open.ts";
 import {
@@ -417,9 +402,6 @@ import {
 } from "./session-actions-overlay.ts";
 import { createPublishThrottle } from "./publish-throttle.ts";
 import {
-  readResumableSessionsResult,
-} from "./resumable.ts";
-import {
   readAgentCapabilities,
   type AgentCapabilityObservation,
 } from "./agent-capabilities.ts";
@@ -428,8 +410,6 @@ import { AgentUpdater, agentUpdaterDeps } from "./agent-updates.ts";
 import { accessibilityTrusted } from "./accessibility.ts";
 // First-run setup's requests (setup.ts), over what `conch doctor`, `conch install` and `install-plugin` already do.
 import { createSetup, loginShellHas, MIC_CHECK_QUIET_WITHIN_MS, runInstallerInLoginShell } from "./setup.ts";
-// Setup's practice turn (practice.ts): conch's own session, spoken and heard through the voice loop, echoed, never delivered.
-import { createPractice, practiceGate, PRACTICE_LABEL, PRACTICE_SESSION_ID, type Practice } from "./practice.ts";
 import { resolveAgentBinaries } from "./doctor-checks.ts";
 import { codexHooksAreWiredAt, isConchHookCommand, runCodexInstall, runInstall } from "./install.ts";
 import { appendCapped, childCeilingFrom, installChildCeiling, RESTART_POLICY, runawayGuards } from "./runaway.ts";
@@ -1065,7 +1045,6 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   // The ledger owns the per-session/window runtime facts, but exposes the raw
   // collections so render and controller paths keep their existing shape.
   const {
-    injectedAt,
     pending,
     sessionStates,
     eventOrder,
@@ -1719,16 +1698,13 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     if ((event.type === "session-start" || (event.type === "working" && event.claudeSignIn)) && sessionSignIns.note(event.sessionId, event.claudeSignIn)) {
       void renderSessionPanel();
     }
-    // Setup's practice session is conch's own (practice.ts): anything naming it is the practice's to answer, and never
-    // reaches the queue, the voice loop or a terminal, whichever door it came in by.
-    if (event.sessionId === PRACTICE_SESSION_ID) return practice?.turn(event);
     // A Codex turn its Stop hook and the rollout watch both report is said by whichever came first. One that carries
     // a review still goes through: the filing is only on the hook's.
     if (event.type === "turn-end" && event.turnId && !codexTurnsSaid.first(event.sessionId, event.turnId, event) && !event.review) {
       return log(`"${event.label}": ${event.pid === undefined ? "its Stop hook" : "the rollout watch"} said this Codex turn already`);
     }
     breadcrumb(`hook: ${event.type} for "${event.label}"`);
-    // Turned away rather than queued: a dictation while Show's narration has the mic (`VoiceLoop.refusal`).
+    // Turned away rather than queued: a dictation while setup's microphone check has the mic (`VoiceLoop.refusal`).
     const refused = voice.refusal(event);
     if (refused) return log(`refused a dictation for "${event.label || "the last session"}" — ${refused}`);
     warmTranscript(event.transcriptPath);
@@ -2028,8 +2004,6 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     }
     return applied.changed;
   }
-  /** Setup's practice turn (practice.ts), made once the voice loop is: its session merged into every published state. */
-  let practice: Practice | null = null;
   /**
    * What is on screen and which session owns it (docs/screen-context.md). Resolved against the
    * last published rows — their folders and held deliverables — so it names only sessions the
@@ -2913,8 +2887,6 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       (voice.current().reciting ?? ledger.lastTurn)?.sessionId ?? null,
       Date.now(),
     );
-    // The practice row's voice follows the live state, which moved.
-    if (practice) lastPublishedPanelState = practice.publish(lastPublishedPanelState);
     publishedStateWriter.request();
   }
 
@@ -3336,8 +3308,6 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       const outside = elsewhere.published();
       if (outside.length) lastPublishedPanelState.elsewhere = outside;
       if (hasSidebarGroups(sidebarLayout)) lastPublishedPanelState.sidebarGroups = sidebarLayout;
-      // Setup's practice session, first among the rows while it runs, and `features.practice` always (practice.ts).
-      if (practice) lastPublishedPanelState = practice.publish(lastPublishedPanelState);
       // Each working row's line, through its throttle: a fresh build carries none until this puts them back.
       applyLiveActivity();
       publishedStateWriter.request();
@@ -4749,17 +4719,6 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     const exhaustive: never = message;
     return exhaustive;
   }
-  // Show's narration: recorded here, never by the app, so the mic keeps one owner and its one gate (narration.ts).
-  const narration = createNarration({
-    hold: (stopRecorder) => voice.holdNarration(NARRATION_QUIET_WITHIN_MS, stopRecorder),
-    record: (wav, seconds) => {
-      const proc = spawnNarrationRecorder(cfg, wav, seconds);
-      return { exited: proc.exited, stop: () => stopSoxProcess(proc) };
-    },
-    transcribe: (wav) => transcribeWavSegments(cfg, wav),
-    root: join(conchHome(), ".cache/conch/canvas"),
-    log,
-  });
   const codexDir = join(conchHome(), ".codex");
   const setup = createSetup({
     claudeDir: cfg.claudeDir,
@@ -4790,7 +4749,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       : voice.speak({ ...cfg, ttsVoices: [voiceId] }, text, "", true))),
     audioElsewhere: () => (audioLease.isPhone() ? "phone" : audioHolder.isLocal() ? null : "another-mac"),
     mic: {
-      hold: (stop) => voice.holdNarration(MIC_CHECK_QUIET_WITHIN_MS, stop, "Microphone check"),
+      hold: (stop) => voice.holdMic(MIC_CHECK_QUIET_WITHIN_MS, stop, "Microphone check"),
       record: (wav, seconds) => {
         const proc = spawnNarrationRecorder(cfg, wav, seconds);
         return { exited: proc.exited, stop: () => stopSoxProcess(proc) };
@@ -4801,36 +4760,6 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     },
     retry: (what) => (what === "speech" ? speechEngine.retry() : voiceEnv?.retry() ?? false),
   });
-  // Setup's practice turn (practice.ts): the voice loop speaks its line and opens its mic through its own gates; what it
-  // hears is echoed into the practice session's conversation. Its card lives in conch's own folder, emptied at start.
-  practice = createPractice({
-    dir: join(conchHome(), ".cache/conch/practice"),
-    now: Date.now,
-    log,
-    audioElsewhere: () => (audioLease.isPhone() ? "phone" : audioHolder.isLocal() ? null : "another-mac"),
-    recognitionReady: () => speechEngineStatus?.state === "ready",
-    // Only the worker speaks with the natural voices; `say` and a server of the person's own are what they are.
-    naturalVoicesReady: () => cfg.ttsEngine !== "worker" || naturalVoices?.state === "ready",
-    voice: cfg.ttsVoices[0],
-    turn: ({ line, systemVoice, stillWanted, onLine, onSpoken }) => voice.practice({
-      label: PRACTICE_LABEL,
-      ...(line ? { line } : {}),
-      // A ring voice; the Mac's own while the natural voices aren't ready, asked for as itself so a download still
-      // going reports nothing as a failure.
-      speechCfg: systemVoice ? { ...cfg, ttsEngine: "say" } : { ...cfg, ttsVoices: cfg.ttsVoices.slice(0, 1) },
-      stillWanted,
-      onLine,
-      onSpoken,
-    }),
-    hush: () => speech.cancelCurrent(),
-    dictated: (text) => publishDictation(text, PRACTICE_SESSION_ID),
-    changed: () => {
-      if (!lastPublishedPanelState) return; // the first render publishes it
-      lastPublishedPanelState = practice!.publish({ ...lastPublishedPanelState, ts: Date.now() });
-      publishedStateWriter.request();
-    },
-  });
-  const practiceTurns = practice;
   const controlServer = createControlServer({
     ownership,
     socketPath: cfg.socketPath,
@@ -4857,23 +4786,19 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         set: writeSetting,
         unset: unsetSetting,
       }),
-      session: (message, delivered) => (practiceTurns.owns(message.sessionId)
-        ? practiceTurns.sessionCommand(message)
-        : applySessionCommand(message, sessionCommandDispatchOptions, delivered)),
+      session: (message, delivered) => applySessionCommand(message, sessionCommandDispatchOptions, delivered),
       runtime: (message) => applyRuntimeControlMessage(message, runtimeControlDispatchOptions),
-      // The practice session's events stop at the practice (practice.ts), before anything else reads them.
-      turn: practiceGate(practiceTurns, (event) => dispatchSocketTurnEvent(event, socketTurnCallbacks)),
+      turn: (event) => dispatchSocketTurnEvent(event, socketTurnCallbacks),
       device: deviceCommand,
     },
-    // `conch message`: the messenger is made below the server, and delivers through the same practice gate and turn
-    // dispatch as `turn` above.
+    // `conch message`: the messenger is made below the server, and delivers through the same turn dispatch as `turn`
+    // above.
     peerMessages: { send: (request) => peerMessenger.send(request) },
     onDelivery: rememberDelivery,
     // The Mac app heard from (its health check every 5 s, a screen report): `surfaces.mac` for a publication.
     onMacApp: () => macApp.seen(Date.now()),
     // Resolving can wait on a port lookup now; whatever goes wrong there is logged, never thrown at the daemon.
     onScreenObservation: (observation) => void screen.observe(observation).catch((error) => log(`screen: ${error}`)),
-    narration,
     onReviewPreview: (message) => windowPreviews.answer(message),
     failureTickets: failureDesk,
     notices: handleNoticeRequest,
@@ -4899,7 +4824,6 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     pageCapture,
     browser,
     setup,
-    practice: practiceTurns,
   });
   // `conch message` (peer-message-send.ts): from a session the caller's process belongs to, to one it names among
   // the rows conch publishes, through the inject a send from the apps takes, scoped to that row as the socket scopes it.
@@ -4926,7 +4850,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         label: row?.label, cwd: session?.cwd, pid: session?.pid, transcriptPath: findTranscript(cfg.claudeDir, event.sessionId),
       });
       return scoped.ok
-        ? practiceGate(practiceTurns, (scopedEvent) => dispatchSocketTurnEvent(scopedEvent, socketTurnCallbacks))(scoped.value)
+        ? dispatchSocketTurnEvent(scoped.value, socketTurnCallbacks)
         : { delivered: false, reason: "session-not-routable" };
     },
     replyCursor: async (session) => {
@@ -4955,8 +4879,6 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     failureDesk.stop();
     clearInterval(browserPrune);
     clearInterval(browserAsks);
-    // The practice session and its card go with the daemon: nothing of it is left for the next one.
-    practice?.stop("conch is closing");
     // An approval inside its undo window reaches nobody now: said in the log (review-approval.ts).
     heldApprovals.dropAll("conch is closing");
     // An agent's installer still running goes too, its whole process group: nothing is left installing unwatched.

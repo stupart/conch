@@ -7,14 +7,19 @@ import XCTest
 final class SidebarRowTests: XCTestCase {
     // MARK: The second line
 
+    /// A row's second line in words, for a row with no activity.
+    private func line(message: String?, blockedOn: String?, startedBy: String?) -> String? {
+        SidebarRowText.secondLine(message: message, blockedOn: blockedOn, activity: nil, startedBy: startedBy)?.text
+    }
+
     func testOnlyWhatAsksSomethingEarnsASecondLine() {
-        XCTAssertNil(SidebarRowText.subtitle(message: nil, blockedOn: nil, startedBy: nil))
+        XCTAssertNil(line(message: nil, blockedOn: nil, startedBy: nil))
         XCTAssertEqual(
-            SidebarRowText.subtitle(message: nil, blockedOn: "Allow rm -rf build/ in morrow-site?", startedBy: nil),
+            line(message: nil, blockedOn: "Allow rm -rf build/ in morrow-site?", startedBy: nil),
             "Allow rm -rf build/ in morrow-site?"
         )
         XCTAssertEqual(
-            SidebarRowText.subtitle(message: nil, blockedOn: nil, startedBy: "Sidebar names redesign"),
+            line(message: nil, blockedOn: nil, startedBy: "Sidebar names redesign"),
             "started by Sidebar names redesign"
         )
     }
@@ -22,15 +27,15 @@ final class SidebarRowTests: XCTestCase {
     /// conch's own word about the row (a failed rename) outranks the question, which outranks the starter.
     func testConchsWordComesFirstThenTheQuestionThenTheStarter() {
         XCTAssertEqual(
-            SidebarRowText.subtitle(message: "Couldn't rename", blockedOn: "Allow rm?", startedBy: "Parent"),
+            line(message: "Couldn't rename", blockedOn: "Allow rm?", startedBy: "Parent"),
             "Couldn't rename"
         )
-        XCTAssertEqual(SidebarRowText.subtitle(message: nil, blockedOn: "Allow rm?", startedBy: "Parent"), "Allow rm?")
+        XCTAssertEqual(line(message: nil, blockedOn: "Allow rm?", startedBy: "Parent"), "Allow rm?")
     }
 
     func testBlankWordsAreNoLine() {
-        XCTAssertNil(SidebarRowText.subtitle(message: "  ", blockedOn: "\n", startedBy: ""))
-        XCTAssertEqual(SidebarRowText.subtitle(message: " ", blockedOn: " Allow rm? ", startedBy: nil), "Allow rm?")
+        XCTAssertNil(line(message: "  ", blockedOn: "\n", startedBy: ""))
+        XCTAssertEqual(line(message: " ", blockedOn: " Allow rm? ", startedBy: nil), "Allow rm?")
     }
 
     /// A background agent Claude Code parked when it asked (2026-10-24) says so before its question, and is still a
@@ -104,7 +109,7 @@ final class SidebarRowTests: XCTestCase {
             SidebarRowText.SecondLine(text: "started by Parent", kind: .startedBy)
         )
         // The old rule's answers are unchanged for every row with no activity.
-        XCTAssertEqual(SidebarRowText.subtitle(message: nil, blockedOn: nil, startedBy: "Parent"), "started by Parent")
+        XCTAssertEqual(line(message: nil, blockedOn: nil, startedBy: "Parent"), "started by Parent")
     }
 
     // MARK: The tooltip

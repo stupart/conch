@@ -94,7 +94,6 @@ import {
   deliverableKindRefusal,
   FOCUS_MAX,
   folderRefusal,
-  isDeliverableKind,
   LINKLESS_DELIVERABLE_KINDS,
   readDeliverableKind,
 } from "./deliverables.ts";
@@ -3006,13 +3005,6 @@ export function createMcpToolHandlers(
 }
 
 export type JsonRpcId = string | number | null;
-
-export interface JsonRpcRequest {
-  jsonrpc: "2.0";
-  id?: JsonRpcId;
-  method: string;
-  params?: unknown;
-}
 
 export interface JsonRpcResponse {
   jsonrpc: "2.0";

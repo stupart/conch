@@ -40,13 +40,11 @@ import {
 import type { ResumableSessionsRead } from "./resumable.ts";
 import { validateScreenObservation, type ScreenObservation } from "./screen-context.ts";
 import type { AgentCapabilitiesRead } from "./agent-capabilities.ts";
-import { decodeNarrationRequest, type Narration, type NarrationReply } from "./narration.ts";
 import type { AgentInstall } from "./agent-install.ts";
 import type { TerminalFocusReply, TerminalScreenReply } from "./terminal-mirror.ts";
 import type { SessionAppOpenReply } from "./session-app-open.ts";
 import { applyPlan, planToggle, rollbackFile, type ConfigWriteHomes, type ConfigWriteIo } from "./config-write.ts";
 import { decodeSetupRequest, type Setup, type SetupReply } from "./setup.ts";
-import { decodePracticeRequest, practiceRefusal, type Practice, type PracticeReply } from "./practice.ts";
 import { breadcrumb } from "./loop-watchdog.ts";
 import type { PageCaptureService } from "./page-capture.ts";
 import { decodeBrowserMessage, type BrowserReply, type BrowserService } from "./browser-workbench.ts";
@@ -1356,8 +1354,6 @@ export interface ControlServerOptions {
   onDelivery?(delivery: PublishedDelivery): void;
   /** Told what an observer saw on screen (`screen-observation`), once it has been validated. */
   onScreenObservation?(observation: ScreenObservation): void;
-  /** Show's narration (narration.ts): a `narration-start` that is taken keeps its connection open, as the lease. */
-  narration?: Narration;
   /**
    * Failure tickets (failure-tickets.ts): Settings › Failures' list and its actions, and `conch failures`. Absent: the
    * request is answered as unavailable.
@@ -1411,8 +1407,6 @@ export interface ControlServerOptions {
   browser?: BrowserService;
   /** First-run setup's requests (setup.ts): agents found and connected, a voice sample, the microphone check. */
   setup?: Setup;
-  /** Setup's practice turn (practice.ts): a `practice-start` that is taken keeps its connection open, as the lease. */
-  practice?: Practice;
   ownership?: SocketOwnership;
 }
 
@@ -1711,30 +1705,6 @@ export function createControlServer(options: ControlServerOptions): ControlServe
           sock.end(JSON.stringify(answer) + "\n");
           return;
         }
-        // Show's narration names a canvas, not a session. A start that is taken answers and stays open: the app holds
-        // this connection for as long as it narrates, and its going away — a crash, a quit — ends the narration.
-        const narration = decodeNarrationRequest(body);
-        if (narration) {
-          let reply: NarrationReply;
-          if ("error" in narration) reply = { kind: "narration-error", error: narration.error };
-          else if (!options.narration) reply = { kind: "narration-error", error: "narration is unavailable" };
-          else if (narration.kind === "narration-start") {
-            // `end`: the app's side is gone, however it went — a quit, a crash, its own half-close (measured: Bun
-            // emits it for each, and `close` only when the socket is torn down).
-            const closed = new Promise<void>((resolve) => sock.once("end", () => resolve()));
-            reply = await options.narration.start(narration.canvasId, { closed, end: () => void sock.end() });
-            if (reply.kind === "narration-started") {
-              sock.write(JSON.stringify(reply) + "\n");
-              return;
-            }
-          } else {
-            reply = narration.kind === "narration-stop"
-              ? await options.narration.stop(narration.canvasId)
-              : await options.narration.cancel(narration.canvasId);
-          }
-          sock.end(JSON.stringify(reply) + "\n");
-          return;
-        }
         // A link a session opened (browser-open.ts, agent B's `open` shim): a tab of the session that ran it, found from
         // `callerPid`, or a browser-error, on which the shim opens it in the default browser instead. Answered within
         // the shim's wait (`BROWSER_OPEN_REPLY_MS`): the Workbench bounds its own lookup (`BROWSER_OPEN_RESOLVE_MS`).
@@ -1799,7 +1769,7 @@ export function createControlServer(options: ControlServerOptions): ControlServe
         }
         // First-run setup (setup.ts) names an agent or the microphone, never a session. Its long requests stream lines
         // before the reply (an installer's last words, the microphone's level), and a microphone check stops when the
-        // app that asked goes away, as a narration's lease does.
+        // app that asked goes away.
         const setupRequest = decodeSetupRequest(body);
         if (setupRequest) {
           let reply: SetupReply;
@@ -1813,29 +1783,6 @@ export function createControlServer(options: ControlServerOptions): ControlServe
             reply = await options.setup.handle(setupRequest, (line) => {
               if (!sock.destroyed) sock.write(JSON.stringify(line) + "\n");
             }, closed);
-          }
-          sock.end(JSON.stringify(reply) + "\n");
-          return;
-        }
-        // Setup's practice turn (practice.ts) names no session the app picked: conch's own. A start that is taken answers
-        // and stays open, as a narration's does: the app holds this connection for as long as its tour runs, and its going
-        // away (a quit, a crash) ends the practice and removes it.
-        const practiceRequest = decodePracticeRequest(body);
-        if (practiceRequest) {
-          let reply: PracticeReply;
-          if (!options.practice) reply = { kind: "practice-error", reason: "unavailable", error: practiceRefusal("unavailable") };
-          else if (practiceRequest.kind === "practice-start") {
-            const closed = new Promise<void>((resolve) => {
-              sock.once("end", () => resolve());
-              sock.once("close", () => resolve());
-            });
-            reply = await options.practice.handle(practiceRequest, { closed, end: () => void sock.end() });
-            if (reply.kind === "practice-started") {
-              sock.write(JSON.stringify(reply) + "\n");
-              return;
-            }
-          } else {
-            reply = await options.practice.handle(practiceRequest);
           }
           sock.end(JSON.stringify(reply) + "\n");
           return;

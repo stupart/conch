@@ -67,8 +67,8 @@ export function forgetSox(pid: number, path = SOX_RECORD_PATH): void {
 }
 
 /**
- * Whether this argv is a conch capture: `soxCaptureArgs` or `narrationSoxArgs`
- * in listen.ts, or conch Microphone (the app's helper, or its installed copy:
+ * Whether this argv is a conch capture: `soxCaptureArgs` in listen.ts, or
+ * conch Microphone (the app's helper, or its installed copy:
  * microphone-helper.ts) as listen.ts runs it, as `ps -o command=` prints it. A pid that was reused by
  * anything else — even another sox, or seashell's own recorder — is not ours
  * to kill. conch Microphone also ends itself once its stream has no reader,
@@ -78,8 +78,7 @@ export function isConchSox(command: string): boolean {
   if (/\/(conch-microphone|conch Microphone) --sample-rate 16000( --no-disclaim)?( --seconds \d+)?$/.test(command)) return true;
   // The pre-roll stage and `-l` are optional: a daemon from before conch ended
   // captures itself (2026-11-11) may have left one of its recorders behind.
-  return /(^|\/)sox -d -q -r 16000 -c 1 -b 16 -e signed-integer -t raw \/tmp\/conch-\S+ (gain \S+ )?(channels 1 remix 1 1 delay 0 [0-9.]+ )?silence (-l )?1 0\.15 /.test(command)
-    || /(^|\/)sox -d -q -r 16000 -c 1 -b 16 -e signed-integer -t wav \/.*\/\.cache\/conch\/canvas\/[0-9A-Fa-f-]{36}\/narration\.wav (gain \S+ )?trim 0 \d+$/.test(command);
+  return /(^|\/)sox -d -q -r 16000 -c 1 -b 16 -e signed-integer -t raw \/tmp\/conch-\S+ (gain \S+ )?(channels 1 remix 1 1 delay 0 [0-9.]+ )?silence (-l )?1 0\.15 /.test(command);
 }
 
 function psCommand(pid: number): string | null {

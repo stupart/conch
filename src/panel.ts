@@ -18,7 +18,6 @@ import type { PublishedShowing } from "./screen-context.ts";
 import type { NaturalVoicesStatus } from "./voice-env.ts";
 import type { SpeechEngineStatus } from "./speech-engine.ts";
 import type { PublishedPhone } from "./phone-setup.ts";
-import type { PublishedPractice } from "./practice.ts";
 import type { PublishedSessionSettings, SessionSettingsCatalog } from "./session-settings.ts";
 import type { GuardTrip } from "./runaway.ts";
 import { deviceExecutionCatalog, sessionExecution, type ExecutionCatalog, type SessionExecution } from "./execution-model.ts";
@@ -284,7 +283,7 @@ export interface PublishedSessionRow {
    * phone that assumes one ceiling either wastes bytes or throws away detail
    * the model would have used.
    */
-  /** `conch` is conch's own practice session (`practice.ts`), which has no agent and no terminal. */
+  /** `conch` was conch's own practice session, which had no agent and no terminal; setup's practice turn is gone. */
   backend?: "claude" | "codex" | "conch";
   /** Which account it is on, in words: its profile's name, or its sign-in's (`claudeSignInId`). */
   accountLabel?: string;
@@ -469,8 +468,6 @@ export interface PublishedState {
   features: {
     deliverables: 4;
     viewedState: 1;
-    /** Setup's practice turn (`practice.ts`): `practice-start`, `-listen`, `-stop`. Absent from a daemon without one. */
-    practice?: 1;
     /** `set-settings`, and `rows[].settings` / `sessionSettings` (session-settings.ts). */
     sessionSettings?: 1;
     sessionHosts?: 1;
@@ -558,11 +555,6 @@ export interface PublishedState {
    * Absent from older daemons, which also have no `set-settings` (`features.sessionSettings`).
    */
   sessionSettings?: SessionSettingsCatalog;
-  /**
-   * Setup's practice turn while one runs (`practice.ts`): where it is, what it heard, and why a go didn't run. Its
-   * session is the first row. Absent with none running, and from older daemons.
-   */
-  practice?: PublishedPractice;
   /**
    * How many pieces of sea glass approving results has earned, ever (`SessionLedger.seaGlass`): always present, 0 when
    * none. 2026-10-05, Tyler's decision: one per approval, one back for an approval undone within 10 s. The name is

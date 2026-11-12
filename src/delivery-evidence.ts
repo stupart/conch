@@ -203,14 +203,3 @@ function promptText(entry: any): string {
     .map((block: any) => block.text).join("\n");
 }
 
-/** The parts of a delivery's evidence the outcome is decided from, in order of strength. */
-export type DeliveryEvidence =
-  /** The agent wrote the prompt down, or its hook said it took these words. */
-  | "submitted"
-  /** The agent queued these words behind its running turn. */
-  | "queued"
-  /** The words left the input box after the Return; nothing has written them down yet. */
-  | "box-cleared"
-  /** The words are still in the input box. */
-  | "in-box"
-  | null;

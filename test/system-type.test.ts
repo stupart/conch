@@ -42,14 +42,6 @@ describe("no source names a face other than the system's", () => {
       expect(sources(tree).filter((path) => /helvetica/i.test(read(path)))).toEqual([]);
     });
   }
-
-  test("the pages conch writes itself ask for the system face", () => {
-    // The welcome card (`conch practice`) is HTML that conch renders into its own review pane.
-    const practice = read("src/practice.ts");
-    expect(practice).not.toMatch(/helvetica/i);
-    expect(practice).toContain("font: 15px/1.5 -apple-system, system-ui, sans-serif;");
-    expect(practice).toContain("kbd { font: 600 12px/1 -apple-system, system-ui, sans-serif;");
-  });
 });
 
 describe("the Mac window's type is SF", () => {
@@ -92,7 +84,6 @@ test("type drawn with Core Text is SF, through one helper", () => {
   expect(tokens).toContain("static func coreText(size: CGFloat, bold: Bool = false) -> CTFont {");
   expect(tokens).toContain("CTFontCreateUIFontForLanguage(bold ? .emphasizedSystem : .system, size, nil)");
   const canvas = read("design/ConchDesign/Sources/ConchDesign/Canvas.swift");
-  expect(canvas).toContain("let font = ConchType.coreText(size: size)");
   expect(canvas).toContain("let font = ConchType.coreText(size: size, bold: true)");
   const storyboard = read("design/ConchDesign/Sources/ConchDesign/VideoStoryboard.swift");
   expect(storyboard).toContain("let font = ConchType.coreText(size: stampPoints)");

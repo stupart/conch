@@ -20,8 +20,6 @@ import { dirname, join } from "node:path";
 import { conchHome } from "./home.ts";
 import { decodeBrowserMessage } from "./browser-workbench.ts";
 import { decodeBrowserOpenRequest } from "./browser-open.ts";
-import { decodeNarrationRequest } from "./narration.ts";
-import { decodePracticeRequest } from "./practice.ts";
 import { decodeSetupRequest } from "./setup.ts";
 import { checkLocalFile } from "./snippet.ts";
 import { tempFolders } from "./temp-folders.ts";
@@ -180,12 +178,11 @@ function historyRequest(pathname: string, value: unknown): ReturnType<typeof val
 }
 
 /**
- * What only the Mac app sends: Show's narration (its lease is a local connection held open, which a
- * phone never holds), its answer to a window snapshot the daemon asked it for, what it saw on
- * screen, first-run setup (an agent's official installer, conch's hooks written into an agent's own
- * settings, the microphone check, a voice sample, a download retried) and setup's practice turn. A
- * phone forwarding one would be speaking as the Mac app: a paired phone could run `curl … | bash`
- * on the Mac, rewrite `~/.claude/settings.json`, or stop a practice the Mac is running.
+ * What only the Mac app sends: its answer to a window snapshot the daemon asked it for, what it saw
+ * on screen, and first-run setup (an agent's official installer, conch's hooks written into an
+ * agent's own settings, the microphone check, a voice sample, a download retried). A phone
+ * forwarding one would be speaking as the Mac app: a paired phone could run `curl … | bash` on the
+ * Mac, or rewrite `~/.claude/settings.json`.
  *
  * An agent's page capture (`page-capture`) and the Mac app's answers to it (`page-capture-answer`) are on this side too:
  * a capture draws an address with the cookies of conch's own review pane, where the user may be signed in, and leaves
@@ -204,7 +201,7 @@ function historyRequest(pathname: string, value: unknown): ReturnType<typeof val
  * a remove or a setup changes which accounts this Mac's sessions can run on.
  *
  * The requests with a decoder are refused by that decoder, the one the control server dispatches
- * with (`createControlServer`), so a kind added to setup's or the practice's is refused here the day
+ * with (`createControlServer`), so a kind added to setup's is refused here the day
  * it is added. test/phone-mac-only.test.ts holds every branch the control server takes before a
  * session is resolved to one side or the other.
  */
@@ -212,9 +209,7 @@ export const MAC_APP_ONLY_KINDS: ReadonlySet<string> = new Set(["review-preview"
 export const MAC_APP_ONLY_DECODERS: Readonly<Record<string, (value: unknown) => unknown>> = {
   decodeBrowserMessage,
   decodeBrowserOpenRequest,
-  decodeNarrationRequest,
   decodeSetupRequest,
-  decodePracticeRequest,
   // Failure tickets hold every session's names, folders and words, and Fix starts a session: the Mac's (failure-tickets.ts).
   decodeFailureTicketRequest,
   // Notices (notify-user.ts): an APNs key goes from the Mac app to the Keychain and never through a phone or the relay,

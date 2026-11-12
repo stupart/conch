@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { createControlServer, type ControlServer } from "../src/control-server.ts";
 import type { TurnEvent } from "../src/hook.ts";
 import { createPhoneBridgeApplication, forwardToDaemonSocket, MAC_APP_ONLY_KINDS, PHONE_READ_REPLY_MAX_BYTES } from "../src/phone-bridge.ts";
-import { PRACTICE_REQUEST_KINDS } from "../src/practice.ts";
 import { SETUP_REQUEST_KINDS } from "../src/setup.ts";
 import { NOTICE_REQUEST_KINDS } from "../src/notice-wire.ts";
 import {
@@ -308,7 +307,7 @@ describe("Mac phone relay adapter", () => {
     const forwarded: string[] = [];
     const h = await connectedHarness({ forward: async (line) => { forwarded.push(line); return JSON.stringify({ kind: "ack" }); } });
     // Notices too (notify-user.ts): an APNs key never crosses the relay, and a phone sends itself no notices.
-    const kinds = [...SETUP_REQUEST_KINDS, ...PRACTICE_REQUEST_KINDS, "narration-start", ...MAC_APP_ONLY_KINDS, ...NOTICE_REQUEST_KINDS];
+    const kinds = [...SETUP_REQUEST_KINDS, ...MAC_APP_ONLY_KINDS, ...NOTICE_REQUEST_KINDS];
     let sequence = 0;
     const send = async (body: unknown) => {
       const sealed = await h.phone.seal(
@@ -319,7 +318,7 @@ describe("Mac phone relay adapter", () => {
       return responseStatus(await openSent(h.phone, h.sent));
     };
     for (const kind of kinds) {
-      expect(await send({ kind, agent: "claude", canvasId: "0f3c1a2b-4d5e-4f60-8a7b-9c0d1e2f3a4b" }), kind).toBe(403);
+      expect(await send({ kind, agent: "claude" }), kind).toBe(403);
       expect(await send({ kind: "control-envelope", body: { kind, agent: "codex" } }), `enveloped ${kind}`).toBe(403);
     }
     expect(forwarded).toEqual([]);

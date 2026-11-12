@@ -431,7 +431,6 @@ If you can't publish, end your reply with one \`conch:review <summary> | <link>\
 };
 
 export type AgentInstructions = typeof AGENT_INSTRUCTIONS;
-export type ConchToolName = keyof AgentInstructions["tools"];
 
 /** The command a tool moved to, by the tool's name; undefined for one that didn't. */
 export function commandForTool(tool: string, commands: readonly AgentCommandText[] = AGENT_COMMANDS): AgentCommandText | undefined {

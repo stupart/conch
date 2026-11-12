@@ -12,9 +12,9 @@
  * Nothing here is new machinery. Agents are found as `conch doctor` finds them (`resolveAgentBinaries`), wired as
  * `conch install` and `conch install-plugin` wire them (`runInstall`, `runCodexInstall`, `runInstallPlugin`), and read
  * back with the same shapes (`isConchHookCommand`, `codexHooksAreWiredAt`, `pluginInstalledFor`). The microphone is held
- * through the voice loop's one gate, as Show's narration holds it (`VoiceLoop.holdNarration`), recorded with seashell's
- * recorder (`spawnNarrationRecorder`: conch Microphone, or sox) and transcribed by whisper (`transcribeWavSegments`): never Apple's speech APIs,
- * and never while conch is speaking.
+ * through the voice loop's one gate (`VoiceLoop.holdMic`), recorded with seashell's recorder (`spawnNarrationRecorder`:
+ * conch Microphone, or sox) and transcribed by whisper (`transcribeWavSegments`): never Apple's speech APIs, and never
+ * while conch is speaking.
  *
  * A row in setup goes green on the first real hook event from that agent, not on the file write: `noteTurn` hears every
  * hook-shaped event, and the agent it came from is remembered in `setup.json`, beside the time conch wired it.
@@ -259,7 +259,7 @@ export function wavDataOffset(head: Uint8Array): number | null {
   return null;
 }
 
-/** The microphone check's words for a refused hold (`VoiceLoop.holdNarration`), which a person can act on. */
+/** The microphone check's words for a refused hold (`VoiceLoop.holdMic`), which a person can act on. */
 export function micRefusal(refused: string): { error: string; reason: string } {
   if (/phone/.test(refused)) return { reason: "elsewhere", error: "Your iPhone has conch's audio right now. Hand it back to this Mac to check the microphone." };
   if (/another Mac/.test(refused)) return { reason: "elsewhere", error: "Another Mac has conch's audio right now. Hand it back to check the microphone here." };
@@ -272,8 +272,8 @@ export function micRefusal(refused: string): { error: string; reason: string } {
 export type AudioElsewhere = "phone" | "another-mac";
 
 /**
- * A voice sample refused because this Mac doesn't have the audio: in the microphone check's and the practice's words, so
- * the app offers the same Hand it back. Played anyway, it would arm the phone's latch or play on the other Mac, and the
+ * A voice sample refused because this Mac doesn't have the audio: in the microphone check's words, so the app offers the
+ * same Hand it back. Played anyway, it would arm the phone's latch or play on the other Mac, and the
  * sample would answer done for a line nobody heard here.
  */
 export function voiceSampleRefusal(where: AudioElsewhere): { error: string; reason: "elsewhere" } {
@@ -620,7 +620,7 @@ export function createSetup(deps: SetupDependencies): Setup {
     const id = ring.find((voice) => voice.toLowerCase() === wanted || voice.toLowerCase().split("_").pop() === wanted);
     if (!id) return { kind: "setup-error", error: "conch doesn't have that voice." };
     // The phone or another Mac has the audio: the line would go there, or only arm the phone's latch, and "done" would be
-    // a sample nobody heard here. Refused as the microphone check and the practice are, for the app's Hand it back.
+    // a sample nobody heard here. Refused as the microphone check is, for the app's Hand it back.
     const elsewhere = deps.audioElsewhere();
     if (elsewhere) return { kind: "setup-error", ...voiceSampleRefusal(elsewhere) };
     const name = voiceName(id);

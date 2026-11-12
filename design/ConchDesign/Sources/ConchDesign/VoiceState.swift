@@ -1,14 +1,5 @@
 import SwiftUI
 
-/// The two voice modes. Talk was "auto"; Quiet was "manual" (the daemon's pause).
-public enum VoiceMode: String, CaseIterable, Identifiable, Sendable {
-    case talk
-    case quiet
-
-    public var id: String { rawValue }
-    public var title: String { self == .talk ? "Talk" : "Quiet" }
-}
-
 /// What the voice is doing, as the menu bar mark and the control bar show it.
 public enum VoiceState: String, CaseIterable, Sendable {
     case talk
