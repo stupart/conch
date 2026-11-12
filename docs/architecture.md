@@ -200,7 +200,10 @@ parent's tool_result carrying `toolUseResult.agentId` (`isAsync: true` for a
 background agent), and a `<task-notification>` in the parent when it reports
 back — in one of three carriers, depending on whether the parent was idle.
 Nothing on disk says "still running"; `agent-activity.ts` derives it as a fresh
-sidechain whose newest mention in the parent is its launch. That one reader
+sidechain whose newest mention in the parent is its launch, a SendMessage that
+resumed it (`resumedAgentId`), or a notification that it is "waiting on its own
+background work", which says `completed` and is not an end (`parseTaskNotice`).
+A waiting agent stays listed while it is quiet, up to three hours. That one reader
 serves both the hook (a Stop with live background agents is "working", not
 "waiting") and the dashboard (C4): a live subagent becomes a row with
 `parentSessionId`, nested under its parent, whose transcript is the sidechain —

@@ -508,6 +508,14 @@ struct ConversationStack: View {
                             .lineLimit(1)
                             .truncationMode(.middle)
                     }
+                    // An agent paused on its own background work, or stopped short and resumable (2026-11-12).
+                    if let note = item.tool?.subagentNote {
+                        Text(note)
+                            .font(Type.caption)
+                            .foregroundStyle(item.tool?.subagentStopped == true ? Palette.needs : Palette.textDim)
+                            .lineLimit(1)
+                            .layoutPriority(1)
+                    }
                     Spacer(minLength: 0)
                 }
             }

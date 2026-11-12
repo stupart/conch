@@ -42,6 +42,8 @@ import {
 import { dirname, isAbsolute, join } from "node:path";
 import {
   SUBAGENT_ROW_PREFIX,
+  parseTaskNotice,
+  resumedAgentOf,
   sidechainTranscriptPath,
   subagentRowId,
   taskNotificationText,
@@ -107,8 +109,12 @@ export interface ConversationToolDetail {
    * transcript once the reader knows where the parent's lives. A viewer can
    * open that transcript from the block that started it — the row for a
    * finished agent is gone, but the file is not.
+   *
+   * `waiting`: it stopped with background work of its own still running, and is still out (Claude Code's "is waiting
+   * on its own background work"). `stopped`: why it ended, when not by finishing ("stopped: usage limit"); a
+   * SendMessage that resumes it clears both, at `resumedAt` (epoch-ms).
    */
-  subagent?: { id: string; transcriptPath?: string };
+  subagent?: { id: string; transcriptPath?: string; waiting?: true; stopped?: string; resumedAt?: number };
 }
 
 export interface ConversationItem {
@@ -180,6 +186,8 @@ export function upsertConversationItem(
     && existing.kind === item.kind
     && existing.tool?.status === item.tool?.status
     && existing.tool?.result === item.tool?.result
+    // An agent waiting, stopped or resumed changes its block without changing its status (2026-11-12).
+    && JSON.stringify(existing.tool?.subagent) === JSON.stringify(item.tool?.subagent)
     && JSON.stringify(existing.material) === JSON.stringify(item.material)
     && JSON.stringify(existing.receipt) === JSON.stringify(item.receipt)
     && JSON.stringify(existing.peer) === JSON.stringify(item.peer);
@@ -830,9 +838,9 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
   // A background agent reporting back. Claude Code files this three ways
   // (a user message, a queued command, a queue operation) depending on what
   // the parent was doing; whichever arrives, the block that started the agent
-  // is finished. Then carry on: the user-message form is also a task material.
+  // says what became of it. Then carry on: the user-message form is also a task material.
   const notice = taskNotificationText(entry);
-  if (notice) finishSubagent(conversation, notice);
+  if (notice) noteSubagent(conversation, notice, at);
 
   // A message from another session that arrived while this one was busy, queued as one of Tyler's would be but
   // with `origin.kind: "peer"` (2.1.280–2.1.309). Only his were read, so these were never shown at all. Keyed by
@@ -891,6 +899,9 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
         // agent is out there, and only its task notification ends it.
         const launched = subagentLaunch(entry.toolUseResult);
         const resultText = claudeResultText(result.content);
+        // SendMessage to an agent that had stopped resumes it: its block runs again.
+        const resumed = !result.is_error ? resumedAgentOf(entry.toolUseResult, resultText) : undefined;
+        if (resumed) resumeSubagent(conversation, subagentRowId(resumed), at);
         upsertConversationItem(conversation, {
           ...target,
           tool: {
@@ -1047,18 +1058,55 @@ function subagentLaunch(toolUseResult: unknown): { id: string; async: boolean } 
   return { id: subagentRowId(result.agentId), async: result.isAsync === true };
 }
 
-/** A task notification ends the subagent block it names — once, whichever form it arrives in. */
-function finishSubagent(conversation: Conversation, notice: string): void {
-  const taskId = notice.match(/<task-id>\s*([^<]+?)\s*<\/task-id>/)?.[1];
-  if (!taskId) return;
-  const status = notice.match(/<status>\s*([^<]+?)\s*<\/status>/)?.[1] ?? "";
-  const subagentId = subagentRowId(taskId);
+/**
+ * A task notification on the subagent block it names, whichever form it arrives in. One that ends the agent ends a
+ * running block once, and says why when it did not finish ("stopped: usage limit"). One that says it is waiting on its
+ * own background work leaves it running: Tyler, 2026-11-12, "conch ui shows 3 sub-agents for u but it says 2 more in
+ * the claude code ui" — that notification says `completed`, and conch took the word for the agent finishing.
+ *
+ * A copy queued before a SendMessage resumed the agent can be filed after it; it is about the agent's last run, not
+ * this one, so it changes nothing.
+ */
+function noteSubagent(conversation: Conversation, text: string, at: number | undefined): void {
+  const notice = parseTaskNotice(text);
+  if (!notice || notice.outcome === "other") return;
+  const subagentId = subagentRowId(notice.taskId);
   for (const key of conversation.order) {
     const item = conversation.items[key];
-    if (item?.tool?.subagent?.id !== subagentId || item.tool.status !== "running") continue;
+    const agent = item?.tool?.subagent;
+    if (!item?.tool || agent?.id !== subagentId) continue;
+    if (agent.resumedAt !== undefined && at !== undefined && at < agent.resumedAt) continue;
+    const { waiting: _waiting, stopped: _stopped, ...rest } = agent;
+    if (notice.outcome === "waiting") {
+      if (item.tool.status === "running" && agent.waiting) continue;
+      upsertConversationItem(conversation, {
+        ...item,
+        tool: { ...item.tool, status: "running", subagent: { ...rest, waiting: true } },
+      });
+      continue;
+    }
+    if (item.tool.status !== "running") continue;
     upsertConversationItem(conversation, {
       ...item,
-      tool: { ...item.tool, status: /kill|fail|error/i.test(status) ? "error" : "done" },
+      tool: {
+        ...item.tool,
+        status: notice.failed ? "error" : "done",
+        subagent: { ...rest, ...(notice.stopped ? { stopped: notice.stopped } : {}) },
+      },
+    });
+  }
+}
+
+/** A SendMessage resumed this agent: the block that started it runs again, from `at`. */
+function resumeSubagent(conversation: Conversation, subagentId: string, at: number | undefined): void {
+  for (const key of conversation.order) {
+    const item = conversation.items[key];
+    const agent = item?.tool?.subagent;
+    if (!item?.tool || agent?.id !== subagentId) continue;
+    const { waiting: _waiting, stopped: _stopped, resumedAt: _resumedAt, ...rest } = agent;
+    upsertConversationItem(conversation, {
+      ...item,
+      tool: { ...item.tool, status: "running", subagent: { ...rest, ...(at !== undefined ? { resumedAt: at } : {}) } },
     });
   }
 }

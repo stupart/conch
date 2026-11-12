@@ -715,7 +715,13 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
         var kind = Kind.unknown
         var status = "running"
         var result: String?
-        private enum CodingKeys: String, CodingKey { case name, kind, status, result }
+        /// What an Agent block says after its name when its agent isn't simply running or finished: "waiting on its
+        /// background work", or why it stopped ("stopped: usage limit"). The Mac's `Subagent.note`.
+        var subagentNote: String?
+        /// The note is a stop, not a pause.
+        var subagentStopped = false
+        private enum CodingKeys: String, CodingKey { case name, kind, status, result, subagent }
+        private enum SubagentKeys: String, CodingKey { case waiting, stopped }
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             name = (try? c.decodeIfPresent(String.self, forKey: .name)) ?? ""
@@ -725,6 +731,12 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
             kind = (try? c.decodeIfPresent(Kind.self, forKey: .kind)) ?? .unknown
             status = (try? c.decodeIfPresent(String.self, forKey: .status)) ?? "running"
             result = try? c.decodeIfPresent(String.self, forKey: .result)
+            if let agent = try? c.nestedContainer(keyedBy: SubagentKeys.self, forKey: .subagent) {
+                let stopped = try? agent.decodeIfPresent(String.self, forKey: .stopped)
+                let waiting = (try? agent.decodeIfPresent(Bool.self, forKey: .waiting)) ?? false
+                subagentNote = stopped ?? (waiting ? "waiting on its background work" : nil)
+                subagentStopped = stopped != nil
+            }
         }
     }
 

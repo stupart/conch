@@ -400,6 +400,7 @@ export const claudeAdapter: AgentAdapter = {
         ? { startedAt: agent.startedAt, statusUpdatedAt: agent.startedAt }
         : {}),
       transcriptPath: agent.transcriptPath,
+      ...(agent.waitingSince !== undefined ? { waitingOnOwnWorkSince: agent.waitingSince } : {}),
     })),
   rowsMayLackPid: false,
   resumableCandidates: (options) => readClaudeCandidates(options),

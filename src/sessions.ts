@@ -103,6 +103,12 @@ export interface SessionInfo {
    */
   parentSessionId?: string;
   /**
+   * On a subagent row: when its agent stopped to wait on background work of its own (a push, a gate), epoch-ms.
+   * Claude Code still counts it running, and so does conch; its row says what it is waiting on instead of its last
+   * words (`liveBackgroundAgents`).
+   */
+  waitingOnOwnWorkSince?: number;
+  /**
    * Present when another live session's process is an ancestor of this one's
    * (C15): a `codex` that Claude Code's Bash tool started, or a `claude` that
    * Codex's shell did. Read from the process tree and the registries' pids —

@@ -29,11 +29,16 @@ export const MID_TOOL_WINDOW_MS = 3 * 60 * 60 * 1000;
 
 const READ_CHUNK_BYTES = 256 * 1024;
 const MAX_SCAN_BYTES = 32 * 1024 * 1024;
-const TERMINAL_TASK_STATUS = new Set(["completed", "failed", "killed"]);
+const TERMINAL_TASK_STATUS = new Set(["completed", "failed", "killed", "stopped"]);
 
 interface Candidate {
   id: string;
   bytes: Buffer;
+  /**
+   * Quiet past both windows, and a candidate only because it started background work of its own: live only if its
+   * parent's newest word on it says it is waiting on that work.
+   */
+  quiet?: true;
 }
 
 /** Bounds for the caches below, which are keyed by folders and files of sessions that come and go. */
@@ -209,6 +214,90 @@ export function taskNotificationText(entry: any): string {
   return "";
 }
 
+/**
+ * What a task notification says about the task it names. Claude Code 2.1.309 writes one each time a background agent
+ * stops, and not every stop is an end. Its summaries, across Tyler's transcripts of the last sixty days (2026-11-12):
+ *
+ * - `Agent "<name>" finished` (`completed`), 6,789 of them: done.
+ * - `Agent "<name>" is waiting on its own background work` (`completed`), 937: NOT done. It stopped with a build or a
+ *   push of its own still running, "may resume on its own when that work completes or reports, and the same task-id
+ *   notifies again if it does". Claude Code still counts it among the session's running agents.
+ * - `Agent "<name>" failed: <why>` (`failed`), 457: a usage limit, a stalled stream, an API error.
+ * - `Agent "<name>" was stopped by Claude` (`killed`) and `… stopped at its 200-turn limit` (`completed`).
+ *
+ * Every ending but the first can be undone: SendMessage to the agent resumes it (`resumedAgentOf`).
+ */
+export interface TaskNotice {
+  taskId: string;
+  status: string;
+  /** `waiting`: out there still, on its own background work. `ended`: finished, failed or stopped. */
+  outcome: "waiting" | "ended" | "other";
+  /** Why it ended, when it did not end by finishing: "stopped: usage limit". */
+  stopped?: string;
+  /** Failed or killed, as opposed to finished or paused. */
+  failed: boolean;
+}
+
+const WAITING_ON_OWN_WORK = /\bis waiting on its own background work\b/i;
+
+export function parseTaskNotice(text: string): TaskNotice | null {
+  const taskId = text.match(/<task-id>\s*([^<]+?)\s*<\/task-id>/)?.[1];
+  if (!taskId) return null;
+  const status = text.match(/<status>\s*([^<]+?)\s*<\/status>/)?.[1] ?? "";
+  const summary = text.match(/<summary>\s*([\s\S]*?)\s*<\/summary>/)?.[1] ?? "";
+  const failed = /kill|fail|error/i.test(status);
+  // Tyler, 2026-11-12: "conch ui shows 3 sub-agents for u but it says 2 more in the claude code ui." A waiting agent's
+  // notification says `completed`, and conch took that word for the agent finishing.
+  const outcome = WAITING_ON_OWN_WORK.test(summary)
+    ? "waiting"
+    : TERMINAL_TASK_STATUS.has(status) ? "ended" : "other";
+  const stopped = outcome === "ended" ? stoppedBecause(status, summary) : undefined;
+  return {
+    taskId,
+    status,
+    outcome,
+    ...(stopped ? { stopped } : {}),
+    failed,
+  };
+}
+
+/** "stopped: usage limit", from a summary that says why; nothing for an agent that finished. */
+function stoppedBecause(status: string, summary: string): string | undefined {
+  const failure = summary.match(/\bfailed:\s*([\s\S]*)$/i)?.[1]?.trim();
+  if (failure !== undefined || /fail|error/i.test(status)) {
+    const why = failure ?? "";
+    if (/hit your [\w ]*limit|out of (extra )?usage|usage limit|rate_limit/i.test(why)) return "stopped: usage limit";
+    if (/\bstalled\b/i.test(why)) return "stopped: stalled";
+    if (/\bAPI Error\b/i.test(why)) return "stopped: API error";
+    if (/\bnot started\b/i.test(why)) return "stopped: never started";
+    const first = why.replace(/^Agent terminated early due to (an )?/i, "").split(/[.(·\n]/)[0]?.trim();
+    return first ? `stopped: ${first.length > 60 ? `${first.slice(0, 59).trimEnd()}…` : first}` : "stopped: failed";
+  }
+  if (/\bturn limit\b|-turn limit\b/i.test(summary)) return "stopped: turn limit";
+  if (/kill/i.test(status) || /\bwas stopped\b/i.test(summary)) return "stopped";
+  return undefined;
+}
+
+/**
+ * The agent a SendMessage result says it resumed: `toolUseResult.resumedAgentId` (Claude Code 2.1.309, beside
+ * `revivedAgentId` and a "Resuming agent <id>" message), or the same JSON as the tool result's text.
+ */
+export function resumedAgentOf(toolUseResult: unknown, resultText = ""): string | undefined {
+  const result = toolUseResult as { resumedAgentId?: unknown; revivedAgentId?: unknown } | null | undefined;
+  if (result && typeof result === "object") {
+    const id = typeof result.resumedAgentId === "string" ? result.resumedAgentId
+      : typeof result.revivedAgentId === "string" ? result.revivedAgentId : undefined;
+    if (id) return id;
+  }
+  if (!resultText.includes("resumedAgentId")) return undefined;
+  try {
+    const parsed = JSON.parse(resultText);
+    return typeof parsed?.resumedAgentId === "string" && parsed.resumedAgentId ? parsed.resumedAgentId : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Row id for a subagent: the agent id under a prefix no session id carries. */
 export const SUBAGENT_ROW_PREFIX = "agent-";
 
@@ -234,14 +323,20 @@ export interface LiveAgent {
   agentType?: string;
   /** When it was spawned (its meta file's mtime), epoch-ms. */
   startedAt?: number;
+  /**
+   * When it stopped to wait on background work of its own (a push, a gate), epoch-ms: Claude Code's "is waiting on
+   * its own background work". Absent while it runs.
+   */
+  waitingSince?: number;
 }
 
 /**
  * The background *sub-agents* this session has in flight, from what Claude
  * Code writes to disk: a fresh sidechain under the session's directory, and a
- * parent transcript whose newest word on that agent is its launch, or a
- * SendMessage result naming it in `resumedAgentId` — no completion
- * notification since. AGENTS ONLY — a background Bash
+ * parent transcript whose newest word on that agent is its launch, a
+ * SendMessage result naming it in `resumedAgentId`, or a notification that it
+ * is waiting on its own background work — nothing since that ends it
+ * (`parseTaskNotice`). AGENTS ONLY — a background Bash
  * (`run_in_background`) is deliberately ignored: it is often a persistent
  * process (dev server, watcher, tail) that never writes a completion, so
  * counting it would keep the session silent forever. A background agent
@@ -280,6 +375,11 @@ export function liveBackgroundAgents(transcriptPath: string): LiveAgent[] {
     // Quiet past the window but inside a tool call of its own: a build or a test run
     // writes nothing until it returns, and the session read "done" (and dropped "waiting
     // on its agents") in the middle of it.
+    //
+    // Or stopped with background work of its own running, which writes nothing until that work reports: Claude Code
+    // still lists it, and it vanished from conch six minutes in (Tyler, 2026-11-12: "conch ui shows 3 sub-agents for
+    // u but it says 2 more in the claude code ui"). Only its parent's notification can say it is waiting, so it is a
+    // candidate that only that notification keeps.
     for (const [id, candidate] of freshIds(
       sidechains,
       names,
@@ -288,37 +388,78 @@ export function liveBackgroundAgents(transcriptPath: string): LiveAgent[] {
       now,
       MID_TOOL_WINDOW_MS,
     )) {
+      if (agents.has(id)) continue;
       const path = join(sidechains, `agent-${id}.jsonl`);
-      if (!agents.has(id) && insideToolCallOf(path, statOnce(stats, path))) agents.set(id, candidate);
+      const tail = agentTailOf(path, statOnce(stats, path));
+      if (tail.insideToolCall) agents.set(id, candidate);
+      else if (tail.startedOwnWork) agents.set(id, { ...candidate, quiet: true });
     }
 
     if (!agents.size) return [];
-    return launchedAgents(transcriptPath, agents).map((agentId) => describeAgent(sidechains, agentId));
+    const quiet = new Set([...agents.values()].filter((candidate) => candidate.quiet).map((candidate) => candidate.id));
+    return launchedAgents(transcriptPath, agents).flatMap(({ agentId, waitingSince }) => {
+      // Its own transcript moved after it said it was waiting: that work reported and woke it, and it is running.
+      const moved = waitingSince !== undefined
+        && (statOnce(stats, join(sidechains, `agent-${agentId}.jsonl`))?.mtimeMs ?? 0) > waitingSince + WOKEN_SLACK_MS;
+      const waiting = waitingSince !== undefined && !moved;
+      if (quiet.has(agentId) && !waiting) return [];
+      return [{ ...describeAgent(sidechains, agentId), ...(waiting ? { waitingSince } : {}) }];
+    });
   } catch {
     return [];
   }
 }
 
 /**
+ * How long after its waiting notification an agent's transcript may still move without having been woken: Claude Code
+ * writes the agent's last words a few milliseconds BEFORE the notification (3 ms on 2026-11-12), and a filesystem
+ * may keep whole seconds.
+ */
+const WOKEN_SLACK_MS = 2_000;
+
+/** An agent still out, as its parent's newest word on it says: running, or waiting on its own work since then. */
+interface Launched {
+  agentId: string;
+  waitingSince?: number;
+}
+
+/**
  * The last scan of each parent transcript: which of its candidates it still launches. The answer depends only on
  * the transcript and the candidates, so a parent that has not moved, asked about the same agents, is not read again.
  */
-const scans = new Map<string, { version: FileVersion; ids: string; live: string[] }>();
+const scans = new Map<string, { version: FileVersion; ids: string; live: Launched[] }>();
 
 /** Which candidates the parent transcript's newest word still has in flight, newest first. Consumes `agents`. */
-function launchedAgents(transcriptPath: string, agents: Map<string, Candidate>): string[] {
+function launchedAgents(transcriptPath: string, agents: Map<string, Candidate>): Launched[] {
   const version = fileVersion(transcriptPath);
   const ids = [...agents.keys()].sort().join("\u0000");
   const known = scans.get(transcriptPath);
-  if (known && known.ids === ids && sameFileVersion(known.version, version)) return [...known.live];
+  if (known && known.ids === ids && sameFileVersion(known.version, version)) return known.live.map((agent) => ({ ...agent }));
   const live = scanLaunches(transcriptPath, agents);
   // Taken before the scan: a transcript that moves during it reads as moved next time.
-  if (version) remember(scans, transcriptPath, { version, ids, live: [...live] });
+  if (version) remember(scans, transcriptPath, { version, ids, live: live.map((agent) => ({ ...agent })) });
   return live;
 }
 
-function scanLaunches(transcriptPath: string, agents: Map<string, Candidate>): string[] {
-  const live: string[] = [];
+function entryTime(entry: any): number | undefined {
+  const at = Date.parse(entry?.timestamp ?? "");
+  return Number.isFinite(at) ? at : undefined;
+}
+
+function scanLaunches(transcriptPath: string, agents: Map<string, Candidate>): Launched[] {
+  const live: Launched[] = [];
+  // The newest notification about each agent, held until the next older word on it decides what it means. Claude
+  // Code files one notification up to three times, and the copy it queued while the session was busy can land AFTER a
+  // SendMessage that resumed the agent, though it was written before (2026-11-12: a waiting notice queued at 03:15:59,
+  // the resume at 03:16:02, the queued copy filed after it). Read newest first, that stale copy would end an agent
+  // that is running again.
+  const held = new Map<string, { notice: TaskNotice; at?: number }>();
+  const settle = (agentId: string): void => {
+    const newest = held.get(agentId);
+    held.delete(agentId);
+    agents.delete(agentId);
+    if (newest?.notice.outcome === "waiting") live.push({ agentId, waitingSince: newest.at ?? 0 });
+  };
   visitLinesNewestFirst(transcriptPath, (buffer) => containsCandidate(buffer, agents), (line) => {
     if (!containsCandidate(line, agents)) return false;
     let entry: any;
@@ -330,50 +471,76 @@ function scanLaunches(transcriptPath: string, agents: Map<string, Candidate>): s
 
     const content = taskNotificationText(entry);
     if (content) {
-      const taskId = content.match(/<task-id>\s*([^<]+?)\s*<\/task-id>/)?.[1];
-      const status = content.match(/<status>\s*([^<]+?)\s*<\/status>/)?.[1];
-      if (taskId && status && TERMINAL_TASK_STATUS.has(status)) {
-        agents.delete(taskId);
+      const notice = parseTaskNotice(content);
+      if (notice && agents.has(notice.taskId)) {
+        // An older notification than the one held: the held one is the newest word.
+        if (held.has(notice.taskId)) settle(notice.taskId);
+        else if (notice.outcome !== "other") held.set(notice.taskId, { notice, at: entryTime(entry) });
       }
     } else if (entry?.type === "user" && entry?.toolUseResult && typeof entry.toolUseResult === "object") {
       const result = entry.toolUseResult;
-      if (typeof result.resumedAgentId === "string" && agents.has(result.resumedAgentId)) {
-        // SendMessage to a finished agent resumes it in the background; its
-        // next completion notification closes it again. Newest first, so a
-        // resume met here reopens the agent past every older completion.
-        live.push(result.resumedAgentId);
-        agents.delete(result.resumedAgentId);
+      const resumed = resumedAgentOf(result);
+      if (resumed && agents.has(resumed)) {
+        // SendMessage to a stopped agent resumes it in the background; its
+        // next notification says what became of it. A notification held from
+        // after this line but written before it is the stale copy above.
+        const newer = held.get(resumed);
+        const at = entryTime(entry);
+        if (newer && !(newer.at !== undefined && at !== undefined && at > newer.at)) settle(resumed);
+        else {
+          held.delete(resumed);
+          live.push({ agentId: resumed });
+          agents.delete(resumed);
+        }
       } else if (typeof result.agentId === "string" && agents.has(result.agentId)) {
-        // Newest first, so a launch met here is the last word on the agent:
-        // it is still out there.
-        if (result.isAsync === true) live.push(result.agentId);
-        // A synchronous Agent uses the same artifact naming convention but is
-        // already complete when its tool_result is written.
-        agents.delete(result.agentId);
+        if (held.has(result.agentId)) settle(result.agentId);
+        else {
+          // Newest first, so a launch met here is the last word on the agent:
+          // it is still out there.
+          if (result.isAsync === true) live.push({ agentId: result.agentId });
+          // A synchronous Agent uses the same artifact naming convention but is
+          // already complete when its tool_result is written.
+          agents.delete(result.agentId);
+        }
       }
     }
 
     return !agents.size;
   });
+  // A notification with nothing older in reach is still the newest word.
+  for (const agentId of [...held.keys()]) settle(agentId);
   return live;
 }
 
-/** `insideToolCall` per agent transcript, kept until the file moves: one `stat` (already taken) instead of a read. */
-const insideToolCalls = new Map<string, { version: FileVersion; inside: boolean }>();
-
-function insideToolCallOf(path: string, stat: Stats | null): boolean {
-  const version = stat ? { ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs } : null;
-  const known = insideToolCalls.get(path);
-  if (known && sameFileVersion(known.version, version)) return known.inside;
-  const inside = insideToolCall(path);
-  if (version) remember(insideToolCalls, path, { version, inside });
-  return inside;
+/** What an agent's own transcript ends in. */
+interface AgentTail {
+  /** A tool_use with no tool_result after it: a build or a test run that writes nothing until it returns. */
+  insideToolCall: boolean;
+  /** Among its last entries, a tool call it sent to the background (`run_in_background`): a push, a gate, a watch. */
+  startedOwnWork: boolean;
 }
 
-/** Does this transcript end inside a tool call: a tool_use with no tool_result after it? */
-function insideToolCall(transcriptPath: string): boolean {
+/** How far back from its end an agent's transcript is searched for background work it started. */
+const OWN_WORK_ENTRIES = 200;
+
+/** `agentTail` per agent transcript, kept until the file moves: one `stat` (already taken) instead of a read. */
+const agentTails = new Map<string, { version: FileVersion; tail: AgentTail }>();
+
+function agentTailOf(path: string, stat: Stats | null): AgentTail {
+  const version = stat ? { ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs } : null;
+  const known = agentTails.get(path);
+  if (known && sameFileVersion(known.version, version)) return known.tail;
+  const tail = agentTail(path);
+  if (version) remember(agentTails, path, { version, tail });
+  return tail;
+}
+
+/** Does this transcript end inside a tool call (a tool_use with no tool_result after it), and did it start background work lately? */
+function agentTail(transcriptPath: string): AgentTail {
   let inside = false;
   let decided = false;
+  let ownWork = false;
+  let entries = 0;
   visitLinesNewestFirst(transcriptPath, () => true, (line) => {
     let entry: any;
     try {
@@ -381,13 +548,20 @@ function insideToolCall(transcriptPath: string): boolean {
     } catch {
       return false;
     }
+    entries += 1;
     const parts = Array.isArray(entry?.message?.content) ? entry.message.content : [];
-    if (entry?.type === "user" && parts.some((part: any) => part?.type === "tool_result")) decided = true;
-    else if (entry?.type === "assistant" && parts.some((part: any) => part?.type === "tool_use")) inside = decided = true;
-    else if (entry?.type === "assistant" || entry?.type === "user") decided = true;
-    return decided;
+    if (!decided) {
+      if (entry?.type === "user" && parts.some((part: any) => part?.type === "tool_result")) decided = true;
+      else if (entry?.type === "assistant" && parts.some((part: any) => part?.type === "tool_use")) inside = decided = true;
+      else if (entry?.type === "assistant" || entry?.type === "user") decided = true;
+    }
+    if (entry?.type === "assistant" && parts.some((part: any) => part?.type === "tool_use" && part.input?.run_in_background === true)) {
+      ownWork = true;
+    }
+    // Inside a tool call settles it; otherwise look back for work it left running.
+    return (decided && (inside || ownWork)) || entries >= OWN_WORK_ENTRIES;
   });
-  return inside;
+  return { insideToolCall: inside, startedOwnWork: ownWork };
 }
 
 function describeAgent(sidechains: string, agentId: string): LiveAgent {

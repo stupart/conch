@@ -1,4 +1,4 @@
-import { unwrapPastedContent } from "./conversation.ts";
+import { classifyInjectedUserText, unwrapPastedContent } from "./conversation.ts";
 import { peerRecordText, receivedPeerMessage, type PeerMessage } from "./peer-messages.ts";
 import { recordToolResult, recordValue } from "./records-sanitize.ts";
 import {
@@ -116,6 +116,21 @@ function claudePeerRecord(entry: Record<string, unknown>, message: Record<string
   return text ? receivedPeerMessage(unwrapPastedContent(text), entry.origin) : null;
 }
 
+/**
+ * A background task's notification, which Claude Code files under the user's name: its words as the live window shows
+ * them (`classifyInjectedUserText`), the summary that says whether an agent finished, failed or is waiting on its own
+ * background work. Null for anything else.
+ */
+function claudeTaskNotice(entry: Record<string, unknown>, message: Record<string, unknown>): string | null {
+  if (entry.type !== "user") return null;
+  const content = message.content;
+  if (Array.isArray(content) && content.some((part) => object(part)?.type === "tool_result")) return null;
+  const text = typeof content === "string" ? content : visibleText(recordValue(content));
+  if (!text?.trimStart().startsWith("<task-notification>")) return null;
+  const material = classifyInjectedUserText(text);
+  return material ? material.detail ?? material.title : null;
+}
+
 /** Normalize one complete JSONL record; never retain the source envelope in parser state. */
 export function normalizeClaudeRecord(value: unknown, context: RecordNormalizerContext): NormalizedRecords {
   const out = emptyRecords();
@@ -134,6 +149,10 @@ export function normalizeClaudeRecord(value: unknown, context: RecordNormalizerC
   // Another session's message is kept although Claude Code files it as a meta turn or a queue attachment: as
   // `inter_agent`, never as a message of Tyler's, in the tag the apps read a sender from (peerRecordText).
   const peer = compact ? null : claudePeerRecord(entry, message);
+  // A background agent's notification was stored as a message of Tyler's, tags and all, so history above the live
+  // window showed "<task-notification>…" in his bubble where the live window shows what became of the agent
+  // (2026-11-12). Stored as that line instead, and it starts no turn of his.
+  const task = compact || peer ? null : claudeTaskNotice(entry, message);
   // Omitted bodies may still provide a UUID needed to follow a later visible branch.
   const omitted = !compact && !peer && ((entry.type !== "user" && entry.type !== "assistant")
     || entry.isMeta === true || message.role === "system" || message.role === "developer");
@@ -188,7 +207,7 @@ export function normalizeClaudeRecord(value: unknown, context: RecordNormalizerC
     });
   } else {
     // A peer message starts a turn as Tyler's words do: the session answers it. One queued mid-turn joins that turn.
-    const humanInput = (peer !== null && !peer.peer.queued) || (entry.type === "user" && parts.some((part) =>
+    const humanInput = (peer !== null && !peer.peer.queued) || (task === null && entry.type === "user" && parts.some((part) =>
       (part.type === "text" && typeof part.text === "string")
       || part.type === "image" || part.type === "document"));
     if (humanInput || nativeTurnId) {
@@ -217,7 +236,8 @@ export function normalizeClaudeRecord(value: unknown, context: RecordNormalizerC
     if (peer) {
       append(rootId, { kind: "inter_agent", role: "system", turnId, text: peerRecordText(peer.peer, peer.body) });
     }
-    const blocks = peer ? [] : rawParts;
+    if (task !== null) append(rootId, { kind: "material", role: "system", turnId, text: task });
+    const blocks = peer || task !== null ? [] : rawParts;
     const visible = blocks.flatMap((raw) => {
       const block = object(raw);
       const text = block?.type === "text" && typeof block.text === "string"
