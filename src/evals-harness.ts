@@ -740,13 +740,13 @@ async function whisperFixture(root: string): Promise<Record<string, unknown>> {
 
 // ---- the live processes, read only ----
 
-interface PsRow { pid: number; rssKB: number; cpuSeconds: number; elapsedSeconds: number; command: string }
+interface PsRow { pid: number; ppid: number; rssKB: number; cpuSeconds: number; elapsedSeconds: number; command: string }
 
 function psRows(): PsRow[] {
-  const result = Bun.spawnSync(["/bin/ps", "-axo", "pid=,rss=,cputime=,etime=,command="], { stdout: "pipe", stderr: "ignore" });
+  const result = Bun.spawnSync(["/bin/ps", "-axo", "pid=,ppid=,rss=,cputime=,etime=,command="], { stdout: "pipe", stderr: "ignore" });
   return result.stdout.toString().split("\n").flatMap((line) => {
-    const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(.*)$/.exec(line);
-    return match ? [{ pid: Number(match[1]), rssKB: Number(match[2]), cpuSeconds: parseCpuTime(match[3]!), elapsedSeconds: parseElapsed(match[4]!), command: match[5]! }] : [];
+    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(.*)$/.exec(line);
+    return match ? [{ pid: Number(match[1]), ppid: Number(match[2]), rssKB: Number(match[3]), cpuSeconds: parseCpuTime(match[4]!), elapsedSeconds: parseElapsed(match[5]!), command: match[6]! }] : [];
   });
 }
 
@@ -760,8 +760,20 @@ export function liveRole(command: string): "daemon" | "app" | "mcp" | null {
 }
 
 export async function observeLive(exclude: readonly number[] = [], windowMs = 5_000): Promise<Record<string, unknown>> {
-  const pick = () => psRows().filter((row) => !exclude.includes(row.pid) && row.pid !== process.pid).map((row) => ({ ...row, role: liveRole(row.command) })).filter((row) => row.role);
-  const first = pick();
+  const all = psRows();
+  const pick = (rows: PsRow[]) => rows.filter((row) => !exclude.includes(row.pid) && row.pid !== process.pid).map((row) => ({ ...row, role: liveRole(row.command) })).filter((row) => row.role);
+  const first = pick(all);
+  // What the live daemon itself runs (its TTS worker, a whisper-server, sox, tmux): its children, by program.
+  const daemons = new Set(first.filter((row) => row.role === "daemon").map((row) => row.pid));
+  const children: Record<string, { processes: number; rssMB: number }> = {};
+  for (const row of all) {
+    if (!daemons.has(row.ppid)) continue;
+    const program = /tts-worker/.test(row.command) ? "tts-worker (python)" : row.command.split(" ")[0]!.split("/").at(-1)!;
+    const entry = children[program] ?? { processes: 0, rssMB: 0 };
+    entry.processes += 1;
+    entry.rssMB += Math.round(row.rssKB / 1024);
+    children[program] = entry;
+  }
   // The published sessions file's size and how often it is rewritten: a stat every 100 ms, never a read.
   const sessionsFile = "/tmp/conch-sessions.json";
   let changes = 0;
@@ -775,7 +787,7 @@ export async function observeLive(exclude: readonly number[] = [], windowMs = 5_
     } catch {}
   }
   const seconds = (Date.now() - started) / 1000;
-  const second = new Map(pick().map((row) => [row.pid, row]));
+  const second = new Map(pick(psRows()).map((row) => [row.pid, row]));
   const describe = (role: "daemon" | "app" | "mcp") => {
     const rows = first.filter((row) => row.role === role);
     if (!rows.length) return undefined;
@@ -797,6 +809,7 @@ export async function observeLive(exclude: readonly number[] = [], windowMs = 5_
     ...(describe("daemon") ? { daemon: describe("daemon") } : {}),
     ...(describe("app") ? { app: describe("app") } : {}),
     ...(describe("mcp") ? { mcpServers: describe("mcp") } : {}),
+    ...(Object.keys(children).length ? { daemonChildren: children } : {}),
     ...(publishedKB !== undefined ? { publishedState: { kb: publishedKB, rewritesPerMinute: Math.round((changes / seconds) * 60 * 10) / 10 } } : {}),
   };
 }
