@@ -9,7 +9,9 @@ import type { RecordObject, RecordProvider } from "./records-types.ts";
 // claude 3: pasted text is stored without Claude Code's `<pasted_content>` tags.
 // 4 (both, 2026-11-12): a message from another agent session is stored as `inter_agent` in conch's tag, never as
 // Tyler's words or not at all (peer-messages.ts).
-export const RECORD_PARSER_VERSION = { claude: 4, codex: 4 } as const satisfies Record<RecordProvider, number>;
+// claude 5 (2026-11-12): a background task's notification is stored as the line the live window shows, never as
+// Tyler's words with its tags.
+export const RECORD_PARSER_VERSION = { claude: 5, codex: 4 } as const satisfies Record<RecordProvider, number>;
 export const SOURCE_PROBE_BYTES = 256;
 
 export interface StoredRecordSource {

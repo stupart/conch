@@ -2939,6 +2939,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         format: transcriptFormatFor(path),
         places: [...(session.workDirs ?? []), ...(session.cwd ? [session.cwd] : [])],
         window: session,
+        ...(session.waitingOnOwnWorkSince !== undefined ? { waitingOnOwnWorkSince: session.waitingOnOwnWorkSince } : {}),
       }];
     })).catch((error) => log(`live activity: ${error}`));
     // One per visible row. The reads are tail-only and bounded, and doing them

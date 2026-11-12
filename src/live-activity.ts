@@ -495,7 +495,15 @@ export interface ActivitySource {
   places?: readonly string[];
   /** One window of a shared transcript reads its own branch (A8), as the conversation does. */
   window?: WindowIdentity;
+  /**
+   * A sub-agent stopped to wait on background work of its own, since then (epoch-ms): its line says so, and its
+   * transcript, which ends in its last words ("Still waiting on the push's pre-push gate."), is not read.
+   */
+  waitingOnOwnWorkSince?: number;
 }
+
+/** A sub-agent's line while it waits on background work of its own (`ActivitySource.waitingOnOwnWorkSince`). */
+export const WAITING_ON_OWN_WORK_LINE = "Waiting on its background work";
 
 interface TranscriptVersion {
   size: number;
@@ -593,6 +601,10 @@ export class LiveActivity {
   async observe(sources: readonly ActivitySource[]): Promise<void> {
     const next = new Map<string, ActivityFacts>();
     await Promise.all(sources.map(async (source) => {
+      if (source.waitingOnOwnWorkSince !== undefined) {
+        next.set(source.id, { steps: [], latest: { text: WAITING_ON_OWN_WORK_LINE, kind: "step", at: source.waitingOnOwnWorkSince } });
+        return;
+      }
       const facts = await this.reader.facts(source).catch(() => null);
       if (facts) next.set(source.id, facts);
     }));

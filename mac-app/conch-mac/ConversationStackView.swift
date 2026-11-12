@@ -1382,6 +1382,15 @@ struct ConversationStackView: View {
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                         }
+                        // An agent paused on its own background work, or stopped short (a usage limit) and resumable:
+                        // the block says which, where it used to read finished (2026-11-12).
+                        if let note = item.tool?.subagent?.note {
+                            Text(note)
+                                .font(ConchType.secondary)
+                                .foregroundStyle(item.tool?.subagent?.stopped != nil ? ConchPalette.statusNeeds : ConchPalette.textDim)
+                                .lineLimit(1)
+                                .layoutPriority(1)
+                        }
                         if !result.isEmpty {
                             Image(systemName: expanded ? "chevron.down" : "chevron.right")
                                 .font(.system(size: 8))

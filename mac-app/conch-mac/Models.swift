@@ -752,14 +752,23 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
         struct Subagent: Decodable, Equatable, Sendable {
             let id: String
             let transcriptPath: String?
+            /// Stopped with background work of its own still running, and still out.
+            let waiting: Bool
+            /// Why it ended, when not by finishing: "stopped: usage limit". A resume clears it.
+            let stopped: String?
 
-            private enum CodingKeys: String, CodingKey { case id, transcriptPath }
+            private enum CodingKeys: String, CodingKey { case id, transcriptPath, waiting, stopped }
 
             init(from decoder: Decoder) throws {
                 let c = try decoder.container(keyedBy: CodingKeys.self)
                 id = try c.decode(String.self, forKey: .id)
                 transcriptPath = try? c.decodeIfPresent(String.self, forKey: .transcriptPath)
+                waiting = (try? c.decodeIfPresent(Bool.self, forKey: .waiting)) ?? false
+                stopped = try? c.decodeIfPresent(String.self, forKey: .stopped)
             }
+
+            /// What its block says after the agent's name, when it isn't simply running or finished.
+            var note: String? { stopped ?? (waiting ? "waiting on its background work" : nil) }
         }
 
         var name = ""
