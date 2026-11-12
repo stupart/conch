@@ -71,6 +71,26 @@ describe("microphone doctor probe", () => {
     expect(formatDoctorProbe(result)).toStartWith("⚠️");
   });
 
+  test("conch Microphone is probed when macOS allows it; otherwise the probe says so and checks sox", async () => {
+    const asked: string[] = [];
+    const allowed = await checkMicrophone({
+      native: "/Runtime/conch Microphone",
+      nativeStatus: async (path) => (asked.push(path), "authorized"),
+      capture: async () => ({ pcm: new Uint8Array([0, 0, 2, 0]) }),
+    });
+    expect(asked).toEqual(["/Runtime/conch Microphone"]);
+    expect(allowed).toEqual({ ok: true, label: "microphone", message: "conch Microphone captured non-zero audio (300ms)" });
+
+    const undecided = await checkMicrophone({
+      native: "/Runtime/conch Microphone",
+      nativeStatus: async () => "notDetermined",
+      capture: async () => ({ pcm: new Uint8Array([0, 0, 2, 0]) }),
+    });
+    expect(undecided.ok).toBeTrue();
+    expect(undecided.message).toStartWith("sox captured non-zero audio (300ms) — conch Microphone's Microphone access is notDetermined here");
+    expect(undecided.message).toContain("System Settings › Privacy & Security › Microphone");
+  });
+
   test("capture errors become actionable advisory results", async () => {
     const result = await checkMicrophone({
       capture: async () => { throw new Error("SoX exited with code 1"); },

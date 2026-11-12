@@ -8,6 +8,7 @@ import {
   type PhoneLanMode,
 } from "./settings.ts";
 import { resolveSpeechEngine, type SpeechEngine } from "./speech-engine.ts";
+import type { RecorderPreference } from "./microphone-helper.ts";
 
 const HOME = conchHome();
 
@@ -27,8 +28,12 @@ export interface Config {
   whisperIdleUnloadMins: number;
   whisperModel: string;
   vadModel: string;
-  /** the sox that captures the microphone: conch.app's, Homebrew's, or bare `sox` on PATH */
+  /** the sox that captures the microphone when conch Microphone does not: conch.app's, Homebrew's, or bare `sox` on PATH */
   soxBin: string;
+  /** conch Microphone as the app carries it (microphone-helper.ts installs its own copy from it); "" when there is none */
+  microphoneHelper: string;
+  /** `recorder`: conch Microphone ("native"), or sox for every capture */
+  recorder: RecorderPreference;
   /** where each engine part came from (speech-engine.ts), for the status and the doctor */
   speechEngine: SpeechEngine;
   /** TTS voice for `say`; empty string = system default */
@@ -188,6 +193,8 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     whisperModel: engine.whisperModel.path,
     vadModel: engine.vadModel.path,
     soxBin: engine.sox.path,
+    microphoneHelper: engine.microphone.found ? engine.microphone.path : "",
+    recorder: settings["recorder"].value as RecorderPreference,
     speechEngine: engine,
     voice: env.CONCH_VOICE ?? "",
     sayRate: settings["say-rate"].value as number,

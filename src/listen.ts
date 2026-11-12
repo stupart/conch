@@ -23,6 +23,8 @@ import {
 } from "./diagnostics.ts";
 import { TranscriptionGate } from "./transcription-gate.ts";
 import { SpeechEndpointer } from "./speech-endpoint.ts";
+import { microphoneRecorders, MICROPHONE_PERMISSION_EXIT_CODE } from "./microphone-helper.ts";
+import { startNativeRecording, type RecorderProcess } from "./native-recorder.ts";
 
 // Anything smaller than this is silence (raw 16kHz 16-bit mono = 32KB/s).
 export const MIN_PCM_BYTES = 16_000; // ~0.5s
@@ -140,9 +142,15 @@ export interface RuntimeDictationSession {
   abort(): Promise<void>;
 }
 
+/** What records a capture: conch Microphone (microphone-helper.ts), or sox. */
+export type RecorderKind = "native" | "sox";
+
 interface Capture {
   raw: string;
-  proc: ReturnType<typeof Bun.spawn>;
+  proc: RecorderProcess;
+  recorder: RecorderKind;
+  /** Why the recorder exited, in words, when it was not asked to: its stderr for conch Microphone. */
+  exitError(code: number): string;
   trace?: RecorderTrace;
   minimumBytes: number;
   killCause: RecorderKillCause;
@@ -181,6 +189,11 @@ interface Capture {
 // is measured P shorter in it (endpointQuietSecs), and the utterance still ends
 // when it did. Measured: WER 18% → 11.5% (LibriSpeech), 12 of the 14 clipped
 // dictations whole again.
+//
+// conch Microphone (microphone-helper.ts) records without sox, and its stream
+// goes through the capture gate (capture-gate.ts): the same start, the same
+// pre-roll, the same gain, but the pre-roll is a look-back, so its file is
+// live rather than P behind the mic.
 export const CAPTURE_PREROLL_SECS = 0.3;
 
 /** The pre-roll for this config: never more than half the end silence it is taken from. */
@@ -198,14 +211,23 @@ export function capturePrerollSecs(cfg: Pick<Config, "endSilenceSecs">): number 
 const ENDPOINT_LAG_SECS = 8_192 / 32_000 / 2 + CAPTURE_WATCHDOG_INTERVAL_MS / 1000 / 2;
 
 /**
+ * The same for conch Microphone: its input tap hands over 4,096 frames at a
+ * time at the device's rate (85ms at 48kHz, 256ms at a headset's 16kHz), and
+ * the gate writes each as it arrives. Half a 48kHz buffer, and half a tick.
+ */
+const NATIVE_ENDPOINT_LAG_SECS = 4_096 / 48_000 / 2 + CAPTURE_WATCHDOG_INTERVAL_MS / 1000 / 2;
+
+/**
  * The unbroken pause, measured in the capture file, that ends a capture. The
  * file runs the pre-roll behind the mic, and is read a little late
  * (ENDPOINT_LAG_SECS), so both come off `end-silence`: the capture still ends
  * `end-silence` after the last word, as it did when sox ended it, and turn-taking
  * is no slower. Never less than a quarter of `end-silence`, however short that is.
  */
-export function endpointQuietSecs(cfg: Pick<Config, "endSilenceSecs">): number {
-  return Math.max(cfg.endSilenceSecs / 4, cfg.endSilenceSecs - capturePrerollSecs(cfg) - ENDPOINT_LAG_SECS);
+export function endpointQuietSecs(cfg: Pick<Config, "endSilenceSecs">, recorder: RecorderKind = "sox"): number {
+  // conch Microphone's file is live (its pre-roll looks back), so only its own lag comes off.
+  const behind = recorder === "native" ? NATIVE_ENDPOINT_LAG_SECS : capturePrerollSecs(cfg) + ENDPOINT_LAG_SECS;
+  return Math.max(cfg.endSilenceSecs / 4, cfg.endSilenceSecs - behind);
 }
 
 /**
@@ -216,10 +238,10 @@ export function endpointQuietSecs(cfg: Pick<Config, "endSilenceSecs">): number {
 function soxSeconds(seconds: number): string {
   return seconds.toFixed(3);
 }
-const activeRecorders = new Set<ReturnType<typeof Bun.spawn>>();
-const tracedRecorders = new Map<ReturnType<typeof Bun.spawn>, Capture>();
+const activeRecorders = new Set<RecorderProcess>();
+const tracedRecorders = new Map<RecorderProcess, Capture>();
 const activeControllers = new Set<DictationController>();
-const activeBargeShutdowns = new Map<ReturnType<typeof Bun.spawn>, () => Promise<void>>();
+const activeBargeShutdowns = new Map<RecorderProcess, () => Promise<void>>();
 
 export function soxCaptureArgs(
   cfg: Pick<Config, "micGainDb" | "endSilenceSecs"> & Partial<Pick<Config, "soxBin">>,
@@ -242,8 +264,9 @@ export function soxCaptureArgs(
 
 /**
  * Stops whose audio is going to be heard wait out the pre-roll, so the words
- * just spoken leave the delay first. Discards, shutdown, and an idle window
- * with nothing said stop at once.
+ * just spoken leave the delay first — or, for conch Microphone, the input
+ * tap's last buffer (at most 256ms, at a headset's 16kHz) reaches the file.
+ * Discards, shutdown, and an idle window with nothing said stop at once.
  */
 const UNHEARD_STOPS = new Set(["shutdown", "abort", "manual-reply", "timeout"]);
 
@@ -270,7 +293,7 @@ export function captureStopTailMs(cfg: Pick<Config, "endSilenceSecs">, reason: s
  * that was never going to.
  */
 export function stopSoxProcess(
-  proc: Pick<ReturnType<typeof Bun.spawn>, "kill"> & { exited?: Promise<number> },
+  proc: Pick<RecorderProcess, "kill"> & { exited?: Promise<number> },
   options: { graceMs?: number; immediate?: boolean; tailMs?: number } = {},
 ): void {
   // A capture runs its pre-roll behind the mic, and SIGINT discards what the
@@ -314,12 +337,27 @@ function spawnCapture(
 ): Capture {
   const trace = startRecorderTrace(tag, parent, sequence);
   const raw = trace?.rawPath ?? `/tmp/conch-${tag}-${process.pid}-${Date.now()}.raw`;
-  let proc: ReturnType<typeof Bun.spawn>;
+  const choice = microphoneRecorders.choose(cfg);
+  let proc: RecorderProcess;
+  let exitError: (code: number) => string;
   try {
-    proc = Bun.spawn(
-      soxCaptureArgs(cfg, raw, startPct),
-      { stdout: "ignore", stderr: "ignore" },
-    );
+    if (choice.kind === "native") {
+      const recording = startNativeRecording({
+        argv: [choice.path, ...choice.args],
+        path: raw,
+        format: { kind: "raw", gate: { startPct, prerollSecs: capturePrerollSecs(cfg), gainDb: cfg.micGainDb } },
+        onPermissionRefused: () => microphoneRecorders.reportPermissionRefused(),
+        onDigitalSilence: () => microphoneRecorders.reportDigitalSilence(),
+      });
+      proc = recording;
+      exitError = (code) => nativeExitError(code, recording.stderr());
+    } else {
+      proc = Bun.spawn(
+        soxCaptureArgs(cfg, raw, startPct),
+        { stdout: "ignore", stderr: "ignore" },
+      );
+      exitError = (code) => `sox exited with code ${code}`;
+    }
   } catch (e) {
     if (trace) {
       const finalBytes = finalFileSize(raw).size;
@@ -334,7 +372,9 @@ function spawnCapture(
     }
     throw e;
   }
-  const capture: Capture = { raw, proc, trace, minimumBytes, killCause: null, sizeAtKill: null };
+  const capture: Capture = {
+    raw, proc, recorder: choice.kind, exitError, trace, minimumBytes, killCause: null, sizeAtKill: null,
+  };
   activeRecorders.add(proc);
   if (trace) tracedRecorders.set(proc, capture);
   // So the next daemon can reap this recorder if we die without shutting down.
@@ -349,6 +389,15 @@ function spawnCapture(
   return capture;
 }
 
+/** conch Microphone's exit, in the words a person can act on. */
+function nativeExitError(code: number, stderr: string): string {
+  if (code === MICROPHONE_PERMISSION_EXIT_CODE) {
+    // Where sox recorded silence that nothing reported, the refusal is the error.
+    return `Microphone access is off for ${microphoneRecorders.permissionName} — allow it in System Settings › Privacy & Security › Microphone`;
+  }
+  return `conch Microphone exited with code ${code}${stderr ? `: ${stderr.split("\n").at(-1)}` : ""}`;
+}
+
 /**
  * End the capture when an unbroken pause of `end-silence` has been heard
  * (speech-endpoint.ts), as sox's `silence` effect used to before its pause
@@ -359,7 +408,7 @@ function spawnCapture(
  */
 function watchEndpoint(cfg: Config, capture: Capture): ReturnType<typeof setInterval> {
   const endpointer = new SpeechEndpointer({
-    quietSecs: endpointQuietSecs(cfg),
+    quietSecs: endpointQuietSecs(cfg, capture.recorder),
     thresholdPct: cfg.endThresholdPct,
   });
   let offset = 0;
@@ -394,10 +443,21 @@ export function narrationSoxArgs(cfg: Pick<Config, "micGainDb"> & Partial<Pick<C
 /**
  * A narration's recorder, owned like every other: shutdown, a phone claim and
  * an audio yield stop it with the rest (`killActiveRecorders`), and the next
- * daemon reaps it if this one dies hard.
+ * daemon reaps it if this one dies hard. conch Microphone when it records
+ * (microphone-helper.ts), kept whole as a WAV and ended by its own
+ * `--seconds`; sox otherwise.
  */
-export function spawnNarrationRecorder(cfg: Config, wav: string, seconds: number): ReturnType<typeof Bun.spawn> {
-  const proc = Bun.spawn(narrationSoxArgs(cfg, wav, seconds), { stdout: "ignore", stderr: "ignore" });
+export function spawnNarrationRecorder(cfg: Config, wav: string, seconds: number): RecorderProcess {
+  const choice = microphoneRecorders.choose(cfg);
+  const proc: RecorderProcess = choice.kind === "native"
+    ? startNativeRecording({
+      argv: [choice.path, ...choice.args, "--seconds", String(seconds)],
+      path: wav,
+      format: { kind: "wav", gainDb: cfg.micGainDb },
+      onPermissionRefused: () => microphoneRecorders.reportPermissionRefused(),
+      onDigitalSilence: () => microphoneRecorders.reportDigitalSilence(),
+    })
+    : Bun.spawn(narrationSoxArgs(cfg, wav, seconds), { stdout: "ignore", stderr: "ignore" });
   activeRecorders.add(proc);
   recordSpawnedSox(proc.pid);
   void proc.exited.then(() => {
@@ -407,12 +467,12 @@ export function spawnNarrationRecorder(cfg: Config, wav: string, seconds: number
   return proc;
 }
 
-/** True for every Conch-owned SoX child, including pre-adoption barge capture. */
+/** True for every conch-owned recorder (conch Microphone or sox), including pre-adoption barge capture. */
 export function hasActiveRecorders(): boolean {
   return activeRecorders.size > 0;
 }
 
-/** Kill any in-flight sox capture — daemon shutdown must not leave the mic hot. */
+/** Kill any in-flight capture — daemon shutdown must not leave the mic hot. */
 export function killActiveRecorders(
   options: { immediate?: boolean } = {},
 ): Promise<void> | undefined {
@@ -780,7 +840,7 @@ export function armBargeRecorder(cfg: Config, traceParent?: string, traceSequenc
     clearTimeout(hardStop);
     const finalizedAt = Date.now();
     const final = finalFileSize(raw);
-    const error = final.error ?? (!capture.killCause && exitCode !== 0 ? `sox exited with code ${exitCode}` : null);
+    const error = final.error ?? (!capture.killCause && exitCode !== 0 ? capture.exitError(exitCode) : null);
     finalizeCaptureTrace(capture, exitCode, final.size, error);
     return {
       rawPath: raw,
@@ -988,7 +1048,7 @@ function armContinuousRecorder(
     clearInterval(watchdog);
     const finalizedAt = Date.now();
     const final = finalFileSize(raw);
-    const error = final.error ?? (!capture.killCause && exitCode !== 0 ? `sox exited with code ${exitCode}` : null);
+    const error = final.error ?? (!capture.killCause && exitCode !== 0 ? capture.exitError(exitCode) : null);
     finalizeCaptureTrace(capture, exitCode, final.size, error);
     return {
       rawPath: raw,
@@ -1043,7 +1103,7 @@ function finalizeCaptureTrace(
 ): void {
   if (!capture.trace) return;
   const final = knownFinalBytes === undefined ? finalFileSize(capture.raw) : { size: knownFinalBytes, error: null };
-  const unexpectedExit = !capture.killCause && exitCode !== 0 ? `sox exited with code ${exitCode}` : null;
+  const unexpectedExit = !capture.killCause && exitCode !== 0 ? capture.exitError(exitCode) : null;
   const error = knownError ?? final.error ?? unexpectedExit;
   if (!final.error) {
     try {

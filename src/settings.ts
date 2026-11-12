@@ -50,6 +50,7 @@ export const SETTINGS_FILE = "settings.json";
 export const SETTING_KEYS = [
   "end-silence",
   "mic-gain",
+  "recorder",
   "hold-submit-delay",
   "listen-window",
   "typing-grace",
@@ -95,6 +96,7 @@ export type SettingField =
   | "recordsEnabled"
   | "endSilenceSecs"
   | "micGainDb"
+  | "recorder"
   | "holdSubmitSecs"
   | "listenWindowSecs"
   | "typingGraceSecs"
@@ -187,6 +189,14 @@ function parsePhoneLan(raw: unknown): ParseResult<PhoneLanMode> {
   return { ok: false, err: "expected auto, on, or off" };
 }
 
+function parseRecorder(raw: unknown): ParseResult<"native" | "sox"> {
+  if (typeof raw === "string") {
+    const normalized = raw.trim().toLowerCase();
+    if (normalized === "native" || normalized === "sox") return { ok: true, value: normalized };
+  }
+  return { ok: false, err: "expected native or sox" };
+}
+
 function parseRelayURL(raw: unknown): ParseResult<string> {
   if (typeof raw !== "string") return { ok: false, err: "expected an https or wss URL" };
   const value = raw.trim();
@@ -261,7 +271,24 @@ export const SETTING_DESCRIPTORS = [
     parse: numberParser(micGain, "a number from -20 to 30"),
     bounds: micGain,
     apply: "live",
-    help: "software gain in dB added to mic capture (sox); lifts a quiet mic without touching the system input; 0 = off",
+    help: "software gain in dB added to mic capture; lifts a quiet mic without touching the system input; 0 = off",
+  },
+  {
+    // 2026-11-11, Tyler: "does it mess with my audio or mic and make it crackle or anything?" sox's CoreAudio
+    // driver sets the input device's IO buffer size at every capture and drops what its ring cannot hold; conch
+    // Microphone (seashell's native recorder, microphone-helper.ts) touches no device property. sox stays one
+    // setting away, as seashell keeps it behind SEASHELL_MICROPHONE_RECORDER=sox, and conch uses it by itself
+    // while conch Microphone has not been allowed the microphone.
+    key: "recorder",
+    field: "recorder",
+    env: "CONCH_RECORDER",
+    kind: "enum",
+    default: "native",
+    parse: parseRecorder,
+    bounds: null,
+    choices: ["native", "sox"],
+    apply: "live",
+    help: "what records the microphone: native (conch Microphone, seashell's recorder) or sox",
   },
   {
     key: "hold-submit-delay",

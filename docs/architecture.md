@@ -275,14 +275,14 @@ in place of polling and keystrokes is in `docs/codex-harness-notes.md` (roadmap 
 ## Async, and where it is honest
 
 Bun, single-threaded, `async`/`await` throughout. Everything expensive is a
-child process — `sox`, `whisper-cli`, `say`, Kokoro, `osascript`, `tmux` — so
+child process — the recorder (conch Microphone, or `sox`), `whisper-cli`, `say`, Kokoro, `osascript`, `tmux` — so
 the event loop is rarely the bottleneck. Codex's own audit of the relay
 confirmed the loop is not being starved: injection measures 0.7–1.2s and the
 30-second heartbeat window was never close.
 
 ## What it does to the rest of the Mac
 
-Every child process above reaches outside conch: `sox` opens the default
+Every child process above reaches outside conch: the recorder opens the default
 microphone, `say`/`afplay` play over whatever else is playing, `osascript`
 raises Terminal windows and types into them, and the hooks and the MCP server
 load into every Claude Code session on the machine. `docs/daemon-side-effects.md`
@@ -436,7 +436,11 @@ naming, because neither is obvious from the code:
   window snapshots) and the Microphone (the daemon's recorder) are each one
   switch for conch. The exception is a daemon conch did not start: from a
   terminal it answers to that terminal, from launchd to bun itself, and
-  Settings › Permissions says so. The app reads all four without prompting and
+  Settings › Permissions says so. The recorder keeps this rule since it became
+  seashell's native one (2026-11-11): conch Microphone relaunches itself
+  responsible for itself by default, so the daemon runs it with `--no-disclaim`;
+  only under launchd, where bun's silence would be the answer, does it hold its
+  own Microphone permission, from one installed copy (`src/microphone-helper.ts`). The app reads all four without prompting and
   asks only on a press (`mac-app/conch-mac/Permissions.swift`); the daemon
   names a refused keystroke `accessibility-permission-denied`, which the apps
   show with an Open Settings. Asking for Automation from the app needs

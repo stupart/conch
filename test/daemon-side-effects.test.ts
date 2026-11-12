@@ -551,6 +551,19 @@ describe("7. a dead daemon's sox is reaped", () => {
     expect(isConchSox("whisper-server --port 8642")).toBe(false);
   });
 
+  test("conch Microphone, as listen.ts runs it, qualifies; seashell's own recorder never does", () => {
+    const app = "/Applications/conch.app/Contents/Helpers/conch-microphone";
+    expect(isConchSox(`${app} --sample-rate 16000 --no-disclaim`)).toBe(true);
+    expect(isConchSox(`${app} --sample-rate 16000 --no-disclaim --seconds 150`)).toBe(true);
+    const copy = "/Users/someone/Library/Application Support/conch/Runtime/conch Microphone";
+    expect(isConchSox(`${copy} --sample-rate 16000`)).toBe(true);
+    expect(isConchSox(`${copy} --sample-rate 16000 --seconds 150`)).toBe(true);
+    expect(isConchSox(`${copy} --status`)).toBe(false);
+    expect(isConchSox(`${app} --request-permission`)).toBe(false);
+    expect(isConchSox("/Users/someone/Library/Application Support/Sea Shell/Runtime/Seashell Microphone --sample-rate 16000")).toBe(false);
+    expect(isConchSox("/opt/homebrew/opt/seashell/libexec/native/bin/seashell-microphone --sample-rate 16000")).toBe(false);
+  });
+
   test("kills exactly the recorded sox pids once their daemon is dead", async () => {
     const path = recordAt({ daemonPid: 999, pids: [4242, 4243, 4244], identities: Object.fromEntries([4242, 4243, 4244].map((pid) => [pid, identityFor(pid)])) });
     const r = reaper(new Set([4242, 4243, 4244]), { 4242: ARGV, 4243: "node server.js", 4244: ARGV });

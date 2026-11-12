@@ -13,7 +13,7 @@
  * `conch install` and `conch install-plugin` wire them (`runInstall`, `runCodexInstall`, `runInstallPlugin`), and read
  * back with the same shapes (`isConchHookCommand`, `codexHooksAreWiredAt`, `pluginInstalledFor`). The microphone is held
  * through the voice loop's one gate, as Show's narration holds it (`VoiceLoop.holdNarration`), recorded with seashell's
- * sox recipe (`spawnNarrationRecorder`) and transcribed by whisper (`transcribeWavSegments`): never Apple's speech APIs,
+ * recorder (`spawnNarrationRecorder`: conch Microphone, or sox) and transcribed by whisper (`transcribeWavSegments`): never Apple's speech APIs,
  * and never while conch is speaking.
  *
  * A row in setup goes green on the first real hook event from that agent, not on the file write: `noteTurn` hears every
@@ -673,7 +673,7 @@ export function createSetup(deps: SetupDependencies): Setup {
       let exited = false;
       void recorder.exited.finally(() => { exited = true; });
 
-      // Read the WAV as sox writes it: a level for each 60 ms, and an early end once someone has spoken and paused.
+      // Read the WAV as the recorder writes it: a level for each 60 ms, and an early end once someone has spoken and paused.
       let position = 0;
       let dataStart: number | null = null;
       let carry: Uint8Array = new Uint8Array(0);

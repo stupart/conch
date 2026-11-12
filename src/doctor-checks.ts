@@ -24,6 +24,7 @@ import {
   type SpeechEngineStatus,
 } from "./speech-engine.ts";
 import { describeTmux, resolveTmux, type TmuxBinary } from "./tmux-binary.ts";
+import { NATIVE_SAMPLE_RATE_ARGS, parseMicrophoneStatus, type MicrophoneAuthorization } from "./microphone-helper.ts";
 
 export const MICROPHONE_PROBE_DURATION_MS = 300;
 export const TTS_PROBE_WORD = "Ready.";
@@ -114,11 +115,12 @@ export function checkSpeechEngine(cfg: Pick<Config, "speechEngine">, deps: Speec
     describePart("whisper-server", engine.whisperServer),
     describePart("model", engine.whisperModel),
     describePart("VAD", engine.vadModel),
-    describePart("capture (sox)", engine.sox),
+    ...(engine.microphone.found ? [describePart("capture (conch Microphone)", engine.microphone)] : []),
+    describePart(engine.microphone.found ? "fallback capture (sox)" : "capture (sox)", engine.sox),
   ];
   const modelToFetch = !engine.whisperModel.found && engine.whisperModel.source === "missing";
   return {
-    ok: engine.whisperCli.found && engine.whisperModel.found && engine.vadModel.found && engine.sox.found,
+    ok: engine.whisperCli.found && engine.whisperModel.found && engine.vadModel.found && (engine.microphone.found || engine.sox.found),
     label,
     message: `Speech engine: ${parts.join("; ")}`,
     ...(modelToFetch
@@ -274,8 +276,17 @@ export type MicrophoneCaptureRunner = (
 export interface MicrophoneProbeOptions {
   capture?: MicrophoneCaptureRunner;
   durationMs?: number;
-  /** The sox the daemon captures with (`cfg.soxBin`: conch.app's, Homebrew's, or PATH's). */
+  /** The sox the daemon falls back to (`cfg.soxBin`: conch.app's, Homebrew's, or PATH's). */
   sox?: string;
+  /**
+   * conch Microphone, when the daemon records with it (microphone-helper.ts),
+   * run as the app's daemon runs it (`--no-disclaim`). Its permission is read
+   * first, without opening the microphone or asking; only an allowed helper is
+   * recorded with, and otherwise the probe says so and checks sox.
+   */
+  native?: string;
+  /** Test seam: what `conch-microphone --status` says. */
+  nativeStatus?: (path: string) => Promise<MicrophoneAuthorization>;
 }
 
 export type TtsProbeRunner = (
@@ -348,6 +359,49 @@ async function captureMicrophoneWithSox(durationMs: number, sox = "sox"): Promis
   }
 }
 
+/** conch Microphone records for `durationMs` (`--seconds`) and its stdout is the PCM. */
+async function captureMicrophoneWithNative(durationMs: number, helper: string): Promise<MicrophoneCapture> {
+  const seconds = Math.max(1, durationMs) / 1_000;
+  // Its own process group: it relaunches itself, and a timeout has to reach that copy.
+  const process = Bun.spawn([helper, ...NATIVE_SAMPLE_RATE_ARGS, "--no-disclaim", "--seconds", String(seconds)], {
+    stdout: "pipe",
+    stderr: "pipe",
+    detached: true,
+  });
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    try { globalThis.process.kill(-process.pid, "SIGKILL"); } catch {}
+  }, Math.max(MICROPHONE_PROBE_TIMEOUT_MS, durationMs + 2_000));
+  try {
+    const [exitCode, pcmBuffer, stderr] = await Promise.all([
+      process.exited,
+      new Response(process.stdout).arrayBuffer(),
+      new Response(process.stderr).text(),
+    ]);
+    if (timedOut) throw new Error("conch Microphone capture timed out");
+    if (exitCode !== 0) {
+      const detail = stderr.trim();
+      throw new Error(`conch Microphone exited with code ${exitCode}${detail ? `: ${detail}` : ""}`);
+    }
+    return { pcm: new Uint8Array(pcmBuffer) };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function nativeAuthorization(path: string): Promise<MicrophoneAuthorization> {
+  const proc = Bun.spawn([path, "--status", "--no-disclaim"], { stdout: "pipe", stderr: "ignore", detached: true });
+  const timeout = setTimeout(() => {
+    try { process.kill(-proc.pid, "SIGKILL"); } catch {}
+  }, MICROPHONE_PROBE_TIMEOUT_MS);
+  try {
+    return parseMicrophoneStatus(await new Response(proc.stdout).text());
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 /**
  * Record just long enough to distinguish a real input stream from the all-zero
  * stream seen when microphone access is unavailable. A quiet room still has a
@@ -358,20 +412,34 @@ export async function checkMicrophone(
   options: MicrophoneProbeOptions = {},
 ): Promise<DoctorProbeResult> {
   const durationMs = options.durationMs ?? MICROPHONE_PROBE_DURATION_MS;
+  let recorder = "microphone";
+  let note = "";
+  let capture: MicrophoneCaptureRunner = options.capture ?? ((ms: number) => captureMicrophoneWithSox(ms, options.sox));
+  if (options.native) {
+    const native = options.native;
+    const authorization = await (options.nativeStatus ?? nativeAuthorization)(native).catch(() => "unknown" as const);
+    if (authorization === "authorized") {
+      recorder = "conch Microphone";
+      capture = options.capture ?? ((ms: number) => captureMicrophoneWithNative(ms, native));
+    } else {
+      recorder = "sox";
+      note = ` — conch Microphone's Microphone access is ${authorization} here; allow it in System Settings › Privacy & Security › Microphone`;
+    }
+  }
   try {
-    const { pcm } = await (options.capture ?? ((ms: number) => captureMicrophoneWithSox(ms, options.sox)))(durationMs);
+    const { pcm } = await capture(durationMs);
     if (!pcm16HasNonZeroSample(pcm)) {
       return {
         ok: false,
         label: "microphone",
-        message: "microphone capture was all zeros — likely a microphone-permission problem.",
+        message: `${recorder} capture was all zeros — likely a microphone-permission problem${note}.`,
         action: MICROPHONE_PERMISSION_ACTION,
       };
     }
     return {
       ok: true,
       label: "microphone",
-      message: `microphone captured non-zero audio (${durationMs}ms)`,
+      message: `${recorder} captured non-zero audio (${durationMs}ms)${note}`,
     };
   } catch (error) {
     return {
