@@ -3,22 +3,24 @@ import WebKit
 import XCTest
 @testable import ConchDesign
 
-/// The passkey watcher (`WorkbenchPasskeys`), in real WebKit: a page that asks for a passkey is heard, in conch's own
-/// world alone, and gets exactly what it would have got without the watcher; the wrappers pass for the originals; the
-/// quiet autofill offer a sign-in page makes as it loads isn't heard; and nothing new is on the page's `window`.
-/// test/workbench-passkeys.test.ts holds the same script to the same rules against a pretend page.
+/// The passkey watcher (`WorkbenchPasskeys`), in real WebKit: a page that offers a passkey is heard, from conch's own
+/// world, and one that doesn't isn't; Tyler pressing one is heard at once; and the page's own world is exactly as it is
+/// without the watcher, so a bot check finds nothing tampered with. test/workbench-passkeys.test.ts holds the same script
+/// to the same rules against a pretend page.
 @MainActor
 final class WorkbenchPasskeysTests: XCTestCase {
     private final class Heard: NSObject, WKScriptMessageHandler {
-        var ops: [String] = []
+        var said: [String] = []
         var bodies: [Any] = []
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             bodies.append(message.body)
-            if let op = WorkbenchPasskeys.attempt(message.body) { ops.append(op) }
+            if let what = WorkbenchPasskeys.attempt(message.body) { said.append(what) }
         }
     }
 
+    /// Held as the app holds it: WebKit drops a named world once nothing holds it.
+    private static let world = WKContentWorld.world(name: WorkbenchScript.contentWorld)
     private var views: [WKWebView] = []
     private var windows: [NSWindow] = []
 
@@ -32,19 +34,29 @@ final class WorkbenchPasskeysTests: XCTestCase {
         super.tearDown()
     }
 
-    private func page(watched: Bool) async throws -> (WKWebView, Heard) {
+    private static let offering = """
+    <!doctype html><html><head><title>Sign in · Swatchbook</title></head><body>
+    <h1>Sign in</h1><input id="email" aria-label="Email">
+    <button id="passkey" style="width:200px;height:30px">Sign in with a passkey</button>
+    <iframe srcdoc="<p>inner</p>"></iframe></body></html>
+    """
+
+    private static let plain = """
+    <!doctype html><html><head><title>Sign in · Swatchbook</title></head><body>
+    <h1>Sign in</h1><input id="email" aria-label="Email"><button>Continue</button>
+    <p>Read our guide to passkeys.</p><button style="display:none">Use a passkey</button></body></html>
+    """
+
+    private func page(_ html: String, watched: Bool) async throws -> (WKWebView, NSWindow, Heard) {
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.prohibited)
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         let heard = Heard()
         if watched {
-            let event = WorkbenchPasskeys.eventName()
-            let world = WKContentWorld.world(name: WorkbenchScript.contentWorld)
             let content = configuration.userContentController
-            content.addUserScript(WKUserScript(source: WorkbenchPasskeys.pageScript(event: event), injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page))
-            content.addUserScript(WKUserScript(source: WorkbenchPasskeys.listenerScript(event: event), injectionTime: .atDocumentStart, forMainFrameOnly: false, in: world))
-            content.add(heard, contentWorld: world, name: WorkbenchPasskeys.messageHandler)
+            content.addUserScript(WKUserScript(source: WorkbenchPasskeys.script, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: Self.world))
+            content.add(heard, contentWorld: Self.world, name: WorkbenchPasskeys.messageHandler)
         }
         let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 480, height: 320), configuration: configuration)
         let window = NSWindow(contentRect: NSRect(x: -30_000, y: -30_000, width: 480, height: 320), styleMask: [.borderless], backing: .buffered, defer: false)
@@ -53,106 +65,98 @@ final class WorkbenchPasskeysTests: XCTestCase {
         window.orderFrontRegardless()
         views.append(view)
         windows.append(window)
-        view.loadHTMLString("<!doctype html><html><head><title>Sign in · Swatchbook</title></head><body><iframe srcdoc=\"<p>inner</p>\"></iframe></body></html>", baseURL: URL(string: "https://swatchbook.example/login"))
+        view.loadHTMLString(html, baseURL: URL(string: "https://swatchbook.example/login"))
         let deadline = Date().addingTimeInterval(10)
         while view.isLoading || view.url == nil {
             guard Date() < deadline else { throw XCTSkip("WebKit didn't load a page in this process") }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
-        try await Task.sleep(nanoseconds: 100_000_000)
-        return (view, heard)
+        return (view, window, heard)
     }
 
-    /// What the page sees of `navigator.credentials` and what a passkey request gets, in the page's own world.
-    private func look(_ view: WKWebView) async throws -> [String: Any] {
+    private func settle() async throws {
+        try await Task.sleep(nanoseconds: 1_600_000_000)
+    }
+
+    func testAPageThatOffersAPasskeyIsHeardAndOneThatDoesntIsnt() async throws {
+        let (_, _, offered) = try await page(Self.offering, watched: true)
+        let (_, _, plain) = try await page(Self.plain, watched: true)
+        try await settle()
+        XCTAssertEqual(offered.said, ["offer"], "once a page, however many frames and changes")
+        // Words about passkeys in a paragraph, and a passkey button not shown: no offer.
+        XCTAssertEqual(plain.said, [])
+    }
+
+    func testAPageThatOffersOneLaterIsHeardWhenItDoes() async throws {
+        let (view, _, heard) = try await page(Self.plain, watched: true)
+        try await settle()
+        XCTAssertEqual(heard.said, [])
+        _ = try await view.callAsyncJavaScript("document.body.insertAdjacentHTML('beforeend', '<h2>Use your passkey to confirm it’s really you</h2>')", arguments: [:], in: nil, contentWorld: .page)
+        try await settle()
+        XCTAssertEqual(heard.said, ["offer"])
+    }
+
+    func testTylerPressingOneIsHeardAtOnce() async throws {
+        let (view, window, heard) = try await page(Self.offering, watched: true)
+        let box = try await view.callAsyncJavaScript("const b = document.getElementById('passkey').getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2]", arguments: [:], in: nil, contentWorld: .page) as? [Double]
+        let point = try XCTUnwrap(WorkbenchInput.viewPoint(css: try XCTUnwrap(box), scale: Double(view.pageZoom), in: view.bounds.size))
+        view.mouseDown(with: try XCTUnwrap(WorkbenchInput.mouseEvent(.leftMouseDown, at: point, in: view, window: window)))
+        view.mouseUp(with: try XCTUnwrap(WorkbenchInput.mouseEvent(.leftMouseUp, at: point, in: view, window: window)))
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertTrue(heard.said.contains("pressed"), "\(heard.said)")
+        // A script's click is the page's own doing, not his.
+        let before = heard.said.filter { $0 == "pressed" }.count
+        _ = try await view.callAsyncJavaScript("document.getElementById('passkey').click()", arguments: [:], in: nil, contentWorld: .page)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(heard.said.filter { $0 == "pressed" }.count, before)
+    }
+
+    /// 2026-11-11: the old watcher wrapped `navigator.credentials` and `Function.prototype.toString` in the page's world,
+    /// and CreepJS read it as a stealth plugin, every native function as a lie. Now the page's world is as it would be
+    /// without the watcher: the same sources, the same answers to the recursion test that caught the Proxy, and nothing
+    /// new on `window`.
+    func testThePagesOwnWorldIsUntouched() async throws {
+        let (plainView, _, _) = try await page(Self.offering, watched: false)
+        let (watchedView, _, _) = try await page(Self.offering, watched: true)
+        try await settle()
         let script = """
         const out = {};
-        const C = navigator.credentials;
-        out.hasCredentials = !!C;
-        if (!C) return out;
         const ts = Function.prototype.toString;
-        out.getSource = ts.call(C.get);
-        out.createSource = ts.call(C.create);
-        out.getString = String(C.get);
-        out.toStringSource = ts.call(ts);
-        out.toStringOfToString = ts.toString();
-        out.getName = C.get.name + "/" + C.get.length;
-        out.createName = C.create.name + "/" + C.create.length;
-        out.descriptor = JSON.stringify(Object.getOwnPropertyDescriptor(CredentialsContainer.prototype, "get"));
-        out.toStringDescriptor = JSON.stringify(Object.getOwnPropertyDescriptor(Function.prototype, "toString"));
+        const C = navigator.credentials;
+        out.toString = ts.call(ts);
+        out.get = C ? ts.call(C.get) : "none";
+        out.same = C ? (Object.getOwnPropertyDescriptor(CredentialsContainer.prototype, "get").value === C.get) : true;
+        // The recursion test: a Proxy round toString overflows the stack where the native one throws a TypeError.
+        const recursion = (fn) => { try { Object.setPrototypeOf(fn, Object.create(fn)); return String(fn); } catch (error) { return error.constructor.name; } finally { try { Object.setPrototypeOf(fn, Function.prototype); } catch (_) {} } };
+        out.toStringRecursion = recursion(ts);
+        out.getRecursion = C ? recursion(C.get) : "none";
+        out.keys = Object.getOwnPropertyNames(window).filter((key) => /conch/i.test(key)).join(",");
         out.webkit = typeof window.webkit;
-        out.ownKeys = Object.getOwnPropertyNames(window).filter((key) => key.toLowerCase().includes("conch")).join(",");
-        const settle = (promise) => Promise.race([
-            promise.then(() => "resolved", (error) => "rejected " + (error && error.name)),
-            new Promise((resolve) => setTimeout(() => resolve("pending"), 2500)),
-        ]);
-        const challenge = new Uint8Array(16);
-        out.getOutcome = await settle(C.get({ publicKey: { challenge, timeout: 1500 } }));
-        out.badThis = await settle(Promise.resolve().then(() => C.get.call({}, { publicKey: { challenge } })));
         return out;
         """
-        let value = try await view.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .page)
-        return try XCTUnwrap(value as? [String: Any])
-    }
-
-    func testAPasskeyRequestIsHeardAndGetsWhatItWouldHaveGot() async throws {
-        let (plain, _) = try await page(watched: false)
-        let (watched, heard) = try await page(watched: true)
-        let before = try await look(plain)
-        let after = try await look(watched)
-        guard before["hasCredentials"] as? Bool == true else { throw XCTSkip("this WebKit has no navigator.credentials") }
-
-        // Heard for each get asking for a passkey (the second on the wrong object, which the original then turns down),
-        // as "get" alone: never the page's own words.
-        XCTAssertEqual(heard.ops, ["get", "get"])
-        XCTAssertEqual(heard.bodies.count, 2)
-
-        // Exactly what it would have got, rejection and all (here WebKit's NotAllowedError, as conch isn't an approved
-        // browser), and the same for a call on the wrong object.
-        XCTAssertEqual(after["getOutcome"] as? String, before["getOutcome"] as? String)
-        XCTAssertEqual(after["badThis"] as? String, before["badThis"] as? String)
-
-        // The wrappers pass for the originals, and toString for itself.
-        for key in ["getSource", "createSource", "getString", "toStringSource", "toStringOfToString", "getName", "createName", "toStringDescriptor", "webkit", "ownKeys"] {
-            XCTAssertEqual(after[key] as? String, before[key] as? String, key)
+        let plainLook = try await plainView.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .page)
+        let watchedLook = try await watchedView.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .page)
+        let plain = try XCTUnwrap(plainLook as? [String: Any])
+        let watched = try XCTUnwrap(watchedLook as? [String: Any])
+        for key in ["toString", "get", "toStringRecursion", "getRecursion", "keys", "webkit"] {
+            XCTAssertEqual(watched[key] as? String, plain[key] as? String, key)
         }
-        XCTAssertTrue((after["getSource"] as? String ?? "").contains("[native code]"))
-        // The same attributes on the prototype: only the value differs.
-        XCTAssertEqual((after["descriptor"] as? String)?.contains("\"writable\":true"), (before["descriptor"] as? String)?.contains("\"writable\":true"))
-        XCTAssertEqual((after["descriptor"] as? String)?.contains("\"enumerable\":true"), (before["descriptor"] as? String)?.contains("\"enumerable\":true"))
+        XCTAssertEqual(watched["same"] as? Bool, true)
+        XCTAssertNotEqual(watched["toStringRecursion"] as? String, "RangeError")
+        XCTAssertEqual(watched["webkit"] as? String, "undefined", "the handler is in conch's world alone")
     }
 
-    func testTheQuietAutofillOfferAndOtherCredentialsAreNotHeard() async throws {
-        let (view, heard) = try await page(watched: true)
-        let script = """
-        const C = navigator.credentials;
-        if (!C) return "none";
-        const settle = (promise) => Promise.race([promise.then(() => 0, () => 0), new Promise((resolve) => setTimeout(() => resolve(0), 600))]);
-        await settle(C.get({ publicKey: { challenge: new Uint8Array(16) }, mediation: "conditional" }));
-        await settle(C.get({ password: true }));
-        await settle(C.get());
-        await settle(C.create({ publicKey: { challenge: new Uint8Array(16), rp: { name: "Swatchbook" }, user: { id: new Uint8Array(8), name: "jordan", displayName: "Jordan" }, pubKeyCredParams: [{ type: "public-key", alg: -7 }], timeout: 500 } }));
-        return "ok";
-        """
-        let result = try await view.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .page) as? String
-        guard result == "ok" else { throw XCTSkip("this WebKit has no navigator.credentials") }
-        try await Task.sleep(nanoseconds: 200_000_000)
-        XCTAssertEqual(heard.ops, ["create"], "the conditional get, a password get and a bare get aren't passkeys asked for")
-    }
-
-    func testTheEventNameIsNewForEachPageAndOnlyEverItsOwnCharacters() {
-        let one = WorkbenchPasskeys.eventName()
-        XCTAssertNotEqual(one, WorkbenchPasskeys.eventName())
-        XCTAssertNotNil(one.range(of: "^conch-pk-[0-9a-f]{32}$", options: .regularExpression))
-        let script = WorkbenchPasskeys.pageScript(event: "conch-pk-abc\"; alert(1); //")
-        XCTAssertTrue(script.contains("const EVENT = \"conch-pk-abcalert1\";"))
-        XCTAssertFalse(script.contains(WorkbenchPasskeys.placeholder))
-        let listener = WorkbenchPasskeys.listenerScript(event: one)
-        XCTAssertTrue(listener.contains("window.webkit.messageHandlers.conchPasskeys.postMessage(op)"))
-        XCTAssertTrue(listener.contains("const EVENT = \"\(one)\";"))
-        XCTAssertEqual(WorkbenchPasskeys.attempt("get"), "get")
-        XCTAssertEqual(WorkbenchPasskeys.attempt("create"), "create")
-        XCTAssertNil(WorkbenchPasskeys.attempt("eval"))
-        XCTAssertNil(WorkbenchPasskeys.attempt(["op": "get"]))
+    func testOnlyItsOwnTwoWordsAreHeard() {
+        XCTAssertEqual(WorkbenchPasskeys.attempt("offer"), "offer")
+        XCTAssertEqual(WorkbenchPasskeys.attempt("pressed"), "pressed")
+        XCTAssertNil(WorkbenchPasskeys.attempt("get"))
+        XCTAssertNil(WorkbenchPasskeys.attempt(["what": "offer"]))
+        XCTAssertFalse(WorkbenchPasskeys.script.contains(WorkbenchPasskeys.handlerPlaceholder))
+        XCTAssertTrue(WorkbenchPasskeys.script.contains("window.webkit.messageHandlers.conchPasskeys.postMessage(what)") || WorkbenchPasskeys.script.contains("W.webkit.messageHandlers.conchPasskeys.postMessage(what)"))
+        XCTAssertEqual(WorkbenchPasskeys.entitlement, "com.apple.developer.web-browser.public-key-credential")
+        // Nothing of the page's is touched: the watcher never names what it used to wrap.
+        for wrapped in ["navigator", "credentials", "Function.prototype", "toString", "defineProperty"] {
+            XCTAssertFalse(WorkbenchPasskeys.script.contains(wrapped), wrapped)
+        }
     }
 }

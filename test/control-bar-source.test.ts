@@ -1079,7 +1079,7 @@ test("one opening rule: a deliverable the panel draws opens in it while it is on
     "let content = row.panelContent",
     "let marked = !(row.review?.marks.isEmpty ?? true)",
     // A folder's tree is conch's alone too (`ReviewScene.opensOnlyInConch`, XCTests pin its cases).
-    "let conchOnly = ReviewScene.opensOnlyInConch(deliverable: row.review?.kind, marked: marked)",
+    "let conchOnly = ReviewScene.opensOnlyInConch(deliverable: row.review?.kind, marked: marked, link: link)",
     // The rule itself is ConchDesign's (`ConchOverlays.destination`, XCTests pin every case); on, it is the one it was.
     "let destination = ConchOverlays.destination(overlays: panels != nil, panelDraws: content != nil,",
     "panelOn: defaults.bool(forKey: showConversationKey), conchOnly: conchOnly, words: words)",

@@ -141,6 +141,11 @@ final class FolderDeliverableTests: XCTestCase {
         XCTAssertTrue(ReviewScene.opensOnlyInConch(deliverable: "page", marked: true))
         XCTAssertFalse(ReviewScene.opensOnlyInConch(deliverable: "page", marked: false))
         XCTAssertFalse(ReviewScene.opensOnlyInConch(deliverable: nil, marked: false))
+        // A Figma file is shown as its embed where conch shows the work, never handed to Figma by a pick (2026-11-11).
+        XCTAssertTrue(ReviewScene.opensOnlyInConch(deliverable: "design", marked: false, link: URL(string: "https://www.figma.com/design/KEY/Name")))
+        XCTAssertTrue(ReviewScene.opensOnlyInConch(deliverable: nil, marked: false, link: URL(string: "https://figma.com/file/KEY")))
+        XCTAssertFalse(ReviewScene.opensOnlyInConch(deliverable: "url", marked: false, link: URL(string: "https://www.figma.com/pricing")))
+        XCTAssertFalse(ReviewScene.opensOnlyInConch(deliverable: "design", marked: false, link: nil))
     }
 
     func testTheRowSaysWhatItIsMarkedFor() {

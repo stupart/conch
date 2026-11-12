@@ -122,6 +122,26 @@ final class WorkdeskAttentionRenderTests: XCTestCase {
 
     // MARK: - Passkeys
 
+    /// 2026-11-11 (Tyler: "passkeys don't work in conch browser yet"): the line offers the page in his own browser, where
+    /// his passkeys work. Open in Browser sits before the ×, Done's shape, and the × stays under the bar's close ×.
+    func testThePasskeyLineOffersHisOwnBrowser() throws {
+        for dark in [false, true] {
+            for width in Self.widths {
+                let label = "\(Int(width)) \(dark ? "dark" : "light")"
+                let shot = try picture(PasskeyScene(width: width, opens: true), size: CGSize(width: width, height: AskScene.height), dark: dark, name: "after-passkeys-open-\(Int(width))")
+                let top = AskScene.noticeTop
+                let ground = shot.color(width / 2, top + 3)
+                let x = try XCTUnwrap(shot.inkSpan(x: width - 29, width - 7, y: top + 8, top + 22, against: ground, threshold: 40), label)
+                let close = try XCTUnwrap(shot.inkSpan(x: width - 29, width - 7, y: AskScene.barTop + 6, AskScene.barTop + 20, against: shot.color(width - 3, AskScene.barTop + 3), threshold: 40), label)
+                XCTAssertEqual(x.lowerBound, close.lowerBound, accuracy: 0.6, "the × still under the close ×, \(label)")
+                // The button: its capsule ends before the ×'s target and is a few words wide.
+                let button = try XCTUnwrap(shot.span(x: width - 200, width - 33, y: top + 15, notMatching: ground, tolerance: 6), "Open in Browser, \(label)")
+                XCTAssertLessThan(button.upperBound, x.lowerBound - 4, "the button before the ×, \(label)")
+                XCTAssertGreaterThan(button.upperBound - button.lowerBound, 70, "the button's words, \(label)")
+            }
+        }
+    }
+
     /// The passkey line: the same strip, the bar's surface without the wash, its key on the left axis and its × the bar's
     /// close × exactly, under it.
     func testAPasskeyThePageAskedForIsSaidUnderTheBar() throws {
@@ -358,6 +378,7 @@ private struct AskScene: View {
 /// A Google-like account chooser after a passkey failed: invented, with the passkey line under the bar.
 private struct PasskeyScene: View {
     let width: CGFloat
+    var opens = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -379,7 +400,7 @@ private struct PasskeyScene: View {
             Rectangle().fill(ConchColor.hairline).frame(height: 1)
             BarStandIn(address: "https://accounts.example/signin/challenge")
             Rectangle().fill(ConchColor.hairline).frame(height: 1)
-            WorkbenchNotice(.passkeys, action: {})
+            WorkbenchNotice(.passkeys, action: {}, open: opens ? {} : nil)
             Rectangle().fill(ConchColor.hairline).frame(height: 1)
             ChooserPage()
         }

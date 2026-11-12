@@ -267,8 +267,8 @@ final class ConchDesignTests: XCTestCase {
     }
 
     /// 09-21, "BOTH": a pick in the panel whose deliverable the panel can draw shows it there, full screen, with the reply
-    /// floating over it. An app window, the Simulator, a terminal, a design or an office document still comes forward in
-    /// its own app.
+    /// floating over it. An app window, the Simulator, a terminal, a design that isn't a Figma file or an office document
+    /// still comes forward in its own app.
     func testAPanelPickShowsAPageDocumentPictureOrLiveUrlInThePanel() {
         let there: (String) -> Bool = { _ in true }
         let gone: (String) -> Bool = { _ in false }
@@ -295,8 +295,13 @@ final class ConchDesignTests: XCTestCase {
         XCTAssertTrue(shows("url", live, kind: .link))
         // Filed without a kind, by a daemon older than kinds: the link says, as src/deliverables.ts reads it.
         XCTAssertTrue(shows(nil, live))
-        XCTAssertFalse(shows(nil, URL(string: "https://www.figma.com/design/abc/Icons")))
-        XCTAssertFalse(shows(nil, URL(string: "https://figma.com/file/abc")))
+        // A Figma file, filed as a design or with no kind: drawn here, as Figma's embed (2026-11-11, Tyler: "Make figma
+        // show in the deliverables area instead of automatically sending me to figma"). Figma's other pages aren't.
+        XCTAssertTrue(shows(nil, URL(string: "https://www.figma.com/design/abc/Icons")))
+        XCTAssertTrue(shows(nil, URL(string: "https://figma.com/file/abc")))
+        XCTAssertTrue(shows("design", URL(string: "https://www.figma.com/design/abc/Icons")))
+        XCTAssertFalse(shows(nil, URL(string: "https://www.figma.com/pricing")))
+        XCTAssertFalse(shows("design", URL(string: "https://www.figma.com/design/abc/Icons"), kind: .terminal))
         XCTAssertTrue(shows(nil, URL(fileURLWithPath: "/tmp/hero-390.PNG")))
         XCTAssertTrue(shows(nil, URL(fileURLWithPath: "/tmp/notes.md")))
         XCTAssertFalse(shows(nil, URL(fileURLWithPath: "/tmp/brief.docx")))

@@ -459,6 +459,42 @@ extension WorkspaceTests {
         XCTAssertNil(figmaApp("file:///Users/me/Asset.fig"))
     }
 
+    // MARK: - A Figma file, shown where it was published
+
+    /// 2026-11-11, Tyler: "Make figma show in the deliverables area instead of automatically sending me to figma." A file's
+    /// embed is Figma's viewer for it, its whole address carried in `url` with every reserved character encoded, so the
+    /// frame it was filed on and its options stay its own; anything that isn't a file has none.
+    func testAFigmaFileIsShownAsItsEmbed() throws {
+        let file = try XCTUnwrap(URL(string: "https://www.figma.com/design/KEY/Pricing-Page?node-id=12-34&t=abc"))
+        XCTAssertTrue(FigmaLink.isFile(file))
+        let embed = try XCTUnwrap(FigmaLink.embedURL(for: file))
+        XCTAssertEqual(embed.absoluteString, "https://www.figma.com/embed?embed_host=conch&url=https%3A%2F%2Fwww.figma.com%2Fdesign%2FKEY%2FPricing-Page%3Fnode-id%3D12-34%26t%3Dabc")
+        let parts = try XCTUnwrap(URLComponents(url: embed, resolvingAgainstBaseURL: false))
+        XCTAssertEqual(parts.queryItems?.first { $0.name == "url" }?.value, file.absoluteString)
+        XCTAssertEqual(parts.queryItems?.first { $0.name == "embed_host" }?.value, "conch")
+        for other in ["https://www.figma.com/proto/KEY/Flow", "https://figma.com/file/KEY", "https://www.figma.com/board/KEY/Map", "https://embed.figma.com/design/KEY/Name"] {
+            XCTAssertNotNil(FigmaLink.embedURL(for: URL(string: other)!), other)
+        }
+        for notAFile in ["https://www.figma.com/pricing", "https://www.figma.com/community/file/123", "https://notfigma.com/design/KEY/Name", "file:///Users/me/Asset.fig"] {
+            XCTAssertFalse(FigmaLink.isFile(URL(string: notAFile)!), notAFile)
+            XCTAssertNil(FigmaLink.embedPage(for: URL(string: notAFile)!), notAFile)
+        }
+    }
+
+    /// The page holding the embed is nothing but its frame, filling it, on conch's ground while it loads; framed at
+    /// figma.com's own address, so WebKit lets the embed have the profile's Figma sign-in, which it keeps from a frame
+    /// on any other site.
+    func testTheEmbedsPageIsOnlyItsFrameAtFigmasAddress() throws {
+        let page = try XCTUnwrap(FigmaLink.embedPage(for: URL(string: "https://www.figma.com/design/KEY/Name?node-id=1-2")!))
+        XCTAssertTrue(page.contains("<iframe src=\"https://www.figma.com/embed?embed_host=conch&amp;url=https%3A%2F%2Fwww.figma.com%2Fdesign%2FKEY%2FName%3Fnode-id%3D1-2\" allowfullscreen></iframe>"))
+        XCTAssertFalse(page.contains("<script"))
+        XCTAssertEqual(page.components(separatedBy: "<iframe").count, 2)
+        XCTAssertEqual(FigmaLink.embedBase.absoluteString, "https://www.figma.com/")
+        // A quote in the address can't end the frame's attribute.
+        let odd = try XCTUnwrap(FigmaLink.embedPage(for: URL(string: "https://www.figma.com/design/KEY/Name?x=%22onload%3D")!))
+        XCTAssertFalse(odd.contains("\"onload"))
+    }
+
     // MARK: - The Workdesk's run
 
     private func page(_ id: String, opened: Double, used: Double? = nil) -> Workbench.Tab {

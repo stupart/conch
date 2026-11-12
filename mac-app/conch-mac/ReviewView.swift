@@ -139,8 +139,8 @@ struct InlineReviewView: View {
             // artifact 'in the wild'". It no longer depends on the stage at all, so it says one
             // thing and does one thing.
             actionSymbol: "arrow.up.forward.app",
-            // Where a Figma file lives is Figma (`FigmaLink`; `openLink` hands it over), and a
-            // private one is often a sign-in wall in here — so the way out says where it goes.
+            // Where a Figma file lives is Figma (`FigmaLink`; `openLink` hands it over). The pane shows
+            // its embed (2026-11-11); the way out says where it goes.
             actionHelp: opensInFigma ? "Open in Figma (⌘3)" : "Open where it lives (⌘3)",
             actionAccessibilityLabel: opensInFigma ? "Open the design in Figma" : "Open the deliverable where it lives",
             // The page you are LOOKING AT, not the one that was filed. "Open in browser" sat

@@ -130,6 +130,9 @@ class FakeElement {
   dispatchEvent(event: FakeEvent): boolean { this.events.push(event.type); return !event.defaultPrevented; }
   click() { this.clicks += 1; this.events.push("click"); }
   focus() { this.focused = true; }
+  selected = 0;
+  select() { this.selected += 1; }
+  contains(other: FakeElement): boolean { return other === this || this.descendants().includes(other); }
   scrolls: unknown[] = [];
   scrollIntoView(options?: unknown) { this.scrolls.push(options); }
 }
@@ -160,14 +163,16 @@ function page() {
   const script = new FakeElement("a", { href: "javascript:void(0)" }, "Menu");
   const offscreen = new FakeElement("a", { href: "/hidden" }, "Hidden link");
   offscreen.display = "none";
+  const date = new FakeElement("input", { type: "date", name: "when", "aria-label": "When" });
+  const plan = new FakeElement("select", { name: "plan", "aria-label": "Plan" });
   const body = new FakeElement("body", {}, "Welcome back").append(
     new FakeElement("h1", {}, "Sign in to Acme"),
     label("Email", email), email,
     passwordBox,
     shown, hidden, code, notes,
-    signIn, docs, external, script, offscreen,
+    signIn, docs, external, script, offscreen, date, plan,
   );
-  const document = {
+  const document: Record<string, any> = {
     title: "Sign in · Acme",
     body,
     documentElement: body,
@@ -175,8 +180,14 @@ function page() {
     querySelector: (selector: string) => body.querySelector(selector),
     getElementById: (id: string) => body.descendants().find((element) => element.id === id) ?? null,
   };
+  const listeners: Record<string, Array<(event: unknown) => void>> = {};
   const window: Record<string, unknown> = {
     location: { href: "https://acme.dev/login" },
+    innerWidth: 1280,
+    innerHeight: 800,
+    addEventListener: (type: string, listener: (event: unknown) => void, capture: boolean) => {
+      if (capture) (listeners[type] ??= []).push(listener);
+    },
     getComputedStyle: (element: FakeElement) => ({ display: element.display, visibility: element.visibility }),
     Event: FakeEvent,
     MouseEvent: FakeEvent,
@@ -185,7 +196,7 @@ function page() {
     HTMLInputElement: FakeElement,
     HTMLTextAreaElement: FakeElement,
   };
-  return { window, document, form, email, password, shown, hidden, code, notes, passwordBox, signIn, docs, external, body };
+  return { window, document, listeners, form, email, password, shown, hidden, code, notes, passwordBox, signIn, docs, external, date, plan, body };
 }
 
 type Page = ReturnType<typeof page>;
@@ -322,11 +333,12 @@ describe("the Workbench's page script", () => {
   /** 2026-10-16: the user watches an agent work, so the app marks what it is about to click or type into. */
   test("locate answers only where a click or a type will land, and refuses a password field before anything is marked", async () => {
     const p = page();
-    expect(await run(p, "locate", { how: "auto", what: "Sign in" })).toEqual({ box: [10, 10, 120, 24] });
-    expect(await run(p, "locate-field", { how: "auto", what: "Email" })).toEqual({ box: [10, 10, 120, 24] });
+    expect(await run(p, "locate", { how: "auto", what: "Sign in" })).toEqual({ box: [10, 10, 120, 24], native: true, what: 'button "Sign in"' });
+    expect(await run(p, "locate-field", { how: "auto", what: "Email" })).toEqual({ box: [10, 10, 120, 24], native: true, what: 'field "Email"', singleLine: true });
     // A label's box is its field's: what will be typed into is what is marked.
     p.email.size = { width: 300, height: 32 };
-    expect(await run(p, "locate-field", { how: "text", what: "Email" })).toEqual({ box: [10, 10, 300, 32] });
+    expect(await run(p, "locate-field", { how: "text", what: "Email" })).toEqual({ box: [10, 10, 300, 32], native: true, what: 'field "Email"', singleLine: true });
+    expect((await run(p, "locate-field", { how: "auto", what: "Notes" })).singleLine).toBe(false);
     for (const what of ["Password", ".password-box", "#password"]) {
       expect(await run(p, "locate-field", { how: "auto", what }), what).toEqual({ error: PASSWORD_REFUSAL });
     }
@@ -336,6 +348,91 @@ describe("the Workbench's page script", () => {
     for (const field of [p.email, p.password]) expect(field.valueSets).toBe(0);
     const wire = JSON.stringify(await run(p, "locate-field", { how: "auto", what: "Email" }));
     expect(wire).not.toContain("tyler@example.com");
+  });
+
+  /**
+   * 2026-11-11: the app presses a click for real, at a spot inside the element that a click there reaches, so the page
+   * hears the pointer, trusted. The middle when nothing covers it; another spot of it when something does (a banner over
+   * half of it); none when it is covered all over, and the app clicks by script. A label's spot is its field's.
+   */
+  test("locate answers a spot a real click reaches, or none when the element is covered", async () => {
+    const p = page();
+    p.document.elementFromPoint = () => p.signIn;
+    expect((await run(p, "locate", { how: "auto", what: "Sign in" })).point).toEqual([70, 22]);
+    // The middle covered by a banner: the next spot that is the button's.
+    p.document.elementFromPoint = (x: number) => (x === 70 ? p.docs : p.signIn);
+    expect((await run(p, "locate", { how: "auto", what: "Sign in" })).point).toEqual([46, 22]);
+    p.document.elementFromPoint = () => p.docs;
+    const covered = await run(p, "locate", { how: "auto", what: "Sign in" });
+    expect(covered.point).toBeUndefined();
+    expect(covered.native).toBe(true);
+    // What is drawn at the spot is the field's label: a click there is the field's.
+    const emailLabel = p.email.labels[0]!;
+    p.document.elementFromPoint = () => emailLabel;
+    expect((await run(p, "locate-field", { how: "selector", what: "#email" })).point).toEqual([70, 22]);
+    // Out of the window: no spot.
+    p.window.innerWidth = 40;
+    p.document.elementFromPoint = () => p.signIn;
+    expect((await run(p, "locate", { how: "auto", what: "Sign in" })).point).toEqual([28, 22]);
+    p.window.innerWidth = 5;
+    expect((await run(p, "locate", { how: "auto", what: "Sign in" })).point).toBeUndefined();
+  });
+
+  test("a menu or a picker is never pressed for real: its window would hold the app until it closed", async () => {
+    const p = page();
+    p.document.elementFromPoint = (_x: number, _y: number) => p.plan;
+    expect(await run(p, "locate", { how: "auto", what: "select" })).toMatchObject({ native: false });
+    expect((await run(p, "locate", { how: "auto", what: "select" })).point).toBeUndefined();
+    p.document.elementFromPoint = () => p.date;
+    expect(await run(p, "locate-field", { how: "selector", what: 'input[name="when"]' })).toMatchObject({ native: false });
+    expect(await run(p, "locate-field", { how: "selector", what: "select" })).toMatchObject({ native: false });
+  });
+
+  /**
+   * 2026-11-11: real keys type into the field the app pressed. `focus-field` puts the caret there with its text selected
+   * (the keys replace it, as `type` always did), and guards it: while the agent types, a trusted key the page would send
+   * anywhere else (it moved the caret, to a password say) is stopped before the page has it. `end-field` says whether
+   * anything landed, and never what.
+   */
+  test("focus-field selects the field and guards it; end-field says only whether anything landed", async () => {
+    const p = page();
+    expect(await run(p, "focus-field", { how: "auto", what: "Email" })).toEqual({ ready: true });
+    expect(p.email.focused).toBe(true);
+    expect(p.email.selected).toBe(1);
+    const keyTo = (target: FakeElement, trusted = true) => {
+      const event = { isTrusted: trusted, target, stopped: false, prevented: false,
+        composedPath: () => [target, ...(target.parent ? [target.parent] : [])],
+        preventDefault() { this.prevented = true; }, stopImmediatePropagation() { this.stopped = true; } };
+      for (const listener of p.listeners.keydown ?? []) listener(event);
+      return event;
+    };
+    expect(p.listeners.keydown?.length).toBe(1);
+    expect(keyTo(p.email)).toMatchObject({ prevented: false, stopped: false });
+    expect(keyTo(p.password)).toMatchObject({ prevented: true, stopped: true });
+    // The page's own events, and anyone's once the agent is done, go where they go.
+    expect(keyTo(p.password, false)).toMatchObject({ prevented: false });
+    p.email.value = "agent@example.com";
+    const ended = await run(p, "end-field");
+    expect(ended).toEqual({ changed: true, strayed: true, typed: 'field "Email"' });
+    expect(JSON.stringify(ended)).not.toContain("agent@example.com");
+    expect(keyTo(p.password)).toMatchObject({ prevented: false });
+    // The guard goes on once a page, however many fields are typed in.
+    await run(p, "focus-field", { how: "auto", what: "Notes" });
+    expect(p.listeners.keydown?.length).toBe(1);
+    expect(await run(p, "end-field")).toEqual({ changed: false, strayed: false, typed: 'field "Notes"' });
+    expect(await run(p, "end-field")).toEqual({ changed: false, strayed: false });
+  });
+
+  test("focus-field refuses a password, a menu and a field that can't take typing, before anything is selected", async () => {
+    const p = page();
+    for (const what of ["Password", "#password", ".password-box", 'input[name="pw-visible"]']) {
+      expect(await run(p, "focus-field", { how: "auto", what }), what).toEqual({ error: PASSWORD_REFUSAL });
+    }
+    expect(p.password.selected).toBe(0);
+    expect((await run(p, "focus-field", { how: "selector", what: "select" })).error).toBe('field "Plan" isn\'t a field you can type in');
+    p.email.disabled = true;
+    expect((await run(p, "focus-field", { how: "selector", what: "#email" })).error).toBe('field "Email" is disabled');
+    expect(p.email.selected).toBe(0);
   });
 
   /**
