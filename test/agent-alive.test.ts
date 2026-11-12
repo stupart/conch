@@ -8,7 +8,7 @@ import { confirmAgentStarted, lastTabLines, tabAgentState, type AgentStartWatch,
  */
 describe("what a tab is running", () => {
   test("the agent, by its executable or a runtime running it; its shell alone; nothing; or unknown", () => {
-    expect(tabAgentState(["login -pf alex", "claude --resume 162f2800 --fork-session"], "claude")).toBe("running");
+    expect(tabAgentState(["login -pf alex", "claude --resume 5e5e5e09 --fork-session"], "claude")).toBe("running");
     expect(tabAgentState(["node /opt/homebrew/bin/claude --resume x"], "claude")).toBe("running");
     expect(tabAgentState(["/Users/alex/.codex/bin/codex fork x"], "codex")).toBe("running");
     expect(tabAgentState(["login -pf alex", "-zsh"], "claude")).toBe("starting");
@@ -32,7 +32,7 @@ describe("confirming a start", () => {
     let clock = 0;
     return {
       state: async () => states(clock),
-      lastWords: async () => "No conversation found with session ID: 162f2800",
+      lastWords: async () => "No conversation found with session ID: 5e5e5e09",
       sleep: async (ms) => { clock += ms; },
       now: () => clock,
     };
@@ -47,7 +47,7 @@ describe("confirming a start", () => {
     expect(await confirmAgentStarted(fake((at) => (at < 1_000 ? "running" : "gone")))).toEqual({
       ok: false,
       why: "exited as soon as it started",
-      lastWords: "No conversation found with session ID: 162f2800",
+      lastWords: "No conversation found with session ID: 5e5e5e09",
     });
   });
 

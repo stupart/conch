@@ -35,9 +35,9 @@ const held = (id: string, at: number, viewedAt?: number, approvedAt?: number): S
 
 function modelWith(reviews: SessionReview[], status: "waiting" | "working" | "needs" = "waiting") {
   return buildPanelModel({
-    sessions: [{ sessionId: "s", name: "Prime page wireframe", backend: "claude" }],
+    sessions: [{ sessionId: "s", name: "About page wireframe", backend: "claude" }],
     sessionStates: new Map([
-      ["s", { label: "Prime page wireframe", status, at: 10_000, review: reviews.at(-1), reviews }],
+      ["s", { label: "About page wireframe", status, at: 10_000, review: reviews.at(-1), reviews }],
     ]),
     pausedSessionIds: new Set(),
     live: { state: "idle", label: "", partial: "" },

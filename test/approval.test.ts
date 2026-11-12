@@ -26,22 +26,22 @@ const bash = use("tu_1", "Bash", { command: "git push origin main", description:
 const newestFirst = (...oldestFirst: string[]) => [...oldestFirst].reverse();
 
 /**
- * Real lines from Tyler's own Codex rollout, captured 2026-09-19 from
- * ~/.codex/sessions/2026/09/19/rollout-2026-09-19T19-00-38-01a0b8e5-….jsonl.
- * Reduced only by trimming one long input script and long tool output; the
- * envelope, the field names and the escalation are verbatim.
+ * Synthetic lines in the shape of a real Codex rollout (captured 2026-09 from
+ * ~/.codex/sessions/<date>/rollout-<time>-<thread id>.jsonl). The envelope, the
+ * field names and the escalation are Codex's own; the ids, times, paths and words
+ * are made up, and one long input script and long tool output are trimmed.
  *
  * Ordinal 107 is the ask that started this: `bun install` wanting escalated
  * permission, with no `custom_tool_call_output` after it. It sat unanswered for
  * hours, and `readCodexRolloutTail` read the thread as "busy" the whole time —
  * which `registryToPanel` renders as "working".
  */
-const CODEX_TASK_STARTED = String.raw`{"timestamp":"2026-09-19T11:51:05.614Z","ordinal":89,"type":"event_msg","payload":{"type":"task_started","turn_id":"01a0b981-7a87-7cb2-8320-79a8e0312f86","started_at":1789818665,"model_context_window":258400,"collaboration_mode_kind":"default"}}`;
-const CODEX_ORDINARY_CALL = String.raw`{"timestamp":"2026-09-19T11:51:17.783Z","ordinal":95,"type":"response_item","payload":{"type":"custom_tool_call","id":"ctc_0f19e8bf8f5bb023016aae772e2bd887d2949c1891fde29aeb","status":"completed","call_id":"call_9kMQwV8oyZhJi34xnEZQjO8r","name":"exec","input":"text(await tools.exec_command({cmd:\"git status --short && git worktree list\",workdir:\"/Users/you/Projects/Seashell\",max_output_tokens:2500}));\n","internal_chat_message_metadata_passthrough":{"turn_id":"01a0b981-7a87-7cb2-8320-79a8e0312f86","create_time":1789818666.498133}}}`;
-const CODEX_ORDINARY_OUTPUT = String.raw`{"timestamp":"2026-09-19T11:51:17.956Z","ordinal":101,"type":"response_item","payload":{"type":"custom_tool_call_output","id":"ctco_01a0b981-aac4-7182-bc32-ff832f55110e","call_id":"call_9kMQwV8oyZhJi34xnEZQjO8r","output":[{"type":"input_text","text":"Script completed\nWall time 0.2 seconds\nOutput:\n"}],"internal_chat_message_metadata_passthrough":{"turn_id":"01a0b981-7a87-7cb2-8320-79a8e0312f86","create_time":1789818677.956609}},"metadata":{"client_authored":false,"fallback_token_limit_override":12000}}`;
-const CODEX_ESCALATED_CALL = String.raw`{"timestamp":"2026-09-19T11:51:31.795Z","ordinal":107,"type":"response_item","payload":{"type":"custom_tool_call","id":"ctc_0f19e8bf8f5bb023016aae7740998087d29c15626dd510a213","status":"completed","call_id":"call_R3SFJWQHZ4ebOGHTATol2WJF","name":"exec","input":"text(await tools.exec_command({cmd:\"bun install --frozen-lockfile\",workdir:\"/Users/you/Projects/Seashell/.worktrees/fix-model-download\",sandbox_permissions:\"require_escalated\",justification:\"May I download the locked Seashell dependencies to run its test suite and reproduce bugs?\",prefix_rule:[\"bun\",\"install\"],yield_time_ms:10000,max_output_tokens:1500}));\ntext(ALL_TOOLS.filter(t=>/review_to_front/.test(t.name)));\n","internal_chat_message_metadata_passthrough":{"turn_id":"01a0b981-7a87-7cb2-8320-79a8e0312f86","create_time":1789818678.512885}}}`;
+const CODEX_TASK_STARTED = String.raw`{"timestamp":"2026-01-02T03:04:05.000Z","ordinal":89,"type":"event_msg","payload":{"type":"task_started","turn_id":"5e5e5e24-0024-7000-8000-000000000024","started_at":1767323045,"model_context_window":258400,"collaboration_mode_kind":"default"}}`;
+const CODEX_ORDINARY_CALL = String.raw`{"timestamp":"2026-01-02T03:04:17.000Z","ordinal":95,"type":"response_item","payload":{"type":"custom_tool_call","id":"ctc_5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e01","status":"completed","call_id":"call_SyntheticOrdinary0000001","name":"exec","input":"text(await tools.exec_command({cmd:\"git status --short && git worktree list\",workdir:\"/Users/you/Projects/acme-web\",max_output_tokens:2500}));\n","internal_chat_message_metadata_passthrough":{"turn_id":"5e5e5e24-0024-7000-8000-000000000024","create_time":1767323046.5}}}`;
+const CODEX_ORDINARY_OUTPUT = String.raw`{"timestamp":"2026-01-02T03:04:17.200Z","ordinal":101,"type":"response_item","payload":{"type":"custom_tool_call_output","id":"ctco_5e5e5e24-0024-7000-8000-000000000101","call_id":"call_SyntheticOrdinary0000001","output":[{"type":"input_text","text":"Script completed\nWall time 0.2 seconds\nOutput:\n"}],"internal_chat_message_metadata_passthrough":{"turn_id":"5e5e5e24-0024-7000-8000-000000000024","create_time":1767323057.2}},"metadata":{"client_authored":false,"fallback_token_limit_override":12000}}`;
+const CODEX_ESCALATED_CALL = String.raw`{"timestamp":"2026-01-02T03:04:31.000Z","ordinal":107,"type":"response_item","payload":{"type":"custom_tool_call","id":"ctc_5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e02","status":"completed","call_id":"call_SyntheticEscalated000001","name":"exec","input":"text(await tools.exec_command({cmd:\"bun install --frozen-lockfile\",workdir:\"/Users/you/Projects/acme-web/.worktrees/fix-image-upload\",sandbox_permissions:\"require_escalated\",justification:\"May I download the locked dependencies to run the test suite and reproduce the bug?\",prefix_rule:[\"bun\",\"install\"],yield_time_ms:10000,max_output_tokens:1500}));\ntext(ALL_TOOLS.filter(t=>/review_to_front/.test(t.name)));\n","internal_chat_message_metadata_passthrough":{"turn_id":"5e5e5e24-0024-7000-8000-000000000024","create_time":1767323058.5}}}`;
 /** The same call answered, in the shape ordinal 101 records a finished one. */
-const CODEX_ESCALATED_OUTPUT = String.raw`{"timestamp":"2026-09-19T11:52:02.118Z","ordinal":113,"type":"response_item","payload":{"type":"custom_tool_call_output","id":"ctco_01a0b981-aac4-7182-bc32-ff832f55110f","call_id":"call_R3SFJWQHZ4ebOGHTATol2WJF","output":[{"type":"input_text","text":"Script completed\nWall time 12.4 seconds\nOutput:\n"}]}}`;
+const CODEX_ESCALATED_OUTPUT = String.raw`{"timestamp":"2026-01-02T03:05:02.000Z","ordinal":113,"type":"response_item","payload":{"type":"custom_tool_call_output","id":"ctco_5e5e5e24-0024-7000-8000-000000000113","call_id":"call_SyntheticEscalated000001","output":[{"type":"input_text","text":"Script completed\nWall time 12.4 seconds\nOutput:\n"}]}}`;
 
 describe("what Codex is waiting on, from its rollout", () => {
   test("an unanswered escalation is the pending prompt", () => {
@@ -51,7 +51,7 @@ describe("what Codex is waiting on, from its rollout", () => {
       CODEX_ORDINARY_OUTPUT,
       CODEX_ESCALATED_CALL,
     ))).toEqual({
-      id: "call_R3SFJWQHZ4ebOGHTATol2WJF",
+      id: "call_SyntheticEscalated000001",
       name: "exec",
       summary: "bun install --frozen-lockfile",
       answerable: false,
@@ -82,10 +82,10 @@ describe("what Codex is waiting on, from its rollout", () => {
     // finds nothing in it and reports no prompt at all.
     const dir = mkdtempSync(join(tmpdir(), "conch-codex-approval-"));
     try {
-      const path = join(dir, "rollout-2026-09-19T19-00-38-01a0b8e5.jsonl");
+      const path = join(dir, "rollout-2026-01-02T03-04-05-5e5e5e22-0022-7000-8000-000000000022.jsonl");
       writeFileSync(path, [CODEX_TASK_STARTED, CODEX_ORDINARY_CALL, CODEX_ORDINARY_OUTPUT, CODEX_ESCALATED_CALL].join("\n") + "\n");
       expect(pendingApproval(path)).toEqual({
-        id: "call_R3SFJWQHZ4ebOGHTATol2WJF",
+        id: "call_SyntheticEscalated000001",
         name: "exec",
         summary: "bun install --frozen-lockfile",
         answerable: false,

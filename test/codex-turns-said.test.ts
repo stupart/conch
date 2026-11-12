@@ -36,7 +36,7 @@ test("it remembers a bounded number of sessions, the longest quiet forgotten fir
 
 test("a turn id crosses the socket on a turn-end only, and only shaped as an id", () => {
   const event = { type: "turn-end", sessionId: "s", label: "l", announce: "a" };
-  expect(validateSocketTurnEvent({ ...event, turnId: "01a16ae2-32a5-7261-848c-1986bafd1e96" }).ok).toBe(true);
+  expect(validateSocketTurnEvent({ ...event, turnId: "5e5e5e23-0023-7000-8000-000000000023" }).ok).toBe(true);
   expect(validateSocketTurnEvent({ ...event, turnId: "two words" }).ok).toBe(false);
   expect(validateSocketTurnEvent({ ...event, turnId: 7 }).ok).toBe(false);
   expect(validateSocketTurnEvent({ ...event, turnId: "x".repeat(129) }).ok).toBe(false);

@@ -11,8 +11,8 @@ Help text quoted below is from 0.154.0. The one difference that matters here: 0.
 `codex mcp-server` (section 8). Nothing was started, resumed or forked, and nothing under `~/.codex`
 was written: SQLite was opened `mode=ro`, rollouts read with `jq`, locks inspected with `lsof`.
 
-The live example throughout is session `01a08ea0…` ("Clone Blueprint Studio monorepo"), running as
-`codex resume 01a08ea0… -c model_provider=openai-api -c model=gpt-6-astra …` (pid 2383) with ten
+The live example throughout is session `5e5e5e19…` ("Clone the Acme monorepo"), running as
+`codex resume 5e5e5e19… -c model_provider=openai-api -c model=gpt-6-astra …` (pid 2383) with ten
 `thread_spawn` helpers.
 
 ## 1. app-server protocol
@@ -231,7 +231,7 @@ have to get them *trusted*.
 **Trust, as conch meets it (codex-cli 0.164.0, 2026-10-28).** An untrusted hook doesn't just stay off:
 every TUI that would load one opens on "Hooks need review" and waits for an answer, and a launch
 naming a Codex account writes conch's three into hooks.json (`runCodexInstall`). A background
-session has nobody to answer, so it never checked in ("atals and nura"). For the background sessions
+session has nobody to answer, so it never checked in ("budget app and api"). For the background sessions
 it starts, conch now asks `hooks/list` which hooks would load and trusts its own for that launch:
 exactly its command, from that home's own hooks.json, at the hash Codex reports, as one
 `-c hooks.state={"<key>"={trusted_hash="…"}}` (a per-key dotted `-c` is not read; the table merges with
@@ -291,7 +291,7 @@ first. The value depends on Tyler's own policy: 560 of 561 local rollouts ran `a
   `{"subagent":{"thread_spawn":{parent_thread_id, depth, agent_path, agent_nickname, agent_role}}}`
   (`SubAgentSource::ThreadSpawn`, `protocol.rs:2822-2837`). `parent_thread_id` is also top-level in
   `SessionMeta`, and `session_id` names the root.
-- The state DB keeps the edge in `thread_spawn_edges` (live: ten `open` children under `01a08ea0`),
+- The state DB keeps the edge in `thread_spawn_edges` (live: ten `open` children under `5e5e5e19`),
   and `thread/list` answers `parentThreadId` and `ancestorThreadId` (`README.md:178, 564-581`).
 - Helpers run inside the parent's process (pid 2383 holds their locks). Under Multi-Agent V2 they
   refuse direct input with `-32600` "direct app-server input is not allowed for multi-agent v2

@@ -233,7 +233,7 @@ describe("handleCodexHookPayload", () => {
   });
 
   test("Stop names its turn only by an id-shaped turn_id, never by whatever the payload carries", async () => {
-    for (const [turn_id, turnId] of [["01a16ae2-32a5-7261-848c-1986bafd1e96", "01a16ae2-32a5-7261-848c-1986bafd1e96"], ["two words", undefined], [42, undefined]] as const) {
+    for (const [turn_id, turnId] of [["5e5e5e23-0023-7000-8000-000000000023", "5e5e5e23-0023-7000-8000-000000000023"], ["two words", undefined], [42, undefined]] as const) {
       const h = harness();
       const event = await handleCodexHookPayload({ hook_event_name: "Stop", session_id: "s", cwd: "/work/p", turn_id: turn_id as string,
         last_assistant_message: "Done.", agent_type: null }, h.cfg, h.dependencies);

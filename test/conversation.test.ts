@@ -483,19 +483,18 @@ describe("Codex says everything twice", () => {
 });
 
 describe("Codex's echoed answer to an async question is not Tyler's own words", () => {
-  // Ground truth, byte-for-byte, from the "Asset Generator" codex session
-  // (rollout-2026-09-11T14-01-26-01a08ea0…, 2026-09-21T07:07:10Z): Codex
-  // answers a `request_user_input_async` question by filing a `role: "user"`
-  // message that quotes the whole question back, then the actual answer
-  // after a blank line. Rendering it whole put the agent's own OAuth
-  // explanation in Tyler's mouth for one word of real reply. The record
-  // names nothing as an echo, so the guard against acting on shape alone is
-  // this: only strip when the reply exactly matches an option the SAME
-  // conversation actually offered via `request_user_input_async` earlier.
-  const question = "The Blueprint plugin is installed locally. To test the real connection, "
-    + "please open this sign-in link, choose Morrow, and authorize it. Both the existing Claude "
-    + "connection and the new Codex connection currently need sign-in. I’m continuing the "
-    + "code review meanwhile.  https://auth.morrow.example/oauth/authorize?response_type=code&client_id=demo_client_7Kq2Lm9xRt4Vw8Np";
+  // Ground truth from a real Codex rollout (2026-09), its shape kept and its
+  // words made up: Codex answers a `request_user_input_async` question by
+  // filing a `role: "user"` message that quotes the whole question back, then
+  // the actual answer after a blank line. Rendering it whole put the agent's
+  // own OAuth explanation in Tyler's mouth for one word of real reply. The
+  // record names nothing as an echo, so the guard against acting on shape
+  // alone is this: only strip when the reply exactly matches an option the
+  // SAME conversation actually offered via `request_user_input_async` earlier.
+  const question = "The Acme plugin is installed on this Mac. To try the live connection, "
+    + "please open this sign-in link, pick Morrow, and approve it. The Claude connection "
+    + "and the new Codex connection both still need a sign-in. I’m carrying on with the "
+    + "review meanwhile.  https://auth.morrow.example/oauth/authorize?response_type=code&client_id=demo_client_7Kq2Lm9xRt4Vw8Np";
   const echoed = `> ${question}\n\nSigned in to Morrow`;
 
   /** Files the exact `request_user_input_async` call conch actually observed. */
@@ -525,7 +524,7 @@ describe("Codex's echoed answer to an async question is not Tyler's own words", 
     const item = conversation.items[conversation.order[1]!]!;
     expect(item.kind).toBe("user");
     expect(item.text).toBe("Signed in to Morrow");
-    expect(item.text).not.toContain("Blueprint plugin");
+    expect(item.text).not.toContain("Acme plugin");
   });
 
   test("event_msg:user_message strips the same way, once the question was actually asked", () => {

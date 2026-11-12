@@ -8,7 +8,7 @@ final class SentMessageTextTests: XCTestCase {
 
     /// 2026-10-09: a dropped screenshot sent as its path came back from Claude Code as `[Image #10]`.
     func testADroppedImagesPathAndClaudesPlaceholderBothDrop() {
-        let sent = "/var/folders/hj/cg29fnq929v27cj88gsnrskr0000gn/T/conch-drop-A1ED45E8-83EF-40A2-BF8B-D91D94A274F6.png\noh geeze i found another error"
+        let sent = "/var/folders/xx/xxxxxxxxxxxxxxxxxxxxxxxx0000gn/T/conch-drop-A1ED45E8-83EF-40A2-BF8B-D91D94A274F6.png\noh geeze i found another error"
         let transcript = "[Image #10]oh geeze i found another error"
         XCTAssertEqual(squash(sent), "oh geeze i found another error")
         XCTAssertEqual(squash(transcript), squash(sent))

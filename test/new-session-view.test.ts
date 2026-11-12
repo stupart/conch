@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 
 // Tyler (2026-09-24), on a session he had just started in his home folder: it opened side by
 // side with a tree of everything in ~, an empty "Pick a file" pane and "No reply yet from
-// ‹tylerstupart-40›". conch-mac has no XCTest target, so these read the source.
+// ‹you-40›". conch-mac has no XCTest target, so these read the source.
 const read = (name: string) => readFileSync(`${import.meta.dir}/../mac-app/conch-mac/${name}`, "utf8");
 
 test("the home folder is not a working folder, so a session there gets the whole stage", () => {
