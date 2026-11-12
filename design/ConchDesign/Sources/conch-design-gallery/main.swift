@@ -1164,6 +1164,7 @@ try renderFailureTickets()
 try renderFloatingPill()
 // Messages between agent sessions (PeerMessagesGallery.swift).
 try renderPeerMessages()
+try renderSkillsLibrary()
 
 // MARK: - Infinite scroll
 

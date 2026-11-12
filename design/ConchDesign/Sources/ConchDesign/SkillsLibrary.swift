@@ -23,6 +23,8 @@ public struct SkillsLibraryRequest: Encodable, Equatable, Sendable {
     public var agent: String?
     public var accountId: String?
     public var planHash: String?
+    /// `toggle-preview`, `toggle`: on or off for new sessions (LibraryUse.swift).
+    public var enabled: Bool?
 
     public init(action: String) { self.action = action }
 
@@ -714,6 +716,8 @@ public struct InstalledSkillRow: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
+        // Every row says what clicking it does (2026-11-11).
+        .help("Show \(skill.name): what it does, how to use it in an open session, and where each copy lives")
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
@@ -789,6 +793,7 @@ public struct DiscoverSkillRow: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
+        .help("Fetch \(entry.name) and read it, with Add and Try")
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }

@@ -412,6 +412,50 @@ export function planToggle(
   };
 }
 
+// ── a skill's switch ─────────────────────────────────────────────────────────
+
+/** A whole-file edit, planned: what an apply writes, and the diff a person sees first. */
+export interface FileEditPlan {
+  file: string;
+  before: string;
+  after: string;
+  diff: string;
+  beforeHash: string;
+}
+
+/**
+ * Claude Code's switch for one of the person's own skills (2026-11-11): `skillOverrides["<name>"]` in a settings file,
+ * `"off"` to hide it from the model and from `/name`, absent for on ("Per-skill listing overrides keyed by skill name …
+ * Absent = on", Claude Code 2.1.322's settings schema). Turning one on removes conch's key, and an object left empty goes
+ * with it; any other value there ("name-only", "user-invocable-only") is the person's own and is replaced only by an
+ * explicit off. The same proof as `planToggle`: the edited file re-parses to the original plus this one change.
+ */
+export function planSkillOverride(file: string, name: string, enabled: boolean): FileEditPlan {
+  const before = readText(file);
+  const parsed = parseJsonFile(file, before);
+  if (parsed.skillOverrides !== undefined && !record(parsed.skillOverrides)) {
+    throw new Error(`${file}: skillOverrides is not an object; conch will not edit it.`);
+  }
+  const overrides = { ...(record(parsed.skillOverrides) ? parsed.skillOverrides : {}) };
+  if (enabled) delete overrides[name];
+  else overrides[name] = "off";
+  const expected = structuredClone(parsed);
+  if (Object.keys(overrides).length === 0) delete expected.skillOverrides;
+  else expected.skillOverrides = overrides;
+  const after = Bun.deepEquals(expected, parsed, true) ? before : emitJson(before, expected);
+  if (!Bun.deepEquals(parseByExtension(file, after || "{}"), expected, true)) {
+    throw new Error(`${file}: the edit would change more than skillOverrides.${name}; refusing.`);
+  }
+  return { file, before, after, diff: unifiedDiff(file, before, after), beforeHash: contentHash(before) };
+}
+
+/** Write a planned edit, as `applyPlan` does: refused when the file moved since, kept as a backup, read back. */
+export function applyFileEdit(plan: FileEditPlan, io: ConfigWriteIo = {}): ConfigApplyResult {
+  if (plan.before === plan.after) return { file: plan.file };
+  const backup = replaceFile(plan.file, plan.before, plan.after, io);
+  return { file: plan.file, ...(backup ? { backup } : {}) };
+}
+
 // ── writing ──────────────────────────────────────────────────────────────────
 
 function writeAtomically(file: string, content: string, io: ConfigWriteIo): void {
