@@ -134,14 +134,15 @@ describe("conch shot photographs what is actually on screen", () => {
     expect(snapshot.match(/cacheDisplay\(/g) ?? []).toHaveLength(1);
   });
 
-  test("a named window is the key one, the dashboard or none, and no name still means what it did", () => {
+  test("a named window is the key one, the pill, the dashboard or none, and no name still means what it did", () => {
     // 2026-11-11: the floating panels went with the old overlays, so `overlay` and `controlbar`
-    // went from the targets too. Every window the app has is now a candidate, and the CLI offers
-    // exactly the names the app answers, so `--window overlay` is refused rather than silently
-    // photographing the key window.
-    expect(snapshot).toContain("case key, dashboard, geometry");
-    expect(snapshot).not.toContain("FloatingPanel");
-    expect(read("src/cli.ts")).toContain('const targets = ["key", "dashboard", "geometry"];');
+    // went from the targets too, and the floating pill is photographed by its own name, never
+    // taken for conch's window. The CLI offers exactly the names the app answers, so
+    // `--window overlay` is refused rather than silently photographing the key window.
+    expect(snapshot).toContain("case key, pill, dashboard, geometry");
+    expect(snapshot).not.toContain("FloatingPanels");
+    expect(snapshot).toContain("let candidates = onScreen.filter { $0 !== FloatingPillController.shared.window }");
+    expect(read("src/cli.ts")).toContain('const targets = ["key", "pill", "dashboard", "geometry"];');
     // A one-line request is what every caller wrote before names existed. It still
     // resolves the key window, exactly as it always did.
     expect(snapshot).toContain("let target = wanted.isEmpty ? Target.key : Target(rawValue: wanted) ?? Target.key");

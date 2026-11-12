@@ -782,7 +782,7 @@ switch (command) {
     // Photograph conch. Two modes, and which one you want depends on the question:
     //
     //   conch shot <path>                     the app draws one of its own windows
-    //   conch shot <path> --window dashboard  ... a named one
+    //   conch shot <path> --window pill       ... a named one: the floating pill, or the dashboard
     //   conch shot <path> --screen            the whole display, as an eye would see it
     //
     // `--screen` is the honest mode for anything TRANSLUCENT. Glass is mostly
@@ -804,7 +804,7 @@ switch (command) {
     // appearance each one is painting. Read a crop out of that, never out of a
     // rect remembered from earlier in a run — three measurements in one session
     // were invalidated by aiming at where a window used to be.
-    const targets = ["key", "dashboard", "geometry"];
+    const targets = ["key", "pill", "dashboard", "geometry"];
     const usage = `usage: conch shot [/tmp/<name>.png] [--window ${targets.join("|")}] [--screen]`;
     const at = rest.indexOf("--window");
     const wanted = at === -1 ? "" : rest[at + 1] ?? "";

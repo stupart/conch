@@ -58,9 +58,9 @@ enum DebugSnapshot {
     /// Which window to photograph.
     ///
     /// `key` is what a one-line request has always meant and stays the default.
-    /// 2026-11-11: `overlay` and `controlbar` went with the old overlays.
+    /// 2026-11-11: `overlay` and `controlbar` went with the old overlays; `pill` is the floating pill.
     enum Target: String {
-        case key, dashboard, geometry
+        case key, pill, dashboard, geometry
     }
 
     /// Read and clear a pending request to show a session.
@@ -143,7 +143,8 @@ enum DebugSnapshot {
         // one too. Calling that "dashboard" in the very artifact that exists to say
         // which window is which would be its own small lie, so anything without a
         // title answers with its class instead.
-        window.title.isEmpty ? String(describing: type(of: window)) : "dashboard"
+        if window === FloatingPillController.shared.window { return "pill" }
+        return window.title.isEmpty ? String(describing: type(of: window)) : "dashboard"
     }
 
     /// Honour a pending request, if there is one. Cheap enough to call per poll.
@@ -179,7 +180,8 @@ enum DebugSnapshot {
         }
 
         let onScreen = NSApp.windows.filter { $0.isVisible && !$0.isMiniaturized }
-        let candidates = onScreen
+        // Not the floating pill: it is photographed by name.
+        let candidates = onScreen.filter { $0 !== FloatingPillController.shared.window }
         // Whatever is in FRONT is what someone wants a picture of.
         //
         // This used to take the largest visible window on the reasoning that
@@ -201,6 +203,7 @@ enum DebugSnapshot {
         switch target {
         case .key: window = key ?? largest
         case .dashboard: window = largest
+        case .pill: window = onScreen.first { $0 === FloatingPillController.shared.window }
         case .geometry: window = nil
         }
 

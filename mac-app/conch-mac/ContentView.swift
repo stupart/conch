@@ -190,8 +190,8 @@ struct ContentView: View {
                   let row = store.state?.rows.first(where: { $0.id == id }) else { return }
             selectSession(row)
         }
-        // A deliverable opened from outside this window (`ConchStatusItem.openInWindow`): the menu's Ready for you rows, a
-        // review with marks, a folder.
+        // A deliverable opened from outside this window (`ConchStatusItem.openInWindow`): the menu's Ready for you rows and
+        // the floating pill's, a review with marks, a folder.
         .onReceive(NotificationCenter.default.publisher(for: .openInWindowFromStatusItem)) { note in
             guard let open = note.object as? ConchStatusItem.WindowOpen,
                   let row = store.state?.rows.first(where: { $0.id == open.sessionId }) else { return }

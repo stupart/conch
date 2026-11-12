@@ -1129,6 +1129,7 @@ struct GroundStrip: View {
 // First-run setup (OnboardingGallery.swift).
 try MainActor.assumeIsolated { try renderOnboarding() }
 try renderFailureTickets()
+try renderFloatingPill()
 
 // MARK: - Infinite scroll
 

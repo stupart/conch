@@ -29,6 +29,8 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         installed = ConchStatusItem(store: store)
         // The natural voices' calm line, for the window's notices.
         NaturalVoicesNoticeStore.shared.install(store: store)
+        // The floating pill, shown while its switch is on (on by default), which it watches itself.
+        FloatingPillController.shared.install(store: store)
     }
 
     private let store: StateStore
@@ -102,7 +104,8 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
             working: Self.workingRows(state).map { StatusMenu.Session(id: $0.id, label: $0.label) },
             // Setup put away with steps left: a reminder at the top until it's done.
             setupLeft: OnboardingController.shared.menuReminder(),
-            readAloud: !(state?.mode.speechOff ?? false)
+            readAloud: !(state?.mode.speechOff ?? false),
+            floatingPill: FloatingPillController.isOn
         )
         for row in StatusMenu.rows(input) {
             switch row {
@@ -186,6 +189,7 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         case .readAloud: #selector(toggleReadAloud)
         case .finishSetup: #selector(finishSetup)
         case .settings: #selector(openSettings)
+        case .floatingPill: #selector(toggleFloatingPill)
         }
     }
 
@@ -216,6 +220,11 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
     @objc private func toggleReadAloud() { store.setReadAloud(store.state?.mode.speechOff ?? false) }
     // The dashboard's spacebar: stops the speech or listening that is running.
     @objc private func stopSpeaking() { store.send(.stop()) }
+
+    // The pill hears its switch flip (`FloatingPillController.apply`).
+    @objc private func toggleFloatingPill() {
+        UserDefaults.standard.set(!FloatingPillController.isOn, forKey: FloatingPill.key)
+    }
 
     @objc private func openSession(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String else { return }
@@ -250,9 +259,10 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         OnboardingController.shared.finishSettingUp()
     }
 
-    /// The one opening rule, for the menu's Ready for you rows. What conch's own window draws in its deliverable pane
-    /// (`SessionRow.windowContent`) opens there, beside the conversation (`openInWindow`), and so does a review only conch
-    /// can show as it was published (marks, a folder's tree); everything else is brought forward in its own app (`stage`).
+    /// The one opening rule, for the menu's Ready for you rows and the floating pill alike. What conch's own window draws
+    /// in its deliverable pane (`SessionRow.windowContent`) opens there, beside the conversation (`openInWindow`), and so
+    /// does a review only conch can show as it was published (marks, a folder's tree); everything else is brought forward
+    /// in its own app (`stage`).
     ///
     /// 2026-11-11: the conversation panel this used to choose between is gone with the rest of the old overlays, so the
     /// rule is what it already was with them switched off.
@@ -408,7 +418,8 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
     }
 }
 
-/// What is held, opened from the menu's Ready for you rows: one queue, so every open agrees on what has been looked at.
+/// What is held, opened from the menu's Ready for you rows and the floating pill: one queue, so every open agrees on what
+/// has been looked at.
 /// 2026-11-11: the Ready pill's walk and the panel's Previous, Next and switcher went with the old overlays; what is left
 /// is opening a session's next ready item.
 @MainActor

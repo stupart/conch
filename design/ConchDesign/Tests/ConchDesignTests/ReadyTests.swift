@@ -108,7 +108,13 @@ final class ReadyTests: XCTestCase {
     /// ready or working, and no two separators meet where they were.
     func testTheMenuIsTitleCaseWithNoOverlayItems() {
         let titles = items(StatusMenu.rows(input())).map(\.title)
-        XCTAssertEqual(titles, ["Talk", "Quiet", "Read Replies Aloud", "Stop Speaking", "Open conch", "Settings…"])
+        XCTAssertEqual(titles, ["Talk", "Quiet", "Read Replies Aloud", "Stop Speaking", "Floating Pill", "Open conch", "Settings…"])
+        // The floating pill's switch (2026-11-11), ticked while it is on, which it is until turned off.
+        let pill = { (input: StatusMenu.Input) in self.items(StatusMenu.rows(input)).first { $0.command == .floatingPill } }
+        XCTAssertEqual(pill(input())?.mark, .on)
+        var off = input()
+        off.floatingPill = false
+        XCTAssertEqual(pill(off)?.mark, .off)
         XCTAssertFalse(titles.contains { $0.hasPrefix("Show") })
         let ready = [StatusMenu.Session(id: "r", label: "Ready one")], working = [StatusMenu.Session(id: "w", label: "Working one")]
         for (ready, working) in [([], []), (ready, []), ([], working), (ready, working)] as [([StatusMenu.Session], [StatusMenu.Session])] {

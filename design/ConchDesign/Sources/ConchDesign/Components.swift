@@ -165,7 +165,7 @@ public struct VoiceStateLabel: View {
 
 // MARK: - ReviewScene
 
-/// What opening a review brings forward (the menu's Ready for you, the phone's Next): the agents
+/// What opening a review brings forward (the menu's Ready for you, the floating pill, the phone's Next): the agents
 /// showing you their work, rather than you going to find it (Tyler: "it's like the agents are messaging me 'look at this' and showing me stuff").
 public enum ReviewScene: Equatable {
     /// The deliverable itself, in whatever app macOS opens it with.

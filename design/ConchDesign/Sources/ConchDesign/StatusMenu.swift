@@ -9,6 +9,8 @@ public enum StatusMenu {
     /// What choosing an item does.
     public enum Command: Equatable, Sendable {
         case talk, quiet, stop, openConch
+        /// The floating pill on or off (`FloatingPill.key`).
+        case floatingPill
         /// Read replies aloud on or off (settings `speak`).
         case readAloud
         /// A ready session's next item, opened by the one opening rule (`ConchStatusItem.open`).
@@ -84,10 +86,12 @@ public enum StatusMenu {
         public var setupLeft: [String]
         /// Read replies aloud is on (settings `speak`; the daemon publishes `mode.speechOff` while it's off).
         public var readAloud: Bool
+        /// The floating pill is on (`FloatingPill.enabled`).
+        public var floatingPill: Bool
 
         public init(
             voice: VoiceState, quiet: Bool, exchangeActive: Bool, ready: [Session], working: [Session], setupLeft: [String] = [],
-            readAloud: Bool = true
+            readAloud: Bool = true, floatingPill: Bool = FloatingPill.byDefault
         ) {
             self.voice = voice
             self.quiet = quiet
@@ -96,6 +100,7 @@ public enum StatusMenu {
             self.working = working
             self.setupLeft = setupLeft
             self.readAloud = readAloud
+            self.floatingPill = floatingPill
         }
     }
 
@@ -112,6 +117,9 @@ public enum StatusMenu {
         rows.append(.separator)
         // Space is the conch window's stop key.
         rows.append(.item(Item(title: input.voice == .listening ? "Stop Listening" : "Stop Speaking", command: .stop, key: " ", enabled: input.exchangeActive)))
+        // The one thing conch draws over other apps (2026-11-11), switched here as the old overlays' items were, by name
+        // and with a tick.
+        rows.append(.item(Item(title: "Floating Pill", command: .floatingPill, mark: input.floatingPill ? .on : .off)))
         if !input.ready.isEmpty || !input.working.isEmpty { rows.append(.separator) }
         if !input.ready.isEmpty {
             rows.append(.section("Ready for you"))
