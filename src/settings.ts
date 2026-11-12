@@ -92,6 +92,7 @@ export const SETTING_KEYS = [
   "agent-budget-cpu",
   "agent-budget-memory",
   "agent-auto-background",
+  "limit-auto-resume",
 ] as const;
 
 export type SettingKey = typeof SETTING_KEYS[number];
@@ -137,7 +138,8 @@ export type SettingField =
   | "agentAutoUpdate"
   | "agentBudgetCpu"
   | "agentBudgetMemory"
-  | "agentAutoBackground";
+  | "agentAutoBackground"
+  | "limitAutoResume";
 export type HandoffOrder = "newest" | "oldest" | "urgency";
 export type PhoneLanMode = "auto" | "on" | "off";
 export type SettingValue = number | boolean | string;
@@ -799,6 +801,24 @@ export const SETTING_DESCRIPTORS = [
     bounds: null,
     apply: "live",
     help: "while agents are over their CPU budget, lower the priority (taskpolicy -b) of what they left running that has kept a core busy for 5 minutes; never stops or pauses anything",
+  },
+  {
+    // 2026-11-12, Tyler: "it didn't autoswitch cause it got stuck on a terminal message", then "resume all". Every Default
+    // session sat on Claude Code's usage-limit menu after the account ran out, a switch didn't move them, and he went
+    // round them from his phone (limit-recovery.ts). On by default, and only does anything while `claude-rotation` is
+    // on: turning rotation on is asking for sessions to carry on across accounts, and a session stopped on that menu is
+    // the one case the switcher alone can't carry on. It chooses only "Stop and wait", never a paid option, and types
+    // nothing into a session in manual mode. Read live. Not one agents may set (`AGENT_TUNABLE_SETTINGS`): it types
+    // into your sessions and switches your account.
+    key: "limit-auto-resume",
+    field: "limitAutoResume",
+    env: "CONCH_LIMIT_AUTO_RESUME",
+    kind: "boolean",
+    default: true,
+    parse: parseBoolean,
+    bounds: null,
+    apply: "live",
+    help: "while claude-rotation is on: when Default's sessions stop at a usage limit, switch to an account with room, choose \"Stop and wait\" on the limit menu and tell each session to carry on",
   },
 ] as const satisfies readonly SettingDescriptor[];
 

@@ -117,6 +117,15 @@ that one rule is what keeps the loop from hearing itself.
   the daemon end up on different versions. `conch doctor` names both; keep one.
 - **`conch` says "nothing to attach to"** — the app is hosting the daemon, so
   the app is the dashboard. That is not an error.
+- **Sessions sit on "You've hit your … limit" with a numbered menu** — the
+  account Default is on ran out. With `claude-rotation` and
+  `limit-auto-resume` on, the daemon switches to an account with room, chooses
+  "Stop and wait for limit to reset" and tells each session to carry on; the
+  log's `usage limit:` lines say what it did or why it couldn't (no account
+  with room, an account with a `cswap run` session on it, manual mode, a
+  Terminal window waiting for the Mac to be left alone). Choosing an account
+  in Settings › Providers › Claude is enough: the stopped sessions are resumed
+  onto it.
 
 {{CONCH_SECTION}}
 
