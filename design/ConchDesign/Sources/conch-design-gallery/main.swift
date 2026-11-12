@@ -2692,6 +2692,7 @@ try render("reply-bar-swoop", width: 1860) {
 // First-run setup (OnboardingGallery.swift).
 try MainActor.assumeIsolated { try renderOnboarding() }
 try renderFailureTickets()
+try renderSkillsLibrary()
 
 // MARK: - Infinite scroll
 
