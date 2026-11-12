@@ -15,8 +15,11 @@ import CoreGraphics
 /// Workflows (2026-11-11) sit beside Skills: Claude Code's saved multi-agent scripts and the runs in open sessions
 /// (LibraryUse.swift, src/workflows.ts). Tyler: "making the rest of the app like skills, workflows, etc much more
 /// pleasurable to use."
+/// Teams (2026-11-12) after Environments: who runs, where, then which agents work together (Teams.swift). Tyler: "would be
+/// nice to add 'teams' to conch settings to where we can set up team structures with specialized agents, rules for how
+/// they'll work together, and a hierarchy and then i can spin up or pass tasks to team types."
 public enum SettingsSection: String, CaseIterable, Identifiable, Sendable {
-    case providers, environments, tools, skills, workflows, benchmarks, browser, logins, general, phone, permissions, setup
+    case providers, environments, teams, tools, skills, workflows, benchmarks, browser, logins, general, phone, permissions, setup
     /// What each session uses, green, yellow or red, and agents' load against a budget (2026-11-11, ResourcesPage.swift).
     /// Beside Failures: both are where conch keeps an eye on what runs on this Mac.
     case resources
@@ -30,6 +33,7 @@ public enum SettingsSection: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .providers: "Providers"
         case .environments: "Environments"
+        case .teams: "Teams"
         case .tools: "Plugins & MCP"
         case .skills: "Skills"
         case .workflows: "Workflows"
@@ -50,6 +54,7 @@ public enum SettingsSection: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .providers: "person.crop.circle"
         case .environments: "desktopcomputer"
+        case .teams: "person.3"
         case .tools: "puzzlepiece.extension"
         case .skills: "sparkles"
         case .workflows: "flowchart"
