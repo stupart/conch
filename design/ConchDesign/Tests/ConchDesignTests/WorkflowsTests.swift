@@ -74,8 +74,11 @@ final class WorkflowsTests: XCTestCase {
         let run = try XCTUnwrap(JSONDecoder().decode(WorkflowsPage.self, from: page).runs.first)
         XCTAssertEqual(WorkflowsLibrary.runState(run), "Running · Verify")
         XCTAssertEqual(WorkflowsLibrary.agentsLine(run.agents, running: true), "6 of 10 agents done")
-        // A third of the way per phase: Review done, Verify a third through, Notes not started.
-        XCTAssertEqual(try XCTUnwrap(WorkflowsLibrary.fraction(run)), (1 + 2.0 / 6) / 3, accuracy: 0.0001)
+        // The bar counts what its line counts: 6 of 10 agents.
+        XCTAssertEqual(try XCTUnwrap(WorkflowsLibrary.fraction(run)), 0.6, accuracy: 0.0001)
+        XCTAssertEqual(WorkflowsLibrary.whenToUse("When CI flaps"), "CI flaps")
+        XCTAssertEqual(WorkflowsLibrary.whenToUse("use when a release is near"), "A release is near")
+        XCTAssertEqual(WorkflowsLibrary.whenToUse("Before a release"), "Before a release")
         XCTAssertEqual(WorkflowsLibrary.phaseAgents(run.phases[0], running: true), "4 agents")
         XCTAssertEqual(WorkflowsLibrary.phaseAgents(run.phases[1], running: true), "2 of 6 agents")
         XCTAssertEqual(WorkflowsLibrary.phaseAgents(run.phases[2], running: true), "not started")
