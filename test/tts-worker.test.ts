@@ -538,11 +538,11 @@ describe("a sleeping Mac is not a hung worker (2026-10-23)", () => {
   test("a startup the Mac slept through comes up, rather than being killed and retried into `say`", async () => {
     const clock = sleepyClock();
     const sleeping = makeHarness({ flags: ["--ready-delay-ms", "300"], startupTimeoutMs: 100, now: clock.now });
+    // Asleep for the whole load, which takes three times its budget in wall time and none of it awake. Waking at a
+    // fixed 320 ms raced the load itself: on a busy Mac python had not said ready by then, and the 100 ms left killed it.
     clock.asleep = true;
-    const started = sleeping.worker.start();
-    await Bun.sleep(320);
+    expect(await sleeping.worker.start()).toBeTrue();
     clock.asleep = false;
-    expect(await started).toBeTrue();
     expect(sleeping.worker.snapshot()).toMatchObject({ status: "ready", spawnAttempts: 1 });
     expect(sleeping.kills).toEqual([]);
 
