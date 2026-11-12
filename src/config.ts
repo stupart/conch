@@ -134,6 +134,11 @@ export interface Config {
   failureAutofix: boolean;
   /** Keep the agent CLIs current (settings `agent-auto-update`, agent-updates.ts). Read live. */
   agentAutoUpdate: boolean;
+  /** The load budget: the share of this Mac's cores and memory agents may use (resource-ledger.ts). Read live. */
+  agentBudgetCpu: number;
+  agentBudgetMemory: number;
+  /** Lower the priority of a heavy leftover while agents are over budget (resource-sampler.ts). Off unless turned on. */
+  agentAutoBackground: boolean;
   socketPath: string;
   claudeDir: string;
   /** TTS engine: owned stdin/stdout worker (default) | legacy HTTP server | say */
@@ -239,6 +244,9 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     screenLog: settings["screen-log"].value as boolean,
     failureAutofix: settings["failure-autofix"].value as boolean,
     agentAutoUpdate: settings["agent-auto-update"].value as boolean,
+    agentBudgetCpu: settings["agent-budget-cpu"].value as number,
+    agentBudgetMemory: settings["agent-budget-memory"].value as number,
+    agentAutoBackground: settings["agent-auto-background"].value as boolean,
     socketPath: env.CONCH_SOCKET ?? "/tmp/conch.sock",
     claudeDir: env.CLAUDE_CONFIG_DIR ?? join(HOME, ".claude"),
     ttsEngine: parseTtsEngine(env.CONCH_TTS),

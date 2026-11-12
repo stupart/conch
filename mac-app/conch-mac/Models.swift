@@ -95,6 +95,9 @@ struct PublishedState: Decodable, Equatable, Sendable {
     /// Failure tickets' counts (src/failure-tickets.ts `digest`): the gear's dot while any open one is unseen, and the
     /// count beside Settings › Failures. Nil from an older daemon.
     let failures: FailureDigest?
+    /// What sessions left running (src/resource-ledger.ts; ConchDesign/StillRunning.swift): the sidebar's Still running.
+    /// Only the sessions file carries it; nil from an older daemon.
+    let resources: PublishedResources?
 
     /// How many tickets are open, being fixed, and new since Settings › Failures was last shown: conch's own, which an
     /// agent's calls (`agents`) aren't. `alert` is the newest conch bug worth the window's banner (src/failure-triage.ts).
@@ -294,6 +297,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         case seaGlass
         case restore
         case failures
+        case resources
     }
 
     init(
@@ -327,7 +331,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
         guards: [RunawayGuardTrip] = [],
         seaGlass: Int? = nil,
         restore: RestoreReport? = nil,
-        failures: FailureDigest? = nil
+        failures: FailureDigest? = nil,
+        resources: PublishedResources? = nil
     ) {
         self.v = v
         self.ownerDeviceId = ownerDeviceId
@@ -361,6 +366,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         self.seaGlass = seaGlass
         self.restore = restore
         self.failures = failures
+        self.resources = resources
     }
 
     init(from decoder: Decoder) throws {
@@ -415,6 +421,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         seaGlass = try? container.decodeIfPresent(Int.self, forKey: .seaGlass)
         restore = try? container.decodeIfPresent(RestoreReport.self, forKey: .restore)
         failures = try? container.decodeIfPresent(FailureDigest.self, forKey: .failures)
+        resources = try? container.decodeIfPresent(PublishedResources.self, forKey: .resources)
     }
 
     private static func decodeLossyArray<Element: Decodable>(
@@ -469,6 +476,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
             && restore == other.restore
             // The gear's dot and Settings › Failures' count.
             && failures == other.failures
+            // The sidebar's Still running.
+            && resources == other.resources
             // The deliverables strip draws a tab for each.
             && browserTabs == other.browserTabs
             && browserProfiles == other.browserProfiles
@@ -1381,6 +1390,12 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     /// Its conch MCP server can't get conch's current tools, and which it lacks (src/mcp-servers.ts): the line under its
     /// header with Restart (`SessionToolsNotice`). Only the sessions file carries it; older daemons never send it.
     let toolsStale: ToolsStale?
+    /// How many things this session started are still running (src/resource-ledger.ts): its second line's "3 still
+    /// running" (`SidebarRowText.secondLine`). Older daemons never send it.
+    let stillRunning: Int?
+    /// What it uses all told, its own processes and its leftovers, when yellow or red (src/resource-load.ts): the dot
+    /// before its "3 still running". Older daemons never send it.
+    let resourceLevel: String?
 
     /// Its turn is over and nothing of it is still running or waiting on an answer, so a restart loses nothing
     /// (`ToolsStaleRestart.isIdle`): the tools line's Restart restarts it at once, and Settings' "Restart idle sessions"
@@ -1447,6 +1462,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         case workDirs
         case activity
         case toolsStale
+        case stillRunning
+        case resourceLevel
     }
 
     init(
@@ -1487,7 +1504,9 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         cwd: String? = nil,
         workDirs: [String]? = nil,
         activity: Activity? = nil,
-        toolsStale: ToolsStale? = nil
+        toolsStale: ToolsStale? = nil,
+        stillRunning: Int? = nil,
+        resourceLevel: String? = nil
     ) {
         self.id = id
         self.label = label
@@ -1527,6 +1546,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         self.workDirs = workDirs
         self.activity = activity
         self.toolsStale = toolsStale
+        self.stillRunning = stillRunning
+        self.resourceLevel = resourceLevel
     }
 
     init(from decoder: Decoder) throws {
@@ -1580,6 +1601,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         activity = try? container.decodeIfPresent(Activity.self, forKey: .activity)
         // The same: a verdict this build can't read, or one naming nothing, is no line.
         toolsStale = try? container.decodeIfPresent(ToolsStale.self, forKey: .toolsStale)
+        stillRunning = try? container.decodeIfPresent(Int.self, forKey: .stillRunning)
+        resourceLevel = try? container.decodeIfPresent(String.self, forKey: .resourceLevel)
     }
 
     func replacingLabel(with label: String) -> SessionRow {
@@ -1621,7 +1644,9 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             cwd: cwd,
             workDirs: workDirs,
             activity: activity,
-            toolsStale: toolsStale
+            toolsStale: toolsStale,
+            stillRunning: stillRunning,
+            resourceLevel: resourceLevel
         )
     }
 }
@@ -1642,7 +1667,9 @@ extension SessionRow {
             snippet: snippet, transcriptPath: transcriptPath, voice: voice, prioritized: prioritized, navSelected: navSelected,
             revealable: revealable, noTerminal: noTerminal, messageRoute: messageRoute, attachable: attachable, parked: parked,
             waitingOnAgents: waitingOnAgents, approval: approval, parentSessionId: parentSessionId,
-            startedBySessionId: startedBySessionId, cwd: cwd, workDirs: workDirs, activity: activity, toolsStale: toolsStale
+            startedBySessionId: startedBySessionId, cwd: cwd, workDirs: workDirs, activity: activity, toolsStale: toolsStale,
+            stillRunning: stillRunning,
+            resourceLevel: resourceLevel
         )
     }
 
@@ -1658,7 +1685,9 @@ extension SessionRow {
             snippet: snippet, transcriptPath: transcriptPath, voice: voice, prioritized: prioritized, navSelected: navSelected,
             revealable: revealable, noTerminal: noTerminal, messageRoute: messageRoute, attachable: attachable,
             waitingOnAgents: waitingOnAgents, approval: approval, parentSessionId: parentSessionId,
-            startedBySessionId: startedBySessionId, cwd: cwd, workDirs: workDirs, activity: nil, toolsStale: toolsStale
+            startedBySessionId: startedBySessionId, cwd: cwd, workDirs: workDirs, activity: nil, toolsStale: toolsStale,
+            stillRunning: stillRunning,
+            resourceLevel: resourceLevel
         )
     }
 
