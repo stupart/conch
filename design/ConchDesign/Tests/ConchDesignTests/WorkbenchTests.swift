@@ -84,6 +84,7 @@ final class WorkbenchTests: XCTestCase {
         XCTAssertTrue(WorkbenchScript.page.contains("const PASSWORD_REFUSAL = \"\(WorkbenchScript.passwordRefusal)\";"))
         XCTAssertTrue(WorkbenchScript.page.contains("if (isPassword(el)) fail(PASSWORD_REFUSAL);"))
         XCTAssertTrue(WorkbenchScript.page.contains("text: \(WorkbenchScript.textMax), links: \(WorkbenchScript.linksMax), buttons: \(WorkbenchScript.buttonsMax), fields: \(WorkbenchScript.fieldsMax)"))
+        XCTAssertTrue(WorkbenchScript.page.contains("headings: \(WorkbenchScript.headingsMax),"))
     }
 
     /// A tab is a second axis value like the files: picking one keeps the stage, and is remembered per session.

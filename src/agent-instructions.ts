@@ -157,9 +157,10 @@ export const AGENT_COMMANDS: readonly AgentCommandText[] = [
     name: "browser read",
     tool: "browser_read",
     group: "Browse for the user, in conch's browser, where they can watch",
-    usage: "browser read [--tab T]",
-    summary: "a tab's title, URL, words, and its links, buttons and fields with refs",
-    help: "Your most recent tab when --tab is omitted. Links and buttons each come with a short ref (e12) for browser click, fields with their label, name, type and value (never a password's or a hidden field's value). Refs last until the page changes: read again after it navigates.",
+    usage: "browser read [--tab T] [--page N | --find WORDS | --section HEADING] [--selector CSS] [--full]",
+    summary: "a page of a tab's words, and its links, buttons and fields with refs",
+    // 2026-11-11: one page of the words by default (browser-read.ts says why), and the ways to the rest.
+    help: "Your most recent tab when --tab is omitted. It shows the page's title and URL, one page of its words (about 2,000 characters), the page's sections, and the links, buttons and fields in those words, a same-site link by its path; its last line, more:, says what else there is. --page N shows the next pages; --find WORDS only the lines, links, buttons and fields that say them (any case); --section HEADING the words under that heading; --selector CSS reads only that part of the page; --full the whole read, every word, link, button and field. Links and buttons each come with a short ref (e12) for browser click, fields with their label, name, type and value (never a password's or a hidden field's value). Refs are the same in every view of a page and last until it changes: read again after it navigates.",
   },
   {
     name: "browser click",

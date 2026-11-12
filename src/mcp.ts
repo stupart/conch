@@ -139,6 +139,7 @@ import {
   type BrowserSend,
   type BrowserTarget,
 } from "./browser-workbench.ts";
+import { compactRead, READ_SELECTOR_MAX, READ_WORDS_MAX, readView, ReadViewError } from "./browser-read.ts";
 import { appServerNoTerminal } from "./codex-threads.ts";
 import { ATLAS_MARKDOWN_MAX_BYTES, ATLAS_PATH_MAX, atlasCopiesFolder, atlasFiling, atlasPagePath, writeAtlasCopy } from "./atlas-copies.ts";
 import {
@@ -817,7 +818,15 @@ export function buildMcpToolDefinitions(text: AgentInstructions = AGENT_INSTRUCT
       description: describe("browser_read"),
       inputSchema: {
         type: "object",
-        properties: { tab: BROWSER_TAB_SCHEMA },
+        // 2026-11-11: one page of the words by default (browser-read.ts says why); these ask for another part, or all.
+        properties: {
+          tab: BROWSER_TAB_SCHEMA,
+          page: { type: "integer", minimum: 1, description: "Optional. That page of the words; the answer's page says how many." },
+          find: { type: "string", minLength: 1, maxLength: READ_WORDS_MAX, description: "Optional. Only the lines and elements that say these words." },
+          section: { type: "string", minLength: 1, maxLength: READ_WORDS_MAX, description: "Optional. The words under the heading that says this." },
+          selector: { type: "string", minLength: 1, maxLength: READ_SELECTOR_MAX, description: "Optional. A CSS selector: read only that part of the page." },
+          full: { type: "boolean", description: "Optional. The whole read: every word, link, button and field." },
+        },
         additionalProperties: false,
       },
     },
@@ -2887,9 +2896,20 @@ export function createMcpToolHandlers(
       };
     },
 
+    // 2026-11-11: compact unless asked for all of it (browser-read.ts); `full` is the answer as it was.
     async browser_read(argumentsValue, meta) {
-      const reply = await browserCommand("browser_read", argumentsValue, meta, ["tab"], () => ({ op: "read" }));
-      return { tab: reply.tab?.id, ...reply.result };
+      let view: Exclude<ReturnType<typeof readView>, { error: string }> = {};
+      const reply = await browserCommand("browser_read", argumentsValue, meta, ["tab", "page", "find", "section", "selector", "full"], (args) => {
+        const asked = readView(args);
+        if ("error" in asked) throw new ToolInputError(asked.error);
+        view = asked;
+        return { op: "read", ...(asked.selector ? { target: { selector: asked.selector } } : {}) };
+      });
+      try {
+        return compactRead({ tab: reply.tab?.id, ...reply.result }, view);
+      } catch (error) {
+        throw error instanceof ReadViewError ? new ToolInputError(error.message) : error;
+      }
     },
 
     async browser_click(argumentsValue, meta) {
