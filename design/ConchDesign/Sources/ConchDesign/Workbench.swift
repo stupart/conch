@@ -202,9 +202,10 @@ public enum Workbench {
         "Browser tab: \(reason)"
     }
 
-    /// Said under a tab's address bar when its page asked for a passkey, which conch's browser can't give it
-    /// (`WorkbenchPasskeys`): WebKit lets only browsers Apple has approved use passkeys.
-    public static let passkeyWords = "Passkeys don't work in conch's browser yet · choose your password or another way to sign in"
+    /// Said under a tab's address bar when its page offers a passkey, which conch's browser can't use yet
+    /// (`WorkbenchPasskeys`): WebKit lets only browsers Apple has approved use passkeys. What to do instead, beside Open
+    /// in Browser (2026-11-11, Tyler: "passkeys don't work in conch browser yet").
+    public static let passkeyWords = "Passkeys don't work in conch's browser yet · sign in with your password or another way, or open this page in your browser"
 
     private static func quiet(since touched: Date?, now: Date) -> Bool {
         guard let touched else { return true }

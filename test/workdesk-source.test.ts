@@ -243,13 +243,21 @@ describe("a tab that needs the user", () => {
     expect(between(dashboard, "private func summonAsk() {", "\n    }\n\n")).not.toContain("followsAgent");
   });
 
-  test("a page that asks for a passkey is heard in conch's world alone, and said under the bar", () => {
+  /**
+   * 2026-11-11: the watcher used to wrap the page's own `navigator.credentials` and `Function.prototype.toString`, which
+   * a bot check reads as a stealth plugin. Nothing runs in the page's world now: the watcher and its handler are in
+   * conch's alone, and the notice offers the page in his own browser, where his passkeys work.
+   */
+  test("a page that offers a passkey is heard in conch's world alone, and said under the bar with Open in Browser", () => {
     const page = between(workbench, "init(tab: Workbench.Tab, store: WKWebsiteDataStore, report: @escaping (WorkbenchTabEvent) -> Void) {", "super.init()");
-    expect(page).toContain("WKUserScript(source: WorkbenchPasskeys.pageScript(event: event), injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page)");
-    expect(page).toContain("WKUserScript(source: WorkbenchPasskeys.listenerScript(event: event), injectionTime: .atDocumentStart, forMainFrameOnly: false, in: Self.world)");
+    expect(page).toContain("WKUserScript(source: WorkbenchPasskeys.script, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: Self.world)");
     expect(page).toContain("content.add(messages, contentWorld: Self.world, name: WorkbenchPasskeys.messageHandler)");
-    expect(workbench).not.toMatch(/add\(messages, contentWorld: \.page/);
-    expect(between(workbench, "struct WorkbenchPane: View {", "enum WorkbenchNewTab {")).toContain("WorkbenchNotice(.passkeys) {");
+    expect(page).toContain("if !Self.passkeysWork {");
+    expect(workbench).not.toMatch(/in: \.page\)|add\(messages, contentWorld: \.page/);
+    expect(workbench).toContain("SecTaskCopyValueForEntitlement(task, WorkbenchPasskeys.entitlement as CFString, nil)");
+    const notice = between(workbench, "if page.passkeyAsked != nil {", "WorkbenchHost(page: page)");
+    expect(notice).toContain("WorkbenchNotice(.passkeys, action: {");
+    expect(notice).toContain("open: page.url.map { url in { store.touched(); openInBrowser(url) } })");
     expect(between(workbench, "private func sync() {", "\n    }\n")).toContain("if passkeyAsked != nil, Self.site(of: view.url) != passkeySite { passkeyAsked = nil }");
   });
 });
