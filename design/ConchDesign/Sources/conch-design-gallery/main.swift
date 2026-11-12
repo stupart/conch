@@ -1167,6 +1167,8 @@ try renderFloatingPill()
 try renderPeerMessages()
 try renderSkillsLibrary()
 try renderWorkflowsLibrary()
+// What sessions left running (StillRunningGallery.swift).
+try renderStillRunning()
 
 // MARK: - Infinite scroll
 

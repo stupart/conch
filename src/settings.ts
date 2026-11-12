@@ -1,3 +1,5 @@
+import { cpus, totalmem } from "node:os";
+import { parseCpuBudget, parseMemoryBudget, type Machine } from "./resource-load.ts";
 import { accountToolsRequestError, isAccountToolsReply, type AccountToolsRequest, type AccountToolsReply } from "./account-tools.ts";
 import { isLoginInventoryReply, loginInventoryRequestError, type LoginInventoryReply, type LoginInventoryRequest } from "./login-inventory.ts";
 import { agentUpdatesRequestError, isAgentUpdatesReply, type AgentUpdatesReply, type AgentUpdatesRequest } from "./agent-updates-wire.ts";
@@ -87,6 +89,9 @@ export const SETTING_KEYS = [
   "screen-log",
   "failure-autofix",
   "agent-auto-update",
+  "agent-budget-cpu",
+  "agent-budget-memory",
+  "agent-auto-background",
 ] as const;
 
 export type SettingKey = typeof SETTING_KEYS[number];
@@ -129,7 +134,10 @@ export type SettingField =
   | "whisperIdleUnloadMins"
   | "screenLog"
   | "failureAutofix"
-  | "agentAutoUpdate";
+  | "agentAutoUpdate"
+  | "agentBudgetCpu"
+  | "agentBudgetMemory"
+  | "agentAutoBackground";
 export type HandoffOrder = "newest" | "oldest" | "urgency";
 export type PhoneLanMode = "auto" | "on" | "off";
 export type SettingValue = number | boolean | string;
@@ -249,6 +257,8 @@ const micGain = { min: -20, max: 30, minInclusive: true, maxInclusive: true } sa
 const haikuTimeout = { min: 1, max: 60, minInclusive: true, maxInclusive: true } satisfies SettingBounds;
 const positiveInteger = { min: 1, minInclusive: true, integer: true } satisfies SettingBounds;
 const zeroableInteger = { min: 0, minInclusive: true, integer: true } satisfies SettingBounds;
+/** This Mac, for the budget's settings: an amount is checked against what it has. */
+const thisMac = (): Machine => ({ cores: Math.max(1, cpus().length), memory: totalmem() });
 
 export const SETTING_DESCRIPTORS = [
   {
@@ -738,6 +748,57 @@ export const SETTING_DESCRIPTORS = [
     bounds: null,
     apply: "live",
     help: "keep Claude Code and Codex up to date when they're installed as Homebrew casks; checks every few hours, never restarts a session",
+  },
+  {
+    // The load budget (resource-ledger.ts), Tyler, 2026-11-11: "Long term u should prob be setting the 'budget' for how
+    // much continuous load agents can use in conch." The share of this Mac's cores everything agents run may keep busy,
+    // averaged over five minutes: their sessions, what those run, and what they left running. Read live. Not one agents
+    // may set (`AGENT_TUNABLE_SETTINGS`): it is the limit on them.
+    // 2026-11-12: 75%, from a quarter. Tyler, seeing a quarter of 18 cores: "why do they just 4.5 cores?" and "maybe
+    // give it 75%?". Agents' builds and gates are most of what the Mac is for; the budget is there to name the sessions
+    // when they take nearly all of it, and 75% still leaves him a quarter. Memory has its own (below).
+    // 2026-11-12: a share or an amount, Tyler: "should we make it 14 cores and 100GB just to be cleaner?" The default stays
+    // a share, since conch runs on Macs of every size (resource-load.ts `parseCpuBudget`).
+    key: "agent-budget-cpu",
+    field: "agentBudgetCpu",
+    env: "CONCH_AGENT_BUDGET_CPU",
+    kind: "string",
+    default: "75%",
+    parse: (raw) => parseCpuBudget(raw, thisMac()),
+    bounds: null,
+    apply: "live",
+    help: "the CPU agents may keep busy, averaged over 5 minutes, before conch says which sessions are over (Settings › Resources): a share of this Mac's cores, like 75%, or a number of cores, like 14",
+  },
+  {
+    // The same budget's memory: the share of this Mac's memory (as Activity Monitor counts it) agents may hold.
+    // 2026-11-12: 60%, from a quarter. Asked whether memory should go to 75% like the cores, or somewhere between,
+    // Tyler: "or 60%". Below the cores' share because memory doesn't share out over time as CPU does: what a VM or a
+    // simulator holds stays held, and the Mac swaps once it is gone.
+    key: "agent-budget-memory",
+    field: "agentBudgetMemory",
+    env: "CONCH_AGENT_BUDGET_MEMORY",
+    kind: "string",
+    default: "60%",
+    parse: (raw) => parseMemoryBudget(raw, thisMac()),
+    bounds: null,
+    apply: "live",
+    help: "the memory agents may hold before conch says which sessions are over (Settings › Resources): a share of this Mac's memory, like 60%, or an amount, like 100 GB (GiB, as Activity Monitor counts)",
+  },
+  {
+    // Off, and it ships off. On, while agents are over their CPU budget, conch moves a process an agent left running
+    // that has kept a core busy for five minutes into macOS's background band (`taskpolicy -b`): it still runs, only
+    // after what Tyler is doing, and Restore priority (`taskpolicy -B`) takes it back. The one thing conch does on its
+    // own here, because it stops nothing and loses nothing; holding or stopping stays his. Never a VM, a simulator,
+    // something no session started, or a session itself. Not one agents may set (`AGENT_TUNABLE_SETTINGS`).
+    key: "agent-auto-background",
+    field: "agentAutoBackground",
+    env: "CONCH_AGENT_AUTO_BACKGROUND",
+    kind: "boolean",
+    default: false,
+    parse: parseBoolean,
+    bounds: null,
+    apply: "live",
+    help: "while agents are over their CPU budget, lower the priority (taskpolicy -b) of what they left running that has kept a core busy for 5 minutes; never stops or pauses anything",
   },
 ] as const satisfies readonly SettingDescriptor[];
 

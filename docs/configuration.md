@@ -88,6 +88,9 @@ The defaults below are read from `src/settings.ts`; `conch settings` prints the 
 | `records` | `CONCH_RECORDS_ENABLED` | `false` | Index local agent history and record observed outcomes |
 | `failure-autofix` | `CONCH_FAILURE_AUTOFIX` | `false` | When one of conch's own failure tickets opens (not an agent's tool call), start a background Claude session in conch's checkout to fix it and open a PR, never merged: one at a time, at most 3 a day ([failure-tickets.md](failure-tickets.md)) |
 | `agent-auto-update` | `CONCH_AGENT_AUTO_UPDATE` | `true` | Keep Claude Code and Codex up to date when they're installed as Homebrew casks: checks every few hours and runs `brew upgrade --cask` for that cask alone. Anything else (native installer, npm, an app bundle) is left alone. Off stops the next check and upgrade at once; never restarts a session. |
+| `agent-budget-cpu` | `CONCH_AGENT_BUDGET_CPU` | `75%` | The load budget: the CPU agents may keep busy, averaged over 5 minutes, as a share of this Mac's cores (`75%`) or a number of cores (`14`, `14 cores`) (their sessions, what those run, and what they left running). Over it, Settings › Resources and `conch resources` say which sessions are over |
+| `agent-budget-memory` | `CONCH_AGENT_BUDGET_MEMORY` | `60%` | The memory agents may hold, as Activity Monitor counts it: a share of this Mac's memory (`60%`) or an amount (`100GB`, `100 GB`, `100G`; GiB). Either setting refuses zero and more than the Mac has, and shows in the unit it was set in, the other beside it: "14 cores (78% of 18)" |
+| `agent-auto-background` | `CONCH_AGENT_AUTO_BACKGROUND` | `false` | While agents are over their CPU budget, lower the priority (`taskpolicy -b`) of what they left running that has kept a core busy for 5 minutes. Never stops or pauses anything; Restore priority takes it back |
 
 ## Environment-only variables
 

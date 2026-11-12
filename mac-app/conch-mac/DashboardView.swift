@@ -538,6 +538,37 @@ private struct HeaderButton: View {
 }
 
 
+/// Tyler's word on what sessions use and left running, over the socket (src/resource-ledger.ts): the sidebar's Still
+/// running and Settings › Resources send the same. The app sends no pid, which is how the daemon knows the word is
+/// Tyler's. A stop, a hold or a priority change waits for it (`colima stop` can take minutes).
+enum ResourceRequests {
+    static let decide: @Sendable (String, ResourceAction) async -> String? = { id, action in
+        let quick = action == .keep || action == .later
+        switch await ConchSocketClient().request(ResourceDecideRequest(id: id, action: action), timeout: quick ? 5 : 200) {
+        case .reply(let data): return StillRunning.replyError(data)
+        case .connectFailed, .timeout: return StillRunning.replyError(nil)
+        }
+    }
+
+    /// A whole session to the background band, or back.
+    static let lowerSession: @Sendable (String, Bool) async -> String? = { sessionId, lower in
+        switch await ConchSocketClient().request(ResourceSessionRequest(sessionId: sessionId, lower: lower), timeout: 60) {
+        case .reply(let data): return StillRunning.replyError(data)
+        case .connectFailed, .timeout: return StillRunning.replyError(nil)
+        }
+    }
+
+    /// The budget's settings, through the daemon's own (`set-config`), as any setting is changed.
+    static let setBudget: @Sendable (ResourceBudgetRequest) async -> String? = { request in
+        switch await ConchSocketClient().request(request, timeout: 5) {
+        case .reply(let data):
+            let reply = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            return reply?["kind"] as? String == "config-error" ? (reply?["error"] as? String ?? "The daemon didn't take it.") : nil
+        case .connectFailed, .timeout: return "Could not reach the conch daemon."
+        }
+    }
+}
+
 private struct SessionLedger: View {
     let onSelectRemote: (RemoteSessionID) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -625,9 +656,12 @@ private struct SessionLedger: View {
         return state.rows.map(\.id) + state.dismissedRows.map { "dismissed:\($0.id)" }
     }
 
+    /// Stop, Keep or Ask later on something a session left running (`ResourceRequests.decide`).
+    static let decideResource = ResourceRequests.decide
+
     var body: some View {
         Group {
-            if let state, !state.rows.isEmpty || !state.dismissedRows.isEmpty {
+            if let state, !state.rows.isEmpty || !state.dismissedRows.isEmpty || !(state.resources?.items.isEmpty ?? true) {
                 ScrollViewReader { proxy in
                     TimelineView(.periodic(from: .now, by: 10)) { timeline in
                         ScrollView {
@@ -744,6 +778,16 @@ private struct SessionLedger: View {
                                           .id(row.id)
                                         }
                                     }
+                                }
+
+                                // What sessions left running, whose, and Tyler's word on it (src/resource-ledger.ts,
+                                // ConchDesign/StillRunning.swift). Tyler, 2026-11-11: "maybe we need like a resource ledger
+                                // as part of conch so things are linked to the sessions that made them or are using them and
+                                // we can have less loose ends for things that are meaning to run temporarily." Beside the
+                                // sessions, above the dismissed ones; nothing when nothing runs. conch stops nothing itself.
+                                if let resources = state.resources, !resources.items.isEmpty {
+                                    StillRunningSection(resources: resources, now: timeline.date, decide: Self.decideResource)
+                                        .id("still-running")
                                 }
 
                                 if !state.dismissedRows.isEmpty {
@@ -1173,6 +1217,10 @@ private struct DashboardRow: View {
             message: rowMessage,
             blockedOn: row.status == .needs ? (row.parked ? SidebarRowText.parked(row.detail) : row.detail) : nil,
             activity: activity,
+            // What it left running (src/resource-ledger.ts): "3 still running", once it isn't working, after a dot
+            // saying what it uses all told: green, yellow or red (src/resource-load.ts).
+            stillRunning: row.stillRunning,
+            stillRunningLevel: row.resourceLevel,
             startedBy: startedByLabel
         )
     }
@@ -1186,7 +1234,8 @@ private struct DashboardRow: View {
             agent: AgentBadge.name(for: row.backend),
             voice: voice.mark,
             startedBy: startedByLabel,
-            activity: activity
+            activity: activity,
+            stillRunning: row.stillRunning
         )
     }
 

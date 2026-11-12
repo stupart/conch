@@ -439,6 +439,9 @@ private struct ConchSettingRowView: View {
         "say-rate": "Fallback voice speed (wpm)",
         "failure-autofix": "Fix new failures on their own",
         "agent-auto-update": "Update Claude Code and Codex automatically",
+        "agent-budget-cpu": "Agents' CPU budget (75% or 14 cores)",
+        "agent-budget-memory": "Agents' memory budget (60% or 100 GB)",
+        "agent-auto-background": "Lower the priority of heavy leftovers",
     ]
 
     private var displayName: String {
@@ -610,9 +613,47 @@ private struct ConchSettingRowView: View {
             } else {
                 UnsupportedSettingControl(text: "No choices published")
             }
+        case "string":
+            StringSettingControl(entry: setting.entry, onSet: onSet)
         default:
             UnsupportedSettingControl(text: "Unsupported kind: \(setting.entry.kind)")
         }
+    }
+}
+
+/// A setting written as words (2026-11-12): the agents' budget takes "75%" or "14 cores", "60%" or "100 GB". Committed on
+/// Return or on leaving the field, as a number is; the daemon checks it against this Mac and says why when it won't take it.
+private struct StringSettingControl: View {
+    let entry: ConchConfigEntry
+    let onSet: (ConchSettingValue) -> Void
+
+    @State private var draft: String
+    @FocusState private var isEditing: Bool
+
+    init(entry: ConchConfigEntry, onSet: @escaping (ConchSettingValue) -> Void) {
+        self.entry = entry
+        self.onSet = onSet
+        _draft = State(initialValue: entry.value.displayText)
+    }
+
+    var body: some View {
+        TextField("Value", text: $draft)
+            .textFieldStyle(.roundedBorder)
+            .multilineTextAlignment(.trailing)
+            .frame(width: 120)
+            .focused($isEditing)
+            .onSubmit(commit)
+            .onChange(of: isEditing) { _, editing in
+                if !editing { commit() }
+            }
+            .onChange(of: entry.value) { _, value in draft = value.displayText }
+            .accessibilityLabel("Setting value")
+    }
+
+    private func commit() {
+        let value = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, value != entry.value.displayText else { return }
+        onSet(.string(value))
     }
 }
 
@@ -1121,6 +1162,9 @@ struct ConchSettingsPage: View {
         case .phone: ConchPairingView()
         case .permissions: ConchPermissionsView()
         case .setup: SetupSettingsTab()
+        // What each session uses, green, yellow or red, and agents' budget (ConchDesign/ResourcesPage.swift), from the
+        // published state; Tyler's word on each goes over the socket (`ResourceRequests`).
+        case .resources: ConchResourcesSettingsView()
         // Failure tickets (ConchDesign/FailureTickets.swift): the list and Fix, over the socket; a fix session's startup
         // terminal opens as the New session sheet's does.
         case .failures: FailureTicketsView(openTerminal: { store.openStartupTerminal($0) }) { request in
@@ -1390,6 +1434,31 @@ struct SettingsAppearance: NSViewRepresentable {
     }
 }
 
+
+/// Settings › Resources (2026-11-11): Tyler, "long term conch should probably show in its UI with green, yellow, red what
+/// sessions are using what in some view in settings or something … Long term u should prob be setting the 'budget' for
+/// how much continuous load agents can use in conch." Redrawn as the daemon publishes, every 30 s at most.
+struct ConchResourcesSettingsView: View {
+    @EnvironmentObject private var store: StateStore
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: SettingsLayout.headerGap) {
+                SettingsSectionHeader(title: "Resources", subtitle: "What each session uses and left running, green, yellow or red, and how much load agents may use together. Nothing is held, lowered or stopped unless you say so.")
+                TimelineView(.periodic(from: .now, by: 30)) { timeline in
+                    ResourcesPageView(
+                        resources: store.state?.resources,
+                        now: timeline.date,
+                        decide: ResourceRequests.decide,
+                        lowerSession: ResourceRequests.lowerSession,
+                        setBudget: ResourceRequests.setBudget
+                    )
+                }
+            }
+            .padding(SettingsLayout.inset)
+        }
+    }
+}
 
 struct ConchEnvironmentsView: View {
     @StateObject private var accounts = ClaudeAccountsStore(providerId: "codex")

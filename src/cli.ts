@@ -38,7 +38,7 @@ Getting started:
 
 Everyday:
   conch wake [name] | recite [name] | pause | resume  talk again | reread | manual (hold) | auto
-  conch sessions | resumable [query] | start [claude|codex] [options]  live | past | open one in Terminal (start --help)
+  conch sessions | resources | resumable [query] | start [claude|codex] [options]  live | what they left running (resources help) | past | open one in Terminal (start --help)
   conch rename <session> <name> | model <session> <model> | message <session> "<text>" | agent help | bug <title> --happened <what> --expected <what>  save a name | type /model into it | from an agent's shell, message another session (message --help) | agents' tools, from a session's shell | file a private bug about conch
 
 Voice and settings:
@@ -775,6 +775,12 @@ switch (command) {
     // conch's own efficiency evals (evals.ts): agent context, compute, latency, against the checked-in baseline.
     const { runEvalsCli } = await import("./evals.ts");
     process.exitCode = await runEvalsCli(rest);
+    break;
+  }
+  case "resources": {
+    // The resource ledger (resource-ledger.ts): what sessions started that is still running, and Tyler's word on it.
+    const { runResourcesCli } = await import("./resources-cli.ts");
+    process.exitCode = await runResourcesCli(rest, cfg.socketPath);
     break;
   }
   case "failures": {
