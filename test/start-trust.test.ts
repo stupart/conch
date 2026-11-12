@@ -106,6 +106,8 @@ describe("the trust question is about the folder the session will run in", () =>
     expect(backgroundTrustReport(name, "not asked").error).toBeUndefined();
     expect(backgroundTrustReport(name, "the session ended").error).toBeUndefined();
     expect(backgroundTrustReport(name, "never appeared").error).toContain("open its startup terminal");
+    expect(backgroundTrustReport(name, "still asking").error).toContain("did not take the yes");
+    expect(backgroundTrustReport(name, "still asking").error).toContain("open its startup terminal");
   });
 });
 
@@ -135,9 +137,9 @@ describe("the Terminal path's typed yes", () => {
 const tmux = resolveTmux().found;
 const fixture = join(import.meta.dir, "fixtures", "fake-claude-trust.ts");
 
-async function fakeClaude(delayMs: number): Promise<{ pane: string; out: string }> {
+async function fakeClaude(delayMs: number, deafMs = 0): Promise<{ pane: string; out: string }> {
   const out = join(mkdtempSync(join(tmpdir(), "trust-")), "answer");
-  const { pane } = await startBackgroundProcess(`exec ${shellQuote(process.execPath)} ${shellQuote(fixture)} ${shellQuote(out)} ${delayMs}`, tmpdir());
+  const { pane } = await startBackgroundProcess(`exec ${shellQuote(process.execPath)} ${shellQuote(fixture)} ${shellQuote(out)} ${delayMs} ${deafMs}`, tmpdir());
   return { pane, out };
 }
 
@@ -183,6 +185,35 @@ describe.skipIf(!tmux)("typing the yes into a background session's trust prompt"
     expect(await acceptBackgroundTrust(pane, flaky)).toBe("answered");
     expect(failed).toBe(1);
     expect(await answerIn(out)).toBe("trusted");
+  }, 15_000);
+
+  // 2026-11-09: a new background session sat on this prompt, logged "answered". The menu was drawn and not yet listening.
+  test("keys the menu was too new to hear are pressed again, and it is answered only once the prompt has gone", async () => {
+    const { pane, out } = await fakeClaude(0, 1_500);
+    expect(await acceptBackgroundTrust(pane)).toBe("answered");
+    expect(await answerIn(out)).toBe("trusted");
+  }, 15_000);
+
+  test("one key at a time, and never Enter on No: a lost Down does not choose to exit", async () => {
+    const { pane, out } = await fakeClaude(300);
+    const sent: string[][] = [];
+    let lost = 0;
+    const dropsTheFirstDown: typeof probeCommand = async (argv, ok, timeoutMs) => {
+      if (argv.includes("send-keys")) {
+        sent.push(argv.slice(argv.indexOf("send-keys") + 3));
+        if (argv.at(-1) === "Down" && lost === 0) { lost += 1; return ""; }
+      }
+      return probeCommand(argv, ok, timeoutMs);
+    };
+    expect(await acceptBackgroundTrust(pane, dropsTheFirstDown)).toBe("answered");
+    expect(sent).toEqual([["Down"], ["Down"], ["Enter"]]);
+    expect(await answerIn(out)).toBe("trusted");
+  }, 15_000);
+
+  test("a prompt that never takes the keys is reported as still asking, and nothing is chosen", async () => {
+    const { pane, out } = await fakeClaude(0, 60_000);
+    expect(await acceptBackgroundTrust(pane, probeCommand, { waitMs: 1_500 })).toBe("still asking");
+    expect(existsSync(out)).toBe(false);
   }, 15_000);
 
   test("a prompt that never comes is reported as never appeared, the session still there", async () => {
