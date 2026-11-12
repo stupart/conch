@@ -11,6 +11,7 @@ import { conchHome } from "./home.ts";
 import { basename, dirname, join, resolve } from "node:path";
 import { adapterFor, agentAdapters } from "./agent-adapter.ts";
 import { codexThreadDbPaths, openReadOnly } from "./codex-threads.ts";
+import { scanWorkflowFolder } from "./workflows.ts";
 
 export type AgentCapabilityBackend = "claude" | "codex";
 export type AgentCapabilityKind = "plugin" | "skill" | "command" | "mcp-server" | "mcp-tool";
@@ -128,6 +129,8 @@ export interface CommandCapabilityMetadata {
   model?: string;
   allowedTools: string[];
   bytes: number;
+  /** A saved workflow (workflows.ts), which Claude Code makes a slash command that runs it: `/name [args]`. */
+  workflow?: true;
 }
 
 export type McpTransportKind = "stdio" | "http" | "sse" | "websocket" | "unknown";
@@ -879,6 +882,59 @@ function scanCommandRoot(options: CommandScanOptions): number {
   return count;
 }
 
+/**
+ * A folder's saved workflows as commands (2026-11-11): Claude Code types each as `/name [args]` (a plugin's as
+ * `/plugin:name`), which asks the session to run it, so conch's composer and ⌘K offer them where they offer commands.
+ * Only those Claude Code itself loads: `.js`, under 512 KB, with a meta that reads (workflows.ts).
+ */
+function scanWorkflowRoot(options: Omit<CommandScanOptions, "invocation" | "grouped" | "backend"> & { prefix: string }): number {
+  let count = 0;
+  for (const found of scanWorkflowFolder(options.root, { agent: "claude", origin: "user", enabled: null }, options.prefix)) {
+    if (!found.meta || found.problem) continue;
+    const path = found.location.path;
+    const name = found.meta.name;
+    const invocation = found.location.invocation;
+    const id = capabilityId("claude", "command", `workflow:${name}`, options.parentId ? `${options.parentId}:workflow:${name}` : resolve(path));
+    const enabled = options.parentEnabled === undefined ? null : options.parentEnabled;
+    const scope = options.parentId ? "plugin" : options.scope;
+    const entity: AgentCapabilityEntity = {
+      id,
+      subject: { id, type: "agent-capability", title: invocation },
+      backend: "claude",
+      kind: "command",
+      name,
+      displayName: name,
+      description: found.meta.description ? `Workflow: ${found.meta.description}` : `Run the ${name} workflow`,
+      ...(options.parentId ? { parentId: options.parentId } : {}),
+      scope,
+      sources: [{ kind: "directory", path, scope }],
+      evidence: evidence(
+        "A workflow script exists in a configured discovery directory.",
+        enabled === false ? unavailable("Configuration disables the plugin this workflow comes with.") : unknownAvailable(),
+        undefined,
+        "filesystem",
+      ),
+      diagnostics: [],
+      command: {
+        path,
+        invocation,
+        ...(options.ownerPluginId ? { ownerPluginId: options.ownerPluginId } : {}),
+        enabledForNextSession: enabled,
+        argumentHint: "input (optional)",
+        allowedTools: [],
+        bytes: safeSize(path),
+        workflow: true,
+      },
+    };
+    if (options.collector.add(entity)) count += 1;
+  }
+  return count;
+}
+
+function safeSize(path: string): number {
+  try { return statSync(path).size; } catch { return 0; }
+}
+
 function usageMap(value: unknown): Map<string, UsageRecord> {
   const result = new Map<string, UsageRecord>();
   if (!record(value)) return result;
@@ -1262,6 +1318,9 @@ export function readClaude(
   const visibility = effectiveSkillVisibility(layers);
   const toolPermissions = mcpPermissionMap(layers, projectState?.allowedTools);
   const enableAllProject = layers.some((layer) => layer.value.enableAllProjectMcpServers === true);
+  // Saved workflows are commands only while the feature is on: off when a layer disables it, or turns it off last.
+  const workflowsOn = !layers.some((layer) => layer.value.disableWorkflows === true)
+    && layers.reduce<boolean | undefined>((on, layer) => typeof layer.value.enableWorkflows === "boolean" ? layer.value.enableWorkflows : on, undefined) !== false;
   const managedMcpPath = options.claudeManagedMcpPath === undefined
     ? defaultClaudeManagedPath("managed-mcp.json")
     : options.claudeManagedMcpPath;
@@ -1380,6 +1439,15 @@ export function readClaude(
           ownerPluginId: pluginId,
           parentEnabled: enabled,
         });
+        if (workflowsOn) scanWorkflowRoot({
+          root: join(installPath, "workflows"),
+          scope: "plugin",
+          collector,
+          prefix: `${pluginName}:`,
+          parentId: id,
+          ownerPluginId: pluginId,
+          parentEnabled: enabled,
+        });
         const mcpFile = manifestPath(installPath, manifest, "mcpServers", ".mcp.json");
         if (existsSync(mcpFile)) {
           const parsed = readJson(mcpFile, collector, "Claude plugin MCP configuration");
@@ -1455,6 +1523,13 @@ export function readClaude(
       invocation: (name) => `/${name}`,
       grouped: true,
     });
+  }
+  // Saved workflows, the person's and each project's on the way to this folder, while the feature is on for them.
+  if (workflowsOn) {
+    scanWorkflowRoot({ root: join(claudeHome, "workflows"), scope: "user", collector, prefix: "" });
+    for (const directory of projectDirectories(options.cwd)) {
+      scanWorkflowRoot({ root: join(directory, ".claude", "workflows"), scope: "project", collector, prefix: "" });
+    }
   }
 
   if (record(state?.mcpServers)) {

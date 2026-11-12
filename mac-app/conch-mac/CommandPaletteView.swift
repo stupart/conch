@@ -14,7 +14,7 @@ struct PaletteCommand: Identifiable, Equatable {
         case pause, resume, wake, recite, stop, reveal, rename, setModel, fork
         case dismiss, inspect, helpSession
         case restore(id: String, label: String)
-        /// A section of Settings: Skills and Benchmarks (SkillsLibraryView.swift).
+        /// A section of Settings: Skills, Workflows and Benchmarks (SkillsLibraryView.swift, WorkflowsLibraryView.swift).
         case settings(SettingsSection)
         /// Typed into the session as written; an argument, if given, follows it.
         case type(String)
@@ -81,6 +81,11 @@ enum PaletteCatalog {
             id: "skills", section: .session, title: "Skills…",
             detail: "Every skill in every account, and skills from the public indexes to add and try",
             action: .settings(.skills)
+        ))
+        out.append(PaletteCommand(
+            id: "workflows", section: .session, title: "Workflows…",
+            detail: "Claude Code's saved multi-agent scripts, to run in a session, and the runs going now",
+            action: .settings(.workflows)
         ))
         out.append(PaletteCommand(
             id: "benchmarks", section: .session, title: "Benchmarks…",

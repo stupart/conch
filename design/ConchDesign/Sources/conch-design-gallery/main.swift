@@ -2693,6 +2693,7 @@ try render("reply-bar-swoop", width: 1860) {
 try MainActor.assumeIsolated { try renderOnboarding() }
 try renderFailureTickets()
 try renderSkillsLibrary()
+try renderWorkflowsLibrary()
 
 // MARK: - Infinite scroll
 
