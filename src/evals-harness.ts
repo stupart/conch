@@ -850,7 +850,9 @@ async function bench(root: string): Promise<Record<string, unknown>> {
   out.transcriptTail = { transcriptMB: Math.round(biggest.bytes / 1024 / 1024), coldMs: Math.round(cold[0]! * 10) / 10, unchanged: stats(warm), afterAppend: stats(appended) };
 
   const { transcriptMark } = await import("./snippet.ts");
-  out.transcriptMark = { transcriptMB: Math.round(biggest.bytes / 1024 / 1024), note: "the inject's prompt count, with no cursor", ...stats(await timeEach(3, () => transcriptMark(biggest.transcript))) };
+  // The first count reads the whole file; a repeat is answered from what the first one kept.
+  const marks = await timeEach(4, () => transcriptMark(biggest.transcript));
+  out.transcriptMark = { transcriptMB: Math.round(biggest.bytes / 1024 / 1024), note: "the inject's prompt count, with no cursor", coldMs: Math.round(marks[0]! * 10) / 10, repeat: stats(marks.slice(1)) };
 
   const { deadTarget } = await import("./dead-target.ts");
   out.injectPreflight = { note: "deadTarget on a live pid: the kernel's answer and `ps -o args=`", ...stats(await timeEach(10, () => deadTarget(claudeDir, { pid: sessions[0]!.pid }))) };

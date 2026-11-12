@@ -694,7 +694,7 @@ export function formatLatency(latency: Record<string, unknown>, baseline?: Recor
   }
   if (latency.registrySnapshot) row(`registry read (${at(latency, "registrySnapshot.sessions")} sessions)`, t("registrySnapshot"));
   if (latency.transcriptTail) row(`transcript tail (${at(latency, "transcriptTail.transcriptMB")} MB)`, `cold ${at(latency, "transcriptTail.coldMs")}   unchanged ${t("transcriptTail.unchanged")}   after an append ${t("transcriptTail.afterAppend")}`);
-  if (latency.transcriptMark) row("inject: prompt count", `${t("transcriptMark")}   (${at(latency, "transcriptMark.transcriptMB")} MB, no cursor)`);
+  if (latency.transcriptMark) row(`inject: prompt count (${at(latency, "transcriptMark.transcriptMB")} MB)`, `cold ${at(latency, "transcriptMark.coldMs")}   repeat ${t("transcriptMark.repeat")}   (no cursor)`);
   if (latency.injectPreflight) row("inject: dead-target check", t("injectPreflight"));
   if (latency.ps) row("ps -axo (one process probe)", t("ps"));
   if (latency.publishedStateRows) row("published state: rows", `${t("publishedStateRows")}   (${kb(Number(at(latency, "publishedStateRows.bytes") ?? 0))})`);
