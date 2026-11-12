@@ -166,6 +166,9 @@ describe("the baseline", () => {
     expect(quiet.latency).toEqual({ ping: 9 });
     expect(quiet.machine.note).toBe("idle enough: load 2 on 10 cores");
     expect(baselineFrom({ v: 1, machine: machine(40), tokens }, null).baseline.machine.note).toBe("tokens only: compute and latency not recorded");
+    // The live daemon's, app's and MCP servers' ps numbers are this Mac's moment, never a baseline.
+    const live = baselineFrom({ v: 1, machine: machine(2), compute: { testDaemon: { cpu: 1 }, live: { daemon: { rssMB: 500 } } } }, null).baseline;
+    expect(live.compute).toEqual({ testDaemon: { cpu: 1 } });
   });
 
   test("compute and latency compare leaf by leaf, arrays by their entries' names", () => {
