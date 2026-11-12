@@ -1630,7 +1630,7 @@ extension SessionRow {
             status: status, at: at, needsResponse: needsResponse, detail: detail,
             review: review, reviews: reviews, paused: paused, pauseExempt: pauseExempt, live: live, active: active,
             snippet: snippet, transcriptPath: transcriptPath, voice: voice, prioritized: prioritized, navSelected: navSelected,
-            revealable: revealable, noTerminal: noTerminal, messageRoute: messageRoute, attachable: attachable,
+            revealable: revealable, noTerminal: noTerminal, messageRoute: messageRoute, attachable: attachable, parked: parked,
             waitingOnAgents: waitingOnAgents, approval: approval, parentSessionId: parentSessionId,
             startedBySessionId: startedBySessionId, cwd: cwd, workDirs: workDirs, activity: nil, toolsStale: toolsStale
         )
