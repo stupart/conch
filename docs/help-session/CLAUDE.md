@@ -21,9 +21,11 @@ that one rule is what keeps the loop from hearing itself.
   Settings, including the Phone app tab.
 - **The iPhone app** is the same ledger in a pocket, paired from Settings →
   Phone app over the LAN or through a relay.
-- **The terminal dashboard** (`conch` with no arguments) attaches to a daemon
-  that `conch service` runs under launchd. When the app hosts the daemon there
-  is nothing to attach to and the app is the dashboard; `conch` says so.
+- **The terminal dashboard** is drawn by a daemon running in a terminal of its
+  own (`conch daemon`); `conch` with no arguments attaches to it when that
+  terminal is a tmux pane. When the app hosts the daemon the app is the
+  dashboard, and a daemon `conch service` runs under launchd has none; `conch`
+  says which, and where to look.
 - **The CLI** — `conch help` lists every command in one screen. Agents have
   their own, `conch agent …` (`conch agent help`), and `conch bug` files a
   bug about conch as a private failure ticket.
@@ -115,8 +117,10 @@ that one rule is what keeps the loop from hearing itself.
   first (`brought back parked …` in the log). `claude agents --all` lists them.
 - **Two `conch` on PATH** — a brew install and a linked checkout; the app and
   the daemon end up on different versions. `conch doctor` names both; keep one.
-- **`conch` says "nothing to attach to"** — the app is hosting the daemon, so
-  the app is the dashboard. That is not an error.
+- **`conch` says there is nothing to attach to** — the app is hosting the
+  daemon (the app is the dashboard), or launchd is running it with no terminal
+  (the app attaches to it; `conch sessions` and `/tmp/conch-daemon.log` read
+  it). Neither is an error; `conch` exits 1 only when no daemon is running.
 - **Sessions sit on "You've hit your … limit" with a numbered menu** — the
   account Default is on ran out. With `claude-rotation` and
   `limit-auto-resume` on, the daemon switches to an account with room, chooses

@@ -26,6 +26,11 @@ ReviewRequest, SessionRow, PublishedState, ConchFrame envelope).
 
 ## Tool set
 
+The first scaffold's eight tools, below, as designed. The set grew past two dozen, then moved (2026-11-11):
+agents reach conch through `conch agent …` (`src/agent-cli.ts`), and the MCP lists only
+`review_to_front` and `conch_run`, answering the moved tools for sessions started before. The
+contract is `src/agent-instructions.ts`.
+
 SAFE tools (this scaffold — map to EXISTING socket sends / imports, no protocol change, non-destructive):
 - `conch_sessions { session?, detail? }` — read `/tmp/conch-sessions.json`, one short entry per session; fallback `registrySnapshot`
 - `conch_wake { session? }` — TurnEvent `wake`

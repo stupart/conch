@@ -28,8 +28,8 @@ There are four ways in and two ways out, and they answer different questions.
 
 ## 1. Events in — a serial queue
 
-`src/daemon.ts` holds one `TurnEvent[]` and one `drain()` that walks it
-strictly one at a time (`daemon.ts:1463`, `1850`, `1907`). Everything that
+`src/daemon.ts` hands every event to one `EventQueue` (`src/event-queue.ts`),
+which holds one `TurnEvent[]` and walks it strictly one at a time. Everything that
 happens to conch becomes a `TurnEvent`: a Claude Code hook firing, a Codex turn
 detected by polling, a wake from a button, an inject from a composer.
 
@@ -84,8 +84,8 @@ because a running session is exactly what a config file cannot reach.
 ## 3. State out — a file, not a stream
 
 The daemon writes the whole visible world to `/tmp/conch-sessions.json` and the
-apps poll it. Republished on change, throttled (`publish-throttle.ts`,
-`daemon.ts:2144`).
+apps poll it. Republished on change, throttled (`publish-throttle.ts`, the daemon's
+`publishedStateWriter`).
 
 **Why a file:** it survives a daemon restart, it is trivially inspectable
 (`cat` it), the Mac app is a socket CLIENT that cannot be pushed to, and a
@@ -298,7 +298,7 @@ typing route.
 
 ## What is wrong with it
 
-**`daemon.ts` was 5,811 lines (2,756 after four cuts) — but the line count was never the problem.**
+**`daemon.ts` was 5,811 lines (2,756 after four cuts, and back over 5,500 since) — but the line count was never the problem.**
 Lines 1–1466 are ~35 exported, individually tested functions and they are fine.
 The problem is that `runDaemon` is a single ~4,200-line function with 37 nested
 functions closing over 152 locals. That is where every feature lands and where
@@ -403,10 +403,10 @@ The remaining seam is already visible:
 
 `daemon.ts` would keep wiring it in. This is worth doing BEFORE the
 write pass and the marketplace, because both add control messages and both will
-otherwise land in the same 2,756-line file.
+otherwise land in the same file, which is back over 5,500 lines.
 
 **Second: two ways to run the daemon, and the daemon's parent owns the
-microphone.** `conch install` puts it in launchd; the Mac app hosts its own and
+microphone.** `conch service install` puts it in launchd; the Mac app hosts its own and
 adopts whatever is already answering the socket. Two owners is what made
 "adopted" a permanent state, and it has now produced two more bugs worth
 naming, because neither is obvious from the code:
@@ -471,7 +471,9 @@ It refuses a CLI-only tarball. The app is the half carrying the microphone
 entitlement, so shipping without it would deliver a conch whose recorder can
 never be granted a microphone.
 
-`.github/workflows/ci.yml` runs the suite and `tsc` on every push and PR, and
-reports how far main has drifted from the newest release. `release.yml` can
-publish from a tag once a signing identity is available to it — by secret, or by
-a self-hosted runner where the certificate never leaves the machine.
+`.github/workflows/ci.yml` ran the suite and `tsc` on every push and PR until
+GitHub Actions credits ran out (2026-09-17); it is now run by hand only
+(`workflow_dispatch`). The gate is `scripts/ci-local.sh`, which pre-push runs
+once `scripts/install-hooks.sh` is installed. `release.yml` can publish from a
+tag once a signing identity is available to it — by secret, or by a self-hosted
+runner where the certificate never leaves the machine.

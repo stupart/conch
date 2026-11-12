@@ -30,9 +30,9 @@ there is no app. It is safe to run again. Then:
 - Allow the microphone when macOS asks.
 - Finish a turn. conch reads it aloud, plays a tink and opens the mic. If it stays quiet, run `conch doctor`.
 
-> **The release trails `main`.** Homebrew installs the latest release, v0.3.0 at the time of writing. Much of what is
-> described here landed after it, including agent marks, version compare, approvals, the Mac setup window, accounts,
-> and natural voices that set themselves up. To run `main` today, [build from source](#build-from-source).
+> **The release trails `main`.** Homebrew installs the latest release, v0.4.0 at the time of writing. Much of what is
+> described here landed after it, including teams of agents, the in-app browser, the floating pill and the
+> `conch agent` commands. To run `main` today, [build from source](#build-from-source).
 
 ## What it does
 
@@ -44,11 +44,11 @@ Claude and OpenAI accounts can sit side by side, with their usage.
 
 **Each agent shows you its work.** When a session has something for you to look at, it publishes it through the conch
 plugin, and it opens in the review pane beside the conversation: a live page or dev server, a local page, a picture, a
-video, a PDF, Markdown, a folder as its file tree, or a Figma design. Ready for you, in the app and in a small bar under
-the menu bar, steps through what is waiting.
+video, a PDF, Markdown, a folder as its file tree, or a Figma design. Ready for you, in the app and in the menu bar,
+steps through what is waiting.
 
-- **Marks.** The agent can mark the one thing to check (an arrow, a box, a highlight, a note) on the page, the picture
-  or your screen. You see the marks on the Mac and on your phone.
+- **Marks.** The agent can mark the one thing to check (an arrow, a box, a highlight, a note) on the page or the
+  picture. Your phone draws the marks over it.
 - **Versions and compare.** Publishing the same thing again files a new version. Compare two with a before/after
   slider, side by side, or a text diff.
 - **Approve.** When an agent is waiting on your yes ("Open the PR"), a ✓ in the session bar gives it.
@@ -59,9 +59,9 @@ different one. The mic never opens while conch is speaking, so it never hears it
 Permission prompts and an agent's questions can be answered the same way. Voice commands, manual mode, and how conch
 keeps quiet while you're typing, away or in a meeting: [docs/voice.md](docs/voice.md).
 
-**Draw on your screen.** Press ⌃⌥⌘P and draw over anything on your screen, then send the picture to the session whose
-work you're looking at. Or record a Show: up to two minutes of your screen with your drawing and your voice, sent to the
-session as a storyboard. (Show needs macOS 15.)
+**A pill over every app.** A small pill under the menu bar shows what conch is doing: the session it is reading or
+listening to, a session that needs you, how many are working. Click it to open what needs you; hover for Talk and
+Auto | Manual. Drag it to any edge of any display, or turn it off from the menu bar.
 
 **Teams of agents.** In Settings › Teams, set up team types: roles (each with its agent, model, effort, account,
 permissions, prompt and skills, how many may work at once, and whom it reports to) and the rules for how they work
@@ -81,7 +81,7 @@ A more playful view of your sessions, the lagoon, is in the works.
 |---|---|---|
 | In the session list, with live activity and subagents | Yes | Yes |
 | Finished turns read aloud; reply by voice | Yes | Yes |
-| Publishes work to the review pane, with marks | Yes, through the conch plugin | Yes, through the conch plugin |
+| Publishes work to the review pane, with marks for the phone | Yes, through the conch plugin | Yes, through the conch plugin |
 | Start, resume, restart; model and effort per session | Yes | Yes |
 | Accounts and usage | Claude accounts | OpenAI / ChatGPT accounts |
 | How your words reach it | Typed into its tmux pane or Terminal window | The same, or through the Codex app for a task open there |
@@ -102,7 +102,7 @@ The iPhone app is the same list in your pocket: each session saying what it want
 you to look at (with the agent's marks, and compare), and a Talk button. Replies are read aloud on the phone, through
 your AirPods, and the mic opens when the reading stops, so a whole turn costs one tap. From the phone you can also
 answer permission prompts and questions, start or resume a session, send a session a photo or a video, and reach most
-of the Mac app's session controls. Drawing on the screen, the shell and the floating panels stay on the Mac.
+of the Mac app's session controls. The shell stays on the Mac.
 
 **Getting it.** The iPhone app isn't on the App Store or a public TestFlight yet. To run it today, open
 `mobile/conch-ios/conch-ios.xcodeproj` in Xcode, choose your own team and bundle identifier, and run it on your phone.
@@ -125,7 +125,7 @@ conch is local-first. It has no server and no account of its own.
 
 - **Your sessions run on your Mac.** conch watches the Claude Code and Codex sessions on this Mac and types into them;
   it runs no agents of its own. The agents talk to Anthropic and OpenAI as they always do, and anything you send a
-  session through conch (your words, a picture of your screen, a Show) reaches that agent the same way typing would.
+  session through conch (your words, your notes on its work, a photo) reaches that agent the same way typing would.
 - **Speech stays on the Mac.** What you say is transcribed on the Mac by whisper.cpp, and replies are spoken by Kokoro
   on the Mac's GPU, or by macOS `say`. No audio goes to a speech service.
 - **The phone talks only to your Mac.** It recognizes your speech with iOS's own recognizer, on the device wherever
@@ -145,7 +145,7 @@ conch is local-first. It has no server and no account of its own.
   turn it off with `conch set screen-log false`.
 - **Permissions.** Each is one grant to conch.app. Microphone: your spoken replies. Accessibility: which app and page
   you're on, and typing your replies into Terminal. Automation: finding a session's Terminal window and pressing keys
-  there. Screen Recording: the picture you draw on, a Show, and window snapshots for your phone.
+  there. Screen Recording: window snapshots for your phone.
 
 ## Reference
 
@@ -155,7 +155,7 @@ conch is local-first. It has no server and no account of its own.
 |---|---|
 | `conch setup [--service \| --no-service] [--no-plugin]` | Set everything up; safe to re-run |
 | `conch doctor` | Check the speech engine, the microphone, voices and agents, and say what to fix |
-| `conch` | Open the terminal dashboard (see below) |
+| `conch` | Open the dashboard, or say where it is (see below) |
 | `conch sessions` / `conch resumable [query]` | List live sessions / past sessions you can resume |
 | `conch start [claude \| codex] [options]` | Open a new session in Terminal (`conch start --help`) |
 | `conch team [start <type> "<task>" \| task <team> "<task>" \| add <role> "<task>" \| members \| brief]` | Teams of agents: start one on a task, give it another, ask for a member, see who is on it (`conch team --help`) |
@@ -181,10 +181,11 @@ conch is local-first. It has no server and no account of its own.
 
 ### Terminal dashboard
 
-Without the Mac app, `conch` attaches to the terminal dashboard that the launchd service keeps running, and
-`conch daemon` runs the loop in the foreground with the same dashboard. It is also the way in over ssh. The session
-list is on the left and a pane that reads along with the active session is on the right; press `?` for its keys. With
-the Mac app installed, the app hosts the daemon and is the dashboard.
+The daemon draws a terminal dashboard only when it runs in a terminal of its own: `conch daemon` runs the loop in the
+foreground with it. The session list is on the left and a pane that reads along with the active session is on the
+right; press `?` for its keys. `conch` in another terminal attaches to it when that terminal is a tmux pane. With the
+Mac app installed, the app hosts the daemon and is the dashboard. The launchd service's daemon has no terminal, so
+`conch` says where to look instead: the Mac app attaches to it, and `conch sessions` lists its sessions, over ssh too.
 
 ### Settings
 

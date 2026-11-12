@@ -137,12 +137,11 @@ describe("a mark's image passes the rule a linked file does", () => {
   /**
    * The contract used to offer "a still the user sent" as an image to mark: every one is in conch's own hidden cache
    * (the phone's uploads, a canvas's folder), which the rule refuses, so an agent following it was always refused.
-   * It now says what works: a canvas by its id, a still copied out first.
+   * It now says what works: a still copied out first.
    */
   test("what the contract tells an agent to mark is what the rule lets through", async () => {
     const skill = readFileSync(join(root, "docs/conch-control-skill.md"), "utf8");
     expect(skill).not.toContain("such as a\n      still the user sent");
-    expect(skill).toContain("Mark a canvas this way, never by its picture's path.");
     expect(skill).toContain("copy it under your folder or a temp folder first and mark the copy.");
     // A temp folder is copied into conch with the publication now, so the still outlives the folder it was copied to.
     expect(skill).toContain("One in a temp folder is copied into conch with the publication, as a\n      link is.");

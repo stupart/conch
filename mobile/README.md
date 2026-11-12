@@ -20,7 +20,7 @@ network.
   markdown, and text all render fully; local files are served by the bridge's
   scoped `/file` endpoint, which only ever serves what the dashboard is
   currently showing. **Ready for you** in the ledger's toolbar opens the oldest
-  unviewed one and steps through the rest, as the Mac's Ready pill does.
+  unviewed one and steps through the rest, as the Mac's Ready for you does.
 - **The Mac's controls, where a phone can use them**: long-press a row to
   rename, quiet, open its window on the Mac or dismiss it; a session's "…" menu
   has Commands (the ⌘K palette: slash commands and skills, typed into the
@@ -28,7 +28,7 @@ network.
   switches), Rename and Restart. Settings reaches Providers (accounts and
   usage), Voices & agents, and what the marks mean, and resets a setting to its
   default. Help with conch starts from the laptop menu. Mac-only surfaces stay
-  on the Mac: drawing on screen, the shell and file tabs, the floating panels.
+  on the Mac: the shell and file tabs.
 
 Build: `xcodebuild -project mobile/conch-ios/conch-ios.xcodeproj -scheme conch-ios`.
 The simulator can pair headlessly via `CONCH_PAIR_HOST` / `CONCH_PAIR_TOKEN`
