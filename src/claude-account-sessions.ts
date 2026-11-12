@@ -1,5 +1,5 @@
 import { statSync } from "node:fs";
-import { windowKey, processParentTable } from "./window-key.ts";
+import { windowKey, processParentTableWith } from "./window-key.ts";
 import { readClaudeAccounts, type ClaudeAccount } from "./claude-accounts.ts";
 import { registryProcessAlive } from "./process-identity.ts";
 import { findTranscript, registrySnapshot, codexRegistrySnapshot, withStartedBy, type RegistrySnapshot } from "./sessions.ts";
@@ -67,7 +67,7 @@ export async function accountRegistrySnapshot(
     combined.liveIds.add(parked.sessionId);
   }
   if (combined.infos.filter(info => info.pid).length >= 2) {
-    const parents = await processParentTable();
+    const parents = await processParentTableWith(combined.infos.flatMap(info => [info.pid, info.agentPid]).filter((pid): pid is number => !!pid && pid > 0));
     if (parents) combined.infos = withStartedBy(combined.infos, parents);
   }
   return available ? combined : null;

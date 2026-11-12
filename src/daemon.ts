@@ -1,5 +1,6 @@
 import { backgroundStartupPid, backgroundTrustReport, managedBackgroundSession } from "./background-sessions.ts";
-import { BackgroundGuard } from "./background-recovery.ts";
+import { BackgroundGuard, backgroundServersLook } from "./background-recovery.ts";
+import { processLook } from "./process-look.ts";
 import { RestartGuard, bootTime } from "./restart-recovery.ts";
 import { dismissedWriter, loadDismissed } from "./dismissed-store.ts";
 import { handleAccountTools } from "./account-tools.ts";
@@ -1838,6 +1839,12 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   // The at-rest status reflects the one lossless quiet mode.
   const restState = (): ConchState => (pause.paused ? "paused" : "idle");
 
+  /** A session opened or closed: the next render looks at the process table and the tmux servers again. */
+  function sessionsMoved(): void {
+    processLook.invalidate();
+    backgroundServersLook.invalidate();
+  }
+
   const panelRefresh = new SessionReconciler({
     read: () => {
       breadcrumb("panel: reading the session registry");
@@ -1869,9 +1876,15 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   // on Tyler's thirteen, a render's conversations went from 24 ms to 0.4 ms with
   // nothing new and with one transcript grown, for about 50 MB of kept lines.
   const transcriptRender = createPublishThrottle(() => void renderSessionPanel(), { intervalMs: 250 });
-  const accountSourcesWatch = watchChangingPaths(() => void renderSessionPanel());
+  const accountSourcesWatch = watchChangingPaths(() => {
+    sessionsMoved();
+    void renderSessionPanel();
+  });
   const transcriptWatch = watchChangingPaths(() => {
     breadcrumb("watch: a live transcript changed");
+    // An agent at work may start a process: the shared `ps` and tmux looks stop backing off (process-look.ts).
+    processLook.nudge();
+    backgroundServersLook.nudge();
     transcriptRender.request();
   }, { debounceMs: 50 });
   let lastPublishedPanelState: PublishedState | null = null;
@@ -4768,7 +4781,10 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       join(cfg.claudeDir, "sessions"),
       ...(codexHome ? [join(codexHome, "thread-writer-locks")] : []),
     ],
-    () => void renderSessionPanel(),
+    () => {
+      sessionsMoved();
+      void renderSessionPanel();
+    },
   );
 
   // Announce Codex turns, which have no hook to announce themselves.

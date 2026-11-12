@@ -24,7 +24,7 @@ import {
 } from "./codex-sessions.ts";
 import { readCodexThreads } from "./codex-threads.ts";
 import { claudeTranscriptGuess, hasConversation, liveTranscriptPath, readClaudeTitles, readClaudeTitlesIfThere, readContinuedIn } from "./claude-title.ts";
-import { parseWindowKey, processParentTable, windowKey, windowPidFromAncestry } from "./window-key.ts";
+import { parseWindowKey, processParentTableWith, windowKey, windowPidFromAncestry } from "./window-key.ts";
 import { noteRegistryEntries } from "./transcript-paths.ts";
 import { readKeptFile } from "./kept-file.ts";
 import { HELP_SESSION_LABEL, helpSessionDir } from "./help-session.ts";
@@ -1027,7 +1027,8 @@ export async function registrySnapshot(
   // ponytail: ~30 ms per read on a 1200-process Mac; cache the table by pid
   // set if a profile ever shows it.
   if (infos.filter((info) => info.pid).length >= 2) {
-    const parents = await (options.processParents ?? processParentTable)();
+    const pids = infos.flatMap((info) => [info.pid, info.agentPid]).filter((pid): pid is number => !!pid && pid > 0);
+    const parents = await (options.processParents ?? (() => processParentTableWith(pids, options.isPidAlive)))();
     if (parents) infos = withStartedBy(infos, parents);
   }
 
@@ -1288,7 +1289,8 @@ export async function codexRegistrySnapshot(codexHome: string, options: Registry
   const entries = codexEntriesById(observed.entries, hooked.entries);
   let infos = await Promise.all([...entries.values()].map(entry => toInfo("", entry, "codex")));
   if (infos.filter(info => info.pid).length >= 2) {
-    const parents = await (options.processParents ?? processParentTable)();
+    const pids = infos.flatMap(info => [info.pid, info.agentPid]).filter((pid): pid is number => !!pid && pid > 0);
+    const parents = await (options.processParents ?? (() => processParentTableWith(pids, options.isPidAlive)))();
     if (parents) infos = withStartedBy(infos, parents);
   }
   const declared = workingFolderOverrides();
