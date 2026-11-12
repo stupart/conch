@@ -1,8 +1,8 @@
-import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { RecordsDiscovery, recordsCandidate, recordsRoots, type RecordsCandidate } from "./records-discovery.ts";
 import { inspectRecordSource, RECORD_PARSER_VERSION, SOURCE_PROBE_BYTES } from "./records-source.ts";
 import { recordKey, type RecordProvider, type RecordSession } from "./records-types.ts";
-import type { RecordStore } from "./records-store.ts";
+import type { RecordCoverageStatus, RecordStore } from "./records-store.ts";
 
 export interface RecordsIndexerOptions {
   ownerDeviceId: string;
@@ -34,11 +34,16 @@ interface Buffered { id: string; from: number; bytes: Buffer; size: number; modi
 const referenceKey = (ref: SessionReference) => recordKey(ref.provider, ref.nativeId);
 const errorCode = (error: unknown) => (error as NodeJS.ErrnoException)?.code ?? "record-index-error";
 
+/** An unchanged live source is polled at most every 2^3 `pollMs` (8 s by default) until the daemon renders again. */
+const MAX_POLL_DOUBLINGS = 3;
+
 /** The worker owns this scheduler. Neither construction nor hints start a scan. */
 export class RecordsIndexer {
   private discovery: RecordsDiscovery;
   private jobs = new Map<string, Job>();
   private polling = new Map<string, { job: Job; at: number }>();
+  /** How many polls in a row found each live source as it was: its next poll waits `pollMs` doubled that often. */
+  private unchangedPolls = new Map<string, number>();
   private hints: RecordsPriorityHints = { live: [] };
   private live = new Set<string>();
   private livePaths: RecordsPriorityHints["live"] = [];
@@ -97,6 +102,7 @@ export class RecordsIndexer {
     this.discovery.close();
     this.jobs.clear();
     this.polling.clear();
+    this.unchangedPolls.clear();
     this.buffered = undefined;
   }
   prioritize(hints: RecordsPriorityHints): void {
@@ -106,6 +112,11 @@ export class RecordsIndexer {
       this.discovery.close();
       this.discovery = new RecordsDiscovery(recordsRoots(this.options));
     }
+    // The daemon sends these after each render, and a live transcript that grew is what renders it: every live
+    // source is polled again within `pollMs`, however far its polls had backed off (`poll`).
+    this.unchangedPolls.clear();
+    const soon = Date.now() + this.pollMs;
+    for (const entry of this.polling.values()) entry.at = Math.min(entry.at, soon);
     this.hints = { ...hints, live: hints.live.slice(0, 256) };
     this.live = new Set(this.hints.live.map(referenceKey));
     const selected = hints.selected && referenceKey(hints.selected);
@@ -198,21 +209,65 @@ export class RecordsIndexer {
     this.foregroundBatches = this.priority(job) < 2 ? this.foregroundBatches + 1 : 0;
     this.read(job);
   }
+  /**
+   * A source's coverage, written only when it says something new: a source that stays partial, oversized or missing
+   * was a commit on every poll. Its `coverage_updated_at` then says when it last changed, which nothing reads as more.
+   */
+  private cover(id: string, update: { status: RecordCoverageStatus; error?: string }): boolean {
+    const known = this.store.coverage(id);
+    if (known?.status === update.status && known.error === update.error) return false;
+    this.store.setCoverage(id, update);
+    return true;
+  }
+  /**
+   * Read a live source again later: `pollMs` after it changed, and twice as long after each poll that found it as it
+   * was, up to 2^`MAX_POLL_DOUBLINGS` times `pollMs` (8 s by default), until `prioritize` says the daemon rendered again.
+   */
+  private poll(job: Job, unchanged: boolean): void {
+    if (this.priority(job) >= 2) return;
+    const count = unchanged ? Math.min(MAX_POLL_DOUBLINGS, (this.unchangedPolls.get(job.id) ?? 0) + 1) : 0;
+    if (count) this.unchangedPolls.set(job.id, count);
+    else this.unchangedPolls.delete(job.id);
+    this.polling.set(job.id, { job, at: Date.now() + this.pollMs * 2 ** count });
+  }
+  /**
+   * A source already read to its end whose file hasn't moved since: one `lstat` and one row, never a write.
+   *
+   * Every poll of a live source and every source on each reconcile (all of them, every 30 s: 1,832 transcripts on
+   * this Mac, 2026-11-11) opened the file, read its prefix and checkpoint, and committed three times to say it was
+   * complete, each with an fsync. A rewrite that kept the size and the modification time to the nanosecond would
+   * read as unmoved here; the prefix and checkpoint still catch every other.
+   */
+  private unmoved(job: Job): boolean {
+    if (this.buffered?.id === job.id) return false;
+    const stored = this.store.source(job.id);
+    if (!stored || stored.offset !== stored.size || stored.parserVersion !== RECORD_PARSER_VERSION[job.session.provider]
+      || stored.device !== job.device || stored.inode !== job.inode) return false;
+    let stat: ReturnType<typeof lstatSync>;
+    try { stat = lstatSync(job.path); } catch { return false; }
+    return stat.isFile() && String(stat.dev) === job.device && String(stat.ino) === job.inode
+      && stat.size === stored.size && stat.mtimeMs === stored.modifiedMs
+      && this.store.coverage(job.id)?.status === "complete";
+  }
   private read(job: Job): void {
     let fd: number | undefined;
     try {
       const root = this.discovery.roots.find((entry) => entry.provider === job.session.provider
         && recordsCandidate(entry, job.path)?.nativeId === job.session.nativeId);
       if (!root) {
-        this.store.setCoverage(job.id, { status: "error", error: "source-outside-roots" });
+        this.cover(job.id, { status: "error", error: "source-outside-roots" });
         if (this.buffered?.id === job.id) this.buffered = undefined;
+        return;
+      }
+      if (this.unmoved(job)) {
+        this.poll(job, true);
         return;
       }
       fd = openSync(job.path, constants.O_RDONLY | constants.O_NOFOLLOW);
       const observed = fstatSync(fd);
       if (!observed.isFile() || String(observed.dev) !== job.device || String(observed.ino) !== job.inode) {
         if (this.buffered?.id === job.id) this.buffered = undefined;
-        this.store.setCoverage(job.id, { status: "missing", error: "source-identity-changed" });
+        this.cover(job.id, { status: "missing", error: "source-identity-changed" });
         if (this.discovery.done) this.discovery.reset();
         return;
       }
@@ -245,7 +300,7 @@ export class RecordsIndexer {
       const after = fstatSync(fd);
       if (after.size < observed.size || (after.size === observed.size && after.mtimeMs !== observed.mtimeMs)) {
         if (this.buffered?.id === job.id) this.buffered = undefined;
-        this.store.setCoverage(job.id, { status: "queued", error: "source-changed-during-read" });
+        this.cover(job.id, { status: "queued", error: "source-changed-during-read" });
         this.enqueue(job);
         return;
       }
@@ -264,9 +319,9 @@ export class RecordsIndexer {
         // priority source needs it, the displaced source rereads its committed cursor.
         const oversized = bytes.length >= this.maxRecordBytes;
         this.buffered = oversized ? undefined : { id: job.id, from: plan.from, bytes, size: observed.size, modifiedMs: observed.mtimeMs };
-        this.store.setCoverage(job.id, { status: oversized ? "oversized" : "partial", ...(oversized ? { error: "record-size-limit" } : {}) });
+        const moved = this.cover(job.id, { status: oversized ? "oversized" : "partial", ...(oversized ? { error: "record-size-limit" } : {}) });
         if (!oversized && from + wanted < observed.size) this.enqueue(job);
-        else if (this.priority(job) < 2) this.polling.set(job.id, { job, at: Date.now() + this.pollMs });
+        else this.poll(job, !moved);
         return;
       }
       if (job.session.provider === "codex" && plan.from === 0 && boundary) {
@@ -280,15 +335,28 @@ export class RecordsIndexer {
           }
         } catch { /* The normalizer records malformed complete lines without storing their contents. */ }
       }
-      // One complete record may exceed the usual batch size, but never maxRecordBytes.
-      this.store.setCoverage(job.id, { status: "indexing" });
-      const result = this.store.ingest({ session: job.session, source: { ...source, from: plan.from, bytes: bytes.subarray(0, boundary) } });
+      // Nothing new, and the stored source already says so: nothing to write (`unmoved` answers this without the reads
+      // when the coverage is complete).
+      if (!bytes.length && plan.change === "append" && plan.from === observed.size && previous.size === observed.size
+        && previous.modifiedMs === observed.mtimeMs) {
+        this.cover(job.id, { status: "complete" });
+        if (after.size > observed.size) this.enqueue(job);
+        else this.poll(job, true);
+        return;
+      }
+      // One complete record may exceed the usual batch size, but never maxRecordBytes. One commit for the batch and
+      // its coverage, where there were three; nothing reads "indexing" from another connection mid-batch.
+      const result = this.store.transaction(() => {
+        this.store.setCoverage(job.id, { status: "indexing" });
+        const ingested = this.store.ingest({ session: job.session, source: { ...source, from: plan.from, bytes: bytes.subarray(0, boundary) } });
+        this.store.setCoverage(job.id, { status: ingested.source.offset === observed.size ? "complete" : "queued" });
+        return ingested;
+      });
       if (this.buffered?.id === job.id) this.buffered = undefined;
       this.counters.linesIndexed += result.lines;
       const complete = result.source.offset === observed.size;
-      this.store.setCoverage(job.id, { status: complete ? "complete" : "queued" });
       if (!complete || after.size > observed.size) this.enqueue(job);
-      else if (this.priority(job) < 2) this.polling.set(job.id, { job, at: Date.now() + this.pollMs });
+      else this.poll(job, false);
       if (result.change === "rewrite") {
         this.recovery.unshift({ sessionId: job.session.id });
         this.buffered = undefined;
@@ -297,8 +365,8 @@ export class RecordsIndexer {
       const code = errorCode(error);
       this.lastError = code;
       if (this.buffered?.id === job.id) this.buffered = undefined;
-      this.store.setCoverage(job.id, { status: code === "ENOENT" ? "missing" : "error", error: code });
-      if (this.priority(job) < 2) this.polling.set(job.id, { job, at: Date.now() + this.pollMs });
+      // A live source that is still missing (a session before its first message) was a commit a second.
+      this.poll(job, !this.cover(job.id, { status: code === "ENOENT" ? "missing" : "error", error: code }));
     } finally { if (fd !== undefined) closeSync(fd); }
   }
 }
