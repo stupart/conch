@@ -67,7 +67,8 @@ extends the conversation panel (the overlay, `Fog*` in code) and the pill; it is
     prompted), and a localhost page → the session that started its server.
   - The phone (#414, #416): relay throughput, dev servers through conch (`conch-dev://`), agent
     marks, Remove, and Mac-only work (an app window, the Simulator, a document) as a snapshot.
-  - Still to do: phone → Mac video.
+  - Phone → Mac video, **done** (#418, 2026-09-25): a recording from the phone reaches the session as
+    a contact sheet and a timed transcript (`src/video-transcript.ts`, `src/phone-uploads.ts`).
 - **Then** (Tyler, 2026-09-25): connect it to the Mac app "so its fluid back adn forth", and a
   clean onboarding — "download or connetc your agents, get a walking thorough of everything, make
   sure permissions are rrec and so on".
@@ -81,28 +82,39 @@ extends the conversation panel (the overlay, `Fog*` in code) and the pill; it is
   id="6a36">`, so the row showed the raw tags and the app's own "Sent" bubble never matched it. The
   wrapper is now stripped wherever conch reads a Claude user record. The first such message in that
   transcript really was sent twice (two prompts nine minutes apart), so that part was not a bug.
-- **done** — Background agents as a small group under their session, each one selectable, the way
-  Claude Code's own agent view is. Tyler (2026-09-23): "have the agents show under smaller as like
-  a group and you can select on them as well just like is possible in the Claude Code ui". The
-  daemon built the published model from `live`, so C4's nested rows never left it; it now uses
-  `visible`, agents get their own four published conversations, and both apps draw them as a
-  compact group under the parent ("3 agents · 2 running" on the Mac, small rows on the phone).
-- **open** — The iPhone cannot open a deliverable that is a file on the Mac. Four `open-link`
+- **done** (#390, #392, 2026-09-23) — Background agents as a small group under their session, each
+  one selectable, the way Claude Code's own agent view is. Tyler (2026-09-23): "have the agents show
+  under smaller as like a group and you can select on them as well just like is possible in the
+  Claude Code ui". The daemon built the published model from `live`, so C4's nested rows never left
+  it; it now uses `visible`, agents get their own four published conversations, and both apps draw
+  them as a compact group under the parent. #392 dropped the "3 agents · 2 running" line on the Mac
+  the same day, so the agent rows sit straight under their session.
+- **done** (#356, 2026-09-21) — The iPhone cannot open a deliverable that is a file on the Mac. Four `open-link`
   failures on 2026-09-21 17:09 from `source: ios`, all reading "That's a file on your Mac, not a
   page: /Users/…/Asset Generator/mcp-plugin-workflow-review-2026-09-17.md". The message is
   honest and the phone genuinely cannot reach that path, so the fix is not "open it anyway" —
   it is either serving the file through the bridge conch already runs, or not offering the
-  control for a link the phone cannot follow.
-- **open** — The composer still cuts a blank band in the PANEL view. The conversation arm layers
-  it in a `ZStack` and hands the stack its measured height as `bottomInset` (`af61d67`,
-  `992d843`), but that is the only call site: the side-by-side arm keeps `floatingComposer` as a
-  plain sibling in the VStack, so it takes layout space and clips. Tyler: "the input panel is
-  still crating that cutoff blank space on the panels view (we fixed it on the conversation
-  view)". In flight.
-- **open** — Spell check does not work in the input box, and the flag is already set:
-  `ComposerView.swift:945` sets `isContinuousSpellCheckingEnabled = true`, but the field typed
-  into is a SwiftUI `TextEditor` (~:467) while that setting is applied to the bridged NSTextView
-  (~:841). The switch exists and does not reach the editor. In flight.
+  control for a link the phone cannot follow. Fixed the first way: a tapped file link that conch
+  is publishing (a review's link, or a file beside it) downloads through the bridge's `/file` and
+  renders in `DeliverableSheet` (`FileLinkSheet`, DeliverableSheet.swift:838). A path the bridge is
+  not publishing is still refused by `/file`'s exact-set check, and the phone says so.
+- **done** (#342, 2026-09-21; #399, 2026-09-24) — The composer still cuts a blank band in the PANEL
+  view. The conversation arm layers it in a `ZStack` and hands the stack its measured height as
+  `bottomInset` (`af61d67`, `992d843`), but that is the only call site: the side-by-side arm keeps
+  `floatingComposer` as a plain sibling in the VStack, so it takes layout space and clips. Tyler:
+  "the input panel is still crating that cutoff blank space on the panels view (we fixed it on the
+  conversation view)". The split is now a bottom-aligned `ZStack` with the card on top, and the
+  room goes to the conversation half through `bottomInset` (#342). When the band came back over the
+  work half, #399 put the card over the conversation column whenever that column is wide enough
+  (`cardOverConversation`, DashboardView.swift:2560), so the work half runs to the bottom edge.
+- **done** (#343, 2026-09-21; #497, 2026-10-04) — Spell check does not work in the input box, and
+  the flag is already set: `ComposerView.swift:945` (then) sets `isContinuousSpellCheckingEnabled =
+  true`, but the field typed into is a SwiftUI `TextEditor` (~:467) while that setting is applied
+  to the bridged NSTextView (~:841). The switch exists and does not reach the editor. #343 found
+  SwiftUI's own update turning it off on every keystroke and kept it on. #497 then replaced the
+  `TextEditor` with AppKit's text view, owned by conch (`ComposerEditor`), which sets continuous
+  spell checking once and nothing else writes it (ComposerEditor.swift:138); autocorrection stays
+  off, since this text lands in terminals and code.
 - **open** — A SECOND control that fills the window with the deliverable and floats the
   deconstructed input over it. Tyler, 2026-09-21: "maybe it like makes that thing fullscreen with
   the deconstructed input ui stuff showing over top?" This read as a reversal of `#338`, which had
@@ -111,19 +123,30 @@ extends the conversation panel (the overlay, `Fog*` in code) and the pill; it is
   him rather than being built on a guess. Decided the same day: BOTH. The arrow keeps going out;
   fullscreen becomes its own gesture. Not built yet, and it is second in line behind the thing it
   floats: the deconstructed input UI does not exist yet.
-- **open** — The left sidebar cannot be dragged into the order you want. Tyler: "i would like to
-  be able to drag around and reorganize the left side bar oranixation of things." Grouping is
-  DERIVED today (`SessionGrouping.folders`), so there is no user-owned order to drag, and a
-  manual order has to answer what happens to a dragged row when its folder changes. In flight.
+- **done** (#339, 2026-09-21) — The left sidebar cannot be dragged into the order you want. Tyler:
+  "i would like to be able to drag around and reorganize the left side bar oranixation of things."
+  Grouping is DERIVED today (`SessionGrouping.folders`), so there is no user-owned order to drag,
+  and a manual order has to answer what happens to a dragged row when its folder changes. Answered
+  by moving FOLDERS: drag a header onto another and it takes that slot (`SessionGrouping.order`),
+  kept as `conch.folderOrder` and never pruned, so a folder keeps its place while its sessions are
+  away. Rows stay derived from their folder on purpose, so a session that moves simply appears
+  under its new folder. The iPhone's list does not reorder.
 - **open** — Filling the stage with a deliverable (⌘3) still does not mark it viewed. Only a tab
   click and the inline card do (`bfc4337` fixed the card; the tab always did). Same class of gap:
   the dot stays on something you are looking at full screen. Found by the versions agent and left
-  deliberately rather than widened into its PR.
+  deliberately rather than widened into its PR. Re-checked 2026-11-11: ⌘3 no longer fills the
+  stage — #338 (2026-09-21) made it Open Where It Lives — and the stage now fills by dragging the
+  conversation off the split, which still marks nothing. What does mark one: a tab click, the
+  inline card, starting a comparison (`startComparing`) and the lagoon's glass.
 - **open** — The files pane shows the whole working folder; it should be scoped to what the
   session is actually working on. Tyler, 2026-09-20: "for the files deally thats more scopped
   to whats being worked on by the projects but can leave for now". The material is already
   there — `ConchFileChanges` knows every path this session touched — so a "changed only" view,
-  or a root inferred from where the changes cluster, needs no new wire.
+  or a root inferred from where the changes cluster, needs no new wire. Partly done: the tree
+  roots at the first folder the agent declared with `conch_working_folders` (#345, 2026-09-21),
+  else where it started, and never at the home folder itself (`ConchWorkFolder.pick`, #453,
+  2026-09-28); a folder deliverable opens on the paths its agent pointed at (#453). Still open: a
+  "changed only" view, or a root inferred from the changes.
 - **open** — The terminal might belong IN the input box as a mode rather than as its own tab.
   Tyler: "terminal should probably just be like a mode in this input boc instead of a seperate
   thing maybe? not sure". Unresolved on purpose: one input box that changes meaning is fewer
@@ -134,25 +157,34 @@ extends the conversation panel (the overlay, `Fog*` in code) and the pill; it is
   from conch's own chrome, and with navigation now free (`ae69957`) it is the only thing doing
   that job. Seen on screen 2026-09-20: `https://github.com/stupart/seashell/pull/13`. Safari
   solves this by emphasising the domain and dimming the rest; this should too.
-- **open** — "Open in browser" is clipped under the stage control, which is overlaid
-  `.topTrailing` on the same corner the origin bar's trailing button occupies. Pre-existing —
-  visible in captures from before the address bar landed — but the longer address makes it
-  reliably reachable-looking and unreachable.
+- **done** (#346, 2026-09-21; #502, 2026-10-05) — "Open in browser" is clipped under the stage
+  control, which is overlaid `.topTrailing` on the same corner the origin bar's trailing button
+  occupies. Pre-existing — visible in captures from before the address bar landed — but the longer
+  address makes it reliably reachable-looking and unreachable. #346 removed the button and moved
+  what it did onto the header arrow (see "One way out of a deliverable" under Done). #502 then took
+  a page's ↗ out of the corner altogether: it sits at the right end of the address line
+  (`lineControls`), where it covers neither the page nor the address.
 - **open** — The terminal pane puts a second text field directly above the session composer, so
   two inputs sit one line apart with nothing saying which has focus. Found the hard way while
   verifying the pane: a click that missed the terminal field left keystrokes to be read as
   global shortcuts, which set conch speaking. Wants a visible focus treatment, and probably a
-  key that puts the cursor in the terminal.
-- **open** — Old deliverables render as live in-conversation cards. Tyler: "this one is showing
-  green circle with a check tho becuase of a really old deliverable that shows at the bottom of teh
-  chat. maybe old deliverables show in teh deliverable area as tabs but not as like in-convo ui
-  elements? only new ones show as in-convo ui elements?" `ConversationStackView` takes one
-  `artifact: ReviewInfo?` and pins it at the end of the stack — the comment even says "for
-  one-artifact-per-session IS where it happened", and that assumption is what breaks. `ReviewInfo`
-  already carries `at`, `id` and `viewedAt`, so gating the inline card needs no new plumbing.
-- **open** — Status colour semantics are backwards. Tyler: "does orange dot mean its waiting for
-  me? We should make that green or blue or something and have working be like yellow or orange or
-  some sort of working icon or no icon or color at all since its working".
+  key that puts the cursor in the terminal. That pane is the Shell tab since #458 (2026-09-28;
+  Terminal is now the agent's own terminal), and its field still has no focus treatment
+  (`ShellPaneView`, Terminal.swift:169).
+- **done** (#315, #329, 2026-09-20) — Old deliverables render as live in-conversation cards. Tyler:
+  "this one is showing green circle with a check tho becuase of a really old deliverable that shows
+  at the bottom of teh chat. maybe old deliverables show in teh deliverable area as tabs but not as
+  like in-convo ui elements? only new ones show as in-convo ui elements?" `ConversationStackView`
+  takes one `artifact: ReviewInfo?` and pins it at the end of the stack — the comment even says
+  "for one-artifact-per-session IS where it happened", and that assumption is what breaks.
+  `ReviewInfo` already carries `at`, `id` and `viewedAt`, so gating the inline card needs no new
+  plumbing. Gated that way: the card shows only while `viewedAt` is nil (or the daemon is too old
+  to report it), and not at all while the work half beside it already shows the same deliverable
+  (`artifactShownBeside`, #329). ConversationStackView.swift:390.
+- **done** (#315, 2026-09-20; #428, 2026-09-26) — Status colour semantics are backwards. Tyler:
+  "does orange dot mean its waiting for me? We should make that green or blue or something and have
+  working be like yellow or orange or some sort of working icon or no icon or color at all since
+  its working".
   DECIDED: waiting becomes green like review, keeping its existing `circle.inset.filled` glyph so
   the check alone distinguishes review — Tyler: "maybe do same green circle just with no check?".
   The glyph is already right; only the colour moves. `needs` stays red as the blocking state.
@@ -161,24 +193,36 @@ extends the conversation panel (the overlay, `Fog*` in code) and the pill; it is
   it (3.39 / 3.57). Today's orange fails too (2.11 / 2.22), so this is not a regression introduced.
   Reverses a documented decision: waiting was moved to orange to read "as attention rather than
   inert grey" and to separate it from review, which were "20/255 apart in a single channel".
-- **open** — The bar above a deliverable: `ReviewSurface.caption` (ReviewView.swift:113) — check +
-  session label in brand cyan + summary + expand. Tyler: "i don't get what its for an it adds
-  clutter / jank". Earlier, same thing: "just liek and image or preview of the work with little or
-  no text". **Mac only** — iOS's `ReviewCard` is already just check + summary.
+  Shipped as decided: `statusWaiting` is `#279B4C` on light (#315), and is now ConchDesign's
+  `ready` token, the phone's green too (Palette.swift:124). Working became its own colour in #428:
+  `active`'s blue, a dot that breathes a halo while the agent works, and a sub-agent that isn't
+  running is a hollow paused ring rather than waiting's green.
+- **done** (#315, 2026-09-20) — The bar above a deliverable: `ReviewSurface.caption`
+  (ReviewView.swift:113, then) — check + session label in brand cyan + summary + expand. Tyler: "i
+  don't get what its for an it adds clutter / jank". Earlier, same thing: "just liek and image or
+  preview of the work with little or no text". **Mac only** — iOS's `ReviewCard` is already just
+  check + summary.
   NOT the web origin bar beneath it (globe + origin + "Open in browser"): that is a deliberate
   trust boundary, because a deliverable is an agent-authored URL rendered full-bleed in conch's own
   chrome and a third-party sign-in page would otherwise be indistinguishable from conch's UI.
-  `test/review-mark.test.ts` pins that checkmark in three places.
+  `test/review-mark.test.ts` pins that checkmark in three places. The caption is gone; what is left
+  above the work is its controls (`stageControl`, top-trailing, or a page's address line), and the
+  origin bar stays, now an address field.
 - **open** — A real workspace pane: file tree, diffs and a terminal, plus a browser. Tyler: "where
   are we on being able to have a terminal and see the full file tree and diffs … as well as a
   browser in the side panel".
-  STATUS, looked up rather than guessed — one of four exists:
+  STATUS, looked up rather than guessed — one of four exists (three of four by 2026-11-11; DIFFS
+  is what keeps this open):
   BROWSER, DONE `ae69957` — the pane browses now, with an address bar. `DeliverableWebView` renders HTML
   deliverables full-bleed. What is missing is arbitrary browsing and a page an agent drives while
-  you reach into it — the Direction note above, not a new engine.
-  DIFFS, partial: `DiffLine` (`ConversationStackView.swift:1280`) draws an edit's changed lines
-  inline in the transcript. `Models.swift:563` says outright "Not a unified diff" — that was a
-  deliberate choice for scanning a stack, so a real diff VIEW is additive, not a fix.
+  you reach into it — the Direction note above, not a new engine. Both shipped as the Workdesk's
+  browser tabs (#548, 2026-10-12; #561, 2026-10-16): live tabs beside the conversation that agents
+  drive with the `browser_*` tools and the user can open, sign in to, or take over.
+  DIFFS, partial: `DiffLine` (`ConversationStackView.swift:2002`) draws an edit's changed lines
+  inline in the transcript. `Models.swift:847` says outright "Not a unified diff" — that was a
+  deliberate choice for scanning a stack, so a real diff VIEW is additive, not a fix. #490
+  (2026-10-03) added one for deliverables: two versions of a text deliverable compare as a unified
+  diff (`TextDiff`, the Compare view's Changes). There is still no diff view of the working tree.
   FILE TREE, DONE `21f614b`: the session's working folder is a tab in the work half, with the
   files it changed marked in place — a folder holding a change marked more quietly than the
   changed file, so the route to the work reads without every folder claiming to be edited.
@@ -206,21 +250,27 @@ extends the conversation panel (the overlay, `Fog*` in code) and the pill; it is
   one (complete output, 0s, pure SGR). Reuse `DaemonHost.daemonPath(inherited:)` for PATH:
   `bun` and `npm` are not on the default one.
   The inputs for the first three already exist — the daemon publishes file changes with paths
-  (`fileChange`, `src/conversation.ts:653`) and every session carries its `cwd`
-  (`Models.swift:864`). A terminal does not: it needs a PTY the daemon owns, which conch has never
-  had, and that is the piece that makes this a project rather than a pane.
+  (`fileChange`, `src/conversation.ts:1177`) and every session carries its `cwd`
+  (`Models.swift:1346`). A terminal does not: it needs a PTY the daemon owns, which conch has never
+  had, and that is the piece that makes this a project rather than a pane. It shipped without one:
+  the PTY is the app's (`6a975fd`), and that pane is now Shell, beside a Terminal button that
+  brings the agent's own terminal forward (#458, #462, 2026-09-28).
 - **open** — Copy a session's name from the sidebar (right-click, beside the rename that is there).
 - **open** — Overlay image paste. `ConversationFog.draft` is a plain `String` with no attachment
   concept anywhere in Components.swift, so this is a feature, not a patch.
 - **open** — Glass reads dark over a light desktop: `.glassEffect` takes its base from the system
   appearance, so in Dark mode it stays a dark card on a light ground.
 - **open** — Mobile input box grows without clipping lines.
-- **done** — App icons need real artwork (~1024² PNG, no alpha) at `assets/conch-icon-1024.png`.
-  Conch-Icon-v3 (the shell with its eyes out, 2026-09-23), through `scripts/make-icons.sh`.
+- **done** (#394, 2026-09-23) — App icons need real artwork (~1024² PNG, no alpha) at
+  `assets/conch-icon-1024.png`. Conch-Icon-v3 (the shell with its eyes out, 2026-09-23), through
+  `scripts/make-icons.sh`.
 - **open** — A working/spinner glyph, and `needs`/`review` as filled badges.
 - **open** — Search.
-- **open** — No red spelling underline in the composer. Pre-existing; probed and NOT caused by the
-  TextKit 1 fallback the caret fix introduced.
+- **done** (#343, 2026-09-21; #497, 2026-10-04) — No red spelling underline in the composer.
+  Pre-existing; probed and NOT caused by the TextKit 1 fallback the caret fix introduced. The same
+  cause as the spell-check item above: SwiftUI turned continuous checking off on every keystroke.
+  #343's probe after the fix had "teh", "helo" and "wrld" underlined; since #497 the field is
+  conch's own TextKit 1 text view with checking set once (ComposerEditor.swift:138).
 
 ### Engineering
 - **open** — MCP servers accumulate per Codex session: 15 alive, **756 MB** combined (2026-09-21).
@@ -248,33 +298,42 @@ extends the conversation panel (the overlay, `Fog*` in code) and the pill; it is
   `conch install-plugin` (`cli.ts` → `runInstallPlugin` → `materializeAtomically`), NOT a daemon
   start. Left for Tyler: it rewrites his MCP config, and the repo template
   (`${CLAUDE_PLUGIN_ROOT}/bin/conch-mcp`) differs from what is installed.
-- **open** — A question an agent asks raises no signal on the row. conch files it correctly —
-  verified in `records/history.sqlite`, the `AskUserQuestion` call recorded against this session
-  with status `completed` — and `ConversationStackView` draws a real `questionRow` with clickable
-  options. But it renders only INSIDE that session's conversation, so with the window closed
-  (or another session in front) there is nothing to notice. Tyler, 2026-09-21: "i dont' think it
-  surfaced your question in the mac app for me". A permission prompt reaches `needs-you` through
-  the Notification hook (`ACTIONABLE` in `src/hook.ts`); a question has no such path, though the
-  set already names `elicitation_dialog`.
+- **done** (#370, #374, 2026-09-23) — A question an agent asks raises no signal on the row. conch
+  files it correctly — verified in `records/history.sqlite`, the `AskUserQuestion` call recorded
+  against this session with status `completed` — and `ConversationStackView` draws a real
+  `questionRow` with clickable options. But it renders only INSIDE that session's conversation,
+  so with the window closed (or another session in front) there is nothing to notice. Tyler,
+  2026-09-21: "i dont' think it surfaced your question in the mac app for me". A permission prompt
+  reaches `needs-you` through the Notification hook (`ACTIONABLE` in `src/hook.ts`); a question
+  has no such path, though the set already names `elicitation_dialog`. It has one now: #370 wired
+  Claude Code's `PermissionRequest` hook, which fires for the question picker too, and #374 sends
+  an `AskUserQuestion` there as a `needs-you` of type `elicitation_dialog` carrying the questions
+  (`src/hook.ts:524`), so the row goes to needs and conch says "… is asking: …" aloud.
 - **open** — `~/.config/conch/records/history.sqlite` is **1.1 GB** (plus a 3.1 MB WAL), noticed
   2026-09-21 while querying it. Nothing measured about what it costs yet — recorded because
   unbounded growth in the file every session writes to is worth knowing before it bites.
-- **done** — The deliverable ledger lives in `/tmp`, so artifact tabs vanish when the machine
-  reboots or macOS sweeps it. Moved to `~/.config/conch/reviews.json`; the daemon reads the
-  `/tmp` file once while the new one is absent. Measured before moving: the file was intact and
-  every deliverable survived the 10:05 daemon restart, and this Mac had not rebooted in 24 days —
-  so this was a reboot-only loss, not the one Tyler saw on an app relaunch (next item). `src/status.ts`: `REVIEWS_FILE = process.env.CONCH_REVIEWS_FILE ||
+- **done** (#341, 2026-09-21) — The deliverable ledger lives in `/tmp`, so artifact tabs vanish
+  when the machine reboots or macOS sweeps it. Moved to `~/.config/conch/reviews.json`; the daemon
+  reads the `/tmp` file once while the new one is absent. Measured before moving: the file was
+  intact and every deliverable survived the 10:05 daemon restart, and this Mac had not rebooted in
+  24 days — so this was a reboot-only loss, not the one Tyler saw on an app relaunch (next item).
+  Before: `src/status.ts` had `REVIEWS_FILE = process.env.CONCH_REVIEWS_FILE ||
   "/tmp/conch-reviews.json"`, restored by `ledger.restoreReviews()` at `src/daemon.ts:674`. Every
   other durable conch file is in `~/.config/conch/` (device-id, labels.json, records/,
-  settings.json, state.json) — this one is the exception, and it is the one holding the thing
+  settings.json, state.json) — this one was the exception, and it was the one holding the thing
   Tyler noticed losing: "the deliverables / artifacts tabs get lost when the app re-installs or
   restarts". Note the trigger is probably the DAEMON restarting or a reboot, not the app.
-  Found 2026-09-21 while briefing the fix; in flight.
-- **done** — Which deliverable tab is SELECTED is in-memory only and resets every launch:
-  `WorkspaceModel()` is a plain `@StateObject` (ContentView.swift:12) and nothing encodes
-  `SessionPresentation`. A second, separate loss from the ledger one above — fixing the ledger
-  will not restore the selection. Confirmed app-wide: no `AppStorage` names a stage.
-- **done** — A conch-internal per-session state file the agent can write, holding the left-panel
+  Found 2026-09-21 while briefing the fix. Now `REVIEWS_FILE` (src/status.ts:60) defaults to
+  `reviews.json` under the config folder, the old path is `LEGACY_REVIEWS_FILE` (:103), and the
+  daemon builds its ledger from both (src/daemon.ts:982) before restoring it.
+- **done** (#344, 2026-09-21) — Which deliverable tab is SELECTED is in-memory only and resets
+  every launch: `WorkspaceModel()` is a plain `@StateObject` (ContentView.swift:12) and nothing
+  encodes `SessionPresentation`. A second, separate loss from the ledger one above — fixing the
+  ledger will not restore the selection. Confirmed app-wide: no `AppStorage` names a stage. Now the
+  model hands back a Codable `WorkspaceMemory` after every change (Workspace.swift:485 in
+  ConchDesign), which the Mac keeps in UserDefaults and hands back at launch: the page, the work
+  pane, the picked tab and the folded sidebar folders.
+- **done** (#341, #344, #345, 2026-09-21) — A conch-internal per-session state file the agent can write, holding the left-panel
   enabled state, the deliverables/artifacts that session is showing, and the parent working
   folder(s) it is ACTUALLY in. Split by who owns each fact: the deliverables were already the
   daemon's (`reviews.json`, now durable); the folded folders and the picked tab are the Mac's
@@ -285,14 +344,19 @@ extends the conversation panel (the overlay, `Fog*` in code) and the pill; it is
   somewhere else", with conch keeping the mapping. The folders matter on their own: "sometimes
   its different than the folder i start the session in and that info would be more accurate for
   file-tree / file viewer and lefsidebar organization" — today `workingFolder` is derived from
-  `row.cwd`, which is the folder the session STARTED in. In flight.
+  `row.cwd`, which is the folder the session STARTED in. That was the state before #345; now
+  `workingFolder` takes the first declared folder and falls back to `cwd` (`ConchWorkFolder.pick`),
+  and `cwd` stays what a relative link is relative to.
 - **open** — Close can still fail in a way nobody has reproduced. One double-press run against a
   session that had sat ~10 minutes did not exit, and its poller saw no "press again" hint on
   screen at all, while nine further runs closed cleanly. No retry was added on purpose: a second
   attempt would blow the app's 12 s close budget. The absent hint is the tell — it suggests the
   keystroke never landed rather than that the window was missed, so if a close fails again this
   is the path to pull, not the press count. Found while fixing `f68f389` and left rather than
-  widened into it.
+  widened into it. The 12 s budget is gone: #516 (2026-10-06) gave a close 45 s on the Mac
+  (`sessionCloseTimeout`) and a 15 s exit wait (`CLOSE_EXIT_WAIT_MS`), for two closes on
+  2026-10-05 that failed only because their sessions were slow to leave. That was a different
+  failure from this one, where the keystroke seems never to have landed.
 - **open** — Nine guards still slice by a FIXED character count from a marker, which breaks the
   moment the code they read grows. Found 2026-09-21 when `composer.slice(loadAt, loadAt + 400)`
   failed while the rule it pins was still true — `load` had gained a doc comment and a branch,
@@ -301,7 +365,11 @@ extends the conversation panel (the overlay, `Fog*` in code) and the pill; it is
   `design-system-source:70`, `phone-speaking-latch:24`, `reveal-command:58`,
   `phone-telemetry:59`, `setup:431`. The idiom that works is already in the same files —
   `slice(at, source.indexOf("\n    }", at))`, an end marker searched FORWARD from the start.
-  A count is a guess about how long a function will stay.
+  A count is a guess about how long a function will stay. Re-checked 2026-11-11: the
+  adopted-daemon-respawn guard now uses that idiom (its `body()` helper), but the same file has
+  gained a backward count (`- 700`, :105), and the rest still count, at `daemon-owner:106`,
+  `daemon-side-effects:471,586` (plus a new `:412`), `design-system-source:80`,
+  `phone-speaking-latch:24`, `reveal-command:57`, `phone-telemetry:59`, `setup:449`.
 - **open** — Running real agent sessions inside conch's own terminal. Tyler: "could test having
   the real reaw sessios runnign in the terminal in th app that could be quite cool... is that
   possible for me to move one in here?"
@@ -314,6 +382,12 @@ extends the conversation panel (the overlay, `Fog*` in code) and the pill; it is
   anywhere, and injection becomes the exact `send-keys` route instead of synthetic keystrokes;
   (2) the pane grows a real emulator — alternate screen and cursor addressing — because an agent
   TUI is exactly the case the colour-only scrollback was scoped out of. Neither is an increment.
+  Partly done: (1) shipped. A session conch starts can run as a background session in tmux
+  (#482, 2026-10-01), on conch's own server, `tmux -L conch`, since #486 (2026-10-02), with the
+  app carrying its own tmux (#466, 2026-09-28); it can be attached from any terminal, and
+  injection there is `send-keys`. (2) has not: the Terminal Mirror (#458) draws a tmux pane's
+  capture view-only, and since #462 it is a debug view, with the strip's Terminal a button that
+  brings the agent's real terminal forward.
 - **open** — A streaming snapshot still costs ~75 ms at 300 rows, after BOTH the MemoRow fix
   and the republish fix. MEASURED 2026-09-20: 63% of it is SwiftUI's own graph walk, with
   `ConversationItem`/`Conversation` equality (~1200 samples) and `_stringCompare` (62 ms)

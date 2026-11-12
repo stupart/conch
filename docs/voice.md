@@ -34,10 +34,11 @@ the terminal dashboard.
 
 ## How your words reach a session
 
-- A session conch started runs in conch's own tmux server, and your words are typed into its pane. So is a session
-  running in a tmux pane of your own.
-- A session in a macOS Terminal window: conch brings that window forward and types into it (`keystroke-fallback`).
-  This needs the Accessibility and Automation permissions.
+- A session in a macOS Terminal window, which is where conch starts sessions unless you pick the background: conch
+  brings that window forward and types into it (`keystroke-fallback`). This needs the Accessibility and Automation
+  permissions.
+- A session conch started in the background runs in conch's own tmux server, and your words are typed into its pane.
+  So is a session running in a tmux pane of your own.
 - A Codex task open in the Codex app gets your words through the app's own connection.
 - Anywhere else, your words go to the clipboard instead of being lost, and conch says "just paste".
 

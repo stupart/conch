@@ -21,7 +21,7 @@ them on the new laptop on 2026-09-10; the ones already fixed say so.
 
 | step | what they type or see | goes quiet when | state |
 |---|---|---|---|
-| 1 | `brew install stupart/tap/conch` | the tap was pinned to a months-old version with nothing saying so | **fixed**: `release.yml` bumps the tap on every tag; `release-gap` CI job fails when main is ahead of the last release |
+| 1 | `brew install stupart/tap/conch` | the tap was pinned to a months-old version with nothing saying so | **fixed**: `scripts/release.sh` cuts a release and bumps the tap in one command (`release.yml` did it on every tag until GitHub Actions went off on 2026-09-17); `scripts/ci-local.sh all` ends with the `gap` check, which counts the commits main is ahead of the last release and warns past 25 |
 | 2 | `conch setup` — downloads ~574 MB of models, wires hooks, installs the plugin, starts the service (or leaves it to the app) | a slow connection made this look hung; the model size was in the README, not on screen | **fixed** (#139): setup prints the size and destination before the download and a progress line during it |
 | 3 | macOS asks for microphone access | the prompt is attributed to whatever spawned sox; without the app it is attributed to nothing and the recorder records silence | **fixed**: the app owns the daemon and carries the entitlement; `conch doctor` says so |
 | 4 | an already-open Claude Code session needs `/hooks` once | nobody told them; the session just stayed silent | **fixed** in the CLI (#139): setup prints the line whenever it actually wired hooks. Open: the app's first-run screen |

@@ -78,8 +78,8 @@ a setting resolved at start time, applied to the process that is about to
 exist. Plugins, skills and MCP servers can work the same way — which sidesteps
 the entire "cannot change a running host" problem rather than fighting it.
 
-This is what `docs/palette-plan.md` calls "named launch profiles", ranked
-fourth there. Tyler's framing makes it more important than that: it is not a
+This is what `docs/surfaces.md` calls "named launch profiles", ranked
+fourth in its build order. Tyler's framing makes it more important than that: it is not a
 power-user convenience, it is the only place the controls are honest.
 
 ## 4. Subagents, nested
@@ -111,6 +111,20 @@ a nested row must not inherit the parent's status or announce like one.
 
 ## Where this sits
 
-None of this is started. It sits after the write pass and before the feed —
+When this was written none of it was started. Two parts have shipped since:
+
+- **Subagents, nested** (section 4): live Claude subagents nest under their
+  session in the ledger (2026-09-11, #149, roadmap C4), and Codex helpers under
+  their parent thread (2026-09-11, #180). Both apps draw them as a small,
+  selectable group under the parent (2026-09-23, #372).
+- **Discovery, for skills** (sections 1 and 2): Settings › Skills lists every
+  skill in every account and the public skill indexes, with Add (every file and
+  where it lands, shown before anything is written) and Try (a trial session),
+  beside a benchmark catalog (2026-10-29, #581; `src/skills-library.ts`,
+  `src/skill-indexes.ts`).
+
+The rest is still open: plugins, marketplaces and MCP servers in that catalogue,
+workflows and prompt templates, and plugin/skill/MCP choices on the start
+sheet. It sits after the write pass and before the feed —
 and it is plausibly the thing that makes the feed worth having, since a
 catalogue of installable things is a natural source of rankable items.

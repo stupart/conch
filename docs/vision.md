@@ -42,9 +42,11 @@ the entire product.
 
 **Every agent should always have something to show.** The feed is empty if
 agents only speak in prose. This reframes `review_to_front` from an occasional
-approval gate into the normal way work is surfaced — which means the plugin's
-current advice to "surface sparingly" is aimed in the wrong direction for where
-this is going.
+approval gate into the normal way work is surfaced. When this was written the
+plugin still told agents to "surface sparingly", which was aimed in the wrong
+direction; that advice came out the same night (`16e76d89`, on main since 2026-08-20,
+#88), and the plugin now tells agents to publish what the user would look at as they go, not
+only at the end.
 
 **Reacting is the primitive.** Voice while looking at the thing, capturing what
 you said AND what you were looking at when you said it. Drawing on it. A quick
