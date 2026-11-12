@@ -16,6 +16,7 @@ const source = (path: string) => readFileSync(new URL(`../${path}`, import.meta.
 const swift = (file: string) => source(`mac-app/conch-mac/${file}`).replace(/^\s*\/\/.*$/gm, "");
 const store = swift("StateStore.swift");
 const stack = swift("ConversationStackView.swift");
+const dashboard = swift("DashboardView.swift");
 const outbox = source("design/ConchDesign/Sources/ConchDesign/DeliveryOutbox.swift");
 const phone = source("mobile/conch-ios/conch-ios/TalkController.swift");
 
@@ -122,9 +123,13 @@ describe("a message sent from the Mac appears the moment it is sent", () => {
     ordered(
       stack,
       "ForEach(conversation.items) { item in",
-      "ForEach(store.outbox.entries(for: conversation.sessionId)) { pending in",
+      "ForEach(pending) { pending in",
       "PendingMessage(entry: pending, selection: selection, onDismiss: { store.discardOutgoing(pending.id) })",
     );
+    // The bubbles are this session's in the outbox, handed down by the pane, which is drawn again when it changes.
+    expect(dashboard).toContain("pending: outbox.entries(for: conversation.sessionId),");
+    expect(dashboard).toContain("outbox: store.outbox,");
+    expect(dashboard).toContain("a.outbox == b.outbox");
     const pending = section(stack, "private struct PendingMessage: View {", "private struct ArtifactPreview: View {");
     expect(pending).toContain(".background(ConchPalette.fill, in: RoundedRectangle(cornerRadius: ConchRadius.large))");
     expect(pending).toContain(".font(ConchType.readingBody)");

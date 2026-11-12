@@ -297,7 +297,8 @@ describe("the Mac question card, as source (conch-mac has no XCTest target)", ()
     expect(tool).toContain("if live, let failure = questionNotices[item.id] {");
     // Any send's failure while the card is live is said on it — the card's own, the composer's,
     // a voice reply's — read from the row message a press clears and a failure sets.
-    expect(stack).toMatch(/\.onChange\(of: store\.rowMessages\[conversation\.sessionId\]\) \{ _, message in\s*guard let live = liveQuestionID else \{ return \}\s*questionNotices\[live\] = message/);
+    // Handed down by the pane as `rowMessage` (app-cpu.test.ts), which is redrawn when it changes.
+    expect(stack).toMatch(/\.onChange\(of: rowMessage\) \{ _, message in\s*guard let live = liveQuestionID else \{ return \}\s*questionNotices\[live\] = message/);
     // Every way the card sends goes through the one that records it: an option, a multi-select
     // Submit and Return in its words, and a set's Submit.
     expect(stack.match(/submitAnswer\(/g)?.length).toBe(5);

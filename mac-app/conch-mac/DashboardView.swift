@@ -101,9 +101,11 @@ struct DashboardView: View {
 
                 HStack(spacing: 0) {
                     if !sidebarCollapsed {
+                    // Drawn again only when something it reads changed (`SessionLedger ==`): the rows, and of the rest
+                    // only what the list draws from (`PublishedState.forSidebar`).
                     SessionLedger(
                         onSelectRemote: onSelectRemote,
-                        state: state,
+                        state: state?.forSidebar(),
                         selectedSessionID: selectedSessionID,
                         renamingSessionID: renamingSessionID,
                         renameDraft: $renameDraft,
@@ -111,6 +113,7 @@ struct DashboardView: View {
                         undoDismissal: store.undoDismissal,
                         actions: actions
                     )
+                    .equatable()
                     .frame(width: sidebarWidth)
                     .opacity(store.isLedgerFrozen ? 0.82 : 1)
                     .grayscale(store.isLedgerFrozen ? 1 : 0)
@@ -150,6 +153,7 @@ struct DashboardView: View {
                                 state: state?.forPane(pinned: selectedSessionID),
                                 store: store,
                                 rowMessages: store.rowMessages,
+                                outbox: store.outbox,
                                 debugInspectRequest: store.debugInspectRequest,
                                 onSelectSession: actions.onSelectSession
                             )
@@ -663,7 +667,11 @@ private struct SessionLedger: View {
         Group {
             if let state, !state.rows.isEmpty || !state.dismissedRows.isEmpty || !(state.resources?.items.isEmpty ?? true) {
                 ScrollViewReader { proxy in
-                    TimelineView(.periodic(from: .now, by: 10)) { timeline in
+                    // The rows' ages on a ten-second clock that the window's frame clock never reaches (`PeriodicClock`):
+                    // under a `TimelineView` every frame of any animation in the window dirtied the whole list.
+                    PeriodicClock(every: 10) { now in
+                        // Once a body: read in the loop below, it mapped every browser tab again for each row.
+                        let browserAsks = self.browserAsks
                         ScrollView {
                             // Eager, not lazy (2026-10-05). The app froze five times, the main thread pegged
                             // in a LazyVStack that never stopped re-placing its rows (LazySubviewPlacements,
@@ -708,6 +716,7 @@ private struct SessionLedger: View {
                                             isDropTarget: dropTargetFolderID == folder.id,
                                             onToggle: { toggleFolder(folder.id) }
                                         )
+                                        .equatable()
                                         // Drag a folder onto another to take its slot. Only
                                         // headers move: a row's place is its folder's place,
                                         // so there is nothing a row could be dragged to that
@@ -738,7 +747,7 @@ private struct SessionLedger: View {
                                                 // needs him (`SessionRow.needingYou`): its mark, its bold name, the ask
                                                 // as what it is blocked on.
                                                 row: row.needingYou(in: browserAsks[row.id]),
-                                                now: timeline.date,
+                                                now: now,
                                                 isSelected: selectedSessionID == row.id,
                                                 isFollowing: selectedSessionID == nil && focusID == row.id,
                                                 isRenaming: renamingSessionID == row.id,
@@ -808,6 +817,7 @@ private struct SessionLedger: View {
                                         isCollapsed: !showsDismissedRows,
                                         onToggle: { showsDismissed.toggle() }
                                     )
+                                    .equatable()
                                     .id("dismissed-header")
 
                                     if showsDismissedRows {
@@ -978,6 +988,16 @@ private struct SessionLedger: View {
     }
 }
 
+/// Everything the list is handed but its actions and the rename field's own text, which it hands on: the actions are the
+/// window's (`ContentView`), whose state lives in SwiftUI's storage, so a body left standing still reaches today's; and
+/// the field is a binding to the window's draft.
+extension SessionLedger: Equatable {
+    static func == (a: Self, b: Self) -> Bool {
+        a.state == b.state && a.selectedSessionID == b.selectedSessionID && a.renamingSessionID == b.renamingSessionID
+            && a.rowMessages == b.rowMessages && a.undoDismissal == b.undoDismissal
+    }
+}
+
 /// One request to bring a session's row into view: a new one each time, so the same session asked for twice scrolls twice.
 private struct LedgerReveal: Equatable {
     let id: SessionRow.ID
@@ -1096,6 +1116,13 @@ private struct FolderHeader: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(isCollapsed ? "\(name), \(count) sessions, collapsed" : name)
         .accessibilityAddTraits(.isHeader)
+    }
+}
+
+/// What it draws; `onToggle` folds the folder through the list's stored preference, so an older one does the same.
+extension FolderHeader: Equatable {
+    static func == (a: Self, b: Self) -> Bool {
+        a.name == b.name && a.count == b.count && a.isCollapsed == b.isCollapsed && a.isDropTarget == b.isDropTarget
     }
 }
 
@@ -1964,6 +1991,8 @@ private struct ConversationPane: View {
     let store: StateStore
     /// The rows' words (`StateStore.rowMessages`): the tools line's Restart says "Restarting…" from them.
     let rowMessages: [SessionRow.ID: String]
+    /// What this Mac has sent that no transcript has shown yet (`StateStore.outbox`), for the stack's pending bubbles.
+    let outbox: ConchOutbox
     /// A debug request to open the capability inspector (`StateStore.debugInspectRequest`).
     let debugInspectRequest: String?
     let onSelectSession: (SessionRow) -> Void
@@ -3080,8 +3109,10 @@ private struct ConversationPane: View {
         // selected at once.
         let shown = workPane(for: row) == .deliverable ? selectedReview?.id : nil
         // The ages tick on the ledger's own clock, ten seconds, for the same reason: "3h" is
-        // a claim about now, and a tab left open all afternoon must not still say "2m".
-        return TimelineView(.periodic(from: .now, by: 10)) { timeline in
+        // a claim about now, and a tab left open all afternoon must not still say "2m". The same
+        // clock, too (`PeriodicClock`): under a timeline every frame of any animation in the window
+        // dirtied the strip.
+        return PeriodicClock(every: 10) { now in
             HStack(spacing: 2) {
                 // The working folder LEADS, and is pinned outside the scroller.
                 //
@@ -3189,7 +3220,7 @@ private struct ConversationPane: View {
                                 versions: versions,
                                 current: byID[group.shown(picked: picked)] ?? versions[0],
                                 isSelected: shown.map(group.versions.contains) ?? false,
-                                now: timeline.date,
+                                now: now,
                                 open: { item in
                                     // A version opened from the strip is a look at that one: any comparison ends.
                                     comparison = nil
@@ -3264,6 +3295,9 @@ private struct ConversationPane: View {
             SessionConversationGate(history: store.history, sessionId: row.id, published: publishedConversation(for: row)) { conversation in
             ConversationStackView(
                 conversation: conversation,
+                store: store,
+                pending: outbox.entries(for: conversation.sessionId),
+                rowMessage: rowMessages[conversation.sessionId],
                 history: store.history,
                 onAnswer: { summary, answers, questionID in
                     store.send(
@@ -3501,8 +3535,8 @@ private struct ConversationPane: View {
 /// itself (the workspace, the Workbench, the dock, the approvals) still redraws it as it always did.
 extension ConversationPane: Equatable {
     static func == (a: Self, b: Self) -> Bool {
-        a.store === b.store && a.rowMessages == b.rowMessages && a.debugInspectRequest == b.debugInspectRequest
-            && a.state == b.state
+        a.store === b.store && a.rowMessages == b.rowMessages && a.outbox == b.outbox
+            && a.debugInspectRequest == b.debugInspectRequest && a.state == b.state
     }
 }
 
@@ -3541,6 +3575,30 @@ extension PublishedState {
             features: features,
             sessionSettings: sessionSettings,
             seaGlass: seaGlass
+        )
+    }
+
+    /// The state as the session list reads it: every row whole and the dismissed ones, the mode, the browser tabs that ask
+    /// for someone (a row that needs him), and of the voice and the reply only what decides which session is in front
+    /// (`Workspace`): the voice's state, whose reply it is.
+    ///
+    /// The list was handed the whole state, and its actions are closures, so every publish ran its body and every folder
+    /// header's: a conversation's next message or a reply read on further, none of which it draws. Offscreen on the app's
+    /// own window with Tyler's sessions file (2026-11-11), ten publishes of a subagent's conversation ran the list's body
+    /// ten times and the folder headers' 110, now none. Not `ts`, which moves on every publish. test/app-cpu.test.ts holds
+    /// the list to reading only what is here.
+    func forSidebar() -> PublishedState {
+        PublishedState(
+            v: v,
+            ts: 0,
+            mode: mode,
+            live: LiveState(state: live.state),
+            reply: reply.map { ConversationReply(sessionId: $0.sessionId) },
+            preview: nil,
+            rows: rows,
+            dismissed: [],
+            dismissedRows: dismissedRows,
+            browserTabs: browserTabs?.filter { $0.ask != nil }
         )
     }
 }

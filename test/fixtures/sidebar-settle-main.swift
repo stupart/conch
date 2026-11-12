@@ -254,7 +254,10 @@ Task { @MainActor in
     window.alphaValue = 0
     window.ignoresMouseEvents = true
     window.hasShadow = false
-    window.contentView = NSHostingView(rootView: LedgerHost(model: model).environmentObject(remotes).frame(width: width, height: height))
+    // Under what the app's window root puts over every list (`conchPausesWhenHidden`, ConchMacApp): this window can't be
+    // seen, so the rows' ten-second clock stands still, as it does in a hidden window of the app's (`PeriodicClock`).
+    window.contentView = NSHostingView(rootView: LedgerHost(model: model).environmentObject(remotes).conchPausesWhenHidden()
+        .frame(width: width, height: height))
     window.orderFrontRegardless()
     window.setFrameOrigin(NSPoint(x: -20_000, y: -20_000))
 
