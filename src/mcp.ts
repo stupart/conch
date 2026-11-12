@@ -44,7 +44,7 @@ import { appendConchError } from "./app-errors.ts";
 import { publishForVerdict, REVIEW_VERDICT_TIMEOUT_MS, type PublishReply } from "./review-verdict.ts";
 import { NOTICE_BODY_MAX, NOTICE_TITLE_MAX, noticeLinkError, noticeText, requestNotice, type NoticeRequest } from "./notice-wire.ts";
 import { isPageAccess } from "./page-access.ts";
-import { MARK_PIXELS_MAX, MARK_UNITS, scenePixelsToFractions } from "./mark-pixels.ts";
+import { MARK_UNITS, scenePixelsToFractions } from "./mark-pixels.ts";
 import { RelabelHints, type LabelSource } from "./label-drift.ts";
 import { backendOfClient, McpCallLog, type McpCaller, type McpCallObservation, type McpCallOutcome } from "./mcp-usage.ts";
 import { compactSessionList, detailedSession, rowMatches, type SessionsView } from "./mcp-sessions.ts";
@@ -77,9 +77,7 @@ import {
   REVIEW_MARK_FRAME_MAX,
   REVIEW_MARK_KINDS,
   REVIEW_MARK_LABEL_MAX,
-  REVIEW_MARK_POINTS_MAX,
   REVIEW_MARKS_MAX,
-  REVIEW_MARKS_MAX_BYTES,
   REVIEW_SCENE_KINDS,
   type ReviewScene,
   REVIEW_SUMMARY_MAX,
@@ -95,14 +93,11 @@ import {
   deliverableFacts,
   deliverableKindRefusal,
   FOCUS_MAX,
-  FOCUS_MAX_BYTES,
-  FOCUS_PATH_MAX,
   folderRefusal,
   isDeliverableKind,
   LINKLESS_DELIVERABLE_KINDS,
   readDeliverableKind,
 } from "./deliverables.ts";
-import { reviewIdentity } from "./records-receipts.ts";
 import { reviewLinkScope, transcriptFolder, type LinkScope } from "./review-roots.ts";
 import { fileURLToPath } from "node:url";
 import {
@@ -514,49 +509,43 @@ export function buildMcpToolDefinitions(text: AgentInstructions = AGENT_INSTRUCT
     {
       name: "review_to_front",
       description: describe("review_to_front"),
+      // 2026-11-11: a line a parameter; what each does in full is `conch agent help publish` (AGENT_COMMANDS) and the
+      // skill. The schema was 2,009 tokens, 27% of the whole tool list, 4,660 characters of it the parameters' prose;
+      // ToolSearch loaded it 71 times in 7 days, and Codex carries it in every session. The marks' own schema (a third
+      // of it) went with their prose: 3 of 1,057 calls in 30 days drew any, and the handler checks each one in full
+      // (snippet.ts `checkReviewScene`), naming what to fix.
       inputSchema: {
         type: "object",
         properties: {
-          // 2026-10-18 review: 153 of 919 accepted summaries (16.6%) were cut at 200 characters, and the schema said only "one-line".
           summary: {
             type: "string",
             minLength: 1,
             maxLength: REVIEW_SUMMARY_MAX,
-            description: `One line, at most ${REVIEW_SUMMARY_MAX} characters: what it is and what to check. Longer is cut at ${REVIEW_SUMMARY_MAX} (the result's summaryTruncated says so); the detail belongs in your reply.`,
+            description: `One line: what it is, what to check. Over ${REVIEW_SUMMARY_MAX} characters is cut.`,
           },
-          // 2026-10-05: what a link may be and what the result says about it moved here from the tool's description,
-          // which now says when to publish (`REVIEW_TO_FRONT_DESCRIPTION_MAX` in agent-instructions.ts says why).
           link: {
             type: "string",
             minLength: 1,
-            description: "Optional. The best single artifact to look at: an http(s) URL, or a path (absolute, or relative to your cwd) to a file or folder under this session's folders or a temp folder (/tmp, or macOS's per-user /var/folders/…/T); never a hidden file, key or executable. For a set of files or a structure you created or changed (a new module layout, generated assets), link the folder and name the paths to look at with focus. A file or folder in a temp folder is filed as conch's own copy, so cleaning the temp folder can't take it away: the result's copiedFrom names the original. For a live page (a url link) conch also checks for a login wall before the call returns: the result's access says what conch's Mac, with its review pane's sign-ins, and a device without them (the phone) were shown (mac and anonymous: page, sign-in or unchecked); snapshot is the Mac's picture of the page, which the phone shows first; and warning, when either was shown a sign-in page, says what to do: act on it.",
+            description: "Optional. An http(s) URL, or a file or folder under this session's folders or a temp folder (conch keeps a copy).",
           },
-          kind: {
-            type: "string",
-            enum: DELIVERABLE_KINDS,
-            description: `Optional. What the user will look at; inferred from the link when omitted. page is a local html file, url a live web page or dev server, folder a directory shown as its file tree (inferred when link is a folder), app a Mac app window, simulator the iOS Simulator or a device build, design Figma and the like, document Keynote, Word, Pages and the like. Only ${LINKLESS_DELIVERABLE_KINDS.join(", ")} may omit link; the summary then says where to look.`,
-          },
+          kind: { type: "string", enum: DELIVERABLE_KINDS, description: "Optional; read off the link. Only these may have no link: " + LINKLESS_DELIVERABLE_KINDS.join(", ") + "." },
           focus: {
             type: "array",
             minItems: 1,
             maxItems: FOCUS_MAX,
             items: { type: "string", minLength: 1 },
-            description: `Optional, for a folder link only: up to ${FOCUS_MAX} paths inside the folder to point at, relative to it or absolute inside it, e.g. ["src/setup.ts", "test/"]. The tree opens expanded to them and marks them. Each must exist and stay inside the folder (no .., no symlink out); at most ${FOCUS_PATH_MAX} characters each and ${FOCUS_MAX_BYTES} bytes in all. Only these paths are published, never a listing.`,
+            description: "Optional, with a folder link: the paths in it to point at.",
           },
           key: {
             type: "string",
             minLength: 1,
             maxLength: ARTIFACT_KEY_MAX,
-            description: "Optional. Names the artifact, so publishing it again is its next version. Defaults to the link (a file's real path, a URL without its fragment), else the summary. Use the same key for each version of a thing with no link, or whose link changes.",
+            description: "Optional. Names the artifact, so publishing it again is its next version; the link when omitted.",
           },
-          session: {
-            type: "string",
-            minLength: 1,
-            description: "Optional. Defaults to YOUR session. A session may only surface its own work; naming another session is refused.",
-          },
+          session: { type: "string", minLength: 1, description: "Omit it: you publish as your own session only." },
           approval: {
             type: "object",
-            description: `Optional, and only when you are waiting on the user's yes to proceed: never by default. The result then offers Approve (✓ and your label); when they press it, conch sends your session "Approved: <label>." as a message about 10 s later (they can undo it until then), or "Approved: <summary>." with no label. label: what approving does, e.g. "Open the PR", "Deploy", "Merge"; trimmed, at most ${APPROVAL_LABEL_MAX} characters.`,
+            description: "Optional, and only when you are waiting on the user's yes to proceed: never by default. Their Approve sends you \"Approved: <label>.\"",
             properties: {
               label: { type: "string", minLength: 1, maxLength: APPROVAL_LABEL_MAX },
             },
@@ -564,7 +553,7 @@ export function buildMcpToolDefinitions(text: AgentInstructions = AGENT_INSTRUCT
           },
           scene: {
             type: "object",
-            description: "Optional. What the pill click brings forward, v1. auto (the same as no scene): the link, else conch's window, else the terminal. link: the link; needs `link`. conversation: conch's window on your session, even with a link. terminal: your terminal, else conch's window. `target.ref` is reserved for conch-issued surface references and not accepted yet.",
+            description: "Optional. What the pill click brings forward.",
             properties: {
               v: { type: "integer", enum: [1] },
               target: {
@@ -575,60 +564,13 @@ export function buildMcpToolDefinitions(text: AgentInstructions = AGENT_INSTRUCT
                 required: ["kind"],
                 additionalProperties: false,
               },
-              inspect: {
-                type: "string",
-                minLength: 1,
-                maxLength: REVIEW_INSPECT_MAX,
-                description: "One short line naming what to check, e.g. \"Check that Save stays reachable at phone width\".",
-              },
+              inspect: { type: "string", minLength: 1, maxLength: REVIEW_INSPECT_MAX, description: "One line: what to check." },
               marks: {
                 type: "array",
                 minItems: 1,
                 maxItems: REVIEW_MARKS_MAX,
-                description: `Optional agent ink: marks conch draws over what you published where conch shows it (its own panel or side panel, or the user's canvas; never over a browser or another app, so a result with marks opens in conch's panel), each pointing at one thing you changed or want checked. frame is what a mark is drawn on: selector or quote, an element or text in the linked page, which conch finds in its own view of the page and marks itself (no at, to, rect or pts); canvas, the user's canvas you are answering, by the id conch gave you with it; image, an absolute path to an image file (it passes the same check as link). On a canvas or an image, numbers are 0-1 of it from the top left, or pixels with units "px": of size [width, height] when given (the size of the view you measured on, if the image was shown to you resized), else of the image file's own pixel size; conch turns them into 0-1. arrow takes at (its tail) and to (its head), box, ellipse and highlight take rect [x, y, width, height], pin and text take at, stroke takes 2-${REVIEW_MARK_POINTS_MAX} pts. text needs a label; any mark may have one, the note beside it. conch colours marks itself. At most ${REVIEW_MARKS_MAX_BYTES} bytes in all.`,
-                items: {
-                  type: "object",
-                  properties: {
-                    id: { type: "string", minLength: 1, maxLength: 32, description: "Letters, digits, - or _; unique among these marks." },
-                    kind: { type: "string", enum: REVIEW_MARK_KINDS },
-                    frame: {
-                      type: "object",
-                      description: "Exactly one of canvas, image, selector or quote.",
-                      properties: {
-                        canvas: { type: "string", minLength: 1, maxLength: REVIEW_MARK_FRAME_MAX.canvas },
-                        image: { type: "string", minLength: 1, maxLength: REVIEW_MARK_FRAME_MAX.image },
-                        selector: { type: "string", minLength: 1, maxLength: REVIEW_MARK_FRAME_MAX.selector },
-                        quote: { type: "string", minLength: 1, maxLength: REVIEW_MARK_FRAME_MAX.quote },
-                      },
-                      additionalProperties: false,
-                    },
-                    // No maximum: with units "px" these are pixels. The fractions' 0-1 is the handler's to refuse.
-                    at: { type: "array", items: { type: "number", minimum: 0 }, minItems: 2, maxItems: 2 },
-                    to: { type: "array", items: { type: "number", minimum: 0 }, minItems: 2, maxItems: 2 },
-                    rect: { type: "array", items: { type: "number", minimum: 0 }, minItems: 4, maxItems: 4 },
-                    pts: {
-                      type: "array",
-                      items: { type: "array", items: { type: "number", minimum: 0 }, minItems: 2, maxItems: 2 },
-                      minItems: 2,
-                      maxItems: REVIEW_MARK_POINTS_MAX,
-                    },
-                    units: {
-                      type: "string",
-                      enum: MARK_UNITS,
-                      description: "\"px\": at, to, rect and pts are pixels (of size, else of the image file); leave it out for fractions 0-1.",
-                    },
-                    size: {
-                      type: "array",
-                      items: { type: "number", minimum: 1, maximum: MARK_PIXELS_MAX },
-                      minItems: 2,
-                      maxItems: 2,
-                      description: "With units \"px\": [width, height] of the picture the pixels were measured on. Needed on a canvas; on an image, defaults to the file's own size.",
-                    },
-                    label: { type: "string", minLength: 1, maxLength: REVIEW_MARK_LABEL_MAX },
-                  },
-                  required: ["id", "kind", "frame"],
-                  additionalProperties: false,
-                },
+                items: { type: "object" },
+                description: "Optional ink: [{id, kind, frame: {selector|quote|image|canvas}, rect|at|to|pts, label}]; `conch agent help publish` says how.",
               },
             },
             required: ["v", "target"],
@@ -971,7 +913,7 @@ export function buildMcpToolDefinitions(text: AgentInstructions = AGENT_INSTRUCT
             type: "string",
             minLength: 1,
             maxLength: CONCH_RUN_COMMAND_MAX,
-            description: "The words after `conch agent`, quoted as in a shell: `browser click \"Sign in\"`, `tail 1a2b3c4d --wait 30`, `help`.",
+            description: "The words after `conch agent`, quoted as in a shell: `tail 1a2b --wait 30`.",
           },
         },
         required: ["command"],
@@ -980,6 +922,9 @@ export function buildMcpToolDefinitions(text: AgentInstructions = AGENT_INSTRUCT
     },
   ] as const satisfies readonly McpToolDefinition[];
 }
+
+/** A mark's field names (snippet.ts `checkReviewScene`), which review_to_front's schema no longer spells out. */
+const REVIEW_MARK_VOCABULARY = ["id", "kind", "frame", "canvas", "image", "selector", "quote", "at", "to", "rect", "pts", "units", "size", "label"] as const;
 
 /** The longest command line `conch_run` takes: a publish's marks or a bug's words, not a file's contents (`--file`). */
 export const CONCH_RUN_COMMAND_MAX = 16 * 1024;
@@ -1066,6 +1011,8 @@ export function mcpToolVocabulary(tools: readonly McpToolDefinition[] = MCP_TOOL
     words.add(tool.name);
     walk(tool.inputSchema);
   }
+  // 2026-11-11: review_to_front's marks are one line of its schema now, and their words still conch's own.
+  for (const word of [...REVIEW_MARK_VOCABULARY, ...REVIEW_MARK_KINDS, ...MARK_UNITS]) words.add(word);
   return words;
 }
 
@@ -2636,7 +2583,7 @@ export function createMcpToolHandlers(
     async review_to_front(argumentsValue, meta) {
       // Filed, refused or failed, and each says which. A refusal names its reason: this server's,
       // before anything reaches the daemon, or the daemon's own, which it used to only log.
-      const { summary, truncatedFrom, link, scene, kind, key, focus, approval, kindAlias, session, transcriptPath } = await (async () => {
+      const { summary, truncatedFrom, link, givenLink, scene, kind, key, focus, approval, kindAlias, session, transcriptPath } = await (async () => {
         const argumentsObject = toolArguments(argumentsValue);
         allowOnly(argumentsObject, ["summary", "link", "kind", "key", "session", "scene", "focus", "approval"], REVIEW_ARGUMENTS_INSTEAD);
         const cleaned = sanitizeReviewSummary(requiredString(argumentsObject, "summary"), Infinity);
@@ -2696,6 +2643,7 @@ export function createMcpToolHandlers(
           summary: cleaned.slice(0, REVIEW_SUMMARY_MAX),
           truncatedFrom: cleaned.length > REVIEW_SUMMARY_MAX ? cleaned.length : undefined,
           link: checked?.link,
+          givenLink: rawLink,
           scene: scene?.scene,
           kind,
           key,
@@ -2755,56 +2703,50 @@ export function createMcpToolHandlers(
       const relabel = dependencies.labelSource
         ? relabelHints.take(session.sessionId, label, dependencies.labelSource(session), [summary, ...held.map((one) => one.summary).reverse()])
         : undefined;
-      const said = {
-        summary,
-        ...(focus ? { focus } : {}),
-        ...(scene ? { scene } : {}),
-        // What it asked: the user's Approve sends this session `Approved: <label>.` about 10 s after the press.
-        ...(approval ? { approval } : {}),
+      // 2026-11-11: what the agent acts on, and nothing it passed in. 278 replies in 7 days averaged 0.86 KB pretty-printed:
+      // the summary it had sent was the largest part (19%), then the filing's id (17%, a 130-character record key no
+      // call in 23 days used: the 5 removals went by artifact, and `conch agent deliverables` lists ids), the link
+      // (13%), the session's id, and the scene, focus and approval it passed. What stays: where it landed (surfaces),
+      // which artifact and version it is, its session's label, what conch changed (the link it copied or made absolute,
+      // the kind it read off the link, a summary it cut, a kind alias it read), and what to act on (warning, with the
+      // login-wall look and the Mac's picture behind it; notCopied; relabel).
+      const changed = (filedLink: string | undefined, filedKind: string) => ({
+        ...(kind === undefined ? { kind: filedKind } : {}),
+        ...(filedLink && filedLink !== givenLink?.trim() ? { link: filedLink } : {}),
         ...(truncatedFrom === undefined
           ? {}
           : { summaryTruncated: { from: truncatedFrom, to: REVIEW_SUMMARY_MAX } }),
         // An alias conch read as a kind: the next call can say it as one.
         ...(kindAlias ? { kindAlias } : {}),
-        ...(relabel ? { relabel } : {}),
-      };
+      });
       if (verdict) {
-        const { filing, copiedFrom, notCopied, surfaces, access, warning, snapshot } = verdict;
+        const { filing, notCopied, surfaces, access, warning, snapshot } = verdict;
         return {
           outcome: "filed",
-          sessionId: session.sessionId,
           label,
-          // This filing's own id, the artifact it is a version of, and which version, as the daemon filed them:
-          // what conch_deliverables lists and review_remove takes.
-          id: filing.id,
+          // The artifact it is a version of, and which version, as the daemon filed them: what `conch agent
+          // deliverables` lists and `unpublish --artifact` takes.
           artifact: filing.artifact,
           version: filing.version,
-          kind: filing.kind,
-          ...(filing.link ? { link: filing.link } : {}),
-          ...(copiedFrom ? { copiedFrom } : {}),
-          ...(notCopied ? { notCopied } : {}),
           ...(surfaces ? { surfaces } : {}),
-          // A live page's login-wall check (page-access.ts): who was shown the page and who a sign-in screen, what to
-          // do about it, and the Mac's picture the phone shows first.
-          ...(access ? { access } : {}),
-          ...(warning ? { warning } : {}),
-          ...(snapshot ? { snapshot } : {}),
-          ...said,
+          ...changed(filing.link, filing.kind),
+          ...(notCopied ? { notCopied } : {}),
+          // A live page's login-wall check (page-access.ts): what to do about a sign-in page, who was shown one, and
+          // the Mac's picture the phone shows first. A page both looks found is nothing to act on.
+          ...(warning ? { warning, ...(access ? { access } : {}), ...(snapshot ? { snapshot } : {}) } : {}),
+          ...(relabel ? { relabel } : {}),
         };
       }
-      // Taken, with no word on the filing: an older daemon, or one that didn't answer in time. The handles are
-      // predicted by the daemon's own rules, and said to be.
+      // Taken, with no word on the filing: an older daemon, or one that didn't answer in time. The version is predicted
+      // by the daemon's own rule, and said to be.
       return {
         outcome: "accepted",
-        unconfirmed: `${reply.kind === "unconfirmed" ? reply.why : "the daemon said nothing"}; the id and version below are predicted, and conch_deliverables says what was filed`,
-        sessionId: session.sessionId,
+        unconfirmed: `${reply.kind === "unconfirmed" ? reply.why : "the daemon said nothing"}; the version below is predicted, and conch_deliverables says what was filed`,
         label,
-        id: reviewIdentity(session.sessionId, { summary, link, at }),
         artifact: facts.artifact,
         version: nextVersion(held, facts.artifact),
-        kind: facts.kind,
-        ...(link ? { link } : {}),
-        ...said,
+        ...changed(link, facts.kind),
+        ...(relabel ? { relabel } : {}),
       };
     },
 
@@ -3116,12 +3058,17 @@ function validId(value: unknown): value is JsonRpcId {
   return value === null || typeof value === "string" || typeof value === "number";
 }
 
+/**
+ * An answer as the agent reads it. 2026-11-11: compact JSON, where it was indented two spaces: the indentation was 19%
+ * of 201 browser_read replies (1.69 MB as sent, 1.37 MB compact) and 10% of 278 review_to_front ones, and an agent
+ * reads JSON the same either way. mcp-sessions.ts still budgets its list by the indented length, which is longer.
+ */
 function toolResult(value: unknown): {
   content: Array<{ type: "text"; text: string }>;
 } {
   const encoded = typeof value === "string"
     ? value
-    : JSON.stringify(value, null, 2) ?? "null";
+    : JSON.stringify(value) ?? "null";
   return { content: [{ type: "text", text: encoded }] };
 }
 

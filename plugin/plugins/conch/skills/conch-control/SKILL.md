@@ -21,8 +21,12 @@ ambiguous, that is the thing to optimise for.
   what the other sessions are doing and tell you to act on them. Then: pull real
   state first, do the one thing asked, and stop.
 
-Publishing is the `review_to_front` tool. Everything else conch does for you is
-a command in your shell, `conch agent …` (*conch's CLI*, below).
+Publishing is the `review_to_front` tool, or `conch agent publish` in your
+shell, which is the same with nothing to load. In Claude Code the tool waits
+behind ToolSearch, and a compaction unloads it again, so publish from the shell
+there; if you load the tool instead, load it once, not before every publish.
+Everything else conch does for you is a command in your shell, `conch agent …`
+(*conch's CLI*, below).
 
 ## Publishing results
 
@@ -30,7 +34,7 @@ conch shows this session in the user’s Mac app, floating overlay and iPhone. I
 
 Whenever you produce something the user would look at (a page, screenshot, file, document, plan, diff or PR, build, app state), publish it with `review_to_front` as you go, not only at the end: a short summary and the best artifact link. Tell the user where it landed from the result’s `surfaces`. With no link (an app window, the Simulator), pass its `kind` and say where to look. For a written explanation, use scene kind `conversation` and keep it in your reply.
 
-A link is an http(s) URL, or an absolute path to a file or a folder (shown as its file tree) under this session’s folders: where it started, where it is now, its git repository, `conch agent folders`, or a temp folder (/tmp, or macOS’s per-user /var/folders/…/T), which conch copies when it files the link, so a cleaned temp folder can’t take it away. Never a hidden file, key or executable.
+A link is an http(s) URL, or a path to a file or a folder (shown as its file tree) under this session’s folders (where it started or is now, its git repository, `conch agent folders`) or a temp folder (/tmp, /var/folders/…/T), which conch copies so cleaning it can’t take it away. Never a hidden file, key or executable.
 
 Everything else is a command in your shell: `conch agent help` lists them; if your shell can’t reach conch (a sandbox), the `conch_run` tool runs the same words. Browse for the user with `conch agent browser …` so they can watch in the Workdesk; other browser tools are fine when they ask or the task needs them. At a sign-in, ask them to sign in in the tab with `conch agent browser ask`; never type passwords. `conch agent capture <url>` shows part of a page. `open <url>` lands in the Workdesk; `CONCH_OPEN_EXTERNAL=1 open <url>` uses the default browser. Show an Atlas page that matters to the user with `conch agent atlas`.
 
@@ -131,7 +135,8 @@ conch refused (the message says why and what to do instead).
   `review_to_front {summary, link?, kind?, key?, focus?, scene?, approval?}`. *Publishing results*
   above says when; this is how. `conch agent publish <summary> [link] [--kind K]
   [--key K] [--focus PATH]... [--scene KIND] [--inspect LINE] [--marks JSON]
-  [--approve LABEL]` does the same from a shell.
+  [--approve LABEL]` does the same from a shell, with nothing to load
+  (`conch agent help publish` has every flag).
 
   **What the user sees.** conch files the result on your session in the Mac app
   and on the iPhone, and the Mac's Ready pill lights. Nothing opens until the
@@ -143,9 +148,12 @@ conch refused (the message says why and what to do instead).
   follow your work as it goes: a plan, a first screen, the diff, the build.
 
   **Where it landed.** The call waits for conch to file it. `outcome: "filed"`
-  means it is filed, under the `id`, `artifact`, `version`, `kind` and `link`
-  the result gives; a refusal fails the call with conch's reason. `surfaces`
-  says who can see it now, and is what you tell the user, never an assumption:
+  means it is filed, as the `artifact` and `version` the result gives; a
+  refusal fails the call with conch's reason. The result repeats nothing you
+  passed: it has a `link` only when conch filed a different one (its copy of a
+  temp file, or the absolute path of a relative one), and a `kind` only when it
+  read one off the link. `surfaces` says who can see it now, and is what you
+  tell the user, never an assumption:
 
   - `mac`: `showing` (conch's window is in front on the Mac), `running` (the
     Mac app is open; it waits behind the Ready pill) or `not-running` (it will
@@ -160,12 +168,12 @@ conch refused (the message says why and what to do instead).
   So "It's filed in conch; the Mac app isn't open and your phone isn't
   connected, so you'll see it when you open either" — not "it's on your
   screen". `outcome: "accepted"` with `unconfirmed` comes from an older conch
-  that doesn't say: the handles are predicted, and `conch agent deliverables`
+  that doesn't say: the version is predicted, and `conch agent deliverables`
   says what was filed.
 
-  The result's other fields are explained below: `copiedFrom` and `notCopied`
-  for a link in a temp folder (the paragraph on `link`, at the end of this
-  item), `access`, `snapshot` and `warning` for a live page (*Pages behind a
+  The result's other fields are explained below: `link` and `notCopied` for a
+  link in a temp folder (the paragraph on `link`, at the end of this item),
+  `warning`, with `access` and `snapshot`, for a live page (*Pages behind a
   login*), and `relabel` (*A label that drifted*).
 
   **What to link.** The best single artifact for the result:
@@ -184,12 +192,14 @@ conch refused (the message says why and what to do instead).
   the phone has none of them. So when you publish a URL, conch looks twice
   while it files it: its Mac app draws the page with the review pane's
   sign-ins (only while the app is running), and conch fetches it with no
-  cookies or credentials at all, as the phone would. `access` says what each
-  was shown: `mac` and `anonymous`, each `page`, `sign-in` or `unchecked`, and
-  `why`. When the Mac drew the page, its picture is attached as `snapshot`, and
-  the phone shows that first, labelled as the Mac's view at that time, with the
-  live page a tap away. `warning` is there when either look was a sign-in page.
-  Act on it, and tell the user what it means for them:
+  cookies or credentials at all, as the phone would. When the Mac drew the
+  page, its picture goes with the publication, and the phone shows that first,
+  labelled as the Mac's view at that time, with the live page a tap away.
+  `warning` is there when either look was a sign-in page, with `access` saying
+  what each was shown (`mac` and `anonymous`, each `page`, `sign-in` or
+  `unchecked`, and `why`) and `snapshot`, the Mac's picture. A page both looks
+  found needs nothing from you, and the result says nothing about it. Act on a
+  warning, and tell the user what it means for them:
 
   - `mac: "sign-in"`: the user sees a login page on the Mac too. Open it with
     `conch agent browser open` (the Default profile shares the review pane's
@@ -236,8 +246,9 @@ conch refused (the message says why and what to do instead).
   same artifact are its versions, numbered from 1. The artifact is the link (a
   file's real path, a URL without its fragment), else the summary; pass `key`
   to name it yourself when there is no link, or the link changes between
-  versions (`hero-v3.png`, `hero-v4.png`). The result returns `id`,
-  `artifact`, `version` and `kind`, as conch filed them. To show a change (a
+  versions (`hero-v3.png`, `hero-v4.png`). The result returns the `artifact`
+  and `version` conch filed it as; `conch agent deliverables` lists each
+  filing's `id`. To show a change (a
   photo edit, a restyled page), save the after as its own file and publish it
   under the before's `key`: conch compares two versions with a slider or side
   by side, so build no before/after composite. A file overwritten in place
@@ -363,7 +374,7 @@ conch refused (the message says why and what to do instead).
   or folder in a temp folder is copied into conch's own store
   (`~/Library/Application Support/conch/deliverables`) when it is filed (a
   page or a markdown document brings the folder it is in), and filed
-  against the copy: the result's `copiedFrom` names the original, and cleaning
+  against the copy: the result's `link` is the copy, and cleaning
   the temp folder or a reboot can't take it away. Over 64 MB or 500 files it is
   filed where it is, and `notCopied` says why. One under your own folders is
   linked where it is, live, never copied. It must not be hidden, in a hidden
@@ -409,7 +420,7 @@ conch refused (the message says why and what to do instead).
     in its 0 to 1 numbers.
   - `--publish SUMMARY [--key K]` files the capture as your deliverable in the
     same command (kind `image`, the mark drawn on it) and returns `filed` with
-    its `id`, `artifact` and `version`, as `review_to_front` would. The artifact defaults
+    its `id`, `artifact` and `version`. The artifact defaults
     to the page and the target, so capturing the same part again after a fix is
     its next version. It needs conch to have verified which session you
     are, and a capture of a sign-in screen is never filed.
