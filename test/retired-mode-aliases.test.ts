@@ -14,10 +14,11 @@ describe("retired mode aliases", () => {
     expect(hook).not.toMatch(/\| ["'](?:mute|unmute)["']/);
   });
 
-  test("legacy verbs live only in the persisted-data migration helper", () => {
+  test("the legacy verbs are gone, migration helper included", () => {
+    // normalizeLegacyModeControl mapped mute/unmute read from persisted data, but
+    // nothing persisted or read those verbs through it, so it went 2026-11-11.
     const controls = source("src/instant-controls.ts");
 
-    expect(controls).toContain('export type LegacyModeControl = "mute" | "unmute"');
-    expect(controls).toContain("public inputs reject it");
+    expect(controls).not.toMatch(/["'](?:mute|unmute)["']/);
   });
 });

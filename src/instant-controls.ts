@@ -5,22 +5,12 @@ import {
 } from "./pause-controller.ts";
 
 export type GlobalModeControl = "pause" | "resume";
-export type LegacyModeControl = "mute" | "unmute";
 export type InstantAudioCommand = TurnEvent & { type: "wake" | "recite" };
 export type TurnControlDisposition =
   | "session-dismissed"
   | "session-paused"
   | "global-paused"
   | null;
-
-/** Migrate a mode verb read from legacy persisted data; public inputs reject it. */
-export function normalizeLegacyModeControl(
-  type: TurnEvent["type"] | LegacyModeControl,
-): TurnEvent["type"] {
-  if (type === "mute") return "pause";
-  if (type === "unmute") return "resume";
-  return type;
-}
 
 export interface InstantControlsOptions {
   pause: PauseController;

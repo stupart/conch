@@ -437,7 +437,7 @@ public struct HistoryPaging: Equatable, Sendable {
     // MARK: Bookkeeping
 
     /// A new page's items, less any already held: the held copy moves to the page's
-    /// position and keeps the newer revision, as `merge(older:into:)` always has.
+    /// position and keeps the newer revision.
     private mutating func absorb(_ incoming: [HistoryItem]) -> [HistoryItem] {
         guard !pages.isEmpty else { return incoming }
         var incomingIDs: [String: Int] = [:]
@@ -513,23 +513,6 @@ public struct HistoryPaging: Equatable, Sendable {
     public var retryDelay: TimeInterval? {
         guard case .failed = status else { return nil }
         return HistoryRetry.delay(afterFailures: failures, holdingNothing: rows.isEmpty)
-    }
-
-    /// Older items in front of what is already held, with any item the store has
-    /// since revised kept at its newest revision.
-    public static func merge(older page: [HistoryItem], into existing: [HistoryItem]) -> [HistoryItem] {
-        guard !page.isEmpty else { return existing }
-        var byId: [String: Int] = [:]
-        var merged = page
-        for (index, item) in page.enumerated() { byId[item.id] = index }
-        for item in existing {
-            guard let index = byId[item.id] else {
-                merged.append(item)
-                continue
-            }
-            if item.revision > merged[index].revision { merged[index] = item }
-        }
-        return merged
     }
 }
 

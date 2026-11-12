@@ -4,7 +4,6 @@ import {
   gateTurnForControls,
   InstantControls,
   markQueuedWakesForControl,
-  normalizeLegacyModeControl,
 } from "../src/instant-controls.ts";
 import { PauseController } from "../src/pause-controller.ts";
 
@@ -75,12 +74,6 @@ function harness() {
 }
 
 describe("InstantControls", () => {
-  test("legacy persisted verbs normalize during migration", () => {
-    expect(normalizeLegacyModeControl("mute")).toBe("pause");
-    expect(normalizeLegacyModeControl("unmute")).toBe("resume");
-    expect(normalizeLegacyModeControl("pause")).toBe("pause");
-  });
-
   test("global pause holds the latest future turn and resume replays it", async () => {
     const h = harness();
     h.controls.applyGlobal("pause");

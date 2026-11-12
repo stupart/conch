@@ -1773,7 +1773,6 @@ export function readCodex(
       const pluginName = pluginId.split("@")[0] ?? pluginId;
       const marketplace = pluginId.includes("@") ? pluginId.slice(pluginId.indexOf("@") + 1) : "unknown";
       const pluginRoot = codexPluginRoot(codexHome, pluginName, marketplace, effectiveConfig, collector);
-      const sourcePath = pluginRoot ?? `${config.path}#plugins.${pluginId}`;
       const id = capabilityId(
         "codex",
         "plugin",
