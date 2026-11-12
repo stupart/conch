@@ -215,7 +215,7 @@ describe("a copy lives exactly as long as a held deliverable names it", () => {
   const filing = (sessionId: string, link: string, at: number, extra: Partial<SessionReview> = {}) =>
     ({ ...fileReview(sessionId, { summary: `filed ${at}`, link }, at, undefined), ...extra });
 
-  test("removed, pushed out by the six-deliverable cap, or its session forgotten, the next save deletes it", async () => {
+  test("removed, pushed out by the six-deliverable cap, or its session forgotten, it goes once the apps have heard", async () => {
     const { temp, store, session, put } = world();
     const ledger = new SessionLedger(undefined, undefined, join(temp, "previews"), store);
     const copies: string[] = [];
@@ -229,8 +229,11 @@ describe("a copy lives exactly as long as a held deliverable names it", () => {
     ledger.saveReviews();
     expect(copies.slice(0, 7).every(existsSync)).toBe(true);
 
-    // review_remove of one filing: its copy goes, and only its copy.
+    // review_remove of one filing: its copy goes, and only its copy, but not before the apps can hear it was dropped:
+    // a pane still showing it would find it gone first and say "Couldn't find" (2026-11-11).
     expect(ledger.removeDeliverables("s1", { review: held[2]!.id })).toBe(true);
+    expect(existsSync(copies[2]!)).toBe(true);
+    ledger.discardDroppedCopies(Date.now() + ledger.copyGraceMs);
     expect(existsSync(dirname(copies[2]!))).toBe(false);
     expect(existsSync(join(store, "art2"))).toBe(false);
     expect([0, 1, 3, 4, 5, 6].every((n) => existsSync(copies[n]!))).toBe(true);
@@ -246,13 +249,50 @@ describe("a copy lives exactly as long as a held deliverable names it", () => {
     expect(capped.map((one) => one.link)).not.toContain(copies[0]);
     ledger.sessionStates.set("s1", { ...state, review: seventh, reviews: capped });
     ledger.saveReviews();
+    expect(existsSync(copies[0]!)).toBe(true);
+    ledger.discardDroppedCopies(Date.now() + ledger.copyGraceMs);
     expect(existsSync(copies[0]!)).toBe(false);
     expect(existsSync(copies[7]!)).toBe(true);
 
     // Its session gone: every copy it held goes; another session's stays.
     ledger.forget("s1");
+    ledger.discardDroppedCopies(Date.now() + ledger.copyGraceMs);
     expect([1, 3, 4, 5, 7].some((n) => existsSync(copies[n]!))).toBe(false);
     expect(existsSync(copies[6]!)).toBe(true);
+  });
+
+  test("a copy dropped and held again within the grace is kept", async () => {
+    const { temp, store, session, put } = world();
+    const ledger = new SessionLedger(undefined, undefined, join(temp, "previews"), store);
+    const shot = put(join(temp, "s", "hero.png"));
+    const copy = (await storeTempDeliverable({ link: shot, folder: false, markImages: [], roots: [session], artifact: "art", version: 1, store })).copies.get(shot)!;
+    const review = filing("s1", copy, 1_000);
+    ledger.sessionStates.set("s1", { label: "a", status: "waiting", at: 0, review, reviews: [review] });
+    ledger.saveReviews();
+    ledger.sessionStates.set("s1", { label: "a", status: "waiting", at: 0 });
+    ledger.saveReviews();
+    ledger.sessionStates.set("s1", { label: "a", status: "waiting", at: 0, review, reviews: [review] });
+    ledger.saveReviews();
+    ledger.discardDroppedCopies(Date.now() + ledger.copyGraceMs);
+    expect(existsSync(copy)).toBe(true);
+  });
+
+  test("a drop with no save after it still goes, when its grace is up", async () => {
+    const { temp, store, session, put } = world();
+    process.env.CONCH_COPY_GRACE_MS = "30";
+    let ledger: SessionLedger;
+    try { ledger = new SessionLedger(undefined, undefined, join(temp, "previews"), store); } finally { delete process.env.CONCH_COPY_GRACE_MS; }
+    expect(ledger.copyGraceMs).toBe(30);
+    const shot = put(join(temp, "s", "hero.png"));
+    const copy = (await storeTempDeliverable({ link: shot, folder: false, markImages: [], roots: [session], artifact: "art", version: 1, store })).copies.get(shot)!;
+    const review = filing("s1", copy, 1_000);
+    ledger.sessionStates.set("s1", { label: "a", status: "waiting", at: 0, review, reviews: [review] });
+    ledger.saveReviews();
+    ledger.sessionStates.set("s1", { label: "a", status: "waiting", at: 0 });
+    ledger.saveReviews();
+    expect(existsSync(copy)).toBe(true);
+    await Bun.sleep(200);
+    expect(existsSync(copy)).toBe(false);
   });
 
   test("at daemon start, a copy nothing restored names is swept, and what is held, with its marks' images, stays", async () => {

@@ -178,7 +178,7 @@ test("the Mac app reads the ack, then waits for session-delivered before taking 
   // Read at the press: before the request exists, let alone the raise.
   const setModel = member(store, "func setModel(id: SessionRow.ID, model: String) async -> String {");
   const pressed = setModel.indexOf("let steered = Self.refocusWhenDelivered()");
-  const sent = setModel.indexOf("let outcome = await socketClient.request(request, whenDelivered: steered?.whenDelivered)");
+  const sent = setModel.indexOf("let outcome = await socketClient.request(request, timeout: Self.sessionCommandTimeout, whenDelivered: steered?.whenDelivered)");
   expect(pressed).toBeGreaterThan(-1);
   expect(sent).toBeGreaterThan(pressed);
   expect(setModel).toContain("awaitDelivery: steered == nil ? nil : true");
@@ -188,7 +188,7 @@ test("the Mac app reads the ack, then waits for session-delivered before taking 
   expect(rename).toContain("steered: Self.refocusWhenDelivered()");
   const enqueue = member(store, "private func enqueueSessionCommand(");
   expect(enqueue).toContain("awaitDelivery: steered == nil ? nil : true");
-  expect(enqueue).toContain("let outcome = await socketClient.request(request, whenDelivered: steered?.whenDelivered)");
+  expect(enqueue).toContain("let outcome = await socketClient.request(request, timeout: Self.sessionCommandTimeout, whenDelivered: steered?.whenDelivered)");
   // Dismiss and restore share the queue but type nothing, so they never ask.
   for (const marker of ["func dismissSession(_ row: SessionRow) {", "func restoreSession(id: SessionRow.ID, label: String) {"]) {
     const body = member(store, marker);

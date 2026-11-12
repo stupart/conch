@@ -3,6 +3,7 @@ import { appendFileSync, mkdtempSync, readdirSync, readFileSync, realpathSync, r
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  ALERTS_DAILY_CAP,
   AUTO_FIX_DAILY_CAP,
   BRIEF_MAX,
   conchCheckout,
@@ -21,7 +22,11 @@ import {
   occurrenceFromMcpRecord,
   readFailureTicketStore,
   readNewLines,
+  STALE_AFTER_MS,
+  ticketRefs,
+  type FailureTicket,
   type FailureTicketList,
+  type TicketPr,
 } from "../src/failure-tickets.ts";
 import { isMacAppOnlyRequest } from "../src/phone-bridge.ts";
 
@@ -127,7 +132,12 @@ describe("records become tickets", () => {
     const thrown = tickets.find((ticket) => ticket.operation === "inject")!;
     expect(thrown.example.state).toContain("\"threw\":true");
     expect(tickets.find((ticket) => ticket.origin === "mcp")).toMatchObject({ operation: "conch_capture failed", title: "conch's Mac app isn't running, so it can't render pages; open it and try again." });
-    expect(desk.digest()).toEqual({ open: 3, fixing: 0, unseen: 3 });
+    // The capture refused because the app was closed is the agent's call, answered correctly: counted apart (failure-triage.ts).
+    // The inject that threw never reached its session: the window's banner names it (`alertWorthy`).
+    expect(desk.digest()).toEqual({
+      open: 2, fixing: 0, unseen: 2, agents: 1,
+      alert: { id: thrown.id, number: 2, title: "Account profiles must have separate directories", operation: "inject", count: 1 },
+    });
     // Nothing new: nothing changes, nothing is written again.
     expect(desk.poll()).toBe(false);
   });
@@ -237,7 +247,7 @@ describe("a ticket's status", () => {
     appendFileSync(h.errors, errorLine({ at: NOW - HOUR, operation: "session-settings", message: "Could not change \"Y\" to sonnet: the session is waiting on you" }));
     desk.poll();
     expect(ticket).toMatchObject({ status: "ignored", count: 2, unseen: false });
-    expect(desk.digest()).toEqual({ open: 0, fixing: 0, unseen: 0 });
+    expect(desk.digest()).toEqual({ open: 0, fixing: 0, unseen: 0, agents: 0 });
     await desk.act(ticket!.id, "reopen");
     expect(ticket!.status).toBe("open");
   });
@@ -504,7 +514,7 @@ describe("what a client is sent", () => {
   test("a list too large for one frame drops the ignored, then the fixed, then the oldest, and says how many", () => {
     const ticket = (index: number, status: "open" | "fixed" | "ignored") => ({
       id: index.toString(16).padStart(12, "0"), number: index, origin: "daemon" as const, operation: "op", title: "t".repeat(150),
-      status, statusAt: NOW, firstSeen: NOW, lastSeen: NOW, count: 1, sessionCount: 1, unseen: false,
+      blame: "conch" as const, status, statusAt: NOW, firstSeen: NOW, lastSeen: NOW, count: 1, sessionCount: 1, unseen: false,
     });
     const list: FailureTicketList = {
       kind: "failure-tickets",
@@ -537,10 +547,184 @@ describe("nothing leaves the Mac", () => {
   test("the desk's own code calls out to nothing but gh, read-only, and the mirror list is empty", async () => {
     const source = readFileSync(join(import.meta.dir, "..", "src", "failure-tickets.ts"), "utf8");
     expect(source).not.toMatch(/\bfetch\(|https?:\/\/(?!github\.test)/);
-    // gh is asked one thing: the PR on a branch the loop named.
+    // gh is asked two things, both reads: the PR on a branch the loop named, and the PRs that say they fix a ticket.
     const gh = [...source.matchAll(/\[gh, ([^\]]+)\]/g)].map((match) => match[1]);
-    expect(gh).toEqual([`"pr", "list", "--head", branch, "--state", "all", "--json", "url,number,state,mergedAt", "--limit", "1"`]);
+    expect(gh).toEqual([
+      `"pr", "list", "--head", branch, "--state", "all", "--json", "url,number,state,mergedAt", "--limit", "1"`,
+      `"pr", "list", "--state", "all", "--search", "ticket in:body", "--json", "url,number,state,mergedAt,createdAt,headRefName,body", "--limit", String(TICKET_PRS_LIMIT)`,
+    ]);
     const { FAILURE_MIRRORS } = await import("../src/failure-tickets.ts");
     expect(FAILURE_MIRRORS).toEqual([]);
+  });
+});
+
+describe("the pile-up (2026-11-11: 47 open, none being fixed)", () => {
+  const DAY = 24 * HOUR;
+  const conchFailure = (h: Harness, at: number, message = "Typed, but the session never took it.", operation = "inject") =>
+    appendFileSync(h.errors, errorLine({ at, operation, message }));
+  const agentCall = (h: Harness, at: number, tool = "browser_click", error = "failed: nothing on the page matches \"Sign up\"", outcome = "failed") =>
+    appendFileSync(h.mcp, mcpLine({ ts: at, tool, outcome, error, session: "s-9" }));
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
+
+  test("an agent's call is listed after conch's own, grouped by its tool, out of the gear's count and auto-fix's queue", async () => {
+    const h = harness();
+    h.autoFix.on = true;
+    agentCall(h, NOW - 2 * HOUR);
+    agentCall(h, NOW - 2 * HOUR, "review_to_front", "input-error: unknown argument \"colour\"", "input-error");
+    conchFailure(h, NOW - 3 * HOUR, "Couldn't find plan.md", "open-deliverable");
+    const desk = h.desk();
+    desk.poll();
+    expect(desk.digest()).toMatchObject({ open: 1, unseen: 1, agents: 2 });
+    await settle();
+    const listed = desk.list().tickets;
+    expect(listed.map((ticket) => [ticket.blame, ticket.tool])).toEqual([["conch", undefined], ["agent", "browser_click"], ["agent", "review_to_front"]]);
+    // Auto-fix took conch's, never an agent's.
+    expect(h.starts).toHaveLength(1);
+    expect(h.starts[0]!.prompt).toContain("open-deliverable");
+    // The store read again sorts by the rules as they are now.
+    expect(readFailureTicketStore(h.store).tickets.map((ticket) => ticket.blame).sort()).toEqual(["agent", "agent", "conch"]);
+  });
+
+  test("a ticket quiet for two weeks goes quiet: out of the counts, folded, and open again, unseen, when it comes back", () => {
+    const h = harness();
+    conchFailure(h, NOW - HOUR);
+    const desk = h.desk();
+    desk.poll();
+    const ticket = desk.tickets()[0]!;
+    h.now.value = NOW + STALE_AFTER_MS;
+    desk.poll();
+    expect(ticket).toMatchObject({ status: "open", staleAt: NOW + STALE_AFTER_MS, unseen: false });
+    expect(desk.digest()).toMatchObject({ open: 0, unseen: 0 });
+    expect(desk.list().tickets[0]).toMatchObject({ staleAt: NOW + STALE_AFTER_MS });
+    h.now.value = NOW + STALE_AFTER_MS + 3 * DAY;
+    conchFailure(h, h.now.value - HOUR);
+    desk.poll();
+    expect(ticket).toMatchObject({ status: "open", unseen: true, count: 2, note: "Back after going quiet 3 days ago." });
+    expect(ticket.staleAt).toBeUndefined();
+    expect(desk.digest()).toMatchObject({ open: 1, unseen: 1 });
+  });
+
+  test("a desk back after weeks away files what came in before it looks for what went quiet", () => {
+    const h = harness();
+    conchFailure(h, NOW - HOUR);
+    h.desk().poll();
+    h.now.value = NOW + STALE_AFTER_MS + DAY;
+    conchFailure(h, h.now.value - HOUR);
+    const desk = h.desk();
+    desk.poll();
+    expect(desk.tickets()[0]).toMatchObject({ status: "open", count: 2 });
+    expect(desk.tickets()[0]!.staleAt).toBeUndefined();
+    expect(desk.tickets()[0]!.note).toBeUndefined();
+  });
+
+  test("a PR that says it fixes a ticket is linked to it: open makes it fixing, merged makes it fixed", async () => {
+    const prs: TicketPr[] = [];
+    const h = harness({ findTicketPrs: async () => prs });
+    conchFailure(h, NOW - 2 * HOUR);
+    conchFailure(h, NOW - 2 * HOUR, "Couldn't find plan.md", "open-deliverable");
+    const desk = h.desk();
+    desk.poll();
+    const [typed, missing] = desk.tickets() as FailureTicket[];
+    prs.push({ url: "https://github.test/pr/40", number: 40, state: "open", branch: "fix/burndown", createdAt: NOW, tickets: [typed!.number, missing!.id] });
+    await desk.checkFixes();
+    expect(typed).toMatchObject({ status: "fixing", fix: { by: "pr", branch: "fix/burndown", pr: { url: "https://github.test/pr/40", state: "open" } } });
+    expect(missing).toMatchObject({ status: "fixing", fix: { by: "pr" } });
+    // From there it is a fixing ticket like any other: its PR is found by its branch, and its merge fixes it.
+    h.prs.set("fix/burndown", { url: "https://github.test/pr/40", number: 40, state: "merged", mergedAt: NOW + HOUR });
+    await desk.checkFixes();
+    expect(typed).toMatchObject({ status: "fixed", fixedBy: "pr", fixedAt: NOW + HOUR });
+  });
+
+  test("a merged PR fixes an open ticket from its merge, once; one that came back after it is not fixed by it again", async () => {
+    const prs: TicketPr[] = [];
+    const h = harness({ findTicketPrs: async () => prs, codeSince: NOW + 2 * HOUR });
+    conchFailure(h, NOW - 2 * HOUR);
+    const desk = h.desk();
+    desk.poll();
+    const ticket = desk.tickets()[0]!;
+    prs.push({ url: "https://github.test/pr/41", number: 41, state: "merged", mergedAt: NOW + HOUR, branch: "fix/x", createdAt: NOW, tickets: [ticket.number] });
+    await desk.checkFixes();
+    expect(ticket).toMatchObject({ status: "fixed", fixedAt: NOW + HOUR, fixedBy: "pr" });
+    // Seen again by code started after the merge: back open, and the next scan leaves it so.
+    h.now.value = NOW + 3 * HOUR;
+    conchFailure(h, NOW + 3 * HOUR - 60_000);
+    desk.poll();
+    expect(ticket).toMatchObject({ status: "open", reopened: 1 });
+    h.now.value += 31 * 60_000;
+    await desk.checkFixes();
+    expect(ticket.status).toBe("open");
+  });
+
+  test("a PR's number names a ticket only if the PR came after it; a closed PR names nothing", async () => {
+    const prs: TicketPr[] = [];
+    const h = harness({ findTicketPrs: async () => prs });
+    conchFailure(h, NOW - 2 * HOUR);
+    const desk = h.desk();
+    desk.poll();
+    const ticket = desk.tickets()[0]!;
+    prs.push(
+      { url: "https://github.test/pr/2", number: 2, state: "merged", mergedAt: NOW - 30 * DAY, branch: "old", createdAt: NOW - 31 * DAY, tickets: [ticket.number] },
+      { url: "https://github.test/pr/3", number: 3, state: "closed", branch: "gave-up", createdAt: NOW, tickets: [ticket.number] },
+    );
+    await desk.checkFixes();
+    expect(ticket.status).toBe("open");
+    expect(ticket.fix).toBeUndefined();
+  });
+
+  test("a send conch declined on purpose, or one that went in after a re-send, makes no ticket; its cause names one that did not go", () => {
+    const h = harness();
+    const generic = "Could not deliver the prompt. Review the recovered draft before retrying.";
+    appendFileSync(h.errors, errorLine({ at: NOW - HOUR, operation: "inject", message: generic, state: { code: "session-awaiting-answer" } }));
+    appendFileSync(h.errors, errorLine({ at: NOW - HOUR, operation: "inject", message: "The Return was lost; the prompt went in after 1 re-send.", state: { code: "transcript-advanced" } }));
+    appendFileSync(h.errors, errorLine({ at: NOW - HOUR, operation: "permission-answer", message: "Could not answer the permission: that permission is no longer waiting" }));
+    appendFileSync(h.errors, errorLine({ at: NOW - HOUR, operation: "inject", message: generic, state: { code: "clipboard-unpreservable" } }));
+    const desk = h.desk();
+    desk.poll();
+    expect(desk.tickets().map((ticket) => ticket.title)).toEqual(["Could not deliver the prompt (clipboard-unpreservable)."]);
+    // The example says its cause too, and keeps the rest of the record's words.
+    expect(desk.tickets()[0]!.example.message).toBe("Could not deliver the prompt (clipboard-unpreservable). Review the recovered draft before retrying.");
+  });
+
+  test("a ticket filed before a rule passed its kind over goes quiet when the desk starts, saying why", () => {
+    const h = harness();
+    const store = emptyFailureTicketStore();
+    fileOccurrence(store, { at: NOW - HOUR, origin: "daemon", operation: "inject", message: "The Return was lost; the prompt went in after 1 re-send.", state: { code: "transcript-advanced" }, source: "errors" }, { codeSince: NOW, autoFix: false });
+    fileOccurrence(store, { at: NOW - HOUR, origin: "daemon", operation: "inject", message: "Typed, but the session never took it.", state: { code: "delivery-unconfirmed" }, source: "errors" }, { codeSince: NOW, autoFix: false });
+    writeFileSync(h.store, JSON.stringify(store));
+    const desk = h.desk();
+    const [lost, unconfirmed] = desk.tickets();
+    expect(lost).toMatchObject({ status: "open", staleAt: NOW, unseen: false, note: "No longer filed: conch was right, and said so where it happened." });
+    expect(unconfirmed!.staleAt).toBeUndefined();
+    expect(desk.digest()).toMatchObject({ open: 1 });
+  });
+
+  test("a description says which tickets it fixes in so many words; a bare #n is a GitHub link, not a ticket", () => {
+    expect(ticketRefs("Fixes ticket #12.")).toEqual([12]);
+    expect(ticketRefs("This PR\n\n`Fixes tickets #1, #4 and #36`\nfixed failure ticket 1a2b3c4d5e6f")).toEqual([1, 4, 36, "1a2b3c4d5e6f"]);
+    expect(ticketRefs("Fixes #12, see #13 and ticket #14")).toEqual([]);
+  });
+
+  test("a conch ticket worth it is alerted once each time it opens, at most a few a day; the banner names the newest", () => {
+    const alerted: number[] = [];
+    const h = harness({ alert: (ticket) => alerted.push(ticket.number) });
+    conchFailure(h, NOW - HOUR); // an inject: a delivery that failed, alerted on the first
+    conchFailure(h, NOW - HOUR, "Couldn't find plan.md", "open-deliverable"); // once is not enough
+    agentCall(h, NOW - HOUR);
+    const desk = h.desk();
+    desk.poll();
+    expect(alerted).toEqual([1]);
+    expect(desk.digest().alert).toMatchObject({ number: 1, operation: "inject" });
+    conchFailure(h, NOW - HOUR / 2);
+    for (let n = 0; n < 2; n += 1) conchFailure(h, NOW - HOUR / 2, "Couldn't find plan.md", "open-deliverable");
+    desk.poll();
+    expect(alerted).toEqual([1, 2]);
+    // Opened once, told once. Seen, it leaves the banner.
+    void desk.act("all", "seen");
+    expect(desk.digest().alert).toBeUndefined();
+    for (let n = 0; n < ALERTS_DAILY_CAP + 2; n += 1) conchFailure(h, NOW - HOUR / 3, `Interrupt ${"x".repeat(n + 1)} failed`, "inject");
+    desk.poll();
+    expect(alerted).toHaveLength(ALERTS_DAILY_CAP);
+    // Over the cap, the banner still has the newest.
+    expect(desk.digest().alert).toBeDefined();
   });
 });

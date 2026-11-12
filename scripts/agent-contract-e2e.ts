@@ -128,6 +128,9 @@ const shared: Record<string, string> = {
   CONCH_SESSIONS_FILE: join(root, "sessions.json"),
   CONCH_STATE_FILE: join(root, "state.json"),
   CONCH_REVIEWS_FILE: join(root, "reviews.json"),
+  // A dropped copy outlives the drop by a minute, for the apps to hear of it first (session-ledger.ts `COPY_GRACE_MS`);
+  // a second here, so the removal below is seen to take its copy.
+  CONCH_COPY_GRACE_MS: "1000",
   CONCH_LOG_FILE: join(root, "daemon.log"),
   CONCH_TELEMETRY_FILE: join(root, "telemetry.jsonl"),
   CONCH_INJECT_DEBUG_LOG: join(root, "inject-debug.log"),

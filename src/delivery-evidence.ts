@@ -161,6 +161,39 @@ export async function claudeTranscriptSince(path: string | undefined, since: num
   return result;
 }
 
+/** How much of a Codex rollout's end a turn's start is looked for in: a send is seconds old, and its turn is near the end. */
+const CODEX_TURN_TAIL_BYTES = 1024 * 1024;
+
+/**
+ * Whether Codex started a turn a person asked for at or after `since` (epoch ms): the rollout's `task_started` event
+ * whose `turn_attribution.turn_trigger` is `user`. A turn Codex starts on its own (a goal it resumes, an exec) is not
+ * one.
+ *
+ * 2026-11-11: a send to a Codex session idle for days started its turn 13 ms after conch's Return, but Codex
+ * auto-compacted first and wrote the prompt down (`UserMessage`, what `promptSince` counts) nearly two minutes later.
+ * conch, seeing no prompt in its few seconds' wait, pressed Return twice more into the running turn, put the words on
+ * the clipboard and told the phone they hadn't gone: an invitation to send them twice.
+ */
+export async function codexTurnStartedSince(path: string | undefined, since: number): Promise<boolean> {
+  if (!path || !isCodexTranscriptPath(path) || !existsSync(path)) return false;
+  let text: string;
+  try {
+    const file = Bun.file(path);
+    text = await file.slice(Math.max(0, file.size - CODEX_TURN_TAIL_BYTES)).text();
+  } catch {
+    return false;
+  }
+  for (const line of text.split("\n")) {
+    if (!line.includes("\"task_started\"")) continue;
+    let entry: any;
+    try { entry = JSON.parse(line); } catch { continue; }
+    const at = Date.parse(entry?.timestamp ?? "");
+    if (!Number.isFinite(at) || at < since - CLOCK_SLACK_MS) continue;
+    if (entry.type === "event_msg" && entry.payload?.type === "task_started" && entry.payload.turn_attribution?.turn_trigger === "user") return true;
+  }
+  return false;
+}
+
 /** A user record's typed words: its string content, or its text blocks in order. */
 function promptText(entry: any): string {
   const content = entry?.message?.content;

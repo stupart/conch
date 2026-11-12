@@ -37,6 +37,26 @@ describe("the daemon files what used to be only a log line", () => {
     expect(daemon).toContain("fileDaemonFailure = recordDaemonError;");
   });
 
+  /**
+   * 2026-11-11: a quarter of conch's own tickets were refusals it was right to make, said on the row and filed besides.
+   * A model change refused because the session was busy, or waiting on its user, or its prompt held unsent words, is
+   * told and not filed; one refused for anything else (a model the session's picker doesn't list) still is.
+   */
+  test("a model change the session's state refused is told on its row, not filed", () => {
+    const settings = daemon.slice(daemon.indexOf("setSettings: async (target, requested) => {"), daemon.indexOf("sessionActionsOverlay = new SessionActionsOverlay"));
+    expect(settings).toContain("if (file) recordDaemonError(\"session-settings\"");
+    expect(settings).toContain("refuse(\"the session is working; change it when its turn is over\", false)");
+    expect(settings).toContain("refuse(\"the session is waiting on you; answer it first\", false)");
+    expect(settings).toContain("refuse(outcome.reason, !(\"declined\" in outcome && outcome.declined))");
+    expect(settings).toContain("refuse(\"the session has no terminal conch can type into\")");
+  });
+
+  test("the Terminal button's refusal is filed once a session and reason, however often it is pressed", () => {
+    const focus = daemon.slice(daemon.indexOf("terminalFocus: async (message) => {"), daemon.indexOf("openSessionApp: async (message) => {"));
+    expect(focus).toContain("if (focusFailure && !filedTerminalFocus.has(focusFailure)) {");
+    expect(focus.indexOf("filedTerminalFocus.add(focusFailure);")).toBeLessThan(focus.indexOf("recordDaemonError(\"terminal-focus\""));
+  });
+
   test("the desk is built on the daemon's own session start: background, Claude, the Default account, the brief first", () => {
     const desk = daemon.slice(daemon.indexOf("const failureDesk = new FailureDesk({"), daemon.indexOf("failureDesk.start("));
     expect(desk).toContain("await launchSession({");

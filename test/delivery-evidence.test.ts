@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claudeTranscriptSince, normalizePrompt, PROMPT_DIGEST, promptDigest, PromptSubmissions } from "../src/delivery-evidence.ts";
+import { claudeTranscriptSince, codexTurnStartedSince, normalizePrompt, PROMPT_DIGEST, promptDigest, PromptSubmissions } from "../src/delivery-evidence.ts";
 import { validateSocketTurnEvent } from "../src/control-server.ts";
 
 describe("a prompt's fingerprint", () => {
@@ -162,5 +162,36 @@ describe("a transcript read by time", () => {
     const codex = join(mkdtempSync(join(tmpdir(), "conch-evidence-")), "rollout-2026-10-03T10-00-00-0199.jsonl");
     writeFileSync(codex, "");
     expect(await claudeTranscriptSince(codex, 0, "hi")).toEqual({ submitted: false, queued: false });
+  });
+});
+
+describe("a Codex turn a person started", () => {
+  // 2026-11-11: Codex started the turn on a send at once but wrote the prompt down only after an auto-compaction, two
+  // minutes on; conch pressed Return into the running turn twice and said the words hadn't gone. Made-up rollout.
+  const SENT = Date.parse("2026-11-01T12:00:00Z");
+  const rollout = (lines: object[]) => {
+    const path = join(mkdtempSync(join(tmpdir(), "conch-codex-turn-")), "rollout-2026-11-01T12-00-00-abc.jsonl");
+    writeFileSync(path, lines.map((line) => JSON.stringify(line)).join("\n") + "\n");
+    return path;
+  };
+  const started = (at: number, trigger: string) => ({
+    timestamp: new Date(at).toISOString(), type: "event_msg",
+    payload: { type: "task_started", turn_id: "t", turn_attribution: { turn_id: "t", turn_trigger: trigger } },
+  });
+
+  test("a user-triggered turn after the send says the words went in", async () => {
+    expect(await codexTurnStartedSince(rollout([started(SENT - 86_400_000, "user"), started(SENT + 13, "user")]), SENT)).toBe(true);
+  });
+
+  test("a turn Codex started itself, or one from before the send, is not this send's", async () => {
+    expect(await codexTurnStartedSince(rollout([started(SENT + 13, "goal"), started(SENT + 20, "exec")]), SENT)).toBe(false);
+    expect(await codexTurnStartedSince(rollout([started(SENT - 60_000, "user")]), SENT)).toBe(false);
+  });
+
+  test("only a Codex rollout is read", async () => {
+    const claude = join(mkdtempSync(join(tmpdir(), "conch-claude-turn-")), "session.jsonl");
+    writeFileSync(claude, `${JSON.stringify(started(SENT + 13, "user"))}\n`);
+    expect(await codexTurnStartedSince(claude, SENT)).toBe(false);
+    expect(await codexTurnStartedSince(undefined, SENT)).toBe(false);
   });
 });
