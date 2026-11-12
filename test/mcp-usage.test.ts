@@ -222,6 +222,17 @@ describe("how a call ended", () => {
     expect(wake.call.error).toContain("yielded its audio to studio-mac");
   });
 
+  test("each call's reply size: the text the agent got, an error's too, in UTF-8 bytes (2026-11-11)", async () => {
+    const ok = await observed(handlers(), "conch_on_screen", {});
+    const text = (ok.response?.result as { content: Array<{ text: string }> }).content[0]!.text;
+    expect(ok.call.bytes).toBe(Buffer.byteLength(text, "utf8"));
+    const refused = await observed(handlers(), "conch_deliverables", {});
+    const said = (refused.response?.result as { content: Array<{ text: string }> }).content[0]!.text;
+    expect(refused.call.bytes).toBe(Buffer.byteLength(said, "utf8"));
+    expect(mcpCallRecord({ ...ok.call, bytes: 1234.4 })).toMatchObject({ bytes: 1234 });
+    expect(mcpCallRecord({ ts: 1, tool: "conch_sessions", ms: 1, outcome: "ok" })).not.toHaveProperty("bytes");
+  });
+
   test("an observer that throws breaks nothing", async () => {
     const response = await dispatchJsonRpc(
       { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "conch_on_screen", arguments: {} } },
@@ -440,6 +451,21 @@ describe("conch mcp-usage", () => {
     expect(runMcpUsageCli(["--since", "later"], path, now).code).toBe(2);
     expect(runMcpUsageCli(["--verbose"], path, now).code).toBe(2);
     expect(runMcpUsageCli([], join(scratch(), "none.jsonl"), now).lines.at(-1)).toBe("no calls recorded in this window");
+  });
+
+  test("reply sizes, once lines carry them: p50/p90/mean/max over the sized calls, and two KB columns", () => {
+    const sized: McpCallRecord[] = [
+      ...records,
+      ...[1_000, 2_000, 3_000, 40_000].map((bytes, index): McpCallRecord => ({ ts: now - day + index, tool: "conch_sessions", ms: 20, outcome: "ok", bytes })),
+    ];
+    const summary = summariseMcpCalls(sized, { since: now - 7 * day, until: now, path: "/x" });
+    const sessions = summary.tools.find((tool) => tool.tool === "conch_sessions")!;
+    expect(sessions.replyBytes).toEqual({ sized: 4, p50: 2_000, p90: 40_000, mean: 11_500, max: 40_000 });
+    expect(summary.tools.find((tool) => tool.tool === "browser_open")!.replyBytes).toBeUndefined();
+    const table = formatMcpUsage(summary);
+    expect(table.find((line) => line.startsWith("tool"))).toEndWith("p50KB  p90KB");
+    expect(table.find((line) => line.startsWith("conch_sessions"))).toMatch(/2\.0\s+39\.1$/);
+    expect(table.find((line) => line.startsWith("browser_open"))).toMatch(/—\s+—$/);
   });
 
   test("the table names the window and file even when it is empty", () => {
