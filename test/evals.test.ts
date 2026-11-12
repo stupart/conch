@@ -316,5 +316,6 @@ describe("the census the test daemon runs under", () => {
     expect(counted.sites["poll (probe.ts)"]).toBe(6);
     expect(counted.written).toEqual({ out: 2048 });
     expect(Object.keys(counted.spawned)).toEqual(["echo hi ← (top) (probe.ts)"]);
-  });
+    // A child bun process: generous for a Mac busy with other agents' gates.
+  }, 30_000);
 });
