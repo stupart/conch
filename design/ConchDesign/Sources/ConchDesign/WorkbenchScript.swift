@@ -13,14 +13,23 @@ import Foundation
 ///   round it): `type` answers `passwordRefusal`, and the field is left as it was. Signing in is the person's, in the
 ///   tab, where they can see what they type into.
 ///
-/// Called by `callAsyncJavaScript` with `op` ("read", "click", "type", "locate" or "locate-field"), `how` ("ref",
-/// "selector", "text" or "auto"), `what`, `text` and `submit`. It answers an object; `{error}` when it can't do what was
-/// asked, saying why.
+/// Called by `callAsyncJavaScript` with `op` ("read", "click", "type", "locate", "locate-field", "focus-field" or
+/// "end-field"), `how` ("ref", "selector", "text" or "auto"), `what`, `text` and `submit`. It answers an object; `{error}`
+/// when it can't do what was asked, saying why.
 ///
 /// So the user can watch an agent work (2026-10-16): `locate` and `locate-field` find what a click or a type will land
 /// on, scroll it into view, and answer only its box, which the app marks over the page; and `type` fills a field in a
 /// few visible steps, as typing looks, never more than about a third of a second. Every scroll into view is instant,
 /// even on a page that asks for smooth scrolling, so the box answered is where the element is, not where it was.
+///
+/// So the page sees a person's input, not a script's (2026-11-11, `WorkbenchInput`): `locate` and `locate-field` also
+/// answer a `point` inside the element that a click there would reach (nothing drawn over it), and whether the app may
+/// press it for real (`native`): not a `<select>`, whose menu would hold the app until it closed, nor a date, colour or
+/// file picker. The app then clicks there with real mouse events and, for a type, `focus-field` puts the field's text
+/// under the caret, selected, so the real keys that follow replace it, and watches them (`guard`): while the agent types,
+/// a key the page would send anywhere but that field (the page moved the caret, to a password say) is stopped before
+/// the page has it. `end-field` says whether anything landed; nothing, and the app types with `type` as before. `click`
+/// and `type` stay for whatever can't be pressed for real.
 public enum WorkbenchScript {
     /// The content world it runs in.
     public static let contentWorld = "conch-workbench"
@@ -71,6 +80,40 @@ public enum WorkbenchScript {
     // Into view at once, whatever the page's own scroll-behavior: a page that scrolls smoothly would still be on its
     // way when the box is measured, and the mark would land where the element was (58 to 891 points off, measured).
     const reveal = (el) => { if (el.scrollIntoView) el.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" }); };
+    // A spot inside the element that a click there reaches: the middle, else the first of a few others nothing is drawn
+    // over (a cookie banner, a sticky header). Null when there is none in view, and the app clicks by script instead.
+    const SPOTS = [[0.5, 0.5], [0.3, 0.5], [0.7, 0.5], [0.5, 0.3], [0.5, 0.7], [0.15, 0.5], [0.85, 0.5], [0.2, 0.2], [0.8, 0.8], [0.2, 0.8], [0.8, 0.2]];
+    const hitAt = (x, y) => {
+        let hit = D.elementFromPoint ? D.elementFromPoint(x, y) : null;
+        while (hit && hit.shadowRoot && hit.shadowRoot.elementFromPoint) {
+            const inner = hit.shadowRoot.elementFromPoint(x, y);
+            if (!inner || inner === hit) break;
+            hit = inner;
+        }
+        return hit;
+    };
+    const pointIn = (el) => {
+        const box = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+        if (!box || box.width < 1 || box.height < 1) return null;
+        const width = W.innerWidth || (D.documentElement && D.documentElement.clientWidth) || 0;
+        const height = W.innerHeight || (D.documentElement && D.documentElement.clientHeight) || 0;
+        for (const spot of SPOTS) {
+            const x = box.left + box.width * spot[0], y = box.top + box.height * spot[1];
+            if (x < 0 || y < 0 || x >= width || y >= height) continue;
+            const hit = hitAt(x, y);
+            if (hit && (hit === el || (el.contains && el.contains(hit)) || (tag(hit) === "label" && hit.control === el))) return [x, y];
+        }
+        return null;
+    };
+    // What the app may press for real: not a menu or a picker, which open a window of the app's own.
+    const PICKERS = ["color", "date", "datetime-local", "month", "week", "time", "file"];
+    const pressable = (el) => {
+        const name = tag(el);
+        if (name === "select" || name === "option" || name === "optgroup" || name === "datalist") return false;
+        if (name === "input" && PICKERS.indexOf(typeOf(el)) >= 0) return false;
+        if (name === "label" && el.control && !pressable(el.control)) return false;
+        return true;
+    };
     const LINKS = "a[href]";
     const BUTTONS = 'button, [role="button"], input[type="submit"], input[type="button"], input[type="reset"], input[type="image"], summary';
     const FIELDS = 'input, textarea, select, [contenteditable="true"], [contenteditable=""]';
@@ -225,12 +268,66 @@ public enum WorkbenchScript {
         return el;
     };
 
-    // Where a click or a type will land, for the app to mark: scrolled into view, and its box. Nothing else about it.
+    // Where a click or a type will land, for the app to mark and to press: scrolled into view, its box, a spot a click
+    // reaches, whether it may be pressed for real, and what it is. Never a field's value.
     const locate = (field) => {
         const el = field ? fieldTarget() : target(false);
         reveal(el);
         const box = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
-        return { box: box ? [box.left, box.top, box.width, box.height] : [0, 0, 0, 0] };
+        const kind = typeOf(el);
+        const native = pressable(el) && (!field || (editable(el) && kind !== "select" && !el.disabled && !el.readOnly));
+        const found = { box: box ? [box.left, box.top, box.width, box.height] : [0, 0, 0, 0], native, what: describe(el) };
+        const point = native ? pointIn(el) : null;
+        if (point) found.point = point;
+        if (field) found.singleLine = kind !== "textarea" && kind !== "contenteditable";
+        return found;
+    };
+
+    // While an agent's real keys go to a field: a key the page would send anywhere else is stopped before the page has
+    // it, in the capture phase at the window, the first place it goes. Installed once a page, in conch's world alone.
+    const guard = () => {
+        if (state.guarded) return;
+        state.guarded = true;
+        const stray = (event) => {
+            const field = state.typing;
+            if (!field || !event.isTrusted) return;
+            const path = event.composedPath ? event.composedPath() : [event.target];
+            if (path.indexOf(field) >= 0) return;
+            state.strayed = true;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+        };
+        for (const type of ["keydown", "keypress", "beforeinput", "keyup"]) W.addEventListener(type, stray, true);
+    };
+    const valueOf = (el) => typeOf(el) === "contenteditable" ? String(el.innerText || el.textContent || "") : String(el.value == null ? "" : el.value);
+
+    // The field an agent's real keys are about to type into: the caret in it (the app's real click put it there, or
+    // here, when the click landed on its label), its text selected so the keys replace it, and the guard on.
+    const focusField = () => {
+        const el = fieldTarget();
+        if (!editable(el) || typeOf(el) === "select") fail(describe(el) + " isn't a field you can type in");
+        if (el.disabled || el.readOnly) fail(describe(el) + " is " + (el.disabled ? "disabled" : "read-only"));
+        if (D.activeElement !== el && el.focus) el.focus();
+        if (typeOf(el) === "contenteditable") {
+            const selection = W.getSelection ? W.getSelection() : null;
+            if (selection && D.createRange) { const range = D.createRange(); range.selectNodeContents(el); selection.removeAllRanges(); selection.addRange(range); }
+        } else {
+            try { el.select(); } catch (_) {}
+        }
+        guard();
+        state.typing = el;
+        state.strayed = false;
+        state.before = valueOf(el);
+        return { ready: true };
+    };
+
+    // The keys are done: the guard off, and whether anything landed in the field (never what), and whether the page
+    // tried to send a key elsewhere.
+    const endField = () => {
+        const el = state.typing;
+        state.typing = null;
+        if (!el) return { changed: false, strayed: false };
+        return { changed: valueOf(el) !== state.before, strayed: Boolean(state.strayed), typed: describe(el) };
     };
 
     const type = async () => {
@@ -284,6 +381,8 @@ public enum WorkbenchScript {
         if (op === "type") return await type();
         if (op === "locate") return locate(false);
         if (op === "locate-field") return locate(true);
+        if (op === "focus-field") return focusField();
+        if (op === "end-field") return endField();
         return { error: "conch's browser has no " + String(op) };
     } catch (thrown) {
         if (thrown && typeof thrown.conchWorkbench === "string") return { error: thrown.conchWorkbench };

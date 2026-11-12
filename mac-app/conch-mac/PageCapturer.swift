@@ -134,6 +134,8 @@ final class PageCapturer: NSObject, WKNavigationDelegate, WKUIDelegate {
         // Nothing plays sound from a page nobody is looking at.
         configuration.mediaTypesRequiringUserActionForPlayback = .all
         webView = WKWebView(frame: CGRect(origin: .zero, size: spec.viewport), configuration: configuration)
+        // The review pane's agent too (`SafariUserAgent`), on the review pane's store: one browser to the sites it signs in to.
+        webView.customUserAgent = SafariUserAgent.current
         let window = PageCaptureWindow(contentRect: NSRect(origin: Self.parking, size: spec.viewport), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.alphaValue = 0
@@ -542,6 +544,14 @@ final class PageCapturer: NSObject, WKNavigationDelegate, WKUIDelegate {
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction,
                  windowFeatures: WKWindowFeatures) -> WKWebView? {
         nil
+    }
+
+    /// The window the page is told it is in, as every web view of conch's answers (`PageWindow`): a browser window in the
+    /// middle of the screen, never the capture's, off every screen, nor WebKit's 0 × 0. On its own here, ConchDesign's
+    /// rule alone, as the capture is built on its own (test/page-capture-render.test.ts).
+    @objc(_webView:getWindowFrameWithCompletionHandler:)
+    func webViewWindowFrame(_ webView: WKWebView, completionHandler: @escaping (CGRect) -> Void) {
+        completionHandler(WorkbenchInput.reportedWindowFrame(page: webView.bounds.size, hosting: nil, parked: true, dashboard: nil, screen: NSScreen.main?.visibleFrame))
     }
 }
 

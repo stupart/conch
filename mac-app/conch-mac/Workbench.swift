@@ -134,6 +134,8 @@ final class WorkbenchStore: ObservableObject {
             }
             touched()
             lastUse[page.id] = Date()
+            // His hand in this page: an agent's real click or keys there wait for it to leave (`WorkbenchInput.handQuiet`).
+            page.lastHand = Date()
             return
         }
         // Anywhere else in the Workdesk: a deliverable he is reading or scrolling, the files, the shell he types in, the
@@ -467,6 +469,11 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
     var agentsPaused = false
     /// Made again after sleeping (`WorkbenchStore.wake`): the next command waits for its address to load first.
     var woke = false
+    /// When Tyler last clicked, typed or scrolled in this page (`WorkbenchStore.noteTouch`): an agent's real input waits
+    /// until his hand has left it.
+    var lastHand: Date?
+    /// Where an agent's pointer last was in the page in front, in its view's points: its next click starts from there.
+    private var pointer: CGPoint?
     /// Where an agent's command is landing now, marked over the page (`WorkbenchMarks`).
     @Published private(set) var mark: WorkbenchMark?
     private var markSerial = 0
@@ -518,7 +525,7 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
         content.add(messages, contentWorld: Self.world, name: WorkbenchPasskeys.messageHandler)
         // An agent's click on "Continue with Google" has to be able to open its window.
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
-        webView = WKWebView(frame: CGRect(origin: .zero, size: Self.parkedSize), configuration: configuration)
+        webView = WorkbenchWebView(frame: CGRect(origin: .zero, size: Self.parkedSize), configuration: configuration)
         window = WorkbenchParkingWindow(contentRect: NSRect(origin: PageCapturer.parking, size: Self.parkedSize), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.alphaValue = 0
@@ -765,6 +772,11 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
             // Where it will land, marked first, so Tyler sees the click happen where it happens: the click is sent
             // `WorkbenchMarkMotion.clickLead` after the mark goes down, as its ripple starts.
             await markTarget(target, kind: .click)
+            // A real click where it can be one (`press`), the page's own events, trusted; else the script's, as before.
+            if let clicked = await press(target, deadline: deadline) {
+                await settle(until: settleBy)
+                return answer(request, result: ["clicked": .string(clicked)])
+            }
             let outcome = await script(front, op: "click", target: target, text: nil, submit: false)
             guard case let .success(value) = outcome else { return answer(request, error: outcome.message ?? "the click didn't happen") }
             await settle(until: settleBy)
@@ -773,11 +785,21 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
             guard let target = request.target?.pair else { return answer(request, error: "typing needs its target") }
             guard let text else { return answer(request, error: "conch's daemon didn't hand over what to type") }
             // The field outlined while it fills, as typing looks (WorkbenchScript): never what is typed, in conch's words.
-            if let refused = await markTarget(target, kind: .type) { return answer(request, error: refused) }
-            let outcome = await script(front, op: "type", target: target, text: text, submit: request.submit == true)
+            if case let .failure(refused) = await markTarget(target, kind: .type) { return answer(request, error: refused.words) }
+            // Real keys where they can be (`typeKeys`); else the script fills the field, as before.
+            var typed = await typeKeys(target, text: text, submit: request.submit == true, deadline: deadline)
+            if typed == nil {
+                switch await script(front, op: "type", target: target, text: text, submit: request.submit == true) {
+                case let .success(value): typed = .success(value)
+                case let .failure(message): typed = .failure(WorkbenchFailure(words: message))
+                }
+            }
             await remeasureMark(target)
             endMark(after: WorkbenchMarkMotion.typeHold)
-            guard case let .success(value) = outcome else { return answer(request, error: outcome.message ?? "nothing was typed") }
+            guard case let .success(value)? = typed else {
+                if case let .failure(failure)? = typed { return answer(request, error: failure.words) }
+                return answer(request, error: "nothing was typed")
+            }
             if request.submit == true { await settle(until: settleBy) }
             return answer(request, result: value)
         case "screenshot":
@@ -791,13 +813,13 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
     /// A password field is refused here, before anything is marked; anything else the page can't find is left for the
     /// command itself to say. A click waits out its lead here, for the eye to get to the mark before the page moves.
     @discardableResult
-    private func markTarget(_ target: (how: String, what: String), kind: WorkbenchMark.Kind) async -> String? {
+    private func markTarget(_ target: (how: String, what: String), kind: WorkbenchMark.Kind) async -> Result<Void, WorkbenchFailure> {
         let view = front
         switch await locate(target, kind: kind, in: view) {
         case let .failure(failure):
-            return failure.words == WorkbenchScript.passwordRefusal ? failure.words : nil
-        case let .success(rect):
-            guard let rect else { return nil }
+            return failure.words == WorkbenchScript.passwordRefusal ? .failure(failure) : .success(())
+        case let .success(found):
+            guard let rect = found.rect else { return .success(()) }
             markSerial += 1
             mark = WorkbenchMark(kind: kind, rect: rect, serial: markSerial)
             markedAt = view.bounds.size
@@ -809,20 +831,166 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
                     await remeasureMark(target)
                 }
             }
-            return nil
+            return .success(())
         }
     }
 
-    /// The box of what a command lands on, in the view's points: nil when the page has no box for it.
-    private func locate(_ target: (how: String, what: String), kind: WorkbenchMark.Kind, in view: WKWebView) async -> Result<CGRect?, WorkbenchFailure> {
+    /// Where a command lands, as the page measured it (`WorkbenchScript`'s `locate`): its box and a spot a real click
+    /// there reaches, in the view's points; whether it may be pressed for real; what it is; for a field, whether it
+    /// holds one line.
+    private struct Located {
+        var rect: CGRect?
+        var point: CGPoint?
+        var native = false
+        var what: String?
+        var singleLine = true
+    }
+
+    private static func numbers(_ value: WorkbenchJSON?) -> [Double] {
+        guard case let .array(items)? = value else { return [] }
+        return items.compactMap { if case let .number(number) = $0 { number } else { nil } }
+    }
+
+    /// Where what a command lands on is, in the view's points.
+    private func locate(_ target: (how: String, what: String), kind: WorkbenchMark.Kind, in view: WKWebView) async -> Result<Located, WorkbenchFailure> {
         switch await script(view, op: kind == .type ? "locate-field" : "locate", target: target, text: nil, submit: false) {
         case let .failure(message):
             return .failure(WorkbenchFailure(words: message))
         case let .success(value):
-            guard case let .array(numbers)? = value["box"] else { return .success(nil) }
-            let box = numbers.compactMap { if case let .number(number) = $0 { number } else { nil } }
-            return .success(Workbench.markRect(box: box, scale: Double(view.pageZoom * view.magnification)))
+            let scale = Double(view.pageZoom * view.magnification)
+            var found = Located()
+            found.rect = Workbench.markRect(box: Self.numbers(value["box"]), scale: scale)
+            // A pinch moves the page under the view as well as scaling it: a spot is pressed only at a pinch's rest.
+            if view.magnification == 1 { found.point = WorkbenchInput.viewPoint(css: Self.numbers(value["point"]), scale: scale, in: view.bounds.size) }
+            if case let .bool(native)? = value["native"] { found.native = native }
+            if case let .string(what)? = value["what"] { found.what = what }
+            if case let .bool(single)? = value["singleLine"] { found.singleLine = single }
+            return .success(found)
         }
+    }
+
+    // MARK: Real input
+
+    /// Tyler's hand in this page, shown, comes first: an agent's click or keys wait until he has left it alone for
+    /// `WorkbenchInput.handQuiet`, at most `handWaitMax`, and never past what the command has left.
+    private func waitForHand(deadline: Date) async {
+        let until = min(Date().addingTimeInterval(WorkbenchInput.handWaitMax), deadline.addingTimeInterval(-6))
+        while isShown, WorkbenchInput.handIsIn(lastTouch: lastHand, now: Date()), Date() < until, !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+    }
+
+    /// A real click on the target (2026-11-11, `WorkbenchInput`): the pointer moved to a spot inside it that a click
+    /// reaches, pressed and let go, by mouse events handed to the view, which the page hears as a person's, trusted. What
+    /// was clicked, or nil when it can't be a real click (a menu or a picker, nothing of it reachable in view, a pinch),
+    /// and the script clicks instead.
+    private func press(_ target: (how: String, what: String), deadline: Date) async -> String? {
+        await waitForHand(deadline: deadline)
+        let view = front
+        // Measured again now: the page may have moved since the mark went down.
+        guard case let .success(found) = await locate(target, kind: .click, in: view), found.native, let point = found.point,
+              let window = view.window, !agentsPaused, !isClosed
+        else { return nil }
+        await click(view, at: point, in: window)
+        return found.what ?? "it"
+    }
+
+    /// The pointer to `point` along a hand's path, pressed there and let go. The keyboard stays where it was: a press in
+    /// a web view takes the keyboard for it (WebKit makes it the window's first responder a moment later), which would take
+    /// it from Tyler's composer, so the view turns it down while an agent presses (`WorkbenchWebView`).
+    private func click(_ view: WKWebView, at point: CGPoint, in window: NSWindow) async {
+        let start = WorkbenchInput.pointerStart(towards: point, last: pointer, in: view.bounds.size)
+        let keeps = (view as? WorkbenchWebView)?.agentPressing()
+        defer { keeps?() }
+        for spot in WorkbenchInput.path(from: start, to: point, steps: WorkbenchInput.pathSteps(from: start, to: point)) {
+            if let event = WorkbenchInput.mouseEvent(.mouseMoved, at: spot, in: view, window: window) { view.mouseMoved(with: event) }
+            try? await Task.sleep(nanoseconds: Self.nanos(WorkbenchInput.jittered(0.014, unit: .random(in: 0...1))))
+        }
+        pointer = point
+        if let event = WorkbenchInput.mouseEvent(.leftMouseDown, at: point, in: view, window: window) { view.mouseDown(with: event) }
+        try? await Task.sleep(nanoseconds: Self.nanos(WorkbenchInput.jittered(0.085, unit: .random(in: 0...1))))
+        if let event = WorkbenchInput.mouseEvent(.leftMouseUp, at: point, in: view, window: window) { view.mouseUp(with: event) }
+        // WebKit's word to make the view first responder comes back from the page a moment after the press.
+        try? await Task.sleep(nanoseconds: 250_000_000)
+    }
+
+    /// Real keys into the target field (2026-11-11, `WorkbenchInput`): a real click on it, its text selected
+    /// (`focus-field`), then a key down and up for each character, Shift held for capitals, at a typist's pace, and Return
+    /// to submit, every event the page's own, trusted. The keys go to the view directly, never through the keyboard focus,
+    /// which stays Tyler's. Nil when they can't (a menu, nothing reachable, a pinch), or when none of them landed, and the
+    /// script types instead; a failure the field itself gave (disabled, read-only).
+    private func typeKeys(_ target: (how: String, what: String), text: String, submit: Bool, deadline: Date) async -> Result<[String: WorkbenchJSON], WorkbenchFailure>? {
+        await waitForHand(deadline: deadline)
+        let view = front
+        guard case let .success(found) = await locate(target, kind: .type, in: view), found.native, let point = found.point,
+              let window = view.window, !agentsPaused, !isClosed
+        else { return nil }
+        await click(view, at: point, in: window)
+        switch await script(view, op: "focus-field", target: target, text: nil, submit: false) {
+        case let .failure(message): return .failure(WorkbenchFailure(words: message))
+        case .success: break
+        }
+        // The selection reaches WebKit's editor on the page's next frame; a key before it would type nothing.
+        try? await Task.sleep(nanoseconds: 60_000_000)
+        let strokes = WorkbenchInput.budgeted(WorkbenchInput.strokes(for: text, singleLine: found.singleLine))
+        await strike(strokes, in: view, window: window)
+        // The page gone from under the keys (it navigated as they landed): said, never typed again on whatever came.
+        guard case let .success(ended) = await script(view, op: "end-field", target: target, text: nil, submit: false) else {
+            return .failure(WorkbenchFailure(words: "the page changed while typing into \(found.what ?? "the field"); read it to see where it stands"))
+        }
+        // Not one key landed (an input method in the way, a field that ignores keys): the script types instead.
+        guard case .bool(true)? = ended["changed"] else { return nil }
+        if case .bool(true)? = ended["strayed"] {
+            return .failure(WorkbenchFailure(words: "the page moved the cursor out of \(found.what ?? "the field") while typing, so some of it wasn't typed; read the page to see where it stands"))
+        }
+        if submit, !agentsPaused, !isClosed {
+            try? await Task.sleep(nanoseconds: Self.nanos(WorkbenchInput.jittered(WorkbenchInput.slowestGap, unit: .random(in: 0...1))))
+            down(key: "\r", unshifted: "\r", code: WorkbenchInput.returnKeyCode, shift: false, in: view, window: window)
+            try? await Task.sleep(nanoseconds: 40_000_000)
+            up(key: "\r", unshifted: "\r", code: WorkbenchInput.returnKeyCode, shift: false, in: view, window: window)
+        }
+        var result: [String: WorkbenchJSON] = ["typed": ended["typed"] ?? .string(found.what ?? "the field")]
+        if submit { result["submitted"] = .bool(true) }
+        return .success(result)
+    }
+
+    /// The strokes, at `WorkbenchInput.keyGap`'s pace, a little uneven. Stops when Tyler pauses agents or the tab goes.
+    private func strike(_ strokes: [WorkbenchInput.Stroke], in view: WKWebView, window: NSWindow) async {
+        let gap = WorkbenchInput.keyGap(count: strokes.count)
+        var shifted = false
+        func shift(_ down: Bool) {
+            guard shifted != down else { return }
+            shifted = down
+            if let event = WorkbenchInput.shiftEvent(down: down, window: window) { view.flagsChanged(with: event) }
+        }
+        for stroke in strokes {
+            if agentsPaused || isClosed || Task.isCancelled { break }
+            switch stroke {
+            case let .key(character, unshifted, code, needsShift):
+                shift(needsShift)
+                down(key: character, unshifted: unshifted, code: code, shift: needsShift, in: view, window: window)
+                try? await Task.sleep(nanoseconds: Self.nanos(WorkbenchInput.jittered(gap / 3, unit: .random(in: 0...1))))
+                up(key: character, unshifted: unshifted, code: code, shift: needsShift, in: view, window: window)
+            case let .text(text):
+                shift(false)
+                // As an input method commits: no key, the text itself (`beforeinput` and `input`, trusted).
+                view.insertText(text)
+            }
+            try? await Task.sleep(nanoseconds: Self.nanos(WorkbenchInput.jittered(gap, unit: .random(in: 0...1))))
+        }
+        shift(false)
+    }
+
+    private func down(key character: String, unshifted: String, code: UInt16, shift: Bool, in view: WKWebView, window: NSWindow) {
+        if let event = WorkbenchInput.keyEvent(.keyDown, character: character, unshifted: unshifted, keyCode: code, shift: shift, window: window) { view.keyDown(with: event) }
+    }
+
+    private func up(key character: String, unshifted: String, code: UInt16, shift: Bool, in view: WKWebView, window: NSWindow) {
+        if let event = WorkbenchInput.keyEvent(.keyUp, character: character, unshifted: unshifted, keyCode: code, shift: shift, window: window) { view.keyUp(with: event) }
+    }
+
+    private static func nanos(_ seconds: TimeInterval) -> UInt64 {
+        UInt64(max(0, seconds) * 1_000_000_000)
     }
 
     /// The page's size when its mark was measured: a tab brought forward for this very command is moved into the Workdesk
@@ -834,7 +1002,7 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
         let view = front
         guard let live = mark, let markedAt, markedAt != view.bounds.size else { return }
         self.markedAt = view.bounds.size
-        guard case let .success(rect?) = await locate(target, kind: live.kind, in: view), mark?.serial == live.serial else { return }
+        guard case let .success(found) = await locate(target, kind: live.kind, in: view), let rect = found.rect, mark?.serial == live.serial else { return }
         mark = WorkbenchMark(kind: live.kind, rect: rect, serial: live.serial, at: live.at, endedAt: live.endedAt)
     }
 
@@ -956,6 +1124,13 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
 
     // MARK: WKUIDelegate
 
+    /// The window the page is told it is in (`window.outerWidth`, `screenX`; WebKit's private UI delegate asks for it):
+    /// with no answer a page reads 0 × 0, a headless browser's tell (`WorkbenchInput.reportedWindowFrame`).
+    @objc(_webView:getWindowFrameWithCompletionHandler:)
+    func webViewWindowFrame(_ webView: WKWebView, completionHandler: @escaping (CGRect) -> Void) {
+        completionHandler(PageWindow.frame(of: webView))
+    }
+
     /// A window the page opens comes up over it, a real web view built with WebKit's configuration, so the page that
     /// opened it hears back from it (`window.opener`): what a "Continue with Google" needs, as Claude's sign-in sheet
     /// found (`ClaudeSignInWebView`). A plain link that only asked for a new tab opens in this one.
@@ -965,7 +1140,7 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
             webView.load(navigationAction.request)
             return nil
         }
-        let popup = WKWebView(frame: self.webView.bounds, configuration: configuration)
+        let popup = WorkbenchWebView(frame: self.webView.bounds, configuration: configuration)
         popup.autoresizingMask = [.width, .height]
         Self.prepare(popup, delegate: self)
         self.webView.addSubview(popup)
@@ -1009,6 +1184,54 @@ private final class WorkbenchOnce {
     func take() -> Bool {
         defer { taken = true }
         return !taken
+    }
+}
+
+/// A tab's web view (and each window its page opens), which turns the keyboard down while an agent presses in it
+/// (`WorkbenchPage.click`). A press in a web view has WebKit take the keyboard for it a moment later (the page asks, and
+/// the window makes the view its first responder, never asking whether it accepts), from wherever it was: Tyler's
+/// composer, as he types there. So while an agent presses, the view refuses to become first responder, and the window
+/// hands the keyboard straight back to what had it, before any key of his is read. Measured in real WebKit
+/// (WorkbenchInputWebKitTests): the page still gives the field pressed its caret, and the agent's keys, handed to the
+/// view directly, still type there. His own press, once the agent's is over, takes the keyboard as it always did.
+final class WorkbenchWebView: WKWebView {
+    private var pressing = 0
+    /// What had the keyboard when the agent's press began: a text field rather than its field editor, which goes with
+    /// the keyboard, and where its caret was, which a field given the keyboard again would otherwise select all of.
+    private weak var keeper: NSResponder?
+    private var keeperSelection: [NSValue]?
+
+    /// Turns the keyboard down until the call it returns.
+    func agentPressing() -> () -> Void {
+        if pressing == 0 {
+            let first = window?.firstResponder
+            if let editor = first as? NSTextView, editor.isFieldEditor, let field = editor.delegate as? NSResponder {
+                keeper = field
+                keeperSelection = editor.selectedRanges
+            } else {
+                keeper = first
+                keeperSelection = nil
+            }
+        }
+        pressing += 1
+        var ended = false
+        return { [weak self] in
+            guard !ended else { return }
+            ended = true
+            self?.pressing -= 1
+        }
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        guard pressing > 0 else { return super.becomeFirstResponder() }
+        // Refused, the window takes the keyboard itself: back to its keeper, on the next turn of the run loop.
+        let window = self.window, keeper = self.keeper, selection = keeperSelection
+        DispatchQueue.main.async {
+            guard let window, window.firstResponder === window, let keeper, keeper !== window else { return }
+            window.makeFirstResponder(keeper)
+            if let selection, let editor = window.firstResponder as? NSTextView, editor.isFieldEditor { editor.selectedRanges = selection }
+        }
+        return false
     }
 }
 
