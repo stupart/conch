@@ -36,57 +36,57 @@
     "tools": [
       {
         "name": "review_to_front",
-        "chars": 8033,
-        "tokens": 2009,
-        "descriptionChars": 847,
-        "schemaChars": 7128,
-        "parameterProseChars": 4660,
+        "chars": 2763,
+        "tokens": 691,
+        "descriptionChars": 643,
+        "schemaChars": 2062,
+        "parameterProseChars": 801,
         "parameters": 8
       },
       {
         "name": "conch_run",
-        "chars": 750,
-        "tokens": 188,
-        "descriptionChars": 421,
-        "schemaChars": 277,
-        "parameterProseChars": 114,
+        "chars": 564,
+        "tokens": 141,
+        "descriptionChars": 276,
+        "schemaChars": 236,
+        "parameterProseChars": 75,
         "parameters": 1
       }
     ],
     "pieces": {
       "server-instructions": {
-        "chars": 1009,
-        "tokens": 253
+        "chars": 988,
+        "tokens": 247
       },
       "skill-listing": {
         "chars": 315,
         "tokens": 79
       },
       "agents-md": {
-        "chars": 2787,
-        "tokens": 697
+        "chars": 2716,
+        "tokens": 679
       },
       "tools-list": {
-        "chars": 8786,
-        "tokens": 2197
+        "chars": 3330,
+        "tokens": 833
       },
       "tools-list (Claude Code names)": {
-        "chars": 8836,
-        "tokens": 2209
+        "chars": 3380,
+        "tokens": 845
       },
       "deferred-tool-names": {
         "chars": 75,
         "tokens": 19
       },
       "skill:conch-control (on load)": {
-        "chars": 51805,
-        "tokens": 12952
+        "chars": 52865,
+        "tokens": 13217
       }
     },
     "surfaces": {
       "claude-code": {
-        "chars": 1399,
-        "tokens": 351,
+        "chars": 1378,
+        "tokens": 345,
         "parts": [
           "server-instructions",
           "skill-listing",
@@ -94,8 +94,8 @@
         ]
       },
       "claude-code (all tools loaded)": {
-        "chars": 10160,
-        "tokens": 2541,
+        "chars": 4683,
+        "tokens": 1171,
         "parts": [
           "server-instructions",
           "skill-listing",
@@ -103,8 +103,8 @@
         ]
       },
       "codex": {
-        "chars": 11888,
-        "tokens": 2973,
+        "chars": 6361,
+        "tokens": 1591,
         "parts": [
           "agents-md",
           "skill-listing",
