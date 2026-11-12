@@ -10,7 +10,7 @@ import {
 import { CONCH_VERSION } from "../src/version.ts";
 import { homedir, tmpdir } from "node:os";
 import { join, relative, isAbsolute, resolve } from "node:path";
-import { AGENT_COMMANDS, AGENT_INSTRUCTIONS } from "../src/agent-instructions.ts";
+import { AGENT_COMMANDS, AGENT_INSTRUCTIONS, renderSkillMd } from "../src/agent-instructions.ts";
 import {
   AGENT_TUNABLE_SETTINGS,
   MAX_SPEAK_CHARS,
@@ -56,7 +56,6 @@ import { AmbiguousSessionError, findSessionByName, registrySnapshot } from "../s
 import { appServerNoTerminal } from "../src/codex-threads.ts";
 import { HISTORY_PAYLOAD_MAX_BYTES, type HistoryRequest, type HistoryResponse } from "../src/history.ts";
 import { artifactIdentity } from "../src/deliverables.ts";
-import { reviewIdentity } from "../src/records-receipts.ts";
 import { MAC_APP_DOWN, type PageCaptureMessage, type PageCaptureReply, type PageCaptureSend } from "../src/page-capture.ts";
 import type { PublishReply } from "../src/review-verdict.ts";
 import { BROWSER_APP_DOWN, BROWSER_REPLY_MS, type BrowserMessage, type BrowserSend } from "../src/browser-workbench.ts";
@@ -715,14 +714,14 @@ describe("review_to_front with a folder", () => {
         link: root,
         focus: ["src/setup.ts", `${root}/test/`],
       })));
+      // 2026-11-11: the kind it read off the link, and nothing it was given: not the link, not the focus.
       expect(result).toMatchObject({
         outcome: "accepted",
         kind: "folder",
         version: 1,
         artifact: artifactIdentity(realpathSync(root)),
-        link: root,
-        focus: ["src/setup.ts", "test"],
       });
+      for (const given of ["summary", "link", "focus", "id", "sessionId"]) expect(result, given).not.toHaveProperty(given);
       // Only the folder and the paths named: never a listing.
       expect(h.calls.daemon.map((call) => call.event.review)).toEqual([
         { summary: "the new module layout", link: root, focus: ["src/setup.ts", "test"] },
@@ -739,7 +738,9 @@ describe("review_to_front with a folder", () => {
       const h = fakeHarness({ parentPid: 4321, sessionsFile: published });
       const handlers = createMcpToolHandlers(runtime, h.dependencies);
       const next = JSON.parse(toolText(await callTool(handlers, "review_to_front", { summary: "layout v2", link: `${root}/`, kind: "folder" })));
-      expect(next).toMatchObject({ artifact, version: 2, kind: "folder" });
+      // The kind it was given isn't said back; the link is, since conch filed it without the slash.
+      expect(next).toMatchObject({ artifact, version: 2, link: root });
+      expect(next).not.toHaveProperty("kind");
       // conch_deliverables says which paths each filing pointed at.
       const listed = JSON.parse(toolText(await callTool(handlers, "conch_deliverables", {})));
       expect(listed.deliverables[0]).toMatchObject({ id: "f-1", kind: "folder", focus: ["src"] });
@@ -772,9 +773,10 @@ describe("review_to_front with a folder", () => {
     const tool = MCP_TOOLS.find((candidate) => candidate.name === "review_to_front")!;
     const properties = tool.inputSchema.properties as Record<string, any>;
     expect(properties.focus).toMatchObject({ type: "array", minItems: 1, maxItems: 12, items: { type: "string", minLength: 1 } });
-    expect(properties.focus.description).toContain("for a folder link only");
+    expect(properties.focus.description).toContain("with a folder link");
     expect(properties.kind.enum).toContain("folder");
-    expect(properties.kind.description).toContain("folder a directory shown as its file tree");
+    // What each kind is, in full, is the command's help (2026-11-11: the schema says a line).
+    expect(AGENT_COMMANDS.find((command) => command.name === "publish")!.help).toContain("folder (a directory shown as its file tree)");
   });
 });
 
@@ -798,10 +800,10 @@ describe("schemas state what the handlers enforce", () => {
   });
 
   test("review_to_front describes publishing, not opening or finishing, and what its answer means", () => {
-    // 2026-10-05: when and why to publish first, then what to pass and what the result means; the mechanics it used to
-    // carry are in the parameters and the skill (agent-instructions.test.ts pins where).
+    // 2026-10-05: when and why to publish first, then what to pass and what the result means. 2026-11-11: the rest is
+    // `conch agent help publish` and the skill (agent-instructions.test.ts pins where), in 643 characters, not 847.
     expect(MCP_TOOLS.find((tool) => tool.name === "review_to_front")!.description).toBe(
-      "Publish whenever you produce something the user would look at (a page, screenshot, file, document, plan, diff or PR, build, app state), as you go, not only at the end. It’s one call, it doesn’t interrupt them, and it’s how they follow your work from conch’s Mac app and their phone. Pass a one-line summary (at most 200 characters) of what it is and what to check, and the best single artifact as link (a URL, or a path to a file or folder) with its kind; with nothing to link (an app window, the Simulator), say where to look in the summary. Publishing the same link or key again adds its next version, not a second entry. It opens nothing and doesn’t end your turn: the user’s click on the pill brings it forward. The result says where it landed (surfaces) and any warning or relabel to act on; tell the user from that, not from what you assume.",
+      "Publish whenever you produce something the user would look at (a page, screenshot, file, document, plan, diff or PR, build, app state), as you go, not only at the end. It’s one call, it doesn’t interrupt them or end your turn, and it’s how they follow your work from conch’s Mac app and phone. Pass a one-line summary and the best single artifact as link (none for an app window or the Simulator: say where to look). Publishing the same link or key again adds its next version. More: `conch agent help publish`. The result says where it landed (surfaces) and any warning or relabel to act on; tell the user from that, not from what you assume.",
     );
     // Claude Code cuts a tool description past 2048 characters (CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH, 2.1.280).
     for (const tool of MCP_TOOLS) expect(tool.description.length).toBeLessThan(2048);
@@ -1386,7 +1388,8 @@ describe("real MCP tool handlers with injected dependencies", () => {
     expect(h.calls.daemon.at(-1)?.event.review).toEqual({
       summary: "The PR is ready", link: "https://example.com/pr", approval: { label: "Open the PR" },
     });
-    expect(labelled.approval).toEqual({ label: "Open the PR" });
+    // 2026-11-11: what it asked is the agent's own, so the answer doesn't say it back.
+    expect(labelled).not.toHaveProperty("approval");
 
     // Asked with no label, and with one of exactly 40.
     await publish({ approval: {} });
@@ -1415,7 +1418,7 @@ describe("real MCP tool handlers with injected dependencies", () => {
       additionalProperties: false,
     });
     expect(approval.description).toContain("only when you are waiting on the user's yes to proceed: never by default");
-    expect(approval.description).toContain('conch sends your session "Approved: <label>." as a message about 10 s later');
+    expect(approval.description).toContain('Their Approve sends you "Approved: <label>."');
     // 2026-10-05: the rule lives here, on the parameter, and no longer in the tool's description, which says when to
     // publish; an approval is the exception, never the default.
     expect(tool.description).not.toContain("approval");
@@ -1641,19 +1644,17 @@ describe("real MCP tool handlers with injected dependencies", () => {
 
     // This harness's daemon takes a publication without a word (`sendToDaemon`), as one from before verdicts does:
     // taken, and said to be unconfirmed, never "filed".
-    const unconfirmed = "this conch daemon does not say whether it filed a publication; the id and version below are"
+    const unconfirmed = "this conch daemon does not say whether it filed a publication; the version below is"
       + " predicted, and conch agent deliverables says what was filed";
     const long = await callTool(handlers, "review_to_front", { summary: "x".repeat(250), session: "Build" });
+    // 2026-11-11: the handles and what conch changed (the kind it read, the summary it cut), never what was passed.
     expect(JSON.parse(toolText(long))).toEqual({
       outcome: "accepted",
       unconfirmed,
-      sessionId: "session-123",
       label: "Build label",
-      id: reviewIdentity("session-123", { summary: "x".repeat(200), at: 1_234_567 }),
       artifact: artifactIdentity("x".repeat(200)),
       version: 1,
       kind: "other",
-      summary: "x".repeat(200),
       summaryTruncated: { from: 250, to: 200 },
     });
     expect(h.calls.daemon[0]?.event.review).toEqual({ summary: "x".repeat(200) });
@@ -1666,14 +1667,10 @@ describe("real MCP tool handlers with injected dependencies", () => {
     expect(JSON.parse(toolText(short))).toEqual({
       outcome: "accepted",
       unconfirmed,
-      sessionId: "session-123",
       label: "Build label",
-      id: reviewIdentity("session-123", { summary: "the dashboard", link: "https://example.com/review", at: 1_234_567 }),
       artifact: artifactIdentity("https://example.com/review"),
       version: 1,
       kind: "url",
-      summary: "the dashboard",
-      link: "https://example.com/review",
     });
   });
 
@@ -2294,7 +2291,9 @@ describe("review_to_front's scene", () => {
     const scene = { v: 1, target: { kind: "conversation" }, inspect: "Check that Save stays reachable" } as const;
     const { h, response } = await publish({ link, scene });
     expect(h.calls.daemon[0]?.event.review).toEqual({ summary: "the settings page", link, scene });
-    expect(JSON.parse(toolText(response))).toMatchObject({ outcome: "accepted", scene });
+    // 2026-11-11: the scene is the agent's own; the answer doesn't say it back.
+    expect(JSON.parse(toolText(response))).toMatchObject({ outcome: "accepted" });
+    expect(JSON.parse(toolText(response))).not.toHaveProperty("scene");
   });
 
   test("no scene publishes none, which the apps read as auto", async () => {
@@ -2338,8 +2337,8 @@ describe("review_to_front's scene", () => {
     expect(scene.properties.target.properties.kind.enum).toEqual(["auto", "link", "conversation", "terminal"]);
     expect(scene.properties.target.properties).not.toHaveProperty("ref");
     expect(scene.properties.inspect).toMatchObject({ type: "string", minLength: 1, maxLength: 200 });
-    expect(scene.description).toContain("`target.ref` is reserved");
-    expect(scene.description).toContain("not accepted");
+    // 2026-11-11: the schema refuses ref by leaving it out; the skill says why it is reserved.
+    expect(renderSkillMd()).toContain("`target.ref` is reserved for surface references conch will issue later");
   });
 
   // Agent ink: the rules themselves are agent-ink.test.ts; these prove the tool runs them.
@@ -2349,7 +2348,8 @@ describe("review_to_front's scene", () => {
     const scene: ReviewScene = { v: 1, target: { kind: "link" }, marks: [cta] };
     const { h, response } = await publish({ link, scene });
     expect(h.calls.daemon[0]?.event.review).toEqual({ summary: "the settings page", link, scene });
-    expect(JSON.parse(toolText(response))).toMatchObject({ outcome: "accepted", scene });
+    expect(JSON.parse(toolText(response))).toMatchObject({ outcome: "accepted" });
+    expect(JSON.parse(toolText(response))).not.toHaveProperty("scene");
   });
 
   test("malformed marks are refused, say why, and publish nothing", async () => {
@@ -2390,17 +2390,33 @@ describe("review_to_front's scene", () => {
     expect(h.calls.daemon).toEqual([]);
   });
 
-  test("the schema describes marks closed, with their caps", () => {
+  /**
+   * 2026-11-11: 3 of 1,057 publications in 30 days drew marks, and their schema was a third of review_to_front's 8 KB.
+   * The schema names their shape in a line and the help says it in full; the handler holds each mark to every rule
+   * the schema used to (the refusals below), naming the mark and what to fix.
+   */
+  test("the schema names the marks' shape in a line, the help says it in full, and the handler refuses what the schema used to", async () => {
     const tool = MCP_TOOLS.find((candidate) => candidate.name === "review_to_front")!;
     const marks = (tool.inputSchema.properties as Record<string, any>).scene.properties.marks;
-    expect(marks).toMatchObject({ type: "array", minItems: 1, maxItems: 12 });
-    expect(marks.items).toMatchObject({ required: ["id", "kind", "frame"], additionalProperties: false });
-    expect(marks.items.properties.kind.enum).toEqual(["arrow", "box", "ellipse", "highlight", "text", "pin", "stroke"]);
-    expect(marks.items.properties.frame).toMatchObject({ additionalProperties: false });
-    expect(Object.keys(marks.items.properties.frame.properties)).toEqual(["canvas", "image", "selector", "quote"]);
-    expect(marks.items.properties.pts).toMatchObject({ minItems: 2, maxItems: 64 });
-    expect(marks.items.properties.label).toMatchObject({ maxLength: 80 });
-    expect(marks.description).toContain("conch colours marks itself");
+    expect(marks).toMatchObject({ type: "array", minItems: 1, maxItems: 12, items: { type: "object" } });
+    expect(marks.description).toContain("[{id, kind, frame: {selector|quote|image|canvas}, rect|at|to|pts, label}]");
+    expect(marks.description).toContain("`conch agent help publish`");
+    const help = AGENT_COMMANDS.find((command) => command.name === "publish")!.help;
+    expect(help).toContain("kind is arrow, box, ellipse, highlight, text (needs a label), pin or stroke");
+    expect(help).toContain("No colour: conch draws them in your colour.");
+    for (const [mark, said] of [
+      [{ ...cta, kind: "circle" }, "kind"],
+      [{ ...cta, colour: "red" }, "colour"],
+      [{ kind: "box", frame: { selector: ".cta" } }, "id"],
+      [{ ...cta, frame: { selector: ".cta", quote: "Save" } }, "frame"],
+      [{ ...cta, label: "x".repeat(81) }, "label"],
+    ] as const) {
+      const { h, response } = await publish({ link, scene: { v: 1, target: { kind: "link" }, marks: [mark] } });
+      expect(rpcResult(response), JSON.stringify(mark)).toMatchObject({ isError: true });
+      expect(toolText(response), JSON.stringify(mark)).toContain("marks[0]");
+      expect(toolText(response), JSON.stringify(mark)).toContain(said);
+      expect(h.calls.daemon).toEqual([]);
+    }
   });
 });
 
@@ -2439,12 +2455,16 @@ describe("typed deliverables: filing, listing and removing your own", () => {
     const next = JSON.parse(toolText(await callTool(handlers, "review_to_front", { summary: "page v3", link: "https://x.test/page#hero" })));
     // The same page, so its next version, one past the highest held.
     expect(next).toMatchObject({ outcome: "accepted", artifact: page, version: 3, kind: "url" });
-    expect(next.id).toBe(reviewIdentity("session-123", { summary: "page v3", link: "https://x.test/page#hero", at: 1_234_567 }));
+    // 2026-11-11: no filing id (no removal in 23 days used one; deliverables lists them), and nothing it passed.
+    expect(next).not.toHaveProperty("id");
+    expect(next).not.toHaveProperty("link");
 
     const sim = JSON.parse(toolText(await callTool(handlers, "review_to_front", {
       summary: "the onboarding flow, second screen", kind: "simulator", key: "onboarding",
     })));
-    expect(sim).toMatchObject({ artifact: artifactIdentity("onboarding"), version: 2, kind: "simulator" });
+    // The kind it was given isn't said back.
+    expect(sim).toMatchObject({ artifact: artifactIdentity("onboarding"), version: 2 });
+    expect(sim).not.toHaveProperty("kind");
     expect(sim).not.toHaveProperty("link");
     // Only what the agent said travels; the daemon infers the rest by the same rules.
     expect(h.calls.daemon.map((call) => call.event.review)).toEqual([
@@ -2743,7 +2763,7 @@ describe("review_to_front waits for the daemon's verdict", () => {
     return { h, sent, handlers: createMcpToolHandlers(runtime, dependencies) };
   };
 
-  test("filed: the daemon's id, version and link, the original it copied, and where the user can see it", async () => {
+  test("filed: the daemon's artifact and version, the copy it filed, and where the user can see it; nothing the agent passed", async () => {
     const { handlers, sent } = withVerdict(() => ({
       kind: "verdict",
       verdict: {
@@ -2754,18 +2774,16 @@ describe("review_to_front waits for the daemon's verdict", () => {
       },
     }));
     const result = JSON.parse(toolText(await callTool(handlers, "review_to_front", { summary: "the hero", link: "https://x.test/hero" })));
+    // 2026-11-11: the link conch filed (its copy), the kind it read off the link, where it landed; not the summary,
+    // the original it copied from (the agent's own link), the session's id or the filing's.
     expect(result).toEqual({
       outcome: "filed",
-      sessionId: "session-123",
       label: "Build label",
-      id: "daemon-id",
       artifact: "art-1",
       version: 4,
+      surfaces,
       kind: "image",
       link: "/cfg/deliverables/art-1/v4-x/hero.png",
-      copiedFrom: "/tmp/hero.png",
-      surfaces,
-      summary: "the hero",
     });
     // What was sent is the publication itself; asking for the verdict is the client's (`publishForVerdict`).
     expect(sent).toHaveLength(1);
@@ -2793,6 +2811,61 @@ describe("review_to_front waits for the daemon's verdict", () => {
     expect(toolText(response)).toBe("refused: conch's daemon did not file it: the user dismissed this session from conch, so nothing it publishes is shown until they restore it");
   });
 
+  /**
+   * 2026-11-11: the answer carries what the agent acts on. A login-wall look that found a sign-in page comes with its
+   * warning, who saw what, and the Mac's picture; a page both looks found says nothing about them (the deliverable
+   * still carries both, for the apps). A link conch filed as given isn't said back; one it filed otherwise is.
+   */
+  test("a sign-in page comes back with its warning, access and snapshot; a page both looks found, with none of them", async () => {
+    const access = { mac: "page", anonymous: "sign-in", why: "without cookies the page redirected to a sign-in page" } as const;
+    const filing = { id: "daemon-id", artifact: "art-2", version: 1, kind: "url", link: "https://x.test/dash" } as const;
+    const walled = withVerdict(() => ({
+      kind: "verdict",
+      verdict: { kind: "review-filed", filing, surfaces, access, warning: "The page needs sign-in, so the phone would show a login page.", snapshot: "/caps/dash.png" },
+    }));
+    const behind = JSON.parse(toolText(await callTool(walled.handlers, "review_to_front", { summary: "the dashboard", link: "https://x.test/dash" })));
+    expect(behind).toEqual({
+      outcome: "filed",
+      label: "Build label",
+      artifact: "art-2",
+      version: 1,
+      surfaces,
+      kind: "url",
+      warning: "The page needs sign-in, so the phone would show a login page.",
+      access,
+      snapshot: "/caps/dash.png",
+    });
+    const open = withVerdict(() => ({
+      kind: "verdict",
+      verdict: { kind: "review-filed", filing, surfaces, access: { mac: "page", anonymous: "page", why: "both looks found the page" }, snapshot: "/caps/dash.png" },
+    }));
+    const fine = JSON.parse(toolText(await callTool(open.handlers, "review_to_front", { summary: "the dashboard", link: "https://x.test/dash", kind: "url" })));
+    expect(fine).toEqual({ outcome: "filed", label: "Build label", artifact: "art-2", version: 1, surfaces });
+  });
+
+  // 2026-11-11: answers were indented two spaces, 19% of browser_read's bytes and 10% of review_to_front's.
+  test("an answer is compact JSON, as an agent reads it either way", async () => {
+    const { handlers } = withVerdict(() => ({ kind: "verdict", verdict: { kind: "review-filed", filing: { id: "i", artifact: "a", version: 1, kind: "url", link: "https://x.test/" }, surfaces } }));
+    const text = toolText(await callTool(handlers, "review_to_front", { summary: "the site", link: "https://x.test/" }));
+    expect(text).toBe(JSON.stringify(JSON.parse(text)));
+    expect(text).not.toContain("\n");
+  });
+
+  test("a relative link comes back as the absolute path conch filed, and a copy it couldn't make says why", async () => {
+    // Resolved against the folder the session is in: with no transcript to say, where this server started.
+    const filedAt = resolve(process.cwd(), "README.md");
+    const { handlers, sent } = withVerdict(() => ({
+      kind: "verdict",
+      verdict: { kind: "review-filed", filing: { id: "i", artifact: "a", version: 1, kind: "markdown", link: filedAt }, surfaces, notCopied: "it is over 64 MB" },
+    }));
+    const relative = JSON.parse(toolText(await callTool(handlers, "review_to_front", { summary: "the readme", link: "README.md" })));
+    expect(sent[0]?.review?.link).toBe(filedAt);
+    expect(relative).toMatchObject({ link: filedAt, kind: "markdown", notCopied: "it is over 64 MB" });
+    const absolute = JSON.parse(toolText(await callTool(handlers, "review_to_front", { summary: "the readme", link: filedAt, kind: "markdown" })));
+    expect(absolute).not.toHaveProperty("link");
+    expect(absolute).not.toHaveProperty("kind");
+  });
+
   test("no daemon is a failure; a daemon that took it without a word is accepted, unconfirmed, with predicted handles", async () => {
     const down = withVerdict(() => ({ kind: "down" }));
     const failed = await callTool(down.handlers, "review_to_front", { summary: "x" });
@@ -2801,10 +2874,10 @@ describe("review_to_front waits for the daemon's verdict", () => {
     const result = JSON.parse(toolText(await callTool(older.handlers, "review_to_front", { summary: "the sim", kind: "simulator" })));
     expect(result).toMatchObject({
       outcome: "accepted",
-      unconfirmed: "this conch daemon is older and does not say whether it filed a publication; the id and version below are predicted, and conch agent deliverables says what was filed",
+      unconfirmed: "this conch daemon is older and does not say whether it filed a publication; the version below is predicted, and conch agent deliverables says what was filed",
       version: 1,
-      kind: "simulator",
     });
+    expect(result).not.toHaveProperty("kind");
     expect(result.surfaces).toBeUndefined();
   });
 
@@ -2870,12 +2943,9 @@ describe("review_to_front waits for the daemon's verdict", () => {
       } });
       expect(toolText(outside)).toBe("refused: scene marks[0] at reaches outside the 2000×1000 image it is measured on");
       expect(sent).toHaveLength(1);
-      // The schema says so, and no longer caps the numbers at 1.
-      const marks = (MCP_TOOLS.find((tool) => tool.name === "review_to_front")!.inputSchema.properties as Record<string, any>).scene.properties.marks;
-      expect(marks.items.properties.units).toMatchObject({ type: "string", enum: ["px"] });
-      expect(marks.items.properties.size).toMatchObject({ type: "array", minItems: 2, maxItems: 2 });
-      expect(marks.items.properties.rect.items).toEqual({ type: "number", minimum: 0 });
-      expect(marks.description).toContain('or pixels with units "px"');
+      // The help says so (2026-11-11: the schema names the marks' shape in a line), and the schema caps no number.
+      const help = AGENT_COMMANDS.find((command) => command.name === "publish")!.help;
+      expect(help).toContain('or pixels with "units":"px" (and "size":[w, h] of the picture you measured on)');
     } finally {
       rmSync(folder, { recursive: true, force: true });
     }
@@ -3085,13 +3155,14 @@ describe("atlas_show", () => {
       const result = JSON.parse(toolText(await callTool(handlers, "atlas_show", { path: "projects/acme/plan", markdown })));
       const copy = join(folder, "projects/acme/plan.md");
       expect(readFileSync(copy, "utf8")).toBe(markdown);
+      // publish's answer (2026-11-11: what conch filed, not what it was handed), plus where the copy is.
       expect(result).toMatchObject({
         atlasPath: "projects/acme/plan",
         copy,
         outcome: "accepted",
-        sessionId: "session-123",
-        kind: "markdown",
-        summary: "Atlas page projects/acme/plan",
+        label: "Build label",
+        artifact: artifactIdentity("atlas:projects/acme/plan"),
+        version: 1,
         source: "Atlas is the source; this is conch's copy of it",
       });
       expect(h.calls.daemon).toHaveLength(1);

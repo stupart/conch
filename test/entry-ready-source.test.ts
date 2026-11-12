@@ -130,7 +130,9 @@ describe("one state, one name", () => {
     expect(doc).not.toContain("where the user is looking");
     expect(doc).toContain("result where conch shows it, in its own conversation panel or side panel,");
     expect(read("src/mcp.ts")).not.toContain("where the user is looking");
-    expect(read("src/mcp.ts")).toContain("never over a browser or another app, so a result with marks opens in conch's panel");
+    // 2026-11-11: the marks' detail moved from review_to_front's schema to `conch agent help publish`.
+    expect(read("src/agent-instructions.ts")).not.toContain("where the user is looking");
+    expect(read("src/agent-instructions.ts")).toContain("never over a browser or another app, so a result with marks opens in conch's panel");
   });
 });
 
