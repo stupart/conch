@@ -86,8 +86,11 @@ describe("help session CLAUDE.md", () => {
     const named = new Set([...doc.matchAll(/`conch agent ([a-z-]+(?: [a-z]+)?)/g)].map((m) => m[1]!));
     expect(named.size).toBeGreaterThanOrEqual(20);
     const commands = ["help", ...AGENT_COMMANDS.map((command) => command.name)];
-    // A command, or a group of them (`conch agent browser …`).
-    for (const name of named) expect(commands.some((command) => command === name || command.split(" ")[0] === name)).toBe(true);
+    // A command, or a group of them (`conch agent browser …`), or a command's own help (`conch agent help publish`).
+    for (const name of named) {
+      const asked = name.startsWith("help ") ? name.slice("help ".length) : name;
+      expect(commands.some((command) => command === asked || command.split(" ")[0] === asked), name).toBe(true);
+    }
   });
 
   test("the files and settings it points at are the ones conch uses", () => {

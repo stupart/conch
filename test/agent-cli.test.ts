@@ -115,14 +115,15 @@ describe("conch agent, from a shell", () => {
   });
 
   test("every command is logged as the tool it runs, marked via cli, under the verified session", async () => {
-    const { logged } = await agent(["deliverables", "--json"]);
-    expect(logged).toEqual([{ ts: 2_000, tool: "conch_deliverables", session: "s-alpha", backend: "claude", ms: expect.any(Number), outcome: "ok", via: "cli" }]);
+    const { logged, out } = await agent(["deliverables", "--json"]);
+    // 2026-11-11: with what it printed, in bytes, as an MCP call logs what it answered.
+    expect(logged).toEqual([{ ts: 2_000, tool: "conch_deliverables", session: "s-alpha", backend: "claude", ms: expect.any(Number), outcome: "ok", via: "cli", bytes: Buffer.byteLength(out) }]);
     // A command named but called wrong is the agent's input error, under the tool's name, as a bad tool call was.
     const wrong = await agent(["capture", "https://x.dev", "--sel", ".a"]);
     expect(wrong.code).toBe(AGENT_EXIT["input-error"]);
     expect(wrong.err).toContain("unknown option --sel");
     expect(wrong.err).toContain("usage: conch agent capture <url>");
-    expect(wrong.logged).toMatchObject([{ tool: "conch_capture", outcome: "input-error", via: "cli" }]);
+    expect(wrong.logged).toMatchObject([{ tool: "conch_capture", outcome: "input-error", via: "cli", bytes: Buffer.byteLength(wrong.err) }]);
   });
 
   test("a session name that matches none lists the live sessions, which the log leaves out", async () => {

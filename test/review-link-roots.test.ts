@@ -297,10 +297,12 @@ describe("what agents are told", () => {
   const told = AGENT_INSTRUCTIONS.alwaysOn;
 
   test("the always-on text says what a link is, what a folder does, which line counts, and what a refusal does", () => {
-    expect(told).toContain("A link is an http(s) URL, or an absolute path to a file or a folder (shown as its file tree) under this session’s folders");
-    expect(told).toContain("where it started, where it is now, its git repository, `conch agent folders`, or a temp folder (/tmp, or macOS’s per-user /var/folders/…/T)");
+    // 2026-11-11: the same folders in fewer words; Codex carries this in every session. A relative path is resolved
+    // against the folder the session is in, so "absolute" went too.
+    expect(told).toContain("A link is an http(s) URL, or a path to a file or a folder (shown as its file tree) under this session’s folders");
+    expect(told).toContain("(where it started or is now, its git repository, `conch agent folders`) or a temp folder (/tmp, /var/folders/…/T)");
     // And what a temp folder means now: a copy that outlives it.
-    expect(told).toContain("which conch copies when it files the link, so a cleaned temp folder can’t take it away");
+    expect(told).toContain("which conch copies so cleaning it can’t take it away");
     expect(told).toContain("only the last counts, so link a folder for several things");
     expect(told).toContain("A refused link is dropped and the summary kept; conch tells the user and you why.");
     // Every session carries it: short, and no longer "use your cwd". 2026-10-05: 380 to 410 words, for what counts as

@@ -11,11 +11,12 @@ import {
   renderSkillMd,
   CLAUDE_CODE_INSTRUCTIONS_CUT,
   REVIEW_TO_FRONT_DESCRIPTION_MAX,
+  PUBLISH_FROM_SHELL,
   SERVER_INSTRUCTIONS_MAX,
-  TOOLSEARCH_PRELOAD,
   type AgentInstructions,
 } from "../src/agent-instructions.ts";
 import { renderHelpSessionClaudeMd } from "../src/help-session.ts";
+import { parseAgentCommand } from "../src/agent-commands.ts";
 import { buildMcpTools, initializeResult, MCP_LISTED_TOOLS, MCP_TOOLS } from "../src/mcp.ts";
 
 /**
@@ -89,7 +90,7 @@ describe("one source for the agent-facing instructions", () => {
     expect(told).toContain("where it landed from the result’s surfaces");
     expect(told).toContain("/tmp or macOS’s /var/folders/…/T is copied into conch");
     // Both agents' names for the skill: Claude Code namespaces a plugin's skills, Codex reads the folder's.
-    expect(told).toContain("conch-control skill (conch:conch-control)");
+    expect(told).toContain("the conch-control skill (conch:conch-control)");
     expect(told).not.toContain("\n");
     // 2026-10-05: as the work goes, not only for the final result.
     expect(told).toContain("Whenever there is something to look at");
@@ -101,14 +102,16 @@ describe("one source for the agent-facing instructions", () => {
    * wrote 686 Playwright screenshot scripts, 112 with conch_capture in their tool list. Claude in Chrome's instructions
    * give a one-line `select:` preload that agents copy; conch's now do too, with Claude Code's own names for the tools.
    */
-  // 2026-11-11: the page tools are shell commands now, with nothing to load; only publishing is a deferred tool.
-  test("the server's instructions give Claude Code one ToolSearch line for publishing, and say conch agent capture over a script", () => {
+  // 2026-11-11: the page tools are shell commands now, with nothing to load. Publishing was the one ToolSearch line,
+  // and most of its loads followed a compaction that had unloaded it: the shell's publish needs no load at all.
+  test("the server's instructions point Claude Code at the shell to publish, with no ToolSearch line, and say conch agent capture over a script", () => {
     const told = AGENT_INSTRUCTIONS.serverInstructions;
-    const select = /query "select:([^"]+)"/.exec(told)?.[1];
-    expect(select?.split(",")).toEqual(TOOLSEARCH_PRELOAD.map((tool) => `mcp__plugin_conch_conch__${tool}`));
-    for (const tool of TOOLSEARCH_PRELOAD) expect(MCP_LISTED_TOOLS.some((one) => one.name === tool)).toBe(true);
-    expect(TOOLSEARCH_PRELOAD).toEqual(["review_to_front"]);
-    expect(told).toContain("in one ToolSearch call");
+    expect(told).not.toContain("ToolSearch call");
+    expect(told).not.toContain("select:");
+    expect(told).toContain(`In your shell that is \`${PUBLISH_FROM_SHELL}\`, with nothing to load: use it rather than a ToolSearch for the tool.`);
+    // The line it names is a command conch reads as review_to_front's.
+    const named = parseAgentCommand(["publish", "<summary>", "<link>"]);
+    expect(named.kind === "run" && named.tool).toBe("review_to_front");
     expect(told).toContain("Everything else conch does is a command in your shell: `conch agent help` lists them.");
     expect(told).toContain("use `conch agent capture <url>` rather than writing a Playwright screenshot script");
     expect(told).toContain("To fork a session, `conch agent fork`.");
@@ -141,6 +144,8 @@ describe("one source for the agent-facing instructions", () => {
     // Why it is cheap, before any of how.
     expect(description.indexOf("it doesn’t interrupt them")).toBeLessThan(description.indexOf("Pass a one-line summary"));
     expect(description).toContain("Publishing the same link or key again adds its next version");
+    // 2026-11-11: the rest is the command's help, which the description names.
+    expect(description).toContain("More: `conch agent help publish`.");
     expect(description).toEndWith("The result says where it landed (surfaces) and any warning or relabel to act on; tell the user from that, not from what you assume.");
     // The mechanics are the parameters' and the skill's; the next test says where.
     for (const mechanic of ["copiedFrom", "approval", "snapshot", "paired-not-connected", "login wall", "never by default"]) {
@@ -148,19 +153,31 @@ describe("one source for the agent-facing instructions", () => {
     }
   });
 
-  test("what the description no longer says is where the agent reads it: the parameters and the skill", () => {
+  /**
+   * 2026-11-11: the parameters say a line each (the schema was 2,009 tokens, 4,660 characters of it their prose), and
+   * what they said is `conch agent help publish`'s, read when needed, and the skill's.
+   */
+  test("what the description and the parameters no longer say is where the agent reads it: conch agent help publish and the skill", () => {
     const tool = MCP_TOOLS.find((candidate) => candidate.name === "review_to_front")!;
     const properties = tool.inputSchema.properties as Record<string, { description?: string }>;
-    const link = properties.link.description!;
-    expect(link).toContain("A file or folder in a temp folder is filed as conch's own copy");
-    expect(link).toContain("the result's copiedFrom names the original");
-    expect(link).toContain("link the folder and name the paths to look at with focus");
-    expect(link).toContain("access says what conch's Mac, with its review pane's sign-ins, and a device without them (the phone) were shown (mac and anonymous: page, sign-in or unchecked)");
-    expect(link).toContain("snapshot is the Mac's picture of the page, which the phone shows first");
-    expect(link).toContain("warning, when either was shown a sign-in page, says what to do: act on it");
+    for (const [name, property] of Object.entries(properties)) expect(property.description?.length ?? 0, name).toBeLessThanOrEqual(160);
     expect(properties.approval.description).toContain("only when you are waiting on the user's yes to proceed: never by default");
     expect(properties.key.description).toContain("publishing it again is its next version");
     expect(properties.scene.description).toContain("What the pill click brings forward");
+    const help = AGENT_COMMANDS.find((command) => command.name === "publish")!.help;
+    for (const said of [
+      "A file or folder in a temp folder is filed as conch's own copy, so cleaning the temp folder can't take it away: the answer's link is the copy",
+      "--focus names a path in it to point at",
+      "folder (a directory shown as its file tree)",
+      "--key names the artifact, so publishing it again is its next version",
+      "--scene is what the pill click brings forward",
+      "kind is arrow, box, ellipse, highlight, text (needs a label), pin or stroke; frame is exactly one of selector or quote",
+      "--approve LABEL asks for the user's yes, only when you are waiting on it to proceed, never by default",
+      "access (what the Mac, with its review pane's sign-ins, and a device without them were shown)",
+      "snapshot (the Mac's picture, which the phone shows first)",
+      "warning says what to do about a sign-in page",
+      "It repeats nothing you passed",
+    ]) expect(help).toContain(said);
 
     const skill = renderSkillMd();
     for (const said of [
@@ -171,11 +188,11 @@ describe("one source for the agent-facing instructions", () => {
       "`paired-not-connected`",
       "`audio`: `mac`",
       "`other-mac`",
-      "`access` says what each\n  was shown",
-      "`snapshot`",
-      "`warning` is there when either look was a sign-in page",
+      "`warning` is there when either look was a sign-in page, with `access` saying\n  what each was shown",
+      "`snapshot`, the Mac's picture",
       "the result carries `relabel: {label, hint}`",
-      "the result's `copiedFrom` names the original",
+      "the result's `link` is the copy",
+      "The result repeats nothing you\n  passed",
       "Set `approval` only when you are waiting on\n  the user's approval to go on, never by default",
       "Publishing\n  opens nothing and doesn't end your turn",
     ]) expect(skill).toContain(said);

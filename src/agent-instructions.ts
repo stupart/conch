@@ -46,17 +46,15 @@ export const SERVER_INSTRUCTIONS_MAX = 1_200;
 /** The cut Claude Code makes to a server's instructions (2.1.280); `SERVER_INSTRUCTIONS_MAX` stays well under it. */
 export const CLAUDE_CODE_INSTRUCTIONS_CUT = 2_048;
 
-/** A conch tool as a Claude Code session names it: the plugin's server is `conch` in the plugin `conch`. */
-export const claudeCodeToolName = (tool: string) => `mcp__plugin_conch_conch__${tool}`;
-
 /**
- * The tools a Claude Code session should load in one ToolSearch call before it publishes. 2026-10-18 review: no Claude
- * Code agent ever loaded conch_capture or browser_* through ToolSearch (61 loads of review_to_front), and they wrote 686
- * Playwright screenshot scripts instead; Claude in Chrome's instructions give a one-line `select:` preload, and 19 of
- * the browser-related ToolSearch calls were that exact line. 2026-11-11: the page tools are `conch agent capture` and
- * `conch agent browser`, shell commands with nothing to load, so only publishing is left to preload.
+ * Why Claude Code sessions are told to publish from the shell. 2026-10-18 review: no Claude Code agent loaded conch_capture
+ * or browser_* through ToolSearch, and they wrote 686 Playwright screenshot scripts instead, so the instructions gave a
+ * one-line `select:` preload. 2026-11-11: the page tools became `conch agent` commands, and only review_to_front was left
+ * to preload; but of 268 conch schemas ToolSearch loaded in 7 days, 138 were loads again after a compaction had unloaded
+ * them, and only 4 a second load with none between, so "load it once" can't hold. `conch agent publish` is the same
+ * handler with nothing to load, so the instructions name it instead of a ToolSearch line (`serverInstructions`).
  */
-export const TOOLSEARCH_PRELOAD = ["review_to_front"] as const;
+export const PUBLISH_FROM_SHELL = "conch agent publish \"<summary>\" <link>";
 
 /**
  * The longest `review_to_front`'s own description may be. 2026-10-05: Tyler asked whether anything in the MCP made
@@ -99,7 +97,19 @@ export const AGENT_COMMANDS: readonly AgentCommandText[] = [
     group: "Show your work",
     usage: "publish <summary> [link] [--kind K] [--key K] [--focus PATH]... [--scene auto|link|conversation|terminal] [--inspect LINE] [--marks JSON] [--approve LABEL]",
     summary: "file a deliverable for the user (the review_to_front tool, from a shell)",
-    help: "The same as the review_to_front MCP tool, for when a command is easier: the summary is one line of at most 200 characters, the link a URL or a path (relative to your shell's folder) under this session's folders or a temp folder. --focus names paths inside a folder link (repeat it); --scene, --inspect and --marks build the scene (--marks takes the marks as JSON); --approve asks for the user's yes with that label (\"\" for none), only when you are waiting on it. The answer says where it landed (surfaces): tell the user from that.",
+    // 2026-11-11: what review_to_front's parameters used to say, here, where an agent reads it when it needs it; the
+    // schema has a line each (mcp.ts says why).
+    help: [
+      "The review_to_front tool, from your shell, with nothing to load. Publish whenever there is something the user would look at, as you go: it opens nothing and doesn't end your turn.",
+      "summary: one line, at most 200 characters, what it is and what to check; longer is cut, and the answer's summaryTruncated says so. The detail belongs in your reply.",
+      "link: an http(s) URL, or a path (relative to your shell's folder) to a file or folder under this session's folders (where it started, where it is now, its git repository, `conch agent folders`) or a temp folder (/tmp, /var/folders/…/T); never a hidden file, key or executable. A file or folder in a temp folder is filed as conch's own copy, so cleaning the temp folder can't take it away: the answer's link is the copy (notCopied says why not, over 64 MB or 500 files). A folder shows as its file tree: --focus names a path in it to point at (repeat it, up to 12).",
+      "--kind: page (a local html file), url (a live page or dev server), folder (a directory shown as its file tree), image, video, audio, pdf, markdown, text, app (a Mac app window), simulator (the iOS Simulator or a device build), terminal, design (Figma and the like), document (Keynote, Word, Pages and the like) or other; read off the link when omitted. app, simulator, terminal, design and other may go without a link: the summary then says where to look.",
+      "--key names the artifact, so publishing it again is its next version; the link when omitted (a file's real path, a URL without its fragment), else the summary. Use it when the link changes between versions.",
+      "--scene is what the pill click brings forward: auto (the link, else conch's window, else your terminal), link, conversation (conch's window on your session: for a written explanation, kept whole in your reply) or terminal. --inspect is one line on what to check.",
+      "--marks draws ink over what you published, where conch shows it: its own panel or side panel, or the user's canvas, never over a browser or another app, so a result with marks opens in conch's panel. As JSON: [{\"id\":\"cta\",\"kind\":\"box\",\"frame\":{\"selector\":\".hero .cta\"},\"label\":\"Moved up\"}]. kind is arrow, box, ellipse, highlight, text (needs a label), pin or stroke; frame is exactly one of selector or quote (in the page you link, which conch finds itself: no numbers), image (an absolute path) or canvas (its id). On an image or a canvas: rect [x, y, w, h] for box, ellipse and highlight, at [x, y] for pin and text (and to, for an arrow's head), 2-64 pts for stroke, as fractions 0-1 from the top left, or pixels with \"units\":\"px\" (and \"size\":[w, h] of the picture you measured on). No colour: conch draws them in your colour. Up to 12, 4096 bytes in all; the skill has more.",
+      "--approve LABEL asks for the user's yes, only when you are waiting on it to proceed, never by default: they get Approve, and about 10 s after they press it you get \"Approved: LABEL.\" (\"\" for no label).",
+      "The answer: outcome filed (accepted and unconfirmed from an older conch), the artifact and version it is, and surfaces, where the user can see it (mac showing, running or not-running; phone connected, paired-not-connected, unpaired or off; audio mac, phone, other-mac or manual): tell the user from that. It repeats nothing you passed: a link only when conch filed another (a copy, or an absolute path), a kind only when it read one off the link. For a live page conch looks for a login wall: warning says what to do about a sign-in page, with access (what the Mac, with its review pane's sign-ins, and a device without them were shown) and snapshot (the Mac's picture, which the phone shows first). relabel suggests a new label for your session. deliverables lists each filing's id.",
+    ].join("\n\n"),
   },
   {
     name: "capture",
@@ -157,9 +167,10 @@ export const AGENT_COMMANDS: readonly AgentCommandText[] = [
     name: "browser read",
     tool: "browser_read",
     group: "Browse for the user, in conch's browser, where they can watch",
-    usage: "browser read [--tab T]",
-    summary: "a tab's title, URL, words, and its links, buttons and fields with refs",
-    help: "Your most recent tab when --tab is omitted. Links and buttons each come with a short ref (e12) for browser click, fields with their label, name, type and value (never a password's or a hidden field's value). Refs last until the page changes: read again after it navigates.",
+    usage: "browser read [--tab T] [--page N | --find WORDS | --section HEADING] [--selector CSS] [--full]",
+    summary: "a page of a tab's words, and its links, buttons and fields with refs",
+    // 2026-11-11: one page of the words by default (browser-read.ts says why), and the ways to the rest.
+    help: "Your most recent tab when --tab is omitted. It shows the page's title and URL, one page of its words (about 2,000 characters), the page's sections, and the links, buttons and fields in those words, a same-site link by its path; its last line, more:, says what else there is. --page N shows the next pages; --find WORDS only the lines, links, buttons and fields that say them (any case); --section HEADING the words under that heading; --selector CSS reads only that part of the page; --full the whole read, every word, link, button and field. Links and buttons each come with a short ref (e12) for browser click, fields with their label, name, type and value (never a password's or a hidden field's value). Refs are the same in every view of a page and last until it changes: read again after it navigates.",
   },
   {
     name: "browser click",
@@ -366,12 +377,13 @@ export const AGENT_INSTRUCTIONS = {
    * conch?"). Said in the same 410-word budget: the detail is the skill's (docs/conch-control-skill.md).
    *
    * 2026-11-11: everything but publishing is `conch agent …` in the shell, and `conch bug` files what conch got wrong.
+   * Codex carries this in every session (AGENTS.md), so the link's rules are said in fewer words: the same folders.
    */
   alwaysOn: `conch shows this session in the user’s Mac app, floating overlay and iPhone. Its Mac app gives you a Workdesk of typed items beside the conversation: deliverables, browser tabs, files, shell, terminal. Show your work there: results with \`review_to_front\`, pages with \`conch agent browser open\`.
 
 Whenever you produce something the user would look at (a page, screenshot, file, document, plan, diff or PR, build, app state), publish it with \`review_to_front\` as you go, not only at the end: a short summary and the best artifact link. Tell the user where it landed from the result’s \`surfaces\`. With no link (an app window, the Simulator), pass its \`kind\` and say where to look. For a written explanation, use scene kind \`conversation\` and keep it in your reply.
 
-A link is an http(s) URL, or an absolute path to a file or a folder (shown as its file tree) under this session’s folders: where it started, where it is now, its git repository, \`conch agent folders\`, or a temp folder (/tmp, or macOS’s per-user /var/folders/…/T), which conch copies when it files the link, so a cleaned temp folder can’t take it away. Never a hidden file, key or executable.
+A link is an http(s) URL, or a path to a file or a folder (shown as its file tree) under this session’s folders (where it started or is now, its git repository, \`conch agent folders\`) or a temp folder (/tmp, /var/folders/…/T), which conch copies so cleaning it can’t take it away. Never a hidden file, key or executable.
 
 Everything else is a command in your shell: \`conch agent help\` lists them; if your shell can’t reach conch (a sandbox), the \`conch_run\` tool runs the same words. Browse for the user with \`conch agent browser …\` so they can watch in the Workdesk; other browser tools are fine when they ask or the task needs them. At a sign-in, ask them to sign in in the tab with \`conch agent browser ask\`; never type passwords. \`conch agent capture <url>\` shows part of a page. \`open <url>\` lands in the Workdesk; \`CONCH_OPEN_EXTERNAL=1 open <url>\` uses the default browser. Show an Atlas page that matters to the user with \`conch agent atlas\`.
 
@@ -389,12 +401,13 @@ If you can't publish, end your reply with one \`conch:review <summary> | <link>\
    * AGENTS.md reaches Codex alone. A Claude Code session used to learn conch was watching only if
    * it went looking. Short on purpose: Claude Code cuts server instructions past 2048 characters,
    * and this is a pointer, the skill is the manual (`SERVER_INSTRUCTIONS_MAX`). 2026-10-05: it says to publish as you
-   * go, not only at the end, as the always-on text and `review_to_front` now do. 2026-11-11: the rest is the CLI.
+   * go, not only at the end, as the always-on text and `review_to_front` now do. 2026-11-11: the rest is the CLI, and
+   * publishing is too, where the tool is deferred (`PUBLISH_FROM_SHELL` says why), in fewer words than the ToolSearch line.
    */
   serverInstructions:
-    "This session is watched by conch: the user follows it from conch’s Mac app and their iPhone, often away from the desk. Whenever there is something to look at (a page, image, file, folder, build or app state), as you go and not only at the end, publish it with review_to_front instead of only mentioning a path, then tell them where it landed from the result’s surfaces. A file in /tmp or macOS’s /var/folders/…/T is copied into conch. Load the conch-control skill (conch:conch-control) for details."
-    + ` If review_to_front is deferred, load it in one ToolSearch call before you publish, with query "select:${TOOLSEARCH_PRELOAD.map(claudeCodeToolName).join(",")}".`
-    + " Everything else conch does is a command in your shell: `conch agent help` lists them. For a picture of a page or one part of it, use `conch agent capture <url>` rather than writing a Playwright screenshot script; to click through a page and check it, `conch agent browser`. To fork a session, `conch agent fork`. When conch itself gets something wrong, `conch bug`.",
+    "This session is watched by conch: the user follows it from conch’s Mac app and their iPhone, often away from the desk. Whenever there is something to look at (a page, image, file, folder, build or app state), as you go and not only at the end, publish it with review_to_front instead of only mentioning a path, then tell them where it landed from the result’s surfaces. A file in /tmp or macOS’s /var/folders/…/T is copied into conch."
+    + ` In your shell that is \`${PUBLISH_FROM_SHELL}\`, with nothing to load: use it rather than a ToolSearch for the tool.`
+    + " Everything else conch does is a command in your shell: `conch agent help` lists them. For a picture of a page or one part of it, use `conch agent capture <url>` rather than writing a Playwright screenshot script; to click through a page and check it, `conch agent browser`. To fork a session, `conch agent fork`. When conch itself gets something wrong, `conch bug`. Details: the conch-control skill (conch:conch-control).",
 
   /** The skill's frontmatter description, which Claude Code carries always-on. */
   skillDescription:
@@ -409,11 +422,11 @@ If you can't publish, end your reply with one \`conch:review <summary> | <link>\
     // 2026-10-05: when and why first, then what to pass, then what the result means; the mechanics are in the
     // parameters (mcp.ts) and the skill (`REVIEW_TO_FRONT_DESCRIPTION_MAX` says why).
     review_to_front:
-      "Publish whenever you produce something the user would look at (a page, screenshot, file, document, plan, diff or PR, build, app state), as you go, not only at the end. It’s one call, it doesn’t interrupt them, and it’s how they follow your work from conch’s Mac app and their phone. Pass a one-line summary (at most 200 characters) of what it is and what to check, and the best single artifact as link (a URL, or a path to a file or folder) with its kind; with nothing to link (an app window, the Simulator), say where to look in the summary. Publishing the same link or key again adds its next version, not a second entry. It opens nothing and doesn’t end your turn: the user’s click on the pill brings it forward. The result says where it landed (surfaces) and any warning or relabel to act on; tell the user from that, not from what you assume.",
+      "Publish whenever you produce something the user would look at (a page, screenshot, file, document, plan, diff or PR, build, app state), as you go, not only at the end. It’s one call, it doesn’t interrupt them or end your turn, and it’s how they follow your work from conch’s Mac app and phone. Pass a one-line summary and the best single artifact as link (none for an app window or the Simulator: say where to look). Publishing the same link or key again adds its next version. More: `conch agent help publish`. The result says where it landed (surfaces) and any warning or relabel to act on; tell the user from that, not from what you assume.",
     // 2026-11-11: the CLI, through this server, for a shell that can't reach conch's socket (Codex's sandbox) or can't
-    // show which session it is (an older Codex app-server thread). Not the way in: the shell is.
+    // show which session it is (an older Codex app-server thread). Not the way in: the shell is. Kept to two lines.
     conch_run:
-      "Run one conch agent command here, exactly as `conch agent <command>` runs in your shell (`conch agent help` lists them): for when your shell can't reach conch (a sandbox refuses its socket) or conch can't tell from it which session you are. command is the words after `conch agent`, quoted as in a shell. The answer is the command's own text, or JSON with --json. Paths are relative to the folder this session started in.",
+      "Run one conch agent command here, exactly as `conch agent <command>` runs in your shell (`conch agent help` lists them), for when your shell can't reach conch (a sandbox refuses its socket) or can't show which session you are. Paths are relative to where this session started.",
   },
 };
 

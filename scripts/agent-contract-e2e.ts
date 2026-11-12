@@ -33,7 +33,7 @@
  */
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { SERVER_INSTRUCTIONS_MAX } from "../src/agent-instructions.ts";
+import { AGENT_COMMANDS, SERVER_INSTRUCTIONS_MAX } from "../src/agent-instructions.ts";
 import { createPhoneBridgeApplication } from "../src/phone-bridge.ts";
 import { publishForVerdict } from "../src/review-verdict.ts";
 import { darwinUserTempDir, inTempFolder } from "../src/temp-folders.ts";
@@ -308,11 +308,13 @@ try {
   const listed = await mcp.request("tools/list", {});
   const publishTool = listed.result?.tools?.find((tool: { name: string }) => tool.name === "review_to_front");
   const description: string = publishTool?.description ?? "";
-  // 2026-10-05: the description says when to publish and where the result says it landed; what a temp link's copy is
-  // (copiedFrom) is the link parameter's to say, with the other mechanics the description used to carry.
+  // 2026-10-05: the description says when to publish and where the result says it landed. 2026-11-11: the link
+  // parameter says in a line that conch keeps a copy, and `conch agent help publish` that the answer's link is it.
   check(description.startsWith("Publish whenever you produce something the user would look at") && description.length <= 1000
     && description.includes("surfaces"), `review_to_front's description says when to publish, and where it landed (surfaces), in ${description.length} chars`);
-  check(String(publishTool?.inputSchema?.properties?.link?.description ?? "").includes("copiedFrom"), "…and its link parameter says what copiedFrom is");
+  check(String(publishTool?.inputSchema?.properties?.link?.description ?? "").includes("conch keeps a copy")
+    && (AGENT_COMMANDS.find((command) => command.name === "publish")?.help ?? "").includes("the answer's link is the copy"),
+  "…its link parameter says conch keeps a copy, and the publish help that the answer's link is the copy");
 
   // ── 2 & 3. A screenshot in the per-user temp folder, with a mark in pixels.
   const shot = join(scratch, "hero.png");
@@ -321,13 +323,14 @@ try {
   const first = await mcp.call("review_to_front", { summary: "Hero with the new headline", link: shot, scene });
   const filed = first.json;
   check(!first.isError && filed?.outcome === "filed", `review_to_front waited for the daemon: outcome ${filed?.outcome ?? first.text.slice(0, 200)}`);
-  check(filed?.copiedFrom === shot && typeof filed?.link === "string" && filed.link.startsWith(`${store}/`),
+  // The answer is what conch filed, never what it was handed: the copy's path, not the original's.
+  check(filed?.copiedFrom === undefined && filed?.summary === undefined && typeof filed?.link === "string" && filed.link.startsWith(`${store}/`),
     `…accepted by both processes although neither TMPDIR is ${userTemp}, and filed as a copy: ${filed?.link}`);
   check(JSON.stringify(filed?.surfaces) === JSON.stringify({ mac: "not-running", phone: "off", audio: filed?.surfaces?.audio })
     && ["mac", "manual"].includes(filed?.surfaces?.audio),
     `…surfaces before the Mac app is heard from: ${JSON.stringify(filed?.surfaces)}`);
-  const v1 = await until("v1 on the row", 10_000, () => held().find((one) => one.id === filed?.id));
-  check(v1?.link === filed?.link && v1?.version === filed?.version && filed?.version === 1, `the id, link and version it returned are what the daemon published (v${v1?.version})`);
+  const v1 = await until("v1 on the row", 10_000, () => held().find((one) => one.artifact === filed?.artifact && one.version === filed?.version));
+  check(v1?.link === filed?.link && v1?.version === filed?.version && filed?.version === 1, `the artifact, link and version it returned are what the daemon published (v${v1?.version})`);
   const mark = v1?.scene?.marks?.[0];
   check(mark?.frame.image === filed?.link && JSON.stringify(mark?.rect) === JSON.stringify([0.25, 0.25, 0.5, 0.5]),
     `the pixel mark was filed as fractions of the 1280×800 image, drawn on the copy: ${JSON.stringify(mark)}`);
@@ -380,7 +383,7 @@ try {
   writeFileSync(join(site, ".env"), "SECRET=1");
   const page = await mcp.call("review_to_front", { summary: "The pricing page", link: join(site, "index.html") });
   const pageCopy: string = page.json?.link ?? "";
-  check(page.json?.outcome === "filed" && page.json?.copiedFrom === join(site, "index.html") && pageCopy.endsWith("/site/index.html"),
+  check(page.json?.outcome === "filed" && pageCopy.startsWith(`${store}/`) && pageCopy.endsWith("/site/index.html"),
     `a page in /tmp is filed as a copy of its folder: ${pageCopy}`);
   rmSync(site, { recursive: true, force: true });
   await until("the page on the row", 10_000, () => held().find((one) => one.link === pageCopy));
@@ -396,9 +399,10 @@ try {
   check(raw.kind === "verdict" && raw.verdict.kind === "review-refused" && /outside this session's folder/.test(raw.verdict.reason),
     `the daemon's refusal reaches the publisher: ${raw.kind === "verdict" && raw.verdict.kind === "review-refused" ? raw.verdict.reason.slice(0, 120) : JSON.stringify(raw)}`);
 
-  // review_remove takes the copy with the filing.
+  // review_remove takes the copy with the filing, by the id the deliverables list gives it (an answer has none).
   const v1Dir = join(filed.link, "..");
-  const removed = await mcp.call("review_remove", { id: filed.id });
+  const listedV1 = (await mcp.call("conch_deliverables", {})).json?.deliverables?.find((one: Held) => one.artifact === filed?.artifact && one.version === 1);
+  const removed = await mcp.call("review_remove", { id: listedV1?.id });
   check(removed.json?.outcome === "removed", `review_remove took v1 back: ${removed.text.slice(0, 120)}`);
   check(Boolean(await until("v1's copy to go", 10_000, () => !existsSync(v1Dir))), "…and its copy is deleted from the store");
   check(existsSync(running.json.link) && existsSync(pageCopy), "…while the copies other filings hold stay");
@@ -446,7 +450,7 @@ try {
   const snapshot: string = dash?.snapshot ?? "";
   check(snapshot.startsWith(`${captures}/`) && existsSync(snapshot) && mode(snapshot) === 0o600, `…snapshot: the Mac's picture, 0600 in conch's capture folder: ${snapshot}`);
   const dashHeld = await until("the snapshot on the row", 10_000, () => {
-    const one = held().find((candidate) => candidate.id === dash?.id) as (Held & { snapshot?: { path: string }; access?: { mac: string; anonymous: string } }) | undefined;
+    const one = held().find((candidate) => candidate.artifact === dash?.artifact && candidate.version === dash?.version) as (Held & { snapshot?: { path: string }; access?: { mac: string; anonymous: string } }) | undefined;
     return one?.snapshot ? one : null;
   });
   check(dashHeld?.snapshot?.path === snapshot && dashHeld?.access?.mac === "page" && dashHeld?.access?.anonymous === "sign-in",
@@ -470,14 +474,20 @@ try {
   chmodSync(stray, 0o600);
   utimesSync(stray, monthAgo, monthAgo);
   const pricing = (await mcp.call("review_to_front", { summary: "The pricing page", link: siteUrl("/pricing") })).json;
-  check(JSON.stringify([pricing?.access?.mac, pricing?.access?.anonymous]) === JSON.stringify(["page", "page"]) && pricing?.warning === undefined
-    && typeof pricing?.snapshot === "string" && existsSync(pricing.snapshot),
-    `a public page: page on both, no warning, and the Mac's snapshot attached: ${JSON.stringify(pricing?.access)}`);
+  // 2026-11-11: nothing to act on, so the answer says nothing about the looks; the deliverable carries them.
+  const pricingHeld = await until("the pricing page's snapshot on the row", 10_000, () => {
+    const one = held().find((candidate) => candidate.artifact === pricing?.artifact && candidate.version === pricing?.version) as (Held & { snapshot?: { path: string }; access?: { mac: string; anonymous: string } }) | undefined;
+    return one?.snapshot ? one : null;
+  });
+  check(pricing?.warning === undefined && pricing?.access === undefined && pricing?.snapshot === undefined
+    && JSON.stringify([pricingHeld?.access?.mac, pricingHeld?.access?.anonymous]) === JSON.stringify(["page", "page"])
+    && typeof pricingHeld?.snapshot?.path === "string" && existsSync(pricingHeld.snapshot.path),
+    `a public page: page on both, no warning (and none of it in the answer), and the Mac's snapshot on the deliverable: ${JSON.stringify(pricingHeld?.access)}`);
   check(!existsSync(stray) && existsSync(snapshot), "the capture sweep took a month-old stray and kept the month-old snapshot a deliverable holds");
 
   // review_remove takes the snapshot with the filing.
-  const pricingShot: string = pricing?.snapshot ?? "";
-  check((await mcp.call("review_remove", { id: pricing?.id })).json?.outcome === "removed", "review_remove takes the pricing page back");
+  const pricingShot: string = pricingHeld?.snapshot?.path ?? "";
+  check((await mcp.call("review_remove", { id: pricingHeld?.id })).json?.outcome === "removed", "review_remove takes the pricing page back");
   check(Boolean(await until("its snapshot to go", 10_000, () => !existsSync(pricingShot))) && await fetched(pricingShot) !== 200,
     "…its snapshot is deleted with it, and the phone is no longer served it");
   check(existsSync(snapshot), "…while the dashboard's snapshot stays");

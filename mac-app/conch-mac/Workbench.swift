@@ -756,7 +756,8 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
             if let failure { return answer(request, error: failure) }
             return answer(request, result: [:])
         case "read":
-            switch await script(front, op: "read", target: nil, text: nil, submit: false) {
+            // Its target, when the agent named one, is the part of the page to read (`--selector`, 2026-11-11).
+            switch await script(front, op: "read", target: request.target?.pair, text: nil, submit: false) {
             case let .failure(message): return answer(request, error: message)
             case let .success(value): return answer(request, result: value)
             }
