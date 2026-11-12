@@ -304,7 +304,7 @@ import { hasSidebarGroups, readSidebarGroups, writeSidebarGroups, type SidebarGr
 import { transcriptFolder } from "./review-roots.ts";
 import { defaultCodexDir, readCodexAccounts, addCodexAccount, removeCodexAccount, requireCodexAccount, cachedCodexAccount, invalidateCodexAccount, codexAccountForLaunch } from "./codex-accounts.ts";
 import { installProfileSignal } from "./daemon-profile.ts";
-import { claudeAccountForLaunch, offeredClaudeAccounts, readClaudeAccounts, addClaudeAccount, removeClaudeAccount, requireClaudeAccount, cachedClaudeAccountStatus, readClaudeAccountStatus, invalidateClaudeAccountStatus } from "./claude-accounts.ts";
+import { claudeAccountForLaunch, offeredClaudeAccounts, readClaudeAccounts, addClaudeAccount, removeClaudeAccount, requireClaudeAccount, cachedClaudeAccountStatus, readClaudeAccountStatus, invalidateClaudeAccountStatus, type ClaudeAccountRequest } from "./claude-accounts.ts";
 import { codexHookCommand, conchInvocation, runInstall as installAccountHooks, repairConchHooks } from "./install.ts";
 import { setUpSessionBrowsers } from "./browser-open.ts";
 import {
@@ -3778,6 +3778,56 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
    * A new conversation's id is the agent's own to choose, so the session is known by where it runs, the tab or the
    * background host this start opened (session-start-wait.ts), and waited on as an agent's fork is (`awaitForkStart`).
    */
+  /**
+   * Settings › Providers' Codex side: list, add, sign in, remove, check, usage and cloud, each answered with every
+   * account's status. A read that comes back unavailable says why (`statusDetail`): logged, and filed once per account
+   * and reason until it reads again. Until 2026-11-12 a failed read was a bare "Status unavailable" in the app and
+   * nothing anywhere else, so when Tyler said his Codex accounts were broken nothing said what had gone wrong.
+   */
+  const reportedCodexReads = new Map<string, string>();
+  const codexAccounts = async (message: Extract<ClaudeAccountRequest, { kind: "codex-accounts" }>) => {
+    const created = message.action === "add" ? addCodexAccount(message.label!, message.configDir) : undefined;
+    if (message.action === "remove" || message.action === "login") {
+      const account = requireCodexAccount(message.id!);
+      await assertCodexAccountIdle(account);
+      invalidateCodexAccount(account);
+      if (message.action === "remove") removeCodexAccount(account.id);
+      else {
+        await runCodexInstall(account.configDir);
+        await startCodexAccountTerminal(account, "login");
+      }
+    }
+    if (message.action === "cloud") {
+      const account = requireCodexAccount(message.id!);
+      if ((await cachedCodexAccount(account, true)).account.authType !== "chatgpt") throw new Error("Connect a ChatGPT account to use Codex cloud.");
+      await startCodexAccountTerminal(account, "cloud");
+    }
+    const reads = await Promise.all(readCodexAccounts().map(account => cachedCodexAccount(account,
+      message.action === "usage" || (message.action === "refresh" && message.id === account.id))));
+    for (const { account } of reads) {
+      const why = account.status === "unavailable" ? account.statusDetail ?? "Codex gave no reason." : undefined;
+      if (!why) {
+        reportedCodexReads.delete(account.id);
+        continue;
+      }
+      if (reportedCodexReads.get(account.id) === why) continue;
+      reportedCodexReads.set(account.id, why);
+      log(`codex accounts: couldn't check "${account.label}": ${why}`);
+      recordDaemonError("codex-account-read", `Couldn't check the Codex account "${account.label}": ${why}`, undefined, { account: account.id });
+    }
+    for (const { account } of reads) {
+      if (account.usageDetail && message.action === "usage") log(`codex accounts: no usage for "${account.label}": ${account.usageDetail}`);
+    }
+    const accounts = reads.map(read => read.account);
+    void renderSessionPanel();
+    return { kind: "codex-accounts" as const, accounts,
+      execution: deviceExecutionCatalog(ownerDeviceId, hostname(), readClaudeAccounts(cfg.claudeDir), accounts),
+      usage: { state: "ready" as const, source: "codex-app-server" as const, accounts: reads.map(read => read.usage) },
+      ...(created ? { createdAccountId: created.id } : {}),
+      ...(message.action === "login" ? { loginOpened: true as const } : {}),
+      ...(message.action === "cloud" ? { cloudOpened: true as const } : {}) };
+  };
+
   const startLiveSession = async (request: StartSessionRequest, label?: string): Promise<{ sessionId?: string; label?: string; running?: string; backgroundId?: string }> => {
     const asked = { backend: request.backend, at: Date.now(), before: new Set(panelSessions.keys()) };
     const launched = await launchSession(request);
@@ -4200,32 +4250,18 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     benchmarks: (message) => readBenchmarks(undefined, undefined, message.offset ?? 0),
     claudeAccounts: async (message) => {
       if (message.kind === "codex-accounts") {
-        const created = message.action === "add" ? addCodexAccount(message.label!, message.configDir) : undefined;
-        if (message.action === "remove" || message.action === "login") {
-          const account = requireCodexAccount(message.id!);
-          await assertCodexAccountIdle(account);
-          invalidateCodexAccount(account);
-          if (message.action === "remove") removeCodexAccount(account.id);
-          else {
-            await runCodexInstall(account.configDir);
-            await startCodexAccountTerminal(account, "login");
+        try {
+          return await codexAccounts(message);
+        } catch (error) {
+          // The app shows it in Settings; until 2026-11-12 nothing else did. A refusal to sign in over open sessions is
+          // an answer, not a failure, so it is logged and not filed.
+          const said = (error as Error).message;
+          log(`codex accounts: ${message.action}${message.id ? ` ${message.id}` : ""} failed: ${said}`);
+          if (!/^Close this account’s live sessions/.test(said)) {
+            recordDaemonError("codex-accounts", said, undefined, { action: message.action, ...(message.id ? { account: message.id } : {}) });
           }
+          throw error;
         }
-        if (message.action === "cloud") {
-          const account = requireCodexAccount(message.id!);
-          if ((await cachedCodexAccount(account, true)).account.authType !== "chatgpt") throw new Error("Connect a ChatGPT account to use Codex cloud.");
-          await startCodexAccountTerminal(account, "cloud");
-        }
-        const reads = await Promise.all(readCodexAccounts().map(account => cachedCodexAccount(account,
-          message.action === "usage" || (message.action === "refresh" && message.id === account.id))));
-        const accounts = reads.map(read => read.account);
-        void renderSessionPanel();
-        return { kind: "codex-accounts", accounts,
-          execution: deviceExecutionCatalog(ownerDeviceId, hostname(), readClaudeAccounts(cfg.claudeDir), accounts),
-          usage: { state: "ready", source: "codex-app-server", accounts: reads.map(read => read.usage) },
-          ...(created ? { createdAccountId: created.id } : {}),
-          ...(message.action === "login" ? { loginOpened: true as const } : {}),
-          ...(message.action === "cloud" ? { cloudOpened: true as const } : {}) };
       }
       const created = message.action === "add" ? addClaudeAccount(message.label!, message.configDir) : undefined;
       if (message.action === "remove") {

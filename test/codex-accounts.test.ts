@@ -90,6 +90,55 @@ test("read-only app-server handshake requests only identity and limits; failed u
   expect((await readCodexAccount(profile, stalled, 100)).account.status).toBe("unavailable");
 });
 
+test("a check that fails says why, rather than a bare unavailable (2026-11-12)", async () => {
+  const profile = addCodexAccount("Probe");
+  const script = (name: string, body: string) => {
+    const path = join(root, name);
+    writeFileSync(path, `#!${process.execPath}\nimport { createInterface } from 'node:readline';\n${body}\n`);
+    chmodSync(path, 0o700);
+    return path;
+  };
+  // Nothing to run.
+  const missing = await readCodexAccount(profile, join(root, "no-such-codex"), 3000);
+  expect(missing.account).toMatchObject({ status: "unavailable", statusDetail: expect.stringContaining("couldn't find Codex") });
+  // Codex says no, in its own words.
+  const refuses = script("refusing-codex", `for await (const line of createInterface({input: process.stdin})) { const m = JSON.parse(line); if (!m.id) continue;
+console.log(JSON.stringify(m.method === 'initialize' ? {id:m.id,result:{}} : {id:m.id,error:{code:-32600,message:'auth.json is not readable'}})); }`);
+  expect((await readCodexAccount(profile, refuses, 3000)).account.statusDetail)
+    .toBe("Codex account/read failed. Codex refused it: auth.json is not readable");
+  // Codex exits, saying why on stderr.
+  const exits = script("exiting-codex", `console.error('\\x1b[31mERROR\\x1b[0m failed to load config.toml: unknown field'); process.exit(1);`);
+  expect((await readCodexAccount(profile, exits, 3000)).account.statusDetail)
+    .toBe("Codex initialize failed. Codex exited before it answered: ERROR failed to load config.toml: unknown field");
+  // Codex never answers.
+  const stalled = script("silent-codex", "setInterval(() => {}, 1000);");
+  expect((await readCodexAccount(profile, stalled, 150)).account.statusDetail)
+    .toBe("Codex initialize failed. Codex didn't answer within 150 ms.");
+  // A kind of sign-in 0.167.2 added, and one conch has never heard of.
+  expect(decodeCodexAccount(profile, { account: { type: "gcp" } })).toMatchObject({ status: "signed-in", authType: "gcp" });
+  expect(decodeCodexAccount(profile, { account: { type: "quantum" } }))
+    .toMatchObject({ status: "unavailable", statusDetail: "Codex reports a kind of sign-in conch doesn't know (\"quantum\")." });
+  // The reason reaches a client, and only on an unavailable account.
+  const reply = validateControlResponse({ kind: "codex-accounts", accounts: [
+    { ...profile, status: "unavailable", statusDetail: "Codex didn't answer within 12 s." },
+    { ...readCodexAccounts()[0]!, status: "signed-in", statusDetail: "stale" },
+  ] });
+  expect(reply.ok && (reply.value as any).accounts.map((a: any) => a.statusDetail)).toEqual(["Codex didn't answer within 12 s.", undefined]);
+});
+
+test("signing in again is refused only over threads a process has open, and names them (2026-11-12)", async () => {
+  const work = addCodexAccount("Work");
+  mkdirSync(work.configDir, { recursive: true });
+  const db = new Database(join(work.configDir, "state_5.sqlite"));
+  db.run("CREATE TABLE threads (id TEXT PRIMARY KEY, cwd TEXT, name TEXT, rollout_path TEXT, updated_at_ms INTEGER, archived INTEGER, source TEXT)");
+  // Touched an hour ago and closed since: listed in the eight-hour window, open nowhere.
+  db.run("INSERT INTO threads VALUES ('closed-thread', '/work', 'Yesterday', '', ?, 0, 'cli')", [Date.now() - 3_600_000]);
+  db.close();
+  await expect(assertCodexAccountIdle(work)).resolves.toBeUndefined();
+  writeCodexSession({ sessionId: "open-thread", pid: process.pid, cwd: "/work/api", status: "idle", updatedAt: Date.now(), transcriptPath: "", codexHome: work.configDir });
+  await expect(assertCodexAccountIdle(work)).rejects.toThrow("live sessions before signing in again or removing it from Conch: “api”.");
+});
+
 test("live discovery isolates profiles and prevents reauthentication while a profile is active", async () => {
   const work = addCodexAccount("Work");
   const defaultProfile = readCodexAccounts()[0]!;

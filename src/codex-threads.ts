@@ -555,14 +555,15 @@ export function codexThreadRoute(
   holder: number | undefined,
   args: string | undefined,
 ): { pid: number; noTerminal?: string } {
-  if (holder === undefined) {
-    return { pid: 0, noTerminal: "closed: no Codex process has this thread open" };
-  }
+  if (holder === undefined) return { pid: 0, noTerminal: CODEX_THREAD_CLOSED };
   if (holder > 0 && args !== undefined && APP_SERVER_ARGS.test(args)) {
     return { pid: 0, noTerminal: appServerNoTerminal(holder) };
   }
   return { pid: holder };
 }
+
+/** A thread listed from the last eight hours that no process has open now (`codexThreadRoute`). */
+export const CODEX_THREAD_CLOSED = "closed: no Codex process has this thread open";
 
 /**
  * Why a row an app-server hosts has no terminal. It names the pid, which is

@@ -762,7 +762,7 @@ export function capabilityLogins(entities: readonly AgentCapabilityEntity[], con
 
 const optionalDetail = (detail: string | undefined) => (detail ? { detail } : {});
 
-const CODEX_AUTH: Record<string, string> = { chatgpt: "ChatGPT", apiKey: "API key", amazonBedrock: "Amazon Bedrock" };
+const CODEX_AUTH: Record<string, string> = { chatgpt: "ChatGPT", apiKey: "API key", amazonBedrock: "Amazon Bedrock", gcp: "Google Cloud" };
 
 /** One agent profile's own sign-in, from the status the Providers section already reads. */
 export function agentLogin(backend: Backend, status: ClaudeAccountStatus | CodexAccountStatus, installed: boolean, now: number): LoginRecord {
@@ -775,7 +775,9 @@ export function agentLogin(backend: Backend, status: ClaudeAccountStatus | Codex
     ...(account ? { account } : {}), ...(scope ? { scope } : {}), configDir: status.configDir, checkedAt: now,
     ...optionalDetail(installed
       ? joinDetail(backend === "codex" && status.authType ? CODEX_AUTH[status.authType] : undefined, identity(status.subscription, 60),
-        state === "unknown" ? "couldn't read its status" : undefined)
+        state === "unknown"
+          ? `couldn't read its status${"statusDetail" in status && status.statusDetail ? `: ${identity(status.statusDetail, 300) ?? "no reason it could show"}` : ""}`
+          : undefined)
       : "not installed"),
   };
 }

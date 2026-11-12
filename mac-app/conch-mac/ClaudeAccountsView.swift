@@ -216,6 +216,9 @@ struct ClaudeAccountProfile: Decodable, Identifiable, Equatable {
     var email: String?
     var subscription: String?
     var authType: String?
+    /// Why the status is unavailable, from the daemon (`statusDetail` in codex-accounts.ts). Codex's only, for now:
+    /// a bare "Status unavailable" was all a failed check said until 2026-11-12. Older daemons never send it.
+    var statusDetail: String?
 
     var statusLabel: String {
         switch status {
@@ -833,6 +836,10 @@ private struct ProviderAccountSection: View {
                     }
                     Text(account.email ?? account.statusLabel).font(ConchTypography.font(size: 12))
                         .foregroundStyle(SwapPalette.secondaryText).textSelection(.enabled)
+                    if account.status == "unavailable", let why = account.statusDetail {
+                        Text(why).font(ConchTypography.font(size: 11)).foregroundStyle(SwapPalette.severity(80))
+                            .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    }
                     // Two profiles signed in as one person: usage, limits and sessions all land on that one account.
                     if let email = account.email, let twin = store.accounts.first(where: { $0.id != account.id && $0.email == email }) {
                         Text("Same account as \(twin.label). Sign in again to use a different one.")
