@@ -568,7 +568,8 @@ describe("driving a running session's own picker", () => {
     const sim = backend === "claude" ? simulatedClaude({ prompt: "half a thought" }) : simulatedCodex({ prompt: "half a thought" });
     const before = { ...sim.session };
     const outcome = await driveSessionSettings(backend, { effort: "high" }, depsFor(sim));
-    expect(outcome).toEqual({ ok: false, reason: "its prompt holds unsent words, so conch took back what it typed and left them alone" });
+    // The session's own state said no: declined, which the daemon tells the row and doesn't file as a failure.
+    expect(outcome).toEqual({ ok: false, reason: "its prompt holds unsent words, so conch took back what it typed and left them alone", declined: true });
     expect(sim.prompt).toBe("half a thought");
     expect(sim.sentMessage).toBeNull();
     expect(sim.session).toEqual(before);
@@ -580,8 +581,14 @@ describe("driving a running session's own picker", () => {
       ...depsFor(simulatedClaude({ busy: true })),
       type: async (words) => (typed.push(words), true),
     });
-    expect(outcome).toEqual({ ok: false, reason: "the session is working; change it when its turn is over" });
+    expect(outcome).toEqual({ ok: false, reason: "the session is working; change it when its turn is over", declined: true });
     expect(typed).toEqual([]);
+  });
+
+  test("a model the session's picker doesn't list is refused and NOT declined: conch offered it, so it is filed", async () => {
+    const outcome = await driveSessionSettings("claude", { model: "claude-nonesuch-9" }, depsFor(simulatedClaude()));
+    expect(outcome.ok).toBe(false);
+    expect(outcome).not.toHaveProperty("declined");
   });
 
   test("codex: a working session changes through the same picker, for this session only", async () => {
