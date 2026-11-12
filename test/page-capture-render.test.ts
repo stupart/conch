@@ -18,8 +18,11 @@ import { deflateSync } from "node:zlib";
  */
 
 const repo = (path: string) => join(import.meta.dir, "..", path);
+// 2026-11-11: it compiles the app's Swift and drives it offscreen, about 80 s of it, so it runs in ci-local's `harness`
+// stage (CONCH_APP_HARNESS=1) beside the app builds, when Swift changed, not in every bun test a push runs. Its swiftc
+// keeps to the gate's share of cores (CONCH_GATE_JOBS).
 // A web view needs a login session with a window server (`launchctl managername` says Aqua); an ssh session has none.
-const drawable = Bun.which("swiftc") !== null
+const drawable = process.env.CONCH_APP_HARNESS === "1" && Bun.which("swiftc") !== null
   && Bun.spawnSync(["launchctl", "managername"], { stdout: "pipe", stderr: "ignore" }).stdout.toString().trim() === "Aqua";
 const TARGET = [220, 30, 60];
 const GREEN = [20, 170, 60];
@@ -161,7 +164,8 @@ beforeAll(async () => {
   const design = repo("design/ConchDesign/Sources/ConchDesign");
   const sources = [...new Bun.Glob("*.swift").scanSync(design)].map((name) => join(design, name));
   const binary = join(root, "capture");
-  const compile = Bun.spawn(["swiftc", "-swift-version", "5", repo("mac-app/conch-mac/PageCapturer.swift"), ...sources, join(root, "main.swift"), "-o", binary], { stdout: "pipe", stderr: "pipe" });
+  const jobs = String(Math.max(2, Math.min(8, Number(process.env.CONCH_GATE_JOBS) || navigator.hardwareConcurrency || 4)));
+  const compile = Bun.spawn(["swiftc", "-swift-version", "5", "-j", jobs, repo("mac-app/conch-mac/PageCapturer.swift"), ...sources, join(root, "main.swift"), "-o", binary], { stdout: "pipe", stderr: "pipe" });
   if (await compile.exited !== 0) throw new Error(`swiftc failed:\n${await new Response(compile.stderr).text()}`);
   // Spawned, not spawnSync: this process serves the pages it draws.
   const run = Bun.spawn([binary, join(root, "cases.json"), join(root, "out")], { stdout: "pipe", stderr: "pipe", env: { ...process.env, TMPDIR: `${root}/` } });

@@ -209,13 +209,15 @@ on different versions; `conch doctor` names both when that happens.
 **The gate.** There is no hosted CI, so every check runs on your Mac:
 
 ```bash
-scripts/ci-local.sh          # bun install --frozen-lockfile, bun test, tsc --noEmit, swift test (design/ConchDesign)
-scripts/ci-local.sh all      # + the Mac and iOS app builds, and how far HEAD is past the last release
+scripts/ci-local.sh          # bun install --frozen-lockfile, then bun test, tsc --noEmit, swift test (design/ConchDesign) side by side
+scripts/ci-local.sh all      # + the Mac and iOS app builds, the Mac app's Swift harnesses, and how far HEAD is past the last release
+scripts/ci-local.sh --full   # nothing skipped as unchanged or already passed
 scripts/install-hooks.sh     # once per clone: pre-push runs the fast set
 ```
 
-It keeps each check's log in `build/ci-local/` and exits non-zero if anything failed. Any subset works:
-`scripts/ci-local.sh tsc swift`.
+It keeps each check's log in `build/ci-local/` and exits non-zero if anything failed. A stage runs only when what
+changed since origin/main can affect it, and a working tree that already passed a stage doesn't run it again, so a push
+right after a green gate costs nothing. Any subset works, and a stage named always runs: `scripts/ci-local.sh tsc swift`.
 
 ### The plugin from this repo's catalog
 

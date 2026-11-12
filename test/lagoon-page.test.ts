@@ -25,7 +25,11 @@ const BRIDGE = join(homedir(), "Projects/conch-design/brand/experiments/bridge")
 const SANITIZE = join(BRIDGE, "sanitize.mjs");
 const REAL_BUNDLE = join(BRIDGE, "dist/lagoon");
 const node = Bun.which("node");
-const swiftc = Bun.which("swiftc");
+// 2026-11-11: what compiles the app's Swift (the snapshot's cross-check, the stub page and the real lagoon in its web
+// view, about 60 s) runs in ci-local's `harness` stage (CONCH_APP_HARNESS=1) beside the app builds, when Swift changed,
+// not in every bun test a push runs; its swiftc keeps to the gate's share of cores (CONCH_GATE_JOBS). The build checks
+// below always run.
+const swiftc = process.env.CONCH_APP_HARNESS === "1" ? Bun.which("swiftc") : null;
 const drawable = swiftc !== null
   && Bun.spawnSync(["launchctl", "managername"], { stdout: "pipe", stderr: "ignore" }).stdout.toString().trim() === "Aqua";
 const crossCheckable = swiftc !== null && node !== null && existsSync(SANITIZE);
@@ -330,8 +334,9 @@ beforeAll(async () => {
   // Named main.swift: only that file may run statements at the top level.
   writeFileSync(join(root, "main.swift"), read("test/fixtures/lagoon-main.swift"));
   harness = join(root, "lagoon-harness");
+  const jobs = String(Math.max(2, Math.min(8, Number(process.env.CONCH_GATE_JOBS) || navigator.hardwareConcurrency || 4)));
   const compile = Bun.spawn([
-    "swiftc", "-swift-version", "5", ...sources,
+    "swiftc", "-swift-version", "5", "-j", jobs, ...sources,
     join(root, "Models.swift"), join(root, "ExecutionModels.swift"), join(root, "LinkTarget.swift"),
     repo("mac-app/conch-mac/LagoonSource.swift"), repo("mac-app/conch-mac/LagoonWeb.swift"), join(root, "main.swift"),
     "-o", harness,
