@@ -657,7 +657,9 @@ export function formatCompute(compute: Record<string, unknown>, baseline?: Recor
       return row ? `${row.processes > 1 ? `${row.processes} ` : ""}${label} ${row.rssMB} MB, ${row.lifetimeCpuPercent}% over ${row.uptimeHours} h (${row.windowCpuPercent}% now)` : undefined;
     };
     const published = live.publishedState as Record<string, number> | undefined;
-    const parts = [proc("daemon", "daemon"), proc("app", "app"), proc("mcpServers", "MCP servers"), published ? `sessions file ${published.kb} KB, ${published.rewritesPerMinute} rewrites/min` : undefined].filter(Boolean);
+    const children = Object.entries((live.daemonChildren ?? {}) as Record<string, { processes: number; rssMB: number }>)
+      .map(([program, row]) => `${row.processes > 1 ? `${row.processes} ` : ""}${program} ${row.rssMB} MB`).join(", ");
+    const parts = [proc("daemon", "daemon"), children ? `its children: ${children}` : undefined, proc("app", "app"), proc("mcpServers", "MCP servers"), published ? `sessions file ${published.kb} KB, ${published.rewritesPerMinute} rewrites/min` : undefined].filter(Boolean);
     lines.push(`  this Mac's live conch (ps, ${live.windowSeconds} s, read only): ${parts.join(" · ")}`);
   }
   return lines;
