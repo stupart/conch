@@ -44,265 +44,49 @@
         "parameters": 8
       },
       {
-        "name": "conch_capture",
-        "chars": 3621,
-        "tokens": 906,
-        "descriptionChars": 904,
-        "schemaChars": 2661,
-        "parameterProseChars": 1481,
-        "parameters": 6
-      },
-      {
-        "name": "browser_open",
-        "chars": 1579,
-        "tokens": 395,
-        "descriptionChars": 951,
-        "schemaChars": 573,
-        "parameterProseChars": 277,
-        "parameters": 3
-      },
-      {
-        "name": "browser_type",
-        "chars": 1417,
-        "tokens": 355,
-        "descriptionChars": 348,
-        "schemaChars": 1014,
-        "parameterProseChars": 418,
-        "parameters": 4
-      },
-      {
-        "name": "atlas_show",
-        "chars": 1243,
-        "tokens": 311,
-        "descriptionChars": 515,
-        "schemaChars": 675,
-        "parameterProseChars": 390,
-        "parameters": 3
-      },
-      {
-        "name": "browser_ask",
-        "chars": 1240,
-        "tokens": 310,
-        "descriptionChars": 703,
-        "schemaChars": 479,
-        "parameterProseChars": 249,
-        "parameters": 2
-      },
-      {
-        "name": "browser_click",
-        "chars": 1144,
-        "tokens": 286,
-        "descriptionChars": 329,
-        "schemaChars": 759,
-        "parameterProseChars": 290,
-        "parameters": 2
-      },
-      {
-        "name": "conch_transcript_tail",
-        "chars": 981,
-        "tokens": 246,
-        "descriptionChars": 313,
-        "schemaChars": 604,
-        "parameterProseChars": 297,
-        "parameters": 4
-      },
-      {
-        "name": "conch_history",
-        "chars": 961,
-        "tokens": 241,
-        "descriptionChars": 85,
-        "schemaChars": 820,
-        "parameterProseChars": 443,
-        "parameters": 4
-      },
-      {
-        "name": "conch_sessions",
-        "chars": 905,
-        "tokens": 227,
-        "descriptionChars": 414,
-        "schemaChars": 434,
-        "parameterProseChars": 253,
-        "parameters": 2
-      },
-      {
-        "name": "conch_fork",
-        "chars": 901,
-        "tokens": 226,
-        "descriptionChars": 475,
-        "schemaChars": 373,
-        "parameterProseChars": 177,
-        "parameters": 2
-      },
-      {
-        "name": "conch_mode",
-        "chars": 738,
-        "tokens": 185,
-        "descriptionChars": 145,
-        "schemaChars": 540,
-        "parameterProseChars": 268,
-        "parameters": 3
-      },
-      {
-        "name": "browser_tabs",
-        "chars": 717,
-        "tokens": 180,
-        "descriptionChars": 598,
-        "schemaChars": 62,
-        "parameterProseChars": 0,
-        "parameters": 0
-      },
-      {
-        "name": "conch_working_folders",
-        "chars": 682,
-        "tokens": 171,
-        "descriptionChars": 287,
-        "schemaChars": 331,
-        "parameterProseChars": 137,
+        "name": "conch_run",
+        "chars": 750,
+        "tokens": 188,
+        "descriptionChars": 421,
+        "schemaChars": 277,
+        "parameterProseChars": 114,
         "parameters": 1
-      },
-      {
-        "name": "conch_item",
-        "chars": 640,
-        "tokens": 160,
-        "descriptionChars": 60,
-        "schemaChars": 527,
-        "parameterProseChars": 207,
-        "parameters": 3
-      },
-      {
-        "name": "conch_config",
-        "chars": 622,
-        "tokens": 156,
-        "descriptionChars": 110,
-        "schemaChars": 457,
-        "parameterProseChars": 223,
-        "parameters": 3
-      },
-      {
-        "name": "browser_read",
-        "chars": 611,
-        "tokens": 153,
-        "descriptionChars": 345,
-        "schemaChars": 211,
-        "parameterProseChars": 80,
-        "parameters": 1
-      },
-      {
-        "name": "review_remove",
-        "chars": 571,
-        "tokens": 143,
-        "descriptionChars": 229,
-        "schemaChars": 286,
-        "parameterProseChars": 111,
-        "parameters": 2
-      },
-      {
-        "name": "browser_screenshot",
-        "chars": 503,
-        "tokens": 126,
-        "descriptionChars": 231,
-        "schemaChars": 211,
-        "parameterProseChars": 80,
-        "parameters": 1
-      },
-      {
-        "name": "conch_on_screen",
-        "chars": 485,
-        "tokens": 122,
-        "descriptionChars": 365,
-        "schemaChars": 62,
-        "parameterProseChars": 0,
-        "parameters": 0
-      },
-      {
-        "name": "conch_recite",
-        "chars": 418,
-        "tokens": 105,
-        "descriptionChars": 133,
-        "schemaChars": 230,
-        "parameterProseChars": 110,
-        "parameters": 1
-      },
-      {
-        "name": "conch_wake",
-        "chars": 408,
-        "tokens": 102,
-        "descriptionChars": 125,
-        "schemaChars": 230,
-        "parameterProseChars": 110,
-        "parameters": 1
-      },
-      {
-        "name": "conch_speak",
-        "chars": 404,
-        "tokens": 101,
-        "descriptionChars": 126,
-        "schemaChars": 224,
-        "parameterProseChars": 31,
-        "parameters": 2
-      },
-      {
-        "name": "conch_deliverables",
-        "chars": 335,
-        "tokens": 84,
-        "descriptionChars": 212,
-        "schemaChars": 62,
-        "parameterProseChars": 0,
-        "parameters": 0
-      },
-      {
-        "name": "browser_close",
-        "chars": 325,
-        "tokens": 82,
-        "descriptionChars": 66,
-        "schemaChars": 203,
-        "parameterProseChars": 53,
-        "parameters": 1
-      },
-      {
-        "name": "conch_rename",
-        "chars": 328,
-        "tokens": 82,
-        "descriptionChars": 99,
-        "schemaChars": 174,
-        "parameterProseChars": 0,
-        "parameters": 2
       }
     ],
     "pieces": {
       "server-instructions": {
-        "chars": 1102,
-        "tokens": 276
+        "chars": 1009,
+        "tokens": 253
       },
       "skill-listing": {
-        "chars": 305,
-        "tokens": 77
+        "chars": 315,
+        "tokens": 79
       },
       "agents-md": {
-        "chars": 2491,
-        "tokens": 623
+        "chars": 2787,
+        "tokens": 697
       },
       "tools-list": {
-        "chars": 29839,
-        "tokens": 7460
+        "chars": 8786,
+        "tokens": 2197
       },
       "tools-list (Claude Code names)": {
-        "chars": 30489,
-        "tokens": 7623
+        "chars": 8836,
+        "tokens": 2209
       },
       "deferred-tool-names": {
-        "chars": 1018,
-        "tokens": 255
+        "chars": 75,
+        "tokens": 19
       },
       "skill:conch-control (on load)": {
-        "chars": 42741,
-        "tokens": 10686
+        "chars": 51805,
+        "tokens": 12952
       }
     },
     "surfaces": {
       "claude-code": {
-        "chars": 2425,
-        "tokens": 608,
+        "chars": 1399,
+        "tokens": 351,
         "parts": [
           "server-instructions",
           "skill-listing",
@@ -310,8 +94,8 @@
         ]
       },
       "claude-code (all tools loaded)": {
-        "chars": 31896,
-        "tokens": 7976,
+        "chars": 10160,
+        "tokens": 2541,
         "parts": [
           "server-instructions",
           "skill-listing",
@@ -319,8 +103,8 @@
         ]
       },
       "codex": {
-        "chars": 32635,
-        "tokens": 8160,
+        "chars": 11888,
+        "tokens": 2973,
         "parts": [
           "agents-md",
           "skill-listing",
