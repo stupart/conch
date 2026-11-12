@@ -87,6 +87,12 @@ enum PaletteCatalog {
             detail: "Indexes and leaderboards for judging models and agents",
             action: .settings(.benchmarks)
         ))
+        // Teams (2026-11-12): start one on a task, or edit its roles and rules.
+        out.append(PaletteCommand(
+            id: "teams", section: .session, title: "Teams…",
+            detail: "Team types with a lead, roles and rules: start one on a task, or pass a running one its next",
+            action: .settings(.teams)
+        ))
         // Typing needs a pane the daemon can reach, which is what `revealable` says.
         if let row, row.parentSessionId == nil, row.revealable {
             out += provider(for: row)

@@ -1065,6 +1065,9 @@ struct ConchSettingsPage: View {
         switch section {
         case .providers: ClaudeAccountsView()
         case .environments: ConchEnvironmentsView()
+        // Teams (ConchDesign/Teams.swift): the types and the running teams, over the socket. A start waits on the lead's own
+        // start, which conch_start waits up to 45 s for, so the request is given 60.
+        case .teams: TeamsView(chooseFolder: TeamsSocket.chooseFolder, transport: TeamsSocket.send)
         case .tools: AccountToolsView { request in
             switch await ConchSocketClient().request(request, timeout: 22) {
             case .reply(let data): return data
@@ -1091,6 +1094,34 @@ struct ConchSettingsPage: View {
             }
         }
         }
+    }
+}
+
+/// Teams' way to the daemon (ConchDesign/Teams.swift, src/team-desk.ts), for Settings › Teams and the sidebar's team
+/// headers alike, and the folder a start is in.
+enum TeamsSocket {
+    /// A start waits on the lead's own start (up to 45 s, as conch_start does), so every request gets 60.
+    static let timeout: TimeInterval = 60
+
+    @MainActor
+    static func send(_ request: TeamsRequest) async throws -> Data {
+        switch await ConchSocketClient().request(request, timeout: timeout) {
+        case .reply(let data): return data
+        case .connectFailed, .timeout:
+            throw NSError(domain: "ConchTeams", code: 1, userInfo: [NSLocalizedDescriptionKey: "Could not reach the conch daemon."])
+        }
+    }
+
+    /// The folder a team works in, chosen in the Mac's own panel.
+    @MainActor
+    static func chooseFolder() -> String? {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        panel.message = "The folder the team works in"
+        return panel.runModal() == .OK ? panel.url?.path : nil
     }
 }
 

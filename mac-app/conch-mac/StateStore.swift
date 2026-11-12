@@ -1725,7 +1725,9 @@ final class StateStore: ObservableObject {
             // What came back after the Mac restarted, and what waits on the person (src/restart-recovery.ts).
             restore: sourceState.restore,
             // The gear's dot and Settings › Failures' count.
-            failures: sourceState.failures
+            failures: sourceState.failures,
+            // The sidebar's teams (ConchDesign/Teams.swift).
+            teams: sourceState.teams
         )
         if state?.hasSamePresentation(as: next) != true {
             state = next

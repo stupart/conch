@@ -2660,6 +2660,8 @@ try render("reply-bar-swoop", width: 1860) {
 // First-run setup (OnboardingGallery.swift).
 try MainActor.assumeIsolated { try renderOnboarding() }
 try renderFailureTickets()
+// Settings › Teams and a team in the sidebar (TeamsGallery.swift).
+try MainActor.assumeIsolated { try renderTeams() }
 
 // MARK: - Infinite scroll
 

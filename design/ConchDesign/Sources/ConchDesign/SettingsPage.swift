@@ -11,8 +11,12 @@ import CoreGraphics
 ///
 /// Skills and Benchmarks (2026-10-28) sit beside Plugins & MCP: every skill across the accounts, the public indexes' to
 /// add and try, and the benchmark catalog (SkillsLibrary.swift). The header's sparkles opens Skills.
+///
+/// Teams (2026-11-12) after Environments: who runs, where, then which agents work together (Teams.swift). Tyler: "would be
+/// nice to add 'teams' to conch settings to where we can set up team structures with specialized agents, rules for how
+/// they'll work together, and a hierarchy and then i can spin up or pass tasks to team types."
 public enum SettingsSection: String, CaseIterable, Identifiable, Sendable {
-    case providers, environments, tools, skills, benchmarks, browser, logins, general, phone, permissions, setup
+    case providers, environments, teams, tools, skills, benchmarks, browser, logins, general, phone, permissions, setup
     /// What went wrong, as tickets, and Fix (2026-10-28, FailureTickets.swift). Last: it is where conch looks after
     /// itself, after Setup, which is where it was set up.
     case failures
@@ -23,6 +27,7 @@ public enum SettingsSection: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .providers: "Providers"
         case .environments: "Environments"
+        case .teams: "Teams"
         case .tools: "Plugins & MCP"
         case .skills: "Skills"
         case .benchmarks: "Benchmarks"
@@ -41,6 +46,7 @@ public enum SettingsSection: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .providers: "person.crop.circle"
         case .environments: "desktopcomputer"
+        case .teams: "person.3"
         case .tools: "puzzlepiece.extension"
         case .skills: "sparkles"
         case .benchmarks: "chart.bar.xaxis"

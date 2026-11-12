@@ -203,4 +203,83 @@ final class SessionGroupingTests: XCTestCase {
         XCTAssertEqual(grouped.count, 1)
         XCTAssertEqual(grouped.first?.sessionIDs, ["a", "b"])
     }
+
+    // MARK: Teams (2026-11-12, Teams.swift)
+
+    /// A team's builders each work in a worktree of their own: grouped by folder, one team scattered across as many
+    /// headers as it had members. Its members leave their folders for the team's group, lead first, whatever order the
+    /// rows came in; a folder left empty goes.
+    func testATeamsMembersLeaveTheirFoldersForTheTeamsGroup() {
+        let sessions = [
+            session("other", cwd: "/w/app"),
+            session("b1", cwd: "/w/app/.worktrees/one"),
+            session("lead", cwd: "/w/app"),
+            session("b2", cwd: "/w/app/.worktrees/two"),
+            session("elsewhere", cwd: "/w/site"),
+        ]
+        let team = SessionGrouping.Team(id: "build-review-2", name: "Build + review", task: "Dark mode", memberSessionIDs: ["lead", "b1", "b2"])
+        let grouped = SessionGrouping.sidebar(sessions, home: "/Users/t", order: [], teams: [team])
+        XCTAssertEqual(grouped.map(\.id), ["/w/app", "team:build-review-2", "/w/site"])
+        XCTAssertEqual(grouped.map(\.kind), [.folder, .team, .folder])
+        XCTAssertEqual(grouped[0].sessionIDs, ["other"])
+        XCTAssertEqual(grouped[1].sessionIDs, ["lead", "b1", "b2"], "the team's order, lead first")
+        XCTAssertEqual(grouped[1].name, "Build + review")
+        XCTAssertEqual(grouped[1].team, SessionFolder.TeamGroup(id: "build-review-2", name: "Build + review", task: "Dark mode"))
+        XCTAssertNil(grouped[0].team)
+        XCTAssertEqual(SessionGrouping.teamGroupID("x"), "team:x")
+    }
+
+    /// A team takes the slot its first session had, rather than jumping to the top, and is dragged as a folder is.
+    func testATeamTakesTheSlotOfItsFirstSessionAndKeepsADraggedOne() {
+        let sessions = [
+            session("a", cwd: "/w/one"),
+            session("m2", cwd: "/w/two"),
+            session("c", cwd: "/w/three"),
+            session("m1", cwd: "/w/four"),
+        ]
+        let team = SessionGrouping.Team(id: "t", name: "T", task: "", memberSessionIDs: ["m1", "m2"])
+        XCTAssertEqual(SessionGrouping.sidebar(sessions, home: "/h", order: [], teams: [team]).map(\.id), ["/w/one", "team:t", "/w/three"])
+        XCTAssertEqual(SessionGrouping.sidebar(sessions, home: "/h", order: ["team:t"], teams: [team]).map(\.id), ["team:t", "/w/one", "/w/three"])
+        let moved = SessionGrouping.order([], moving: "team:t", onto: "/w/three", visible: ["/w/one", "team:t", "/w/three"])
+        XCTAssertEqual(moved, ["/w/one", "/w/three", "team:t"])
+    }
+
+    /// A member's subagents and the sessions it started come with it; one started by a session outside the team stays
+    /// with that session.
+    func testAMembersChildrenFollowItIntoTheTeam() {
+        let sessions = [
+            session("lead", cwd: "/w/app"),
+            session("agent", cwd: "/w/app", parent: "lead"),
+            session("b1", cwd: "/w/wt"),
+            session("started", cwd: "/w/elsewhere", startedBy: "b1"),
+            session("solo", cwd: "/w/app"),
+            session("solo-child", cwd: "/w/app", parent: "solo"),
+        ]
+        let team = SessionGrouping.Team(id: "t", name: "T", task: "", memberSessionIDs: ["lead", "b1"])
+        let grouped = SessionGrouping.sidebar(sessions, home: "/h", order: [], teams: [team])
+        XCTAssertEqual(grouped.map(\.id), ["team:t", "/w/app"])
+        XCTAssertEqual(grouped[0].sessionIDs, ["lead", "agent", "b1", "started"])
+        XCTAssertEqual(grouped[1].sessionIDs, ["solo", "solo-child"])
+    }
+
+    /// A team none of whose members has a row yet (all still starting), or one whose sessions have all gone, draws
+    /// nothing; a member conch has no row for is skipped; a session two teams name is the first's.
+    func testATeamWithNoListedMembersDrawsNothing() {
+        let sessions = [session("a", cwd: "/w/one"), session("m", cwd: "/w/one")]
+        let starting = SessionGrouping.Team(id: "s", name: "S", task: "", memberSessionIDs: ["gone"])
+        let first = SessionGrouping.Team(id: "f", name: "F", task: "", memberSessionIDs: ["m", "not-yet"])
+        let second = SessionGrouping.Team(id: "g", name: "G", task: "", memberSessionIDs: ["m"])
+        let grouped = SessionGrouping.sidebar(sessions, home: "/h", order: [], teams: [starting, first, second])
+        XCTAssertEqual(grouped.map(\.id), ["/w/one", "team:f"])
+        XCTAssertEqual(grouped[1].sessionIDs, ["m"])
+        XCTAssertEqual(SessionGrouping.sidebar(sessions, home: "/h", order: [], teams: [starting]),
+                       SessionGrouping.sidebar(sessions, home: "/h", order: []), "no listed member: the folders as they were")
+    }
+
+    func testAParentCycleThroughATeamDoesNotHang() {
+        let sessions = [session("a", cwd: "/w", parent: "b"), session("b", cwd: "/w", parent: "a"), session("m", cwd: "/w")]
+        let team = SessionGrouping.Team(id: "t", name: "T", task: "", memberSessionIDs: ["m"])
+        let grouped = SessionGrouping.sidebar(sessions, home: "/h", order: [], teams: [team])
+        XCTAssertEqual(grouped.flatMap(\.sessionIDs).sorted(), ["a", "b", "m"])
+    }
 }
