@@ -19,14 +19,20 @@ public struct PublishedResources: Decodable, Equatable, Sendable {
     /// How many are asking.
     public let asking: Int
     public let items: [ResourceItem]
+    /// What each session uses, heaviest first, and everything unowned (src/resource-load.ts). Empty from an older daemon.
+    public let sessions: [ResourceSessionUsage]
+    /// Agents' load against the budget; nil from an older daemon.
+    public let budget: ResourceBudget?
 
-    public init(sampledAt: Double, asking: Int, items: [ResourceItem]) {
+    public init(sampledAt: Double, asking: Int, items: [ResourceItem], sessions: [ResourceSessionUsage] = [], budget: ResourceBudget? = nil) {
         self.sampledAt = sampledAt
         self.asking = asking
         self.items = items
+        self.sessions = sessions
+        self.budget = budget
     }
 
-    private enum Keys: String, CodingKey { case sampledAt, asking, items }
+    private enum Keys: String, CodingKey { case sampledAt, asking, items, sessions, budget }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: Keys.self)
@@ -34,6 +40,8 @@ public struct PublishedResources: Decodable, Equatable, Sendable {
         asking = (try? container.decodeIfPresent(Int.self, forKey: .asking)) ?? 0
         // One this build can't read is left out, never the whole list.
         items = ((try? container.decodeIfPresent([Lossy<ResourceItem>].self, forKey: .items)) ?? []).compactMap(\.value)
+        sessions = ((try? container.decodeIfPresent([Lossy<ResourceSessionUsage>].self, forKey: .sessions)) ?? []).compactMap(\.value)
+        budget = try? container.decodeIfPresent(ResourceBudget.self, forKey: .budget)
     }
 
     private struct Lossy<Value: Decodable>: Decodable {
@@ -45,6 +53,8 @@ public struct PublishedResources: Decodable, Equatable, Sendable {
 /// One thing a session started that is still running.
 public struct ResourceItem: Decodable, Equatable, Sendable, Identifiable {
     public struct Owner: Decodable, Equatable, Sendable {
+        /// The agent's session id: `ResourceSessionUsage.key`.
+        public let key: String?
         /// Its row, while it has one.
         public let sessionId: String?
         public let label: String
@@ -54,7 +64,8 @@ public struct ResourceItem: Decodable, Equatable, Sendable, Identifiable {
         /// When conch last saw it live, for one that has ended.
         public let endedAt: Double?
 
-        public init(sessionId: String? = nil, label: String, live: Bool, how: String = "tree", endedAt: Double? = nil) {
+        public init(key: String? = nil, sessionId: String? = nil, label: String, live: Bool, how: String = "tree", endedAt: Double? = nil) {
+            self.key = key
             self.sessionId = sessionId
             self.label = label
             self.live = live
@@ -99,12 +110,22 @@ public struct ResourceItem: Decodable, Equatable, Sendable, Identifiable {
     public let reason: String?
     public let asksAgainAt: Double?
     public let preexisting: Bool?
+    /// green, yellow or red (src/resource-load.ts `resourceLevel`), and why.
+    public let level: String?
+    public let levelReasons: [String]?
+    /// Its CPU over the last five minutes, once there are enough looks to say.
+    public let cpuSustained: Double?
+    /// Paused by Tyler (SIGSTOP).
+    public let held: Bool?
+    /// In the background band: "you" or "auto" (`agent-auto-background`).
+    public let lowered: String?
 
     public init(
         id: String, kind: String, title: String, command: String = "", cwd: String? = nil, ports: [Int]? = nil,
         owner: Owner? = nil, users: [String]? = nil, startedAt: Double, cpu: Double = 0, memory: Double = 0,
         lifetime: Lifetime? = nil, why: String? = nil, state: String, reason: String? = nil, asksAgainAt: Double? = nil,
-        preexisting: Bool? = nil
+        preexisting: Bool? = nil, level: String? = nil, levelReasons: [String]? = nil, cpuSustained: Double? = nil,
+        held: Bool? = nil, lowered: String? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -123,18 +144,193 @@ public struct ResourceItem: Decodable, Equatable, Sendable, Identifiable {
         self.reason = reason
         self.asksAgainAt = asksAgainAt
         self.preexisting = preexisting
+        self.level = level
+        self.levelReasons = levelReasons
+        self.cpuSustained = cpuSustained
+        self.held = held
+        self.lowered = lowered
+    }
+}
+
+/// What one session uses all told (src/resource-load.ts `SessionUsage`): its own process and everything under it, and what
+/// it left running; or, keyed "unowned", everything no session started.
+public struct ResourceSessionUsage: Decodable, Equatable, Sendable, Identifiable {
+    public let key: String
+    public let sessionId: String?
+    public let label: String
+    public let live: Bool
+    /// Per cent of one core, over the last five minutes.
+    public let cpu: Double
+    public let sustained: Bool
+    public let memory: Double
+    public let resources: Int
+    public let level: String
+    public let reasons: [String]
+    public let over: Bool?
+    public let lowered: Bool?
+
+    public var id: String { key }
+    public var isUnowned: Bool { key == "unowned" }
+
+    public init(key: String, sessionId: String? = nil, label: String, live: Bool, cpu: Double, sustained: Bool = true, memory: Double,
+                resources: Int, level: String, reasons: [String] = [], over: Bool? = nil, lowered: Bool? = nil) {
+        self.key = key
+        self.sessionId = sessionId
+        self.label = label
+        self.live = live
+        self.cpu = cpu
+        self.sustained = sustained
+        self.memory = memory
+        self.resources = resources
+        self.level = level
+        self.reasons = reasons
+        self.over = over
+        self.lowered = lowered
+    }
+}
+
+/// Agents' load against the budget (src/resource-load.ts `PublishedBudget`; settings `agent-budget-cpu`,
+/// `agent-budget-memory`, `agent-auto-background`).
+public struct ResourceBudget: Decodable, Equatable, Sendable {
+    public let cpuPercent: Int
+    public let memoryPercent: Int
+    public let autoBackground: Bool
+    public let cores: Int
+    /// The budget: per cent of one core, and bytes.
+    public let cpuLimit: Double
+    public let memoryLimit: Double
+    /// What agents use together, sustained, and their memory.
+    public let cpu: Double
+    public let sustained: Bool
+    public let memory: Double
+    public let level: String
+    /// The sessions that make up what is over, heaviest first, by key.
+    public let over: [String]
+    public let reason: String
+
+    public init(cpuPercent: Int, memoryPercent: Int, autoBackground: Bool, cores: Int, cpuLimit: Double, memoryLimit: Double,
+                cpu: Double, sustained: Bool, memory: Double, level: String, over: [String], reason: String) {
+        self.cpuPercent = cpuPercent
+        self.memoryPercent = memoryPercent
+        self.autoBackground = autoBackground
+        self.cores = cores
+        self.cpuLimit = cpuLimit
+        self.memoryLimit = memoryLimit
+        self.cpu = cpu
+        self.sustained = sustained
+        self.memory = memory
+        self.level = level
+        self.over = over
+        self.reason = reason
     }
 }
 
 public enum ResourceAction: String, Sendable, Equatable, CaseIterable {
-    case stop, keep, later
+    case stop, keep, later, hold, resume, lower, restore
 
     public var title: String {
         switch self {
         case .stop: "Stop"
         case .keep: "Keep"
         case .later: "Ask later"
+        case .hold: "Hold"
+        case .resume: "Resume"
+        case .lower: "Lower priority"
+        case .restore: "Restore priority"
         }
+    }
+}
+
+/// A whole session to the background band or back (`{kind: "resource-session", sessionId, action}`): the throttle the
+/// budget offers for a session that is over it. Tyler's alone; the daemon refuses an agent.
+public struct ResourceSessionRequest: Encodable, Equatable, Sendable {
+    public let kind = "resource-session"
+    public let sessionId: String
+    public let action: String
+
+    public init(sessionId: String, lower: Bool) {
+        self.sessionId = sessionId
+        self.action = lower ? "lower" : "restore"
+    }
+
+    private enum Keys: String, CodingKey { case kind, sessionId, action }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: Keys.self)
+        try container.encode(kind, forKey: .kind)
+        try container.encode(sessionId, forKey: .sessionId)
+        try container.encode(action, forKey: .action)
+    }
+}
+
+/// The budget's settings, through the daemon's own settings (`{kind: "set-config", key, value}`), as Failures' auto-fix is.
+public enum ResourceBudgetRequest: Encodable, Equatable, Sendable {
+    case cpuPercent(Int)
+    case memoryPercent(Int)
+    case autoBackground(Bool)
+
+    private enum Keys: String, CodingKey { case kind, key, value }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: Keys.self)
+        try container.encode("set-config", forKey: .kind)
+        switch self {
+        case let .cpuPercent(value):
+            try container.encode("agent-budget-cpu", forKey: .key)
+            try container.encode(value, forKey: .value)
+        case let .memoryPercent(value):
+            try container.encode("agent-budget-memory", forKey: .key)
+            try container.encode(value, forKey: .value)
+        case let .autoBackground(on):
+            try container.encode("agent-auto-background", forKey: .key)
+            try container.encode(on, forKey: .value)
+        }
+    }
+}
+
+/// Green, yellow, red: what a session or a resource uses, against the thresholds src/resource-load.ts defines.
+public enum ResourceLevel: String, Sendable, Equatable {
+    case green, yellow, red
+
+    public init(_ raw: String?) { self = raw.flatMap(Self.init(rawValue:)) ?? .green }
+
+    /// Green is ready's; red is attention's. Yellow is an amber of its own, held to a mark's 3:1 on white and on the
+    /// dark ground (#A97700 light, 3.6 on white; #FFD60A dark), and never the orange that means listening.
+    public var color: Color {
+        switch self {
+        case .green: ConchColor.ready.color(.light)
+        case .yellow: Color(red: 0xA9 / 255, green: 0x77 / 255, blue: 0)
+        case .red: ConchColor.attention.color(.light)
+        }
+    }
+
+    public func color(_ scheme: ColorScheme) -> Color {
+        switch self {
+        case .green: ConchColor.ready.color(scheme)
+        case .yellow: scheme == .dark ? Color(red: 1, green: 0xD6 / 255, blue: 0x0A / 255) : Color(red: 0xA9 / 255, green: 0x77 / 255, blue: 0)
+        case .red: ConchColor.attention.color(scheme)
+        }
+    }
+
+    public var word: String { rawValue }
+}
+
+/// A level's dot, in the scheme it is drawn in.
+public struct ResourceLevelDot: View {
+    let level: ResourceLevel
+    let size: CGFloat
+    @Environment(\.colorScheme) private var scheme
+
+    public init(_ level: ResourceLevel, size: CGFloat = 7) {
+        self.level = level
+        self.size = size
+    }
+
+    public var body: some View {
+        Circle()
+            .fill(level.color(scheme))
+            .frame(width: size, height: size)
+            .accessibilityLabel(level.word)
     }
 }
 
@@ -207,6 +403,14 @@ public enum StillRunning {
         }
     }
 
+    /// "38% CPU · 6.3 GB", its five-minute CPU once it has one, then what Tyler did to it: held, lowered.
+    public static func costLine(_ item: ResourceItem) -> String {
+        var line = "\(cpu(item.cpuSustained ?? item.cpu)) · \(memory(item.memory))"
+        if item.held == true { line += " · held" }
+        if let lowered = item.lowered { line += lowered == "auto" ? " · lowered (budget)" : " · lowered" }
+        return line
+    }
+
     /// "up 2 d · 0% CPU · 258 MB".
     public static func numbers(_ item: ResourceItem, now: Date) -> String {
         "up \(age(since: item.startedAt, now: now)) · \(cpu(item.cpu)) · \(memory(item.memory))"
@@ -221,6 +425,12 @@ public enum StillRunning {
         case "stopping": []
         default: [.stop]
         }
+    }
+
+    /// The rest, in a row's menu: hold or resume, lower or restore, for a process group (a VM or a simulator is only stopped).
+    public static func moreActions(for item: ResourceItem) -> [ResourceAction] {
+        guard item.state != "stopping", !["vm", "simulator"].contains(item.kind) else { return [] }
+        return [item.held == true ? .resume : .hold, item.lowered != nil ? .restore : .lower]
     }
 
     /// What a stop will do, said before it does: the confirmation's message.
@@ -444,6 +654,7 @@ public struct StillRunningRow: View {
 
     @State private var hovering = false
     @State private var confirmingStop = false
+    @Environment(\.colorScheme) private var scheme
 
     public init(item: ResourceItem, now: Date, pending: Bool = false, error: String? = nil, onAction: @escaping (ResourceAction) -> Void) {
         self.item = item
@@ -458,9 +669,10 @@ public struct StillRunningRow: View {
 
     public var body: some View {
         HStack(alignment: .top, spacing: 8) {
+            // Its mark in its level's colour (src/resource-load.ts): green, yellow, red.
             Image(systemName: StillRunning.symbol(for: item.kind))
                 .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(asking ? AnyShapeStyle(ConchColor.attention) : AnyShapeStyle(ConchColor.textTertiary))
+                .foregroundStyle(ResourceLevel(item.level).color(scheme))
                 .frame(width: 12, height: 16)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 1) {
@@ -484,7 +696,7 @@ public struct StillRunningRow: View {
                     if !asking && hovering && !actions.isEmpty {
                         ForEach(actions, id: \.self) { action in actionButton(action) }
                     } else {
-                        Text("\(StillRunning.cpu(item.cpu)) · \(StillRunning.memory(item.memory))")
+                        Text(StillRunning.costLine(item))
                             .font(.system(size: 10.5))
                             .monospacedDigit()
                             .foregroundStyle(ConchColor.textTertiary)
@@ -512,7 +724,7 @@ public struct StillRunningRow: View {
         .onHover { hovering = $0 }
         .help(StillRunning.tooltip(item))
         .contextMenu {
-            ForEach(StillRunning.actions(for: item), id: \.self) { action in
+            ForEach(StillRunning.actions(for: item) + StillRunning.moreActions(for: item), id: \.self) { action in
                 Button(action.title) { perform(action) }
             }
         }

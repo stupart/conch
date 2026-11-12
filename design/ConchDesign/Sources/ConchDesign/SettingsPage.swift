@@ -13,6 +13,9 @@ import CoreGraphics
 /// add and try, and the benchmark catalog (SkillsLibrary.swift). The header's sparkles opens Skills.
 public enum SettingsSection: String, CaseIterable, Identifiable, Sendable {
     case providers, environments, tools, skills, benchmarks, browser, logins, general, phone, permissions, setup
+    /// What each session uses, green, yellow or red, and agents' load against a budget (2026-11-11, ResourcesPage.swift).
+    /// Beside Failures: both are where conch keeps an eye on what runs on this Mac.
+    case resources
     /// What went wrong, as tickets, and Fix (2026-10-28, FailureTickets.swift). Last: it is where conch looks after
     /// itself, after Setup, which is where it was set up.
     case failures
@@ -32,6 +35,7 @@ public enum SettingsSection: String, CaseIterable, Identifiable, Sendable {
         case .phone: "Phone app"
         case .permissions: "Permissions"
         case .setup: "Setup"
+        case .resources: "Resources"
         case .failures: "Failures"
         }
     }
@@ -50,6 +54,7 @@ public enum SettingsSection: String, CaseIterable, Identifiable, Sendable {
         case .phone: "iphone"
         case .permissions: "hand.raised"
         case .setup: "checklist"
+        case .resources: "gauge.with.dots.needle.33percent"
         case .failures: "ladybug"
         }
     }

@@ -1,4 +1,18 @@
+import { cpus, totalmem } from "node:os";
 import { basename } from "node:path";
+import {
+  budgetOf,
+  CpuHistory,
+  loadLevel,
+  resourceLevel,
+  SESSION_THRESHOLDS,
+  worse,
+  type BudgetSettings,
+  type Level,
+  type Machine,
+  type PublishedBudget,
+  type SessionUsage,
+} from "./resource-load.ts";
 
 /**
  * The resource ledger: what agent sessions started that is still running, whose it is, how long it was meant to live,
@@ -432,10 +446,16 @@ export interface LedgerMemory {
   decisions: Record<string, Decision>;
   /** Sessions that named a simulator, by the device's identity: the first one, and when its command started. */
   simulatorTouches: Record<string, { owner: ResourceOwner; startedAt: number; users: string[] }>;
+  /** Resources Tyler held (SIGSTOP), by identity, and when: a restart must still say they are paused. */
+  held: Record<string, number>;
+  /** Resources in the background band (`taskpolicy -b`), by identity: by Tyler, or by `agent-auto-background`. */
+  lowered: Record<string, { at: number; by: "you" | "auto" }>;
+  /** Sessions whose processes Tyler moved to the background band, by agent session id. */
+  loweredSessions: Record<string, number>;
 }
 
 export function emptyLedgerMemory(): LedgerMemory {
-  return { v: 1, owners: {}, labels: {}, ended: {}, declarations: {}, decisions: {}, simulatorTouches: {} };
+  return { v: 1, owners: {}, labels: {}, ended: {}, declarations: {}, decisions: {}, simulatorTouches: {}, held: {}, lowered: {}, loweredSessions: {} };
 }
 
 /** A memory file read back: anything that isn't one is a fresh start, never an error. */
@@ -453,6 +473,9 @@ export function decodeLedgerMemory(value: unknown): LedgerMemory {
     declarations: record(raw.declarations),
     decisions: record(raw.decisions),
     simulatorTouches: record(raw.simulatorTouches),
+    held: record(raw.held),
+    lowered: record(raw.lowered),
+    loweredSessions: record(raw.loweredSessions),
   };
 }
 
@@ -471,8 +494,10 @@ export interface ResourceEntry {
   root: { pid: number; startedAt: number };
   startedAt: number;
   firstSeenAt: number;
-  /** Every process in it this sample, by identity. */
+  /** Every process in it this sample, by identity: the top of its group and everything under it. */
   members: string[];
+  /** A VM's processes outside its group (its Virtualization process, its ssh mux), by identity. */
+  extras: string[];
   cpu: number;
   rss: number;
   ports: number[];
@@ -511,7 +536,8 @@ export interface PublishedResource {
   command: string;
   cwd?: string;
   ports?: number[];
-  owner?: { sessionId?: string; label: string; live: boolean; how: ResourceOwner["how"]; endedAt?: number };
+  /** `key`: the agent's session id, as `sessions[].key` names it. */
+  owner?: { key: string; sessionId?: string; label: string; live: boolean; how: ResourceOwner["how"]; endedAt?: number };
   users?: string[];
   startedAt: number;
   /** Per cent of one core, summed over its processes. */
@@ -526,6 +552,15 @@ export interface PublishedResource {
   /** For `later`: when it asks again. */
   asksAgainAt?: number;
   preexisting?: true;
+  /** Green, yellow or red (resource-load.ts `resourceLevel`), and why. */
+  level: Level;
+  levelReasons?: string[];
+  /** Its CPU, the mean over the last five minutes, once there are enough looks to say. */
+  cpuSustained?: number;
+  /** Paused (SIGSTOP) by Tyler. */
+  held?: true;
+  /** In the background band (`taskpolicy -b`): by Tyler, or by `agent-auto-background`. */
+  lowered?: "you" | "auto";
 }
 
 export interface PublishedResources {
@@ -535,6 +570,10 @@ export interface PublishedResources {
   /** How many are asking, for a badge. */
   asking: number;
   items: PublishedResource[];
+  /** What each session uses, its own processes and what it left running, and everything unowned; heaviest first. */
+  sessions: SessionUsage[];
+  /** Agents' usage against the budget (`agent-budget-cpu`, `agent-budget-memory`). */
+  budget: PublishedBudget;
 }
 
 /** How long a resource shows as stopping after a stop that said it worked. */
@@ -544,7 +583,14 @@ export const ASK_LATER_MS = 4 * 60 * 60_000;
 /** A session gone from two whole registry reads in a row has ended; one could be a resume in flight. */
 const ENDED_AFTER_MISSES = 2;
 
-export type ResourceAction = "stop" | "keep" | "later";
+/**
+ * Tyler's word on a resource: stop it, keep it, ask later; hold it (SIGSTOP) or let it go on (SIGCONT); move it to the
+ * background band (`taskpolicy -b`) or back (`-B`). Every one only ever on his action, but for `agent-auto-background`.
+ */
+export type ResourceAction = "stop" | "keep" | "later" | "hold" | "resume" | "lower" | "restore";
+export const RESOURCE_ACTIONS: readonly ResourceAction[] = ["stop", "keep", "later", "hold", "resume", "lower", "restore"];
+/** The kinds that are a process group conch can pause or reprioritise; a VM or a simulator is stopped, never held. */
+export const PROCESS_KINDS: ReadonlySet<ResourceKind> = new Set(["server", "browser", "container", "tmux", "watcher", "shell", "process"]);
 
 // MARK: the forest: one sample's tree, walked once
 
@@ -644,7 +690,10 @@ export class ProcessForest {
     return placement;
   }
 
-  /** A process and everything under it. */
+  /**
+   * Everything under a process, but never into another agent: a session a shell started is its own, with everything
+   * under it, so a stop, a hold or a sum over one group never reaches into it.
+   */
   descendants(pid: number): ProcessRow[] {
     const found: ProcessRow[] = [];
     const queue = [...(this.children.get(pid) ?? [])];
@@ -653,6 +702,7 @@ export class ProcessForest {
       const next = queue.shift()!;
       if (seen.has(next.pid)) continue;
       seen.add(next.pid);
+      if (this.sessionByPid.has(next.pid) || isAgentProcess(next.args)) continue;
       found.push(next);
       queue.push(...(this.children.get(next.pid) ?? []));
     }
@@ -664,6 +714,10 @@ export class ProcessForest {
 
 export interface ResourceLedgerOptions {
   memory?: LedgerMemory;
+  /** The budget's settings, read at each look (live settings). Absent: a quarter of the cores and of the memory, nothing automatic. */
+  budget?(): BudgetSettings;
+  /** This Mac's cores and memory. */
+  machine?: Machine;
   /** A session's name when conch never saw it live (the daemon reads its transcript's title); asked once per session. */
   labelFor?(agentSessionId: string): string | undefined;
 }
@@ -691,11 +745,18 @@ export class ResourceLedger {
   private live: LedgerSession[] = [];
   private sampledAt = 0;
   private readonly labelFor?: (agentSessionId: string) => string | undefined;
+  private readonly budgetSettings: () => BudgetSettings;
+  private readonly machine: Machine;
+  private readonly history = new CpuHistory();
+  /** What each owner used at the last look, before levels (`published` adds them). */
+  private usage: Array<Omit<SessionUsage, "cpu" | "sustained" | "level" | "reasons"> & { cpuNow: number }> = [];
 
   constructor(options: ResourceLedgerOptions = {}) {
     this.memory = options.memory ?? emptyLedgerMemory();
     for (const [key, owner] of Object.entries(this.memory.owners)) this.treeOwners.set(key, owner);
     this.labelFor = options.labelFor;
+    this.budgetSettings = options.budget ?? (() => ({ cpuPercent: 25, memoryPercent: 25, autoBackground: false }));
+    this.machine = options.machine ?? { cores: Math.max(1, cpus().length), memory: totalmem() };
   }
 
   /** What a sample's evidence should include for this forest: each thing read once in a process's life. */
@@ -770,7 +831,14 @@ export class ResourceLedger {
     this.rememberSimulatorTouches(forest);
     this.noteEndedOwners(forest.sessions, now, complete);
 
-    const next = this.buildEntries(forest, now, evidence.memoryOf);
+    // One footprint read per process a look, whoever asks for it.
+    const footprints = new Map<number, number>();
+    const memoryOf = (row: ProcessRow): number => {
+      let bytes = footprints.get(row.pid);
+      if (bytes === undefined) footprints.set(row.pid, bytes = evidence.memoryOf?.(row) ?? row.rss);
+      return bytes;
+    };
+    const next = this.buildEntries(forest, now, memoryOf);
     for (const [pid, folder] of evidence.cwds) {
       const entry = [...next.values()].find((each) => each.anchor.pid === pid);
       if (entry) this.cwds.set(processKey(entry.root.pid, entry.root.startedAt), folder);
@@ -789,6 +857,7 @@ export class ResourceLedger {
       }
     }
     this.memory.owners = owners;
+    this.measure(forest, now, memoryOf);
     this.previousKeys = new Set(forest.table.map((row) => processKey(row.pid, row.startedAt)));
     this.prune(forest);
     return this.signature(now) !== before;
@@ -888,6 +957,69 @@ export class ResourceLedger {
     return undefined;
   }
 
+  /**
+   * What each owner uses this look: a live session's own process and everything under it (its MCP servers, the commands
+   * it runs, what runs in its tree), then whatever it left running outside it; an ended session's leftovers; everything
+   * unowned. Each process counted once, for the nearest session: a Codex that Claude started is the Codex's.
+   */
+  private measure(forest: ProcessForest, now: number, memoryOf: (row: ProcessRow) => number): void {
+    const counted = new Set<string>();
+    const usage = new Map<string, { sessionId?: string; label: string; live: boolean; cpuNow: number; memory: number; resources: number }>();
+    const add = (key: string, base: { sessionId?: string; label: string; live: boolean }, rows: readonly ProcessRow[], resources = 0) => {
+      const owner = usage.get(key) ?? { ...base, cpuNow: 0, memory: 0, resources: 0 };
+      for (const row of rows) {
+        const processId = processKey(row.pid, row.startedAt);
+        if (counted.has(processId)) continue;
+        counted.add(processId);
+        owner.cpuNow += row.cpu;
+        owner.memory += memoryOf(row);
+      }
+      owner.resources += resources;
+      usage.set(key, owner);
+    };
+    const depth = (pid: number) => {
+      let hops = 0;
+      for (let up = forest.byPid.get(pid)?.ppid; up && up > 1 && hops < 64; up = forest.byPid.get(up)?.ppid) hops += 1;
+      return hops;
+    };
+    // Deepest first, so a session another started keeps its own tree.
+    const sessions = [...forest.sessions].sort((a, b) => Math.max(...b.pids.map(depth), 0) - Math.max(...a.pids.map(depth), 0));
+    for (const session of sessions) {
+      const rows = session.pids.flatMap((pid) => {
+        const row = forest.byPid.get(pid);
+        return row ? [row, ...forest.descendants(pid)] : [];
+      });
+      add(agentId(session), { sessionId: session.sessionId, label: session.label, live: true }, rows);
+    }
+    const byKey = new Map(forest.table.map((row) => [processKey(row.pid, row.startedAt), row]));
+    for (const entry of this.entries.values()) {
+      if (entry.seen < 2 && entry.declaredAt === undefined) continue;
+      const rows = [...entry.members, ...entry.extras].flatMap((key) => (byKey.has(key) ? [byKey.get(key)!] : []));
+      const live = this.liveOwner(entry.owner);
+      add(
+        entry.owner?.agentSessionId ?? "unowned",
+        entry.owner ? { ...(live ? { sessionId: live.sessionId } : {}), label: entry.owner.label, live: Boolean(live) } : { label: "Unowned", live: false },
+        rows,
+        1,
+      );
+    }
+    const seenKeys = new Set<string>();
+    let total = 0;
+    for (const [key, owner] of usage) {
+      this.history.record(`session:${key}`, now, owner.cpuNow);
+      seenKeys.add(`session:${key}`);
+      if (key !== "unowned") total += owner.cpuNow;
+    }
+    for (const entry of this.entries.values()) {
+      this.history.record(entry.identity, now, entry.cpu);
+      seenKeys.add(entry.identity);
+    }
+    this.history.record("budget", now, total);
+    seenKeys.add("budget");
+    this.history.keep(seenKeys);
+    this.usage = [...usage].map(([key, owner]) => ({ key, ...owner }));
+  }
+
   private buildEntries(forest: ProcessForest, now: number, memoryOf?: (row: ProcessRow) => number): Map<string, ResourceEntry> {
     type Candidate = { row: ProcessRow; kind: ResourceKind; title: string; placement: Placement };
     const groups = new Map<number, Candidate[]>();
@@ -979,6 +1111,7 @@ export class ResourceLedger {
         startedAt: Math.min(best.row.startedAt, root.startedAt),
         firstSeenAt: previous?.firstSeenAt ?? now,
         members: memberKeys,
+        extras: extras.map((row) => processKey(row.pid, row.startedAt)),
         cpu: all.reduce((sum, member) => sum + member.cpu, 0),
         rss: all.reduce((sum, member) => sum + (memoryOf?.(member) ?? member.rss), 0),
         ports,
@@ -1007,6 +1140,8 @@ export class ResourceLedger {
     for (const key of Object.keys(this.memory.decisions)) if (!held(key)) delete this.memory.decisions[key];
     for (const key of Object.keys(this.memory.simulatorTouches)) if (!identities.has(key)) delete this.memory.simulatorTouches[key];
     for (const key of this.stopping.keys()) if (!identities.has(key)) this.stopping.delete(key);
+    for (const key of Object.keys(this.memory.held)) if (!identities.has(key)) delete this.memory.held[key];
+    for (const key of Object.keys(this.memory.lowered)) if (!identities.has(key)) delete this.memory.lowered[key];
     // Names and ends only while something still points at them.
     const referenced = new Set<string>(this.live.map(agentId));
     for (const entry of this.entries.values()) if (entry.owner) referenced.add(entry.owner.agentSessionId);
@@ -1015,6 +1150,7 @@ export class ResourceLedger {
     for (const key of Object.keys(this.memory.labels)) if (!referenced.has(key)) delete this.memory.labels[key];
     for (const key of Object.keys(this.memory.ended)) if (!referenced.has(key)) delete this.memory.ended[key];
     for (const key of this.lastLive.keys()) if (!referenced.has(key)) this.lastLive.delete(key);
+    for (const key of Object.keys(this.memory.loweredSessions)) if (!this.live.some((session) => agentId(session) === key)) delete this.memory.loweredSessions[key];
   }
 
   /** One resource by its id or identity, for a stop or a decision. */
@@ -1046,21 +1182,24 @@ export class ResourceLedger {
     const decision = this.memory.decisions[entry.identity];
     if (decision?.kind === "keep") return { state: "kept", reason: failed ?? "you kept it" };
     if (entry.lifetime?.kind === "keep") return { state: "kept", reason: failed ?? "its session said to keep it" };
-    const due = this.dueReason(entry, now);
+    const due = this.due(entry, now);
     if (!due) return { state: "running", ...(failed ? { reason: failed } : {}) };
-    if (decision?.kind === "later" && decision.until > now) return { state: "later", reason: failed ?? due, asksAgainAt: decision.until };
-    return { state: "asking", reason: failed ?? due };
+    if (decision?.kind === "later" && decision.until > now) return { state: "later", reason: failed ?? due.reason, asksAgainAt: decision.until };
+    return { state: "asking", reason: failed ?? due.reason };
   }
 
-  /** Why its lifetime is over, or undefined while it isn't. */
-  private dueReason(entry: ResourceEntry, now: number): string | undefined {
+  /** Why its lifetime is over and since when (as near as conch can say), or undefined while it isn't. */
+  private due(entry: ResourceEntry, now: number): { reason: string; since?: number } | undefined {
     const lifetime = entry.lifetime;
     if (!lifetime || !entry.owner) return undefined;
-    if (lifetime.kind === "until") return lifetime.until <= now ? "past the time it was started for" : undefined;
+    if (lifetime.kind === "until") return lifetime.until <= now ? { reason: "past the time it was started for", since: lifetime.until } : undefined;
     const live = this.liveOwner(entry.owner);
-    if (!live) return entry.owner.agentSessionId in this.memory.ended ? "its session ended" : undefined;
+    if (!live) {
+      const ended = this.memory.ended[entry.owner.agentSessionId];
+      return ended === undefined ? undefined : { reason: "its session ended", ...(ended ? { since: ended } : {}) };
+    }
     if (lifetime.kind === "turn" && entry.declaredAt !== undefined && !working(live.status)
-      && (live.statusUpdatedAt ?? 0) > entry.declaredAt) return "its turn is over";
+      && (live.statusUpdatedAt ?? 0) > entry.declaredAt) return { reason: "its turn is over", since: live.statusUpdatedAt };
     return undefined;
   }
 
@@ -1082,6 +1221,7 @@ export class ResourceLedger {
         ...(entry.ports.length ? { ports: entry.ports } : {}),
         ...(entry.owner ? {
           owner: {
+            key: entry.owner.agentSessionId,
             ...(live ? { sessionId: live.sessionId } : entry.owner.sessionId ? { sessionId: entry.owner.sessionId } : {}),
             label: entry.owner.label,
             live: Boolean(live),
@@ -1105,11 +1245,106 @@ export class ResourceLedger {
         ...(reason ? { reason } : {}),
         ...(asksAgainAt ? { asksAgainAt } : {}),
         ...(entry.preexisting ? { preexisting: true as const } : {}),
+        ...this.levelFields(entry, state, now),
+        ...(this.memory.held[entry.identity] ? { held: true as const } : {}),
+        ...(this.memory.lowered[entry.identity] ? { lowered: this.memory.lowered[entry.identity]!.by } : {}),
       });
     }
     const order: Record<ResourceState, number> = { asking: 0, stopping: 1, running: 2, later: 3, kept: 4, unowned: 5 };
     items.sort((a, b) => order[a.state] - order[b.state] || (a.owner?.label ?? "").localeCompare(b.owner?.label ?? "") || a.startedAt - b.startedAt);
-    return { v: 1, sampledAt: this.sampledAt, asking: items.filter((item) => item.state === "asking").length, items };
+    const { sessions, budget } = this.load(items, now);
+    return { v: 1, sampledAt: this.sampledAt, asking: items.filter((item) => item.state === "asking").length, items, sessions, budget };
+  }
+
+  /** A resource's level and its sustained CPU (resource-load.ts `resourceLevel`). */
+  private levelFields(entry: ResourceEntry, state: ResourceState, now: number): { level: Level; levelReasons?: string[]; cpuSustained?: number } {
+    const cpu = this.history.sustained(entry.identity, now);
+    const { level, reasons } = resourceLevel({ ...(cpu ? { cpu } : {}), memory: entry.rss, state, startedAt: entry.startedAt, dueSince: this.due(entry, now)?.since }, now);
+    return { level, ...(reasons.length ? { levelReasons: reasons } : {}), ...(cpu?.sustained ? { cpuSustained: Math.round(cpu.cpu) } : {}) };
+  }
+
+  /** Each owner's usage with its level, heaviest first, and agents' usage against the budget. */
+  private load(items: readonly PublishedResource[], now: number): { sessions: SessionUsage[]; budget: PublishedBudget } {
+    const sessions: SessionUsage[] = this.usage.map((owner) => {
+      const cpu = this.history.sustained(`session:${owner.key}`, now) ?? { cpu: owner.cpuNow, sustained: false };
+      const mine = items.filter((item) => (owner.key === "unowned" ? !item.owner : item.owner?.key === owner.key));
+      const load = loadLevel({ cpu, memory: owner.memory }, SESSION_THRESHOLDS);
+      let level = load.level;
+      const reasons = [...load.reasons];
+      // Its worst leftover's level, and the first thing that one says.
+      const worst = mine.reduce<PublishedResource | undefined>((found, item) => (!found || worse(found.level, item.level) !== found.level ? item : found), undefined);
+      if (worst && worse(level, worst.level) !== level) {
+        level = worst.level;
+        reasons.push(`${worst.title}: ${worst.levelReasons?.[0] ?? worst.reason ?? worst.level}`);
+      }
+      return {
+        key: owner.key,
+        ...(owner.sessionId ? { sessionId: owner.sessionId } : {}),
+        label: owner.label,
+        live: owner.live,
+        cpu: Math.round(cpu.cpu),
+        sustained: cpu.sustained,
+        memory: owner.memory,
+        resources: owner.resources,
+        level,
+        reasons,
+        ...(this.memory.loweredSessions[owner.key] ? { lowered: true as const } : {}),
+      };
+    });
+    const total = this.history.sustained("budget", now) ?? { cpu: 0, sustained: false };
+    const memory = sessions.filter((session) => session.key !== "unowned").reduce((sum, session) => sum + session.memory, 0);
+    const budget = budgetOf(this.budgetSettings(), this.machine, sessions, { ...total, memory });
+    for (const session of sessions) {
+      if (!budget.over.includes(session.key)) continue;
+      session.over = true;
+      session.level = "red";
+      session.reasons.unshift("over the agents' budget");
+    }
+    const rank = { red: 2, yellow: 1, green: 0 } as const;
+    sessions.sort((a, b) => Number(a.key === "unowned") - Number(b.key === "unowned") || rank[b.level] - rank[a.level] || b.cpu - a.cpu || b.memory - a.memory);
+    return { sessions, budget };
+  }
+
+  /** Each live row's worst level, for its "3 still running" line's mark; green rows are left out. */
+  rowLevels(now: number = this.sampledAt): Map<string, Level> {
+    const levels = new Map<string, Level>();
+    for (const session of this.published(now).sessions) if (session.sessionId && session.live && session.level !== "green") levels.set(session.sessionId, session.level);
+    return levels;
+  }
+
+  /** A live session by its row or agent id. */
+  liveSession(id: string): LedgerSession | undefined {
+    return this.live.find((session) => session.sessionId === id || agentId(session) === id);
+  }
+
+  markHeld(entry: ResourceEntry, held: boolean, now: number): void {
+    if (held) this.memory.held[entry.identity] = now;
+    else delete this.memory.held[entry.identity];
+  }
+
+  markLowered(entry: ResourceEntry, by: "you" | "auto" | null, now: number): void {
+    if (by) this.memory.lowered[entry.identity] = { at: now, by };
+    else delete this.memory.lowered[entry.identity];
+  }
+
+  markSessionLowered(session: LedgerSession, lowered: boolean, now: number): void {
+    if (lowered) this.memory.loweredSessions[agentId(session)] = now;
+    else delete this.memory.loweredSessions[agentId(session)];
+  }
+
+  /**
+   * What `agent-auto-background` may move to the background band now: while agents are over their CPU budget, a
+   * process group a session left running (never a VM, a simulator, something unowned or a session itself) that has
+   * kept a core busy for five minutes, and that isn't already lowered or held.
+   */
+  autoBackgroundCandidates(now: number = this.sampledAt): ResourceEntry[] {
+    const published = this.published(now);
+    if (!published.budget.autoBackground || published.budget.level !== "red" || !published.budget.sustained || published.budget.cpu <= published.budget.cpuLimit) return [];
+    return [...this.entries.values()].filter((entry) => {
+      if (!entry.owner || !PROCESS_KINDS.has(entry.kind) || this.memory.lowered[entry.identity] || this.memory.held[entry.identity]) return false;
+      const cpu = this.history.sustained(entry.identity, now);
+      return Boolean(cpu?.sustained && cpu.cpu >= 100);
+    });
   }
 
   /** How many of each live row's resources are running: its row's "3 still running". */
@@ -1161,18 +1396,24 @@ function escapeRegExp(text: string): string {
 
 // MARK: the published rows
 
-/** The published state's rows with each live session's `stillRunning`, by row id. */
-export function withStillRunning<State extends { rows: readonly object[] }>(state: State, counts: ReadonlyMap<string, number>): State {
-  if (!counts.size && !state.rows.some((row) => "stillRunning" in row)) return state;
+/**
+ * The published state's rows with each live session's `stillRunning` (how many things it left running) and
+ * `resourceLevel` (yellow or red, what it uses all told; green is left out), by row id.
+ */
+export function withStillRunning<State extends { rows: readonly object[] }>(
+  state: State,
+  counts: ReadonlyMap<string, number>,
+  levels: ReadonlyMap<string, Level> = new Map(),
+): State {
+  if (!counts.size && !levels.size && !state.rows.some((row) => "stillRunning" in row || "resourceLevel" in row)) return state;
   return {
     ...state,
     rows: state.rows.map((row) => {
       const id = (row as { id?: unknown }).id;
       const count = typeof id === "string" ? counts.get(id) : undefined;
-      if (count) return { ...row, stillRunning: count };
-      if (!("stillRunning" in row)) return row;
-      const { stillRunning: _dropped, ...rest } = row as { stillRunning?: number };
-      return rest;
+      const level = typeof id === "string" ? levels.get(id) : undefined;
+      const { stillRunning: _count, resourceLevel: _level, ...rest } = row as { stillRunning?: number; resourceLevel?: Level };
+      return { ...rest, ...(count ? { stillRunning: count } : {}), ...(level && level !== "green" ? { resourceLevel: level } : {}) };
     }),
   };
 }
@@ -1188,6 +1429,7 @@ export type ResourceTarget =
 export type ResourceRequest =
   | { kind: "resources" }
   | { kind: "resource-decide"; id: string; action: ResourceAction; callerPid?: number }
+  | { kind: "resource-session"; sessionId: string; action: "lower" | "restore"; callerPid?: number }
   | { kind: "resource-add"; target: ResourceTarget; until: string; why?: string; callerPid: number };
 
 export type ResourceReply =
@@ -1209,8 +1451,13 @@ export function decodeResourceRequest(body: unknown): ResourceRequest | { error:
   const callerPid = typeof value.callerPid === "number" && Number.isSafeInteger(value.callerPid) && value.callerPid > 1 ? value.callerPid : undefined;
   if (value.kind === "resource-decide") {
     if (typeof value.id !== "string" || !ID.test(value.id)) return { error: "a resource id is what `conch resources` lists, like p4242 or sim-1a2b3c4d" };
-    if (value.action !== "stop" && value.action !== "keep" && value.action !== "later") return { error: "action must be stop, keep or later" };
-    return { kind: "resource-decide", id: value.id, action: value.action, ...(callerPid ? { callerPid } : {}) };
+    if (!RESOURCE_ACTIONS.includes(value.action as ResourceAction)) return { error: `action must be one of ${RESOURCE_ACTIONS.join(", ")}` };
+    return { kind: "resource-decide", id: value.id, action: value.action as ResourceAction, ...(callerPid ? { callerPid } : {}) };
+  }
+  if (value.kind === "resource-session") {
+    if (typeof value.sessionId !== "string" || !ID.test(value.sessionId)) return { error: "a session is its id, as the Mac app or `conch sessions` gives it" };
+    if (value.action !== "lower" && value.action !== "restore") return { error: "a session's action is lower or restore" };
+    return { kind: "resource-session", sessionId: value.sessionId, action: value.action, ...(callerPid ? { callerPid } : {}) };
   }
   if (value.kind !== "resource-add") return null;
   if (!callerPid) return { error: "callerPid must be the calling process's pid" };

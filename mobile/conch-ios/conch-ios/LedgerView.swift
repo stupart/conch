@@ -911,7 +911,7 @@ struct SessionRowView: View {
                 // What it left running on the Mac (2026-11-11, src/resource-ledger.ts), once it isn't working:
                 // "3 still running". The Mac's Still running lists them and stops one; the phone only says so.
                 if activity == nil, let running = StillRunning.rowLine(row.stillRunning) {
-                    SidebarSecondLine(SidebarRowText.SecondLine(text: running, kind: .stillRunning), font: Type.caption)
+                    SidebarSecondLine(SidebarRowText.SecondLine(text: running, kind: .stillRunning, level: ResourceLevel(row.resourceLevel)), font: Type.caption)
                 }
 
                 // What the agent asked you to check there, when it said (scene.inspect).

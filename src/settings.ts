@@ -85,6 +85,9 @@ export const SETTING_KEYS = [
   "screen-log",
   "failure-autofix",
   "agent-auto-update",
+  "agent-budget-cpu",
+  "agent-budget-memory",
+  "agent-auto-background",
 ] as const;
 
 export type SettingKey = typeof SETTING_KEYS[number];
@@ -125,7 +128,10 @@ export type SettingField =
   | "whisperIdleUnloadMins"
   | "screenLog"
   | "failureAutofix"
-  | "agentAutoUpdate";
+  | "agentAutoUpdate"
+  | "agentBudgetCpu"
+  | "agentBudgetMemory"
+  | "agentAutoBackground";
 export type HandoffOrder = "newest" | "oldest" | "urgency";
 export type PhoneLanMode = "auto" | "on" | "off";
 export type SettingValue = number | boolean | string;
@@ -229,6 +235,7 @@ const micGain = { min: -20, max: 30, minInclusive: true, maxInclusive: true } sa
 const haikuTimeout = { min: 1, max: 60, minInclusive: true, maxInclusive: true } satisfies SettingBounds;
 const positiveInteger = { min: 1, minInclusive: true, integer: true } satisfies SettingBounds;
 const zeroableInteger = { min: 0, minInclusive: true, integer: true } satisfies SettingBounds;
+const share = { min: 1, max: 100, minInclusive: true, maxInclusive: true, integer: true } satisfies SettingBounds;
 
 export const SETTING_DESCRIPTORS = [
   {
@@ -690,6 +697,50 @@ export const SETTING_DESCRIPTORS = [
     bounds: null,
     apply: "live",
     help: "keep Claude Code and Codex up to date when they're installed as Homebrew casks; checks every few hours, never restarts a session",
+  },
+  {
+    // The load budget (resource-ledger.ts), Tyler, 2026-11-11: "Long term u should prob be setting the 'budget' for how
+    // much continuous load agents can use in conch." The share of this Mac's cores everything agents run may keep busy,
+    // averaged over five minutes: their sessions, what those run, and what they left running. A quarter leaves the Mac
+    // to its person; the night of the ledger, agents' leftovers alone held two VMs at 20 GB and more. Read live. Not
+    // one agents may set (`AGENT_TUNABLE_SETTINGS`): it is the limit on them.
+    key: "agent-budget-cpu",
+    field: "agentBudgetCpu",
+    env: "CONCH_AGENT_BUDGET_CPU",
+    kind: "integer",
+    default: 25,
+    parse: numberParser(share, "a whole percentage of this Mac's cores, 1 to 100"),
+    bounds: share,
+    apply: "live",
+    help: "the share of this Mac's cores agents may keep busy, averaged over 5 minutes, before conch says which sessions are over (Settings › Resources)",
+  },
+  {
+    // The same budget's memory: the share of this Mac's memory (as Activity Monitor counts it) agents may hold.
+    key: "agent-budget-memory",
+    field: "agentBudgetMemory",
+    env: "CONCH_AGENT_BUDGET_MEMORY",
+    kind: "integer",
+    default: 25,
+    parse: numberParser(share, "a whole percentage of this Mac's memory, 1 to 100"),
+    bounds: share,
+    apply: "live",
+    help: "the share of this Mac's memory agents may hold before conch says which sessions are over (Settings › Resources)",
+  },
+  {
+    // Off, and it ships off. On, while agents are over their CPU budget, conch moves a process an agent left running
+    // that has kept a core busy for five minutes into macOS's background band (`taskpolicy -b`): it still runs, only
+    // after what Tyler is doing, and Restore priority (`taskpolicy -B`) takes it back. The one thing conch does on its
+    // own here, because it stops nothing and loses nothing; holding or stopping stays his. Never a VM, a simulator,
+    // something no session started, or a session itself. Not one agents may set (`AGENT_TUNABLE_SETTINGS`).
+    key: "agent-auto-background",
+    field: "agentAutoBackground",
+    env: "CONCH_AGENT_AUTO_BACKGROUND",
+    kind: "boolean",
+    default: false,
+    parse: parseBoolean,
+    bounds: null,
+    apply: "live",
+    help: "while agents are over their CPU budget, lower the priority (taskpolicy -b) of what they left running that has kept a core busy for 5 minutes; never stops or pauses anything",
   },
 ] as const satisfies readonly SettingDescriptor[];
 

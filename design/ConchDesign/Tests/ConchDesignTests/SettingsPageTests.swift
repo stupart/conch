@@ -14,13 +14,14 @@ final class SettingsPageTests: XCTestCase {
     /// The seven the window had, in its order, and Browser (2026-10-11): conch's browser profiles, and Chrome's sign-ins
     /// copied into them. Then Logins (2026-10-14) beside it: which CLIs, agents, MCP servers, plugins and browser profiles
     /// are signed in, as whom. Skills and Benchmarks (2026-10-28) after Plugins & MCP, the tools they sit beside.
-    /// And Failures (2026-10-28) last, after Setup: failure tickets and their Fix.
+    /// And Failures (2026-10-28) last, after Setup: failure tickets and their Fix. Resources (2026-11-11) just before it:
+    /// what each session uses, and the agents' budget.
     func testTheSectionsAreTheWindowsSevenThenBrowserAndLoginsInTheirOrder() {
         XCTAssertEqual(SettingsSection.allCases.map(\.title),
-                       ["Providers", "Environments", "Plugins & MCP", "Skills", "Benchmarks", "Browser", "Logins", "General", "Phone app", "Permissions", "Setup", "Failures"])
+                       ["Providers", "Environments", "Plugins & MCP", "Skills", "Benchmarks", "Browser", "Logins", "General", "Phone app", "Permissions", "Setup", "Resources", "Failures"])
         // The raw values are what the separate window remembered, so the section left there is the one the page opens on.
         XCTAssertEqual(SettingsSection.allCases.map(\.rawValue),
-                       ["providers", "environments", "tools", "skills", "benchmarks", "browser", "logins", "general", "phone", "permissions", "setup", "failures"])
+                       ["providers", "environments", "tools", "skills", "benchmarks", "browser", "logins", "general", "phone", "permissions", "setup", "resources", "failures"])
         XCTAssertEqual(SettingsSection.storageKey, "conch.settings.section")
         XCTAssertEqual(Set(SettingsSection.allCases.map(\.symbol)).count, SettingsSection.allCases.count, "a mark each")
     }

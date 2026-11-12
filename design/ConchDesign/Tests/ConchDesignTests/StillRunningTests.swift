@@ -52,7 +52,7 @@ final class StillRunningTests: XCTestCase {
 
     func testTheSecondLineSaysWhatItLeftRunningWhenIdleAndWhatItDoesWhileWorking() {
         let idle = SidebarRowText.secondLine(message: nil, blockedOn: nil, activity: nil, stillRunning: 3, startedBy: "planner")
-        XCTAssertEqual(idle, .init(text: "3 still running", kind: .stillRunning))
+        XCTAssertEqual(idle, .init(text: "3 still running", kind: .stillRunning, level: .green))
         let working = SidebarRowText.secondLine(message: nil, blockedOn: nil, activity: "Running the test suite", stillRunning: 3, startedBy: nil)
         XCTAssertEqual(working?.kind, .activity)
         let blocked = SidebarRowText.secondLine(message: nil, blockedOn: "Allow rm?", activity: nil, stillRunning: 3, startedBy: nil)

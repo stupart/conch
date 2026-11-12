@@ -66,10 +66,13 @@ public enum SidebarRowText {
 
         public let text: String
         public let kind: Kind
+        /// For `.stillRunning`: what the session uses all told, green, yellow or red (src/resource-load.ts), drawn as a dot.
+        public let level: ResourceLevel?
 
-        public init(text: String, kind: Kind) {
+        public init(text: String, kind: Kind, level: ResourceLevel? = nil) {
             self.text = text
             self.kind = kind
+            self.level = level
         }
     }
 
@@ -91,11 +94,15 @@ public enum SidebarRowText {
     ///
     /// 2026-11-11: what it left running (`stillRunning`, src/resource-ledger.ts) comes after what it is doing and before
     /// its starter: an idle session holding three dev servers says so, a working one says what it is doing.
-    public static func secondLine(message: String?, blockedOn: String?, activity: String?, stillRunning: Int? = nil, startedBy: String?) -> SecondLine? {
+    public static func secondLine(
+        message: String?, blockedOn: String?, activity: String?, stillRunning: Int? = nil, stillRunningLevel: String? = nil, startedBy: String?
+    ) -> SecondLine? {
         if let message = present(message) { return SecondLine(text: message, kind: .message) }
         if let blockedOn = present(blockedOn) { return SecondLine(text: blockedOn, kind: .question) }
         if let activity = SidebarActivity.clean(activity) { return SecondLine(text: activity, kind: .activity) }
-        if let running = StillRunning.rowLine(stillRunning) { return SecondLine(text: running, kind: .stillRunning) }
+        if let running = StillRunning.rowLine(stillRunning) {
+            return SecondLine(text: running, kind: .stillRunning, level: ResourceLevel(stillRunningLevel))
+        }
         return present(startedBy).map { SecondLine(text: "started by \($0)", kind: .startedBy) }
     }
 
@@ -191,11 +198,17 @@ public struct SidebarSecondLine: View {
     }
 
     public var body: some View {
-        TailFadeText(line.text, fade: 24)
-            .font(font)
-            .foregroundStyle(style)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .clipped()
+        HStack(spacing: 5) {
+            // What the session uses, green, yellow or red, before what it left running (2026-11-11).
+            if line.kind == .stillRunning, let level = line.level {
+                ResourceLevelDot(level, size: 6)
+            }
+            TailFadeText(line.text, fade: 24)
+                .font(font)
+                .foregroundStyle(style)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .clipped()
     }
 
     private var style: AnyShapeStyle {
