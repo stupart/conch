@@ -25,6 +25,7 @@ import {
 import { readCodexThreads } from "./codex-threads.ts";
 import { hasConversation, liveTranscriptPath, readClaudeTitles, readContinuedIn } from "./claude-title.ts";
 import { parseWindowKey, processParentTable, windowKey, windowPidFromAncestry } from "./window-key.ts";
+import { noteRegistryEntries } from "./transcript-paths.ts";
 import { HELP_SESSION_LABEL, helpSessionDir } from "./help-session.ts";
 
 const LABELS_FILE = join(conchHome(), ".config/conch/labels.json");
@@ -925,6 +926,8 @@ export async function registrySnapshot(
     allEntries.push(entry);
     if (isEngageable(entry) && !unusedBackgroundJob(claudeDir, entry)) claudeEntries.push(entry);
   }
+  // A session that moved folder or process is searched for again (transcript-paths.ts).
+  noteRegistryEntries(claudeDir, allEntries);
   // A process killed outright leaves its registry file behind until Claude Code next prunes it, and after the Mac
   // goes down that is every session's. When conch brings one back (`restart-recovery.ts`), the live process and
   // the dead file name one conversation, and read as two windows of it: a doubled row, half of it dead. The live

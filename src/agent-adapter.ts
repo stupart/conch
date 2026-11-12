@@ -17,7 +17,7 @@
  * import `adapterFor` back, and an ES module cycle only bites when a binding
  * is read before its module has run.
  */
-import { existsSync, readdirSync } from "node:fs";
+import { claudeTranscriptPath } from "./transcript-paths.ts";
 import { join } from "node:path";
 import { liveBackgroundAgents, subagentRowId } from "./agent-activity.ts";
 import { claudeExitBlocker, type ExitBlocker } from "./exit-screen.ts";
@@ -385,18 +385,8 @@ export const claudeAdapter: AgentAdapter = {
   ownInstallerRoots: (home, env) => [join(env.XDG_DATA_HOME ?? join(home, ".local", "share"), "claude", "versions")],
   renameCommand: (label) => `/rename ${label}`,
   transcriptFormat: "claude",
-  findTranscript: (sessionId, { claudeDir }) => {
-    const projects = join(claudeDir, "projects");
-    try {
-      // `existsSync`, not a `statSync` that throws: every project but one misses, and the registry asks this for
-      // each Claude session on every render (75 projects here, 2026-11-02). Each miss built an exception.
-      for (const dir of readdirSync(projects)) {
-        const candidate = join(projects, dir, `${sessionId}.jsonl`);
-        if (existsSync(candidate)) return candidate;
-      }
-    } catch {}
-    return undefined;
-  },
+  // Searched once per session and kept (transcript-paths.ts).
+  findTranscript: (sessionId, { claudeDir }) => claudeTranscriptPath(claudeDir, sessionId),
   subagentSessions: (parent, transcriptPath) =>
     liveBackgroundAgents(transcriptPath).map((agent) => ({
       sessionId: subagentRowId(agent.agentId),
