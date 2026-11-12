@@ -11,8 +11,8 @@ Help text quoted below is from 0.154.0. The one difference that matters here: 0.
 `codex mcp-server` (section 8). Nothing was started, resumed or forked, and nothing under `~/.codex`
 was written: SQLite was opened `mode=ro`, rollouts read with `jq`, locks inspected with `lsof`.
 
-The live example throughout is session `01a08ea0…` ("Clone Blueprint Studio monorepo"), running as
-`codex resume 01a08ea0… -c model_provider=openai-api -c model=gpt-6-astra …` (pid 2383) with ten
+The live example throughout is session `5e5e5e19…` ("Clone the Acme monorepo"), running as
+`codex resume 5e5e5e19… -c model_provider=openai-api -c model=gpt-6-astra …` (pid 2383) with ten
 `thread_spawn` helpers.
 
 ## 1. app-server protocol
@@ -130,8 +130,12 @@ the live parent rollout:
 - 162 `reasoning` and 41 `inter_agent_communication_metadata`;
 - 17 `world_state`, 9 `turn_context` and 1 `compacted`.
 
-conch reads `session_meta`, `event_msg`, `response_item` and `token_count`
-(`src/conversation.ts:843-990`, `src/context-meter.ts:34-41`) and nothing else.
+When this was written conch read `session_meta`, `event_msg`, `response_item` and `token_count` and
+nothing else. Today the live conversation reads `event_msg` and `response_item` (`reduceCodexLine`,
+`src/conversation.ts:1488-1649`) and the context meter reads `token_count` (`codexContext`,
+`src/context-meter.ts:34-41`). The record store (2026-09-15, #225) also reads `session_meta`,
+`turn_context`, `token_usage_record`, `compacted` and `inter_agent_communication`
+(`normalizeCodexRecord`, `src/records-codex.ts:283-425`).
 
 **Databases.** All live under `~/.codex`, in WAL mode.
 
@@ -145,8 +149,9 @@ conch reads `session_meta`, `event_msg`, `response_item` and `token_count`
   (`codex-rs/state/thread_history_migrations/0001-0006`).
 - Also: `queue_1` (queued turns), `goals_1`, `logs_2`, `memories_1`.
 
-conch's note that `thread_turns` is sparse ("7 of them on this machine", `src/codex-threads.ts:675`)
-is stale: 34 of 36 local threads have turn rows, and every thread is `history_mode = paginated`.
+conch's note that `thread_turns` was sparse ("7 of them on this machine") was stale: 34 of 36 local
+threads have turn rows, and every thread is `history_mode = paginated`. The note was corrected the same
+day (#180) and now carries the measured coverage (`codexThreadStatus`, `src/codex-threads.ts:575`).
 
 **The lock, and identifying a live process from outside.** The lock is
 `thread-writer-locks/<thread-id>.lock`. A process opens it and holds an exclusive `try_lock` for as
@@ -165,8 +170,10 @@ So the reliable outside test is what conch does, `lsof` on the lock, with one re
 1. The thread is inside conch's eight-hour window but no process has it open: a closed TUI, a
    finished helper, or a Desktop thread unloaded after "no subscribers and no thread activity for 30
    minutes" (`README.md:211`). There is no holder, so pid 0 is the truth, not an error.
-2. `readCodexThreadPid` caches a miss for 30 s (`src/codex-threads.ts:306-330`), so a thread opened
-   just after a poll stays pid-less until the cache expires.
+2. `readCodexThreadPid` cached a miss for 30 s, so a thread opened just after a poll stayed pid-less
+   until the cache expired. Gone since the same day (#180): one `lsof -F pn` over every lock names each
+   holder, and its answer is asked again the moment a lock file appears or is replaced
+   (`cachedLockProbe`, `src/codex-threads.ts`).
 3. A failing `lsof` returns undefined.
 
 Two cases give a pid that is wrong to type into:
@@ -224,7 +231,7 @@ have to get them *trusted*.
 **Trust, as conch meets it (codex-cli 0.164.0, 2026-10-28).** An untrusted hook doesn't just stay off:
 every TUI that would load one opens on "Hooks need review" and waits for an answer, and a launch
 naming a Codex account writes conch's three into hooks.json (`runCodexInstall`). A background
-session has nobody to answer, so it never checked in ("atals and nura"). For the background sessions
+session has nobody to answer, so it never checked in ("budget app and api"). For the background sessions
 it starts, conch now asks `hooks/list` which hooks would load and trusts its own for that launch:
 exactly its command, from that home's own hooks.json, at the hash Codex reports, as one
 `-c hooks.state={"<key>"={trusted_hash="…"}}` (a per-key dotted `-c` is not read; the table merges with
@@ -284,7 +291,7 @@ first. The value depends on Tyler's own policy: 560 of 561 local rollouts ran `a
   `{"subagent":{"thread_spawn":{parent_thread_id, depth, agent_path, agent_nickname, agent_role}}}`
   (`SubAgentSource::ThreadSpawn`, `protocol.rs:2822-2837`). `parent_thread_id` is also top-level in
   `SessionMeta`, and `session_id` names the root.
-- The state DB keeps the edge in `thread_spawn_edges` (live: ten `open` children under `01a08ea0`),
+- The state DB keeps the edge in `thread_spawn_edges` (live: ten `open` children under `5e5e5e19`),
   and `thread/list` answers `parentThreadId` and `ancestorThreadId` (`README.md:178, 564-581`).
 - Helpers run inside the parent's process (pid 2383 holds their locks). Under Multi-Agent V2 they
   refuse direct input with `-32600` "direct app-server input is not allowed for multi-agent v2
@@ -299,7 +306,7 @@ encrypted_content?, trigger_turn}`, with agent paths such as `/root/ci_release` 
 (`protocol.rs:804-820`). The enum has a separate `inter_agent_communication` record type, but in the
 live parent they appear as `response_item` `agent_message` items with `author` and `recipient` (42 of
 them), each followed by an `inter_agent_communication_metadata {trigger_turn}` line. conch detects them
-by a text header (`isInterAgentEnvelope`, `src/codex-threads.ts:425`); the fields are the reliable test.
+by a text header (`isInterAgentEnvelope`, `src/codex-threads.ts:751`); the fields are the reliable test.
 
 **Tokens live only in each thread's own rollout.**
 
@@ -312,10 +319,13 @@ Live figures: the parent has 420.6 M, and the ten helpers 88.8 M between them (B
 20.9 M, Zeno 14.0 M, …). Nothing rolls children up, which is why the earlier analysis found helpers
 holding more than their parent: a meter on the parent alone undercounts by exactly its descendants.
 
-**What conch should do.** Give the Codex adapter a `subagentSessions` (today `() => []`,
-`src/agent-adapter.ts:284`) built from `thread_spawn_edges` plus `threads`. Nest live helpers under
-their parent the way C4 does for Claude, and classify inter-agent messages by `author`/`recipient`.
-Touches C4/C15, E8, the cost meter.
+**What conch should do.** Give the Codex adapter a `subagentSessions` (it was `() => []`) built from
+`thread_spawn_edges` plus `threads`. Nest live helpers under their parent the way C4 does for Claude,
+and classify inter-agent messages by `author`/`recipient`. Touches C4/C15, E8, the cost meter.
+**Done:** helpers nest under their parent since 2026-09-11 (#180; `subagentSessions`,
+`src/agent-adapter.ts:508`, from `readCodexHelperThreads`, listed only while a helper's writer lock has a
+holder), and the live conversation drops an `agent_message` carrying `author` or `recipient` since
+2026-09-23 (#375). The thread listing's preview still matches the text header. The cost meter is still open.
 
 ## 6. Context and cost
 
@@ -533,10 +543,11 @@ Ranked by value.
    kept separate. Add the compaction line at min(configured, 90 % of the window). Evidence: a helper's
    tokens are only in its own rollout (all 186 parent records are the parent's; ten helpers hold
    88.8 M); `protocol.rs:2216-2248`; `openai_models.rs:499-507`. Rows: cost/context meter, C4/C15.
-4. **Read Codex's own indexes instead of reconstructing them.** Use `thread_spawn_edges` to nest live
-   helpers (the Codex adapter's `subagentSessions` is empty), `thread_turns` for busy/idle (no longer
-   sparse), and `threads.name` / `session_index.jsonl` for names. Name the writer-lock holder in the
-   log: pid 0 with no holder means closed; an app-server or daemon holder means do not type. Evidence:
+4. **Read Codex's own indexes instead of reconstructing them** — **done** (2026-09-11, #180). Use
+   `thread_spawn_edges` to nest live helpers (the Codex adapter's `subagentSessions` was empty),
+   `thread_turns` for busy/idle (no longer sparse), and `threads.name` / `session_index.jsonl` for names.
+   Name the writer-lock holder in the log: pid 0 with no holder means closed; an app-server or daemon
+   holder means do not type. All four shipped as written (`src/codex-threads.ts`). Evidence:
    `state/migrations/0021`, `0041`; `writer_lock.rs:40-160`; live `lsof` (2383 holds the parent and
    three helpers, 74676 the Desktop thread). Rows: C4/C15, E8, R.
 5. **A neutral Codex record for export, from `thread_items` and without the ciphertext.** Keep messages,

@@ -87,9 +87,9 @@ The upstream claude-swap dashboard is MIT licensed and built with Python/Textual
 
 The default collector is now Claude Code's supported status-line input (2.1.251+), not an external account manager. Login/launch installs an idempotent wrapper that preserves the original command and forwards its exact input/output. It records only five-hour and weekly percentages and reset times. Public CLI auth status binds readings to the profile's email and organization; changed identities cannot inherit a cached reading. Conch-initiated login clears the previous measurement. No credential files or Keychain entries are read by Conch.
 
-The wrapper checks public identity on changed readings or once per minute. Settings refresh reads the cache, not a billing API. Missing windows remain unknown; passed reset windows disappear until a new Claude reading arrives. Readings older than five minutes are labelled Cached. Usage does not route sessions or rotate accounts.
+The wrapper checks public identity on changed readings or once per minute. Settings refresh reads the cache, not a billing API. Missing windows remain unknown; passed reset windows disappear until a new Claude reading arrives. Readings older than five minutes are labelled Cached. This reading does not route sessions or rotate accounts; rotation is claude-swap's own auto-switcher, below.
 
-The optional schema-v1 claude-swap adapter remains available in source with its own tests, but is not invoked by this settings flow. External collector slots are not automatically joined to launch profiles.
+The optional schema-v1 claude-swap adapter (`src/claude-swap.ts`) is invoked by the Claude accounts list: since rotation shipped (2026-10-09, #537), the daemon answers each rotation request from the Providers screen with `cswap list --json`, and that list is what the screen shows (`src/claude-rotation.ts`). External collector slots are not automatically joined to launch profiles.
 
 ## Terminal and background launches
 

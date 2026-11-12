@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { TERMINAL_SCRIPT_TIMEOUT_MS, terminalTabLookup } from "../src/terminal-tab.ts";
 
-// 2026-10-11, Tyler: "the asset generator and monorepo session won't let me send a message or open the terminal". Its
+// 2026-10-11, Tyler: "the recipe app and backend session won't let me send a message or open the terminal". Its
 // tab was found by asking each of Terminal's tabs for its tty, one Apple event per tab; with the Mac's load past 250 that
 // took up to 90 seconds, and conch gave up after four.
 test("the tab is found in two Apple events, however many windows and tabs", () => {

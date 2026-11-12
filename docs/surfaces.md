@@ -2,7 +2,8 @@
 
 Research date: 2026-08-17. This document is the master inventory behind the
 backlog item “conch should know about skills and plugins, then toggle them”
-(`docs/backlog.md:140-145`). It starts from conch's implementation, then checks
+(since gone from `docs/backlog.md`; the work now lives in `docs/roadmap.md` as
+B1, B3, B4 and C3). It starts from conch's implementation, then checks
 the current Claude Code and Codex documentation.
 
 The short answer is that “installed” or “enabled” is not one state. For almost
@@ -34,32 +35,61 @@ clients, lifecycle controls, and relevant tests. Generated/build output,
 dependencies, lockfiles, binary/media fixtures and Xcode derived data were
 excluded. Those files do not define an agent-facing surface.
 
-Conch today is an observer and terminal operator, not an agent host:
+Conch today is an observer and terminal operator, not an agent host. This list
+was refreshed against the code on 2026-11-11; the sections below keep the
+2026-08-17 research, with dated notes where conch has since shipped something
+they describe as missing:
 
-- Claude sessions come from `~/.claude/sessions/<pid>.json`; conch keeps only
-  session id, backend, name, cwd, pid, status, kind, entrypoint and transcript
-  path (`src/sessions.ts:37-61`, `src/sessions.ts:77-121`).
-- Codex sessions come from conch's optional hook registry and, when that is
-  absent, read-only access to Codex's SQLite state, history, rollout paths and
-  writer locks (`src/sessions.ts:311-332`, `src/codex-threads.ts:496-617`). The
-  fallback is deliberately observational: the database is opened read-only and
-  the session does not know conch is there (`src/codex-threads.ts:1-20`,
-  `src/codex-threads.ts:109-136`).
-- The published row contains backend, context usage, status, transcript, voice,
-  priority, attention state and artifact, but no model, configuration source,
-  permission mode, plugin, skill, MCP, hook or agent inventory
-  (`src/panel.ts:150-182`, `src/panel.ts:330-401`).
+- Claude sessions come from `sessions/<pid>.json` in every Claude profile conch
+  knows: the default `~/.claude` and each account added in conch
+  (`src/claude-account-sessions.ts:9-47`). Besides session id, backend, name,
+  cwd, pid, status, kind, entrypoint and transcript path, conch now keeps the
+  account and its configuration home, the agent's own id when two windows share
+  one, who chose the name, the folders the agent says it works in, a background
+  job's id, why a row has no terminal, and the session it runs inside or was
+  started by (`src/sessions.ts:62-158`, `src/sessions.ts:554-616`).
+- Codex sessions come from conch's optional hook registry and, for any session
+  that registry does not list, read-only access to Codex's SQLite state,
+  history, session index, rollout paths and writer locks, in each Codex home
+  conch knows (`src/sessions.ts:969-995`, `src/codex-threads.ts:1053-1201`,
+  `src/claude-account-sessions.ts:24-30`). The fallback is deliberately
+  observational: the database is opened read-only and the session does not know
+  conch is there (`src/codex-threads.ts:3-25`, `src/codex-threads.ts:182-214`).
+- The published row carries backend, context usage, status, transcript, voice,
+  priority, attention state and deliverables, and now also the account, the
+  model and effort read from the session's own record, a usage limit, cwd and
+  declared working folders, a pending approval, the session it runs inside or
+  was started by, and whether it can be typed into or raised
+  (`src/panel.ts:270-404`, `src/panel.ts:699-862`). It still has no
+  configuration source, permission mode, plugin, skill, MCP, hook or
+  agent-definition inventory. Plugins, skills, commands and MCP come from a
+  separate per-session read that the Mac app's inspector asks for
+  (`src/agent-capabilities.ts:2272-2299`); hooks and agent definitions are not
+  read.
 - Transcript folding recognizes commands, file changes, reads, searches, web,
-  subagents, plans, questions and MCP calls (`src/conversation.ts:303-359`). It
+  subagents, plans, questions and MCP calls (`src/conversation.ts:935-998`). It
   observes an invocation, not the catalog from which that invocation came.
-- Conch's own MCP server implements eleven tools and advertises only the MCP
-  `tools` capability; it does not expose resources or prompts
-  (`src/mcp.ts:34-35`, `src/mcp.ts:121-250`, `src/mcp.ts:947-966`).
-- Conch now starts or resumes a terminal session, but the launch contract has
-  only backend, session id and cwd (`src/settings.ts:705-714`), and the actual
-  command is plain `claude [--resume id]` or `codex [resume id]`
-  (`src/session-lifecycle.ts:36-46`). It does not choose a configuration home,
-  profile, model, permissions, plugins or MCP set.
+- Conch's own MCP server implements 26 tools (`src/mcp.ts:283-877`): seeing and
+  steering sessions (list, wake, recite, speak, mode, rename, fork, settings),
+  reading their replies and recorded history, publishing, listing and removing
+  deliverables, capturing pages, eight tools for conch's in-app browser, Atlas
+  pages, what is on screen, and the folders a session works in. It advertises
+  only the MCP `tools` capability, with `listChanged` so a running server can
+  hand over to a newer conch's, and gives Claude sessions server
+  `instructions`; it does not expose resources or prompts
+  (`src/mcp.ts:156-157`, `src/mcp.ts:2667-2678`, `src/mcp.ts:2726-2737`).
+- Conch starts, resumes, forks, restarts and teleports sessions, in Terminal or,
+  as a background session, in conch's own tmux. The launch request carries
+  backend, host, Claude profile or sign-in, Codex account, resume or teleport
+  id, cwd, a first message, a folder-trust answer, and per-agent start options
+  checked against each CLI's own `--help` (`src/settings.ts:1020-1039`). The
+  command sets the account's configuration home and passes those options:
+  Claude's model, effort, permission mode, permission bypass and fork; Codex's
+  model and reasoning effort as `-c` overrides, sandbox, approval policy, bypass
+  and profile, plus a one-launch trust override
+  (`src/session-lifecycle.ts:321-372`, `src/agent-adapter.ts:335-369`,
+  `src/agent-adapter.ts:442-492`). It still does not choose plugins, an MCP
+  set, added directories or free-form `-c` overrides.
 
 The difficulty labels used below mean:
 
@@ -100,10 +130,17 @@ sometimes narrow them; neither proves every host-supplied or in-memory choice.
 
 **Conch today.** Claude discovery is rooted at one configured `claudeDir`, and
 Codex observation defaults to `~/.codex` unless a test/config override supplies
-another home (`src/sessions.ts:271-347`, `src/codex-threads.ts:490-504`). The row
+another home (`src/sessions.ts:868-1020`, `src/codex-threads.ts:879-883`). The row
 records cwd and backend, but no binary, version, account, configuration home,
-profile, source surface or trust state (`src/sessions.ts:37-61`). A session held
-on Claude's trust prompt may not register at all (`docs/backlog.md:140-143`).
+profile, source surface or trust state (`src/sessions.ts:62-158`). A session held
+on Claude's trust prompt may not register at all (a backlog item at the time).
+— **shipped since**: accounts made discovery read every Claude profile and
+Codex home conch knows, and a row carries its account and configuration home
+(2026-09-29, #469 and #470, `src/claude-account-sessions.ts:9-47`); the Mac
+inspector names the binary a session runs, its version, and the folder's trust
+state (2026-09-23, #360; 2026-08-20, #88); and a start from conch asks about an
+untrusted folder before launching, then answers Claude's trust screen for it
+(2026-09-24, #396).
 
 **Good UI.** A session inspector should lead with backend and host surface
 (Claude terminal, Claude IDE/Desktop/SDK, Codex TUI/IDE/app-server), version,
@@ -147,20 +184,26 @@ Codex IDE extension
 [Codex developer commands](https://learn.chatgpt.com/docs/developer-commands?surface=cli#codex-plugin)).
 
 **Conch today.** Conch ships parallel Claude and Codex marketplace manifests,
-plugin manifests, one skill, an AGENTS file, an MCP declaration and launcher
+plugin manifests, one skill, an AGENTS file, an MCP declaration for each agent
+and a launcher
 (`plugin/.claude-plugin/marketplace.json:1-14`,
 `plugin/.agents/plugins/marketplace.json:1-16`,
 `plugin/plugins/conch/.codex-plugin/plugin.json:1-10`). The installer materializes
 that bundle under `~/.config/conch/plugin-dist` and invokes each product's
-marketplace/install CLI (`src/plugin-install.ts:145-171`,
-`src/plugin-install.ts:187-215`). The Mac app's only general plugin awareness is
+marketplace/install CLI (`src/plugin-install.ts:111-138`,
+`src/plugin-install.ts:153-184`). The Mac app's only general plugin awareness is
 a one-time boolean: it searches a few directories or the text `conch@`, with no
 version, enabled state, scope or component validation
 (`mac-app/conch-mac/PluginPresence.swift:3-48`,
-`mac-app/conch-mac/StateStore.swift:26-28`,
-`mac-app/conch-mac/StateStore.swift:70-86`). Its copied Claude marketplace
+`mac-app/conch-mac/StateStore.swift:35-37`,
+`mac-app/conch-mac/StateStore.swift:128-129`). Its copied Claude marketplace
 command is unrelated to the local installer and should not be treated as a
-source of truth (`mac-app/conch-mac/DashboardView.swift:297-327`).
+source of truth (`mac-app/conch-mac/Notices.swift:347-393`). — **shipped
+since**: the session inspector lists each plugin with its marketplace, version,
+scope, components and next-session state (2026-08-20, #88; the per-kind
+detail 2026-08-30, #89), and can enable or disable an existing plugin for the
+next session after showing the diff (2026-09-11, #166). The one-time nudge is
+unchanged.
 
 **Good UI.** Show installed, enabled and available plugins grouped by ecosystem,
 marketplace and scope; version/update state; source and trust/policy; components
@@ -169,7 +212,8 @@ the plugin can apply to the selected host surface. Let users install, update,
 enable, disable and remove at an explicit scope, inspect the manifest and data
 directory, and copy the exact recovery command. Conch's own plugin should get a
 health check: manifests present, correct version, skill available, MCP declared,
-eleven tools advertised, and hooks separately wired where required.
+every tool the build describes advertised, and hooks separately wired where
+required.
 
 **Running-session truth.** In Claude, skill text changes are live, but other
 plugin component changes require `/reload-plugins` or restart. Enabling or
@@ -219,12 +263,21 @@ can `skills/config/write`, but that is the state of that app-server host
 ([Codex app-server skills API](https://learn.chatgpt.com/docs/app-server#skills)).
 
 **Conch today.** Conch generates the `conch-control` SKILL from the single
-agent-facing contract and a short always-on Codex AGENTS preamble
-(`src/plugin-install.ts:69-106`, `src/plugin-install.ts:199-215`). The skill says
-what each of conch's tools does and when to surface artifacts
-(`docs/conch-control-skill.md:19-85`). Conch neither inventories other skills nor
+agent-facing contract and a short always-on Codex AGENTS preamble, both
+rendered from `src/agent-instructions.ts`
+(`src/agent-instructions.ts:181-189`, `src/plugin-install.ts:165-184`). The skill
+says what each of conch's tools does and when to surface artifacts
+(`docs/conch-control-skill.md:19-451`). Conch neither inventories other skills nor
 publishes whether its own skill is discoverable, loaded or invoked. A skill
 invocation may appear merely as a generic tool/command in the transcript.
+— **shipped since**: the session inspector lists the skills a session's
+configuration offers, with path, scope, owning plugin, visibility and who may
+invoke them (2026-08-20, #88; detail 2026-08-30, #89); the ⌘K palette offers
+user-invocable skills (2026-09-11, #157) and the Mac and phone composers offer
+them as you type (2026-11-04, #596); and Settings › Skills lists every skill
+across every account and both agents, with Add and Try (2026-10-29, #581,
+`src/skills-library.ts`). Whether a skill is loaded or was invoked is still not
+published.
 
 **Good UI.** Show name, description, scope, provider, file path, plugin owner,
 enabled/visibility state, invocation policy, allowed tools, model/effort/context
@@ -279,12 +332,19 @@ resource
 
 **Conch today.** The conch plugin contributes one stdio MCP definition. The
 installer rewrites it to the correct Bun/compiled invocation
-(`plugin/plugins/conch/.mcp.json:1-8`, `src/plugin-install.ts:130-159`,
-`src/plugin-install.ts:199-210`). The Mac “plugin installed” badge does not test
+(`plugin/plugins/conch/.mcp.json:1-8`, `src/plugin-install.ts:96-125`,
+`src/plugin-install.ts:165-177`). The Mac “plugin installed” badge does not test
 whether this server connects. Conversation rows render a used MCP call by its
-server and tool name (`src/conversation.ts:337-342`,
-`src/conversation.ts:559-570`); there is no configured-server inventory or
-health/auth model.
+server and tool name (`src/conversation.ts:975-979`,
+`src/conversation.ts:1268-1280`); there is no configured-server inventory or
+health/auth model. — **shipped since**: the session inspector lists each
+configured MCP server with its scope, transport, executable or URL origin
+(never arguments or secret values), credential sources, timeouts and
+next-session state (2026-08-20, #88; detail 2026-08-30, #89), with a
+next-session switch (2026-09-11, #166). Health covers only conch's own server:
+a row's `toolsStale` says when a session's conch server can't get the current
+tools (2026-10-19, #569, `src/mcp-servers.ts`). Codex has had its own
+declaration, `plugin/plugins/conch/.codex-mcp.json`, since 2026-09-11 (#178).
 
 **Good UI.** For each server show source/scope/precedence, transport, endpoint or
 redacted command, enabled/required state, connection/auth status, startup and
@@ -331,10 +391,13 @@ not passive file reading.
 
 **Conch today.** It folds calls from both ecosystems into `mcp_tool_call` and
 shows a readable server/tool label, arguments summary, completion and result
-(`src/conversation.ts:303-359`, `src/conversation.ts:559-570`). It does not keep
+(`src/conversation.ts:935-998`, `src/conversation.ts:1268-1280`). It does not keep
 schemas, descriptions, annotations, tool policy or a never-used catalog. Its own
-server defines eleven schemas but exports no catalog into panel state
-(`src/mcp.ts:115-250`).
+server defines 26 schemas but exports no catalog into panel state, only a
+fingerprint of its toolset (`src/mcp.ts:276-877`). — **shipped since**: the
+session inspector shows the MCP tools the session was seen calling (2026-08-20,
+#88) and a tool's policy and approval mode where the agent's config names one
+(2026-08-30, #89).
 
 **Good UI.** Under each server, show tool name/description, input shape in human
 language, read-only/destructive/interaction annotations, approval policy,
@@ -375,9 +438,11 @@ infer support from the MCP protocol
 [Codex app-server MCP API](https://learn.chatgpt.com/docs/app-server#configuration-and-mcp-apis)).
 
 **Conch today.** None are modeled. Conch's MCP server advertises only tools
-(`src/mcp.ts:947-964`). Claude's `elicitation_dialog` is treated as a generic
-“needs you” notification with no form fields (`src/hook.ts:79-80`,
-`src/hook.ts:250-270`).
+(`src/mcp.ts:2667-2678`, `src/mcp.ts:2726-2737`); since 2026-10-03 (#492) its
+`initialize` reply also gives Claude sessions server `instructions`, conch's own
+always-on text. Claude's `elicitation_dialog` is treated as a generic
+“needs you” notification with no form fields (`src/hook.ts:297-298`,
+`src/hook.ts:557-577`).
 
 **Good UI.** Put resources in the attachment/mention picker with URI, MIME type,
 server and refresh state; put prompts in the command palette with arguments;
@@ -416,11 +481,11 @@ Logs or saved session JSONL can sometimes audit what Codex loaded; filesystem
 resolution alone still misses launch overrides and truncation effects.
 
 **Conch today.** The plugin installs a short AGENTS instruction for Codex and a
-progressively loaded skill. The old installer paths for modifying global
-CLAUDE.md/AGENTS remain as unused helpers, while setup explicitly says it no
-longer writes those global prompts (`src/install.ts:13-116`,
-`src/install.ts:412-422`). Conch does not inventory the user's instructions or
-memory and does not show which part of its contract reached a session.
+progressively loaded skill. The old installer helpers for modifying global
+CLAUDE.md/AGENTS were deleted on 2026-09-16 (#239), and setup explicitly says it
+does not write those global prompts (`src/install.ts:381-391`). Conch does not
+inventory the user's instructions or memory and does not show which part of its
+contract reached a session.
 
 **Good UI.** Show the resolved chain in load order, scope, byte/token size,
 imports, shadowed/override status, path conditions, truncation and a content
@@ -469,12 +534,19 @@ child threads, but only for a host conch is connected to
 ([Codex app-server thread list](https://learn.chatgpt.com/docs/app-server#list-threads-with-filters-and-pagination)).
 
 **Conch today.** The transcript vocabulary has a `subagent` tool kind
-(`src/conversation.ts:303-324`). Claude's `SubagentStop` is explicitly discarded
-so it cannot masquerade as the main turn ending (`src/hook.ts:144-147`), and
-Codex hook payloads with `agent_type` are discarded (`src/codex-hook.ts:206-220`).
+(`src/conversation.ts:935-962`). Claude's `SubagentStop` is explicitly discarded
+so it cannot masquerade as the main turn ending (`src/hook.ts:369-372`), and
+Codex hook payloads with `agent_type` are discarded (`src/codex-hook.ts:238-253`).
 Conch scans fresh Claude child transcript files only to decide whether the main
 session still has background work; it publishes no child identity, task or
-progress (`src/agent-activity.ts:133-159`). It has no definition library.
+progress (`src/agent-activity.ts:239-304`). It has no definition library.
+— **shipped since** (2026-09-11): a live background Claude subagent is a row
+nested under its session, named by its description, with its sidechain
+transcript readable (#149, `src/agent-adapter.ts:393-406`); live Codex helpers
+nest the same way from `thread_spawn_edges` (#180); and a session that another
+session's shell started is grouped under it (#162). Finished agents and
+per-child progress are still not shown, and there is still no definition
+library.
 
 **Good UI.** Two views are needed. **Library** shows built-in/custom/plugin
 agents, scope, prompt summary, tools, model/effort, permissions, skills/MCP,
@@ -517,9 +589,13 @@ outlive a foreground turn.
 
 **Conch today.** Plans become checklist rows, and a boolean prevents a Claude
 main session from being announced while fresh background subagent work remains
-(`src/conversation.ts:508-556`, `src/agent-activity.ts:133-180`). Team members,
-mailboxes, task assignment/dependencies and background session controls are not
-published.
+(`src/conversation.ts:1217-1266`, `src/agent-activity.ts:239-304`,
+`src/agent-activity.ts:410-413`). Team members, mailboxes, task
+assignment/dependencies and background session controls are not published.
+— **shipped since**: Claude Code background jobs are rows that conch can open
+in Terminal (`claude attach`) and stop (`claude stop`) (2026-09-13, #188), and
+conch can start a session in the background itself (2026-10-01, #482). Teams,
+mailboxes and tasks are still not read.
 
 **Good UI.** Show a compact task tree/list with owner, dependencies, status,
 last activity, blockers and result; team members with role and current task;
@@ -565,14 +641,16 @@ prompt and agent types are parsed but skipped. Non-managed definitions are
 hash-trusted, and `/hooks` can inspect, trust and disable them
 ([Codex hooks](https://learn.chatgpt.com/docs/hooks)).
 
-**Conch today.** Setup installs only Claude `Stop`, `Notification` and
-`UserPromptSubmit` hooks (`src/install.ts:720-759`). Optional Codex installation
-installs only `SessionStart`, `UserPromptSubmit` and `Stop`
-(`src/install.ts:645-712`). The Claude receiver handles those three, filters
-notification subtypes and rejects all unknown events (`src/hook.ts:116-163`,
-`src/hook.ts:250-272`); the Codex receiver likewise rejects every other event
-and all subagent events (`src/codex-hook.ts:206-220`). There is no hook library,
-health, trust or recent-execution UI.
+**Conch today.** Setup installs Claude `Stop`, `Notification`,
+`UserPromptSubmit`, `PermissionRequest` and `SessionStart` hooks; the last two
+were added on 2026-09-23 (#370) and 2026-09-26 (#423) (`src/install.ts:816`,
+`src/install.ts:862-924`). Optional Codex installation installs only
+`SessionStart`, `UserPromptSubmit` and `Stop` (`src/install.ts:710-799`). The
+Claude receiver handles those five, filters notification subtypes and rejects
+all unknown events (`src/hook.ts:341-405`, `src/hook.ts:510-580`); the Codex
+receiver likewise rejects every other event and all subagent events
+(`src/codex-hook.ts:238-253`). There is no hook library, health, trust or
+recent-execution UI.
 
 **Good UI.** Show every configured hook grouped by event, source/scope, matcher,
 handler type, command/URL with secrets redacted, timeout/async status, trust,
@@ -619,7 +697,14 @@ Plugins, skills and host version can add or remove palette items.
 **Conch today.** Composer/voice text is delivered to the terminal as user input;
 there is no provider command catalog, completion, argument UI or distinction
 between a command and a model prompt. Plans/questions are recognized only after
-they appear in transcript events (`src/conversation.ts:370-556`).
+they appear in transcript events (`src/conversation.ts:1008-1266`).
+— **shipped since**: the ⌘K palette lists the agent's documented slash commands
+and the session's user-invocable skills, asks for a declared argument first,
+and sends a slash line as a command rather than a message (2026-09-11, #157);
+the Mac and phone composers offer the same list, with custom commands, as you
+type (2026-11-04, #596). Claude's question picker now reaches conch from its
+`PermissionRequest` hook before the transcript has it (2026-09-23, #374). The
+list is the documented commands, not the running session's exact set.
 
 **Good UI.** A unified command palette should group **conch controls**,
 **provider host commands**, **skills**, **MCP prompts** and **session actions**;
@@ -664,9 +749,17 @@ app-server resolves the effective disk layering for that host
 
 **Conch today.** Conch has its own curated live daemon settings through the
 socket/MCP, but no reader or editor for Claude/Codex settings. Its new-session
-request cannot choose a profile or one-off override (`src/settings.ts:705-725`,
-`src/settings.ts:979-1004`). Its assumption about effective session behavior is
+request cannot choose a profile or one-off override (`src/settings.ts:1020-1039`,
+`src/settings.ts:1587-1665`). Its assumption about effective session behavior is
 therefore independent of the files that determine that behavior.
+— **shipped since**: the capability read parses the agents' settings layers for
+plugins, skills and MCP (2026-08-20, #88), and conch reads their model and
+effort defaults, read-only (2026-09-28, #456). The one editor is the
+next-session plugin/MCP switch, which shows the diff and scope before it writes
+the agent's own file (2026-09-11, #166, `src/config-write.ts`). A new session
+can pick an account profile, Codex's `--profile` and the per-agent start
+options (2026-09-11, #165; 2026-09-29, #469 and #470), but still no free-form
+override.
 
 **Good UI.** Use a resolved inspector, not a raw settings dump: key, effective
 value, source layer, lower-priority values, merge behavior, managed constraint,
@@ -709,11 +802,20 @@ App-server has structured approval and permission-profile requests for clients.
 generic attention event. The daemon asks for voice yes/no and injects terminal
 keys, but the notification can also represent `AskUserQuestion`, so conch
 deliberately avoids claiming it knows the exact permission request
-(`src/hook.ts:250-270`, `src/daemon.ts:2394-2408`). Structured questions are
+(`src/hook.ts:557-577`, `src/voice-loop.ts:962-987`). Structured questions are
 instead parsed from transcript tool calls. The four-way “approve once / session
 / permanent / decline” remains blocked because a blind keypress can approve the
 wrong menu choice. No effective permission mode or
-rule set is published.
+rule set is published. — **shipped since**: by voice, “yes”, “no”, “always”
+and “no, do this instead” press the rows of Claude's dialog (2026-09-11, #163,
+`src/approval.ts`), and Claude Code's `PermissionRequest` hook now names the
+exact tool and its input before the dialog opens, which conch shows as an
+Allow / Deny card on the Mac and the phone while a question picker stays a
+question (2026-09-23, #370, #373 and #374, `src/hook.ts:510-556`). Both still
+answer by keypress with no structured acknowledgement, and a Codex approval is
+announced but answered by hand. The inspector shows a Codex thread's recorded
+approval mode and sandbox (2026-08-20, #88); permission mode is still not on
+the row.
 
 **Good UI.** Show active mode, approval policy, sandbox roots, network/web
 access, relevant rules with source/precedence, managed locks and workspace
@@ -759,8 +861,15 @@ capabilities available to that host
 model id is used internally only to infer a likely 200k/1M denominator; Codex
 uses the transcript-reported model context window (`src/context-meter.ts:8-25`,
 `src/context-meter.ts:34-58`). Neither active model id, effort, provider nor
-service tier reaches `PublishedSessionRow` (`src/panel.ts:150-182`). Start UI
-cannot select any of them.
+service tier reaches `PublishedSessionRow` (`src/panel.ts:270-404`). Start UI
+cannot select any of them. — **shipped since**: a row's `settings` carries the
+model and effort read from the session's own record, and conch changes them for
+that one session by driving the agent's own picker with its session-only key
+(2026-09-28, #456, `src/session-settings.ts`); the start sheets take a model
+and effort (2026-09-11, #165; Codex's effort since #456); and the running
+session's model picker lists what each account's agent reports through its own
+protocol (2026-09-30, #477, `src/provider-models.ts`). Provider and service
+tier are still not published.
 
 **Good UI.** Show active model, provider/account, effort, speed/service tier,
 context used/limit, compaction threshold, price/usage caveat and source of each
@@ -800,10 +909,16 @@ in-memory goals are not necessarily.
 **Conch today.** It has a session ledger, resume picker, conversation, composer,
 interrupt, clean terminal close, local rename/priority/dismiss, voice mode and
 artifact handoff. Rename is only conch's label, not the provider session name
-(`src/settings.ts:686-714`). Checkpoint/revert remains intentionally unbuilt
+(`src/settings.ts:930-994`). Checkpoint/revert remains intentionally unbuilt
 because blindly driving a destructive terminal menu has unsafe failure modes.
 Conch's MCP contract can see and steer sibling
-sessions at this limited level (`docs/conch-control-skill.md:40-85`).
+sessions at this limited level (`docs/conch-control-skill.md:66-451`).
+— **shipped since**: a rename also types Claude Code's `/rename` into the
+session (2026-08-20, #88, `src/provider-rename.ts:28-38`; Codex has no
+equivalent), and conch can teleport a Claude cloud session by id (2026-09-10,
+#131), restart a session with its own flags (2026-09-23, #364), change its
+model and effort for that session only (2026-09-28, #456) and fork it under the
+same account and flags (2026-10-09, #534). Checkpoint/revert is still unbuilt.
 
 **Good UI.** Show provider name vs conch alias, created/updated/runtime state,
 queued turns, parent/fork, goal, next scheduled run, channel/remote-control
@@ -846,7 +961,7 @@ current `/statusline` UI persists choices in config
 **Conch today.** Conch owns its own visual themes/voice settings but neither
 discovers nor shows the agent host's output style, theme, status line or
 keybindings. The published session schema has no presentation fields
-(`src/panel.ts:150-182`).
+(`src/panel.ts:270-404`).
 
 **Good UI.** Put these in a lower-priority “host appearance and behavior” group,
 not beside safety controls. Show available/selected style, source and prompt
@@ -878,10 +993,15 @@ actually granted can differ from disk defaults.
 
 **Conch today.** Rows carry cwd and transcript, conversations render file
 changes/diffs, and `review_to_front` gives one artifact pane per session
-(`src/panel.ts:150-182`, `docs/conch-control-skill.md:45-76`). New sessions can
+(`src/panel.ts:270-404`, `docs/conch-control-skill.md:73-320`). New sessions can
 choose one cwd only. There is no additional-root, worktree, checkpoint or
 artifact-history model; `docs/vision.md:31-53` says the eventual unit should be
-the artifact rather than the session.
+the artifact rather than the session. — **shipped since**: an agent can name
+the folders it actually works in, and its row carries them (2026-09-21, #345);
+conch's file tree follows them. A session holds many deliverables, typed and
+kept as versions of an artifact, in its Workdesk (2026-09-17, #271; 2026-09-25,
+#405; `docs/conch-control-skill.md:23-43`). Additional roots, worktrees and
+checkpoints are still not modeled.
 
 **Good UI.** Show primary cwd, repo root, branch/worktree, additional readable
 and writable roots, sandbox boundaries, changed files, checkpoint coverage and
@@ -919,7 +1039,10 @@ approval policy and can return richer app context/UI. App-server exposes
 
 **Conch today.** These components are invisible except when a connector call
 looks like another MCP call. Plugin presence does not inspect components or
-background processes. No LSP/monitor/app status reaches the panel.
+background processes. No LSP/monitor/app status reaches the panel. — **shipped
+since** (2026-08-30, #89): the inspector's plugin row counts a plugin's skills
+and MCP servers and says whether it carries hooks or apps; LSP servers,
+monitors and executables are still not read.
 
 **Good UI.** Nest components under their plugin. Show connector identity/auth
 and organization policy, LSP language/status/restarts/log, monitor trigger and
@@ -965,7 +1088,12 @@ meaning of the read-only attached view.
    model evidence and the four states—configured, available, loaded, observed—to
    daemon state before adding switches. This is the dependency for every honest
    feature below and fixes conch's current assumption that one `~/.claude` and
-   one `~/.codex` describe every session.
+   one `~/.codex` describe every session. — **partly shipped**: the per-session
+   capability read keeps the four states apart for plugins, skills, commands
+   and MCP (2026-08-20, #88), reads each session's own account's configuration
+   home (2026-09-29, #469 and #470), and the inspector names the session's
+   binary and version (2026-09-23, #360). It is a read the Mac app asks for,
+   not part of the published state.
 
 2. **Ship a read-only MCP inspector.** MCP is the broadest and highest-risk
    surface: servers bring credentials, arbitrary local processes, remote data,
@@ -973,7 +1101,10 @@ meaning of the read-only attached view.
    servers, source/scope, redacted transport, policy and observed calls; add a
    deliberate fresh-host health probe. For attached sessions, say “runtime
    unknown.” Conch already renders MCP calls and ships an MCP server, so this
-   joins existing facts rather than inventing a new product area.
+   joins existing facts rather than inventing a new product area. — **shipped**
+   (2026-08-20, #88; detail 2026-08-30, #89) without the fresh-host health
+   probe: configured servers with source, scope, redacted transport and
+   policy, and observed calls, in the session inspector.
 
 3. **Ship the plugin and skill library, including a proper conch-plugin doctor.**
    Use the supported Claude/Codex JSON CLIs plus filesystem metadata. Show scope,
@@ -981,21 +1112,37 @@ meaning of the read-only attached view.
    descriptions; link observed invocations. Offer install/update/remove and
    **next-session** enable/disable first. Replace the current one-bit, one-time
    presence guess. This directly answers Tyler's request without promising live
-   state conch cannot see.
+   state conch cannot see. — **partly shipped**: plugin and skill rows in the
+   inspector (2026-08-20, #88), next-session enable/disable of an existing
+   plugin or MCP server with its diff (2026-09-11, #166), and Settings › Skills,
+   every skill across accounts with Add and Try (2026-10-29, #581). Plugin
+   install, update and remove, and a plugin doctor beyond `toolsStale`
+   (2026-10-19, #569), remain; the one-time presence guess is still there.
 
 4. **Expand conch's existing session launcher into named launch profiles.** Let
    a user choose environment/account, cwd/worktree, model/effort and permission
    mode, with optional plugin/MCP/skill profile. Because conch already starts
    terminal sessions, start-time controls are honest and useful immediately.
    Record the exact launch receipt so those sessions have stronger provenance
-   than passively attached ones.
+   than passively attached ones. — **partly shipped**: account, model, effort,
+   permission mode (for Codex: sandbox, approvals, profile) and bypass at start
+   (2026-09-11, #165), with accounts as the named profiles for a configuration
+   home (2026-09-29, #469 and #470). Worktrees, plugin/MCP/skill profiles,
+   saved sets of start options and a launch receipt are not built; a restart
+   reads the flags back from the process's command line (2026-09-23, #364).
 
 5. **Turn subagents, tasks, hook failures and approvals into attention objects.**
    The session ledger, conversation view, artifact pane and voice loop already
    exist. The next leverage is to surface “child blocked,” “team task ready,”
    “hook failed,” “MCP needs auth,” and the exact structured question as feed
    items. Begin read-only from transcripts/team files and preserve the existing
-   rule that a child stopping is not the main turn stopping.
+   rule that a child stopping is not the main turn stopping. — **partly
+   shipped**: live subagents nest under their session (2026-09-11, #149; Codex
+   helpers, #180) and the parent says it is waiting on them (2026-09-23, #373);
+   a pending permission is a card naming the exact tool and its input, and a
+   question picker is its questions (2026-09-23, #370 and #374); a session
+   whose conch tools are stale says so (2026-10-19, #569). Team tasks and hook
+   failures are not read.
 
 6. **Add an optional owned-runtime mode for authoritative live controls.** Use
    Codex app-server and Claude's Agent SDK for sessions deliberately launched

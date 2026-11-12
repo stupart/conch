@@ -301,8 +301,6 @@ public struct LagoonSwitchPlayhead: Equatable, Sendable {
         LagoonSwitchMotion.clamp(now.timeIntervalSince(start) * 1000, 0, length)
     }
 
-    public func isMoving(at now: Date) -> Bool { elapsed(at: now) < length }
-
     /// What to draw at `now`. A change made one way and drawn the other (Reduce motion switched mid-change) shows its
     /// finished state, as turned.js's two layers do.
     public func pose(at now: Date, reduceMotion: Bool) -> LagoonSwitchMotion.Pose {

@@ -126,7 +126,7 @@ final class LagoonSwitchMotionTests: XCTestCase {
     func testThePlayhead() {
         let t0 = Date(timeIntervalSince1970: 1_000)
         var head = LagoonSwitchPlayhead(isOn: false)
-        XCTAssertFalse(head.isMoving(at: t0), "at rest where it was left")
+        XCTAssertEqual(head.elapsed(at: t0), head.length, "at rest where it was left")
         XCTAssertEqual(head.pose(at: t0, reduceMotion: false), .motion(.off, Motion.end))
         head.flip(toOn: true, at: t0, reduceMotion: false)
         guard case let .motion(started, at200) = head.pose(at: t0.addingTimeInterval(0.2), reduceMotion: false) else { return XCTFail() }
@@ -139,8 +139,8 @@ final class LagoonSwitchMotionTests: XCTestCase {
         XCTAssertEqual(direction, .off)
         XCTAssertEqual(t, 288, accuracy: 1e-3)
         XCTAssertEqual(Motion.frame(.off, at: t).x, x, accuracy: 0.1, "within turned.js's 2 ms search step")
-        XCTAssertTrue(head.isMoving(at: t0.addingTimeInterval(1)))
-        XCTAssertFalse(head.isMoving(at: t0.addingTimeInterval(2)))
+        XCTAssertLessThan(head.elapsed(at: t0.addingTimeInterval(1)), head.length)
+        XCTAssertEqual(head.elapsed(at: t0.addingTimeInterval(2)), head.length)
     }
 
     func testReducedMotionCrossfades() {
@@ -151,7 +151,7 @@ final class LagoonSwitchMotionTests: XCTestCase {
         XCTAssertEqual(head.length, 200)
         XCTAssertEqual(head.pose(at: t0, reduceMotion: true), .crossfade(on: 0))
         XCTAssertEqual(head.pose(at: t0.addingTimeInterval(0.2), reduceMotion: true), .crossfade(on: 1))
-        XCTAssertFalse(head.isMoving(at: t0.addingTimeInterval(0.2)))
+        XCTAssertEqual(head.elapsed(at: t0.addingTimeInterval(0.2)), head.length)
         // Back mid-fade: from what showed.
         head.flip(toOn: false, at: t0.addingTimeInterval(0.1), reduceMotion: true)
         guard case let .crossfade(on) = head.pose(at: t0.addingTimeInterval(0.1), reduceMotion: true) else { return XCTFail() }

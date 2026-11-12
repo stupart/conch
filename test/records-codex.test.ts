@@ -338,17 +338,16 @@ describe("Codex durable records", () => {
 });
 
 describe("Codex's echoed answer to an async question is not recorded as Tyler's own words", () => {
-  // Ground truth, byte-for-byte, from the "Asset Generator" codex session
-  // (rollout-2026-09-11T14-01-26-01a08ea0…, 2026-09-21T07:07:10Z): answering
-  // a `request_user_input_async` question files a `role: "user"` item that
-  // quotes the whole question back, then the real answer after a blank line.
-  // Recording it whole put the agent's own OAuth explanation in Tyler's
-  // mouth for one word of actual reply. The record names nothing as an
-  // echo, so the guard against acting on shape alone is this: only strip
-  // when the reply exactly matches an option this session actually offered
-  // via `request_user_input_async` earlier.
-  const question = "The Blueprint plugin is installed locally. To test the real connection, "
-    + "please open this sign-in link, choose Morrow, and authorize it.";
+  // Ground truth from a real Codex rollout (2026-09), its shape kept and its
+  // words made up: answering a `request_user_input_async` question files a
+  // `role: "user"` item that quotes the whole question back, then the real
+  // answer after a blank line. Recording it whole put the agent's own OAuth
+  // explanation in Tyler's mouth for one word of actual reply. The record
+  // names nothing as an echo, so the guard against acting on shape alone is
+  // this: only strip when the reply exactly matches an option this session
+  // actually offered via `request_user_input_async` earlier.
+  const question = "The Acme plugin is installed on this Mac. To try the live connection, "
+    + "please open this sign-in link, pick Morrow, and approve it.";
   const echoed = `> ${question}\n\nSigned in to Morrow`;
 
   const askAsync = (f: ReturnType<typeof fixture>, callId: string, options: string[]) =>
@@ -363,7 +362,7 @@ describe("Codex's echoed answer to an async question is not recorded as Tyler's 
     const out = f.read("response_item", responseMessage("user", echoed));
     expect(out.items).toHaveLength(1);
     expect(out.items[0]).toMatchObject({ kind: "message", role: "user", text: "Signed in to Morrow" });
-    expect(out.items[0]?.text).not.toContain("Blueprint plugin");
+    expect(out.items[0]?.text).not.toContain("Acme plugin");
   });
 
   // The blocking case: Tyler blockquotes things constantly (he opened the very

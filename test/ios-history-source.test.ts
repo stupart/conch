@@ -158,9 +158,9 @@ describe("the iPhone reads recorded history", () => {
     // and again only if it left the screen and came back.
     expect(stack).not.toContain(".onAppear { loadOlder() }");
     expect(store).toContain("region.onNearTop = { [weak self] in self?.loadOlder() }");
-    expect(stack).toContain("private func loadOlder() {");
-    expect(stack).toContain("guard history.paging.canLoadOlder else { return }");
-    expect(stack).toContain("history.loadOlder(anchor: history.paging.rows.first?.id ?? conversation.items.first?.id)");
+    // The stack's own private loadOlder() lost its last caller with that marker; the region and
+    // `HistoryStore.follow` ask the store directly, so it went 2026-11-11.
+    expect(stack).not.toContain("private func loadOlder()");
   });
 
   test("the transcript keeps the reader's place when older messages arrive", () => {

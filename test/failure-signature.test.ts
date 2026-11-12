@@ -16,7 +16,7 @@ describe("a failure's message, without what changes from one occurrence to the n
       .toBe("That's a file on your Mac, not a page: <path>");
     expect(normalizeFailureMessage("iPhone couldn't open ~/Projects/site/index.html."))
       .toBe("iPhone couldn't open <path>.");
-    expect(normalizeFailureMessage("Delivered, to a new session Claude Code started from this window (15a3c78f-c6a3-4887-8abd-3abacaeeb417), not the conversation addressed."))
+    expect(normalizeFailureMessage("Delivered, to a new session Claude Code started from this window (5e5e5e14-0014-4000-8000-000000000014), not the conversation addressed."))
       .toBe("Delivered, to a new session Claude Code started from this window (<id>), not the conversation addressed.");
     expect(normalizeFailureMessage("trust prompt in conch-0f3c1a2b-4d5e-4f60-8a7b-9c0d1e2f3a4b: never appeared"))
       .toBe("trust prompt in <id>: never appeared");

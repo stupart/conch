@@ -31,10 +31,6 @@ export type TelemetryEvent =
   | "turn"
   | "recovery";
 
-export interface TelemetrySink {
-  record(event: TelemetryEvent, fields: Record<string, unknown>): void;
-}
-
 function rotate(path: string): void {
   try {
     if (existsSync(path) && statSync(path).size > MAX_TELEMETRY_BYTES) {
