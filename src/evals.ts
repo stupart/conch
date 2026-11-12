@@ -331,6 +331,9 @@ export interface TranscriptReport {
   results: TranscriptToolResults[];
   /** ToolSearch selects that loaded conch tools: each one puts those tools' schemas in the context. */
   toolSearch: { loads: number; conchToolsLoaded: number; byTool: Record<string, number>; schemaTokensLoaded?: number };
+  /** Skill tool calls that loaded a conch skill, and what that added at today's size. */
+  skillLoads: Record<string, number>;
+  skillTokensLoaded?: number;
 }
 
 /**
@@ -341,13 +344,15 @@ export interface TranscriptReport {
 export class TranscriptScan {
   readonly sizes = new Map<string, number[]>();
   readonly loads = { loads: 0, conchToolsLoaded: 0, byTool: {} as Record<string, number> };
+  /** Skill tool calls that loaded one of conch's skills, by skill. */
+  readonly skillLoads: Record<string, number> = {};
   private readonly pending = new Map<string, string>();
   private readonly seen = new Set<string>();
 
   constructor(private readonly since = 0) {}
 
   line(text: string): void {
-    const conch = text.includes(CLAUDE_CODE_TOOL_PREFIX);
+    const conch = text.includes(CLAUDE_CODE_TOOL_PREFIX) || text.includes("conch-control");
     if (!conch && !(this.pending.size && text.includes("tool_result"))) return;
     let record: { message?: { content?: unknown }; timestamp?: unknown };
     try { record = JSON.parse(text); } catch { return; }
@@ -358,7 +363,13 @@ export class TranscriptScan {
         if (this.seen.has(block.id) || at < this.since) continue;
         this.seen.add(block.id);
         if (block.name.startsWith(CLAUDE_CODE_TOOL_PREFIX)) this.pending.set(block.id, block.name.slice(CLAUDE_CODE_TOOL_PREFIX.length));
-        else if (block.name === "ToolSearch") {
+        else if (block.name === "Skill") {
+          const skill = (block.input as { skill?: unknown } | undefined)?.skill;
+          if (typeof skill === "string" && /^(?:conch:)?conch-/.test(skill)) {
+            const name = skill.replace(/^conch:/, "");
+            this.skillLoads[name] = (this.skillLoads[name] ?? 0) + 1;
+          }
+        } else if (block.name === "ToolSearch") {
           const query = (block.input as { query?: unknown } | undefined)?.query;
           const names = typeof query === "string" ? [...query.matchAll(/mcp__plugin_conch_conch__(\w+)/g)].map((m) => m[1]!) : [];
           if (names.length) {
@@ -429,7 +440,7 @@ export async function transcriptReport(claudeDirs: readonly string[], since: num
     const summary = replyBytesSummary(sorted);
     return { tool, calls: sorted.length, p50: summary.p50, p90: summary.p90, mean: summary.mean, max: summary.max, totalBytes: sorted.reduce((s, v) => s + v, 0) };
   }).sort((a, b) => b.totalBytes - a.totalBytes);
-  return { source: "claude-code transcripts", days: Math.round(((now - since) / 86_400_000) * 10) / 10, files, results, toolSearch: scan.loads };
+  return { source: "claude-code transcripts", days: Math.round(((now - since) / 86_400_000) * 10) / 10, files, results, toolSearch: scan.loads, skillLoads: scan.skillLoads };
 }
 
 // ---- the report, the baseline, the comparison ----
@@ -606,6 +617,8 @@ export function formatTokens(report: NonNullable<EvalReport["tokens"]>, baseline
       lines.push(`    ${row.tool.padEnd(24)} ${String(row.calls).padStart(6)} calls  p50 ${kb(row.p50).padStart(7)}  p90 ${kb(row.p90).padStart(7)}  mean ${kb(row.mean).padStart(7)}  total ~${n(Math.round(row.totalBytes / 4))} tokens`);
     }
     const loaded = Object.entries(t.toolSearch.byTool).sort(([, a], [, b]) => b - a).slice(0, 5).map(([name, count]) => `${name} ${count}`).join(", ");
+    const skills = Object.entries(t.skillLoads ?? {}).map(([name, count]) => `${name} ${count}×`).join(", ");
+    if (skills) lines.push(`    skill loads: ${skills}${t.skillTokensLoaded !== undefined ? ` (~${n(t.skillTokensLoaded)} tokens at today's size)` : ""}`);
     lines.push(`    ToolSearch loads of conch tools: ${t.toolSearch.loads}, ${t.toolSearch.conchToolsLoaded} schemas${t.toolSearch.schemaTokensLoaded !== undefined ? ` (~${n(t.toolSearch.schemaTokensLoaded)} tokens at today's sizes)` : ""}: ${loaded}`);
   }
   return lines;
@@ -794,6 +807,7 @@ export async function runEvalsCli(argv: readonly string[]): Promise<number> {
       // What those loads cost at today's schemas.
       const cost = new Map(tokens.tools.map((tool) => [tool.name, tool.tokens]));
       tokens.transcripts.toolSearch.schemaTokensLoaded = Object.entries(tokens.transcripts.toolSearch.byTool).reduce((sum, [name, count]) => sum + count * (cost.get(name) ?? 0), 0);
+      tokens.transcripts.skillTokensLoaded = Object.entries(tokens.transcripts.skillLoads).reduce((sum, [name, count]) => sum + count * (tokens.pieces[`skill:${name} (on load)`]?.tokens ?? 0), 0);
     }
     report.tokens = tokens;
   }
