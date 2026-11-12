@@ -26,7 +26,7 @@ function between(text: string, start: string, end: string): string {
 
 describe("the daemon reads claude-swap's runs, looks for what isn't in conch, and keeps the groups", () => {
   test("claude-swap's run folders are read with the accounts on every registry read", () => {
-    expect(daemon).toContain("accountRegistrySnapshot(claudeDir, readClaudeAccounts(claudeDir), readCodexAccounts(), claudeSwapRuns())");
+    expect(daemon).toContain("accountRegistrySnapshot(claudeDir, readClaudeAccounts(claudeDir), readCodexAccounts(), undefined, claudeSwapRuns())");
   });
 
   test("discovery looks after a registry read, and both are published only when they say something", () => {

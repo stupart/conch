@@ -257,7 +257,7 @@ describe("the session list is drawn again only when what it reads changed", () =
   const ledger = section(dashboard, "private struct SessionLedger: View {", "private struct LedgerReveal: Equatable {");
 
   test("the window hands it the state as it reads it, behind its own ==", () => {
-    expect(dashboard).toMatch(/SessionLedger\(\s*onSelectRemote: onSelectRemote,\s*state: state\?\.forSidebar\(\),[^]*?actions: actions\s*\)\s*\.equatable\(\)/);
+    expect(dashboard).toMatch(/SessionLedger\(\s*onSelectRemote: onSelectRemote,\s*state: state\?\.forSidebar\(\),[^]*?actions: actions(?:,[^]*?)?\s*\)\s*\.equatable\(\)/);
     const head = section(ledger, "private struct SessionLedger: View {", "    private var focusID: SessionRow.ID? {");
     const equal = section(dashboard, "extension SessionLedger: Equatable {", "\n}\n");
     // Every stored input but the actions: the window's closures, whose state lives in SwiftUI's storage.
@@ -296,14 +296,14 @@ describe("the session list is drawn again only when what it reads changed", () =
   });
 
   test("its folder headers are behind their own ==, and the asks are worked out once a body", () => {
-    expect(ledger.split("FolderHeader(").length - 1).toBe(2);
-    expect(ledger.match(/FolderHeader\([^]*?\n\s*\)\n\s*\.equatable\(\)/g)?.length).toBe(2);
+    expect(ledger.split("FolderHeader(").length - 1).toBe(3);
+    expect(ledger.match(/FolderHeader\([^]*?\n\s*\)\n\s*\.equatable\(\)/g)?.length).toBe(3);
     const head = section(dashboard, "private struct FolderHeader: View {", "    @State private var hovering = false");
     const equal = section(dashboard, "extension FolderHeader: Equatable {", "\n}\n");
-    // `isDropTarget` has a default and no written type, so `stored` passes it by.
-    const inputs = [...stored(head).filter((p) => !isClosure(p.type)).map((p) => p.name), "isDropTarget"];
+    // `isDropTarget` and `alwaysCounts` have defaults and no written type, so `stored` passes them by.
+    const inputs = [...stored(head).filter((p) => !isClosure(p.type)).map((p) => p.name), "isDropTarget", "alwaysCounts"];
     expect(head).toContain("    var isDropTarget = false\n");
-    expect(inputs.sort()).toEqual(["count", "isCollapsed", "isDropTarget", "name"]);
+    expect(inputs.sort()).toEqual(["accessibilityName", "alwaysCounts", "count", "isCollapsed", "isDropTarget", "name"]);
     for (const name of inputs) expect(equal).toContain(`a.${name} == b.${name}`);
     expect(ledger).toContain("let browserAsks = self.browserAsks");
   });

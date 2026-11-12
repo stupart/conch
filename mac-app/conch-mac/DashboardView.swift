@@ -1165,6 +1165,7 @@ private struct SessionLedger: View {
                 accessibilityName: ElsewhereText.headerAccessibility(count: agents.count, collapsed: !showsElsewhere),
                 onToggle: { showsElsewhere.toggle() }
             )
+            .equatable()
             .id("elsewhere-header")
             if showsElsewhere {
                 ForEach(agents) { agent in
@@ -1435,6 +1436,7 @@ private struct FolderHeader: View {
 extension FolderHeader: Equatable {
     static func == (a: Self, b: Self) -> Bool {
         a.name == b.name && a.count == b.count && a.isCollapsed == b.isCollapsed && a.isDropTarget == b.isDropTarget
+            && a.alwaysCounts == b.alwaysCounts && a.accessibilityName == b.accessibilityName
     }
 }
 

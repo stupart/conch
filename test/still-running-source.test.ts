@@ -35,7 +35,7 @@ describe("the Mac app", () => {
 
   test("the section sits after the sessions' folders and before the dismissed ones", () => {
     const ledger = between(dashboard, "private struct SessionLedger: View {", "private struct FolderHeader: View {");
-    const folders = ledger.indexOf("ForEach(sessionFolders) { folder in");
+    const folders = ledger.indexOf("ForEach(plan.folders) { folder in");
     const section = ledger.indexOf("StillRunningSection(resources: resources, now: now, decide: Self.decideResource)");
     const dismissed = ledger.indexOf('name: "Dismissed"');
     expect(folders).toBeGreaterThan(-1);
