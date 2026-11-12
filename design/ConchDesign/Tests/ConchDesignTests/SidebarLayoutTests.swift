@@ -49,6 +49,26 @@ final class SidebarLayoutTests: XCTestCase {
         XCTAssertEqual(layout.sections, ["group:d", conch, site])
     }
 
+    /// A running team is one kind of section beside Tyler's groups and the folders: its members stay under it, lead
+    /// first, whatever group one was put in; its header takes a place in his order; and its rows offer no moves.
+    func testARunningTeamIsOneSectionBesideTheGroupsAndKeepsItsMembers() {
+        let team = SessionGrouping.Team(id: "t1", name: "Build + review", task: "Ship the sidebar", memberSessionIDs: ["c", "b"])
+        var layout = SidebarLayout.empty.creatingGroup(named: "Harbor", id: "group:h", placing: "c", shown: shown(.empty))
+        layout.sections = [SessionGrouping.teamGroupID("t1"), "group:h", conch, site]
+        let list = SessionGrouping.sidebar(sessions, home: home, order: [], layout: layout, teams: [team])
+        XCTAssertEqual(list.map(\.id), [SessionGrouping.teamGroupID("t1"), "group:h", conch, site])
+        // The lead first, the session it started under it; the group it was placed in stays, empty, to drop into.
+        XCTAssertEqual(list[0].sessionIDs, ["c", "c-started", "b"])
+        XCTAssertEqual(list[0].team, SessionFolder.TeamGroup(id: "t1", name: "Build + review", task: "Ship the sidebar"))
+        XCTAssertEqual(list[1].sessionIDs, [])
+        XCTAssertEqual(list[3].sessionIDs, ["d"])
+        XCTAssertEqual(SidebarMove.moves(for: "c", layout: layout, shown: list, topLevel: top, folder: nil), [])
+        // Never dropped into: a team's id is neither a group nor a folder.
+        XCTAssertFalse(layout.accepts("a", into: SessionGrouping.teamGroupID("t1"), folder: conch))
+        // The team ended: the placement it was holding back applies again.
+        XCTAssertEqual(SessionGrouping.sidebar(sessions, home: home, order: [], layout: layout).first(where: { $0.id == "group:h" })?.sessionIDs, ["c", "c-started"])
+    }
+
     func testAGroupWhoseSessionsAllClosedStaysAsAPlaceToDropInto() {
         let layout = SidebarLayout.empty.creatingGroup(named: "Later", id: "group:l", shown: shown(.empty))
         XCTAssertEqual(shown(layout).first, SessionFolder(id: "group:l", name: "Later", sessionIDs: []))
