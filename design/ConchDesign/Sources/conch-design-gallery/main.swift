@@ -227,12 +227,10 @@ try render("tokens-scale") {
     }
     VStack(alignment: .leading, spacing: 4) {
         Caption("motion (seconds; none under Reduce Motion)")
-        Text(verbatim: "quick \(ConchMotion.quick) · standard \(ConchMotion.standard) · gentle \(ConchMotion.gentle) · wave \(ConchMotion.wavePeriod) · breath \(ConchMotion.breathPeriod)")
+        Text(verbatim: "quick \(ConchMotion.quick) · standard \(ConchMotion.standard) · wave \(ConchMotion.wavePeriod) · breath \(ConchMotion.breathPeriod)")
             .font(ConchType.code).foregroundStyle(ConchColor.textSecondary)
         Caption("springs, bounce / response (s), from the overlay lab; Reduce Motion drops the bounce")
         Text(verbatim: ConchMotion.springs.map { "\($0.name) \($0.spring.bounce) / \($0.spring.response)" }.joined(separator: " · "))
-            .font(ConchType.code).foregroundStyle(ConchColor.textSecondary)
-        Text(verbatim: "flight: scale \(ConchMotion.flightScale) · blur \(ConchMotion.flightBlur) · opacity \(ConchMotion.flightOpacity) · words: reveal \(ConchMotion.wordReveal) s · blur \(ConchMotion.wordRevealBlur) · \(ConchMotion.wordsPerSecond)/s")
             .font(ConchType.code).foregroundStyle(ConchColor.textSecondary)
     }
 }
@@ -572,36 +570,19 @@ struct OtherApp: View {
 
 let m3Screen = CGSize(width: 1200, height: 750)
 
-/// A markup over the screen the receipts picture, 0 to 1 across it: a box round the invite card, a note in it, an
-/// arrow, a stroke and a highlight. Drawn by `CanvasInk`, as the canvas receipt's picture is.
-let canvasMarks: [CanvasMark] = {
-    func at(_ x: CGFloat, _ y: CGFloat, _ t: Double = 0) -> CanvasPoint { CanvasPoint(x: x / m3Screen.width, y: y / m3Screen.height, t: t) }
-    let wave = (0...60).map { i -> CanvasPoint in
-        let x = 820 + CGFloat(i) * 4.5
-        return at(x, 150 + sin(CGFloat(i) / 7) * 18, Double(i) / (i < 30 ? 90 : 30))
-    }
-    return [
-        CanvasMark(kind: .box, points: [at(700, 60), at(1150, 260)]),
-        CanvasMark(kind: .note, points: [at(1080, 120)], text: "make this bigger"),
-        CanvasMark(kind: .arrow, points: [at(560, 360), at(760, 250)]),
-        CanvasMark(kind: .pen, points: wave),
-        CanvasMark(kind: .highlight, points: [at(820, 300, 0), at(1000, 302, 0.1), at(1100, 300, 0.2)]),
-    ]
-}()
-
 // Something Tyler sent through conch, as his own row in the conversation (`SentReceiptRow`): a canvas, a Show, a video
 // from the phone, and a canvas whose picture hasn't been read yet, between his words and a reply so the row can be
 // judged against the bubble beside it. The thumbnails are the pictures each one sends: the canvas's flat.png, a frame,
 // and a contact sheet.
 do {
-    var document = CanvasDocument(anchor: CanvasAnchor(id: 1, frame: CGRect(origin: .zero, size: m3Screen)), id: "receipts", at: 0)
-    canvasMarks.forEach { document.add($0) }
     let screen = MainActor.assumeIsolated { () -> CGImage? in
         let renderer = ImageRenderer(content: OtherApp().frame(width: m3Screen.width, height: m3Screen.height).environment(\.conchRendersStatically, true))
         renderer.scale = 1
         return renderer.cgImage
     }
-    let flat = CanvasInk.render(document, over: screen)
+    // The canvas's flat.png was the screen with his marks over it: drawn here as an annotation's overview draws a note, a
+    // box round the invite card with its numbered pin.
+    let flat = screen.flatMap { AnnotationPicture.overview($0, notes: [(1, .box(CGRect(x: 700, y: 60, width: 450, height: 200)))], scale: 1) }
     let sheet = screen.flatMap { frame in VideoStoryboard.contactSheet((0..<6).map { (at: Double($0) * 3, image: frame) }) }
     let picture = { (image: CGImage?) in image.map { Image(decorative: $0, scale: 2) } }
     let canvas = ConchSentReceipt(kind: .canvas, title: "Marked up Invite page", detail: "2 marks · 1 note\n“make the button just say Join”")
@@ -662,7 +643,7 @@ struct SidebarMark {
     var breathes = false
     var wantsYou = false
     var live = false
-    /// Blocked on a question: the one state whose summary earns the row a second line (`SidebarRowText.subtitle`).
+    /// Blocked on a question: the one state whose summary earns the row a second line (`SidebarRowText.secondLine`).
     var asks = false
 
     static let working = SidebarMark(symbol: "circle.fill", size: 8, colour: AnyShapeStyle(ConchColor.active), meaning: "Working — an agent is running, nothing needed from you", breathes: true)

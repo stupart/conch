@@ -39,7 +39,7 @@ What is newly captured, which before reached only the text log, a spoken line, o
 
 | Where | Operation | Before |
 |---|---|---|
-| Any queued or immediate daemon event that throws (interrupt, session-start, a turn, and an inject until #574 files its own throw where it happens, as `permission-answer`, `question-answer` or `inject`): today's Allow | the event's type, `threw: true`, top of the stack | log line only |
+| Any queued or immediate daemon event that throws (interrupt, session-start, a turn; an inject files its own throw where it happens since #574, as `permission-answer`, `question-answer` or `inject`): today's Allow | the event's type, `threw: true`, top of the stack | log line only |
 | A publication that throws while being filed | `review-filing` | log line only |
 | An inject the daemon refuses because its target isn't a live session (the Mac app drops that reply) | `inject` | log line only, nothing on screen |
 | A background session conch could not bring back after its tmux server stopped | `session-restore` | log line only |

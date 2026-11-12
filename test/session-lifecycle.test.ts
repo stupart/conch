@@ -458,14 +458,14 @@ describe("closing a slow session", () => {
 
   test("a background job's stop waits as long as a close for its process to leave", async () => {
     let looks = 0;
-    await stopBackgroundSession("f31f0d15", 9107, {
+    await stopBackgroundSession("5e5e5e13", 9107, {
       which: () => "/opt/bin/claude",
       spawn: () => settledProcess(),
       pidIsAlive: async () => ++looks <= 60,
       sleep: async () => {},
     });
     expect(looks).toBe(61);
-    await expect(stopBackgroundSession("f31f0d15", 9108, {
+    await expect(stopBackgroundSession("5e5e5e13", 9108, {
       which: () => "/opt/bin/claude",
       spawn: () => settledProcess(),
       pidIsAlive: async () => true,

@@ -1712,34 +1712,6 @@ public struct OnboardingDoneStep: View {
     }
 }
 
-/// Where conch lives: a strip of menu bar with its mark picked out.
-public struct MenuBarHint: View {
-    public init() {}
-
-    public var body: some View {
-        HStack(spacing: 14) {
-            HStack(spacing: 13) {
-                Image(systemName: "wifi")
-                Image(systemName: "battery.75percent")
-                ConchMarkView()
-                    .frame(width: 18, height: 18)
-                    .padding(5)
-                    .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(ConchColor.fillSelected).conchElevation(.raised))
-                Image(systemName: "switch.2")
-                Text("Mon 9:41").font(.system(size: 12, weight: .medium))
-            }
-            .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(ConchColor.textPrimary)
-            .padding(.horizontal, 12)
-            .frame(height: 30)
-            .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(ConchColor.fill))
-            Text("Click the shell for Talk and Quiet, the panel, and everything that's ready.")
-                .font(.system(size: 12)).foregroundStyle(ConchColor.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-}
-
 /// Launched on a Mac that already had conch: what's set, and only what's missing.
 public struct OnboardingWelcomeBack<Rows: View>: View {
     let count: Int

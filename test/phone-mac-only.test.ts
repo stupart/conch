@@ -2,7 +2,6 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { createControlServer, type ControlServer } from "../src/control-server.ts";
-import { decodeNarrationRequest } from "../src/narration.ts";
 import {
   createPhoneBridgeApplication,
   forwardToDaemonSocket,
@@ -10,7 +9,6 @@ import {
   MAC_APP_ONLY_DECODERS,
   MAC_APP_ONLY_KINDS,
 } from "../src/phone-bridge.ts";
-import { decodePracticeRequest, PRACTICE_REQUEST_KINDS } from "../src/practice.ts";
 import { decodeSetupRequest, SETUP_REQUEST_KINDS } from "../src/setup.ts";
 import { decodeNoticeRequest, NOTICE_REQUEST_KINDS } from "../src/notice-wire.ts";
 
@@ -35,17 +33,6 @@ function earlyDispatch(): string {
 /** What the phone may send through that part of the dispatch: a liveness ping, the envelope, history reads, the audio's handoffs. */
 const PHONE_MAY_SEND = { decoders: new Set(["decodeAudioCommand"]), kinds: new Set(["ping", "control-envelope", "history-page", "history-item"]) };
 
-/** Narration's kinds, read from its decoder: the literals it compares `kind` with. */
-function narrationKinds(): string[] {
-  const narration = source("src/narration.ts");
-  const decoder = narration.slice(narration.indexOf("export function decodeNarrationRequest"), narration.indexOf("return { kind, canvasId };"));
-  const kinds = [...decoder.matchAll(/kind !== "([^"]+)"/g)].map((match) => match[1]!);
-  expect(kinds.length).toBeGreaterThan(0);
-  return kinds;
-}
-
-const CANVAS = "0f3c1a2b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
-
 /** Every Mac-app-only request, each as its sender would shape it and as a malformed one: a refusal can't depend on the fields. */
 function macOnlyBodies(): Array<{ kind: string; body: Record<string, unknown> }> {
   const shaped: Record<string, Record<string, unknown>> = {
@@ -55,9 +42,6 @@ function macOnlyBodies(): Array<{ kind: string; body: Record<string, unknown> }>
     "voice-sample": { voice: "heart" },
     "mic-check": { seconds: 10 },
     "setup-retry": { what: "speech" },
-    "narration-start": { canvasId: CANVAS },
-    "narration-stop": { canvasId: CANVAS },
-    "narration-cancel": { canvasId: CANVAS },
     "screen-observation": { observation: {} },
     "review-preview": { request: "r", path: "/tmp/x.png" },
     // conch_capture's request (an agent's, through the MCP server) and the Mac app's answer to it: a page drawn with
@@ -74,10 +58,10 @@ function macOnlyBodies(): Array<{ kind: string; body: Record<string, unknown> }>
     "notify-user": { title: "Deploy", body: "It's live.", from: "s1" },
     "notice-answer": { id: "0f3c1a2b-4d5e-4f60-8a7b-9c0d1e2f3a4b", outcome: "shown" },
   };
-  const kinds = [...SETUP_REQUEST_KINDS, ...PRACTICE_REQUEST_KINDS, ...narrationKinds(), ...MAC_APP_ONLY_KINDS, ...NOTICE_REQUEST_KINDS];
+  const kinds = [...SETUP_REQUEST_KINDS, ...MAC_APP_ONLY_KINDS, ...NOTICE_REQUEST_KINDS];
   return kinds.flatMap((kind) => [
     { kind, body: { kind, ...(shaped[kind] ?? {}) } },
-    { kind, body: { kind, agent: "gemini", seconds: -1, voice: "", what: "everything", canvasId: "nope" } },
+    { kind, body: { kind, agent: "gemini", seconds: -1, voice: "", what: "everything" } },
     { kind, body: { kind: "control-envelope", body: { kind, ...(shaped[kind] ?? {}) } } },
   ]);
 }
@@ -99,16 +83,12 @@ describe("every request the control server takes before a session is one side's 
     expect(new Set(MAC_APP_ONLY_KINDS)).toEqual(new Set([...kinds].filter((kind) => !PHONE_MAY_SEND.kinds.has(kind))));
   });
 
-  test("the Mac-only decoders are the ones the control server dispatches setup, the practice and narration with", () => {
+  test("the Mac-only decoders are the ones the control server dispatches setup and notices with", () => {
     expect(MAC_APP_ONLY_DECODERS.decodeSetupRequest).toBe(decodeSetupRequest);
-    expect(MAC_APP_ONLY_DECODERS.decodePracticeRequest).toBe(decodePracticeRequest);
-    expect(MAC_APP_ONLY_DECODERS.decodeNarrationRequest).toBe(decodeNarrationRequest);
     expect(MAC_APP_ONLY_DECODERS.decodeNoticeRequest).toBe(decodeNoticeRequest);
     for (const kind of NOTICE_REQUEST_KINDS) expect(decodeNoticeRequest({ kind }), kind).not.toBeNull();
     // Each kind derived from a decoder is one that decoder takes.
     for (const kind of SETUP_REQUEST_KINDS) expect(decodeSetupRequest({ kind }), kind).not.toBeNull();
-    for (const kind of PRACTICE_REQUEST_KINDS) expect(decodePracticeRequest({ kind }), kind).not.toBeNull();
-    for (const kind of narrationKinds()) expect(decodeNarrationRequest({ kind }), kind).not.toBeNull();
   });
 
   test("every Mac-only request is recognised, shaped or not, bare or in an envelope; the phone's own are not", () => {
@@ -184,7 +164,7 @@ describe("the phone's /control refuses them all, and forwards nothing", () => {
       for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
     });
 
-    test("setup, the practice and narration are never reached from the phone; the Mac app's socket still reaches them", async () => {
+    test("setup and the Mac app's other requests are never reached from the phone; the Mac app's socket still reaches them", async () => {
       // A short private path: a Unix socket's is capped near 104 bytes, and this is nowhere near conch's own socket.
       const dir = mkdtempSync("/tmp/conch-mac-only-");
       dirs.push(dir);
@@ -208,14 +188,6 @@ describe("the phone's /control refuses them all, and forwards nothing", () => {
           handle: async (request: { kind: string }) => { reached.push(request.kind); return { kind: "setup-ack", retried: false }; },
           close: () => {},
         },
-        practice: {
-          handle: async (request: { kind: string }) => { reached.push(request.kind); return { kind: "practice-stopped", removed: false }; },
-        } as never,
-        narration: {
-          start: async (canvasId: string) => { reached.push("narration-start"); return { kind: "narration-error", error: canvasId }; },
-          stop: async (canvasId: string) => { reached.push("narration-stop"); return { kind: "narration-error", error: canvasId }; },
-          cancel: async (canvasId: string) => { reached.push("narration-cancel"); return { kind: "narration-error", error: canvasId }; },
-        } as never,
         onScreenObservation: () => { reached.push("screen-observation"); },
         onReviewPreview: async () => { reached.push("review-preview"); return { ok: true }; },
         notices: async (request) => { reached.push(request.kind); return { kind: "push-status", devices: [] }; },

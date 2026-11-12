@@ -334,7 +334,7 @@ export class WhisperServerClient {
     wav: Uint8Array,
     timeoutMs = 60_000,
     includeConfidence = true,
-    // Show's narration (`transcribeWavSegments`): each segment with when it was said.
+    // A whole WAV (`transcribeWavSegments`): each segment with when it was said.
     timestamps = false,
   ): Promise<WarmTranscriptionResult> {
     if (!cfg.whisperPort || !this.healthy) return { status: "unavailable" };
@@ -706,9 +706,9 @@ function timed(start: number, end: number, text: string): TimedSegment[] {
 }
 
 /**
- * A whole WAV, timed — Show's narration (narration.ts). The same two paths as
- * `transcribePcm`: the warm server, then the cold CLI once; each segment with
- * when it was said, which is what places the words against the recording.
+ * A whole WAV, timed — setup's microphone check (setup.ts). The same two paths
+ * as `transcribePcm`: the warm server, then the cold CLI once; each segment
+ * with when it was said.
  */
 export async function transcribeWavSegments(
   cfg: Config,

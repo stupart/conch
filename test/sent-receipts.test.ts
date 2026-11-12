@@ -29,7 +29,7 @@ const said = (uuid: string, content: string) => ({ type: "user", uuid, message: 
 const rows = (text: string) =>
   conversationWindow(buildConversation("s", lines(said("u1", text)), "claude"), 20);
 
-/** `CanvasPrompt.text`, as CanvasTests pins it. */
+/** A canvas still, as the Mac's canvas wrote it until it went with the overlays (2026-11-11). */
 const canvasMessage = (id = ID) => [
   join(folder, "flat.png"),
   "[canvas] Tyler marked up Invite page (http://localhost:3000/invite).",
@@ -40,7 +40,7 @@ const canvasMessage = (id = ID) => [
   `To mark your answer on this canvas, frame your marks {canvas: "${id}"}.`,
 ].join("\n");
 
-/** `CanvasStoryboard.prompt`, as CanvasShowTests pins it. */
+/** A Show, as the Mac's Show wrote it until it went with the overlays (2026-11-11). */
 const showMessage = (frame = (n: number) => join(folder, `frame-0${n}.png`)) => [
   "[canvas] Tyler showed Safari (0:23).",
   `Storyboard: ${join(folder, "storyboard.md")}`,
@@ -329,23 +329,13 @@ describe("the phone is served a receipt's picture from conch's own folders, and 
   });
 });
 
-// The formats above are the Swift builders'. Read here so a change to one is a change to the receipt's parser too:
-// otherwise the receipt quietly stops matching and Tyler is back to the picture of his own screen.
+// The video's format above is the Swift builder's. Read here so a change to it is a change to the receipt's parser too:
+// otherwise the receipt quietly stops matching and Tyler is back to the picture of his own screen. The canvas's and the
+// Show's builders went with the overlays (2026-11-11): what they wrote is pinned by the messages above alone.
 describe("the parser reads the formats the apps write", () => {
   const read = (path: string) => readFileSync(join(import.meta.dir, "..", path), "utf8");
 
-  test("the canvas's, the Show's and a video's message lines, from the phone and the Mac", () => {
-    const canvas = read("design/ConchDesign/Sources/ConchDesign/Canvas.swift");
-    expect(canvas).toContain('var lines = [picture, "[canvas] Tyler marked up \\(label)."]');
-    expect(canvas).toContain('lines.append("Clean screen + marks: \\(clean), \\(marks)")');
-    expect(canvas).toContain('lines.append("conch can\'t see the screen without the Screen Recording permission, so the picture is his marks alone. Marks: \\(marks)")');
-    expect(canvas).toContain('"To mark your answer on this canvas, frame your marks {canvas: \\"\\(document.id)\\"}."');
-    expect(canvas).toContain('return "\\(number). \\(place(document.target(of: note) ?? note)): \\"\\(words)\\""');
-    const show = read("design/ConchDesign/Sources/ConchDesign/CanvasShow.swift");
-    expect(show).toContain('var lines = ["[canvas] Tyler showed \\(label) (\\(clock(length))).", "Storyboard: \\(storyboard)"]');
-    expect(show).toContain('"\\(stamp(frame.moment.at)) \\(frame.path) — \\(happened(frame.moment, first: index == 0, words: words[index]))"');
-    expect(show).toContain('lines.append("The recording, for people (agents can\'t watch video): \\(video)")');
-    expect(show).toContain('(words.isEmpty ? "" : "\\"\\(words)\\" · ") + caption(moment, first: first)');
+  test("a video's message lines, from the phone and the Mac", () => {
     const video = read("design/ConchDesign/Sources/ConchDesign/VideoStoryboard.swift");
     expect(video).toContain('var heading = "[video] Tyler sent a video from his \\(sender.rawValue) (\\(CanvasStoryboard.clock(length)))."');
     expect(video).toContain('if cut { heading += " The frames below are its first \\(CanvasStoryboard.clock(longest))." }');

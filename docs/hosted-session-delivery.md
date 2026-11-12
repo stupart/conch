@@ -73,7 +73,7 @@ this change does not migrate conversations or create cloud jobs.
 
 ## Validation
 
-- Live delivery to task `01a0ebc6-303d-7762-9df7-7406a1e1272b` returned the active
+- Live delivery to task `5e5e5e21-0021-7000-8000-000000000021` returned the active
   turn ID and appeared as user input in that same task.
 - Socket fixtures cover fragmented frames, active steering, inactive-to-start,
   timeouts, missing acknowledgements, incompatible versions, cancellation,

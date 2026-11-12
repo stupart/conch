@@ -173,7 +173,7 @@ describe("observing Codex sessions without touching them", () => {
     // conch labels a Claude session by directory basename, which works because
     // those live in different repos. Every one of Tyler's Codex threads runs
     // from his home directory, so that rule would render every row
-    // "tylerstupart".
+    // "you".
     expect(codexThreadLabel({ name: "asset generator", agent_nickname: "Nash", title: "x" }))
       .toBe("asset generator");
     expect(codexThreadLabel({ agent_nickname: "Nash", title: "x" })).toBe("Nash");
@@ -186,14 +186,14 @@ describe("observing Codex sessions without touching them", () => {
 });
 
 /**
- * Real lines from Tyler's rollout of 2026-09-19, reduced only by trimming a
- * long input script and long tool output. The escalated call had no
- * `custom_tool_call_output` after it for hours, and the thread reported "busy"
- * — which the panel renders as "working" — the entire time.
+ * Synthetic lines in the shape of a real Codex rollout, the same as test/approval.test.ts's: the envelope, the field
+ * names and the escalation are Codex's own; the ids, times, paths and words are made up. The escalated call had no
+ * `custom_tool_call_output` after it for hours, and the thread reported "busy" — which the panel renders as "working"
+ * — the entire time.
  */
-const STARTED_LINE = String.raw`{"timestamp":"2026-09-19T11:51:05.614Z","ordinal":89,"type":"event_msg","payload":{"type":"task_started","turn_id":"01a0b981-7a87-7cb2-8320-79a8e0312f86","started_at":1789818665,"model_context_window":258400,"collaboration_mode_kind":"default"}}`;
-const ESCALATED_LINE = String.raw`{"timestamp":"2026-09-19T11:51:31.795Z","ordinal":107,"type":"response_item","payload":{"type":"custom_tool_call","id":"ctc_0f19e8bf8f5bb023016aae7740998087d29c15626dd510a213","status":"completed","call_id":"call_R3SFJWQHZ4ebOGHTATol2WJF","name":"exec","input":"text(await tools.exec_command({cmd:\"bun install --frozen-lockfile\",workdir:\"/Users/you/Projects/Seashell/.worktrees/fix-model-download\",sandbox_permissions:\"require_escalated\",justification:\"May I download the locked Seashell dependencies to run its test suite and reproduce bugs?\",prefix_rule:[\"bun\",\"install\"],yield_time_ms:10000,max_output_tokens:1500}));\n","internal_chat_message_metadata_passthrough":{"turn_id":"01a0b981-7a87-7cb2-8320-79a8e0312f86","create_time":1789818678.512885}}}`;
-const ESCALATED_ANSWERED = String.raw`{"timestamp":"2026-09-19T11:52:02.118Z","ordinal":113,"type":"response_item","payload":{"type":"custom_tool_call_output","id":"ctco_01a0b981-aac4-7182-bc32-ff832f55110f","call_id":"call_R3SFJWQHZ4ebOGHTATol2WJF","output":[{"type":"input_text","text":"Script completed\nWall time 12.4 seconds\nOutput:\n"}]}}`;
+const STARTED_LINE = String.raw`{"timestamp":"2026-01-02T03:04:05.000Z","ordinal":89,"type":"event_msg","payload":{"type":"task_started","turn_id":"5e5e5e24-0024-7000-8000-000000000024","started_at":1767323045,"model_context_window":258400,"collaboration_mode_kind":"default"}}`;
+const ESCALATED_LINE = String.raw`{"timestamp":"2026-01-02T03:04:31.000Z","ordinal":107,"type":"response_item","payload":{"type":"custom_tool_call","id":"ctc_5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e02","status":"completed","call_id":"call_SyntheticEscalated000001","name":"exec","input":"text(await tools.exec_command({cmd:\"bun install --frozen-lockfile\",workdir:\"/Users/you/Projects/acme-web/.worktrees/fix-image-upload\",sandbox_permissions:\"require_escalated\",justification:\"May I download the locked dependencies to run the test suite and reproduce the bug?\",prefix_rule:[\"bun\",\"install\"],yield_time_ms:10000,max_output_tokens:1500}));\ntext(ALL_TOOLS.filter(t=>/review_to_front/.test(t.name)));\n","internal_chat_message_metadata_passthrough":{"turn_id":"5e5e5e24-0024-7000-8000-000000000024","create_time":1767323058.5}}}`;
+const ESCALATED_ANSWERED = String.raw`{"timestamp":"2026-01-02T03:05:02.000Z","ordinal":113,"type":"response_item","payload":{"type":"custom_tool_call_output","id":"ctco_5e5e5e24-0024-7000-8000-000000000113","call_id":"call_SyntheticEscalated000001","output":[{"type":"input_text","text":"Script completed\nWall time 12.4 seconds\nOutput:\n"}]}}`;
 
 describe("Codex sessions blocked on a permission ask", () => {
   const homes: string[] = [];
@@ -205,14 +205,14 @@ describe("Codex sessions blocked on a permission ask", () => {
   function rollout(...lines: string[]): string {
     const dir = mkdtempSync(join(tmpdir(), "conch-codex-approval-"));
     homes.push(dir);
-    const path = join(dir, "rollout-2026-09-19T19-00-38-5e5e5e06.jsonl");
+    const path = join(dir, "rollout-2026-01-02T03-04-05-5e5e5e22-0022-7000-8000-000000000022.jsonl");
     writeFileSync(path, lines.join("\n") + "\n");
     return path;
   }
 
   const snapshot = (transcriptPath: string, status: "busy" | "idle" = "busy") => [{
     sessionId: "s", label: "seashell", cwd: "/tmp", transcriptPath,
-    size: 0, turnId: "01a0b981", status, text: "",
+    size: 0, turnId: "5e5e5e24", status, text: "",
   }];
 
   test("a waiting ask is reported once, however often the poll runs", () => {
@@ -221,7 +221,7 @@ describe("Codex sessions blocked on a permission ask", () => {
     const memory = new Map<string, string>();
     const snaps = snapshot(rollout(STARTED_LINE, ESCALATED_LINE));
     const first = detectCodexApprovals(memory, snaps);
-    expect(first.map((e) => e.approval?.id)).toEqual(["call_R3SFJWQHZ4ebOGHTATol2WJF"]);
+    expect(first.map((e) => e.approval?.id)).toEqual(["call_SyntheticEscalated000001"]);
     expect(first[0]!.approval!.summary).toBe("bun install --frozen-lockfile");
     expect(detectCodexApprovals(memory, snaps)).toEqual([]);
     expect(detectCodexApprovals(memory, snaps)).toEqual([]);
@@ -999,16 +999,16 @@ describe("a Codex thread is named as Codex names it", () => {
     // threads.name and the index agree.
     const home = realCodexHome({
       threads: [
-        { id: "named", name: "Clone Blueprint Studio monorepo" },
+        { id: "named", name: "Clone the web app monorepo" },
         { id: "cleared", name: null, title: "the first prompt" },
       ],
       index: [
-        { id: "named", thread_name: "Clone Blueprint Studio monorepo", updated_at: "2026-09-11T10:00:00Z" },
+        { id: "named", thread_name: "Clone the web app monorepo", updated_at: "2026-09-11T10:00:00Z" },
         { id: "cleared", thread_name: "since cleared", updated_at: "2026-09-11T10:00:00Z" },
       ],
     });
     try {
-      expect(await names(home)).toEqual({ named: "Clone Blueprint Studio monorepo", cleared: "the first prompt" });
+      expect(await names(home)).toEqual({ named: "Clone the web app monorepo", cleared: "the first prompt" });
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -1280,12 +1280,12 @@ describe("a session its hooks have reported on", () => {
   const entry = { sessionId: "t1", cwd: "/Users/me/Projects", pid: 0, status: "idle" as const, updatedAt: 1, transcriptPath: "/t.jsonl" };
 
   test("keeps the thread's name, and takes the hook's pid and status", () => {
-    const merged = codexEntriesById([{ ...entry, name: "atals and nura" }], [{ ...entry, pid: 42, status: "busy", updatedAt: 2 }]);
-    expect(merged.get("t1")).toMatchObject({ name: "atals and nura", pid: 42, status: "busy", updatedAt: 2 });
+    const merged = codexEntriesById([{ ...entry, name: "budget app and api" }], [{ ...entry, pid: 42, status: "busy", updatedAt: 2 }]);
+    expect(merged.get("t1")).toMatchObject({ name: "budget app and api", pid: 42, status: "busy", updatedAt: 2 });
   });
 
   test("through the registry: a running session's row keeps its name once a hook has written it", async () => {
-    const home = realCodexHome({ threads: [{ id: "named", name: "atals and nura" }] });
+    const home = realCodexHome({ threads: [{ id: "named", name: "budget app and api" }] });
     const claudeDir = mkdtempSync(join(tmpdir(), "conch-claude-"));
     const configDir = mkdtempSync(join(tmpdir(), "conch-config-"));
     mkdirSync(join(claudeDir, "sessions"));
@@ -1294,7 +1294,7 @@ describe("a session its hooks have reported on", () => {
       const snap = await registrySnapshot(claudeDir, { codexHome: home, configDir, now: NOW });
       const info = snap!.infos.find((candidate) => candidate.sessionId === "named")!;
       expect(info.pid).toBe(process.pid);
-      expect(sessionLabel(info, info.cwd, { labelsPath: join(configDir, "labels.json") })).toBe("atals and nura");
+      expect(sessionLabel(info, info.cwd, { labelsPath: join(configDir, "labels.json") })).toBe("budget app and api");
     } finally {
       for (const dir of [home, claudeDir, configDir]) rmSync(dir, { recursive: true, force: true });
     }

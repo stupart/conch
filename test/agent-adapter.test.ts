@@ -218,7 +218,7 @@ describe("Claude Code's input box, read off its terminal", () => {
   // Shape read from a live Terminal tab on 2.1.280 (2026-09-23).
   const screen = (box: string[]) => [
     "❯ Can turn off the netlify for this page", "· Coalescing… (26s · thinking with xhigh effort)",
-    "───────────────────────────────────────── Prime page wireframe in blueprint studio ─",
+    "───────────────────────────────────────── About page wireframe for the new website ─",
     ...box,
     "────────────────────────────────────────────────────────────────────────",
     "  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents · esc to interrupt",

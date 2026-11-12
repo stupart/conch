@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { codexTerminalCandidates, probeCodexTerminalSessions, resumedCodexThread } from "../src/codex-terminal-sessions.ts";
 
-const THREAD = "01a0b8e3-c575-72b1-8570-a071638e3acf";
+const THREAD = "5e5e5e20-0020-7000-8000-000000000020";
 test("explicit resume, including the installed CLI's yolo command, identifies the native thread", () => {
   for (const args of [
     `codex resume ${THREAD}`, `codex yolo resume ${THREAD}`,

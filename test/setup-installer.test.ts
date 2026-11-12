@@ -211,7 +211,7 @@ describe("never a real installer, or a login shell, from a conch with a stand-in
 
   test("the daemon runs the real ones; no e2e script asks for an install", () => {
     const daemon = readFileSync(join(import.meta.dir, "..", "src/daemon.ts"), "utf8");
-    const wiring = daemon.slice(daemon.indexOf("const setup = createSetup({"), daemon.indexOf("practice = createPractice({"));
+    const wiring = daemon.slice(daemon.indexOf("const setup = createSetup({"), daemon.indexOf("const controlServer = createControlServer({"));
     expect(wiring).toContain("shellHas: loginShellHas,");
     expect(wiring).toContain("runInstaller: runInstallerInLoginShell,");
     for (const name of readdirSync(join(import.meta.dir, "..", "scripts")).filter((file) => file.endsWith(".ts"))) {
@@ -457,7 +457,7 @@ describe("the microphone check's recording never outlives it (D5)", () => {
 });
 
 describe("a voice sample where this Mac doesn't have the audio (D6)", () => {
-  test("the phone, or another Mac: refused in the check's and the practice's words, and nothing is spoken", async () => {
+  test("the phone, or another Mac: refused in the check's words, and nothing is spoken", async () => {
     for (const where of ["phone", "another-mac"] as const) {
       const spoken: string[] = [];
       const setup = createSetup(deps({ audioElsewhere: () => where, speak: async (voice) => { spoken.push(voice); return true; } }));
@@ -487,7 +487,7 @@ describe("a voice sample where this Mac doesn't have the audio (D6)", () => {
 
   test("the daemon's sample sends nothing to the phone or another Mac, and says where the audio is", () => {
     const daemon = readFileSync(join(import.meta.dir, "..", "src/daemon.ts"), "utf8");
-    const wiring = daemon.slice(daemon.indexOf("const setup = createSetup({"), daemon.indexOf("practice = createPractice({"));
+    const wiring = daemon.slice(daemon.indexOf("const setup = createSetup({"), daemon.indexOf("const controlServer = createControlServer({"));
     const speak = wiring.slice(wiring.indexOf("speak: (voiceId, text) => eventQueue.exclusive(() => (audioLease.isPhone() || !audioHolder.isLocal()"), wiring.indexOf("audioElsewhere:"));
     expect(speak).toContain("? Promise.resolve()");
     expect(speak.indexOf("? Promise.resolve()")).toBeLessThan(speak.indexOf(': voice.speak({ ...cfg, ttsVoices: [voiceId] }, text, "", true)'));

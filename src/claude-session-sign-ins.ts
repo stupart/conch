@@ -35,8 +35,6 @@ import { conchHome } from "./home.ts";
 
 /** The Keychain service each sign-in's token is kept under: one generic password per sign-in, its account the id. */
 export const SIGN_IN_KEYCHAIN_SERVICE = "conch.claude.session-sign-in";
-/** Where Claude Code would read a token from its environment: never set by a sign-in launch, and stripped from it. */
-export const SIGN_IN_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
 /** Where a sign-in launch tells Claude Code to read the token from instead: a descriptor, `SIGN_IN_TOKEN_FD`. */
 export const SIGN_IN_TOKEN_FD_ENV = "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR";
 export const SIGN_IN_TOKEN_FD = 3;

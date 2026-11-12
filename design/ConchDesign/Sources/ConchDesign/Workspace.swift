@@ -162,8 +162,8 @@ public enum StageMode: String, Equatable, Sendable, Codable {
 ///
 /// The work half is the Workdesk (2026-10-16), and these are the TYPES of item it holds: each tab in its strip is one
 /// item of one type (`Workdesk.ItemType`). Tyler: "deliverable is a type, borwser is a type, we prob have other ones
-/// already too". A new type (an Atlas page with a view of its own, a design) is a new case here, with its name and mark
-/// in `Workdesk`, and its tab and pane in the app.
+/// already too". A new type (an Atlas page with a view of its own, a design) is a new case here, with its name in
+/// `Workdesk`, and its tab and pane in the app.
 public enum WorkPane: String, Equatable, Sendable, Codable, CaseIterable {
     /// What the session filed for you to look at.
     case deliverable
@@ -210,34 +210,8 @@ public enum Workdesk {
         }
     }
 
-    /// Its mark in the strip (SF Symbols).
-    public static func symbol(of type: ItemType) -> String {
-        switch type {
-        case .deliverable: "doc.text"
-        case .browser: "globe"
-        case .files: "folder"
-        case .shell: "chevron.left.forwardslash.chevron.right"
-        case .terminal: "terminal"
-        }
-    }
-
     /// The help for the strip's +: what a tab of your own is for.
     public static let newTabHelp = "New browser tab: sign in, or browse alongside this session's agents"
-
-    /// Where conch keeps Atlas pages' copies, under the home folder (src/atlas-copies.ts `ATLAS_COPIES_PARTS`).
-    public static let atlasCopiesParts = ["Documents", "conch-notes", "atlas"]
-
-    /// The Atlas page a deliverable is a copy of, by its path in Atlas: a Markdown file under the copies folder (what
-    /// `atlas_show` files). Nil for anything else.
-    public static func atlasPage(link: String?, home: String) -> String? {
-        guard let link, link.hasPrefix("/") else { return nil }
-        let folder = ([home] + atlasCopiesParts).joined(separator: "/") + "/"
-        guard link.hasPrefix(folder) else { return nil }
-        let path = String(link.dropFirst(folder.count))
-        guard !path.isEmpty, path.lowercased().hasSuffix(".md") || path.lowercased().hasSuffix(".markdown"),
-              !path.split(separator: "/").contains(where: { $0.hasPrefix(".") }) else { return nil }
-        return path
-    }
 }
 
 /// What the workspace remembers about ONE session, so leaving it and coming back returns
@@ -378,12 +352,6 @@ public enum DeliverableGroups {
             order.append(key)
         }
         return order.map { DeliverableGroup(id: $0, versions: versions[$0]!) }
-    }
-
-    /// The newest filing of whatever artifact `id` is a version of, among `held` (oldest first): the conversation panel,
-    /// on a version when a newer one of the same artifact is published, follows to it. Nil when `id` isn't held.
-    public static func newest(of id: String, in held: [DeliverableVersion]) -> String? {
-        grouped(held).first { $0.versions.contains(id) }?.newest
     }
 }
 

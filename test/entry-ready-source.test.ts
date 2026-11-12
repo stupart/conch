@@ -121,11 +121,14 @@ describe("one state, one name", () => {
     const doc = read("docs/conch-control-skill.md");
     expect(doc).not.toContain("wherever it is on screen");
     expect(doc).not.toContain("where the user is looking");
-    expect(doc).toContain("result where conch shows it, in its own conversation panel or side panel,");
+    // 2026-11-11: the panel and the canvas went with the overlays; the iPhone draws them, and a marked result opens in
+    // conch's window.
+    expect(doc).toContain("result where it shows it as you published it (the iPhone draws them), never");
+    expect(doc).not.toContain("{canvas: id}");
     expect(read("src/mcp.ts")).not.toContain("where the user is looking");
     // 2026-11-11: the marks' detail moved from review_to_front's schema to `conch agent help publish`.
     expect(read("src/agent-instructions.ts")).not.toContain("where the user is looking");
-    expect(read("src/agent-instructions.ts")).toContain("never over a browser or another app, so a result with marks opens in conch's panel");
+    expect(read("src/agent-instructions.ts")).toContain("never over a browser or another app, so a result with marks opens in conch's window");
   });
 });
 

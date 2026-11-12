@@ -248,7 +248,6 @@ struct PublishedState: Decodable, Equatable, Sendable {
     struct Showing: Decodable, Equatable, Sendable {
         let sessionId: String?
         let reviewId: String?
-        let confidence: Double
         let surface: Surface
 
         /// Its path or address, published only when it resolved to a session.
@@ -1111,10 +1110,6 @@ enum RowStatus: Equatable, Sendable {
     case needs
     case review
     case unknown
-
-    var isReview: Bool {
-        self == .review
-    }
 }
 
 extension RowStatus: Decodable {

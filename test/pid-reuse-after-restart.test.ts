@@ -7,7 +7,7 @@ import { BYPASS_OPTION } from "../src/agent-adapter.ts";
 
 /**
  * A pid that came round again (2026-11-06): a session that had stopped working, and that Restart could not bring back.
- * After the Mac restarted on 2026-11-05, the retired Blueprint profile still had two registry entries from the boot
+ * After the Mac restarted on 2026-11-05, the retired profile still had two registry entries from the boot
  * before: one naming pid 972, which macOS had handed to ImageIOXPCService, and a seashell window's naming 996, by then the `login`
  * of a Terminal tab. Asked only "is the pid alive?", conch counted both as running: it did not bring them back
  * ("not bringing back … it is running elsewhere"), it typed the first's messages at a process with no terminal, it listed

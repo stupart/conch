@@ -42,18 +42,18 @@ function between(source: string, start: string, end: string): string {
 
 describe("Open in Terminal: claude attach <jobId>", () => {
   test("the command is exactly claude attach <jobId> in the job's folder, shell-quoted", () => {
-    expect(attachTerminalCommand("f31f0d15", "/Users/you"))
-      .toBe("cd -- '/Users/you' && claude attach 'f31f0d15'");
-    expect(attachTerminalCommand("f31f0d15", "/tmp/it's here"))
-      .toBe("cd -- '/tmp/it'\\''s here' && claude attach 'f31f0d15'");
-    for (const hostile of ["", "-h", "f31f0d15; rm -rf ~", "a b", "$(id)", "'x'"]) {
+    expect(attachTerminalCommand("5e5e5e13", "/Users/you"))
+      .toBe("cd -- '/Users/you' && claude attach '5e5e5e13'");
+    expect(attachTerminalCommand("5e5e5e13", "/tmp/it's here"))
+      .toBe("cd -- '/tmp/it'\\''s here' && claude attach '5e5e5e13'");
+    for (const hostile of ["", "-h", "5e5e5e13; rm -rf ~", "a b", "$(id)", "'x'"]) {
       expect(() => attachTerminalCommand(hostile, "/tmp")).toThrow("background job id");
     }
   });
 
   test("it opens through the same Terminal door a start uses", async () => {
     const calls: string[][] = [];
-    await attachTerminalSession("f31f0d15", "/Users/t", {
+    await attachTerminalSession("5e5e5e13", "/Users/t", {
       which: () => "/opt/homebrew/bin/claude",
       isDirectory: () => true,
       spawn(argv) {
@@ -65,7 +65,7 @@ describe("Open in Terminal: claude attach <jobId>", () => {
     expect(calls[0]![0]).toBe("osascript");
     expect(calls[0]!).toContain("set newTab to do script (item 1 of argv)");
     expect(calls[0]!).toContain("return tty of newTab");
-    expect(calls[0]!.at(-1)).toBe("cd -- '/Users/t' && claude attach 'f31f0d15'");
+    expect(calls[0]!.at(-1)).toBe("cd -- '/Users/t' && claude attach '5e5e5e13'");
   });
 
   test("the socket command reaches the controller and acks by whether there is a job to attach", () => {
@@ -82,10 +82,10 @@ describe("Open in Terminal: claude attach <jobId>", () => {
       { kind: "session-command", sessionId: "succ", command: "attach" },
       { controller, pause: { open() {}, close() {} }, targetForSessionId: () => target },
     );
-    expect(reply({ sessionId: "succ", label: "conch", jobId: "f31f0d15" })).toEqual({
+    expect(reply({ sessionId: "succ", label: "conch", jobId: "5e5e5e13" })).toEqual({
       kind: "session-ack", sessionId: "succ", command: "attach", changed: true, label: "conch",
     });
-    expect(attached).toEqual([{ sessionId: "succ", label: "conch", jobId: "f31f0d15" }]);
+    expect(attached).toEqual([{ sessionId: "succ", label: "conch", jobId: "5e5e5e13" }]);
     expect(reply({ sessionId: "cx", label: "codex" })).toMatchObject({ kind: "session-ack", changed: false });
   });
 
@@ -103,8 +103,8 @@ describe("Open in Terminal: claude attach <jobId>", () => {
 describe("close on a background job", () => {
   test("runs claude stop <jobId> and waits out the job's own process, never the window's", async () => {
     for (const row of [
-      { pid: 61637, jobId: "f31f0d15", agentPid: 72858 }, // a window attached
-      { pid: 0, jobId: "f31f0d15", agentPid: 72858, noTerminal: BG_NO_TERMINAL }, // none
+      { pid: 61637, jobId: "5e5e5e13", agentPid: 72858 }, // a window attached
+      { pid: 0, jobId: "5e5e5e13", agentPid: 72858, noTerminal: BG_NO_TERMINAL }, // none
     ]) {
       const spawned: string[][] = [];
       const probed: number[] = [];
@@ -124,16 +124,16 @@ describe("close on a background job", () => {
         },
         sleep: async () => {},
       });
-      expect(spawned).toEqual([["/opt/homebrew/bin/claude", "stop", "f31f0d15"]]);
+      expect(spawned).toEqual([["/opt/homebrew/bin/claude", "stop", "5e5e5e13"]]);
       expect(probed).toEqual([72858, 72858]);
     }
   });
 
   test("a stop that fails says why, in claude's words", async () => {
     await expect(closeSession(
-      { pid: 61637, jobId: "f31f0d15", agentPid: 72858 },
-      { which: () => "/opt/homebrew/bin/claude", spawn: () => settled(1, "", "no background session f31f0d15\n") },
-    )).rejects.toThrow("no background session f31f0d15");
+      { pid: 61637, jobId: "5e5e5e13", agentPid: 72858 },
+      { which: () => "/opt/homebrew/bin/claude", spawn: () => settled(1, "", "no background session 5e5e5e13\n") },
+    )).rejects.toThrow("no background session 5e5e5e13");
   });
 
   test("a terminal session still closes with Ctrl-D, and a no-terminal row still refuses", async () => {

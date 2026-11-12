@@ -3,11 +3,10 @@ import ImageIO
 import XCTest
 @testable import ConchDesign
 
-/// The canvas's document and its one path builder: what is on screen and what an agent is sent are drawn from these.
+/// The canvas's marks and its one path builder: what is on screen and what an agent is sent are drawn from these.
 final class CanvasTests: XCTestCase {
     /// A 1000 × 500 point display, so a unit point reads straight off as points.
     private let size = CGSize(width: 1000, height: 500)
-    private lazy var anchor = CanvasAnchor(id: 7, frame: CGRect(origin: .zero, size: size))
 
     private func at(_ x: CGFloat, _ y: CGFloat, p: Double? = nil, t: Double = 0) -> CanvasPoint {
         CanvasPoint(x: x / size.width, y: y / size.height, p: p, t: t)
@@ -15,93 +14,6 @@ final class CanvasTests: XCTestCase {
 
     private func mark(_ kind: CanvasMark.Kind, _ points: CanvasPoint..., text: String? = nil, author: CanvasMark.Author = .you) -> CanvasMark {
         CanvasMark(kind: kind, author: author, points: points, text: text)
-    }
-
-    // MARK: The document
-
-    func testItRoundTripsThroughJSONAndLeavesOutAMousesPressure() throws {
-        var document = CanvasDocument(anchor: anchor, id: "c1", at: 1_000)
-        document.add(mark(.pen, at(10, 10, t: 0), at(20, 12, p: 0.4, t: 0.01)))
-        document.add(mark(.note, at(300, 200), text: "make this bigger"))
-        let data = try JSONEncoder().encode(document)
-        XCTAssertEqual(try JSONDecoder().decode(CanvasDocument.self, from: data), document)
-        let json = String(decoding: data, as: UTF8.self)
-        // A mouse sample has no pressure, and says so by leaving it out; a tablet's is kept.
-        XCTAssertEqual(json.components(separatedBy: "\"p\":").count - 1, 1)
-        XCTAssertTrue(json.contains("\"kind\":\"display\""))
-        XCTAssertTrue(json.contains("\"author\":\"you\""))
-    }
-
-    func testUndoTakesTheNewestMark() {
-        var document = CanvasDocument(anchor: anchor)
-        document.add(mark(.box, at(0, 0), at(10, 10)))
-        document.add(mark(.arrow, at(0, 0), at(10, 10)))
-        XCTAssertEqual(document.undo()?.kind, .arrow)
-        XCTAssertEqual(document.marks.map(\.kind), [.box])
-        document.undo()
-        XCTAssertNil(document.undo())
-        XCTAssertTrue(document.isEmpty)
-    }
-
-    /// An agent's marks aren't Tyler's to undo: undo passes over them to his own.
-    func testUndoLeavesAnAgentsMarks() {
-        var document = CanvasDocument(anchor: anchor)
-        document.add(mark(.pen, at(0, 0), at(5, 5)))
-        document.merge(agent: [mark(.box, at(0, 0), at(10, 10), author: .agent)])
-        XCTAssertEqual(document.undo()?.kind, .pen)
-        XCTAssertNil(document.undo())
-        XCTAssertEqual(document.marks.map(\.author), [.agent])
-    }
-
-    /// A new set of an agent's marks replaces its old ones, by id; Tyler's stay, and come first.
-    func testAnAgentsMarksMergeByIdAndReplaceItsOldOnes() {
-        var document = CanvasDocument(anchor: anchor)
-        let his = mark(.pen, at(0, 0), at(5, 5))
-        document.add(his)
-        let one = CanvasMark(kind: .box, author: .agent, points: [at(0, 0), at(10, 10)], id: "a/1")
-        let two = CanvasMark(kind: .arrow, author: .agent, points: [at(0, 0), at(10, 10)], id: "a/2")
-        document.merge(agent: [one, two])
-        XCTAssertEqual(document.marks.map(\.id), [his.id, "a/1", "a/2"])
-        // Scrolled: the same marks, moved. Still the same ids, so the glass moves them rather than drawing them again.
-        var moved = one
-        moved.points = [at(0, 20), at(10, 30)]
-        document.merge(agent: [moved, two])
-        XCTAssertEqual(document.marks.map(\.id), [his.id, "a/1", "a/2"])
-        XCTAssertEqual(document.marks[1], moved)
-        // A new version's marks: the old ones go.
-        document.merge(agent: [CanvasMark(kind: .pen, author: .agent, points: [at(1, 1), at(2, 2)], id: "b/1")])
-        XCTAssertEqual(document.marks.map(\.id), [his.id, "b/1"])
-        // Only an agent's marks are taken from `agent`; and none clears them.
-        document.merge(agent: [mark(.box, at(0, 0), at(1, 1))])
-        XCTAssertEqual(document.marks.map(\.id), [his.id])
-        XCTAssertFalse(document.has(.agent))
-        XCTAssertTrue(document.has(.you))
-    }
-
-    func testNotesAreNumberedPerAuthorInTheOrderTheyWerePinned() {
-        var document = CanvasDocument(anchor: anchor)
-        let first = mark(.note, at(1, 1)), agent = mark(.note, at(2, 2), author: .agent), second = mark(.note, at(3, 3))
-        for each in [first, mark(.pen, at(0, 0)), agent, second] { document.add(each) }
-        XCTAssertEqual(document.number(of: first), 1)
-        XCTAssertEqual(document.number(of: second), 2)
-        XCTAssertEqual(document.number(of: agent), 1)
-        document.setText("bigger", of: second.id)
-        XCTAssertEqual(document.marks.last?.text, "bigger")
-    }
-
-    /// A note says what it is about by where it is pinned: `1. box (62%,18%): "make this bigger"`.
-    func testANoteIsAboutTheNewestMarkItIsPinnedOn() {
-        var document = CanvasDocument(anchor: anchor)
-        let box = mark(.box, at(100, 100), at(300, 200))
-        let arrow = mark(.arrow, at(500, 400), at(700, 300))
-        let inner = mark(.box, at(150, 120), at(250, 180))
-        for each in [box, arrow, inner] { document.add(each) }
-        XCTAssertEqual(document.target(of: mark(.note, at(200, 150)))?.id, inner.id, "the newest box on top wins")
-        XCTAssertEqual(document.target(of: mark(.note, at(120, 190)))?.id, box.id)
-        // Just outside a box still counts, as a pin dropped on its edge would.
-        XCTAssertEqual(document.target(of: mark(.note, at(310, 150)))?.id, box.id)
-        XCTAssertEqual(document.target(of: mark(.note, at(600, 360)))?.id, arrow.id, "on the arrow's shaft")
-        XCTAssertNil(document.target(of: mark(.note, at(900, 60))), "open space is about itself")
     }
 
     // MARK: The path builder
@@ -209,60 +121,6 @@ final class CanvasTests: XCTestCase {
         return context.makeImage()!
     }
 
-    /// The pixel at `x`, `y` from the top left, as 0–255 red, green, blue.
-    private func pixel(_ image: CGImage, _ x: Int, _ y: Int) -> (r: Int, g: Int, b: Int) {
-        let context = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: image.width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
-        let bytes = context.data!.assumingMemoryBound(to: UInt8.self)
-        let at = (y * image.width + x) * 4
-        return (Int(bytes[at]), Int(bytes[at + 1]), Int(bytes[at + 2]))
-    }
-
-    /// The display's pixels, the marks drawn over them where they were drawn, and no more than 1568 px on the long edge.
-    func testThePictureIsTheScreenWithTheMarksOverItAtMost1568Across() throws {
-        var document = CanvasDocument(anchor: anchor)
-        document.add(mark(.box, at(100, 100), at(300, 200)))
-        // A 2x display: 2000 × 1000 pixels, fitted into 1568 × 784.
-        let picture = try XCTUnwrap(CanvasInk.render(document, over: screen(2000, 1000)))
-        XCTAssertEqual(picture.width, 1568)
-        XCTAssertEqual(picture.height, 784)
-        let k = 1568.0 / 1000
-        // The box's top edge, in Tyler's orange, not flipped to the bottom.
-        let edge = pixel(picture, Int(200 * k), Int(100 * k))
-        XCTAssertEqual(edge.r, 0xFF, accuracy: 3)
-        XCTAssertEqual(edge.g, 0x6A, accuracy: 3)
-        XCTAssertEqual(edge.b, 0x3D, accuracy: 3)
-        // Inside, the screen shows through the faintest wash; outside, the screen as it was.
-        let inside = pixel(picture, Int(200 * k), Int(150 * k))
-        XCTAssertGreaterThan(inside.b, 235)
-        XCTAssertLessThan(inside.b, 255)
-        XCTAssertEqual(pixel(picture, Int(200 * k), Int(400 * k)).b, 255)
-        // A smaller screen is never scaled up.
-        XCTAssertEqual(CanvasInk.render(document, over: screen(1000, 500))?.width, 1000)
-    }
-
-    /// Without the Screen Recording grant there is no screen: the marks alone, on the ground, so they read anywhere.
-    func testWithNoScreenItIsTheMarksAloneOnTheGround() throws {
-        var document = CanvasDocument(anchor: anchor)
-        document.add(mark(.arrow, at(100, 250), at(900, 250)))
-        let picture = try XCTUnwrap(CanvasInk.render(document, over: nil))
-        XCTAssertEqual(picture.width, 1568)
-        let ground = pixel(picture, 10, 10)
-        XCTAssertEqual(ground.r, 0xF2, accuracy: 2)
-        XCTAssertEqual(pixel(picture, 784, 392).r, 0xFF, accuracy: 3)
-    }
-
-    /// A highlight is multiplied into what is under it, as a marker is: yellow over white, darker over grey.
-    func testAHighlightMultipliesOverTheScreen() throws {
-        var document = CanvasDocument(anchor: anchor)
-        document.add(mark(.highlight, at(100, 250), at(900, 250)))
-        let white = try XCTUnwrap(CanvasInk.render(document, over: screen(1000, 500)))
-        let grey = try XCTUnwrap(CanvasInk.render(document, over: screen(1000, 500, grey: 0.5)))
-        XCTAssertEqual(pixel(white, 500, 250).r, 255, accuracy: 3)
-        XCTAssertLessThan(pixel(white, 500, 250).b, 180, "yellow")
-        XCTAssertLessThan(pixel(grey, 500, 250).r, 140, "multiplied, not laid over")
-    }
-
     func testAPictureRoundTripsAsAPNG() throws {
         let data = try XCTUnwrap(CanvasInk.png(screen(40, 20)))
         XCTAssertEqual(Array(data.prefix(4)), [0x89, 0x50, 0x4E, 0x47])
@@ -270,47 +128,16 @@ final class CanvasTests: XCTestCase {
         XCTAssertEqual(CGImageSourceCreateImageAtIndex(source, 0, nil)?.width, 40)
     }
 
-    // MARK: The prompt
+    // MARK: Words
 
-    func testThePromptLeadsWithThePictureThenTheNotesByNumberThenTheRest() {
-        var document = CanvasDocument(anchor: anchor)
-        document.add(mark(.box, at(520, 40), at(720, 140)))
-        document.add(mark(.note, at(600, 90), text: "make this\nbigger"))
-        document.add(mark(.arrow, at(100, 400), at(300, 300)))
-        document.add(mark(.note, at(200, 350), text: "move here"))
-        document.add(mark(.note, at(950, 480), text: "  "))
-        document.add(mark(.note, at(900, 20), text: "and this"))
-        XCTAssertEqual(
-            CanvasPrompt.text(for: document, about: "Morrow brand page (http://localhost:3000/invite)", picture: "/c/flat.png", clean: "/c/raw.png", marks: "/c/canvas.json"),
-            """
-            /c/flat.png
-            [canvas] Tyler marked up Morrow brand page (http://localhost:3000/invite).
-            1. box (62%,18%): "make this bigger"
-            2. arrow (10%,80%)→(30%,60%): "move here"
-            4. note (90%,4%): "and this"
-            Clean screen + marks: /c/raw.png, /c/canvas.json
-            To mark your answer on this canvas, frame your marks {canvas: "\(document.id)"}.
-            """
-        )
-    }
-
-    /// A note Tyler pins on the agent's own mark names it as the agent's, so it knows which it is answering.
-    func testANoteOnAnAgentsMarkCallsItYours() {
-        var document = CanvasDocument(anchor: anchor, id: "c1", at: 0)
-        document.merge(agent: [CanvasMark(kind: .box, author: .agent, points: [at(520, 40), at(720, 140)], id: "a/1")])
-        document.add(mark(.note, at(600, 90), text: "bigger still"))
-        XCTAssertEqual(CanvasPrompt.notes(document), ["1. your box (62%,18%): \"bigger still\""])
-    }
-
-    func testWithoutAScreenThePromptSaysWhy() {
-        var document = CanvasDocument(anchor: anchor)
-        document.add(mark(.pen, at(10, 10), at(20, 20)))
-        let text = CanvasPrompt.text(for: document, about: "Safari", picture: "/c/flat.png", clean: nil, marks: "/c/canvas.json")
-        XCTAssertEqual(text.components(separatedBy: "\n").first, "/c/flat.png")
-        XCTAssertTrue(text.contains("[canvas] Tyler marked up Safari.\n"))
-        XCTAssertTrue(text.contains("the picture is his marks alone. Marks: /c/canvas.json\n"))
-        XCTAssertTrue(text.hasSuffix("{canvas: \"\(document.id)\"}."), "the id to answer on, whatever else")
-        XCTAssertFalse(text.contains("raw.png"))
+    /// A mark in words, where it is in percent: how a frame's caption names what was marked there. A box by its middle,
+    /// an arrow from tail to head, and one the agent drew itself is "your" mark.
+    func testAMarkIsNamedByWhereItIs() {
+        XCTAssertEqual(CanvasPrompt.place(mark(.box, at(520, 40), at(720, 140))), "box (62%,18%)")
+        XCTAssertEqual(CanvasPrompt.place(mark(.arrow, at(100, 400), at(300, 300))), "arrow (10%,80%)→(30%,60%)")
+        XCTAssertEqual(CanvasPrompt.place(mark(.note, at(900, 20))), "note (90%,4%)")
+        XCTAssertEqual(CanvasPrompt.place(mark(.area, at(520, 40), at(720, 140), author: .agent)), "your highlight (62%,18%)")
+        XCTAssertEqual(CanvasPrompt.place(mark(.box, at(520, 40), at(720, 140), author: .agent)), "your box (62%,18%)")
     }
 
     /// Live ink is rebuilt on every pointer event, so a long stroke must stay far inside a frame.

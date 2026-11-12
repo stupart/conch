@@ -322,11 +322,6 @@ struct ConversationStackView: View {
         workspace.toggleTool(itemID, for: conversation.sessionId)
     }
 
-    private func expand(_ itemID: String) {
-        guard !isExpanded(itemID) else { return }
-        toggleExpanded(itemID)
-    }
-
     var body: some View {
         // Read when the selection needs it, from this body's conversation: nothing is worked out here.
         let _ = selection.source = selectionSource
@@ -2352,11 +2347,5 @@ private struct ArtifactPreview: View {
         case "md", "markdown", "txt": return "doc.text"
         default: return "doc"
         }
-    }
-
-    private func shortLink(_ link: String) -> String {
-        if link.hasPrefix("http") { return link }
-        let parts = link.split(separator: "/")
-        return parts.suffix(2).joined(separator: "/")
     }
 }

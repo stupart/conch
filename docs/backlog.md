@@ -12,6 +12,10 @@ Status: **open** · **doing** · **done** (with proof) · **won't** (with the re
 Tyler, 2026-09-19. Longer-term shape rather than discrete bugs; recorded whole because the
 pieces only make sense together.
 
+**2026-11-11:** what this grew into on the Mac (the conversation panel and its reply line, the
+canvas and Show, the control bar and its Ready pill, the tour) went with #613, and one floating
+pill took their place. This section and the plan below are kept as the record of what was tried.
+
 **The conversation panel IS the input box, taken with you.** "bring your favorite parts of the ui
 with you". One input box visible at a time. Drag it off the conch window and toss it, and it
 becomes the overlay; the app keeps the rest. The overlay is not a second UI, it is the same input
@@ -61,7 +65,7 @@ extends the conversation panel (the overlay, `Fog*` in code) and the pill; it is
   - Show (#413): a screen recording sent as keyframes and a storyboard; narration (#415) is
     recorded and transcribed by the daemon, which holds the mic like a dictation.
   - Figma in the review pane (#407).
-  - Still to do: the motion pass — Tyler tunes `panel-lab.html`, then its values are ported.
+  - **won't** (2026-11-11, #613): the motion pass. The panel it was for went with the overlays.
 - **Wave 3**, shipped 2026-09-25
   - Recognising what Tyler opened himself (#409): the front window (Accessibility, never
     prompted), and a localhost page → the session that started its server.
@@ -115,8 +119,8 @@ extends the conversation panel (the overlay, `Fog*` in code) and the pill; it is
   `TextEditor` with AppKit's text view, owned by conch (`ComposerEditor`), which sets continuous
   spell checking once and nothing else writes it (ComposerEditor.swift:138); autocorrection stays
   off, since this text lands in terminals and code.
-- **open** — A SECOND control that fills the window with the deliverable and floats the
-  deconstructed input over it. Tyler, 2026-09-21: "maybe it like makes that thing fullscreen with
+- **won't** (2026-11-11, #613: the deconstructed input it would float went with the overlays) — A
+  SECOND control that fills the window with the deliverable and floats the deconstructed input over it. Tyler, 2026-09-21: "maybe it like makes that thing fullscreen with
   the deconstructed input ui stuff showing over top?" This read as a reversal of `#338`, which had
   just repointed that same control to open the deliverable where it LIVES — from Tyler's own
   Direction note, "Full screen means the deliverable's own home, not conch's" — so it went back to
@@ -256,8 +260,8 @@ extends the conversation panel (the overlay, `Fog*` in code) and the pill; it is
   the PTY is the app's (`6a975fd`), and that pane is now Shell, beside a Terminal button that
   brings the agent's own terminal forward (#458, #462, 2026-09-28).
 - **open** — Copy a session's name from the sidebar (right-click, beside the rename that is there).
-- **open** — Overlay image paste. `ConversationFog.draft` is a plain `String` with no attachment
-  concept anywhere in Components.swift, so this is a feature, not a patch.
+- **won't** (2026-11-11, #613: the overlay went) — Overlay image paste. `ConversationFog.draft` was a
+  plain `String` with no attachment concept anywhere in Components.swift, so this was a feature, not a patch.
 - **open** — Glass reads dark over a light desktop: `.glassEffect` takes its base from the system
   appearance, so in Dark mode it stays a dark card on a light ground.
 - **open** — Mobile input box grows without clipping lines.
@@ -401,11 +405,13 @@ extends the conversation panel (the overlay, `Fog*` in code) and the pill; it is
   capture PCM byte ranges beside their transcripts.
 - **open** — Post-launch session failures are structurally invisible: `runInTerminal` `exec`s, so
   conch never sees the agent's exit code and a crashed launch reads to the sheet as a hang.
-- **open** — Top-corner docking lands 33 pt short of the true top edge; AppKit constrains a
-  restored frame below the menu bar while `FogDock` computes against `screen.frame`.
+- **won't** (2026-11-11, #613: `FogDock` went with the overlays) — Top-corner docking lands 33 pt
+  short of the true top edge; AppKit constrains a restored frame below the menu bar while `FogDock`
+  computes against `screen.frame`.
 - **open** — `scripts/build-app.sh` only relaunches an app it found running, so killing conch for a
   test and then installing leaves it down. Left conch not running twice in one session.
-- **open** — `conch.conversationFullScreen` default so the capture manifest can drive full screen.
+- **won't** (2026-11-11, #613: the panel's full screen went with the overlays) —
+  `conch.conversationFullScreen` default so the capture manifest can drive full screen.
   Deliberately not added yet: the existing comment records a decision that a launch never restores
   a full-screen frame, and that should not be reversed silently.
 - **open** — Token-level streaming. Out of reach for hand-started sessions: the transcripts carry

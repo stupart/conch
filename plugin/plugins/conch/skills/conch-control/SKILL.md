@@ -141,8 +141,9 @@ conch refused (the message says why and what to do instead).
   (`conch agent help publish` has every flag).
 
   **What the user sees.** conch files the result on your session in the Mac app
-  and on the iPhone, and the Mac's Ready pill lights. Nothing opens until the
-  user clicks the pill, which brings the scene forward. A newer publication from
+  and on the iPhone, and the Mac's floating pill shows it is ready. Nothing
+  opens until the user clicks the pill (or Ready for you in the menu bar),
+  which brings the scene forward. A newer publication from
   your session sits beside the older ones as another tab; one with the same link
   becomes a newer version of that artifact instead — the user sees the newest,
   with the earlier versions listed under it by summary and time. Publishing
@@ -158,8 +159,8 @@ conch refused (the message says why and what to do instead).
   tell the user, never an assumption:
 
   - `mac`: `showing` (conch's window is in front on the Mac), `running` (the
-    Mac app is open; it waits behind the Ready pill) or `not-running` (it will
-    be there when they open the app).
+    Mac app is open; it waits behind the floating pill) or `not-running` (it
+    will be there when they open the app).
   - `phone`: `connected` (the iPhone app is connected now; one just put away
     can still count for a moment), `paired-not-connected` (they see it next time
     the app connects), `unpaired` or `off`.
@@ -232,7 +233,7 @@ conch refused (the message says why and what to do instead).
   the Simulator, on the second screen").
 
   **Folders.** Link a folder to show what is in it: conch draws its file tree
-  on the Mac, in its panel and window, with the files your session changed
+  on the Mac, in its window, with the files your session changed
   marked, and a click on a file opens it there. `focus` names up to 12 paths
   inside the folder to point at, relative to it or absolute inside it
   (`focus: ["src/setup.ts", "test/"]`); the tree opens expanded to them and
@@ -295,46 +296,41 @@ conch refused (the message says why and what to do instead).
     in your reply.
   - `kind: "terminal"`: your terminal, else conch's window.
   - `inspect`: one short line, at most 200 characters, naming what to check
-    ("Check that Save stays reachable at phone width"). The pill's tooltip and
-    the iPhone show it.
+    ("Check that Save stays reachable at phone width"). The iPhone shows it.
   - `target.ref` is reserved for surface references conch will issue later and
     is not accepted yet.
 
   **Marks.** Optional `scene.marks`, agent ink: conch draws them over your
-  result where conch shows it, in its own conversation panel or side panel,
-  and on the user's canvas; not over a browser or another app, where conch
-  can't see the page. So a result with marks that conch can show opens in its
-  panel, even from the Ready pill. Mark the one thing that decides whether the
-  result is right (the button you moved, the heading that still wraps, the frame
-  that blurs) and say why in its `label`. Don't mark the whole page, or what the
-  summary already says. Up to 12, each `{id, kind, frame, at?, to?, rect?,
-  pts?, label?}`:
+  result where it shows it as you published it (the iPhone draws them), never
+  over a browser or another app, where conch can't see the page. So a result
+  with marks opens in conch's window, even from the floating pill. Mark the one
+  thing that decides whether the result is right (the button you moved, the
+  heading that still wraps, the frame that blurs) and say why in its `label`.
+  Don't mark the whole page, or what the summary already says. Up to 12, each
+  `{id, kind, frame, at?, to?, rect?, pts?, label?}`:
 
   - `id`: 1 to 32 letters, digits, `-` or `_`, unique among your marks.
   - `kind`: `arrow`, `box`, `ellipse`, `highlight`, `text`, `pin` or `stroke`.
   - `frame`, exactly one of:
     - `{selector: ".hero .cta"}` or `{quote: "Start free trial"}`: an element,
       or text, in the page your `link` opens, at most 120 characters. conch
-      finds it in the page as its panel shows it and places the mark on it, so
+      finds it in the page as it shows it and places the mark on it, so
       these take no numbers. Prefer them for a page you wrote.
-    - `{canvas: id}`: the user's canvas you are answering, by the id conch gave
-      you with it. Mark a canvas this way, never by its picture's path.
     - `{image: "/tmp/still.png"}`: an absolute path to an image file. It must
       pass the same check as `link`, which refuses conch's own hidden folders,
-      where a still sent from the phone or a canvas's frames are kept: to mark
+      where a still sent from the phone is kept: to mark
       one, copy it under your folder or a temp folder first and mark the copy.
       One in a temp folder is copied into conch with the publication, as a
       link is.
-  - On a canvas or an image, numbers are fractions of it, 0 to 1 from the top
+  - On an image, numbers are fractions of it, 0 to 1 from the top
     left. `arrow` takes `at` (its tail) and `to` (its head) as `[x, y]`; `box`,
     `ellipse` and `highlight` take `rect: [x, y, width, height]`; `pin` and
-    `text` take `at`; `stroke` takes 2 to 64 `pts`, and only on a canvas or an
-    image.
+    `text` take `at`; `stroke` takes 2 to 64 `pts`, and only on an image.
   - Or in pixels: add `units: "px"`, and the numbers are pixels of
     `size: [width, height]`, or, on an image with no `size`, of the image
     file's own pixel size (PNG, JPEG, GIF, WebP, BMP); conch turns them into
     fractions. Pass `size` when you measured on a resized view of the image
-    (you were shown a screenshot scaled down), and on a canvas always. A pixel
+    (you were shown a screenshot scaled down). A pixel
     mark that reaches outside the picture is refused, naming the size.
   - `label`: at most 80 characters, the note beside the mark. `text` needs one:
     it is the text.
@@ -521,7 +517,7 @@ conch refused (the message says why and what to do instead).
 - **Auto / manual** — `conch agent mode pause|resume [--session S | --all]` uses `pause` for lossless manual mode and `resume` for auto read-and-listen mode. Without `--session` or `--all` it switches only YOUR session; `--session` names another one. Switching every session at once — the whole daemon, what the user's `p` key and `conch pause` do — needs `--all` explicitly, and only when the user asked for exactly that. A `resume` from an agent is refused while the user put conch in manual themselves (the `p` key, the Mac's toggle, `conch pause`) — only a person undoes a person's pause, and a `conch agent speak` is held then too: not spoken and not queued, and its result carries `held` saying so.
 - **Rename** — `conch agent rename <session> <label>` gives a session a name the user actually uses ("call that one 'the api work'").
 - **Say where you work** — `conch agent folders <dir>...` names the folder(s) you are actually working in when they differ from where the session started; conch's file tree, file viewer and sidebar grouping follow them. Once is enough; say it again only if you move.
-- **What's on screen** — `conch agent on-screen` says what conch last put on the user's screen and whose it is: the surface, the session and deliverable, a confidence and the reason. It knows only what conch staged itself (the Ready pill, the menu, its own window), so treat it as "last seen", not "looking at now".
+- **What's on screen** — `conch agent on-screen` says what conch last put on the user's screen and whose it is: the surface, the session and deliverable, a confidence and the reason. It follows the front app as the user moves between apps; without the Accessibility permission it knows the app but not the file or page in it. Treat it as "last seen", not "looking at now".
 - **Tune** — `conch agent config [key [value]] [--unset]` reads any conch setting live and changes these, and only these: `end-silence`, `voice-speed`, `haiku-timeout`, `read-full`, `announce-summary`, `whisper-idle-unload` — the voice and timing knobs. Every other key (the phone, the relay, permissions, meeting detection) is the user's own, by name, forever; the refusal tells you the `conch set` command to hand them. Only touch a setting the user named.
 - **File a bug about conch** — `conch bug <title> --happened TEXT --expected TEXT [--area WORD] [--evidence PATH-OR-LINE]...` (also `conch agent bug`) when conch itself got something wrong that its own records can't show: a pill that never lit, a tab that opened under the wrong session, an answer that contradicts what you see. The title is one line; `--happened` and `--expected` are what you saw and what should have happened; `--area` is the command or tool it is about (`capture`, `browser`); `--evidence` (repeat it, up to 6) is a file path or a line of output, kept as written (a file isn't copied). It becomes a failure ticket in Settings › Failures on this Mac, where the user can press Fix: never a GitHub issue or anything public, since conch's repository is public and a ticket holds session names and the user's words. The same bug from another session counts on the same ticket. The answer gives the ticket's number (`ticket: 48`, `outcome: opened`, or `counted` for one that was there): tell the user it. Don't file what conch already said in an error: every failed or refused command is a ticket already. A session files at most 5 an hour, and the same one once.
 
@@ -556,7 +552,7 @@ or tell the user in one line.
   hold** — "nothing removed"; list yours with `conch agent deliverables`. It
   takes exactly one of the two.
 - `review_to_front` with a **scene** that is not `v: 1`, has an unknown kind or field, asks for `kind: "link"` with no link, has an `inspect` that is empty or over 200 characters, or carries `target.ref` — the refusal says which; fix the scene or omit it.
-- `review_to_front` with **marks** that don't fit *Marks* above: an unknown kind or field (a colour is one), numbers outside 0 to 1, geometry the kind doesn't take, a `selector` or `quote` with no link, an image that fails the link check, more than 12, or over 4096 bytes; or `units: "px"` with no `size` on a canvas, on an image conch can't read the size of, or reaching outside the picture. The refusal names the mark (`marks[2]`) and what to fix.
+- `review_to_front` with **marks** that don't fit *Marks* above: an unknown kind or field (a colour is one), numbers outside 0 to 1, geometry the kind doesn't take, a `selector` or `quote` with no link, an image that fails the link check, more than 12, or over 4096 bytes; or `units: "px"` with no `size` on an image conch can't read the size of, or reaching outside the picture. The refusal names the mark (`marks[2]`) and what to fix.
 - `conch agent capture` with a url that is not an http(s) URL or a local `.html` file that passes the link rule, both `--selector` and `--quote`, a `--size` outside its limits, a `--mark` without a part to mark, or `--publish` from a session conch cannot verify. When it runs but can't capture, it fails with why: conch's Mac app isn't running (open it and try again), the page didn't load, the target **wasn't found** (the error names the page's title, its headings, whether it was a sign-in screen, and a picture of what conch saw), or it didn't finish in time.
 - A `conch agent browser` command that reaches a tab the user **paused agents in** — "the user has taken over this tab (…)": don't retry; say what you were doing and wait for them, or open a tab of your own.
 - `conch agent atlas` with a path that isn't an Atlas path (parts of letters, digits, `.`, `_` or `-`, none starting with a dot, no `..`), an empty Markdown file or one over 2 MB, or from a session conch cannot verify; nothing is written then. A copy that is in the way and isn't a plain file (a symlink) fails with why, and is left alone.

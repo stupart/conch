@@ -7,118 +7,11 @@ import ImageIO
 // canvas that both the ai and the user can write to over top of what they're looking at". This is its data and its one
 // path builder, pure, so what is on screen and the picture an agent is sent are drawn from the same thing. The research it
 // follows is ~/Projects/conch-design/canvas-research-2026-09-25.md; the feel is panel-lab.html's.
+//
+// The canvas itself, and its document, went with the overlays (2026-11-11). Its marks and its ink are what an annotation
+// and an agent's ink on a page are drawn with.
 
-// MARK: - The document
-
-/// One canvas: its marks, kept as data, and what they are drawn over.
-public struct CanvasDocument: Codable, Equatable, Sendable {
-    public var v = 1
-    public let id: String
-    /// Epoch-ms, when it was started.
-    public let at: Double
-    public let anchor: CanvasAnchor
-    /// Oldest first, which is the order they are drawn in: the newest is on top, and is the one undo takes.
-    public private(set) var marks: [CanvasMark] = []
-
-    public init(anchor: CanvasAnchor, id: String = UUID().uuidString, at: Double = (Date().timeIntervalSince1970 * 1000).rounded()) {
-        self.id = id
-        self.at = at
-        self.anchor = anchor
-    }
-
-    public var isEmpty: Bool { marks.isEmpty }
-
-    public mutating func add(_ mark: CanvasMark) {
-        marks.append(mark)
-    }
-
-    /// Tyler's newest mark taken off, if there is one. An agent's marks aren't his to undo.
-    @discardableResult
-    public mutating func undo() -> CanvasMark? {
-        guard let newest = marks.lastIndex(where: { $0.author == .you }) else { return nil }
-        return marks.remove(at: newest)
-    }
-
-    /// An agent's marks, in place of whatever it had drawn before: Tyler's stay as they are, the agent's follow them in the
-    /// order given. By id, so a mark the agent still has keeps its identity (drawn once, moved rather than redrawn).
-    public mutating func merge(agent: [CanvasMark]) {
-        marks = marks.filter { $0.author == .you } + agent.filter { $0.author == .agent }
-    }
-
-    /// Whether any of its marks are `author`'s.
-    public func has(_ author: CanvasMark.Author) -> Bool {
-        marks.contains { $0.author == author }
-    }
-
-    /// What a note says, as it is typed.
-    public mutating func setText(_ text: String, of id: CanvasMark.ID) {
-        guard let index = marks.firstIndex(where: { $0.id == id }) else { return }
-        marks[index].text = text
-    }
-
-    /// A note's number on its pin, 1 up, counted among its author's notes in the order they were pinned.
-    public func number(of note: CanvasMark) -> Int? {
-        let notes = marks.filter { $0.kind == .note && $0.author == note.author }
-        return notes.firstIndex { $0.id == note.id }.map { $0 + 1 }
-    }
-
-    /// The mark a note is pinned on, if any: the newest box it sits inside, or stroke or arrow it sits on, within `reach`
-    /// points. Pinned in open space, it is about that place alone.
-    public func target(of note: CanvasMark, reach: CGFloat = 24) -> CanvasMark? {
-        guard let pin = note.points.first else { return nil }
-        let size = anchor.frame.size
-        let at = pin.point(in: size)
-        return marks.last { mark in
-            guard mark.kind != .note, mark.id != note.id, !mark.points.isEmpty else { return false }
-            let points = mark.points.map { $0.point(in: size) }
-            switch mark.kind {
-            case .box, .ellipse, .area:
-                return mark.rect(in: size).insetBy(dx: -reach, dy: -reach).contains(at)
-            case .highlight:
-                return Self.distance(from: at, to: points) <= reach + CanvasInk.highlightWidth / 2
-            default:
-                return Self.distance(from: at, to: points) <= reach
-            }
-        }
-    }
-
-    /// How far `point` is from the nearest part of the line through `points`.
-    static func distance(from point: CGPoint, to points: [CGPoint]) -> CGFloat {
-        guard var previous = points.first else { return .infinity }
-        var nearest = hypot(point.x - previous.x, point.y - previous.y)
-        for next in points.dropFirst() {
-            let dx = next.x - previous.x, dy = next.y - previous.y
-            let length = dx * dx + dy * dy
-            let t = length > 0 ? min(1, max(0, ((point.x - previous.x) * dx + (point.y - previous.y) * dy) / length)) : 0
-            nearest = min(nearest, hypot(point.x - (previous.x + t * dx), point.y - (previous.y + t * dy)))
-            previous = next
-        }
-        return nearest
-    }
-}
-
-/// What a canvas's marks are relative to. Their points run 0 to 1 across and down it, so a canvas means the same at any
-/// scale: on the display it was drawn on, and in the smaller picture an agent is sent.
-public struct CanvasAnchor: Codable, Equatable, Sendable {
-    public enum Kind: String, Codable, Sendable {
-        /// A whole display. The research orders two stronger anchors ahead of it, so ink can follow what it was drawn on: a
-        /// page conch renders itself (its scroll position), then the window underneath (its id and bounds). Each is a case
-        /// here, its `frame` read the same way.
-        case display
-    }
-
-    public let kind: Kind
-    /// The display's `CGDirectDisplayID`.
-    public let id: UInt32
-    /// Where it is, in AppKit's screen points.
-    public let frame: CGRect
-
-    public init(kind: Kind = .display, id: UInt32, frame: CGRect) {
-        self.kind = kind
-        self.id = id
-        self.frame = frame
-    }
-}
+// MARK: - Marks
 
 /// One mark: a stroke, a highlight, an arrow, a box or a numbered note; and from an agent, an ellipse, a highlighted
 /// area, or words on their own.
@@ -159,29 +52,6 @@ public struct CanvasMark: Codable, Equatable, Identifiable, Sendable {
     public func rect(in size: CGSize) -> CGRect {
         guard let first = points.first?.point(in: size), let last = points.last?.point(in: size) else { return .null }
         return CGRect(x: min(first.x, last.x), y: min(first.y, last.y), width: abs(last.x - first.x), height: abs(last.y - first.y))
-    }
-
-    /// How far it reaches, in points of a space of `size`: a click that never moved is not an arrow or a box.
-    public func extent(in size: CGSize) -> CGFloat {
-        let rect = rect(in: size)
-        return rect.isNull ? 0 : max(rect.width, rect.height)
-    }
-
-    /// Whether a mark just finished drew anything worth keeping, on a display of `size`: a stroke that moved at all, an
-    /// arrow or a box at least 4 points across, a note always. A click that never moved is not ink: with the pen down,
-    /// a click aimed at the panel's pen button left a dot where it landed.
-    public func drew(in size: CGSize) -> Bool {
-        switch kind {
-        case .note, .text:
-            return true
-        case .pen, .highlight:
-            // Every sample, not the ends alone: a loop comes back to where it began. A point's jitter is still a click.
-            let at = points.map { $0.point(in: size) }
-            guard let first = at.first else { return false }
-            return at.contains { hypot($0.x - first.x, $0.y - first.y) >= 1 }
-        case .arrow, .box, .ellipse, .area:
-            return extent(in: size) >= 4
-        }
     }
 }
 
@@ -230,12 +100,9 @@ public enum CanvasInk {
 
     public static func colour(_ author: CanvasMark.Author) -> ConchRGBA { author == .agent ? agent : you }
 
-    /// Words on each ink: Send's, and a note's number on its badge. White on Tyler's orange measured 2.85:1 (the route at
-    /// 85%, 2.44); off-black is 5.92, and 4.75 at 85%. The orange stays, since it is his ink's colour. On the agent's
-    /// violet the badge carries a ✦, a mark rather than words: white clears its 3:1 at 4.35.
+    /// Words on Tyler's ink: Send's, and a note's number on its badge. White on his orange measured 2.85:1 (the route at
+    /// 85%, 2.44); off-black is 5.92, and 4.75 at 85%. The orange stays, since it is his ink's colour.
     public static let onYou = ConchRGBA(0x1D1D1F)
-    public static let onAgent = ConchRGBA(0xFFFFFF)
-    public static func on(_ author: CanvasMark.Author) -> ConchRGBA { author == .agent ? onAgent : onYou }
 
     /// An agent's name in its colour, as words ("Claude · …" beside its mark): the violet itself is a mark's colour, and
     /// at 13 pt semibold it read 3.9:1 on its label in light and 3.2 in dark ("Claude ·" was unreadable). These clear 4.5 on
@@ -441,88 +308,7 @@ public enum CanvasInk {
 // MARK: - The picture
 
 extension CanvasInk {
-    /// The picture an agent is sent: what was on screen (`screen`, the display's own pixels), the marks drawn over it by
-    /// the same builder as the glass, the whole no longer than `longEdge` pixels (the phone uploads' rule). With no
-    /// screen — no Screen Recording grant — the marks alone, on the ground colour, so they read in any viewer.
-    public static func render(_ document: CanvasDocument, over screen: CGImage?, longEdge: CGFloat = 1568) -> CGImage? {
-        let points = document.anchor.frame.size
-        guard points.width > 0, points.height > 0 else { return nil }
-        let source = screen.map { CGSize(width: $0.width, height: $0.height) } ?? CGSize(width: points.width * 2, height: points.height * 2)
-        let fit = min(1, longEdge / max(source.width, source.height))
-        let size = CGSize(width: (source.width * fit).rounded(), height: (source.height * fit).rounded())
-        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
-              let context = CGContext(data: nil, width: Int(size.width), height: Int(size.height), bitsPerComponent: 8, bytesPerRow: 0, space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-        else { return nil }
-        context.interpolationQuality = .high
-        let bounds = CGRect(origin: .zero, size: size)
-        if let screen {
-            context.draw(screen, in: bounds)
-        } else {
-            context.setFillColor(ConchColor.ground.light.cgColor)
-            context.fill(bounds)
-        }
-        // The marks are kept y down; a bitmap context is y up.
-        context.translateBy(x: 0, y: size.height)
-        context.scaleBy(x: 1, y: -1)
-        draw(document, in: context, size: size, scale: size.width / points.width)
-        return context.makeImage()
-    }
-
-    /// Every mark into `context`, y down, in a space of `size` at `scale` pixels a point: the ink, a box's wash under it,
-    /// a highlight multiplied over what is under it, a note's number on its badge.
-    public static func draw(_ document: CanvasDocument, in context: CGContext, size: CGSize, scale: CGFloat) {
-        // An agent's ink under Tyler's, as on the glass: his answer is drawn over its marks.
-        for mark in document.marks.filter({ $0.author == .agent }) + document.marks.filter({ $0.author == .you }) {
-            let shape = shape(of: mark, in: size, scale: scale)
-            let colour = fill(of: mark)
-            context.saveGState()
-            if let wash = shape.wash {
-                context.addPath(wash)
-                context.setFillColor(colour.cgColor.copy(alpha: washOpacity) ?? colour.cgColor)
-                context.fillPath()
-            }
-            if multiplies(mark) { context.setBlendMode(.multiply) }
-            context.addPath(shape.ink)
-            context.setFillColor(colour.cgColor)
-            context.fillPath()
-            context.restoreGState()
-            if mark.kind == .note, let number = document.number(of: mark), let spot = mark.points.first?.point(in: size) {
-                let side = pinSide * scale
-                label(mark.author == .agent ? "✦" : "\(number)", centredIn: CGRect(x: spot.x, y: spot.y - side, width: side, height: side), size: 12 * scale, colour: on(mark.author), in: context)
-            }
-            // An agent's words, in the picture as they were on screen. Tyler's own are in the prompt, by number.
-            if mark.author == .agent, let words = mark.text, !words.isEmpty {
-                let spot = mark.kind == .note
-                    ? mark.points.first.map { $0.point(in: size) + CGPoint(x: (pinSide + 6) * scale, y: -pinSide * scale) }
-                    : labelSpot(of: mark, in: size)
-                if let spot { pill(words, at: spot, size: 12 * scale, bounds: CGRect(origin: .zero, size: size), in: context) }
-            }
-        }
-    }
-
-    /// Words on a white pill with a hairline in the agent's colour, kept inside `bounds`.
-    private static func pill(_ text: String, at spot: CGPoint, size: CGFloat, bounds: CGRect, in context: CGContext) {
-        let font = ConchType.coreText(size: size)
-        let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [
-            NSAttributedString.Key(kCTFontAttributeName as String): font,
-            NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(srgbRed: 0.11, green: 0.11, blue: 0.12, alpha: 1),
-        ]))
-        let pad = size * 0.8, width = CTLineGetTypographicBounds(line, nil, nil, nil) + 2 * pad, height = size * 2
-        let x = min(max(spot.x, bounds.minX), bounds.maxX - width), y = min(max(spot.y, bounds.minY), bounds.maxY - height)
-        let box = CGRect(x: x, y: y, width: width, height: height)
-        context.saveGState()
-        context.addPath(CGPath(roundedRect: box, cornerWidth: height / 2, cornerHeight: height / 2, transform: nil))
-        context.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.94))
-        context.setStrokeColor(agent.cgColor)
-        context.setLineWidth(max(1, size / 12))
-        context.drawPath(using: .fillStroke)
-        context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
-        context.textPosition = CGPoint(x: box.minX + pad, y: box.midY + CTFontGetCapHeight(font) / 2)
-        CTLineDraw(line, context)
-        context.restoreGState()
-    }
-
-    /// Bold type in `colour` (the words on its ink, `on`), centred on its cap height in `rect`, in a y-down context.
+    /// Bold type in `colour` (the words on its ink, `onYou`), centred on its cap height in `rect`, in a y-down context.
     static func label(_ text: String, centredIn rect: CGRect, size: CGFloat, colour: ConchRGBA, in context: CGContext) {
         let font = ConchType.coreText(size: size, bold: true)
         let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [
@@ -547,42 +333,10 @@ extension CanvasInk {
     }
 }
 
-// MARK: - The prompt
+// MARK: - Words
 
-/// What a canvas says when it is sent: one message through the composer's own path. The picture's path comes first, on
-/// its own line — both agents read an image whose path is in the message, and a leading path isn't skimmed past — then
-/// what was marked up, each note by the number on its pin, and where the rest is.
+/// A mark in words, as a frame's caption names what was marked there (`CanvasStoryboard.caption`).
 public enum CanvasPrompt {
-    /// `picture` is the flat PNG; `clean` the screen without the marks, nil when there was no screen to capture;
-    /// `marks` the document as JSON. The last line gives the canvas's id in the very frame an agent's marks take to be
-    /// drawn back on it (`scene.marks`).
-    public static func text(for document: CanvasDocument, about label: String, picture: String, clean: String?, marks: String) -> String {
-        var lines = [picture, "[canvas] Tyler marked up \(label)."]
-        lines += notes(document)
-        if let clean {
-            lines.append("Clean screen + marks: \(clean), \(marks)")
-        } else {
-            lines.append("conch can't see the screen without the Screen Recording permission, so the picture is his marks alone. Marks: \(marks)")
-        }
-        lines.append(answer(document))
-        return lines.joined(separator: "\n")
-    }
-
-    /// How an agent draws its answer on this canvas.
-    public static func answer(_ document: CanvasDocument) -> String {
-        "To mark your answer on this canvas, frame your marks {canvas: \"\(document.id)\"}."
-    }
-
-    /// Tyler's notes with words in them, numbered as their pins are, each named by the mark it is pinned on:
-    /// `1. box (62%,18%): "make this bigger"`.
-    public static func notes(_ document: CanvasDocument) -> [String] {
-        document.marks.filter { $0.kind == .note && $0.author == .you }.compactMap { note in
-            let words = (note.text ?? "").split(whereSeparator: \.isNewline).joined(separator: " ").trimmingCharacters(in: .whitespaces)
-            guard !words.isEmpty, let number = document.number(of: note) else { return nil }
-            return "\(number). \(place(document.target(of: note) ?? note)): \"\(words)\""
-        }
-    }
-
     /// A mark and where it is, in percent across and down the screen: a box by its middle, an arrow from tail to head.
     /// One the agent drew itself is "your" mark, so it knows which of its own a note answers.
     static func place(_ mark: CanvasMark) -> String {

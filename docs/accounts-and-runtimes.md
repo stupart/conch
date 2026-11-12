@@ -100,8 +100,8 @@ permission options and native resume ID. Teleport and Help still use Terminal.
 `features.sessionHosts` prevents a new client offering Background against an
 older daemon that would silently ignore the field.
 
-Background uses a detached, Conch-named tmux session on the normal local tmux
-server. This is a local CLI with a persistent PTY, not provider cloud hosting
+Background uses a detached, Conch-named tmux session on conch's own tmux
+server (`tmux-binary.ts`, `background-sessions.ts`), not the person's. This is a local CLI with a persistent PTY, not provider cloud hosting
 or a Codex desktop task. Existing tmux delivery, approval, interrupt and screen
 inspection paths work without raising a window or borrowing the clipboard.
 Conch/app/daemon shutdown does not end the process. Mac sleep pauses local work;

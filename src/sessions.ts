@@ -259,7 +259,7 @@ async function defaultAttachedJobPids(): Promise<ReadonlyMap<string, number> | n
  * daemon run` → `claude --bg-pty-host` → the job), in a hidden pty. A window
  * attached to the job is a viewer: what is typed there is forwarded to the
  * job. conch's inject log proves it — text typed into window 61637 arrived in
- * job f31f0d15's transcript, same length, seconds later. So the window is the
+ * job 5e5e5e13's transcript, same length, seconds later. So the window is the
  * route for everything conch types, stops, reveals or renames. The job's own
  * pid is not: its pty is hidden, and its ancestry runs through the daemon.
  *
@@ -273,8 +273,8 @@ async function defaultAttachedJobPids(): Promise<ReadonlyMap<string, number> | n
  *
  * A second source, checked only when no registry window answers: a live
  * `claude attach <jobId>` process. 2.1.280 writes NO registry entry for one —
- * ground truth (2026-09-23): job f31f0d15 was open in a visible Terminal tab
- * (pid 10231, ttys014, `claude attach f31f0d15`) with no window naming it
+ * ground truth (2026-09-23): job 5e5e5e13 was open in a visible Terminal tab
+ * (pid 10231, ttys014, `claude attach 5e5e5e13`) with no window naming it
  * anywhere in the registry, so conch reported "running in the background, not
  * open in a terminal" for a job someone was actively looking at. This is the
  * only place that pid is findable — never `job.pid` itself; see the comment
@@ -307,13 +307,13 @@ async function attachedWindow(
  * project directory (the registry's `spare: true`) and can leave a live
  * window's `parkedJobId` pointing at one it never backgrounded anything into.
  * Ground truth (2026-09-23): window 94777 kept running `claude --resume
- * 2f266f8d` — 3,632 real lines, actively growing — the whole time its
- * `parkedJobId` named job 25d17f50, whose entire transcript was the two
+ * 5e5e5e10` — 3,632 real lines, actively growing — the whole time its
+ * `parkedJobId` named job 5e5e5e11, whose entire transcript was the two
  * metadata records (`ai-title`, `agent-name`) Claude Code wrote when the spare
  * got auto-named; never a `user` or `assistant` record, and no
- * `bridge-session` or other link to 2f266f8d either. Trusting the field alone
+ * `bridge-session` or other link to 5e5e5e10 either. Trusting the field alone
  * hid the real 3,632-line conversation behind that empty job's row — this
- * row's id really was 2f266f8d earlier the same day, before the daemon parked
+ * row's id really was 5e5e5e10 earlier the same day, before the daemon parked
  * it. Fixing this un-hides it: the window was simply never moved.
  *
  * A genuine background move leaves the SAME mark `movedToLiveSession` already
@@ -326,7 +326,7 @@ async function attachedWindow(
  * contradicts it withdraws that trust.
  */
 function genuinelyParked(claudeDir: string, window: any, job: any): boolean {
-  // The same decoy an hour later (2026-09-23): 25d17f50 took the Prime page
+  // The same decoy an hour later (2026-09-23): 5e5e5e11 took the about page
   // conversation over — 33 user and 62 assistant records, typed into from
   // window 94777 — and 2.1.280 wrote no `continued-in` into the window's
   // transcript for it. The window was that job's viewer, while conch showed it
@@ -414,7 +414,7 @@ export async function processConversation(
  * conch MCP server, the window's own children — still names the window's
  * stale session id, or only its pid. conch hides that window, so the id is no
  * row, and a review sent to it landed nowhere (`da29d3fa`, pid 61637, while
- * the conch row was job `f31f0d15`). An id the registry knows decides alone;
+ * the conch row was job `5e5e5e13`). An id the registry knows decides alone;
  * the pid is asked only when no entry has that id. Anything else: null.
  */
 export async function parkedWindowJob(
@@ -604,7 +604,7 @@ async function toInfo(
     // the obvious fix when this reads 0: a `bg` job's own registry pid sits on
     // a hidden daemon pty (`claude --bg-pty-host`), not a Terminal tab, so
     // typing into it types into a pty nobody can see. Measured 2026-09-23: job
-    // f31f0d15's own pid (9939) was on ttys008 (not a Terminal tab at all);
+    // 5e5e5e13's own pid (9939) was on ttys008 (not a Terminal tab at all);
     // the real, visible tab (ttys014) belonged to a `claude attach` process
     // instead — that's `window` above, from the registry or from
     // `attachedWindow`'s `ps` fallback, never the job's own `entry.pid`.
@@ -1060,8 +1060,8 @@ export async function registrySnapshot(
  * Claude Code 2.1.280's daemon keeps idle "bg-spare" jobs ready per project
  * directory and auto-names some. Ground truth (2026-09-23): three such rows
  * next to the real ones — 50b4f863 and db7b8e98 (`spare: true`, no transcript
- * at all) and 25d17f50 (spare flag gone, auto-named "Prime page wireframe in
- * blueprint studio" after the real 2f266f8d conversation, transcript only the
+ * at all) and 5e5e5e11 (spare flag gone, auto-named "About page wireframe for
+ * the new website" after the real 5e5e5e10 conversation, transcript only the
  * `ai-title` and `agent-name` records). Each read as a session with no
  * terminal and nothing in it, and the name collision made a lookup by name
  * ambiguous. A job shows up as soon as it holds one user or assistant record.
@@ -1273,7 +1273,7 @@ export function findTranscript(
 /**
  * Each Codex session once: a hook's entry, with the live pid and status, over the thread's, keeping the thread's name,
  * which a hook doesn't know. Replacing the whole entry named a session after its folder the moment its hooks ran:
- * "atals and nura" became "Projects" on its first turn in a background session (2026-10-30).
+ * "budget app and api" became "Projects" on its first turn in a background session (2026-10-30).
  */
 export function codexEntriesById(
   observed: readonly CodexSessionEntry[],

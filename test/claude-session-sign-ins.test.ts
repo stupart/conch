@@ -545,7 +545,7 @@ describe("restart, fork and resume keep it", () => {
     expect(restart).toMatchObject({ backend: "claude", resumeSessionId: SESSION, claudeAccountId: "default", claudeSignInId: signIn.id });
     expect(terminalSessionCommand(restart)).toContain(`CONCH_CLAUDE_SIGN_IN='${signIn.id}'`);
     expect(forkRequest(live, ["--resume", SESSION]).request).toMatchObject({ claudeSignInId: signIn.id, options: { "fork-session": true } });
-    expect(forkRequest({ ...live, jobId: "f31f0d15" }, []).request).toMatchObject({ host: "background", claudeSignInId: signIn.id });
+    expect(forkRequest({ ...live, jobId: "5e5e5e13" }, []).request).toMatchObject({ host: "background", claudeSignInId: signIn.id });
     expect("claudeSignInId" in restartRequest({ ...live, claudeSignInId: undefined }, []).request).toBe(false);
   });
 

@@ -31,7 +31,7 @@ const blocked = (over: Record<string, unknown> = {}) => ({
   template: "bg",
   respawnFlags: ["--permission-mode", "bypassPermissions"],
   intent: "it's alright we're in deep",
-  name: "Agent - Design system a",
+  name: "Agent - Settings page a",
   nameSource: "user",
   sessionId: ID,
   resumeSessionId: ID,
@@ -69,7 +69,7 @@ describe("which job records are waiting on you", () => {
       jobId: "5e5e5e03",
       sessionId: ID,
       since: Date.parse("2026-10-22T00:57:48.431Z"),
-      name: "Agent - Design system a",
+      name: "Agent - Settings page a",
       cwd: "/work/studio",
       needs: "confirm: start onboarding walkthrough or next step?",
     });
@@ -143,13 +143,13 @@ describe("parked rows beside the live ones", () => {
     job(dir, "5e5e5e03", blocked());
     const path = conversation(dir, "/work/studio", ID, [
       { type: "user", message: { role: "user", content: "go" } },
-      { type: "custom-title", customTitle: "Agent - Design system ⑂" },
+      { type: "custom-title", customTitle: "Agent - Settings page ⑂" },
     ]);
     const [row, ...rest] = parkedSessions([account(dir)], nothingLive, options);
     expect(rest).toEqual([]);
     expect(row).toEqual({
       sessionId: ID,
-      name: "Agent - Design system ⑂",
+      name: "Agent - Settings page ⑂",
       cwd: "/work/studio",
       pid: 0,
       jobId: "5e5e5e03",
@@ -194,7 +194,7 @@ describe("parked rows beside the live ones", () => {
   test("a job whose transcript holds no conversation is a spare, as a live one is; one with no transcript found still shows", () => {
     const dir = join(root, "claude");
     job(dir, "5e5e5e03", blocked());
-    conversation(dir, "/work/studio", ID, [{ type: "ai-title", aiTitle: "Prime page wireframe" }]);
+    conversation(dir, "/work/studio", ID, [{ type: "ai-title", aiTitle: "About page wireframe" }]);
     expect(parkedSessions([account(dir)], nothingLive, options)).toEqual([]);
     const elsewhere = join(root, "other");
     job(elsewhere, "5e5e5e03", blocked());
@@ -205,7 +205,7 @@ describe("parked rows beside the live ones", () => {
     const home = join(root, "claude");
     const work = join(root, "work");
     job(home, "5e5e5e03", blocked());
-    job(work, "5e5e5e01", blocked({ sessionId: "5e5e5e01-0001-4000-8000-000000000001", daemonShort: "5e5e5e01", name: "Type scale" }));
+    job(work, "5e5e5e01", blocked({ sessionId: "5e5e5e01-0001-4000-8000-000000000001", daemonShort: "5e5e5e01", name: "Copy edits" }));
     job(work, "5e5e5e03", blocked()); // a copied history: the same conversation in a second profile
     const rows = parkedSessions([account(home), account(work, "a7a7a7a7", "Studio")], nothingLive, options);
     expect(rows.map((row) => [row.sessionId, row.claudeAccountId, row.accountLabel])).toEqual([
@@ -248,7 +248,7 @@ describe("the account snapshot conch's rows come from", () => {
     // `claude attach` brought it back: Claude Code's own registry entry for the job, under the same conversation.
     writeFileSync(join(claudeDir, "sessions", "42979.json"), JSON.stringify({
       pid: process.pid, sessionId: SESSION, cwd: "/work/studio", kind: "bg", entrypoint: "cli", jobId: SHORT,
-      status: "idle", statusUpdatedAt: Date.now(), name: "Agent - Design system a",
+      status: "idle", statusUpdatedAt: Date.now(), name: "Agent - Settings page a",
     }));
     const live = (await accountRegistrySnapshot(claudeDir, undefined, [], parkedOptions))!;
     const rows = live.infos.filter((info) => info.sessionId === SESSION);
@@ -282,7 +282,7 @@ describe("bringing a parked job back for a reply", () => {
         reads++;
         if (reads >= (over.upAfter ?? 2)) row = liveRow;
       },
-      label: () => "Agent - Design system ⑂",
+      label: () => "Agent - Settings page ⑂",
       log: (line) => void logs.push(line),
       tmux: () => ["tmux", "-L", "conch-test"],
       tmuxFound: () => true,
@@ -319,7 +319,7 @@ describe("bringing a parked job back for a reply", () => {
       ["capture-pane", "-p", "-t", "=conch-attach-5e5e5e03:"],
     ]);
     expect(w.logs).toEqual([
-      'brought back parked "Agent - Design system ⑂" for a reply (claude attach 5e5e5e03, hidden in tmux conch-attach-5e5e5e03): live in 1.5s',
+      'brought back parked "Agent - Settings page ⑂" for a reply (claude attach 5e5e5e03, hidden in tmux conch-attach-5e5e5e03): live in 1.5s',
     ]);
   });
 
@@ -358,7 +358,7 @@ describe("bringing a parked job back for a reply", () => {
       "couldn't bring the parked session back: claude attach 5e5e5e03 exited before the session came back. Open it in Terminal and send again",
     );
     expect(w.logs).toEqual([
-      'could not bring back parked "Agent - Design system ⑂" for a reply (claude attach 5e5e5e03): claude attach 5e5e5e03 exited before the session came back',
+      'could not bring back parked "Agent - Settings page ⑂" for a reply (claude attach 5e5e5e03): claude attach 5e5e5e03 exited before the session came back',
     ]);
   });
 

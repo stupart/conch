@@ -319,7 +319,7 @@ describe("cold transcription recovery", () => {
 });
 
 /**
- * Show's narration (narration.ts): a whole WAV, timed. Real output from both
+ * A whole WAV, timed (setup's microphone check). Real output from both
  * engines on a spoken file with a 2.5 s pause (2026-09-25, large-v3-turbo with
  * VAD): the server's verbose_json segments and the CLI's lines, the same times.
  */

@@ -67,7 +67,6 @@ final class ConchDesignTests: XCTestCase {
 
     /// The springs are the overlay lab's, in SwiftUI's own terms, so the apps move the way the lab felt.
     func testTheSpringsAreTheOverlayLabsAndStepLikeSwiftUI() {
-        XCTAssertEqual(ConchMotion.dock, ConchSpring(bounce: 0.2, response: 0.45))
         XCTAssertEqual(ConchMotion.morph, ConchSpring(bounce: 0.12, response: 0.46))
         XCTAssertEqual(ConchMotion.pop, ConchSpring(bounce: 0.34, response: 0.36))
         XCTAssertEqual(ConchMotion.grow, ConchSpring(bounce: 0.12, response: 0.34))
@@ -80,10 +79,8 @@ final class ConchDesignTests: XCTestCase {
             XCTAssertEqual(spring.damping, swiftUI.damping, accuracy: 0.01, name)
         }
         // Reduce Motion keeps the timing and drops the overshoot.
-        XCTAssertEqual(ConchMotion.dock.resolved(reduceMotion: true), ConchSpring(bounce: 0, response: 0.45))
-        XCTAssertEqual(ConchMotion.dock.resolved(reduceMotion: false), ConchMotion.dock)
-        // A 1000 pt/s flick carries about 500 pt.
-        XCTAssertEqual(ConchMotion.projectedDistance(1000), 499, accuracy: 0.01)
+        XCTAssertEqual(ConchMotion.pop.resolved(reduceMotion: true), ConchSpring(bounce: 0, response: 0.36))
+        XCTAssertEqual(ConchMotion.pop.resolved(reduceMotion: false), ConchMotion.pop)
     }
 
     /// The overlay's words read at 4.5:1 on its own wash, in light and in dark.
@@ -182,7 +179,7 @@ final class ConchDesignTests: XCTestCase {
     /// the window's deliverable pane's once the panel went (2026-11-11).
     func testAPanelPickShowsAPageDocumentPictureOrLiveUrlInThePanel() {
         let gone: (String) -> Bool = { _ in false }
-        let live = URL(string: "http://localhost:3111/invite")!
+        let live = URL(string: "http://localhost:3000/invite")!
         let page = URL(fileURLWithPath: "/tmp/site/index.html")
         func shows(_ deliverable: String?, _ link: URL?, kind: ReviewScene.Kind = .auto, fileExists: (String) -> Bool = { _ in true }) -> Bool {
             ReviewScene.panelShowsContent(kind: kind, deliverable: deliverable, link: link, fileExists: fileExists)

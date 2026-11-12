@@ -307,7 +307,7 @@ public struct AnnotationRoute: Equatable, Sendable {
 
 // MARK: - The message
 
-/// What a batch says when it is sent: one message through the composer's own path (the canvas's `CanvasPrompt` shape).
+/// What a batch says when it is sent: one message through the composer's own path (the shape the canvas's was).
 /// The overview's path comes first, on its own line: both agents read an image whose path is in the message, and a
 /// leading path isn't skimmed past. Then what was annotated, each note by its number with its frame in agent ink's
 /// words, what Tyler said, and its picture; then where the rest is and how to answer on it.

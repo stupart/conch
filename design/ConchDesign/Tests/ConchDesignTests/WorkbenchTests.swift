@@ -239,13 +239,11 @@ final class WorkbenchTests: XCTestCase {
         XCTAssertEqual(mark.point, CGPoint(x: 70, y: 32))
     }
 
-    /// The Workdesk's items are typed: each type is named and marked, and a new one slots in as a case.
+    /// The Workdesk's items are typed: each type is named, and a new one slots in as a case.
     func testTheWorkdeskHoldsTypedItems() {
         XCTAssertEqual(Workdesk.name, "Workdesk")
         XCTAssertEqual(Set(Workdesk.ItemType.allCases), [.deliverable, .browser, .files, .shell, .terminal])
         XCTAssertEqual(Workdesk.ItemType.allCases.map(Workdesk.name(of:)), ["Deliverable", "Files", "Shell", "Terminal", "Browser tab"])
-        XCTAssertEqual(Workdesk.symbol(of: .browser), "globe")
-        XCTAssertEqual(Workdesk.symbol(of: .files), "folder")
         // Remembered presentations still read: the raw values are what they were.
         XCTAssertEqual(WorkPane(rawValue: "browser"), .browser)
         XCTAssertEqual(WorkPane(rawValue: "deliverable"), .deliverable)
@@ -342,16 +340,5 @@ final class WorkbenchTests: XCTestCase {
     func testASleepingTabSaysWhyUnderThePointer() {
         XCTAssertEqual(Workbench.asleepWords, "Asleep to save memory. It opens again when you show it, or when an agent uses it.")
         XCTAssertEqual(Workbench.sleepSettingKey, "conch.workbench.sleepIdleTabs")
-    }
-
-    /// An Atlas page's copy is known by where atlas_show keeps it: Markdown under the copies folder, by its Atlas path.
-    func testAnAtlasPagesCopyIsKnownByItsFolder() {
-        let home = "/Users/someone"
-        XCTAssertEqual(Workdesk.atlasPage(link: "/Users/someone/Documents/conch-notes/atlas/projects/acme/plan.md", home: home), "projects/acme/plan.md")
-        XCTAssertNil(Workdesk.atlasPage(link: "/Users/someone/Documents/conch-notes/atlas/projects/acme/plan.png", home: home))
-        XCTAssertNil(Workdesk.atlasPage(link: "/Users/someone/Documents/conch-notes/plan.md", home: home))
-        XCTAssertNil(Workdesk.atlasPage(link: "/Users/someone/Documents/conch-notes/atlas/.drafts/plan.md", home: home))
-        XCTAssertNil(Workdesk.atlasPage(link: "https://acme.dev/plan.md", home: home))
-        XCTAssertNil(Workdesk.atlasPage(link: nil, home: home))
     }
 }

@@ -496,9 +496,9 @@ describe("the daemon's wiring", () => {
 
   test("a full render puts the lines back on the snapshot it built, and a due line patches it without a scan", () => {
     const render = daemon.slice(daemon.indexOf("lastPublishedPanelState = buildDaemonPublishedState("));
-    expect(render.indexOf("applyLiveActivity();")).toBeGreaterThan(render.indexOf("practice.publish(lastPublishedPanelState)"));
+    expect(render.indexOf("applyLiveActivity();")).toBeGreaterThan(render.indexOf("lastPublishedPanelState.sidebarGroups = sidebarLayout;"));
     expect(render.indexOf("applyLiveActivity();")).toBeLessThan(render.indexOf("publishedStateWriter.request();"));
-    const apply = daemon.slice(daemon.indexOf("function applyLiveActivity(): boolean {"), daemon.indexOf("/** Setup's practice turn"));
+    const apply = daemon.slice(daemon.indexOf("function applyLiveActivity(): boolean {"), daemon.indexOf("const windowPreviews = new WindowPreviews("));
     expect(apply).toContain("withLiveActivity(lastPublishedPanelState, liveActivity, now)");
     expect(apply).toContain("if (applyLiveActivity()) publishedStateWriter.request();");
     expect(apply).not.toContain("renderSessionPanel");

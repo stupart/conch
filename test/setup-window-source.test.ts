@@ -158,7 +158,7 @@ describe("the microphone check and the voices", () => {
     for (const [name, source] of Object.entries(macSources)) {
       expect(source, name).not.toMatch(/import Speech\b|SFSpeechRecognizer|SFSpeechAudioBufferRecognitionRequest/);
     }
-    expect(daemon).toContain('hold: (stop) => voice.holdNarration(MIC_CHECK_QUIET_WITHIN_MS, stop, "Microphone check"),');
+    expect(daemon).toContain('hold: (stop) => voice.holdMic(MIC_CHECK_QUIET_WITHIN_MS, stop, "Microphone check"),');
     expect(daemon).toContain("const proc = spawnNarrationRecorder(cfg, wav, seconds);");
     expect(daemon).toContain("transcribe: (wav) => transcribeWavSegments(cfg, wav)");
     // A sample waits its turn and goes through `speak`'s gate, which drops a line while a mic is open; with the audio on

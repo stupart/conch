@@ -30,9 +30,9 @@ import { attachedJobId } from "./sessions.ts";
  * and the pid of the session inside it (`replPid`), each beside its start time as
  * `LC_ALL=C TZ=UTC ps -o lstart=` prints it. A job is live while its roster entry is there
  * and that pid is still the process that started then. Measured on this Mac (2026-09-26):
- * job 25d17f50's entry named host 8904 and session 8936 — the `8936.json` registry entry —
- * both `Wed Sep 23 04:39:09 2026`; job f31f0d15's entry left the roster in the same second
- * Claude's daemon logged `bg settled f31f0d15 (killed)`, and its pty sockets went with it.
+ * job 5e5e5e11's entry named host 8904 and session 8936 — the `8936.json` registry entry —
+ * both `Wed Sep 23 04:39:09 2026`; job 5e5e5e13's entry left the roster in the same second
+ * Claude's daemon logged `bg settled 5e5e5e13 (killed)`, and its pty sockets went with it.
  *
  * Only positive evidence refuses. A roster or registry that cannot be read, a torn write, a
  * `ps` that fails: the send goes ahead exactly as it did before this check existed.

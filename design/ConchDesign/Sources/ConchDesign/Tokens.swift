@@ -217,13 +217,6 @@ public enum ConchType {
     public static let secondary = Font.system(size: 12)
     public static let meta = Font.system(size: 11, weight: .medium)
     public static let code = Font.system(size: 12, design: .monospaced)
-    public static let conversationNow = Font.system(size: 24, weight: .medium)
-    public static let conversationPast = Font.system(size: 17)
-    /// The conversation full screen: the words grow with the space they have.
-    public static let conversationNowFull = Font.system(size: 36, weight: .medium)
-    public static let conversationPastFull = Font.system(size: 24)
-    /// `conversationNow`'s size, for type drawn outside SwiftUI (the reply line's text view) and measured by it.
-    public static let conversationNowSize: CGFloat = 24
     #else
     public static let title = Font.title2.weight(.semibold)
     public static let heading = Font.headline
@@ -233,11 +226,6 @@ public enum ConchType {
     public static let secondary = Font.footnote
     public static let meta = Font.caption.weight(.medium)
     public static let code = Font.system(.footnote, design: .monospaced)
-    public static let conversationNow = Font.system(.title, weight: .medium)
-    public static let conversationPast = Font.title3
-    public static let conversationNowFull = Font.largeTitle.weight(.medium)
-    public static let conversationPastFull = Font.title2
-    public static let conversationNowSize: CGFloat = 28
     #endif
 
     /// Line spacing to add to reading text.
@@ -258,14 +246,10 @@ public enum ConchType {
         .init(name: "secondary", font: secondary, mac: "12 regular", iOS: ".footnote (13)"),
         .init(name: "meta", font: meta, mac: "11 medium", iOS: ".caption medium (12)"),
         .init(name: "code", font: code, mac: "12 SF Mono", iOS: ".footnote SF Mono (13)"),
-        .init(name: "conversationNow", font: conversationNow, mac: "24 medium", iOS: ".title medium (28)"),
-        .init(name: "conversationPast", font: conversationPast, mac: "17 regular", iOS: ".title3 (20)"),
-        .init(name: "conversationNowFull", font: conversationNowFull, mac: "36 medium", iOS: ".largeTitle medium (34)"),
-        .init(name: "conversationPastFull", font: conversationPastFull, mac: "24 regular", iOS: ".title2 (22)"),
     ]
 
-    /// SF through Core Text, for type drawn straight into a CGContext: the canvas's labels and pills, the storyboard's
-    /// frame stamps. Core Text answers nil only for a UI type it does not know; the fallback is the same face asked for
+    /// SF through Core Text, for type drawn straight into a CGContext: the numbers on a note's pin, the storyboard's frame
+    /// stamps. Core Text answers nil only for a UI type it does not know; the fallback is the same face asked for
     /// through the platform, so nothing drawn outside SwiftUI can land in a different one.
     static func coreText(size: CGFloat, bold: Bool = false) -> CTFont {
         if let font = CTFontCreateUIFontForLanguage(bold ? .emphasizedSystem : .system, size, nil) { return font }
@@ -431,8 +415,6 @@ public struct ConchSpring: Equatable, Sendable {
 
 public enum ConchMotion {
     // Springs: the overlay lab's Default feel. Its Calm and Island presets are still to be chosen between.
-    /// A throw docking in its corner.
-    public static let dock = ConchSpring(bounce: 0.2, response: 0.45)
     /// A big view changing shape: collapse, full screen. Big things bounce less.
     public static let morph = ConchSpring(bounce: 0.12, response: 0.46)
     /// A small control appearing, like the collapsed caret. Small things bounce more.
@@ -452,66 +434,31 @@ public enum ConchMotion {
     /// The pointer coming over something: the panel's buttons filling in, the resize band's glow, a fade opening at the
     /// transcript's near end.
     public static let hover = ConchSpring(bounce: 0, response: 0.3)
-    /// A message you sent flying from the reply line into the transcript.
-    public static let sent = ConchSpring(bounce: 0.14, response: 0.42)
     /// The panel's words, or its deliverable, arriving once its frame has landed (panel-lab's `.inner`, 0.1 / 0.42).
     public static let reveal = ConchSpring(bounce: 0.1, response: 0.42)
     public static let springs: [(name: String, spring: ConchSpring)] = [
-        ("dock", dock), ("morph", morph), ("pop", pop), ("grow", grow), ("voiceColour", voiceColour), ("appearance", appearance), ("swap", swap),
-        ("liftOff", liftOff), ("hover", hover), ("sent", sent), ("reveal", reveal),
+        ("morph", morph), ("pop", pop), ("grow", grow), ("voiceColour", voiceColour), ("appearance", appearance), ("swap", swap),
+        ("liftOff", liftOff), ("hover", hover), ("reveal", reveal),
     ]
 
     /// How small and soft a deliverable comes in on `swap`; it leaves as much larger.
     public static let swapScale: CGFloat = 0.965
     public static let swapBlur: CGFloat = 6
 
-    /// The panel's content coming back after its frame morphs (full screen, docked, collapsed): `revealDelay` after the
-    /// frame lands, from a touch small and soft, on `reveal`. Never while it is still small: the words laid out for full
-    /// screen inside a docked-size window was what the morph used to show.
-    public static let revealScale: CGFloat = 0.985
-    public static let revealBlur: CGFloat = 3
+    /// Content arriving once its frame has landed: `revealDelay` after it, on `reveal`.
     public static let revealDelay: Double = 0.12
 
-    /// One session's words and header giving way to another's (panel-lab's crossfade): the old out soft and up, the new in
-    /// from a little below, on `pop`, the words `crossStagger` behind the header. Never a hard cut.
+    /// One view's words giving way to another's (panel-lab's crossfade): the old out soft and up, the new in from a little
+    /// below. Never a hard cut.
     public static let crossBlur: CGFloat = 4
     public static let crossShift: CGFloat = 8
-    public static let crossScale: CGFloat = 0.985
-    public static let crossStagger: Double = 0.024
 
-    /// A popover opening on `pop` (the panel's switcher, panel-lab's `#switcher`): from a touch small, `popShift` toward
-    /// where it opens from and soft; its rows following `popStagger` apart after `popLead`.
-    public static let popScale: CGFloat = 0.94
+    /// Rows popping in on `pop` (panel-lab's `#switcher`): from `popShift` toward where they open from, `popStagger` apart.
     public static let popShift: CGFloat = 6
-    public static let popBlur: CGFloat = 4
-    public static let popLead: Double = 0.04
     public static let popStagger: Double = 0.018
-
-    /// The input with nowhere to come from, or nowhere to go (`ComposerFlight`): it appears from, or leaves to, this much of
-    /// its size about its middle, fading as it does. Never from nothing.
-    public static let appearScale: CGFloat = 0.9
-
-    /// A thrown view mid-air: a little smaller, softer and fainter, whole again as it lands.
-    public static let flightScale: CGFloat = 0.97
-    public static let flightBlur: CGFloat = 3
-    public static let flightOpacity: CGFloat = 0.9
-
-    /// Words arriving: each fades up out of a small blur, at a talking pace.
-    public static let wordReveal: Double = 0.36
-    public static let wordRevealBlur: CGFloat = 4
-    public static let wordsPerSecond: Double = 13
-
-    /// A scroll view's normal deceleration, per millisecond.
-    public static let deceleration = 0.998
-    /// How far `velocity` (points per second) carries under that deceleration: where a throw is heading
-    /// (WWDC18, "Designing Fluid Interfaces").
-    public static func projectedDistance(_ velocity: CGFloat) -> CGFloat {
-        velocity * deceleration / (1 - deceleration) / 1000
-    }
 
     public static let quick: Double = 0.15
     public static let standard: Double = 0.25
-    public static let gentle: Double = 0.4
     /// One swell of a waveform bar.
     public static let wavePeriod: Double = 1.1
     /// One breath of a listening mic.

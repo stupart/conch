@@ -540,7 +540,7 @@ export async function readProcessArgs(pid: number): Promise<string[] | null> {
   return output.trim().split(/\s+/).slice(1);
 }
 
-/** A background job id as Claude Code prints it (`f31f0d15`): never a shell word, never an option. */
+/** A background job id as Claude Code prints it (`5e5e5e13`): never a shell word, never an option. */
 const JOB_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
 function checkedJobId(jobId: string): string {
