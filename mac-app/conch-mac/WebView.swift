@@ -69,9 +69,13 @@ struct DeliverableWebView: NSViewRepresentable {
         /// The same KVO shape as the loading state beside it, for the same reason: WebKit is
         /// the only thing that knows where a page went, and a redirect or an in-page link
         /// moves it without anyone calling us.
+        /// A Figma file shown as its embed (`FigmaLink.embedPage`): the file's own address, which the page holding the embed
+        /// stands for. The bar says the file, and ⌘3 opens it in Figma.
+        var embedded: String?
+
         func observeCurrentURL(of webView: WKWebView) {
-            urlObservation = webView.observe(\.url, options: [.initial, .new]) { view, _ in
-                let here = view.url?.absoluteString
+            urlObservation = webView.observe(\.url, options: [.initial, .new]) { [weak self] view, _ in
+                let here = view.url == FigmaLink.embedBase ? self?.embedded ?? view.url?.absoluteString : view.url?.absoluteString
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.parent.currentLink != here else { return }
                     self.parent.currentLink = here
@@ -365,6 +369,8 @@ struct DeliverableWebView: NSViewRepresentable {
         context.coordinator.loadedLink = link
         context.coordinator.loadedReloadID = reloadID
         context.coordinator.surfacedURL = DeliverableLink.url(for: link)
+        let url = DeliverableLink.url(for: link)
+        context.coordinator.embedded = FigmaLink.isFile(url) ? url.absoluteString : nil
         context.coordinator.activeNavigation = load(link, in: webView)
     }
 
@@ -393,6 +399,12 @@ struct DeliverableWebView: NSViewRepresentable {
 
     private func load(_ link: String, in webView: WKWebView) -> WKNavigation? {
         let url = DeliverableLink.url(for: link)
+        // A Figma file is shown here, as Figma's embed on the link's frame, signed in as this view's store is (2026-11-11,
+        // Tyler: "Make figma show in the deliverables area instead of automatically sending me to figma"): Figma's viewer
+        // for the file, where the file's own address is its whole editor.
+        if let embed = FigmaLink.embedPage(for: url) {
+            return webView.loadHTMLString(embed, baseURL: FigmaLink.embedBase)
+        }
         if !url.isFileURL {
             return webView.load(URLRequest(url: url))
         }

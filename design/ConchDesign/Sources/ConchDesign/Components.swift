@@ -766,8 +766,12 @@ public enum ReviewScene: Equatable {
     /// A deliverable only conch can show as it was published, so it opens in the panel from anywhere, turning the panel
     /// on if it has to, rather than in its own app: one with marks (drawn only where conch shows the work), and a folder,
     /// whose tree with what the agent pointed at (`focus`) is conch's; Finder would show the folder and none of it.
-    public static func opensOnlyInConch(deliverable: String?, marked: Bool) -> Bool {
-        marked || deliverable == "folder"
+    ///
+    /// And a Figma file (`FigmaLink`, 2026-11-11). Tyler: "Make figma show in the deliverables area instead of
+    /// automatically sending me to figma." It shows as Figma's embed where conch shows the work; "Open in Figma" (⌘3) is
+    /// the way to the app.
+    public static func opensOnlyInConch(deliverable: String?, marked: Bool, link: URL? = nil) -> Bool {
+        marked || deliverable == "folder" || link.map(FigmaLink.isFile) == true
     }
     /// The same kinds by a file's extension, src/deliverables.ts's table, for a deliverable filed without one.
     static let panelExtensions: Set<String> = [
@@ -779,11 +783,14 @@ public enum ReviewScene: Equatable {
     /// A pick in the conversation panel whose deliverable the panel shows itself, full screen, rather than bringing it
     /// forward in its own app (09-21, "BOTH": full screen shows the content in the panel, the reply floating over it).
     /// Only where the pill's scene would open the link, so a scene asked for by name, or a link with nothing behind it, is
-    /// as before; and only a kind the panel can draw, so an app window, the Simulator, a terminal, a design or an office
-    /// document still comes forward in its own app. `deliverable` is the kind it was filed as; with none, from a daemon
-    /// older than kinds, the link says: a web page but Figma's, or a file by its extension.
+    /// as before; and only a kind the panel can draw, so an app window, the Simulator, a terminal or an office document
+    /// still comes forward in its own app. A Figma file is drawn too, as Figma's embed (2026-11-11). `deliverable` is the
+    /// kind it was filed as; with none, from a daemon older than kinds, the link says: a web page but Figma's other
+    /// pages, or a file by its extension.
     public static func panelShowsContent(kind: Kind, deliverable: String?, link: URL?, fileExists: (String) -> Bool) -> Bool {
         guard case let .open(url) = choose(kind: kind, link: link, fileExists: fileExists, appWindowOpen: false, revealable: false) else { return false }
+        // A Figma file, whatever it was filed as: Figma's embed, drawn here (`FigmaLink.embedPage`, 2026-11-11).
+        if FigmaLink.isFile(url) { return true }
         if let deliverable { return panelKinds.contains(deliverable) }
         if url.isFileURL { return panelExtensions.contains(url.pathExtension.lowercased()) }
         let host = url.host?.lowercased() ?? ""

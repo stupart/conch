@@ -87,7 +87,8 @@ export const SIGN_IN_WORDS = /\b(sign ?in|log ?in|sign on|continue with (google|
 
 /**
  * The link a publication's check looks at: an http(s) link filed as a live page (`url`, said or read off the link), or
- * nothing. A design's link opens in Figma, and an app or a terminal with a link is still that, not a page.
+ * nothing. A design's link is a Figma file, shown as Figma's embed, and an app or a terminal with a link is still that,
+ * not a page.
  */
 export function accessCheckedLink(review: { summary: string; link?: string; kind?: DeliverableKind; key?: string } | undefined): string | undefined {
   if (!review?.link || !/^https?:\/\//i.test(review.link)) return undefined;

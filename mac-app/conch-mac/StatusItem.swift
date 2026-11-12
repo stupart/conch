@@ -401,11 +401,13 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         }
         let content = row.panelContent
         let marked = !(row.review?.marks.isEmpty ?? true)
-        // Marks, or a folder's tree: only conch draws either, so they open in the panel from anywhere.
-        let conchOnly = ReviewScene.opensOnlyInConch(deliverable: row.review?.kind, marked: marked)
         // What `stage` reads to choose, read the same way.
         let kind = ReviewScene.Kind(rawValue: row.review?.sceneKind ?? "") ?? .auto
         let link = ReviewItem(row: row)?.link.map { LinkTarget.url(for: $0, cwd: row.cwd) }
+        // Marks, a folder's tree, or a Figma file's embed: conch shows each as it was published, so they open in the panel
+        // from anywhere, never handed to Figma (2026-11-11, "Make figma show in the deliverables area instead of
+        // automatically sending me to figma").
+        let conchOnly = ReviewScene.opensOnlyInConch(deliverable: row.review?.kind, marked: marked, link: link)
         let words = origin == .panel
             && ReviewScene.panelShowsWords(hasReview: row.review != nil, kind: kind, link: link, fileExists: { FileManager.default.fileExists(atPath: $0) })
         let destination = ConchOverlays.destination(overlays: panels != nil, panelDraws: content != nil,
