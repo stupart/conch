@@ -13,6 +13,7 @@ import {
   WhisperServerClient,
 } from "../src/transcribe.ts";
 import type { Config } from "../src/config.ts";
+import { transcriptionHardware } from "../src/whisper-args.ts";
 import type { ColdTranscriptionProcess } from "../src/transcribe.ts";
 
 function constantPcm(sample: number, seconds = 1): Uint8Array {
@@ -400,12 +401,26 @@ describe("timed transcription", () => {
       expect(commands).toHaveLength(1);
       expect(commands[0]).not.toContain("-nt");
       expect(commands[0]![commands[0]!.indexOf("-f") + 1]).toBe(wav.path);
-      // A CLI that failed with nothing to show says so.
+      // A CLI that failed with nothing to show says so — after one more try on
+      // the CPU when the first was on Metal (seashell 3ad4765).
+      const failedCommands: string[][] = [];
       const failed = await transcribeWavSegments(transcriptionConfig(), wav.path, {
         client: await readyClient(new Response("warm down", { status: 503 })),
-        spawnCold: () => ({ stdout: stream(""), exited: Promise.resolve(1), kill() {} }),
+        spawnCold: (command) => {
+          failedCommands.push(command);
+          return { stdout: stream(""), exited: Promise.resolve(1), kill() {} };
+        },
+        warn() {},
       });
       expect(failed).toEqual({ segments: [], error: "Transcription failed" });
+      if (transcriptionHardware().appleSilicon) {
+        expect(failedCommands).toHaveLength(2);
+        expect(failedCommands[0]).not.toContain("-ng");
+        expect(failedCommands[1]).toContain("-ng");
+      } else {
+        expect(failedCommands).toHaveLength(1);
+        expect(failedCommands[0]).toContain("-ng");
+      }
     } finally { wav.done(); }
     expect(await transcribeWavSegments(transcriptionConfig(), "/nonexistent/narration.wav")).toEqual({
       segments: [], error: "File not found: /nonexistent/narration.wav",
