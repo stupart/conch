@@ -267,11 +267,13 @@ public struct SkillDetailPanel: View {
                               onRun: actions.run, onType: actions.type)
             }
             LibraryFact(label: skill.locations.count == 1 ? "Lives in" : "Copies") {
-                // How each copy is called, only when they aren't all called alike.
-                let sameCall = Set(skill.locations.map { $0.invocation ?? "" }).count == 1
+                // How a copy is called, only where it isn't called as the first is; which copies hold other words.
+                let first = skill.locations.first
+                let primary = SkillsLibrary.primaryLocation(skill)
                 ForEach(skill.locations) { location in
-                    SkillCopyLine(location: location, isRead: (reading ?? SkillsLibrary.primaryLocation(skill)?.id) == location.id,
-                                  showsRead: skill.locations.count > 1, showsCall: !sameCall, actions: actions)
+                    SkillCopyLine(location: location, isRead: (reading ?? primary?.id) == location.id,
+                                  showsRead: skill.locations.count > 1, showsCall: location.invocation != first?.invocation,
+                                  differs: skill.versions > 1 && location.digest != primary?.digest, actions: actions)
                 }
             }
             // Said once: with none open, Use already says so.
@@ -293,6 +295,8 @@ struct SkillCopyLine: View {
     let isRead: Bool
     let showsRead: Bool
     let showsCall: Bool
+    /// Its words differ from the copy read first.
+    let differs: Bool
     let actions: SkillDetailActions
 
     var body: some View {
@@ -300,12 +304,21 @@ struct SkillCopyLine: View {
         HStack(alignment: .center, spacing: ConchSpace.x2) {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 5) {
-                    Text(SkillsLibrary.locationTitle(location))
+                    // With several copies, another copy's place reads it below; the one shown is only its name.
+                    let title = Text(SkillsLibrary.locationTitle(location))
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(ConchColor.textPrimary)
                         .lineLimit(1)
+                    if showsRead, !isRead {
+                        Button { actions.read(location) } label: { title }
+                            .buttonStyle(.plain)
+                            .help("Read this copy below")
+                    } else {
+                        title
+                    }
                     // Off is a choice, not a failure: a quiet tag, not attention's red.
                     if location.enabled == false { LibraryChip("Off", help: "Off for new sessions there") }
+                    if differs { LibraryChip("Other version", help: "Its words differ from the copy shown below") }
                     if isRead, showsRead {
                         Text("shown below").font(.system(size: 10.5)).foregroundStyle(ConchColor.textTertiary)
                     }

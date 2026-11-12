@@ -13,10 +13,10 @@ func renderSkillsLibrary() throws {
         origin: "user",
         locations: [
             SkillLocationInfo(agent: "claude", accountId: "default", accountLabel: "Personal", origin: "user",
-                              path: "/Users/alex/.claude/skills/handoff/SKILL.md", invocation: "/handoff"),
+                              path: "/Users/alex/.claude/skills/handoff/SKILL.md", invocation: "/handoff", digest: "a1"),
             SkillLocationInfo(agent: "claude", accountId: "work", accountLabel: "Studio", origin: "user",
-                              path: "/Users/alex/.config/claude-studio/skills/handoff/SKILL.md", enabled: false, invocation: "/handoff"),
-            SkillLocationInfo(agent: "codex", origin: "user", path: "/Users/alex/.agents/skills/handoff/SKILL.md", invocation: "$handoff"),
+                              path: "/Users/alex/.config/claude-studio/skills/handoff/SKILL.md", enabled: false, invocation: "/handoff", digest: "a1"),
+            SkillLocationInfo(agent: "codex", origin: "user", path: "/Users/alex/.agents/skills/handoff/SKILL.md", invocation: "$handoff", digest: "b2"),
         ], versions: 2)
     let deploy = InstalledSkillInfo(
         id: "skill:own:deploy-check", name: "deploy-check", description: "Checks a branch is ready to ship: tests, migrations and the changelog.",
