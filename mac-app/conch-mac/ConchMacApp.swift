@@ -6,17 +6,24 @@ import UserNotifications
 @main
 struct ConchMacApp: App {
     @NSApplicationDelegateAdaptor(ConchAppDelegate.self) private var appDelegate
-    @StateObject private var store: StateStore
-    @StateObject private var remotes: RemoteMacStore
+    // Held, never watched (2026-11-11). As `@StateObject`s here every publish of any of the three re-ran the app's body,
+    // and after the store's own update the window was drawn twice more, about 10 and 25 ms behind it: the scene and its
+    // menus rebuilt and the environment written again, so every view reading it ran again (26 status marks), then
+    // ContentView and everything under it. In a 10 s SwiftUI trace of the live app (25 rows, 15 working) the app's body
+    // ran 13 times, once a publish, and those two passes were ~70% of each publish's main-thread time (~40 ms of ~56 under
+    // the trace). Nothing in the body draws from them; the views that do watch them themselves, through the environment.
+    // The app is made once, so these live as long as it does, as the state objects did.
+    private let store: StateStore
+    private let remotes: RemoteMacStore
     /// C9b Cut B: reads both stores above; built here so it can.
-    @StateObject private var audio: AudioHolderStore
+    private let audio: AudioHolderStore
 
     init() {
         let store = StateStore()
         let remotes = RemoteMacStore()
-        _store = StateObject(wrappedValue: store)
-        _remotes = StateObject(wrappedValue: remotes)
-        _audio = StateObject(wrappedValue: AudioHolderStore(local: store, remotes: remotes))
+        self.store = store
+        self.remotes = remotes
+        audio = AudioHolderStore(local: store, remotes: remotes)
         // The menu bar mark (M2), a turn later: a status item wants the application running.
         Task { @MainActor in ConchStatusItem.install(store: store) }
         // Setup opens at launch only when its rule says to (OnboardingController).

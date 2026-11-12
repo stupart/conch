@@ -17,6 +17,15 @@ import SwiftUI
 /// appending to the end leaves everything above it untouched and still.
 struct ConversationStackView: View {
     let conversation: Conversation
+    /// Held, not watched (2026-11-11): what the stack draws from the store comes in as `pending` and `rowMessage`, handed
+    /// down by the pane, which is drawn again only when something it reads changed (`ConversationPane ==`). Watched
+    /// through the environment, every publish of any session re-ran this body, the window's costliest, underneath the
+    /// pane's `==`: offscreen on the app's own window, 12 bodies for 10 publishes from a session not on screen, now none.
+    let store: StateStore
+    /// What this Mac has sent this session that its transcript has not shown yet (`StateStore.outbox`).
+    let pending: [ConchOutboxEntry]
+    /// conch's word on this session's row (`StateStore.rowMessages`), said on a waiting question's or approval's card.
+    let rowMessage: String?
     /// Everything older than the live window, and the whole text behind anything it cut.
     @ObservedObject var history: HistoryStore
     /// A readable summary, and one answer per question, in order. The answers are what the
@@ -88,7 +97,6 @@ struct ConversationStackView: View {
     var approval: SessionRow.PendingApproval? = nil
     /// "once", "always" or "deny".
     var onApprove: ((String) -> Void)? = nil
-    @EnvironmentObject private var store: StateStore
     /// The last link that would not open — the OS's own words and the
     /// resolved target — shown here, where the click happened, never as a
     /// Finder alert (A13).
@@ -368,7 +376,7 @@ struct ConversationStackView: View {
                     // as teh phone where we want instant response on send and confirm iwth
                     // checkmark". The daemon reads transcripts on a poll, so a sent message had
                     // seconds of saying nothing at all.
-                    ForEach(store.outbox.entries(for: conversation.sessionId)) { pending in
+                    ForEach(pending) { pending in
                         // A message to the selection, but only its bubble: the line under it has Dismiss (`PendingMessage`).
                         PendingMessage(entry: pending, selection: selection, onDismiss: { store.discardOutgoing(pending.id) })
                             .id(pending.id)
@@ -460,12 +468,12 @@ struct ConversationStackView: View {
                 requestBottomScroll(using: proxy)
             }
             // A send's failure while a question waits is said on that question's card as well.
-            .onChange(of: store.rowMessages[conversation.sessionId]) { _, message in
+            .onChange(of: rowMessage) { _, message in
                 guard let live = liveQuestionID else { return }
                 questionNotices[live] = message
             }
             // And while a permission prompt waits, on its card.
-            .onChange(of: store.rowMessages[conversation.sessionId]) { _, message in
+            .onChange(of: rowMessage) { _, message in
                 if let approval { approvalNotices[approval.id] = message }
             }
             .onChange(of: conversation.sessionId) { _, _ in

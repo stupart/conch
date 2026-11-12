@@ -55,7 +55,7 @@ describe("the conversation holds one selection", () => {
     expect(kinds).toContain("isExpanded(item.id) ? .text : .none");
     // What this Mac has sent is a message too — its bubble, and only its bubble. The line beneath has Dismiss, and a row
     // that took it too took the press on Dismiss as a press on the message (2026-10-05: Dismiss "didn't work per usual").
-    const sent = between(stack, "ForEach(store.outbox.entries", "if let approval");
+    const sent = between(stack, "ForEach(pending) { pending in", "if let approval");
     expect(sent).toContain("PendingMessage(entry: pending, selection: selection,");
     expect(sent).not.toContain(".conversationSelectionRow(");
     const pending = between(stack, "private struct PendingMessage: View {", "private var status: some View");
