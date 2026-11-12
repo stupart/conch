@@ -7,14 +7,12 @@ import WebKit
 /// Annotate (docs/annotate.md). Tyler: "let's add annotate on the deliverables plane like u can do in codex". In the
 /// deliverables pane, where conch draws the deliverable itself, Tyler pins notes to what he points at — an element of a
 /// page, words in it or in a document, part of a picture — and sends them, as one message, to the session that published
-/// it. The notes are anchored as agent ink's marks are (`AgentInkController`): a selector, a quote, an image and its
+/// it. The notes are anchored as agent ink's marks are (`AgentInk`): a selector, a quote, an image and its
 /// fractions. So the agent is told exactly what he meant, in terms it can act on, and can answer with marks on the very
 /// same things.
 ///
-/// Not the canvas (Canvas.swift), which is ink on a glass over the whole screen, anchored to the display and pictured by
-/// Screen Recording, routed to whoever owns what is on screen. A note here follows what it is pinned to as the pane
-/// scrolls, zooms and reloads; its picture is conch's own (no permission); and it goes to the deliverable's own session,
-/// never a guess.
+/// A note follows what it is pinned to as the pane scrolls, zooms and reloads; its picture is conch's own (no
+/// permission); and it goes to the deliverable's own session, never a guess.
 ///
 /// One annotator per pane showing a deliverable (`InlineReviewView`), told which deliverable as it changes; the notes
 /// themselves are kept per deliverable for as long as conch runs (`AnnotationDrafts`), so moving to another tab and back
@@ -517,7 +515,7 @@ final class DeliverableAnnotator: ObservableObject {
             }
             // Taken isn't landed: refused after all, the notes come back to the deliverable they were on, ahead of any
             // pinned there since, whichever deliverable the pane has moved on to.
-            guard let failure = await CanvasController.failure(of: event.opId, in: store) else { return }
+            guard let failure = await Self.failure(of: event.opId, in: store) else { return }
             let back = AnnotationBatch(id: UUID().uuidString, notes: sent.notes + AnnotationDrafts.shared.batch(for: item.id).notes)
             AnnotationDrafts.shared.keep(back, for: item)
             guard self.item?.id == item.id else { return }
@@ -525,6 +523,21 @@ final class DeliverableAnnotator: ObservableObject {
             afterNotesChanged()
             say(.notSent(to: route.label, because: failure))
         }
+    }
+
+    /// What became of a send the daemon took: taken is not landed, and the daemon's outcome comes back against the send's
+    /// own id, in `StateStore.outbox`. The sentence it failed with; nil once it landed, was left staged, or retired, or
+    /// after two minutes with no word. (The canvas's Send asked the same, until it went with the old overlays, 2026-11-11.)
+    // ponytail: polled twice a second; the outbox's publisher, raced against a timeout, if two minutes of polling ever shows.
+    static func failure(of opId: String?, in store: StateStore) async -> String? {
+        guard let opId else { return nil }
+        for _ in 0..<240 {
+            guard let entry = store.outbox.entries.first(where: { $0.id == opId }) else { return nil }
+            if case let .failed(sentence) = entry.state { return sentence }
+            if entry.state.isTerminal { return nil }
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+        return nil
     }
 
     /// The tray's Copy notes: the message, written as Send writes it, on the clipboard, for a session that has ended.
@@ -686,7 +699,8 @@ enum AnnotationFolder {
         return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cache/conch/annotations", isDirectory: true)
     }
 
-    static let kept = CanvasFolder.kept
+    /// Older annotations go when a new batch is written: two weeks, as canvases were kept.
+    static let kept: TimeInterval = 14 * 24 * 3600
 
     /// Each note's picture as `<n>.png`, the overview, and notes.json; the paths, for the message.
     static func write(_ batch: AnnotationBatch, overview: Data?, about summary: String, link: String?) throws -> AnnotationPrompt.Files {

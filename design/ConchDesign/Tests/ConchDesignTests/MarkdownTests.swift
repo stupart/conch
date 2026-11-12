@@ -124,8 +124,8 @@ final class MarkdownTests: XCTestCase {
         XCTAssertEqual(String(cell.characters), "see docs and this")
         XCTAssertTrue(cell.runs.contains { $0.link != nil && $0.underlineStyle == .single }, "a link is underlined")
         XCTAssertTrue(cell.runs.contains { $0.inlinePresentationIntent?.contains(.stronglyEmphasized) == true })
-        // The fog keeps its inline parse, with the same frontmatter rule in front of it.
-        XCTAssertEqual(ConversationFog.plain("---\ntype: document\n---\n## Title"), "Title")
+        // The conversation keeps its inline parse, with the same frontmatter rule in front of it.
+        XCTAssertEqual(ConversationMarkdown.plain("---\ntype: document\n---\n## Title"), "Title")
     }
 
     // MARK: SwiftUI

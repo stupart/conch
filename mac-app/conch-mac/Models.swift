@@ -14,17 +14,14 @@ struct PublishedState: Decodable, Equatable, Sendable {
     struct Features: Decodable, Equatable, Sendable {
         let deliverables: Int?
         let viewedState: Int?
-        /// Setup's practice turn (src/practice.ts): Try it and the tour. Absent from a daemon without one.
-        let practice: Int?
         /// `set-settings` and each row's model and effort (src/session-settings.ts). Absent from an older
         /// daemon, which has no safe way to change them: the header then shows no picker.
         let sessionSettings: Int?
         let sessionHosts: Int?
 
-        init(deliverables: Int? = nil, viewedState: Int? = nil, practice: Int? = nil, sessionSettings: Int? = nil, sessionHosts: Int? = nil) {
+        init(deliverables: Int? = nil, viewedState: Int? = nil, sessionSettings: Int? = nil, sessionHosts: Int? = nil) {
             self.deliverables = deliverables
             self.viewedState = viewedState
-            self.practice = practice
             self.sessionSettings = sessionSettings
             self.sessionHosts = sessionHosts
         }
@@ -69,8 +66,6 @@ struct PublishedState: Decodable, Equatable, Sendable {
     let browserProfiles: [BrowserProfile]?
     let browserTabs: [BrowserTab]?
     let browserRequests: [BrowserRequest]
-    /// Setup's practice turn while one runs (src/practice.ts): where it is and what it heard, for the tour.
-    let practice: PracticeReport?
     /// Each agent's model and effort choices, and its own defaults (src/session-settings.ts).
     let sessionSettings: SessionSettingsCatalog?
     /// Where the natural voices stand (src/voice-env.ts): the calm line's source (`NaturalVoicesNoticeStore`).
@@ -287,7 +282,6 @@ struct PublishedState: Decodable, Equatable, Sendable {
         case browserProfiles
         case browserTabs
         case browserRequests
-        case practice
         case sessionSettings
         case naturalVoices
         case guards
@@ -321,7 +315,6 @@ struct PublishedState: Decodable, Equatable, Sendable {
         browserProfiles: [BrowserProfile]? = nil,
         browserTabs: [BrowserTab]? = nil,
         browserRequests: [BrowserRequest] = [],
-        practice: PracticeReport? = nil,
         sessionSettings: SessionSettingsCatalog? = nil,
         naturalVoices: NaturalVoicesReport? = nil,
         guards: [RunawayGuardTrip] = [],
@@ -354,7 +347,6 @@ struct PublishedState: Decodable, Equatable, Sendable {
         self.browserProfiles = browserProfiles
         self.browserTabs = browserTabs
         self.browserRequests = browserRequests
-        self.practice = practice
         self.sessionSettings = sessionSettings
         self.naturalVoices = naturalVoices
         self.guards = guards
@@ -408,7 +400,6 @@ struct PublishedState: Decodable, Equatable, Sendable {
         browserProfiles = container.contains(.browserProfiles) ? Self.decodeLossyArray(BrowserProfile.self, from: container, forKey: .browserProfiles) : nil
         browserTabs = container.contains(.browserTabs) ? Self.decodeLossyArray(BrowserTab.self, from: container, forKey: .browserTabs) : nil
         browserRequests = Self.decodeLossyArray(BrowserRequest.self, from: container, forKey: .browserRequests)
-        practice = try? container.decodeIfPresent(PracticeReport.self, forKey: .practice)
         sessionSettings = try? container.decodeIfPresent(SessionSettingsCatalog.self, forKey: .sessionSettings)
         naturalVoices = try? container.decodeIfPresent(NaturalVoicesReport.self, forKey: .naturalVoices)
         guards = Self.decodeLossyArray(RunawayGuardTrip.self, from: container, forKey: .guards)
@@ -455,8 +446,6 @@ struct PublishedState: Decodable, Equatable, Sendable {
             && showing == other.showing
             // What the daemon can do (Remove, viewed receipts): a daemon upgrade flips it alone.
             && features == other.features
-            // The practice turn moving on moves the tour.
-            && practice == other.practice
             // The header's model menu offers what these say.
             && sessionSettings == other.sessionSettings
             // The natural voices' calm line follows them.

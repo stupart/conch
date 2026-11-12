@@ -45,11 +45,12 @@ describe("a message sent from the Mac appears the moment it is sent", () => {
   });
 
   /**
-   * The composer is NOT the only sender — the conversation fog types into a session too. Every
-   * inject routes through `send`, so beginning the entry there is what makes the two agree.
+   * The composer is NOT the only sender — the deliverable pane's notes type into a session too
+   * (the conversation fog did until the overlays went, 2026-11-11). Every inject routes through
+   * `send`, so beginning the entry there is what makes them agree.
    */
   test("every inject gets a bubble, because every sender routes through send()", () => {
-    const send = section(store, "func send(_ event: ConchDaemonEvent, overApp: Bool = false) -> Task<Bool, Never> {", "private static func awaitDelivery(");
+    const send = section(store, "func send(_ event: ConchDaemonEvent) -> Task<Bool, Never> {", "private static func awaitDelivery(");
     ordered(
       send,
       // Except an answer to a question: its card shows "Submitted", and its words never come back.

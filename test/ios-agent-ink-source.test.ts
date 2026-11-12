@@ -78,7 +78,9 @@ describe("which marks land where", () => {
 describe("the page is only read, by the one script both apps run", () => {
   test("the finder lives in the shared package, runs in conch's own world, and takes its strings as arguments", () => {
     expect(shared).toContain('public static let finder = """');
-    expect(read("mac-app/conch-mac/AgentInkController.swift")).toContain("static let finder = AgentInk.finder");
+    // The Mac drew an agent's marks on its canvas glass with it (AgentInkController) until the glass went with the
+    // overlays on 2026-11-11; it still runs the same script to find what conch_capture is pointed at.
+    expect(read("mac-app/conch-mac/PageCapturer.swift")).toContain('call(AgentInk.finder, ["marks": [["target", target.how, target.what]]])');
     expect(ink).toContain('page.callAsyncJavaScript(AgentInk.finder, arguments: ["marks": asked], in: nil, contentWorld: .defaultClient)');
     expect(ink).not.toContain("evaluateJavaScript");
     expect(ink).not.toContain("contentWorld: .page");

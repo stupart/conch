@@ -40,6 +40,10 @@ struct ConchSettingsView: View {
                         .fill(ConchPalette.divider)
                         .frame(height: 1)
                     LoginItemRow()
+                    Rectangle()
+                        .fill(ConchPalette.divider)
+                        .frame(height: 1)
+                    FloatingPillRow()
                 }
 
                 StaleToolsCard()
@@ -896,6 +900,41 @@ private struct StaleToolsCard: View {
                 Text(confirmation.message)
             }
         }
+    }
+}
+
+/// The floating pill on or off: the menu bar menu's Floating Pill, here too, since it is the app's own setting and not the
+/// daemon's (2026-11-11).
+private struct FloatingPillRow: View {
+    @AppStorage(FloatingPill.key) private var isOn = FloatingPill.byDefault
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "capsule")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(ConchPalette.textDim)
+                .frame(width: 7)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Floating pill")
+                    .font(ConchTypography.font(size: 12.5, weight: .medium))
+                    .foregroundStyle(ConchPalette.textPrimary)
+                Text("What conch is doing, over every app. Drag it along any edge of the screen.")
+                    .font(ConchTypography.font(size: 11))
+                    .foregroundStyle(ConchPalette.textDim)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 12)
+
+            Toggle("", isOn: $isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .accessibilityLabel("Floating pill")
+        }
+        .padding(.horizontal, ConchSpace.x4)
+        .padding(.vertical, 11)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

@@ -62,8 +62,8 @@ describe("the user's own tab: the Workdesk's +", () => {
     expect(run).toContain(".padding(.leading, Self.gutter)");
     const menu = between(dashboard, "private func sessionBar(for row: SessionRow) -> some View {", "private var approveControl: some View {");
     expect(menu).toContain('Button("New Browser Tab") {\n                        openBrowserTab(for: row)\n                    }');
-    // Never a subagent's or the practice session's.
-    expect(between(dashboard, "private func opensBrowserTabs(_ row: SessionRow) -> Bool {", "\n    }")).toContain("row.parentSessionId == nil && row.id != TourCoach.practiceSessionId");
+    // Never a subagent's. Setup's practice session was excluded too, until Try it went with the overlay tour on 2026-11-11.
+    expect(between(dashboard, "private func opensBrowserTabs(_ row: SessionRow) -> Bool {", "\n    }")).toContain("row.parentSessionId == nil");
   });
 
   test("it asks the daemon for a blank tab on the profile picked last, shows it, and only a press opens the Workdesk", () => {

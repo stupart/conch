@@ -15,14 +15,6 @@ final class ActiveMarkTests: XCTestCase {
     private let micOpen = ConchRGBA(0x58C9D4)
     private let waiting = ConchRGBA(0x279B4C)
 
-    private func composited(_ token: ConchColorToken, over ground: ConchRGBA, _ scheme: ColorScheme) -> ConchRGBA {
-        let fill = token.rgba(scheme)
-        func mix(_ fore: Double, _ back: Double) -> UInt32 {
-            UInt32(((fore * fill.alpha + back * (1 - fill.alpha)) * 255).rounded())
-        }
-        return ConchRGBA(mix(fill.red, ground.red) << 16 | mix(fill.green, ground.green) << 8 | mix(fill.blue, ground.blue))
-    }
-
     private func hue(_ colour: ConchRGBA) -> Double {
         let r = colour.red, g = colour.green, b = colour.blue
         let top = max(r, g, b), spread = top - min(r, g, b)
@@ -48,18 +40,6 @@ final class ActiveMarkTests: XCTestCase {
                 )
             }
         }
-    }
-
-    /// The conversation panel's switcher draws working's ring on its own glass, laid over the fog.
-    /// That grey is where the darker #0A84FF failed in dark, at 2.32.
-    func testWorkingClearsThreeToOneOnTheSwitchersGlass() {
-        for scheme in schemes {
-            let glass = composited(ConchColor.overlayGlassStrong, over: ConchColor.fog.rgba(scheme), scheme)
-            let ratio = ConchColor.active.rgba(scheme).contrast(on: glass)
-            XCTAssertGreaterThanOrEqual(ratio, 3, "active on the switcher in \(scheme) is \(String(format: "%.2f", ratio)):1")
-        }
-        XCTAssertEqual(FogSession.markColor(.working).name, ConchColor.active.name)
-        XCTAssertEqual(FogSession.markColor(.ready).name, ConchColor.ready.name)
     }
 
     /// Blue, apart from the mic's cyan and waiting's green: 25 degrees of hue from the cyan at the

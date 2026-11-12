@@ -55,7 +55,7 @@ enum AnnotateHarness {
     private static var window: NSWindow? {
         if let dashboard = ReviewNotifications.shared.reviewWindow, dashboard.isVisible, dashboard.windowNumber > 0 { return dashboard }
         return NSApp.windows.filter { window in
-            window.isVisible && !(window is FloatingPanel) && window.title == "conch" && window.frame.height > 200
+            window.isVisible && window.title == "conch" && window.frame.height > 200
                 && CGWindowID(exactly: window.windowNumber) != nil && window.windowNumber > 0
         }.max { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height }
     }

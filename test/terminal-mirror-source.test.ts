@@ -241,7 +241,8 @@ describe("Screen Recording is asked only on the debug path: once, after a press 
     expect(read).toContain("permission?(.ask)");
     const perform = section(permissions, "func perform(_ action: ConchPermissionAction, for permission: ConchPermission, store: StateStore) {", "\n    private func openSettings(");
     const asking = section(section(perform, "case .ask:", "case .reopen:"), "case .screenRecording:", "\n            }");
-    expect(asking).toContain("_ = CanvasCapture.granted()");
+    // The once-a-launch ask is `ScreenRecordingGrant`'s, the canvas's `CanvasCapture` until the canvas went on 2026-11-11.
+    expect(asking).toContain("_ = ScreenRecordingGrant.granted()");
     expect(asking).toContain("refresh(after: .seconds(1))");
     expect(asking).not.toContain("openSettings");
   });

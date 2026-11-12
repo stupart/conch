@@ -4,7 +4,6 @@ import { join } from "node:path";
 
 const macRoot = join(import.meta.dir, "..", "mac-app", "conch-mac");
 const mac = (name: string) => readFileSync(join(macRoot, name), "utf8");
-const components = readFileSync(join(import.meta.dir, "..", "design", "ConchDesign", "Sources", "ConchDesign", "Components.swift"), "utf8");
 const markdown = readFileSync(join(import.meta.dir, "..", "design", "ConchDesign", "Sources", "ConchDesign", "Markdown.swift"), "utf8");
 
 describe("the Mac conversation stays readable while it grows", () => {
@@ -278,8 +277,8 @@ describe("the Mac composer belongs to one session", () => {
     // and watching it re-ran the whole pane on every keystroke. The composer below, which draws the draft, watches it.
     expect(dashboard).toMatch(/private let composerDrafts = ComposerDraftStore\.shared/);
     expect(dashboard).not.toMatch(/@ObservedObject private var composerDrafts/);
-    // Bound in the composer's one construction (`SessionComposer`), the window's and the panel's, to the session's
-    // entry in the one store: wherever the input is, it is the same draft.
+    // Bound in the composer's one construction (`SessionComposer`) to the session's entry in the one store: wherever the
+    // input is, it is the same draft.
     const session = composer.slice(composer.indexOf("struct SessionComposer: View {"));
     expect(session).toMatch(/@ObservedObject private var composerDrafts = ComposerDraftStore\.shared/);
     expect(session).toContain("draft: composerDrafts.textBinding(for: row.id)");
@@ -356,10 +355,12 @@ describe("Mac conversation links keep the native clickable path", () => {
   test("SwiftUI receives the markdown link attribute without an interaction override", () => {
     const conversation = mac("ConversationStackView.swift");
     expect(conversation).toContain("Text(AttributedString.conchMarkdown(item.text))");
-    // The one inline parse, in ConchDesign/Markdown.swift: the fog's rows take it whole, the block renderer takes
-    // it per block. Either way the link attribute reaches SwiftUI.
+    // The one inline parse, in ConchDesign/Markdown.swift: the one-flow rows take it whole (`ConversationMarkdown`, the
+    // floating panel's `ConversationFog` until the panel went on 2026-11-11), the block renderer takes it per block.
+    // Either way the link attribute reaches SwiftUI.
     expect(markdown).toContain("interpretedSyntax: .inlineOnlyPreservingWhitespace");
-    expect(components).toContain("MarkdownDocument.inline(promoteHeadings(flattenTables(MarkdownDocument.stripFrontmatter(text))))");
+    expect(markdown).toContain("MarkdownDocument.inline(promoteHeadings(flattenTables(MarkdownDocument.stripFrontmatter(text))))");
+    expect(conversation).toContain("ConversationMarkdown.inlineMarkdown(source)");
     expect(conversation).not.toContain(".allowsHitTesting(false)");
     // The one override that IS allowed, and required (A13): SwiftUI's default
     // action handed a schemeless link straight to LaunchServices, which
@@ -494,8 +495,8 @@ describe("§3's anatomy, where the app had drifted from it", () => {
   test("the workspace moves on §4's springs, not on hand-rolled easings", () => {
     // §4 names exactly what moves and with which spring. ConchMotion already held the right
     // values (morph 0.12/0.46, pop 0.34/0.36) — the workspace just never used them, animating
-    // with .easeOut(duration: 0.18) instead. The overlay has used them properly for months
-    // (control-bar-source.test.ts), so this is the same convention, finally applied here.
+    // with .easeOut(duration: 0.18) instead. The old overlays used them properly for months,
+    // until they were removed on 2026-11-11, so this is the same convention, finally applied here.
     expect(dashboard).toContain("withAnimation(ConchMotion.morph.animation(reduceMotion: reduceMotion))");
     // The stage's pages are a big view changing shape: morph. They did not move at all before.
     expect(dashboard).toContain(

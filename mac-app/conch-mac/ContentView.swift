@@ -190,8 +190,8 @@ struct ContentView: View {
                   let row = store.state?.rows.first(where: { $0.id == id }) else { return }
             selectSession(row)
         }
-        // What the panel would have shown, with the overlays off (`ConchStatusItem.openInWindow`): the menu's Ready for you
-        // rows, a review with marks, a folder.
+        // A deliverable opened from outside this window (`ConchStatusItem.openInWindow`): the menu's Ready for you rows and
+        // the floating pill's, a review with marks, a folder.
         .onReceive(NotificationCenter.default.publisher(for: .openInWindowFromStatusItem)) { note in
             guard let open = note.object as? ConchStatusItem.WindowOpen,
                   let row = store.state?.rows.first(where: { $0.id == open.sessionId }) else { return }
@@ -211,11 +211,9 @@ struct ContentView: View {
         }
         // Which session the window shows, for a debug capture's sidecar (`DebugSnapshot.viewing`).
         .onChange(of: workspace.viewing, initial: true) { _, id in DebugSnapshot.viewing = id }
-        // A session picked here takes the overlay's conversation off the Ready pill's scene, unless it is that one.
+        // conch's own window now shows this session: the screen context's conch-staged observer.
         .onChange(of: workspace.viewing) { _, id in
             guard let id else { return }
-            FloatingPanels.picked(id)
-            // conch's own window now shows this session: the screen context's conch-staged observer.
             store.reportShowing(.conch(sessionId: id, view: "main"))
         }
         // Back to conch from another app: its window shows its session again. The front-window
@@ -265,7 +263,7 @@ struct ContentView: View {
         }
     }
 
-    /// A deliverable in this window rather than the panel (the overlays off): the session's conversation with that version
+    /// A deliverable opened from outside this window: the session's conversation with that version
     /// in the deliverable pane beside it, as a click on the deliverable's card in the conversation opens it, and off the
     /// lagoon if it showed.
     private func openInWindow(_ row: SessionRow, review: ReviewItem.ID?) {
@@ -1235,8 +1233,6 @@ extension Notification.Name {
 
 private struct KeyboardShortcutsSheet: View {
     @Environment(\.dismiss) private var dismiss
-    /// The pen's keys and the panel's are listed only while the overlays are on (`ConchOverlays`).
-    @AppStorage(ConchOverlays.key) private var overlays = ConchOverlays.byDefault
 
     private let keyRows = [
         // Space stops and never starts (`talkOrStop`). P quiets one session or lets it speak, and
@@ -1253,27 +1249,6 @@ private struct KeyboardShortcutsSheet: View {
         ShortcutHelpRow(command: "⌘0", result: "A zoomed deliverable back to fit"),
         ShortcutHelpRow(command: "⌘,", result: "Settings, and back to your sessions"),
         ShortcutHelpRow(command: "?", result: "This list"),
-    ]
-
-    /// The keys of what floats over other apps: the pen (Canvas.swift's glass, panel-lab's keys) and the conversation
-    /// panel. Here, in the one list, rather than as hints on the surfaces themselves.
-    private let drawRows = [
-        ShortcutHelpRow(command: "⌃⌥⌘P", result: "Draw on screen"),
-        ShortcutHelpRow(command: "1 – 5", result: "Pick a pen tool"),
-        ShortcutHelpRow(command: "⇧R", result: "Show: record the screen"),
-        ShortcutHelpRow(command: "Return", result: "Send"),
-        ShortcutHelpRow(command: "⌘Z", result: "Undo the last mark"),
-        ShortcutHelpRow(command: "Esc", result: "Put the pen down"),
-    ]
-
-    private let panelRows = [
-        ShortcutHelpRow(command: "⌥⌘← / ⌥⌘→", result: "Previous / next item"),
-        ShortcutHelpRow(command: "⌘Return", result: "Full screen"),
-        ShortcutHelpRow(command: "⌘.", result: "Collapse"),
-        ShortcutHelpRow(command: "Esc", result: "Leave full screen"),
-        ShortcutHelpRow(command: "Return", result: "Send the reply"),
-        // The switcher, open (`PanelKeys`): Esc closes it before it leaves full screen.
-        ShortcutHelpRow(command: "↑ / ↓, Return", result: "Pick a session in the switcher"),
     ]
 
     private let spokenRows = [
@@ -1319,12 +1294,6 @@ private struct KeyboardShortcutsSheet: View {
                 .accessibilityAddTraits(.isHeader)
 
             ShortcutHelpSection(title: "Keys", rows: keyRows)
-
-            if overlays {
-                ShortcutHelpSection(title: "Drawing on screen", rows: drawRows)
-
-                ShortcutHelpSection(title: "Conversation panel", rows: panelRows)
-            }
 
             ShortcutHelpSection(title: "Spoken commands", rows: spokenRows)
 

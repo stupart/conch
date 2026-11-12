@@ -52,7 +52,7 @@ final class ConversationSelectionHostTests: XCTestCase {
         private func bubble(_ id: String, _ text: String) -> some View {
             HStack {
                 Spacer(minLength: 48)
-                Text(ConversationFog.inlineMarkdown(text))
+                Text(ConversationMarkdown.inlineMarkdown(text))
                     .conversationSelectable(row: id, segment: 0)
                     .font(ConchType.readingBody)
                     .lineSpacing(ConchType.readingLineSpacing)
@@ -70,9 +70,9 @@ final class ConversationSelectionHostTests: XCTestCase {
         var texts: [String: SelectableRowText] = [:]
         for id in ids {
             switch id {
-            case "u1": texts[id] = SelectableRowText(id: id, speaker: .you, segments: [SelectableSegment(ConversationFog.inlineMarkdown(first))])
+            case "u1": texts[id] = SelectableRowText(id: id, speaker: .you, segments: [SelectableSegment(ConversationMarkdown.inlineMarkdown(first))])
             case "a1": texts[id] = SelectableRowText(id: id, speaker: .agent("Claude"), segments: MarkdownView.selectableSegments(reply))
-            case "u2": texts[id] = SelectableRowText(id: id, speaker: .you, segments: [SelectableSegment(ConversationFog.inlineMarkdown(second))])
+            case "u2": texts[id] = SelectableRowText(id: id, speaker: .you, segments: [SelectableSegment(ConversationMarkdown.inlineMarkdown(second))])
             default: break
             }
         }
@@ -417,7 +417,7 @@ final class ConversationSelectionHostTests: XCTestCase {
         private var bubble: some View {
             HStack {
                 Spacer(minLength: 48)
-                Text(ConversationFog.inlineMarkdown(ConversationSelectionHostTests.second))
+                Text(ConversationMarkdown.inlineMarkdown(ConversationSelectionHostTests.second))
                     .conversationSelectable(row: "p1", segment: 0)
                     .font(ConchType.readingBody)
                     .lineSpacing(ConchType.readingLineSpacing)
@@ -449,7 +449,7 @@ final class ConversationSelectionHostTests: XCTestCase {
     private func dismissIsPressable(wholeRow: Bool) -> (taken: Bool, dismissed: Bool) {
         let controller = ConversationSelectionController()
         controller.source = .init(rowIDs: { ["p1"] }, rowTexts: { _ in
-            ["p1": SelectableRowText(id: "p1", speaker: .you, segments: [SelectableSegment(ConversationFog.inlineMarkdown(Self.second))])]
+            ["p1": SelectableRowText(id: "p1", speaker: .you, segments: [SelectableSegment(ConversationMarkdown.inlineMarkdown(Self.second))])]
         })
         let spot = Spot()
         var dismissed = false

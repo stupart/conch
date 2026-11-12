@@ -12,7 +12,7 @@ import SwiftUI
 /// responsible process, and a child inherits its parent's: the daemon this app starts, and the `osascript` and recorder
 /// the daemon runs, answer to this app (docs/architecture.md, "One grant, to conch.app"). So the front-window observer and the
 /// daemon's typing share Accessibility; the daemon's Apple Events to Terminal and System Events are conch's Automation;
-/// the canvas, Show and the phone's window snapshots are conch's Screen Recording; the daemon's recorder is conch's
+/// the phone's window snapshots and the Terminal Mirror are conch's Screen Recording; the daemon's recorder is conch's
 /// Microphone. That is why every answer here is read in this process, or in one it starts.
 ///
 /// Reading never prompts: `AXIsProcessTrusted()`, never its WithOptions form; `CGPreflightScreenCaptureAccess()`;
@@ -85,13 +85,13 @@ final class PermissionCenter: ObservableObject {
         switch action {
         case .openSettings:
             // macOS lists an app under Accessibility and Screen Recording only once it has asked. Asking here puts conch
-            // in the list to turn on: Accessibility's prompt while conch isn't trusted, and the canvas's once-a-launch
-            // Screen Recording ask (`CanvasCapture.granted`), which macOS shows only the first time ever.
+            // in the list to turn on: Accessibility's prompt while conch isn't trusted, and the once-a-launch Screen
+            // Recording ask (`ScreenRecordingGrant.granted`), which macOS shows only the first time ever.
             switch permission {
             case .accessibility where !AXIsProcessTrusted():
                 _ = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary)
             case .screenRecording:
-                _ = CanvasCapture.granted()
+                _ = ScreenRecordingGrant.granted()
             default:
                 break
             }
@@ -112,16 +112,16 @@ final class PermissionCenter: ObservableObject {
                 // macOS never says this wasn't asked; Settings is where it is turned on.
                 perform(.openSettings, for: permission, store: store)
             case .screenRecording:
-                // macOS's own prompt, the once a launch it may show (the canvas's `CanvasCapture.granted`, which also
-                // lists conch in System Settings), and a fresh reading after. The Terminal Mirror, a debug view, asks
+                // macOS's own prompt, the once a launch it may show (`ScreenRecordingGrant.granted`, which also lists
+                // conch in System Settings), and a fresh reading after. The Terminal Mirror, a debug view, asks
                 // this way the first time a Terminal window needs it, after a press that opened it; its row's reading
                 // is never `notAsked`, so nothing else reaches here. System Settings stays the row's own button, never opened unasked.
-                _ = CanvasCapture.granted()
+                _ = ScreenRecordingGrant.granted()
                 refresh(after: .seconds(1))
             }
         case .reopen:
             // The store's own relaunch: a new conch up before this one quits.
-            CanvasCapture.reopen(store) { [weak self] in
+            ScreenRecordingGrant.reopen(store) { [weak self] in
                 self?.notes[permission] = "Couldn't reopen conch. Quit it from the menu bar and open it again."
             }
         }
@@ -289,6 +289,36 @@ struct PermissionNoticeLine: View {
             Rectangle()
                 .fill(ConchPalette.divider)
                 .frame(height: 1)
+        }
+    }
+}
+
+/// The Screen Recording grant, asked for at most once a launch. 2026-11-11: it was the canvas's (`CanvasCapture`), which went
+/// with the old overlays; the phone's window snapshots and the Terminal Mirror still need it.
+@MainActor
+enum ScreenRecordingGrant {
+    private static var asked = false
+
+    /// The grant, checked silently; the first time a launch it is missing, asked for — which is also what puts conch in
+    /// System Settings' list, to be turned on. macOS asks only once ever: after that, nothing appears.
+    static func granted() -> Bool {
+        if CGPreflightScreenCaptureAccess() { return true }
+        if !asked {
+            asked = true
+            CGRequestScreenCaptureAccess()
+        }
+        return false
+    }
+
+    /// conch reopened, as a grant only reaches a new process: the store's own relaunch (a new instance up before this one
+    /// quits). `failed` when it didn't happen.
+    static func reopen(_ store: StateStore?, failed: @escaping @MainActor () -> Void) {
+        guard let store else { return failed() }
+        store.relaunchForNewBuild()
+        Task { @MainActor in
+            // The failure is set from the open's own completion: a moment is plenty, and a reopen that worked has quit.
+            try? await Task.sleep(for: .seconds(5))
+            if store.relaunchFailure != nil { failed() }
         }
     }
 }

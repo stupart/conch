@@ -5,8 +5,6 @@ import XCTest
 /// nothing lost when the window closes or conch reopens for a grant.
 final class OnboardingTests: XCTestCase {
     private let fresh = OnboardingReadiness.fresh
-    /// A fresh Mac with a daemon that runs the practice turn (`features.practice`): the rail has Try it.
-    private let freshWithPractice = OnboardingReadiness(practiceAvailable: true)
     /// Claude Code wired, Codex found and not, the microphone allowed, two others off.
     private let partway = OnboardingReadiness(agentsFound: 2, agentsConnected: 1, microphone: true, permissionsMissing: 2)
 
@@ -20,13 +18,10 @@ final class OnboardingTests: XCTestCase {
         XCTAssertEqual(OnboardingProgress.entry(nil, readiness: fresh), .firstRun)
     }
 
-    /// Set up by hand, or by a conch older than setup: only what is still missing, and never the practice round. Agents
-    /// are never missing for a returning Mac: one is wired, and leaving a second unwired was its own choice.
+    /// Set up by hand, or by a conch older than setup: only what is still missing. Agents are never missing for a
+    /// returning Mac: one is wired, and leaving a second unwired was its own choice.
     func testSomeoneWhoSetUpBeforeSeesOnlyWhatIsMissing() {
         XCTAssertEqual(OnboardingProgress.entry(nil, readiness: partway), .welcomeBack(missing: [.permissions, .voice, .phone]))
-        var practiced = partway
-        practiced.practiceAvailable = true
-        XCTAssertEqual(OnboardingProgress.entry(nil, readiness: practiced), .welcomeBack(missing: [.permissions, .voice, .phone]))
         let complete = OnboardingReadiness(agentsFound: 2, agentsConnected: 1, microphone: true, permissionsMissing: 0,
                                            engineReady: true, phonePaired: true)
         XCTAssertEqual(OnboardingProgress.entry(nil, readiness: complete), .none, "nothing missing, nothing shown")
@@ -46,9 +41,6 @@ final class OnboardingTests: XCTestCase {
         XCTAssertEqual(progress.mark(.voice), .done)
         XCTAssertEqual(progress.mark(.permissions), .todo)
         XCTAssertEqual(progress.mark(.phone), .todo)
-        var practiced = readiness
-        practiced.practiceAvailable = true
-        XCTAssertEqual(OnboardingProgress.welcomingBack(missing: missing, readiness: practiced).mark(.practice), .todo, "never the practice turn")
         // Done is finished: nothing reminds. Not now puts it away, and the menu counts what is still off.
         let done = progress.applying(.finish, readiness: readiness)
         XCTAssertTrue(done.finished)
@@ -58,24 +50,23 @@ final class OnboardingTests: XCTestCase {
         XCTAssertEqual(notNow.remaining(readiness), [.permissions, .phone])
     }
 
-    /// Welcome back never asks about the practice turn, so the menu never counts it: put away with a daemon that runs
-    /// it, a returning Mac is reminded of what is off, and once that's on, of nothing.
-    func testAReturningMacIsNeverRemindedOfTryIt() {
-        var readiness = OnboardingReadiness(agentsFound: 1, agentsConnected: 1, microphone: true, permissionsMissing: 0, engineReady: true,
-                                            practiceAvailable: true)
+    /// Put away, a returning Mac is reminded of what is off, and once that's on, of nothing. (It was never reminded of
+    /// Try it either; Try it went with the overlays, 2026-11-11.)
+    func testAReturningMacIsRemindedOnlyOfWhatIsOff() {
+        var readiness = OnboardingReadiness(agentsFound: 1, agentsConnected: 1, microphone: true, permissionsMissing: 0, engineReady: true)
         guard case let .welcomeBack(missing) = OnboardingProgress.entry(nil, readiness: readiness) else { return XCTFail("not welcome back") }
         XCTAssertEqual(missing, [.phone])
         let notNow = OnboardingProgress.welcomingBack(missing: missing, readiness: readiness).applying(.close, readiness: readiness)
         XCTAssertTrue(notNow.putAway)
-        XCTAssertEqual(notNow.remaining(readiness), [.phone], "Try it is offered, never owed")
+        XCTAssertEqual(notNow.remaining(readiness), [.phone])
         readiness.phonePaired = true
         XCTAssertEqual(notNow.remaining(readiness), [], "the phone paired since: nothing left, nothing reminds")
         // It still reads as returning after a round trip to disk.
         let data = try! JSONEncoder().encode(notNow)
         XCTAssertEqual(try! JSONDecoder().decode(OnboardingProgress.self, from: data).remaining(readiness), [])
-        // A Mac setting up for the first time is reminded of it, as before.
-        let firstRun = run([.begin, .next, .next, .next, .close], readiness: OnboardingReadiness(practiceAvailable: true))
-        XCTAssertEqual(firstRun.remaining(OnboardingReadiness(practiceAvailable: true)), [.phone, .practice])
+        // A Mac setting up for the first time is reminded of what it left, as before.
+        let firstRun = run([.begin, .next, .next, .next, .close])
+        XCTAssertEqual(firstRun.remaining(fresh), [.phone])
     }
 
     // MARK: What setup asks for
@@ -107,57 +98,36 @@ final class OnboardingTests: XCTestCase {
         XCTAssertFalse(OnboardingReadiness(microphone: false, permissionsMissing: 0).satisfies(.permissions), "the microphone is one of the three")
     }
 
-    // MARK: Try it, only with a daemon that runs it
+    // MARK: The rail, which ends at iPhone
 
-    /// With a daemon that can't run the practice turn the rail has no Try it: You're set follows iPhone, and nothing counts
-    /// it. With one that can, Try it follows iPhone, and You're set follows Try it.
-    func testWithoutThePracticeTurnTheRailEndsAtIPhone() {
-        XCTAssertEqual(fresh.rail, [.agents, .permissions, .voice, .phone])
-        XCTAssertEqual(freshWithPractice.rail, [.agents, .permissions, .voice, .phone, .practice])
+    /// The rail ends at iPhone, and You're set follows it, the phone handing back included. Try it, which followed iPhone
+    /// with a daemon that could run the practice turn, went with the overlays (2026-11-11): nothing shows it or counts it.
+    func testTheRailEndsAtIPhone() {
+        XCTAssertEqual(OnboardingStep.rail, [.agents, .permissions, .voice, .phone])
+        XCTAssertEqual(fresh.rail, OnboardingStep.rail)
         let atPhone = run([.begin, .next, .next, .next])
         XCTAssertEqual(atPhone.step, .phone)
         XCTAssertEqual(atPhone.applying(.next, readiness: fresh).step, .done, "You're set follows iPhone")
-        XCTAssertEqual(atPhone.applying(.next, readiness: freshWithPractice).step, .practice)
         XCTAssertEqual(atPhone.remaining(fresh), [.phone])
-        XCTAssertEqual(atPhone.remaining(freshWithPractice), [.phone, .practice])
-        // The phone handing back moves a waiting Mac to the end, or to Try it.
         XCTAssertEqual(atPhone.applying(.phone(.init(device: "Tyler's iPhone", stage: .finished)), readiness: fresh).step, .done)
-        XCTAssertEqual(atPhone.applying(.phone(.init(device: "Tyler's iPhone", stage: .finished)), readiness: freshWithPractice).step, .practice)
-    }
-
-    /// Setup relaunched on Try it before the daemon says it can run the practice turn (after a reboot, or with an older
-    /// daemon): moving on from a step this Mac's rail doesn't list goes on to You're set, never back to a step left for
-    /// later.
-    func testMovingOnFromAStepOffTheRailGoesForwardNeverBack() {
-        let atTry = run([.begin, .next, .skip, .next, .next], readiness: freshWithPractice)
-        XCTAssertEqual(atTry.step, .practice)
-        XCTAssertEqual(atTry.mark(.permissions), .later)
-        let skipped = atTry.applying(.skip, readiness: fresh)
-        XCTAssertEqual(skipped.step, .done, "not Permissions, left for later three steps back")
-        XCTAssertTrue(skipped.finished)
-        XCTAssertEqual(atTry.applying(.next, readiness: fresh).step, .done)
-    }
-
-    /// The tour closing is Try it's Continue: done, and You're set. Its own Skip leaves it for later, which the menu counts;
-    /// Try it is never already true, so it is never ticked on the way past.
-    func testTryItEndsOnYoureSetOrIsLeftForLater() {
-        let atTry = run([.begin, .next, .next, .next, .next], readiness: freshWithPractice)
-        XCTAssertEqual(atTry.step, .practice)
-        let toured = atTry.applying(.next, readiness: freshWithPractice)
-        XCTAssertEqual(toured.step, .done)
-        XCTAssertEqual(toured.mark(.practice), .done)
-        XCTAssertTrue(toured.finished)
-        let skipped = atTry.applying(.skip, readiness: freshWithPractice)
-        XCTAssertEqual(skipped.step, .done)
-        XCTAssertEqual(skipped.mark(.practice), .later)
-        XCTAssertEqual(skipped.remaining(freshWithPractice), [.practice])
         let everythingTrue = OnboardingReadiness(agentsFound: 1, agentsConnected: 1, microphone: true, permissionsMissing: 0,
-                                                 engineReady: true, phonePaired: true, practiceAvailable: true)
-        XCTAssertEqual(run([.begin], readiness: everythingTrue).step, .practice, "the one step a set-up Mac still shows")
-        // Help › Take the tour after setup: Try it again, and its Continue ends where it began.
-        let again = toured.applying(.open(.practice), readiness: freshWithPractice)
-        XCTAssertEqual(again.step, .practice)
-        XCTAssertEqual(again.applying(.next, readiness: freshWithPractice).step, .done)
+                                                 engineReady: true, phonePaired: true)
+        XCTAssertEqual(run([.begin], readiness: everythingTrue).step, .done, "a set-up Mac has no step left to show")
+    }
+
+    /// Progress an older conch saved on Try it, or with Try it left for later, reads back on You're set owing nothing for
+    /// it (2026-11-11), rather than failing to read, which would walk a set-up Mac through setup again. The rest of what
+    /// it says is kept, and the step it named is gone from disk once it is written again.
+    func testProgressSavedOnTryItReadsBackOnYoureSet() throws {
+        let old = #"{"version":1,"step":"practice","marks":{"agents":"done","permissions":"later","voice":"done","phone":"done","practice":"later"},"phone":{"stage":"finished","declined":[]},"finished":false,"putAway":true,"reopening":false}"#
+        let progress = try JSONDecoder().decode(OnboardingProgress.self, from: Data(old.utf8))
+        XCTAssertEqual(progress.step, .done)
+        XCTAssertNil(progress.marks[.practice], "nothing owed for Try it")
+        XCTAssertEqual(progress.mark(.permissions), .later)
+        XCTAssertEqual(progress.mark(.phone), .done)
+        XCTAssertEqual(progress.phone.stage, .finished)
+        XCTAssertEqual(progress.remaining(fresh), [.permissions])
+        XCTAssertFalse(String(decoding: try JSONEncoder().encode(progress), as: UTF8.self).contains("practice"))
     }
 
     func testAnInterruptedSetupResumesWhereItWas() {
@@ -197,19 +167,19 @@ final class OnboardingTests: XCTestCase {
     // MARK: Moving through
 
     func testContinueWalksTheRailToTheEnd() {
-        let progress = run([.begin, .next, .next, .next, .next, .next], readiness: freshWithPractice)
+        let progress = run([.begin, .next, .next, .next, .next])
         XCTAssertEqual(progress.step, .done)
         XCTAssertTrue(progress.finished)
-        XCTAssertEqual(progress.remaining(freshWithPractice), [])
-        XCTAssertEqual(OnboardingProgress.entry(progress, readiness: freshWithPractice), .none)
+        XCTAssertEqual(progress.remaining(fresh), [])
+        XCTAssertEqual(OnboardingProgress.entry(progress, readiness: fresh), .none)
     }
 
     func testSkipLeavesAStepForLaterWithoutBlockingTheEnd() {
-        let progress = run([.begin, .next, .skip, .next, .skip, .next], readiness: freshWithPractice)
+        let progress = run([.begin, .next, .skip, .next, .skip])
         XCTAssertEqual(progress.step, .done)
         XCTAssertEqual(progress.mark(.permissions), .later)
         XCTAssertEqual(progress.mark(.phone), .later)
-        XCTAssertEqual(progress.remaining(freshWithPractice), [.permissions, .phone])
+        XCTAssertEqual(progress.remaining(fresh), [.permissions, .phone])
     }
 
     /// A stray Continue or Skip at the end (a double press) must not wind setup back to a step left for later.
@@ -228,14 +198,9 @@ final class OnboardingTests: XCTestCase {
         let progress = run([.begin], readiness: paired)
         XCTAssertEqual(progress.step, .permissions, "agents are already wired")
         XCTAssertEqual(progress.mark(.agents), .done)
-        var withPractice = paired
-        withPractice.practiceAvailable = true
-        let later = run([.next, .next], from: progress, readiness: withPractice)
-        XCTAssertEqual(later.step, .practice, "the phone was already paired")
+        let later = run([.next, .next], from: progress, readiness: paired)
+        XCTAssertEqual(later.step, .done, "the phone was already paired: straight to the end")
         XCTAssertEqual(later.mark(.phone), .done)
-        let withoutPractice = run([.next, .next], from: progress, readiness: paired)
-        XCTAssertEqual(withoutPractice.step, .done, "and with no Try it yet, straight to the end")
-        XCTAssertEqual(withoutPractice.mark(.phone), .done)
     }
 
     func testSkippingPastAFinishedStepDoesNotUnfinishIt() {
@@ -248,25 +213,26 @@ final class OnboardingTests: XCTestCase {
 
     /// The phone finishing its own setup while the Mac waits on the iPhone step moves the Mac on by itself.
     func testThePhoneFinishingMovesTheWaitingMacOn() {
-        var progress = run([.begin, .next, .next, .next], readiness: freshWithPractice)
+        var progress = run([.begin, .next, .next, .next])
         XCTAssertEqual(progress.step, .phone)
         progress = run([
             .phone(.init(stage: .connecting)),
             .phone(.init(device: "Tyler's iPhone", stage: .paired)),
             .phone(.init(device: "Tyler's iPhone", stage: .tour, declined: [.microphone])),
-        ], from: progress, readiness: freshWithPractice)
+        ], from: progress)
         XCTAssertEqual(progress.step, .phone, "still setting up on the phone")
         XCTAssertEqual(progress.phone.declined, [.microphone])
-        progress = progress.applying(.phone(.init(device: "Tyler's iPhone", stage: .finished)), readiness: freshWithPractice)
-        XCTAssertEqual(progress.step, .practice)
+        progress = progress.applying(.phone(.init(device: "Tyler's iPhone", stage: .finished)), readiness: fresh)
+        XCTAssertEqual(progress.step, .done)
         XCTAssertEqual(progress.mark(.phone), .done)
     }
 
+    /// Past the iPhone step is the end now Try it has gone (2026-11-11), so the phone finishing late finds the Mac there.
     func testThePhoneFinishingLateOnlyTicksTheStep() {
-        var progress = run([.begin, .next, .next, .next, .skip], readiness: freshWithPractice)
-        XCTAssertEqual(progress.step, .practice)
-        progress = progress.applying(.phone(.init(device: "Tyler's iPhone", stage: .finished)), readiness: freshWithPractice)
-        XCTAssertEqual(progress.step, .practice, "the Mac stays where the person is")
+        var progress = run([.begin, .next, .next, .next, .skip])
+        XCTAssertEqual(progress.step, .done)
+        progress = progress.applying(.phone(.init(device: "Tyler's iPhone", stage: .finished)), readiness: fresh)
+        XCTAssertEqual(progress.step, .done, "the Mac stays where the person is")
         XCTAssertEqual(progress.mark(.phone), .done)
     }
 
@@ -290,9 +256,7 @@ final class OnboardingTests: XCTestCase {
     /// Put away with steps left, the menu bar menu's top row says so and names them; with nothing left it's gone.
     func testTheMenuRemindsWhileSetupIsPutAwayWithStepsLeft() {
         let menu = { (left: [String]) in
-            StatusMenu.rows(StatusMenu.Input(voice: .talk, quiet: false, exchangeActive: false, controlBar: true, conversation: false,
-                                             collapsed: false, replyLine: true, drawing: false, ready: [], working: [], setupLeft: left,
-                                             overlays: true))
+            StatusMenu.rows(StatusMenu.Input(voice: .talk, quiet: false, exchangeActive: false, ready: [], working: [], setupLeft: left))
         }
         let putAway = run([.begin, .next, .skip, .close])
         let left = putAway.remaining(fresh).map(\.title)
@@ -310,7 +274,7 @@ final class OnboardingTests: XCTestCase {
     // MARK: Again, and on disk
 
     /// Help › Set up conch… or Settings › Run setup again, on a Mac that finished: from Agents, keeping the phone and
-    /// "reached the end at least once". Put away part way, it reminds about nothing, Try it included: this Mac is set up.
+    /// "reached the end at least once". Put away part way, it reminds about nothing: this Mac is set up.
     func testRunningSetupAgainStartsAtAgentsAndKeepsThePhone() {
         let finished = run([.begin, .next, .next, .next, .phone(.init(device: "Tyler's iPhone", stage: .finished)), .next])
         XCTAssertTrue(finished.finished)
@@ -320,7 +284,7 @@ final class OnboardingTests: XCTestCase {
         XCTAssertTrue(again.marks.isEmpty)
         XCTAssertEqual(again.phone.device, "Tyler's iPhone")
         let set = OnboardingReadiness(agentsFound: 1, agentsConnected: 1, microphone: true, permissionsMissing: 0, engineReady: true,
-                                      phonePaired: true, practiceAvailable: true)
+                                      phonePaired: true)
         let putAway = again.applying(.close, readiness: set)
         XCTAssertFalse(putAway.putAway, "no \"Finish setting up conch\" for a Mac set up already")
         XCTAssertEqual(OnboardingProgress.entry(putAway, readiness: set), .none)

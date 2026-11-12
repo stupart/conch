@@ -36,12 +36,6 @@ struct SetupDaemonMessage: Decodable, Sendable {
     let retried: Bool?
 }
 
-/// `audio-sink`, as the phone sends it to hand the audio back: Try it's "Hand it back", pressed by the person.
-struct AudioSinkRequest: Encodable, Sendable {
-    let kind = "audio-sink"
-    let sink: String
-}
-
 /// setup's side of the daemon's socket. Every failure comes back as words the window can show.
 enum SetupDaemon {
     static let client = ConchSocketClient()
@@ -158,9 +152,6 @@ struct SetupPublished: Equatable, Sendable {
     var phone: PublishedPhone?
     /// The daemon publishes a `phone` block at all: without one, whether a phone is paired is unknown.
     var phoneKnown: Bool
-    /// The daemon can run the practice turn (`features.practice`, src/practice.ts): Try it goes on the rail. Absent from
-    /// an older daemon, and from none at all.
-    var practiceFeature: Int? = nil
 
     /// Where the daemon publishes its state (status.ts `SESSIONS_FILE`).
     static var fileURL: URL {
@@ -180,8 +171,7 @@ struct SetupPublished: Equatable, Sendable {
             speech: block("speechEngine", as: SpeechEngineReport.self),
             voices: block("naturalVoices", as: NaturalVoicesReport.self),
             phone: block("phone", as: PublishedPhone.self),
-            phoneKnown: object["phone"] != nil,
-            practiceFeature: (object["features"] as? [String: Any])?["practice"] as? Int
+            phoneKnown: object["phone"] != nil
         )
     }
 }

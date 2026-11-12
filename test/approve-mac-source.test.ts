@@ -56,9 +56,9 @@ describe("✓ Approve in the session bar", () => {
     expect(button).not.toContain("statusReview");
   });
 
-  test("only for a result on screen whose agent asked, from a daemon that can approve, never the practice's card", () => {
+  // The practice's card, which the tour showed and nobody could approve, went with Try it and the tour on 2026-11-11.
+  test("only for a result on screen whose agent asked, from a daemon that can approve", () => {
     const shown = between(dashboard, "private var shownResult: ReviewApprovals.Target? {", "private var note: String? {");
-    expect(shown).toContain("row.id != TourCoach.practiceSessionId");
     expect(shown).toContain("stage(for: row) != .conversation, workPane(for: row) == .deliverable");
     // ↵ approves only what the button would: no request, nothing for Return to approve either.
     expect(shown).toContain("guard let shown = shownResult, state?.seaGlass != nil, selectedReview?.asksApproval == true,\n              selectedReview?.approvedAt == nil else { return nil }");
@@ -141,7 +141,7 @@ describe("the store, the socket and the models", () => {
   /** 2026-10-05, Tyler's go, replies only: the lagoon's reply bar is the composer's send, and nothing else goes live. */
   test("the lagoon's reply is exactly the composer's send, and acts with no flag", () => {
     const composer = read("mac-app/conch-mac/ComposerView.swift");
-    expect(composer).toContain("let delivery = store.send(.inject(sessionId: row.id, label: row.label, text: text))");
+    expect(composer).toContain("onSend: { text in\n                store.send(.inject(sessionId: row.id, label: row.label, text: text))\n            },");
     const reply = between(lagoon, "func reply(sessionId: String, text: String) {", "func answer(");
     expect(reply).toContain("store?.send(.inject(sessionId: row.id, label: row.label, text: text))");
     const intents = read("design/ConchDesign/Sources/ConchDesign/LagoonIntents.swift");

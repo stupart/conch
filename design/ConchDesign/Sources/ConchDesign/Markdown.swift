@@ -886,3 +886,65 @@ public enum MarkdownSoftBreaks {
         return output.joined(separator: "\n")
     }
 }
+
+/// The inline parse of an agent's markdown, for the conversation's rows that are one flow of text (your turn, a pending
+/// send, a thought, a question). Agent replies are markdown, and a transcript that shows the source reads worst exactly
+/// where it matters most.
+public enum ConversationMarkdown {
+    /// Agent replies are markdown, and a transcript that shows the source reads worst exactly where it matters most:
+    /// `**Storage moved**` with its asterisks and `` `path/to/file` `` with its backticks is most of what a summary is
+    /// made of.
+    ///
+    /// One text flow, for a row that is a bubble or a line rather than a document: a table is read the way you would read
+    /// it aloud, and a heading is bold. Documents go through `MarkdownView`. The frontmatter rule is the shared one. It was
+    /// the conversation panel's renderer (`ConversationFog`) until the panel went with the old overlays, 2026-11-11.
+    public static func inlineMarkdown(_ text: String) -> AttributedString {
+        MarkdownDocument.inline(promoteHeadings(flattenTables(MarkdownDocument.stripFrontmatter(text))))
+    }
+
+    /// A markdown table as lines a person can read: an inline parse cannot lay one out, so it arrives as a wall of
+    /// pipes. Each row becomes "first cell — the rest", which is how you would read it aloud.
+    static func flattenTables(_ source: String) -> String {
+        guard source.contains("|") else { return source }
+        return source
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .compactMap { line -> String? in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                guard trimmed.hasPrefix("|"), trimmed.hasSuffix("|"), trimmed.count > 1 else { return String(line) }
+                let cells = trimmed.dropFirst().dropLast()
+                    .split(separator: "|", omittingEmptySubsequences: false)
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                // The alignment row carries no content once the grid is gone.
+                let isDivider = cells.allSatisfy { cell in !cell.isEmpty && cell.allSatisfy { ":-".contains($0) } }
+                if isDivider { return nil }
+                let filled = cells.filter { !$0.isEmpty }
+                if filled.isEmpty { return nil }
+                if filled.count == 1 { return filled[0] }
+                return "**\(filled[0])** — \(filled.dropFirst().joined(separator: " · "))"
+            }
+            .joined(separator: "\n")
+    }
+
+    /// `## Heading` keeps its hashes under an inline parse, and agents write in headings constantly. Bold keeps the
+    /// emphasis without a block parse, which would collapse every newline.
+    static func promoteHeadings(_ source: String) -> String {
+        guard source.contains("#") else { return source }
+        return source
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line -> Substring in
+                guard line.hasPrefix("#") else { return line }
+                let hashes = line.prefix { $0 == "#" }
+                guard hashes.count <= 6 else { return line }
+                let rest = line.dropFirst(hashes.count).drop { $0 == " " }
+                // Bold needs something to wrap, and `**` alone parses as literal.
+                guard !rest.isEmpty else { return line }
+                return Substring("**\(rest)**")
+            }
+            .joined(separator: "\n")
+    }
+
+    /// The words as this renders them, markdown taken out.
+    static func plain(_ text: String) -> String {
+        String(inlineMarkdown(text).characters)
+    }
+}

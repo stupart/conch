@@ -31,7 +31,8 @@ struct ReviewItem: Identifiable, Equatable {
     let artifact: String?
     /// Which filing of its artifact this is, from 1, as the daemon numbered it; nil from an older one (`VersionLabel`).
     let version: Int?
-    /// What the agent drew over it (`scene.marks`), for the canvas to draw where it shows (`AgentInkController`).
+    /// What the agent drew over it (`scene.marks`). Only conch shows them as they were published (the phone draws them;
+    /// the Mac's canvas glass did until it went with the old overlays, 2026-11-11), so a marked review opens in conch.
     let marks: [AgentMark]
     /// What kind of thing it is, as the daemon filed it (src/deliverables.ts); nil from an older daemon.
     let kind: String?
@@ -114,13 +115,12 @@ struct InlineReviewView: View {
     /// Compare this with another version of its artifact (`DeliverableCompareView`): a button beside the arrow, only where
     /// the session holds another version. Nil draws no button.
     var onCompare: (() -> Void)?
-    /// Whether the page or picture below says it shows this review, for the agent's marks to be drawn on it. Off for the
-    /// two sides of a comparison: marks are drawn for one review at a time, and two would take the canvas in turns.
+    /// Whether the page or picture below can be annotated. Off for the two sides of a comparison: a comparison's two sides
+    /// would annotate in turns.
     var showsInk = true
 
     @State private var isWebLoading = false
-    /// Tyler's notes on this deliverable, while he annotates it (`DeliverableAnnotator`, docs/annotate.md). Off with the
-    /// ink, for the same reason: a comparison's two sides would annotate in turns.
+    /// Tyler's notes on this deliverable, while he annotates it (`DeliverableAnnotator`, docs/annotate.md).
     @StateObject private var annotator = DeliverableAnnotator()
     @EnvironmentObject private var store: StateStore
 
@@ -151,9 +151,7 @@ struct InlineReviewView: View {
             isWebLoading: $isWebLoading,
             liveAddress: $liveAddress
         )
-        // The page or image below says it shows this review, for its marks to find (`AgentInkController`).
-        .environment(\.agentInkItem, showsInk ? item : nil)
-        // And registers itself to be annotated.
+        // The page or image below registers itself to be annotated.
         .environment(\.deliverableAnnotator, showsInk ? annotator : nil)
         .onAppear { annotator.show(item, store: store) }
         .onChange(of: item) { _, item in annotator.show(item, store: store) }
@@ -2051,8 +2049,7 @@ private struct DeliverableImageView: NSViewRepresentable {
     }
 
     final class FitWidthImageScrollView: NSScrollView {
-        /// The picture's own view, exactly the rect it is drawn in: what the agent's marks are placed on
-        /// (`AgentInkController`).
+        /// The picture's own view, exactly the rect it is drawn in: what notes are placed on.
         let imageView = DeliverablePictureView()
         private let container = PictureCanvas()
         /// The picture as ImageIO reads it, decoded for the width it is drawn at (`ConchImage.decode(_:forWidth:)`).
@@ -2325,7 +2322,6 @@ private struct DeliverableImageView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> FitWidthImageScrollView {
         let view = FitWidthImageScrollView()
-        if let item = context.environment.agentInkItem { AgentInkController.shared.appeared(view.imageView, image: url.path, showing: item) }
         // Annotated as a picture: a box dragged, or a spot clicked, in its own points.
         if let annotator = context.environment.deliverableAnnotator {
             context.coordinator.annotator = annotator
@@ -2342,7 +2338,6 @@ private struct DeliverableImageView: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ view: FitWidthImageScrollView, coordinator: Coordinator) {
-        AgentInkController.shared.gone(view.imageView)
         coordinator.annotator?.detach(view)
     }
 

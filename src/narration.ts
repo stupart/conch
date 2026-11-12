@@ -3,8 +3,9 @@ import { join } from "node:path";
 import type { TimedSegment } from "./transcribe.ts";
 
 /**
- * Show's narration. The Mac app's Show (mac-app/conch-mac/CanvasShow.swift)
- * records the screen and never opens the mic; Tyler's voice over it is
+ * Show's narration. The Mac app's Show (the canvas's screen recording, removed
+ * with the old overlays on 2026-11-11; nothing on the Mac asks for this now)
+ * recorded the screen and never opened the mic; Tyler's voice over it is
  * recorded HERE, so the mic keeps one owner. The daemon holds the mic the way
  * an open dictation holds it (`VoiceLoop.holdNarration`), records a WAV into
  * the canvas's folder, and on stop hands back what was said and when.

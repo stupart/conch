@@ -19,7 +19,7 @@
  * Nothing real is touched: the daemon gets a temporary HOME, config, Claude folder, socket and sessions file; its tmux
  * server is its own (TMUX_TMPDIR in the temp root, its own socket name, $TMUX unset), and is stopped by that name alone;
  * the harness app has preferences of its own (deleted afterwards), answers only its own request folder
- * (`DebugSnapshot.answersRequests`), shows no floating panels, and is stopped by its own pid. The daemon's clipboard,
+ * (`DebugSnapshot.answersRequests`), and is stopped by its own pid. The daemon's clipboard,
  * AppleScript and sound commands are stand-ins that record any call. Nothing plays audio, opens the microphone, downloads
  * a model or touches the clipboard.
  */
@@ -320,7 +320,6 @@ try {
   const open = Bun.spawnSync(["/usr/bin/open", "-n", "-g", "-a", app,
     "--env", `CONCH_HARNESS=${harness}`, "--env", `CONCH_SOCKET=${socket}`, "--env", `CONCH_STATE_FILE=${env.CONCH_SESSIONS_FILE}`,
     "--env", `CONCH_LOG_FILE=${env.CONCH_LOG_FILE}`, "--env", `CONCH_ANNOTATIONS_DIR=${annotations}`, "--env", `CONCH_CONFIG_DIR=${env.CONCH_CONFIG_DIR}`,
-    "--args", "-conch.showConversation", "NO", "-conch.showControlBar", "NO", "-conch.showReplyLine", "NO", "-conch.overlays", "NO",
   ]);
   if (open.exitCode !== 0) throw new Error(`open: ${open.stderr.toString()}`);
   const executable = join(app, "Contents/MacOS/conch-mac");

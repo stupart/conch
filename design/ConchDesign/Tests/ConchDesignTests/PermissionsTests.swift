@@ -78,10 +78,11 @@ final class PermissionsTests: XCTestCase {
         XCTAssertEqual(ConchPermissionStatus.notAsked.tone, .quiet)
     }
 
-    /// One vocabulary: the canvas's notice and a permission row name the same two buttons the same way.
+    /// One vocabulary: a permission's one button is named the same way wherever it is offered. The canvas's notice it
+    /// was checked against went with the canvas glass (2026-11-11), so its words are held here.
     func testTheButtonsAreTheCanvassWords() {
-        XCTAssertEqual(ConchPermissionAction.openSettings.title, CanvasToolPill.Notice.Action.openSettings.title)
-        XCTAssertEqual(ConchPermissionAction.reopen.title, CanvasToolPill.Notice.Action.reopen.title)
+        XCTAssertEqual(ConchPermissionAction.openSettings.title, "Open Settings")
+        XCTAssertEqual(ConchPermissionAction.reopen.title, "Reopen conch")
         XCTAssertEqual(ConchPermissionAction.ask.title, "Allow…")
     }
 

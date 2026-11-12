@@ -75,12 +75,13 @@ test("working is the active blue on the Mac, and the dot breathes only while it 
   }
 });
 
-test("the legend, the menu bar menu and the panel's switcher draw working blue, and the legend says what paused is", () => {
+test("the legend and the menu bar menu draw working blue, and the legend says what paused is", () => {
   const legend = between(read("mac-app/conch-mac/ContentView.swift"), "private let entries: [Entry] = [", "    ]\n");
   expect(legend).toContain('Entry(symbol: "circle.fill", color: ConchPalette.statusActive, meaning: "Working — an agent is running, nothing needed from you")');
   expect(legend).toContain('Entry(symbol: "circle", color: ConchPalette.textFaint, meaning: "Paused — a sub-agent that isn\'t running")');
-  // Working is a FILLED dot in active's blue in the menu and the switcher, as the sidebar draws working: the hollow ring
-  // is the sidebar's paused sub-agent (ReadyTests pins the symbols and the colours).
+  // Working is a FILLED dot in active's blue in the menu, as the sidebar draws working: the hollow ring is the sidebar's
+  // paused sub-agent (ReadyTests pins the symbols and the colours). The conversation panel's switcher drew it too until
+  // the panel went with the old overlays on 2026-11-11.
   const menu = read("mac-app/conch-mac/StatusItem.swift");
   const statusMenu = read("design/ConchDesign/Sources/ConchDesign/StatusMenu.swift");
   expect(statusMenu).toContain("rows.append(.item(Item(title: session.label, command: .openSession(session.id), dot: .working)))");
@@ -89,10 +90,6 @@ test("the legend, the menu bar menu and the panel's switcher draw working blue, 
   expect(menu).toContain("NSImage.SymbolConfiguration(paletteColors: [tint])");
   // A menu tints a template image with its own ink, which would undo the colour.
   expect(menu).toContain("image?.isTemplate = false");
-  const components = read("design/ConchDesign/Sources/ConchDesign/Components.swift");
-  expect(components).toContain("case .working: ConchColor.active");
-  expect(components).toContain(".foregroundStyle(FogSession.markColor(session.standing))");
-  expect(components).toContain("Image(systemName: FogSession.markSymbol(session.standing))");
 });
 
 test("the breath is a halo behind a still dot, and holds still under Reduce Motion", () => {

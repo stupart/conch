@@ -146,18 +146,6 @@ final class NaturalVoicesNoticeTests: XCTestCase {
         XCTAssertNil(NaturalVoicesNotices.step(memory, report: space, now: 0).notice)
     }
 
-    func testTheControlBarCarriesTheShortLine() {
-        let healing = NaturalVoicesNotice(tone: .healing, text: "Setting up natural voices… 60%", short: "Setting up voices… 60%")
-        let failed = NaturalVoicesNotice(tone: .needsYou, text: "…", short: "Natural voices stopped", action: .tryAgain, key: "failed::gpu")
-        let back = NaturalVoicesNotice(tone: .back, text: "Natural voices are back", short: "Natural voices are back")
-        XCTAssertNil(NaturalVoicesNotices.barNews(working: nil, notice: nil), "healthy and idle: the bar says nothing new")
-        XCTAssertEqual(NaturalVoicesNotices.barNews(working: "2 working", notice: nil), "2 working")
-        XCTAssertEqual(NaturalVoicesNotices.barNews(working: nil, notice: healing), "Setting up voices… 60%")
-        XCTAssertEqual(NaturalVoicesNotices.barNews(working: "2 working", notice: healing), "2 working", "healing is quiet: the count first")
-        XCTAssertEqual(NaturalVoicesNotices.barNews(working: "2 working", notice: failed), "Natural voices stopped")
-        XCTAssertEqual(NaturalVoicesNotices.barNews(working: "2 working", notice: back), "Natural voices are back")
-    }
-
     func testOnboardingSaysARuntimeLimitPlainly() {
         let download = OnboardingReports.naturalVoices(Report(state: "off", reason: "no Metal GPU", off: "unsupported"))
         XCTAssertEqual(download?.canRetry, false)

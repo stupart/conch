@@ -134,32 +134,20 @@ describe("conch shot photographs what is actually on screen", () => {
     expect(snapshot.match(/cacheDisplay\(/g) ?? []).toHaveLength(1);
   });
 
-  test("a named window reaches the floating panels, and no name still means what it did", () => {
-    // The conversation overlay is the surface under the heaviest iteration and the app
-    // could not photograph it AT ALL: the candidate list excluded every FloatingPanel.
-    expect(snapshot).toContain("case key, overlay, controlbar, dashboard, geometry");
-    expect(snapshot).toContain("case .overlay: window = panels.first(where: isOverlay)");
-    expect(snapshot).toContain("case .controlbar: window = panels.first(where: isControlBar)");
-    // A one-line request is what every caller wrote before this existed. It still
-    // resolves the key window among the NON-panels, exactly as it always did.
+  test("a named window is the key one, the pill, the dashboard or none, and no name still means what it did", () => {
+    // 2026-11-11: the floating panels went with the old overlays, so `overlay` and `controlbar`
+    // went from the targets too, and the floating pill is photographed by its own name, never
+    // taken for conch's window. The CLI offers exactly the names the app answers, so
+    // `--window overlay` is refused rather than silently photographing the key window.
+    expect(snapshot).toContain("case key, pill, dashboard, geometry");
+    expect(snapshot).not.toContain("FloatingPanels");
+    expect(snapshot).toContain("let candidates = onScreen.filter { $0 !== FloatingPillController.shared.window }");
+    expect(read("src/cli.ts")).toContain('const targets = ["key", "pill", "dashboard", "geometry"];');
+    // A one-line request is what every caller wrote before names existed. It still
+    // resolves the key window, exactly as it always did.
     expect(snapshot).toContain("let target = wanted.isEmpty ? Target.key : Target(rawValue: wanted) ?? Target.key");
     expect(snapshot).toContain("case .key: window = key ?? largest");
-    expect(snapshot).toContain("let candidates = onScreen.filter { !($0 is FloatingPanel) }");
-  });
-
-  test("the overlay is found by which window it is, never by the autosave name it loses or by takesKeys", () => {
-    // The canvas's glass takes keys too, while the pen is down: `takesKeys` would take a glass for the overlay.
-    expect(snapshot).toContain("private static func isOverlay(_ panel: FloatingPanel) -> Bool { panel === FloatingPanels.installed?.conversationWindow }");
-    expect(snapshot).toContain("private static func isControlBar(_ panel: FloatingPanel) -> Bool { panel === FloatingPanels.installed?.controlBarWindow }");
-    expect(snapshot).not.toContain("panel.takesKeys");
-    const floating = read("mac-app/conch-mac/FloatingPanels.swift");
-    expect(floating).toContain("var conversationWindow: NSWindow { fog }");
-    expect(floating).toContain("var controlBarWindow: NSWindow { controlBar }");
-    // And the reason a name lookup was rejected: FloatingPanels BLANKS the autosave
-    // name while the fog is collapsed or full screen, so a name-matching lookup would
-    // find the overlay in the dull states and silently miss it in the interesting ones.
-    expect(floating).toContain('fog.setFrameAutosaveName("")');
-    expect(snapshot).not.toContain("conversationFrameName");
+    expect(snapshot).toContain("case .dashboard: window = largest");
   });
 
   test("named windows did not weaken the allowlist", () => {
@@ -179,55 +167,8 @@ describe("conch shot photographs what is actually on screen", () => {
     // scanning for one in a field that had none.
     expect(snapshot).toContain('"firstResponder"');
     expect(snapshot).toContain('"isKeyWindow": window.isKeyWindow');
-    // Light-against-dark for an hour: the overlay paints its own appearance.
-    expect(snapshot).toContain('"overlayAppearance"');
     // Written BEFORE the draw, so the geometry is of the moment photographed.
     expect(snapshot.indexOf('destination + ".json"')).toBeLessThan(snapshot.indexOf("view.cacheDisplay"));
-  });
-});
-
-describe("the overlay shoot rig", () => {
-  const shoot = read("scripts/shoot-overlay.ts");
-
-  test("state is driven by relaunch, because a write into a running app does nothing", () => {
-    // Measured: the panel sat unmoved through 1.7s of polling after a `defaults write`.
-    // `showWhatIsOn()` reads the collapsed key from init and from
-    // UserDefaults.didChangeNotification, which another process's write does not fire.
-    expect(shoot).toContain("await quitConch();");
-    expect(shoot.indexOf("await quitConch();")).toBeLessThan(shoot.indexOf('"defaults", "write", DOMAIN, FRAME_KEY'));
-    expect(shoot).toContain('await sh("open", "-a", APP);');
-    // Never a pattern kill: it reaches whatever else matches, and has cost a session.
-    expect(shoot).toContain('await sh("pgrep", "-f", `${APP}/Contents/MacOS/`)');
-    // The argv entry, not the word: the file explains in prose why pkill is refused.
-    expect(shoot).not.toContain('"pkill"');
-  });
-
-  test("a state that did not take is thrown, never photographed", () => {
-    // The failure this rig exists to prevent: a lab resize that reported success and
-    // silently did nothing, which invalidated an hour of comparisons.
-    expect(shoot).toContain("The state did NOT take; nothing was photographed.");
-    // Settled, not merely present — a shot taken mid-animation is a state nobody asked for.
-    expect(shoot).toContain("const settled = now === last;");
-    expect(shoot).toContain("if (!settled) continue;");
-    // Full screen and size are absent from the MANIFEST itself rather than present and
-    // silently no-ops. Sliced to the manifest, because the prose above it necessarily
-    // names both to explain why they are missing.
-    const manifest = shoot.slice(shoot.indexOf("const MANIFEST"), shoot.indexOf("type Rect"));
-    expect(manifest.length).toBeGreaterThan(100);
-    expect(manifest).not.toContain("fullScreen");
-    expect(manifest).not.toContain("size");
-    expect(shoot).toContain("cannot be driven from outside the app");
-    // The size finding, measured: asked for 600x500, got the hardcoded 900x640.
-    expect(shoot).toContain("restores the ORIGIN but not the SIZE");
-  });
-
-  test("the crop is taken from the sidecar the app just wrote, not from a remembered rect", () => {
-    expect(shoot).toContain("const rect = overlayOf(sidecar)?.imageRect;");
-    expect(shoot).toContain('"--screen"');
-    // And the inset is clamped to the rect: a fixed one is wider than the collapsed
-    // handle, and a negative crop is standardised into a valid rect somewhere else in
-    // the image rather than refused — which measured the backdrop and called it the panel.
-    expect(shoot).toContain("Math.min(rect.width, rect.height) / 4");
   });
 });
 

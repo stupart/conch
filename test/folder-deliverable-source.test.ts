@@ -2,15 +2,15 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
 /**
- * A folder deliverable in the apps: its tree in the Mac's window and panel, the folder the Files tab shows, and the
- * phone's honest fallback. The rules are ConchDesign's and XCTested (FolderDeliverableTests); these pin the wiring.
+ * A folder deliverable in the apps: its tree in the Mac's window, the folder the Files tab shows, and the phone's honest
+ * fallback. The rules are ConchDesign's and XCTested (FolderDeliverableTests); these pin the wiring. 2026-11-11: the
+ * floating conversation panel, which drew the same tree, went with the old overlays.
  */
 const source = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 // Line comments stripped, so prose describing a rule can never satisfy a guard.
 const swift = (path: string) => source(path).replace(/^\s*\/\/.*$/gm, "");
 const review = swift("mac-app/conch-mac/ReviewView.swift");
 const dashboard = swift("mac-app/conch-mac/DashboardView.swift");
-const panels = swift("mac-app/conch-mac/FloatingPanels.swift");
 const statusItem = swift("mac-app/conch-mac/StatusItem.swift");
 const macModels = swift("mac-app/conch-mac/Models.swift");
 const sheet = swift("mobile/conch-ios/conch-ios/DeliverableSheet.swift");
@@ -56,7 +56,7 @@ describe("the Mac draws a folder deliverable as the Files tab's tree", () => {
   });
 
   test("a focus path opened in the viewer is seen: told to the daemon on its filing, greyed here at once", () => {
-    // The window's and the panel's pane both build InlineReviewView, which says so for the filing it shows.
+    // The window's deliverable pane builds InlineReviewView, which says so for the filing it shows.
     expect(review).toContain("onSeen: { path in store.markReviewViewed(sessionId: item.rowID, review: item.id, path: path) },");
     const files = between(review, "struct WorkspaceFilesView: View {", "private struct MissingDeliverableView: View {");
     // What opening a file marks: the path itself and a pointed-at folder holding it, here at once and told on.
@@ -81,18 +81,16 @@ describe("the Mac draws a folder deliverable as the Files tab's tree", () => {
     expect(review).toContain("var marksFocus = true");
   });
 
-  test("the window and the panel hand the session's changes to a folder's tree", () => {
+  test("the window hands the session's changes to a folder's tree", () => {
     expect(dashboard).toContain("changed: changedFiles(for: row)");
-    expect(panels).toContain("InlineReviewView(item: item, onOpenInPlace: openWhereItLives, liveAddress: $address, changed: changed)");
-    expect(panels).toContain("store.state?.row(item.rowID)?.changedFiles(in: store.state)");
+    expect(dashboard).toContain("private func changedFiles(for row: SessionRow) -> ConchFileChanges {\n        row.changedFiles(in: state)");
   });
 
-  test("a folder opens in the panel from anywhere, as marks do", () => {
-    const open = between(statusItem, "static func open(_ row: SessionRow, from origin: OpenFrom", "static func stage(");
-    expect(open).toContain("let conchOnly = ReviewScene.opensOnlyInConch(deliverable: row.review?.kind, marked: marked, link: link)");
-    expect(open).toContain("panelOn: defaults.bool(forKey: showConversationKey), conchOnly: conchOnly, words: words)");
-    // With the overlays off, conch's window instead of the panel (`ConchOverlays.destination`).
-    expect(open).toContain("case .window:\n            openInWindow(row, store: store)");
+  test("a folder opens in conch's window from anywhere, as marks do", () => {
+    const open = between(statusItem, "static func open(_ row: SessionRow, store: StateStore) async -> Bool {", "static func stage(");
+    expect(open).toContain("if row.windowContent != nil || ReviewScene.opensOnlyInConch(deliverable: row.review?.kind, marked: marked, link: link) {\n            openInWindow(row, store: store)");
+    // Only conch draws a folder's tree, so a folder is one of the deliverables only conch can show as it was published.
+    expect(source("design/ConchDesign/Sources/ConchDesign/Components.swift")).toContain('marked || deliverable == "folder"');
   });
 
   test("the Mac reads focus off every held deliverable", () => {

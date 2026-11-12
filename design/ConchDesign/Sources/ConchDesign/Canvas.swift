@@ -606,45 +606,6 @@ public enum CanvasPrompt {
     }
 }
 
-// MARK: - Where it goes
-
-/// Where a canvas is sent, and the sessions Send's menu offers. Tyler's own pick first; else the session that owns what is
-/// on screen when the screen context is sure of it — 0.8 and up is conch having staged it, a held deliverable's link, or
-/// the session's own terminal; else the conversation panel's session. That last is a guess (a localhost page at 0.7 fell
-/// to it without a word), so it is never sent to unasked: Send reads "Send to…" and opens the menu instead.
-public enum CanvasRouting {
-    /// How sure the screen context has to be for a canvas to go to what it names. Below it, a folder match can't say whose.
-    public static let sureEnough = 0.8
-
-    public struct Choice: Equatable, Sendable {
-        public let id: String
-        /// Tyler's pick, or the screen context sure of it. Not sure, Send asks.
-        public let sure: Bool
-
-        public init(id: String, sure: Bool) {
-            self.id = id
-            self.sure = sure
-        }
-    }
-
-    /// `sessions` are every session there is, in the daemon's order; `onScreen` is whose the screen context thinks what
-    /// is on screen is, `confidence` how sure it is; `panel` is the conversation panel's own session (`WorkspaceFocus`).
-    public static func choice(picked: String?, onScreen: String?, confidence: Double, panel: String?, sessions: [String]) -> Choice? {
-        if let picked, sessions.contains(picked) { return Choice(id: picked, sure: true) }
-        if let onScreen, confidence >= sureEnough, sessions.contains(onScreen) { return Choice(id: onScreen, sure: true) }
-        if let panel, sessions.contains(panel) { return Choice(id: panel, sure: false) }
-        return nil
-    }
-
-    /// Send's menu, most likely first: where it would go now, whose the screen seems to be however unsure, the panel's,
-    /// then the rest as the daemon lists them. Each once.
-    public static func ranked(picked: String?, onScreen: String?, confidence: Double, panel: String?, sessions: [String]) -> [String] {
-        let now = choice(picked: picked, onScreen: onScreen, confidence: confidence, panel: panel, sessions: sessions)?.id
-        var listed = Set<String>()
-        return ([now, onScreen, panel].compactMap { $0 } + sessions).filter { sessions.contains($0) && listed.insert($0).inserted }
-    }
-}
-
 extension ConchRGBA {
     public var cgColor: CGColor { CGColor(srgbRed: red, green: green, blue: blue, alpha: alpha) }
 }

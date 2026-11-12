@@ -85,20 +85,6 @@ final class ScreenObservingTests: XCTestCase {
         XCTAssertTrue(gate.noticed("url:old-tab", in: "com.google.Chrome", at: at(2)))
     }
 
-    /// The panel shows A full screen; Chrome, behind it, still shows B's page, and the poll reads it
-    /// every 3 s. That reading used to be said, and B at 0.9 took the canvas's Send from A.
-    func testNothingIsSaidWhileThePanelCoversTheScreen() {
-        var gate = ScreenReportGate<String>()
-        XCTAssertTrue(gate.noticed("url:b", in: "com.google.Chrome", at: at(0)))
-        gate.staged("conch:a:panel", in: nil, at: at(5))
-        gate.covered = true
-        XCTAssertFalse(gate.noticed("url:b", in: "com.google.Chrome", at: at(8)))
-        XCTAssertFalse(gate.noticed("url:b", in: "com.google.Chrome", at: at(60)))
-        // Not remembered as said: docked again, the page in front is news.
-        gate.covered = false
-        XCTAssertTrue(gate.noticed("url:b", in: "com.google.Chrome", at: at(61)))
-    }
-
     /// A daemon that restarts forgets `showing`; the poll's unchanged reading was dropped as a repeat
     /// until Tyler switched app or tab.
     func testAForgottenGateSaysTheSameReadingAgain() {

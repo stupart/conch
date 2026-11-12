@@ -65,60 +65,6 @@ final class ConchDesignTests: XCTestCase {
         XCTAssertTrue(check.contains { $0.allSatisfy { $0 > 0.95 } }, "no white checkmark in the ready orb")
     }
 
-    /// The fog always sits in a screen corner: let go, it docks in the corner its momentum carries it to, and dragging
-    /// near any edge resizes it from that corner.
-    @MainActor
-    func testTheFogDocksInACornerAndResizesFromAnyEdge() {
-        let screen = CGRect(x: 0, y: 0, width: 1728, height: 1117)
-        let least = CGSize(width: 480, height: 360)
-        let size = CGSize(width: 760, height: 560)
-        XCTAssertEqual(FogDock.frame(size: size, corner: .bottomLeading, in: screen), CGRect(x: 0, y: 0, width: 760, height: 560))
-        XCTAssertEqual(FogDock.frame(size: size, corner: .topTrailing, in: screen), CGRect(x: 968, y: 557, width: 760, height: 560))
-        XCTAssertEqual(FogDock.frame(size: CGSize(width: 3000, height: 3000), corner: .topLeading, in: screen), screen)
-        // At rest it docks in the nearest corner; thrown, in the corner it was heading for.
-        XCTAssertEqual(FogDock.corner(releasedAt: CGPoint(x: 400, y: 300), velocity: .zero, in: screen), .bottomLeading)
-        XCTAssertEqual(FogDock.corner(releasedAt: CGPoint(x: 700, y: 300), velocity: CGVector(dx: 2000, dy: 0), in: screen), .bottomTrailing)
-        XCTAssertEqual(FogDock.corner(releasedAt: CGPoint(x: 400, y: 500), velocity: CGVector(dx: 0, dy: 1500), in: screen), .topLeading)
-        // Pulled from its corner it resizes both ways at once: a bottom-left fog dragged up and right grows taller and wider.
-        XCTAssertEqual(FogDock.resized(size, corner: .bottomLeading, by: CGVector(dx: 50, dy: 200), in: screen), CGSize(width: 810, height: 760))
-        // A top-right fog grows left and down.
-        XCTAssertEqual(FogDock.resized(size, corner: .topTrailing, by: CGVector(dx: -100, dy: -100), in: screen), CGSize(width: 860, height: 660))
-        // Past its limits it gives, less the further it goes and never 200 pt.
-        let squeezed = FogDock.resized(size, corner: .topTrailing, by: CGVector(dx: 600, dy: 0), in: screen).width
-        XCTAssertLessThan(squeezed, 480)
-        XCTAssertGreaterThan(squeezed, 480 - 200)
-        XCTAssertEqual(FogDock.rubberBand(1000, 0, 900), 943.137, accuracy: 0.001)
-        XCTAssertEqual(FogDock.rubberBand(500, 0, 900), 500)
-        XCTAssertLessThan(FogDock.rubberBand(1e9, 0, 900), 1100)
-        XCTAssertEqual(FogDock.minSize(in: screen), least)
-        XCTAssertEqual(FogDock.maxSize(in: screen), CGSize(width: 1728, height: 1117))
-        XCTAssertEqual(FogDock.maxSize(in: CGRect(x: 0, y: 0, width: 1024, height: 768)), CGSize(width: 1024, height: 768))
-        // A band along every edge resizes, max(120, a fifth of the short side) deep; only the middle moves.
-        XCTAssertTrue(FogDock.resizes(at: CGPoint(x: 380, y: 119), in: size))
-        XCTAssertTrue(FogDock.resizes(at: CGPoint(x: 641, y: 280), in: size))
-        XCTAssertFalse(FogDock.resizes(at: CGPoint(x: 380, y: 280), in: size))
-        // A big fog's band is a fifth of its short side: 180 pt here.
-        XCTAssertTrue(FogDock.resizes(at: CGPoint(x: 1110, y: 300), in: CGSize(width: 1280, height: 900)))
-        XCTAssertFalse(FogDock.resizes(at: CGPoint(x: 1090, y: 300), in: CGSize(width: 1280, height: 900)))
-        // The words fill the fog less its padding, the Dock and the button row.
-        let text = ConversationFog.textFrame(in: size, corner: .bottomLeading, insets: EdgeInsets(top: 0, leading: 0, bottom: 70, trailing: 0), fullScreen: false)
-        // On the bottom, the button row is below the reply, in the docked corner; hanging from the top, above the words.
-        // The words stay above the Dock's inset; the button row sits in the corner itself, below the Dock's top.
-        XCTAssertEqual(text.maxY, 560 - 70 - ConversationFog.padding, accuracy: 0.01)
-        XCTAssertEqual(text.minY, ConversationFog.padding, accuracy: 0.01)
-        let dock = EdgeInsets(top: 0, leading: 0, bottom: 70, trailing: 0)
-        XCTAssertEqual(ConversationFog.buttonsY(in: size, corner: .bottomLeading, insets: ConversationFog.buttonInsets(dock), fullScreen: false), 560 - ConversationFog.padding - ConversationFog.buttonSize, accuracy: 0.01)
-        // With no Dock inset, the words still keep clear of the corner's button row.
-        let bare = ConversationFog.textFrame(in: size, corner: .bottomLeading, insets: EdgeInsets(), fullScreen: false)
-        XCTAssertLessThanOrEqual(bare.maxY, ConversationFog.buttonsY(in: size, corner: .bottomLeading, insets: EdgeInsets(), fullScreen: false) - ConchSpace.x3 + 0.01)
-        XCTAssertEqual(ConversationFog.buttonsY(in: size, corner: .topTrailing, insets: ConversationFog.buttonInsets(EdgeInsets(top: 33, leading: 0, bottom: 70, trailing: 0)), fullScreen: false), 33 + ConversationFog.padding, accuracy: 0.01)
-        XCTAssertEqual(ConversationFog.buttonsAlignment(corner: .bottomTrailing, fullScreen: false), .trailing)
-        XCTAssertEqual(ConversationFog.buttonsAlignment(corner: .bottomLeading, fullScreen: false), .leading)
-        // A column up to 620 wide, 24 pt in from its side: the buttons' own edge.
-        XCTAssertEqual(text.width, 620, accuracy: 0.01)
-        XCTAssertEqual(text.minX, 24, accuracy: 0.01)
-    }
-
     /// The springs are the overlay lab's, in SwiftUI's own terms, so the apps move the way the lab felt.
     func testTheSpringsAreTheOverlayLabsAndStepLikeSwiftUI() {
         XCTAssertEqual(ConchMotion.dock, ConchSpring(bounce: 0.2, response: 0.45))
@@ -231,46 +177,10 @@ final class ConchDesignTests: XCTestCase {
         XCTAssertEqual(ReviewScene.next(after: "a#2", in: held, opened: ["a#1", "b#1", "a#2"]), "a#1")
     }
 
-    /// Previous goes back through what was seen, in filing order, opened or not, round to the newest.
-    func testPreviousGoesBackThroughWhatWasSeen() {
-        let held: [(key: String, at: Double)] = [("c", 3), ("a", 1), ("b", 2)]
-        XCTAssertEqual(ReviewScene.previous(before: "b", in: held), "a")
-        XCTAssertEqual(ReviewScene.previous(before: "a", in: held), "c")
-        // Nothing yet, or a review no longer ready: the newest.
-        XCTAssertEqual(ReviewScene.previous(before: nil, in: held), "c")
-        XCTAssertEqual(ReviewScene.previous(before: "gone", in: held), "c")
-        XCTAssertNil(ReviewScene.previous(before: "a", in: []))
-        // Next after Previous goes on to the unopened, not back to the one just left.
-        XCTAssertEqual(ReviewScene.next(after: "a", in: held, opened: ["a", "b"]), "c")
-    }
-
-    /// Tyler: "maybe just shows fullscreen text transcript / writer convo if there is no content". A pick in the panel
-    /// with nothing to open is the session's words, full screen; a link that opens, or a scene asked for by name, is not.
-    func testAPanelPickWithNothingToOpenShowsTheWords() {
-        let page = URL(string: "https://example.com/pull/1")!
-        let file = URL(fileURLWithPath: "/tmp/guide.md")
-        let there: (String) -> Bool = { _ in true }
-        let gone: (String) -> Bool = { _ in false }
-        // No review at all, or one with no link: the words.
-        XCTAssertTrue(ReviewScene.panelShowsWords(hasReview: false, kind: .auto, link: nil, fileExists: there))
-        XCTAssertTrue(ReviewScene.panelShowsWords(hasReview: true, kind: .auto, link: nil, fileExists: there))
-        XCTAssertTrue(ReviewScene.panelShowsWords(hasReview: true, kind: .link, link: nil, fileExists: there))
-        // A file that has gone, or a link that is neither a page nor a file, has nothing to open either.
-        XCTAssertTrue(ReviewScene.panelShowsWords(hasReview: true, kind: .auto, link: file, fileExists: gone))
-        XCTAssertTrue(ReviewScene.panelShowsWords(hasReview: true, kind: .auto, link: URL(string: "mailto:a@b.c"), fileExists: there))
-        // Something to open: the pill's scene.
-        XCTAssertFalse(ReviewScene.panelShowsWords(hasReview: true, kind: .auto, link: page, fileExists: gone))
-        XCTAssertFalse(ReviewScene.panelShowsWords(hasReview: true, kind: .link, link: file, fileExists: there))
-        // The terminal, or conch's window, asked for by name, stays what was asked for, link or none.
-        XCTAssertFalse(ReviewScene.panelShowsWords(hasReview: true, kind: .terminal, link: nil, fileExists: there))
-        XCTAssertFalse(ReviewScene.panelShowsWords(hasReview: true, kind: .conversation, link: nil, fileExists: there))
-    }
-
-    /// 09-21, "BOTH": a pick in the panel whose deliverable the panel can draw shows it there, full screen, with the reply
-    /// floating over it. An app window, the Simulator, a terminal, a design that isn't a Figma file or an office document
-    /// still comes forward in its own app.
+    /// 09-21, "BOTH": a deliverable conch can draw is shown by conch itself; an app window, the Simulator, a terminal, a
+    /// design other than a Figma file, or an office document still comes forward in its own app. The panel's rule, kept as
+    /// the window's deliverable pane's once the panel went (2026-11-11).
     func testAPanelPickShowsAPageDocumentPictureOrLiveUrlInThePanel() {
-        let there: (String) -> Bool = { _ in true }
         let gone: (String) -> Bool = { _ in false }
         let live = URL(string: "http://localhost:3111/invite")!
         let page = URL(fileURLWithPath: "/tmp/site/index.html")
@@ -306,35 +216,5 @@ final class ConchDesignTests: XCTestCase {
         XCTAssertTrue(shows(nil, URL(fileURLWithPath: "/tmp/notes.md")))
         XCTAssertFalse(shows(nil, URL(fileURLWithPath: "/tmp/brief.docx")))
         XCTAssertFalse(shows(nil, URL(fileURLWithPath: "/tmp/build.zip")))
-        // Never both: what the panel draws has something to open, so it is not the words.
-        XCTAssertFalse(ReviewScene.panelShowsWords(hasReview: true, kind: .auto, link: page, fileExists: there))
-    }
-
-    /// The panel's switcher lists ready for you first, then working, then the rest, each group as the daemon sent it; and
-    /// an item that is only whitespace says nothing.
-    func testTheSwitcherListsReadyThenWorkingThenTheRest() {
-        let sessions = [
-            FogSession(id: "idle", label: "Idle", agent: "Claude", standing: .other),
-            FogSession(id: "w1", label: "Build", agent: "Codex", standing: .working),
-            FogSession(id: "r1", label: "Morrow", agent: "Claude", item: "The invite page", standing: .ready),
-            FogSession(id: "w2", label: "Docs", agent: "Claude", standing: .working),
-            FogSession(id: "r2", label: "Lowtide", agent: "Claude", standing: .ready),
-        ]
-        XCTAssertEqual(FogSession.ordered(sessions).map(\.id), ["r1", "r2", "w1", "w2", "idle"])
-        XCTAssertEqual(sessions[2].item, "The invite page")
-        XCTAssertNil(FogSession(id: "x", label: "X", agent: "Claude", item: " \n ").item)
-        XCTAssertNil(FogSession(id: "x", label: "X", agent: "Claude").item)
-    }
-
-    /// The label is the Ready pill while anything is ready, whatever the voice is doing: it stopped taking clicks the
-    /// moment conch spoke or listened. With nothing ready, no state makes it a button.
-    @MainActor
-    func testThePillTakesAClickWhileAnythingIsReadyWhateverTheVoiceDoes() {
-        let ready = ControlBar.Ready(label: "Prime page wireframe", position: 1, count: 3)
-        for state in VoiceState.allCases {
-            XCTAssertTrue(ControlBar(state: state, detail: "", mode: .constant(.talk), ready: ready, onTap: {}).taps, "\(state)")
-            XCTAssertFalse(ControlBar(state: state, detail: "", mode: .constant(.talk), onTap: {}).taps, "\(state)")
-            XCTAssertFalse(ControlBar(state: state, detail: "", mode: .constant(.talk), ready: ready).taps, "\(state)")
-        }
     }
 }

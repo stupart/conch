@@ -1923,12 +1923,10 @@ private struct ConversationPane: View {
     /// message goes, and how each session is presented (ConchDesign/Workspace.swift).
     @EnvironmentObject private var workspace: WorkspaceModel
     @StateObject private var transcriptContent = TranscriptContentModel()
-    /// Shared with the conversation fog (M3): one draft per session wherever it is typed. Held, not watched: the pane only
+    /// One draft per session wherever it is typed. Held, not watched: the pane only
     /// hands it a dictation and a preview's seed, and the composer that draws a draft watches it itself
     /// (`SessionComposer`). Watched here, every keystroke re-ran the whole pane's body and everything under it.
     private let composerDrafts = ComposerDraftStore.shared
-    /// Where the one input is: this window lays its composer out only while it is here (ComposerDock).
-    @ObservedObject private var dock = ComposerDock.shared
     /// The Workbench's tabs and pages (`WorkbenchStore`): live browser tabs, its agents' and Tyler's own, in the
     /// Workdesk's strip.
     @ObservedObject private var workbench = WorkbenchStore.shared
@@ -2179,9 +2177,9 @@ private struct ConversationPane: View {
         }
     }
 
-    /// Whether Tyler can open a tab of his own in a session: a session's, not a subagent's or the practice session's.
+    /// Whether Tyler can open a tab of his own in a session: a session's, not a subagent's.
     private func opensBrowserTabs(_ row: SessionRow) -> Bool {
-        row.parentSessionId == nil && row.id != TourCoach.practiceSessionId
+        row.parentSessionId == nil
     }
 
     /// The Workdesk's + (and New Browser Tab): a blank tab of Tyler's in this session, on the profile he picked last,
@@ -2480,10 +2478,9 @@ private struct ConversationPane: View {
     }
 
     /// The result ✓ Approve and ↵ would approve: the deliverable on screen, from a daemon that can approve (it publishes
-    /// `seaGlass`), whose agent asked for your yes (`asksApproval`), not yet approved. Never the practice session's welcome
-    /// card, which the daemon doesn't hold.
+    /// `seaGlass`), whose agent asked for your yes (`asksApproval`), not yet approved.
     private var shownResult: ReviewApprovals.Target? {
-        guard let row = focusedRow, let review = selectedReview, row.id != TourCoach.practiceSessionId,
+        guard let row = focusedRow, let review = selectedReview,
               stage(for: row) != .conversation, workPane(for: row) == .deliverable else { return nil }
         return ReviewApprovals.Target(sessionId: row.id, reviewId: review.id)
     }
@@ -2679,17 +2676,6 @@ private struct ConversationPane: View {
         .onDisappear { approvals.approvable = nil }
         .task(id: TranscriptWatchID(row: watchesTranscriptForRow)) {
             await transcriptContent.monitor(row: watchesTranscriptForRow)
-        }
-        // The session this window's composer addresses, and whether Tyler picked it here: the input takes it along when
-        // it goes with him, and brings its own back (ComposerDock). A subagent has no composer, so it addresses nothing.
-        .onChange(
-            of: ComposerDock.Address(
-                session: focusedRow.flatMap { $0.parentSessionId == nil ? $0.id : nil },
-                picked: workspace.viewing
-            ),
-            initial: true
-        ) { _, address in
-            dock.windowAddress = address
         }
         .onChange(of: state?.live.dictated?.id) { _, _ in
             // Spoken words land in the composer, added to whatever was typed.
@@ -3354,41 +3340,33 @@ private struct ConversationPane: View {
     @ViewBuilder
     /// The composer, floating over the transcript and reporting its own height.
     ///
-    /// The height comes back through a preference rather than being written during layout: the
-    /// control bar already reports its size this way (`ControlBarSize`), and assigning state
-    /// inside a layout pass is how SwiftUI gets told a view changed while it is drawing it.
-    /// Rounded up to whole points so a fractional height cannot oscillate the inset.
+    /// The height comes back through a preference rather than being written during layout:
+    /// assigning state inside a layout pass is how SwiftUI gets told a view changed while it is
+    /// drawing it. Rounded up to whole points so a fractional height cannot oscillate the inset.
     ///
-    /// Only while the input is in this window (ComposerDock). Tyler: "we literally remove it from the Mac app UI until
-    /// they go back to the app and it swoops back into the UI." Away with him it is not built at all, so nothing here can
-    /// be typed into, focused or sent from; on its way back it is laid out unseen and untouchable, for the swoop to land
-    /// on, and shows the moment it does. The room it takes stays behind it (`composerHeight` keeps its last height), so
-    /// nothing in the window jumps as it goes, and it comes back to the place it left.
+    /// 2026-11-11: always here. The input left this window with Tyler for the panel's reply line (ComposerDock) until
+    /// that went with the old overlays.
     private func floatingComposer(for row: SessionRow) -> some View {
-        if dock.place == .window {
-            composer(for: row)
-                .opacity(dock.shown ? 1 : 0)
-                .allowsHitTesting(dock.shown)
-                .background(
-                    GeometryReader { proxy in
-                        Color.clear.preference(key: ComposerHeight.self, value: proxy.size.height.rounded(.up))
-                    }
-                )
-                .onPreferenceChange(ComposerHeight.self) { height in
-                    guard composerHeight != height else { return }
-                    composerHeight = height
+        composer(for: row)
+            .background(
+                GeometryReader { proxy in
+                    Color.clear.preference(key: ComposerHeight.self, value: proxy.size.height.rounded(.up))
                 }
-        }
+            )
+            .onPreferenceChange(ComposerHeight.self) { height in
+                guard composerHeight != height else { return }
+                composerHeight = height
+            }
     }
 
     private func composer(for row: SessionRow) -> some View {
-        // The one construction of a session's composer, the panel's reply line included (`SessionComposer`).
+        // The one construction of a session's composer (`SessionComposer`).
         SessionComposer(
             row: row,
             state: state,
             store: store,
-            // A question's "Something else…" row, or the input landing back here with the keyboard it left with.
-            focusRequest: composerFocusRequest + dock.focusRequests,
+            // A question's "Something else…" row.
+            focusRequest: composerFocusRequest,
             onDraftStarted: {
                 // Selecting is what pins the pane: `focusedRow` prefers an
                 // explicit selection over the live session, so this is the
@@ -3442,7 +3420,7 @@ private struct ConversationPane: View {
 /// The pane is drawn again when what it reads changed, and only then: its state (`PublishedState.forPane`) and the store's
 /// values it is handed. Its closure is the window's `selectSession`, which reaches the same workspace and settings whichever
 /// render it came from, so it is left out, as the conversation's rows leave theirs (`MemoRow`). What the pane watches
-/// itself (the workspace, the Workbench, the dock, the approvals) still redraws it as it always did.
+/// itself (the workspace, the Workbench, the approvals) still redraws it as it always did.
 extension ConversationPane: Equatable {
     static func == (a: Self, b: Self) -> Bool {
         a.store === b.store && a.rowMessages == b.rowMessages && a.debugInspectRequest == b.debugInspectRequest

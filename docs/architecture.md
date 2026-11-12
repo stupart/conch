@@ -432,8 +432,8 @@ naming, because neither is obvious from the code:
   its responsibility disclaimed, so disclaiming would move the grants off
   conch, not onto it. So Accessibility (the front-window observer and the
   daemon's System Events keystrokes), Automation (the daemon's Apple Events to
-  Terminal and System Events), Screen Recording (the canvas, Show, the phone's
-  window snapshots) and the Microphone (the daemon's recorder) are each one
+  Terminal and System Events), Screen Recording (the phone's window
+  snapshots and the Terminal Mirror) and the Microphone (the daemon's recorder) are each one
   switch for conch. The exception is a daemon conch did not start: from a
   terminal it answers to that terminal, from launchd to bun itself, and
   Settings › Permissions says so. The recorder keeps this rule since it became

@@ -92,8 +92,8 @@ func pasteboard(_ shape: String) -> NSPasteboard {
 `;
 
 describe("what the composer's drop target takes", () => {
-  /** The composer's own drop types, as `ComposerDropTarget` declares them. */
-  const declared = between(composer, "content.onDrop(of: ", ", isTargeted: $isTargeted)").slice("content.onDrop(of: ".length);
+  /** The composer's own drop types, as its one `.onDrop` declares them (a `ComposerDropTarget` until 2026-11-11). */
+  const declared = between(composer, ".onDrop(of: ", ", isTargeted: $isTargetedForDrop)").slice(".onDrop(of: ".length);
 
   test.skipIf(!swift)("a promised movie and a movie's bytes are taken, as a movie, and the types before this were refusing them", () => {
     const out = runSwift(`import AppKit

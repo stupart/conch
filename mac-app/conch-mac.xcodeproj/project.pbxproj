@@ -38,7 +38,6 @@
 		A10000000000000000000980 /* Permissions.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000980 /* Permissions.swift */; };
 		E1000000000000000000A001 /* OnboardingController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2000000000000000000A001 /* OnboardingController.swift */; };
 		E1000000000000000000A002 /* OnboardingSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2000000000000000000A002 /* OnboardingSupport.swift */; };
-		E1000000000000000000A003 /* TourCoach.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2000000000000000000A003 /* TourCoach.swift */; };
 		A10000000000000000000009 /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000A /* WebKit.framework */; };
 		A1000000000000000000000A /* ConchSocketClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000C /* ConchSocketClient.swift */; };
 		A1000000000000000000000B /* DashboardInputMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000D /* DashboardInputMonitor.swift */; };
@@ -56,9 +55,7 @@
 		A100000000000000000000952 /* RemoteMacViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000000000000000000952 /* RemoteMacViews.swift */; };
 		A100000000000000000000953 /* AudioHolderStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000000000000000000953 /* AudioHolderStore.swift */; };
 		A10000000000000000000960 /* StatusItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000960 /* StatusItem.swift */; };
-		A10000000000000000000962 /* FloatingPanels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000962 /* FloatingPanels.swift */; };
-		C10000000000000000000A01 /* Canvas.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000A01 /* Canvas.swift */; };
-		C10000000000000000000A02 /* CanvasSend.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000A02 /* CanvasSend.swift */; };
+		F1000000000000000000B001 /* FloatingPillController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2000000000000000000B001 /* FloatingPillController.swift */; };
 		D1A0000000000000000AA002 /* AnnotateHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A0000000000000000AA002 /* AnnotateHarness.swift */; };
 		D1A0000000000000000AA001 /* DeliverableAnnotate.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A0000000000000000AA001 /* DeliverableAnnotate.swift */; };
 		C10000000000000000000A6F /* WindowPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000A6F /* WindowPreview.swift */; };
@@ -67,9 +64,6 @@
 		C10000000000000000000F52 /* PushSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000F52 /* PushSettingsView.swift */; };
 		C10000000000000000000F51 /* NoticeDelivery.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000F51 /* NoticeDelivery.swift */; };
 		C10000000000000000000E01 /* Workbench.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000E01 /* Workbench.swift */; };
-		C10000000000000000000A03 /* AgentInkController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000A03 /* AgentInkController.swift */; };
-		C10000000000000000000B01 /* CanvasShow.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000B01 /* CanvasShow.swift */; };
-		D10000000000000000000C01 /* ComposerDock.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000C01 /* ComposerDock.swift */; };
 		D10000000000000000000C02 /* ComposerEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000C02 /* ComposerEditor.swift */; };
 		D10000000000000000000C03 /* ComposerVideo.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000C03 /* ComposerVideo.swift */; };
 		A10000000000000000000963 /* HistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000963 /* HistoryStore.swift */; };
@@ -103,7 +97,6 @@
 		A20000000000000000000980 /* Permissions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Permissions.swift; sourceTree = "<group>"; };
 		E2000000000000000000A001 /* OnboardingController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingController.swift; sourceTree = "<group>"; };
 		E2000000000000000000A002 /* OnboardingSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingSupport.swift; sourceTree = "<group>"; };
-		E2000000000000000000A003 /* TourCoach.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TourCoach.swift; sourceTree = "<group>"; };
 		A20000000000000000000901 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A20000000000000000000902 /* ConversationStackView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationStackView.swift; sourceTree = "<group>"; };
 		A20000000000000000000931 /* DaemonHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonHost.swift; sourceTree = "<group>"; };
@@ -131,9 +124,7 @@
 		A200000000000000000000952 /* RemoteMacViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteMacViews.swift; sourceTree = "<group>"; };
 		A200000000000000000000953 /* AudioHolderStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioHolderStore.swift; sourceTree = "<group>"; };
 		A20000000000000000000960 /* StatusItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusItem.swift; sourceTree = "<group>"; };
-		A20000000000000000000962 /* FloatingPanels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingPanels.swift; sourceTree = "<group>"; };
-		C20000000000000000000A01 /* Canvas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Canvas.swift; sourceTree = "<group>"; };
-		C20000000000000000000A02 /* CanvasSend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasSend.swift; sourceTree = "<group>"; };
+		F2000000000000000000B001 /* FloatingPillController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingPillController.swift; sourceTree = "<group>"; };
 		D2A0000000000000000AA002 /* AnnotateHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnnotateHarness.swift; sourceTree = "<group>"; };
 		D2A0000000000000000AA001 /* DeliverableAnnotate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeliverableAnnotate.swift; sourceTree = "<group>"; };
 		C20000000000000000000A6F /* WindowPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowPreview.swift; sourceTree = "<group>"; };
@@ -142,9 +133,6 @@
 		C20000000000000000000F52 /* PushSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushSettingsView.swift; sourceTree = "<group>"; };
 		C20000000000000000000F51 /* NoticeDelivery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoticeDelivery.swift; sourceTree = "<group>"; };
 		C20000000000000000000E01 /* Workbench.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Workbench.swift; sourceTree = "<group>"; };
-		C20000000000000000000A03 /* AgentInkController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentInkController.swift; sourceTree = "<group>"; };
-		C20000000000000000000B01 /* CanvasShow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasShow.swift; sourceTree = "<group>"; };
-		D20000000000000000000C01 /* ComposerDock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerDock.swift; sourceTree = "<group>"; };
 		D20000000000000000000C02 /* ComposerEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerEditor.swift; sourceTree = "<group>"; };
 		D20000000000000000000C03 /* ComposerVideo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerVideo.swift; sourceTree = "<group>"; };
 		A20000000000000000000963 /* HistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryStore.swift; sourceTree = "<group>"; };
@@ -194,9 +182,7 @@
 				A200000000000000000000950 /* DirectHTTPTransport.swift */,
 				A200000000000000000000953 /* AudioHolderStore.swift */,
 				A20000000000000000000960 /* StatusItem.swift */,
-				A20000000000000000000962 /* FloatingPanels.swift */,
-				C20000000000000000000A01 /* Canvas.swift */,
-				C20000000000000000000A02 /* CanvasSend.swift */,
+				F2000000000000000000B001 /* FloatingPillController.swift */,
 				D2A0000000000000000AA002 /* AnnotateHarness.swift */,
 				D2A0000000000000000AA001 /* DeliverableAnnotate.swift */,
 				C20000000000000000000A6F /* WindowPreview.swift */,
@@ -205,9 +191,6 @@
 				C20000000000000000000F52 /* PushSettingsView.swift */,
 				C20000000000000000000F51 /* NoticeDelivery.swift */,
 				C20000000000000000000E01 /* Workbench.swift */,
-				C20000000000000000000A03 /* AgentInkController.swift */,
-				C20000000000000000000B01 /* CanvasShow.swift */,
-				D20000000000000000000C01 /* ComposerDock.swift */,
 				D20000000000000000000C02 /* ComposerEditor.swift */,
 				D20000000000000000000C03 /* ComposerVideo.swift */,
 				A20000000000000000000963 /* HistoryStore.swift */,
@@ -223,7 +206,6 @@
 				A20000000000000000000980 /* Permissions.swift */,
 				E2000000000000000000A001 /* OnboardingController.swift */,
 				E2000000000000000000A002 /* OnboardingSupport.swift */,
-				E2000000000000000000A003 /* TourCoach.swift */,
 				A2000000000000000000000C /* ConchSocketClient.swift */,
 				A2000000000000000000000D /* DashboardInputMonitor.swift */,
 				A2000000000000000000009B /* PluginPresence.swift */,
@@ -495,9 +477,7 @@
 				A100000000000000000000950 /* DirectHTTPTransport.swift in Sources */,
 				A100000000000000000000953 /* AudioHolderStore.swift in Sources */,
 				A10000000000000000000960 /* StatusItem.swift in Sources */,
-				A10000000000000000000962 /* FloatingPanels.swift in Sources */,
-				C10000000000000000000A01 /* Canvas.swift in Sources */,
-				C10000000000000000000A02 /* CanvasSend.swift in Sources */,
+				F1000000000000000000B001 /* FloatingPillController.swift in Sources */,
 				D1A0000000000000000AA002 /* AnnotateHarness.swift in Sources */,
 				D1A0000000000000000AA001 /* DeliverableAnnotate.swift in Sources */,
 				C10000000000000000000A6F /* WindowPreview.swift in Sources */,
@@ -506,9 +486,6 @@
 				C10000000000000000000F52 /* PushSettingsView.swift in Sources */,
 				C10000000000000000000F51 /* NoticeDelivery.swift in Sources */,
 				C10000000000000000000E01 /* Workbench.swift in Sources */,
-				C10000000000000000000A03 /* AgentInkController.swift in Sources */,
-				C10000000000000000000B01 /* CanvasShow.swift in Sources */,
-				D10000000000000000000C01 /* ComposerDock.swift in Sources */,
 				D10000000000000000000C02 /* ComposerEditor.swift in Sources */,
 				D10000000000000000000C03 /* ComposerVideo.swift in Sources */,
 				A10000000000000000000963 /* HistoryStore.swift in Sources */,
@@ -524,7 +501,6 @@
 				A10000000000000000000980 /* Permissions.swift in Sources */,
 				E1000000000000000000A001 /* OnboardingController.swift in Sources */,
 				E1000000000000000000A002 /* OnboardingSupport.swift in Sources */,
-				E1000000000000000000A003 /* TourCoach.swift in Sources */,
 				A1000000000000000000000A /* ConchSocketClient.swift in Sources */,
 				A1000000000000000000000B /* DashboardInputMonitor.swift in Sources */,
 				A1000000000000000000009A /* PluginPresence.swift in Sources */,

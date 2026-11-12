@@ -329,8 +329,10 @@ describe("the parser reads the formats the apps write", () => {
     expect(video).toContain('"Contact sheet: \\(sheet) — \\(frames.count) frame\\(frames.count == 1 ? "" : "s"), left to right and down, each stamped with its time:",');
     expect(video).toContain('if !spoken.isEmpty { lines += ["What he said:"] + spoken }');
     expect(video).toContain('lines.append("The video itself, for people (agents can\'t watch video): \\(video)")');
-    // Where conch keeps them.
-    expect(read("mac-app/conch-mac/CanvasSend.swift")).toContain('appendingPathComponent(".cache/conch/canvas", isDirectory: true)');
+    // Where conch keeps them. The Mac's canvas and Show, which wrote into ~/.cache/conch/canvas, went with the
+    // overlays on 2026-11-11; the parser still reads that folder, so a receipt sent before then keeps its row.
+    expect(read("src/conversation.ts")).toContain('return { canvas: join(data, "canvas"), uploads: join(data, "uploads") };');
+    expect(read("mac-app/conch-mac/ComposerVideo.swift")).toContain('appendingPathComponent(".cache/conch/uploads", isDirectory: true)');
     expect(read("src/daemon.ts")).toContain('new PhoneUploads(join(CONCH_DATA, "uploads"))');
   });
 });
@@ -374,9 +376,8 @@ describe("both apps draw a receipt as one quiet row", () => {
     expect(bubble).not.toContain("maxHeight: 320");
   });
 
-  test("the overlay says its title alone, and a pending bubble gives way to the receipt that names its file", () => {
-    expect(read("mac-app/conch-mac/FloatingPanels.swift"))
-      .toContain("text: $0.receipt?.title ?? whole[HistorySnapshot.nativeId(forSnapshotItem: $0.id)] ?? $0.text");
+  // The floating panel that said a receipt by its title alone went with the overlays on 2026-11-11.
+  test("a pending bubble gives way to the receipt that names its file", () => {
     for (const path of ["mac-app/conch-mac/StateStore.swift", "mobile/conch-ios/conch-ios/TalkController.swift"]) {
       expect(read(path)).toContain("|| $0.receipt?.stands(for: message.text) == true");
     }

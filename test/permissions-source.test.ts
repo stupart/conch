@@ -39,8 +39,9 @@ const design = read("design/ConchDesign/Sources/ConchDesign/Permissions.swift");
 const PROMPTS = [
   "AXIsProcessTrustedWithOptions",
   "kAXTrustedCheckOptionPrompt",
-  // The canvas's once-a-launch Screen Recording ask, which is `CGRequestScreenCaptureAccess`.
-  "CanvasCapture.granted()",
+  // The once-a-launch Screen Recording ask, which is `CGRequestScreenCaptureAccess`. It was the canvas's
+  // (`CanvasCapture`) until the canvas went with the overlays on 2026-11-11; now it is `ScreenRecordingGrant`'s.
+  "ScreenRecordingGrant.granted()",
   "requestAccess(for: .audio",
   "automation(ask: true)",
 ];
@@ -102,9 +103,17 @@ describe("never a prompt at launch: every answer is read silently, and asked for
         expect(swift, `${file}: ${prompt}`).not.toContain(prompt);
       }
     }
-    // The ones that do ask are the permissions center, on a press, and the canvas's own Send and Show.
+    // The one that does ask is the permissions center, on a press. Screen Recording's ask was the canvas's own Send
+    // and Show until they went with the overlays on 2026-11-11; it is the center's `ScreenRecordingGrant` now, and
+    // nothing outside the center calls it.
     expect(filesWith("AXIsProcessTrustedWithOptions")).toEqual(["Permissions.swift"]);
-    expect(filesWith("CGRequestScreenCaptureAccess")).toEqual(["CanvasSend.swift"]);
+    expect(filesWith("CGRequestScreenCaptureAccess")).toEqual(["Permissions.swift"]);
+    expect(filesWith("ScreenRecordingGrant.")).toEqual(["Permissions.swift"]);
+    // The rest only check, which neither captures nor asks: the center's reading, the Terminal Mirror's picture and
+    // the phone's window snapshots.
+    expect(filesWith("CGPreflightScreenCaptureAccess")).toEqual(["Permissions.swift", "TerminalMirror.swift", "WindowPreview.swift"]);
+    const grant = member(permissionsCode, "static func granted() -> Bool {");
+    expect(grant).toContain("if CGPreflightScreenCaptureAccess() { return true }\n        if !asked {\n            asked = true\n            CGRequestScreenCaptureAccess()\n        }");
     expect(filesWith("requestAccess(for: .audio")).toEqual(["Permissions.swift"]);
   });
 
@@ -126,8 +135,9 @@ describe("Open Settings goes to the permission's own list, through the store's o
     for (const anchor of ["Privacy_Accessibility", "Privacy_Automation", "Privacy_ScreenCapture", "Privacy_Microphone"]) {
       expect(design).toContain(`"${anchor}"`);
     }
-    // The canvas's own Screen Recording link is the same place.
-    expect(read("mac-app/conch-mac/CanvasSend.swift")).toContain("com.apple.preference.security?Privacy_ScreenCapture");
+    // The canvas's own Screen Recording link went with the canvas on 2026-11-11: the permission's anchor above is
+    // the only way to that list, and no Mac file spells the address itself.
+    expect(filesWith("Privacy_ScreenCapture")).toEqual([]);
   });
 
   test("Open Settings opens it, after listing conch where macOS lists only apps that asked", () => {
@@ -135,10 +145,14 @@ describe("Open Settings goes to the permission's own list, through the store's o
     expect(open).toContain("store.openLink(permission.settingsURL.absoluteString, cwd: nil, rowId: nil)");
     const settings = perform.slice(perform.indexOf("case .openSettings:"), perform.indexOf("case .ask:"));
     expect(settings).toContain("case .accessibility where !AXIsProcessTrusted():");
-    expect(settings).toContain("case .screenRecording:\n                _ = CanvasCapture.granted()");
+    expect(settings).toContain("case .screenRecording:\n                _ = ScreenRecordingGrant.granted()");
     expect(settings).toContain("openSettings(permission, store: store)");
-    // Reopen is the store's relaunch, through the canvas's wrapper that notices when it didn't happen.
-    expect(perform.slice(perform.indexOf("case .reopen:"))).toContain("CanvasCapture.reopen(store) { [weak self] in");
+    // Reopen is the store's relaunch, through the wrapper that notices when it didn't happen (`ScreenRecordingGrant`,
+    // the canvas's `CanvasCapture` until 2026-11-11).
+    expect(perform.slice(perform.indexOf("case .reopen:"))).toContain("ScreenRecordingGrant.reopen(store) { [weak self] in");
+    const reopen = member(permissionsCode, "static func reopen(_ store: StateStore?, failed: @escaping @MainActor () -> Void) {");
+    expect(reopen).toContain("guard let store else { return failed() }\n        store.relaunchForNewBuild()");
+    expect(reopen).toContain("if store.relaunchFailure != nil { failed() }");
   });
 });
 
@@ -186,7 +200,9 @@ describe("where a feature fails, the app says which permission, with the button 
   });
 
   test("every file naming the shared permission types imports the design system", () => {
-    for (const file of ["Permissions.swift", "Notices.swift", "StateStore.swift", "WindowPreview.swift", "CanvasSend.swift", "FrontWindowObserver.swift"]) {
+    // The canvas's CanvasSend.swift was one until it went with the overlays on 2026-11-11; the Terminal Mirror, which
+    // asks for Screen Recording through the center, takes its place.
+    for (const file of ["Permissions.swift", "Notices.swift", "StateStore.swift", "WindowPreview.swift", "TerminalMirror.swift", "FrontWindowObserver.swift"]) {
       expect(macSources[file], file).toContain("import ConchDesign");
     }
     const project = read("mac-app/conch-mac.xcodeproj/project.pbxproj");

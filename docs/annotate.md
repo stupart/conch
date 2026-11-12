@@ -19,7 +19,8 @@ batch it can act on without guessing what "here" meant.
 
 ## What annotate is in conch
 
-conch already has two pieces this has to fit with:
+When this was built, conch had two pieces it had to fit with. The canvas went with the old overlays on 2026-11-11; the
+comparison below is kept for why Annotate is anchored the way it is.
 
 - **The canvas** is freehand ink on a glass over the whole screen, anchored to the display. Send screenshots what is under
   the ink (that needs Screen Recording) and describes each note as a percentage of the screen ("box (62%,18%)"). It works
@@ -69,7 +70,7 @@ one set of anchors.
 | Image | Drag, or click | `{image: path}` with `rect` or `at` in fractions, top left | That region of the original pixels, outlined |
 | Markdown or text | Selecting words | `{quote}`, in its file | None (the words are the content) |
 | Folder | Whichever file is picked | As above, for that file, with its path | As above |
-| PDF, video, anything unpreviewable | — | Annotate isn't offered; the canvas covers these | — |
+| PDF, video, anything unpreviewable | — | Annotate isn't offered | — |
 
 A selector is the shortest unique one: an id or test id where there is one, otherwise tag and classes (machine-made
 class names are skipped), with `:nth-of-type` only where it's needed. It stays within agent ink's 120-character limit, so
@@ -97,7 +98,7 @@ To point back at any of these, publish marks with the same frame (review_to_fron
 
 A note on an image reads `{image: "/path/shot.png"} rect [0.12, 0.40, 0.30, 0.18]`. Those are the same fractions an
 agent's mark takes. A note on a document reads `{quote: "…"} in /path/README.md`. The folder is
-`~/.cache/conch/annotations/<id>/`, private (0700) like the canvas's, and cleared after 14 days.
+`~/.cache/conch/annotations/<id>/`, private (0700), and cleared after 14 days.
 
 ## Choices made to keep the journey simple
 
@@ -140,7 +141,7 @@ agent's mark takes. A note on a document reads `{quote: "…"} in /path/README.m
 
 - On the phone: the deliverable sheet already draws agent ink, so the anchors would carry over, but notes, crops and their
   upload are a separate piece of work.
-- PDFs, video and app windows: the canvas covers them.
+- PDFs, video and app windows: nothing marks them since the canvas went (2026-11-11).
 - Hold-to-interact while annotating (Codex holds Space). For now, turn annotate off to click the page.
 - Live style tweaks (Codex's Adjust).
 - Notes kept across a relaunch.

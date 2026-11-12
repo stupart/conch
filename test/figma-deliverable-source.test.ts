@@ -34,8 +34,10 @@ describe("a Figma deliverable is shown, not sent away", () => {
     expect(between(webView, "func observeCurrentURL(of webView: WKWebView) {", "\n        }\n")).toContain("view.url == FigmaLink.embedBase ? self?.embedded");
   });
 
-  test("a pick from the pill, the menu or the panel opens it where conch shows the work, never in the Figma app", () => {
-    const open = between(statusItem, "static func open(_ row: SessionRow, from origin: OpenFrom, store: StateStore, panels: FloatingPanels?) async -> Bool {", "\n    }\n");
+  test("a pick from the pill or the menu opens it in conch's window, where conch shows the work, never in the Figma app", () => {
+    // Since the floating conversation panel went (#613), conch's window, its deliverable pane, is where it shows.
+    const open = between(statusItem, "static func open(_ row: SessionRow, store: StateStore) async -> Bool {", "\n    }\n");
+    expect(open).toContain("openInWindow(row, store: store)");
     expect(open).toContain("ReviewScene.opensOnlyInConch(deliverable: row.review?.kind, marked: marked, link: link)");
     expect(open.indexOf("let link = ")).toBeLessThan(open.indexOf("opensOnlyInConch("));
     expect(between(components, "public static func opensOnlyInConch(", "\n    }\n")).toContain("link.map(FigmaLink.isFile) == true");

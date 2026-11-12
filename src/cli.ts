@@ -782,11 +782,11 @@ switch (command) {
     // Photograph conch. Two modes, and which one you want depends on the question:
     //
     //   conch shot <path>                     the app draws one of its own windows
-    //   conch shot <path> --window overlay    ... a named one, floating panels included
+    //   conch shot <path> --window pill       ... a named one: the floating pill, or the dashboard
     //   conch shot <path> --screen            the whole display, as an eye would see it
     //
-    // `--screen` is the honest mode for anything TRANSLUCENT. The conversation
-    // overlay is mostly blur, and blur only exists where the window server
+    // `--screen` is the honest mode for anything TRANSLUCENT. Glass is mostly
+    // blur, and blur only exists where the window server
     // composites it over what is behind; an offscreen draw of that same window
     // comes back part-transparent (measured: mean alpha 217 of 255), so its
     // colours are premultiplied over black rather than over the desktop. It also
@@ -801,10 +801,10 @@ switch (command) {
     // Both write <path>.json beside the picture: every conch window's LIVE frame,
     // which window is which, where each one lands inside a full-screen shot
     // (pixels, y from the top), which window holds the keyboard, and which
-    // appearance the overlay is painting. Read a crop out of that, never out of a
+    // appearance each one is painting. Read a crop out of that, never out of a
     // rect remembered from earlier in a run — three measurements in one session
     // were invalidated by aiming at where a window used to be.
-    const targets = ["key", "overlay", "controlbar", "dashboard", "geometry"];
+    const targets = ["key", "pill", "dashboard", "geometry"];
     const usage = `usage: conch shot [/tmp/<name>.png] [--window ${targets.join("|")}] [--screen]`;
     const at = rest.indexOf("--window");
     const wanted = at === -1 ? "" : rest[at + 1] ?? "";

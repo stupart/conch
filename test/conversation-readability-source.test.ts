@@ -17,7 +17,6 @@ import { readFileSync } from "node:fs";
 const source = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8").replace(/^\s*\/\/.*$/gm, "");
 const stack = source("mac-app/conch-mac/ConversationStackView.swift");
 const markdown = source("design/ConchDesign/Sources/ConchDesign/Markdown.swift");
-const components = source("design/ConchDesign/Sources/ConchDesign/Components.swift");
 const tokens = source("design/ConchDesign/Sources/ConchDesign/Tokens.swift");
 const phone = source("mobile/conch-ios/conch-ios/ConversationStack.swift");
 
@@ -79,7 +78,6 @@ describe("the rhythm between blocks", () => {
     expect(markdown).toContain("private var mono: Font { .system(size: size * scale * ConchReading.codeScale, design: .monospaced) }");
     expect(markdown).toContain("styled[run.range].font = .system(size: size * ConchReading.codeScale, design: .monospaced)");
     expect(markdown).toContain("NSFont.monospacedSystemFont(ofSize: size * ConchReading.codeScale, weight: .regular)");
-    expect(components).toContain("text[run.range].font = .system(size: size * ConchReading.codeScale, design: .monospaced)");
     expect(markdown).not.toContain("(size - 1) * scale");
   });
 
@@ -123,17 +121,9 @@ describe("the Mac's rows around the prose", () => {
   });
 });
 
-describe("the floating panel", () => {
-  test("turns sit further apart than a turn's own paragraphs, and past turns have leading", () => {
-    expect(components).toContain("public static let turnGap: CGFloat = 24");
-    expect(components).toContain("return VStack(alignment: .leading, spacing: Self.turnGap) {");
-    expect(components).toContain("let attributed = ConversationFog.typeset(ConversationFog.inlineMarkdown(turn.text), size: ConversationFog.size(latest: now, fullScreen: fullScreen))");
-    expect(components).toContain(
-      ".lineSpacing(ConversationFog.size(latest: now, fullScreen: fullScreen) * (now ? ConversationFog.newestLeading : ConversationFog.pastLeading))",
-    );
-  });
-});
-
+// The floating conversation panel's guards (its turn gap, the leading of past turns and its inline code
+// size) went with the panel on 2026-11-11, when the overlays were removed: the window is the one Mac
+// surface that draws the conversation now.
 describe("the iPhone", () => {
   test("a reply reads at the Mac transcript's leading, through the same renderer", () => {
     const reply = between(phone, "        default:\n", "    private func toolRow");

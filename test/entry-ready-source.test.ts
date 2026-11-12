@@ -25,22 +25,24 @@ const review = read("mac-app/conch-mac/ReviewView.swift");
 const content = read("mac-app/conch-mac/ContentView.swift");
 
 describe("the menu bar menu opens the work", () => {
-  test("a Ready for you row opens its item as the pill does; conch's window is its ⌥ alternate", () => {
+  test("a Ready for you row opens its item by the one opening rule; conch's window is its ⌥ alternate", () => {
     const entry = member(item, "private func entry(_ item: StatusMenu.Item) -> NSMenuItem {");
     expect(entry).toContain("entry.isAlternate = item.alternate");
     expect(entry).toContain("case let .openItem(session), let .openSession(session): entry.representedObject = session");
-    expect(entry).toContain("case .mixed: .mixed");
     const open = member(item, "@objc private func openItem(_ sender: NSMenuItem) {");
-    // The pill's walk, with the panels while the overlays are on; with them off, opened in conch's window (`open`).
-    expect(open).toContain("ReviewQueue.shared.open(session: id, store: store, panels: Self.panels)");
+    // The session's next ready item, through `ConchStatusItem.open`: conch's window for what it draws, else its own app.
+    // The Ready pill shared this walk, and the panels took part while the overlays were on, until both went on 2026-11-11.
+    expect(open).toContain("ReviewQueue.shared.open(session: id, store: store)");
     expect(open).not.toContain("openSession(");
+    const queue = member(item, "func open(session id: SessionRow.ID, store: StateStore) {");
+    expect(queue).toContain("guard await ConchStatusItem.open(found, store: store) else { return }");
     // The alternate is conch's window, the one place the status item takes focus.
     expect(member(item, "@objc private func openSession(_ sender: NSMenuItem) {")).toContain("Self.openSession(id)");
   });
 });
 
 describe("a page whose server has stopped", () => {
-  test("the pill and the menu knock before opening it in a browser, and show it in conch instead", () => {
+  test("the menu knocks before opening it in a browser, and shows it in conch instead", () => {
     const stage = member(item, "static func stage(_ row: SessionRow, store: StateStore) async -> Bool {");
     const knock = stage.indexOf("if LocalServer.port(of: url) != nil, !(await LocalServer.isListening(url)) {");
     const browser = stage.indexOf("store.openLink(LinkTarget.text(of: url)");
@@ -97,7 +99,7 @@ describe("one state, one name", () => {
     expect(dashboard).toContain('return "Ready for you — work to look at"');
   });
 
-  test("the shortcuts say what P quiets, and list the keys of what floats over other apps", () => {
+  test("the shortcuts say what P quiets, and list only the keys conch's window takes", () => {
     const sheet = content.slice(content.indexOf("private struct KeyboardShortcutsSheet: View {"), content.indexOf("/// What the ledger's glyphs mean"));
     expect(sheet).not.toContain("Auto / manual");
     // P reaches the selected session, or every session with none selected (`pauseOrResume`).
@@ -105,22 +107,13 @@ describe("one state, one name", () => {
     // Space stops and never starts (`talkOrStop`), outside a text field; Esc stops a reading from anywhere (2026-10-08).
     expect(sheet).toContain('ShortcutHelpRow(command: "Space", result: "Stop speaking or listening (outside a text field)")');
     expect(sheet).toContain('ShortcutHelpRow(command: "Esc", result: "Stop reading aloud, from anywhere")');
-    for (const row of [
-      'ShortcutHelpRow(command: "⌃⌥⌘P", result: "Draw on screen")',
-      'ShortcutHelpRow(command: "1 – 5", result: "Pick a pen tool")',
-      'ShortcutHelpRow(command: "Return", result: "Send")',
-      'ShortcutHelpRow(command: "Esc", result: "Put the pen down")',
-      'ShortcutHelpRow(command: "⌥⌘← / ⌥⌘→", result: "Previous / next item")',
-      'ShortcutHelpRow(command: "⌘.", result: "Collapse")',
-      'ShortcutHelpRow(command: "Esc", result: "Leave full screen")',
-    ]) {
-      expect(sheet).toContain(row);
+    // The pen's and the conversation panel's keys went with the old overlays on 2026-11-11, so the list must not offer
+    // a key nothing takes any more.
+    for (const gone of ['"⌃⌥⌘P"', '"Draw on screen"', '"Drawing on screen"', '"Conversation panel"', '"Show: record the screen"', '"Put the pen down"']) {
+      expect(sheet).not.toContain(gone);
     }
-    expect(sheet).toContain('ShortcutHelpSection(title: "Drawing on screen", rows: drawRows)');
-    // The key the canvas actually takes for Show (⇧R: a bare R started recordings by accident).
-    expect(sheet).toContain('ShortcutHelpRow(command: "⇧R", result: "Show: record the screen")');
-    expect(sheet).toContain('ShortcutHelpSection(title: "Conversation panel", rows: panelRows)');
-    // Esc and Return each mean two things in one list, so a row is its key and its meaning.
+    // Esc means two things in one list, so a row is its key and its meaning.
+    expect(sheet).toContain('ShortcutHelpRow(command: "Esc", result: "Release selection / close (when nothing is being read)")');
     expect(content).toContain('var id: String { command + "\\u{1F}" + result }');
   });
 
