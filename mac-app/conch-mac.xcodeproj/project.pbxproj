@@ -283,6 +283,7 @@
 				AC0000000000000000000001 /* Embed uv helper */,
 				AC0000000000000000000002 /* Embed conch daemon */,
 				AC0000000000000000000003 /* Embed speech engine */,
+				AC0000000000000000000006 /* Embed microphone helper */,
 				AC0000000000000000000004 /* Embed tmux */,
 				AC0000000000000000000005 /* Embed lagoon */,
 			);
@@ -445,6 +446,26 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/bash;
 			shellScript = "exec \"$SRCROOT/../scripts/embed-lagoon.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+		AC0000000000000000000006 /* Embed microphone helper */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Embed microphone helper";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "exec \"$SRCROOT/../scripts/embed-microphone.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
 /* End PBXShellScriptBuildPhase section */

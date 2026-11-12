@@ -260,6 +260,100 @@ describe("the app carries seashell's speech engine", () => {
   });
 });
 
+// MARK: - conch Microphone
+
+/** A swiftc that logs its argv and writes `-o`'s file, so the phase can be run without a toolchain. */
+function fakeSwiftc(root: string): string {
+  const log = join(root, "swiftc.log");
+  return tool(root, "swiftc", `
+echo "$*" >> '${log}'
+out=""; while [[ $# -gt 0 ]]; do [[ "$1" == "-o" ]] && out="$2"; shift; done
+printf '#!/bin/bash\necho helper\n' > "$out"; chmod 0755 "$out"`);
+}
+
+describe("the app carries conch Microphone, seashell's recorder", () => {
+  test("it is compiled from conch's copy of seashell's source with its Info.plist embedded, put in Contents/Helpers, and signed as itself with the microphone entitlement", async () => {
+    const root = scratch();
+    const { codesign, lipo, calls } = recorders(root);
+    const swiftc = fakeSwiftc(root);
+    const result = await runPhase("scripts/embed-microphone.sh", xcodeEnv(root, { SWIFTC: swiftc, CODESIGN: codesign, LIPO: lipo }));
+    expect(result.stderr).toBe("");
+    expect(result.code).toBe(0);
+    const helper = join(contents(root), "Helpers", "conch-microphone");
+    expect(statSync(helper).mode & 0o111).toBe(0o111);
+    const compiled = readFileSync(join(root, "swiftc.log"), "utf8").trim();
+    expect(compiled).toContain(repo("mac-app/helpers/microphone/conch-microphone.swift"));
+    expect(compiled).toContain("-module-name ConchMicrophone");
+    expect(compiled).toContain("-target arm64-apple-macos14.0");
+    expect(compiled).toContain(`-sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker ${repo("mac-app/helpers/microphone/Info.plist")}`);
+    expect(calls()).toEqual([[
+      "codesign", "--force", "--sign", "0123456789ABCDEF0123456789ABCDEF01234567", "--options", "runtime",
+      "--identifier", "ai.blueprintstudio.conch.microphone",
+      "--entitlements", repo("mac-app/helpers/conch-microphone.entitlements"), "--timestamp=none", helper,
+    ]]);
+    const notices = join(contents(root), "Resources", "ThirdParty", "seashell");
+    expect(readFileSync(join(notices, "LICENSE"), "utf8")).toStartWith("MIT License");
+    expect(readFileSync(join(notices, "NOTICE"), "utf8")).toContain("native/macos-microphone.swift");
+  });
+
+  test("a universal build compiles one slice per architecture and joins them", async () => {
+    const root = scratch();
+    const { codesign, lipo, calls } = recorders(root);
+    const result = await runPhase("scripts/embed-microphone.sh", xcodeEnv(root, { ARCHS: "arm64 x86_64", SWIFTC: fakeSwiftc(root), CODESIGN: codesign, LIPO: lipo }));
+    expect(result.code).toBe(0);
+    const compiled = readFileSync(join(root, "swiftc.log"), "utf8").trim().split("\n");
+    expect(compiled.map((line) => /-target (\S+)/.exec(line)?.[1])).toEqual(["arm64-apple-macos14.0", "x86_64-apple-macos14.0"]);
+    expect(calls().filter((call) => call[0] === "lipo").map((call) => call.at(-1))).toEqual([join(contents(root), "Helpers", "conch-microphone")]);
+  });
+
+  test("a Release build that cannot compile it fails; a Debug build warns and records with sox", async () => {
+    const root = scratch();
+    const { codesign, lipo } = recorders(root);
+    const broken = tool(root, "broken-swiftc", "exit 1");
+    const release = await runPhase("scripts/embed-microphone.sh", xcodeEnv(root, { SWIFTC: broken, CODESIGN: codesign, LIPO: lipo }));
+    expect(release.code).toBe(1);
+    expect(release.stderr).toContain("a Release conch.app must carry conch Microphone");
+    const debug = await runPhase("scripts/embed-microphone.sh", xcodeEnv(root, { CONFIGURATION: "Debug", SWIFTC: broken, CODESIGN: codesign, LIPO: lipo }));
+    expect(debug.code).toBe(0);
+    expect(debug.stdout).toContain("records with sox");
+  });
+
+  test("an unsigned build embeds it without signing", async () => {
+    const root = scratch();
+    const { codesign, lipo, calls } = recorders(root);
+    const result = await runPhase("scripts/embed-microphone.sh", xcodeEnv(root, { CODE_SIGNING_ALLOWED: "NO", EXPANDED_CODE_SIGN_IDENTITY: "", SWIFTC: fakeSwiftc(root), CODESIGN: codesign, LIPO: lipo }));
+    expect(result.code).toBe(0);
+    expect(existsSync(join(contents(root), "Helpers", "conch-microphone"))).toBeTrue();
+    expect(calls()).toEqual([]);
+  });
+
+  test("its source is seashell's recorder at a named commit, and only its identity differs", () => {
+    const source = read("mac-app/helpers/microphone/conch-microphone.swift");
+    expect(source).toMatch(/^\/\/ native\/macos-microphone\.swift at [0-9a-f]{40}$/m);
+    expect(source).toMatch(/\(sha256 [0-9a-f]{64}\)/);
+    // The identity is conch's: its own responsibility variable, usage, error domain and permission message.
+    expect(source).toContain('private let disclaimedEnvironment = "CONCH_MICROPHONE_RESPONSIBLE"');
+    expect(source).toContain("Microphone access is off for conch Microphone.");
+    expect(source).not.toMatch(/SEASHELL_|seashell-microphone|SeashellMicrophone|seashell meeting/);
+    // What made it worth taking: its own downmix (never AVAudioConverter's, which gives zeros for the
+    // built-in mic's discrete layout), rebuilds on a device change, a stall watchdog, the permission exit.
+    expect(source).toContain("final class MonoConverter");
+    expect(source).toContain("private let permissionExitCode: Int32 = 77");
+    expect(source).toContain(".AVAudioEngineConfigurationChange");
+    expect(source).toContain("kAudioHardwarePropertyDefaultInputDevice");
+    expect(source).toContain('scheduleRebuild("input stopped delivering audio")');
+    expect(source).toContain('arguments.contains("--mix-check")');
+    // It writes no device property: only listeners are added on CoreAudio objects.
+    expect(source).not.toMatch(/AudioObjectSetPropertyData|AudioDeviceSetProperty|AudioUnitSetProperty/);
+    const plist = read("mac-app/helpers/microphone/Info.plist");
+    expect(plist).toContain("<string>ai.blueprintstudio.conch.microphone</string>");
+    expect(plist).toContain("<string>conch Microphone</string>");
+    expect(plist).toMatch(/<key>ConchHelperProtocol<\/key>\s*<string>1<\/string>/);
+    expect(plist).toContain("<key>NSMicrophoneUsageDescription</key>");
+    for (const [, comment] of plist.matchAll(/<!--([\s\S]*?)-->/g)) expect(comment).not.toContain("--");
+  });
+});
+
 // MARK: - The project and the scripts that ship it
 
 describe("the build wires it in, and every shipping script checks it", () => {
@@ -273,9 +367,11 @@ describe("the build wires it in, and every shipping script checks it", () => {
     expect(at("Embed uv helper")).toBeGreaterThan(at("Resources"));
     expect(at("Embed conch daemon")).toBeGreaterThan(at("Embed uv helper"));
     expect(at("Embed speech engine")).toBeGreaterThan(at("Embed conch daemon"));
+    expect(at("Embed microphone helper")).toBeGreaterThan(at("Embed speech engine"));
     const section = project.slice(project.indexOf("/* Begin PBXShellScriptBuildPhase section */"), project.indexOf("/* End PBXShellScriptBuildPhase section */"));
     expect(section).toContain('shellScript = "exec \\"$SRCROOT/../scripts/embed-daemon.sh\\"\\n";');
     expect(section).toContain('shellScript = "exec \\"$SRCROOT/../scripts/embed-engine.sh\\"\\n";');
+    expect(section).toContain('shellScript = "exec \\"$SRCROOT/../scripts/embed-microphone.sh\\"\\n";');
   });
 
   test("the dev install prefers the checkout and checks the bundle it still carries", () => {
@@ -298,7 +394,9 @@ describe("the build wires it in, and every shipping script checks it", () => {
 
   test("the bundle check covers every helper: present, Developer ID, Hardened Runtime, the app's architectures, the entitlements, the version", () => {
     const check = read("scripts/check-app-bundle.sh");
-    expect(check).toContain("for helper in conch-daemon whisper-cli whisper-server sox tmux; do");
+    expect(check).toContain("for helper in conch-daemon whisper-cli whisper-server sox conch-microphone tmux; do");
+    expect(check).toContain("Identifier=ai.blueprintstudio.conch.microphone");
+    expect(check).toContain('"$HELPERS/conch-microphone" --mix-check --no-disclaim');
     expect(check).toContain("'^Authority=Developer ID Application'");
     expect(check).toContain("runtime");
     expect(check).toContain('[[ "$archs" == "$app_archs" ]]');
@@ -313,10 +411,12 @@ describe("the build wires it in, and every shipping script checks it", () => {
     expect([...daemon.matchAll(/<key>([^<]+)<\/key>/g)].map((m) => m[1])).toEqual(["com.apple.security.cs.allow-jit"]);
     const sox = read("mac-app/helpers/sox.entitlements");
     expect([...sox.matchAll(/<key>([^<]+)<\/key>/g)].map((m) => m[1])).toEqual(["com.apple.security.device.audio-input"]);
+    const microphone = read("mac-app/helpers/conch-microphone.entitlements");
+    expect([...microphone.matchAll(/<key>([^<]+)<\/key>/g)].map((m) => m[1])).toEqual(["com.apple.security.device.audio-input"]);
  
     // codesign hands these to AMFI's strict XML parser, which refuses a comment
     // holding "--" (plutil -lint accepts it): measured, the Release build failed.
-    for (const text of [daemon, sox]) {
+    for (const text of [daemon, sox, microphone]) {
       for (const [, comment] of text.matchAll(/<!--([\s\S]*?)-->/g)) expect(comment).not.toContain("--");
     }
   });

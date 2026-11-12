@@ -918,13 +918,25 @@ export async function runInstall(cfg: Pick<Config, "claudeDir">): Promise<HooksI
   return { changed, file: settingsPath, backup };
 }
 
+/**
+ * The conch Microphone the app's daemon records with (microphone-helper.ts):
+ * the doctor probes that recorder, as it probed sox, under the permission of
+ * whatever runs the doctor.
+ */
+function doctorMicrophone(cfg: Pick<Config, "recorder" | "microphoneHelper">): string | undefined {
+  return cfg.recorder === "sox" || !cfg.microphoneHelper ? undefined : cfg.microphoneHelper;
+}
+
 /** Sanity-check every external dependency conch shells out to. */
 export async function runDoctor(cfg: Config): Promise<void> {
   console.log(`conch ${CONCH_VERSION}`);
   const checks: Array<[string, () => boolean | Promise<boolean>]> = [
     ["say (TTS)", () => binaryExists("say")],
     ["afplay (bell)", () => binaryExists("afplay")],
-    [`sox (mic capture) at ${cfg.soxBin}`, () => cfg.soxBin.includes("/") ? existsSync(cfg.soxBin) : binaryExists(cfg.soxBin)],
+    // conch Microphone records when the app carries it; sox is its fallback (microphone-helper.ts).
+    cfg.microphoneHelper
+      ? [`conch Microphone (mic capture) at ${cfg.microphoneHelper}`, () => existsSync(cfg.microphoneHelper)]
+      : [`sox (mic capture) at ${cfg.soxBin}`, () => cfg.soxBin.includes("/") ? existsSync(cfg.soxBin) : binaryExists(cfg.soxBin)],
     [`whisper-cli at ${cfg.whisperCli}`, () => existsSync(cfg.whisperCli)],
     [`whisper model at ${cfg.whisperModel}`, () => existsSync(cfg.whisperModel)],
     [`VAD model at ${cfg.vadModel}`, () => existsSync(cfg.vadModel)],
@@ -969,7 +981,7 @@ export async function runDoctor(cfg: Config): Promise<void> {
   console.log(formatDoctorProbe(checkSpeechEngine(cfg)));
   console.log(formatDoctorProbe(checkConchBinaries()));
   console.log(formatDoctorProbe(await checkAgentBinaries()));
-  console.log(formatDoctorProbe(await checkMicrophone({ sox: cfg.soxBin })));
+  console.log(formatDoctorProbe(await checkMicrophone({ sox: cfg.soxBin, native: doctorMicrophone(cfg) })));
   console.log(formatDoctorProbe(await checkTts(cfg)));
   console.log(formatDoctorProbe(await checkWhisperServer(cfg)));
   console.log(formatDoctorProbe(checkNaturalVoices(cfg)));

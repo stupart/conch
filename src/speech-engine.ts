@@ -6,15 +6,18 @@ import { breadcrumb } from "./loop-watchdog.ts";
 import type { TmuxBinary } from "./tmux-binary.ts";
 
 /**
- * conch's speech engine is seashell's: sox captures the microphone, whisper.cpp
- * (whisper-cli, and the warm whisper-server) transcribes it with Metal, and the
- * Silero VAD model trims the silence. Tyler: "we built our audio capture on
- * seashell because we made such a great transcription tool — don't go stripping
- * that out and replacing with Apple defaults."
+ * conch's speech engine is seashell's: seashell's native recorder (conch
+ * Microphone, microphone-helper.ts; sox before 2026-11-11, and still the
+ * fallback) captures the microphone, whisper.cpp (whisper-cli, and the warm
+ * whisper-server) transcribes it with Metal, and the Silero VAD model trims the
+ * silence. Tyler: "we built our audio capture on seashell because we made such
+ * a great transcription tool — don't go stripping that out and replacing with
+ * Apple defaults."
  *
  * conch.app carries the engine (scripts/embed-engine.sh builds the pinned
  * whisper.cpp and a trimmed sox into Contents/Helpers and puts the VAD model in
- * Contents/Resources/models), so a downloaded conch needs nothing installed.
+ * Contents/Resources/models; scripts/embed-microphone.sh compiles conch
+ * Microphone beside them), so a downloaded conch needs nothing installed.
  * The whisper model is 574 MB — too big to ship inside the app — so the daemon
  * fetches it on first run, pinned by sha256, and says so while it does.
  *
@@ -67,6 +70,14 @@ export interface SpeechEngine {
   whisperServer: EnginePart;
   whisperModel: EnginePart;
   vadModel: EnginePart;
+  /**
+   * conch Microphone, the native recorder (microphone-helper.ts): conch.app's
+   * Contents/Helpers/conch-microphone, or CONCH_MICROPHONE. Never seashell's
+   * copy: macOS ties a Microphone grant to the binary it was given for, and a
+   * seashell release replaces its own.
+   */
+  microphone: EnginePart;
+  /** The fallback recorder, and the `recorder` setting's other choice. */
   sox: EnginePart;
 }
 
@@ -209,8 +220,15 @@ export function resolveSpeechEngine(options: ResolveEngineOptions = {}): SpeechE
     [join(models, VAD_MODEL.file), "conch"] as const,
   ], file, join(models, VAD_MODEL.file));
 
-  // seashell captures with Homebrew's sox itself (its formula depends on it),
-  // so there is no seashell tier here: the app's sox, then Homebrew's, then PATH.
+  const microphone = explicit("CONCH_MICROPHONE", executable) ?? first(
+    apps.map((app) => [join(app, "Contents", "Helpers", "conch-microphone"), "conch.app"] as const),
+    executable,
+    "",
+  );
+
+  // seashell's Homebrew formula depends on Homebrew's sox, and its own
+  // recorder is not conch's to use (above), so there is no seashell tier here:
+  // the app's sox, then Homebrew's, then PATH.
   let sox = explicit("CONCH_SOX", executable) ?? first([
     ...apps.map((app) => [join(app, "Contents", "Helpers", "sox"), "conch.app"] as const),
     ...brew.map((prefix) => [join(prefix, "bin", "sox"), "homebrew"] as const),
@@ -226,6 +244,7 @@ export function resolveSpeechEngine(options: ResolveEngineOptions = {}): SpeechE
     whisperServer: binary("whisper-server", "CONCH_WHISPER_SERVER"),
     whisperModel,
     vadModel,
+    microphone,
     sox,
   };
 }
@@ -618,7 +637,10 @@ export class SpeechEngineManager {
         server: { source: engine.whisperServer.source, path: engine.whisperServer.path },
         model: { source: engine.whisperModel.source, path: engine.whisperModel.path },
         vad: { source: engine.vadModel.source, path: engine.vadModel.path },
-        capture: { source: engine.sox.source, path: engine.sox.path },
+        // What records the microphone: conch Microphone when the app carries it, sox otherwise (microphone-helper.ts).
+        capture: engine.microphone.found
+          ? { source: engine.microphone.source, path: engine.microphone.path }
+          : { source: engine.sox.source, path: engine.sox.path },
         tmux: { found: tmux.found, path: tmux.path, source: tmux.source },
       },
       daemon: { ...this.options.daemon },
@@ -641,7 +663,8 @@ export class SpeechEngineManager {
   private readyDetail(): string {
     const engine = this.options.engine;
     const from = (part: EnginePart) => (part.source === "conch.app" ? "the app" : part.source === "conch" ? "conch's download" : part.source);
-    return `whisper from ${from(engine.whisperCli)}, model from ${from(engine.whisperModel)}, capture from ${from(engine.sox)}`;
+    const capture = engine.microphone.found ? `${from(engine.microphone)}'s conch Microphone` : from(engine.sox);
+    return `whisper from ${from(engine.whisperCli)}, model from ${from(engine.whisperModel)}, capture from ${capture}`;
   }
 
   private async resolve(): Promise<void> {
@@ -672,11 +695,11 @@ export class SpeechEngineManager {
       return;
     }
     this.settleReady(true);
-    if (!engine.sox.found) {
+    if (!engine.sox.found && !engine.microphone.found) {
       this.setStatus({
         state: "off",
         reason: "no sox",
-        detail: "no sox to capture the microphone — the conch app carries one; or set CONCH_SOX",
+        detail: "nothing to capture the microphone with — the conch app carries conch Microphone and sox; or set CONCH_SOX",
       });
       return;
     }

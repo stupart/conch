@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- conch-microphone opens the microphone, as its own responsible process:
+	     it relaunches itself so macOS asks for, and remembers, conch
+	     Microphone's own permission. Under the Hardened Runtime a process that
+	     touches the audio input needs this entitlement itself, or macOS hands
+	     it silence and says nothing, the failure seashell met with its
+	     background recorder. -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+</dict>
+</plist>

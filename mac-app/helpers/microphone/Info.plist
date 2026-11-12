@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Embedded in conch-microphone (scripts/build-microphone.sh): macOS lists
+       this name under Privacy and Security, Microphone, and asks with this
+       usage string on the helper's own behalf. -->
+  <key>CFBundleIdentifier</key>
+  <string>ai.blueprintstudio.conch.microphone</string>
+  <key>CFBundleName</key>
+  <string>conch Microphone</string>
+  <!-- Bump only when the PCM or exit-code contract changes. conch keeps one
+       installed copy and replaces it only on a new protocol
+       (src/microphone-helper.ts), because macOS asks for Microphone access
+       again for every new copy. -->
+  <key>ConchHelperProtocol</key>
+  <string>1</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>conch listens for your reply after it reads a session's turn aloud, and for dictation. Audio stays on this Mac.</string>
+</dict>
+</plist>
