@@ -196,8 +196,9 @@ describe("one-command setup", () => {
     expect(ready).toContain("macOS will ask for microphone access");
     expect(ready).not.toContain("System Settings");
     expect(ready).toContain("If you miss the prompt, run `conch doctor`.");
+    // `conch` attached to a tmux dashboard nothing made after 2026-08-10; now it says where the dashboard is.
     expect(ready).toContain(
-      "WHERE TO LOOK — `conch` (the terminal dashboard, also what to use over ssh)",
+      "WHERE TO LOOK — `conch` says where the dashboard is; `conch sessions` lists every session, also over ssh",
     );
     expect(ready).not.toContain("Mac app");
     expect(ready).toContain("IF IT'S QUIET — `conch doctor`");
