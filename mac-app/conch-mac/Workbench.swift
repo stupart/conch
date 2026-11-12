@@ -1,5 +1,6 @@
 import AppKit
 import ConchDesign
+import Security
 import SwiftUI
 import WebKit
 
@@ -26,7 +27,7 @@ import WebKit
 /// An agent asks him to act in a tab (`browser_ask`, the tab's `ask`): the tab says Needs you and takes the stage when
 /// it may (`Workbench.summons`), and his Done there (`answer`) tells the daemon, which tells the agent. Whether he is
 /// using the Workdesk is his hand in it anywhere, its strip and every pane (`watch`, `WorkdeskTouchArea`), and whether he
-/// is typing (`lastTyped`). A page that asks for a passkey is heard (`WorkbenchPasskeys`) and says so under its bar.
+/// is typing (`lastTyped`). A page that offers a passkey is heard (`WorkbenchPasskeys`) and says so under its bar.
 ///
 /// Tyler, 2026-10-09: "Agents's pages should live as tabs in the deliverables plane just like the deliverables."
 /// 2026-10-16: "letting me sign-in in an in-conch browser session and letting agents use that browser in the app so i
@@ -486,8 +487,8 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
     @Published private(set) var popupCount = 0
     /// Why the last load didn't, when it didn't: said over the page.
     @Published private(set) var failure: String?
-    /// When the page asked for a passkey, which conch's browser can't give (`WorkbenchPasskeys`): said under the bar until
-    /// Tyler dismisses it or the page goes to another site.
+    /// When the page offered a passkey, which conch's browser can't use yet (`WorkbenchPasskeys`): said under the bar
+    /// until Tyler dismisses it or the page goes to another site.
     @Published private(set) var passkeyAsked: Date?
     /// The site the page was on when it asked.
     private var passkeySite: String?
@@ -516,13 +517,15 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = store
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
-        // The passkey watcher: the page's half in its own world, conch's half and the handler in conch's alone, so the
-        // page's window gains nothing. The windows it opens are made with this configuration, so they have it too.
-        let event = WorkbenchPasskeys.eventName()
-        let content = configuration.userContentController
-        content.addUserScript(WKUserScript(source: WorkbenchPasskeys.pageScript(event: event), injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page))
-        content.addUserScript(WKUserScript(source: WorkbenchPasskeys.listenerScript(event: event), injectionTime: .atDocumentStart, forMainFrameOnly: false, in: Self.world))
-        content.add(messages, contentWorld: Self.world, name: WorkbenchPasskeys.messageHandler)
+        // The passkey watcher, in conch's world alone (2026-11-11): nothing of the page's is wrapped or changed, which a
+        // site's bot check would read as tampering (`WorkbenchPasskeys`). The windows the page opens are made with this
+        // configuration, so they have it too. Once Apple grants conch the browser passkey entitlement, passkeys work and
+        // there is nothing to say.
+        if !Self.passkeysWork {
+            let content = configuration.userContentController
+            content.addUserScript(WKUserScript(source: WorkbenchPasskeys.script, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: Self.world))
+            content.add(messages, contentWorld: Self.world, name: WorkbenchPasskeys.messageHandler)
+        }
         // An agent's click on "Continue with Google" has to be able to open its window.
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         webView = WorkbenchWebView(frame: CGRect(origin: .zero, size: Self.parkedSize), configuration: configuration)
@@ -657,7 +660,17 @@ final class WorkbenchPage: NSObject, ObservableObject, WKNavigationDelegate, WKU
 
     // MARK: Passkeys
 
-    /// The page asked for a passkey (`WorkbenchPasskeys`): said under the bar, against the site it was on.
+    /// Whether this build may use passkeys for any site: signed with the entitlement Apple grants browsers
+    /// (`WorkbenchPasskeys.entitlement`), read from the app's own signature once.
+    static let passkeysWork: Bool = {
+        guard let task = SecTaskCreateFromSelf(nil),
+              let value = SecTaskCopyValueForEntitlement(task, WorkbenchPasskeys.entitlement as CFString, nil)
+        else { return false }
+        return (value as? Bool) == true
+    }()
+
+    /// The page offered a passkey, or Tyler pressed one (`WorkbenchPasskeys`): said under the bar, against the site it
+    /// was on.
     fileprivate func heardPasskey(in view: WKWebView?) {
         guard !isClosed else { return }
         passkeySite = Self.site(of: (view ?? front).url)
@@ -1419,8 +1432,8 @@ struct WorkbenchPane: View {
                 .fill(ConchPalette.divider)
                 .frame(height: 1)
 
-            // Under the bar, a line the tab says to Tyler: its agent needs him here, with Done; the page asked for a
-            // passkey this browser can't give, with its ×.
+            // Under the bar, a line the tab says to Tyler: its agent needs him here, with Done; the page offers a passkey
+            // this browser can't use yet, with Open in Browser, where his passkeys work, and its ×.
             if let ask = tab.ask {
                 WorkbenchNotice(.needsYou(agent: agent, reason: ask.reason)) { store.answer(tab) }
                 Rectangle()
@@ -1428,10 +1441,10 @@ struct WorkbenchPane: View {
                     .frame(height: 1)
             }
             if page.passkeyAsked != nil {
-                WorkbenchNotice(.passkeys) {
+                WorkbenchNotice(.passkeys, action: {
                     store.touched()
                     page.dismissPasskeys()
-                }
+                }, open: page.url.map { url in { store.touched(); openInBrowser(url) } })
                 Rectangle()
                     .fill(ConchPalette.divider)
                     .frame(height: 1)

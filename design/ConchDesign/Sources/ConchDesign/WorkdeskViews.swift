@@ -735,14 +735,17 @@ public struct WorkbenchNotice: View {
     public enum Kind: Equatable, Sendable {
         /// `agent` asked the user to `reason` in this tab (`browser_ask`).
         case needsYou(agent: String, reason: String)
-        /// The page asked for a passkey (`WorkbenchPasskeys`).
+        /// The page offers a passkey this browser can't use yet (`WorkbenchPasskeys`).
         case passkeys
     }
 
     let kind: Kind
     /// Done, or the ×.
     let action: () -> Void
+    /// The passkeys line's Open in Browser: the page in Tyler's own browser, where his passkeys work (2026-11-11).
+    let open: (() -> Void)?
     @State private var isHovered: Bool
+    @State private var isOpenHovered = false
 
     /// Tall enough for the Done capsule with 5 above and below; a second line, when the pane is narrow, grows it.
     public static let height: CGFloat = 30
@@ -762,10 +765,11 @@ public struct WorkbenchNotice: View {
         }
     }
 
-    public init(_ kind: Kind, isHovered: Bool = false, action: @escaping () -> Void) {
+    public init(_ kind: Kind, isHovered: Bool = false, action: @escaping () -> Void, open: (() -> Void)? = nil) {
         self.kind = kind
         _isHovered = State(initialValue: isHovered)
         self.action = action
+        self.open = open
     }
 
     public var body: some View {
@@ -849,6 +853,23 @@ public struct WorkbenchNotice: View {
             .accessibilityLabel("Done")
             .accessibilityHint("Tells the agent you've done it")
         case .passkeys:
+            if let open {
+                Button(action: open) {
+                    Text("Open in Browser")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(ConchColor.textPrimary)
+                        .padding(.horizontal, 10)
+                        .frame(height: Self.doneHeight)
+                        .background(Self.doneShape.fill(isOpenHovered ? AnyShapeStyle(ConchColor.fillSelected) : AnyShapeStyle(ConchColor.surface)))
+                        .overlay(Self.doneShape.strokeBorder(ConchColor.hairlineStrong, lineWidth: 1))
+                        .contentShape(Self.doneShape)
+                }
+                .buttonStyle(.plain)
+                .onHover { isOpenHovered = $0 }
+                .fixedSize()
+                .help("Open this page in your browser, where your passkeys work")
+                .accessibilityLabel("Open in Browser")
+            }
             // The bar's close button itself, under it: its 22-point target on its axis, 18 from the pane's edge.
             Button(action: action) {
                 Image(systemName: "xmark")

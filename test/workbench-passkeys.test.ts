@@ -4,10 +4,12 @@ import { join } from "node:path";
 import { createContext, runInContext } from "node:vm";
 
 /**
- * The passkey watcher the Mac app puts in every Workbench page (ConchDesign `WorkbenchPasskeys`), read out of its Swift
- * file and run in a realm of its own against a pretend `navigator.credentials`: a passkey asked for is said, by an event
- * whose name is the page's own, and the page gets exactly what it would have got; the wrappers pass for the originals.
- * WorkbenchPasskeysTests runs the same script in real WebKit.
+ * The passkey watcher the Mac app puts in every Workbench page, in conch's own world (ConchDesign `WorkbenchPasskeys`),
+ * read out of its Swift file and run in a realm of its own against a pretend page: a page that shows a way to use a
+ * passkey or a security key is said once, one that only mentions them isn't, and Tyler pressing one is said at once. It
+ * touches nothing of the page's: it never names `navigator.credentials` or `Function.prototype`, which the old watcher
+ * wrapped in the page's own world and CreepJS read as a stealth plugin (2026-11-11). WorkbenchPasskeysTests runs the same
+ * script in real WebKit.
  */
 
 const swift = readFileSync(join(import.meta.dir, "..", "design/ConchDesign/Sources/ConchDesign/WorkbenchPasskeys.swift"), "utf8");
@@ -21,86 +23,114 @@ function literal(name: string): string {
   return swift.slice(start + open.length, end).split("\n").map((line) => line.replace(/^ {4}/, "")).join("\n");
 }
 
-const EVENT = "conch-pk-0123456789abcdef0123456789abcdef";
+const words = /public static let words = #"(.*)"#/.exec(swift)?.[1] ?? "";
+const source = literal("source").replace("__CONCH_HANDLER__", "conchPasskeys").replace("__CONCH_WORDS__", words);
 
-/** A realm with a pretend `navigator.credentials`, the page script run in it, and the events it dispatched. */
-function page() {
-  const context = createContext({});
-  runInContext(`
-    globalThis.heard = [];
-    class Event { constructor(type) { this.type = type; } }
-    class EventTarget { dispatchEvent(event) { heard.push(event.type); return true; } }
-    class Document extends EventTarget {}
-    class CredentialsContainer {
-      get(options) { return options && options.fail ? Promise.reject(new TypeError("no")) : Promise.resolve({ asked: options }); }
-      create(options) { return Promise.reject(Object.assign(new Error("not allowed"), { name: "NotAllowedError" })); }
-    }
-    globalThis.Event = Event;
-    globalThis.EventTarget = EventTarget;
-    globalThis.CredentialsContainer = CredentialsContainer;
-    globalThis.window = globalThis;
-    globalThis.document = new Document();
-    globalThis.navigator = { credentials: new CredentialsContainer() };
-    globalThis.originals = { get: CredentialsContainer.prototype.get, create: CredentialsContainer.prototype.create, toString: Function.prototype.toString };
-    globalThis.sources = { get: Function.prototype.toString.call(originals.get), toString: Function.prototype.toString.call(originals.toString) };
-  `, context);
-  runInContext(literal("page").replace("__CONCH_EVENT__", EVENT), context);
-  return { run: (source: string) => runInContext(source, context), heard: () => runInContext("heard.slice()", context) as string[] };
+class El {
+  tagName: string;
+  textContent: string;
+  attrs: Record<string, string>;
+  width: number;
+  parent?: El;
+  constructor(tag: string, text = "", attrs: Record<string, string> = {}, width = 120) {
+    this.tagName = tag.toUpperCase();
+    this.textContent = text;
+    this.attrs = attrs;
+    this.width = width;
+  }
+  getAttribute(name: string) { return this.attrs[name] ?? null; }
+  getBoundingClientRect() { return { width: this.width, height: this.width ? 20 : 0 }; }
+  matches(selector: string) {
+    return selector.split(",").map((part) => part.trim()).some((part) => {
+      const role = /^\[role="(\w+)"\]$/.exec(part);
+      return role ? this.attrs.role === role[1] : part === this.tagName.toLowerCase();
+    });
+  }
+  closest(selector: string): El | null { return this.matches(selector) ? this : this.parent?.closest(selector) ?? null; }
+}
+
+/** A realm with a pretend page, the watcher run in it, and what it posted. */
+function page(elements: El[]) {
+  const posted: string[] = [];
+  const timers: Array<() => void> = [];
+  const listeners: Record<string, Array<(event: unknown) => void>> = {};
+  const observers: Array<() => void> = [];
+  const document = {
+    body: {},
+    all: elements,
+    querySelectorAll: (selector: string) => document.all.filter((element) => element.matches(selector)),
+    addEventListener: (type: string, listener: () => void) => { (listeners[`doc:${type}`] ??= []).push(listener); },
+  };
+  const window = {
+    webkit: { messageHandlers: { conchPasskeys: { postMessage: (what: string) => posted.push(what) } } },
+    setTimeout: (run: () => void) => { timers.push(run); return timers.length; },
+    addEventListener: (type: string, listener: (event: unknown) => void) => { (listeners[type] ??= []).push(listener); },
+    MutationObserver: class { constructor(run: () => void) { observers.push(run); } observe() {} },
+  };
+  const context = createContext({ window, document });
+  runInContext(source, context);
+  return {
+    posted,
+    document,
+    loaded: () => { for (const listener of listeners["doc:DOMContentLoaded"] ?? []) listener({}); },
+    changed: () => { for (const run of observers) run(); },
+    tick: () => { while (timers.length) timers.shift()!(); },
+    click: (target: El, isTrusted = true) => { for (const listener of listeners.click ?? []) listener({ isTrusted, target }); },
+  };
 }
 
 describe("the passkey watcher", () => {
-  test("a passkey asked for is said by the page's own event, then the original answers, exactly", async () => {
-    const p = page();
-    const options = await p.run("navigator.credentials.get({ publicKey: { challenge: 1 } })");
-    expect(options).toEqual({ asked: { publicKey: { challenge: 1 } } });
-    await expect(p.run("navigator.credentials.create({ publicKey: {} })")).rejects.toMatchObject({ name: "NotAllowedError" });
-    await expect(p.run("navigator.credentials.get({ publicKey: {}, fail: true })")).rejects.toMatchObject({ message: "no" });
-    expect(p.heard()).toEqual([`${EVENT}-get`, `${EVENT}-create`, `${EVENT}-get`]);
+  test("a page that shows a way in with a passkey or a security key is said once", () => {
+    for (const element of [
+      new El("button", "Sign in with a passkey"),
+      new El("a", "Use a security key"),
+      new El("h1", "Use your passkey to confirm it's really you"),
+      new El("div", "", { role: "button", "aria-label": "Sign in with Passkey" }),
+    ]) {
+      const p = page([new El("h1", "Sign in"), element]);
+      p.loaded();
+      p.tick();
+      p.changed();
+      p.tick();
+      expect(p.posted, element.textContent || element.attrs["aria-label"]).toEqual(["offer"]);
+    }
   });
 
-  test("the quiet autofill offer, a password, nothing at all, or options whose getter throws: not said, and passed on", async () => {
-    const p = page();
-    await p.run("navigator.credentials.get({ publicKey: {}, mediation: 'conditional' })");
-    await p.run("navigator.credentials.get({ password: true })");
-    await p.run("navigator.credentials.get()");
-    await p.run("navigator.credentials.get(Object.defineProperty({}, 'publicKey', { get() { throw new Error('page') } }))");
-    expect(p.heard()).toEqual([]);
+  test("words in a paragraph, a passkey button not shown, or nothing: not said", () => {
+    const p = page([new El("p", "Read our guide to passkeys"), new El("button", "Use a passkey", {}, 0), new El("button", "Continue")]);
+    p.loaded();
+    p.tick();
+    expect(p.posted).toEqual([]);
   });
 
-  test("the wrappers pass for the originals: source, name, length, the property's attributes, and toString's own", () => {
-    const p = page();
-    expect(p.run("Function.prototype.toString.call(CredentialsContainer.prototype.get) === sources.get")).toBe(true);
-    expect(p.run("String(navigator.credentials.get) === sources.get")).toBe(true);
-    expect(p.run("Function.prototype.toString.call(Function.prototype.toString) === sources.toString")).toBe(true);
-    expect(p.run("Function.prototype.toString.toString() === sources.toString")).toBe(true);
-    expect(p.run("[CredentialsContainer.prototype.get.name, CredentialsContainer.prototype.get.length, CredentialsContainer.prototype.create.name]")).toEqual(["get", 1, "create"]);
-    expect(p.run("JSON.stringify(Object.getOwnPropertyDescriptor(CredentialsContainer.prototype, 'get'), ['writable', 'enumerable', 'configurable'])"))
-      .toBe(JSON.stringify({ writable: true, enumerable: false, configurable: true }));
-    expect(p.run("Object.getOwnPropertyDescriptor(Function.prototype, 'toString').enumerable")).toBe(false);
-    // Not the same function, which nothing a page does can tell but identity with a reference it kept from before.
-    expect(p.run("CredentialsContainer.prototype.get !== originals.get")).toBe(true);
-    // Nothing new on the page's window.
-    expect(p.run("Object.getOwnPropertyNames(globalThis).filter((key) => /conch|webkit/i.test(key))")).toEqual([]);
+  test("a sign-in's later step is heard when it comes, a second after the page changes, never more often", () => {
+    const p = page([new El("button", "Next")]);
+    p.loaded();
+    p.tick();
+    expect(p.posted).toEqual([]);
+    p.document.all.push(new El("h2", "Use your passkey"));
+    p.changed();
+    p.changed();
+    p.changed();
+    p.tick();
+    expect(p.posted).toEqual(["offer"]);
   });
 
-  test("a page without navigator.credentials is left alone", () => {
-    const context = createContext({ window: {} });
-    runInContext("window.window = window; globalThis.before = Function.prototype.toString;", context);
-    runInContext(literal("page").replace("__CONCH_EVENT__", EVENT), context);
-    expect(runInContext("Function.prototype.toString === before", context)).toBe(true);
+  test("Tyler pressing one is said at once; the page's own click isn't his", () => {
+    const button = new El("button", "Sign in with a passkey");
+    const inner = new El("span", "");
+    inner.parent = button;
+    const p = page([button]);
+    p.click(inner);
+    p.click(button, false);
+    p.click(new El("button", "Continue"));
+    expect(p.posted).toEqual(["pressed"]);
   });
 
-  test("conch's half posts only the op, to its own handler, on the page's own event", () => {
-    const posted: unknown[] = [];
-    const listeners = new Map<string, () => void>();
-    const context = createContext({
-      window: { webkit: { messageHandlers: { conchPasskeys: { postMessage: (value: unknown) => posted.push(value) } } } },
-      document: { addEventListener: (type: string, listener: () => void) => listeners.set(type, listener) },
-    });
-    runInContext(literal("listener").replace("__CONCH_EVENT__", EVENT).replace("__CONCH_HANDLER__", "conchPasskeys"), context);
-    expect([...listeners.keys()]).toEqual([`${EVENT}-get`, `${EVENT}-create`]);
-    listeners.get(`${EVENT}-create`)!();
-    listeners.get(`${EVENT}-get`)!();
-    expect(posted).toEqual(["create", "get"]);
+  test("it touches nothing of the page's", () => {
+    for (const wrapped of ["navigator", "credentials", "Function.prototype", "toString", "defineProperty", "Proxy"]) {
+      expect(source, wrapped).not.toContain(wrapped);
+    }
+    expect(swift).toContain('public static let entitlement = "com.apple.developer.web-browser.public-key-credential"');
   });
 });

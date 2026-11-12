@@ -204,7 +204,7 @@ final class WorkbenchTests: XCTestCase {
     func testWhatTheTabTheRowAndThePasskeyNoticeSay() {
         XCTAssertEqual(Workbench.askWords(agent: "Claude", reason: "Sign in to Swatchbook"), "Claude needs you · Sign in to Swatchbook")
         XCTAssertEqual(Workbench.rowAskLine(reason: "Sign in to Swatchbook"), "Browser tab: Sign in to Swatchbook")
-        XCTAssertEqual(Workbench.passkeyWords, "Passkeys don't work in conch's browser yet · choose your password or another way to sign in")
+        XCTAssertEqual(Workbench.passkeyWords, "Passkeys don't work in conch's browser yet · sign in with your password or another way, or open this page in your browser")
     }
 
     func testATabAnAgentActedInHasItsDotUntilItIsShown() {
