@@ -591,6 +591,13 @@ struct WorkspaceFilesView: View {
 
 /// Where a deliverable with no link would be. When its agent gave a link and conch refused it, this says which and why
 /// (`linkRefused`): a refused link used to read exactly like one never given.
+/// What this app has filed of deliverables it couldn't show, so each is filed once while it runs (`DeliverableMisses`).
+@MainActor
+final class DeliverableMissLedger {
+    static let shared = DeliverableMissLedger()
+    var misses = DeliverableMisses()
+}
+
 private struct MissingDeliverableView: View {
     var refusal: String?
 
@@ -724,6 +731,8 @@ private struct ReviewContent: View {
     /// icon, a PDF stayed empty and a video failed silently.
     private func loadFailed(_ url: URL, _ error: Error) {
         linkFailure = "\(error.localizedDescription) — \(url.path)"
+        // Once for each file and reason while the app runs (`DeliverableMisses`): the pane says it every time.
+        guard DeliverableMissLedger.shared.misses.fileLoadFailure(sessionId: rowID, path: url.path, reason: error.localizedDescription) else { return }
         store.reportAppError(
             operation: "open-deliverable",
             message: error.localizedDescription,
@@ -856,9 +865,14 @@ private struct ReviewContent: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(24)
             .background(ConchPalette.surface)
-            .onAppear {
-                isWebLoading = false
-                // Said above, and filed too (A13), with the path it looked for.
+            .onAppear { isWebLoading = false }
+            // Said above, and filed (A13) only when it is one of conch's own copies, once, and still missing a moment
+            // later (`DeliverableMisses`, 2026-11-11): a file gone from a project folder isn't conch's failure, and a
+            // copy whose deliverable the daemon just dropped stops being shown before the moment is out.
+            .task(id: url.path) {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard !Task.isCancelled, !FileManager.default.fileExists(atPath: url.path),
+                      DeliverableMissLedger.shared.misses.fileMissing(sessionId: rowID, path: url.path) else { return }
                 store.reportAppError(
                     operation: "open-deliverable",
                     message: "Couldn't find \(url.lastPathComponent)",

@@ -30,6 +30,15 @@ import { ACCESS_STATES, discardCapture, type AccessState } from "./page-access.t
  * lost at the next restart. Room for twice that; reading it back at start is a few milliseconds.
  */
 export const MAX_REVIEWS_BYTES = 2_000_000;
+/**
+ * How long a dropped deliverable's copy outlives the drop: past the publish that tells the apps (`discardDroppedCopies`).
+ * `CONCH_COPY_GRACE_MS` shortens it for the end-to-end run, which watches a removed copy go.
+ */
+export const COPY_GRACE_MS = 60_000;
+function copyGraceMs(env: NodeJS.ProcessEnv = process.env): number {
+  const named = Number(env.CONCH_COPY_GRACE_MS);
+  return env.CONCH_COPY_GRACE_MS && Number.isFinite(named) && named >= 0 ? named : COPY_GRACE_MS;
+}
 
 type OrderedTurnEvent = Pick<TurnEvent, "type" | "sessionId" | "eventAt">;
 
@@ -147,6 +156,11 @@ export class SessionLedger {
   #savedSnapshots = new Set<string>();
   /** The store's version folders held deliverables named at the last save (`storeEntry`). */
   #savedCopies = new Set<string>();
+  /** Version folders no held deliverable names any more, and when that was seen: deleted after `COPY_GRACE_MS`. */
+  #droppedCopies = new Map<string, number>();
+  /** The grace a dropped copy gets here (`copyGraceMs`), and the timer that ends the next one's. */
+  readonly copyGraceMs = copyGraceMs();
+  #discardTimer: ReturnType<typeof setTimeout> | undefined;
   // session -> last time conch drove it. Cleanup is still the TTL in markInjected.
   readonly injectedAt = new Map<string, number>();
   // Sessions that finished while paused; latest per session.
@@ -508,7 +522,7 @@ export class SessionLedger {
    */
   saveReviews(): void {
     this.#discardDroppedPreviews();
-    this.#discardDroppedCopies();
+    this.discardDroppedCopies();
     this.#discardDroppedSnapshots();
     if (!this.reviewsPath) return;
     // A session holding nothing is saved for its `versions` alone, after every one that holds something.
@@ -633,13 +647,35 @@ export class SessionLedger {
    * A copy goes with its deliverable, as a snapshot does (`#discardDroppedPreviews`): removed
    * (`review_remove`, the Mac's menu), pushed out by the six-deliverable cap, or its session
    * forgotten. One the last save named and nothing holds now is deleted, from the store alone
-   * (`discardStoredCopy`). A copy made for a filing still being filed was never named, so it is
-   * never deleted from under it.
+   * (`discardStoredCopy`), once it has been dropped for `COPY_GRACE_MS`. A copy made for a filing
+   * still being filed was never named, so it is never deleted from under it.
+   *
+   * The grace is 2026-11-11's: the save that drops a deliverable comes before the publish that tells
+   * the apps, by a registry read, a render and a poll, and a busy Mac makes that seconds. The pane
+   * showing it re-checks its file every 250 ms, so it found its copy gone first and said "Couldn't
+   * find …" (filed as a failure, every time) for a deliverable it was about to stop showing anyway.
+   * Called again when the grace is up (an unref'd timer), so a drop with no save after it still goes;
+   * one held again within the grace (a refiling) is kept. What a shutdown leaves pending, the start sweeps.
    */
-  #discardDroppedCopies(): void {
+  discardDroppedCopies(now: number = Date.now()): void {
     const held = this.#heldCopies();
-    for (const dir of this.#savedCopies) if (!held.has(dir)) discardStoredCopy(dir, this.deliverablesFolder);
+    for (const dir of this.#savedCopies) if (!held.has(dir) && !this.#droppedCopies.has(dir)) this.#droppedCopies.set(dir, now);
+    for (const [dir, at] of this.#droppedCopies) {
+      if (held.has(dir)) this.#droppedCopies.delete(dir);
+      else if (now - at >= this.copyGraceMs) {
+        discardStoredCopy(dir, this.deliverablesFolder);
+        this.#droppedCopies.delete(dir);
+      }
+    }
     this.#savedCopies = held;
+    if (this.#droppedCopies.size && !this.#discardTimer) {
+      const due = Math.min(...this.#droppedCopies.values()) + this.copyGraceMs;
+      this.#discardTimer = setTimeout(() => {
+        this.#discardTimer = undefined;
+        this.discardDroppedCopies();
+      }, Math.max(0, due - now) + 50);
+      this.#discardTimer.unref?.();
+    }
   }
 
   /**
