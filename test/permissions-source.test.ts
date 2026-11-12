@@ -174,7 +174,8 @@ describe("where a feature fails, the app says which permission, with the button 
     // Settings says who macOS is asking when the daemon isn't conch's, and offers the launchd handover it already has.
     const view = member(permissionsCode, "struct ConchPermissionsView: View {", 0);
     expect(view).toContain("caution: ConchPermissionHost.caution(startedBy: daemon.startedBy)");
-    expect(view).toContain('cautionAction: daemon.startedBy == "launchd" ? (title: "Let the app own it", run: { daemon.takeOverFromLaunchd() }) : nil');
+    expect(view).toContain("cautionAction: cautionAction,");
+    expect(view).toContain('case "launchd": (title: "Let the app own it", run: { daemon.takeOverFromLaunchd() })');
   });
 
   test("a send refused for a permission is noted, and a phone's snapshot refused for Screen Recording too", () => {
@@ -263,7 +264,10 @@ describe("every button does something visible", () => {
     expect(reset).toContain("guard permission.isResettable else { return }");
     expect(reset).toContain("let arguments = permission.resetArguments(bundleId: bundleId)");
     expect(reset).toContain('center.notes[permission] = "Couldn\'t reset: \\(failure)"');
-    expect(reset).toContain('progress[permission] = "Resetting…"');
+    expect(reset).toContain("working[permission] = .reset");
+    // Forgotten: the row offers Allow… at once, and says the reset worked.
+    expect(reset).toContain("center.statuses[permission] = .notAsked");
+    expect(reset).toContain("center.progress[permission] = ConchPermission.resetDone");
     const tccutil = member(permissionsCode, "nonisolated static func tccutil(_ arguments: [String]) -> String? {");
     expect(tccutil).toContain('URL(fileURLWithPath: "/usr/bin/tccutil")');
     expect(tccutil).toContain("let deadline = Date().addingTimeInterval(10)");
@@ -281,10 +285,16 @@ describe("every button does something visible", () => {
     expect(open).toContain("configuration.hides = true");
   });
 
-  test("each press puts words under its row while it works", () => {
-    for (const words of ['"Asking macOS…"', '"Reopening conch…"']) expect(perform).toContain(words);
-    expect(permissionsCode).toContain("progress: center.progress,");
-    expect(read("mac-app/conch-mac/OnboardingController.swift")).toContain("progress: center.progress[permission],");
+  test("each press shows on its button while it works, which can't be pressed again", () => {
+    for (const working of ["working[permission] = .ask", "working[permission] = .reopen"]) expect(perform).toContain(working);
+    expect(permissionsCode).toContain("working: center.working,");
+    expect(read("mac-app/conch-mac/OnboardingController.swift")).toContain("working: center.working[permission],");
+    // The microphone's ask reads what conch already knows, not macOS again.
+    expect(perform).toContain("let askedBefore = statuses[.microphone] != .notAsked");
+  });
+
+  test("a terminal's daemon caution has its button: Terminal, where it is stopped", () => {
+    expect(permissionsCode).toContain('case "terminal": (title: "Show Terminal", run: {');
   });
 
   test("coming back from System Settings to a switch still off says the off-and-on fix; the build allowed is remembered", () => {

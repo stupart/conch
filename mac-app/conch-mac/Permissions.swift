@@ -34,6 +34,8 @@ final class PermissionCenter: ObservableObject {
     /// What a row's press is doing, or did, said under it in conch's quiet voice (2026-11-11): every button now shows
     /// something happen, where a press that macOS answered silently looked like a button that did nothing.
     @Published private(set) var progress: [ConchPermission: String] = [:]
+    /// The press under way on each row, whose button says so and waits (2026-11-11).
+    @Published private(set) var working: [ConchPermission: ConchPermissionAction] = [:]
     /// When System Settings was opened for each, so coming back to find one still off can say the off-and-on fix.
     private var settingsOpened: [ConchPermission: Date] = [:]
     private let defaults = UserDefaults.standard
@@ -137,13 +139,13 @@ final class PermissionCenter: ObservableObject {
         case .ask:
             switch permission {
             case .microphone:
-                let before = AVCaptureDevice.authorizationStatus(for: .audio).rawValue
-                progress[permission] = "Asking macOS…"
+                let askedBefore = statuses[.microphone] != .notAsked
+                working[permission] = .ask
                 AVCaptureDevice.requestAccess(for: .audio) { granted in
                     Task { @MainActor in
                         let center = PermissionCenter.shared
-                        center.progress[.microphone] = nil
-                        center.notes[.microphone] = ConchPermissionReading.microphoneAskOutcome(granted: granted, before: before)
+                        center.working[.microphone] = nil
+                        center.notes[.microphone] = ConchPermissionReading.microphoneAskOutcome(granted: granted, askedBefore: askedBefore)
                         center.refresh()
                     }
                 }
@@ -151,12 +153,12 @@ final class PermissionCenter: ObservableObject {
                 // macOS answers only for an app that is open: Terminal and System Events are opened in the background
                 // first, so the press is never one that macOS can't answer. Off the main thread: each prompt waits for
                 // Tyler's answer.
-                progress[permission] = "Asking macOS…"
+                working[permission] = .ask
                 Task { @MainActor in
                     await PermissionCenter.openAutomationTargets()
                     let answers = await Task.detached(priority: .userInitiated) { PermissionCenter.automation(ask: true) }.value
                     let center = PermissionCenter.shared
-                    center.progress[.automation] = nil
+                    center.working[.automation] = nil
                     center.notes[.automation] = ConchPermissionReading.automationAskOutcome(answers)
                     center.refresh()
                 }
@@ -174,9 +176,9 @@ final class PermissionCenter: ObservableObject {
             }
         case .reopen:
             // The store's own relaunch: the daemon handed over, then a new conch up before this one quits.
-            progress[permission] = "Reopening conch…"
+            working[permission] = .reopen
             CanvasCapture.reopen(store) { [weak self] in
-                self?.progress[permission] = nil
+                self?.working[permission] = nil
                 self?.notes[permission] = "Couldn't reopen conch. Quit it from the menu bar and open it again."
             }
         case .reset:
@@ -201,20 +203,19 @@ final class PermissionCenter: ObservableObject {
         alert.addButton(withTitle: "Reset")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        progress[permission] = "Resetting…"
+        working[permission] = .reset
         let arguments = permission.resetArguments(bundleId: bundleId)
         Task { @MainActor in
             let failure = await Task.detached(priority: .userInitiated) { PermissionCenter.tccutil(arguments) }.value
             let center = PermissionCenter.shared
-            center.progress[permission] = nil
+            center.working[permission] = nil
             if let failure {
                 center.notes[permission] = "Couldn't reset: \(failure)"
             } else {
-                // Forgotten: whatever build was allowed before, macOS will ask about this one.
+                // Forgotten: macOS will ask about this build. The row offers Allow… at once, without waiting on a read.
                 center.defaults.removeObject(forKey: Self.allowedBuildKey(permission))
-                center.progress[permission] = permission == .automation
-                    ? "Reset. conch asks the next time it needs Terminal, or press Allow… to be asked now."
-                    : "Reset. Press Allow… and macOS asks again."
+                center.statuses[permission] = .notAsked
+                center.progress[permission] = ConchPermission.resetDone
             }
             center.refresh()
         }
@@ -413,9 +414,10 @@ struct ConchPermissionsView: View {
                     statuses: center.statuses,
                     notes: center.notes,
                     progress: center.progress,
+                    working: center.working,
                     caution: ConchPermissionHost.caution(startedBy: daemon.startedBy),
                     moreCautions: [ConchPermissionHost.signatureCaution(adHoc: BuildSignature.isAdHoc)].compactMap { $0 },
-                    cautionAction: daemon.startedBy == "launchd" ? (title: "Let the app own it", run: { daemon.takeOverFromLaunchd() }) : nil,
+                    cautionAction: cautionAction,
                     titleFont: ConchTypography.font(size: 14, weight: .medium),
                     detailFont: ConchTypography.font(size: 12),
                     statusFont: ConchTypography.font(size: 11),
@@ -428,6 +430,18 @@ struct ConchPermissionsView: View {
         .background(ConchPalette.bg)
         // Opening Settings reads again, as coming back to conch does.
         .onAppear { center.refresh() }
+    }
+
+    /// The caution's one button: the launchd service handed to the app; a terminal's daemon, that terminal brought
+    /// forward, where it is stopped (2026-11-11: the caution said "Stop it there" and offered nothing).
+    private var cautionAction: (title: String, run: () -> Void)? {
+        switch daemon.startedBy {
+        case "launchd": (title: "Let the app own it", run: { daemon.takeOverFromLaunchd() })
+        case "terminal": (title: "Show Terminal", run: {
+            store.openLink("/System/Applications/Utilities/Terminal.app", cwd: nil, rowId: nil) { _ in }
+        })
+        default: nil
+        }
     }
 }
 

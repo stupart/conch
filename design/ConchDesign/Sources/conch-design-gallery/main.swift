@@ -1410,8 +1410,8 @@ struct SidebarColumn<Content: View>: View {
 func settingsFont(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font { .system(size: size, weight: weight) }
 
 func permissionsTab(_ statuses: [ConchPermission: ConchPermissionStatus], notes: [ConchPermission: String] = [:],
-                    progress: [ConchPermission: String] = [:], caution: String? = nil, moreCautions: [String] = [],
-                    launchd: Bool = false) -> some View {
+                    progress: [ConchPermission: String] = [:], working: [ConchPermission: ConchPermissionAction] = [:],
+                    caution: String? = nil, moreCautions: [String] = [], launchd: Bool = false, terminal: Bool = false) -> some View {
     VStack(spacing: 0) {
         HStack {
             VStack(alignment: .leading, spacing: 3) {
@@ -1425,8 +1425,8 @@ func permissionsTab(_ statuses: [ConchPermission: ConchPermissionStatus], notes:
         .padding(.vertical, 16)
         Rectangle().fill(ConchColor.hairline).frame(height: 1)
         ConchPermissionList(
-            statuses: statuses, notes: notes, progress: progress, caution: caution, moreCautions: moreCautions,
-            cautionAction: launchd ? (title: "Let the app own it", run: {}) : nil,
+            statuses: statuses, notes: notes, progress: progress, working: working, caution: caution, moreCautions: moreCautions,
+            cautionAction: launchd ? (title: "Let the app own it", run: {}) : terminal ? (title: "Show Terminal", run: {}) : nil,
             titleFont: settingsFont(14, .medium), detailFont: settingsFont(12), statusFont: settingsFont(11), inset: 22,
             onAction: { _, _ in }
         )
@@ -1461,7 +1461,8 @@ try render("permissions-settings-cautions", width: 780) {
         .automation: ConchPermissionReading.automation([("Terminal", ConchPermissionReading.procNotFound), ("System Events", 0)]),
         .screenRecording: .denied,
         .microphone: .restricted,
-    ], notes: [.accessibility: "Couldn't open System Settings. It is under Privacy & Security › Accessibility."], caution: ConchPermissionHost.caution(startedBy: "terminal"))
+    ], notes: [.accessibility: "Couldn't open System Settings. It is under Privacy & Security › Accessibility."], caution: ConchPermissionHost.caution(startedBy: "terminal"),
+       terminal: true)
     Caption("The launchd service owns the daemon: the handover the app already has")
     permissionsTab(allAllowed, caution: ConchPermissionHost.caution(startedBy: "launchd"), launchd: true)
 }
@@ -1472,20 +1473,20 @@ try render("permissions-settings-cautions", width: 780) {
 // is happening, and Automation with Terminal closed asks after opening it in the background.
 try render("permissions-settings-ways-out", width: 780) {
     Heading(title: "Settings › Permissions: a way out of every state", note: "Reset… where macOS won't ask again, the off-and-on fix where System Settings shows a switch for another build, and words for what each press is doing.")
-    Caption("Refused once: Automation and the Microphone, each with Reset… beside Open Settings")
+    Caption("Refused once: Automation with Reset… beside Open Settings; the Microphone just reset, so macOS asks at Allow…")
     permissionsTab([
         .accessibility: .granted,
         .automation: .denied,
         .screenRecording: .granted,
-        .microphone: .denied,
-    ], progress: [.microphone: "Reset. Press Allow… and macOS asks again."])
+        .microphone: .notAsked,
+    ], progress: [.microphone: ConchPermission.resetDone])
     Caption("A switch for another build, a reopen under way, and Automation with Terminal closed")
     permissionsTab([
         .accessibility: .needsRelaunch,
         .automation: .unanswered("Terminal isn't open, so macOS can't say yet."),
         .screenRecording: .grantedToAnotherBuild,
         .microphone: .granted,
-    ], progress: [.accessibility: "Reopening conch…"],
+    ], working: [.accessibility: .reopen],
        moreCautions: [ConchPermissionHost.signatureCaution(adHoc: true)!])
     Caption("Back from System Settings, still off: the off-and-on fix where you are looking")
     permissionsTab([
