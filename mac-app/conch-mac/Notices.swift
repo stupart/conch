@@ -114,6 +114,9 @@ struct WorkspaceNotices: View {
     // Something kept failing and a runaway guard stopped conch doing more of it (src/runaway.ts): said once, plainly.
     RunawayGuardNoticeLine()
 
+    // A conch bug worth more than the gear's dot (src/failure-triage.ts `alertWorthy`), until it is seen.
+    FailureAlertNoticeLine()
+
     // The first launch opened conch at login: said once, here, when setup's welcome didn't say it (`LoginItem`).
     LoginItemNoticeLine()
 
@@ -294,6 +297,50 @@ private struct RunawayGuardNoticeLine: View {
                     .buttonStyle(.plain)
                     .font(ConchTypography.font(size: 11, weight: .medium))
                     .foregroundStyle(ConchPalette.statusQuiet)
+            }
+            .foregroundStyle(ConchPalette.statusWaiting)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(ConchPalette.raised)
+
+            Rectangle()
+                .fill(ConchPalette.divider)
+                .frame(height: 1)
+        }
+    }
+}
+
+/// A conch bug that matters, in the window, not only as a dot on the gear (2026-11-11). Tyler: "do u see the issues in
+/// the settings of the app?" 47 tickets had piled up behind that dot. One line for the newest a delivery that failed,
+/// one seen a third time, or one back after its fix; Show opens Settings › Failures, which marks it seen, and Later
+/// marks it seen from here. It comes back only when the ticket opens again.
+private struct FailureAlertNoticeLine: View {
+    @EnvironmentObject private var store: StateStore
+    @State private var dismissed: Set<String> = []
+
+    var body: some View {
+        if let alert = store.state?.failures?.alert, !dismissed.contains(alert.id) {
+            HStack(spacing: 10) {
+                Image(systemName: "ladybug")
+                    .font(.system(size: 10.5, weight: .medium))
+                Text(FailureTickets.alertSentence(number: alert.number, title: alert.title, count: alert.count))
+                    .font(ConchTypography.font(size: 11.5))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help("\(alert.operation): \(FailureTickets.displayTitle(alert.title))")
+                Spacer(minLength: 8)
+                Button("Show") { SettingsRouter.shared.open(.failures) }
+                    .buttonStyle(.plain)
+                    .font(ConchTypography.font(size: 11, weight: .medium))
+                    .foregroundStyle(ConchPalette.statusQuiet)
+                Button("Later") {
+                    dismissed.insert(alert.id)
+                    Task { _ = await ConchSocketClient().request(FailureTicketsRequest.act(id: alert.id, action: .seen), timeout: 4) }
+                }
+                .buttonStyle(.plain)
+                .font(ConchTypography.font(size: 11, weight: .medium))
+                .foregroundStyle(ConchPalette.textDim)
             }
             .foregroundStyle(ConchPalette.statusWaiting)
             .padding(.horizontal, 16)

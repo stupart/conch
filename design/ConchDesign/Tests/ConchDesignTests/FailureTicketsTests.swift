@@ -9,12 +9,13 @@ final class FailureTicketsTests: XCTestCase {
 
     private func ticket(
         _ id: String = "0123456789ab", number: Int = 12, status: FailureTicketStatus = .open, lastSeen: Double? = nil,
-        count: Int = 30, sessions: Int = 9, unseen: Bool = true, fix: FailureTicketFix? = nil
+        count: Int = 30, sessions: Int = 9, unseen: Bool = true, fix: FailureTicketFix? = nil,
+        blame: String? = nil, tool: String? = nil, staleAt: Double? = nil
     ) -> FailureTicketSummary {
         FailureTicketSummary(
             id: id, number: number, origin: "mac", operation: "open-deliverable", title: "Couldn't find <file>", status: status,
             statusAt: nowMs, firstSeen: nowMs - 86_400_000, lastSeen: lastSeen ?? nowMs - 2 * 3_600_000, count: count,
-            sessionCount: sessions, unseen: unseen, fix: fix
+            sessionCount: sessions, unseen: unseen, fix: fix, blame: blame, tool: tool, staleAt: staleAt
         )
     }
 
@@ -82,7 +83,7 @@ final class FailureTicketsTests: XCTestCase {
 
     func testAutoFixSaysWhatItDoesAndWhatIsLeftToday() {
         XCTAssertEqual(FailureTickets.autoFixCaption(.init(on: false, today: 0, cap: 3)),
-                       "Off. When on, conch starts a fix session for a ticket as it opens: one at a time, at most 3 a day. You still review and merge every PR.")
+                       "Off. When on, conch starts a fix session for one of its own tickets as it opens, never an agent's call: one at a time, at most 3 a day. You still review and merge every PR.")
         XCTAssertTrue(FailureTickets.autoFixCaption(.init(on: true, today: 2, cap: 3)).hasSuffix("2 of 3 used today."))
     }
 
@@ -98,6 +99,31 @@ final class FailureTicketsTests: XCTestCase {
         XCTAssertEqual(groups.first?.tickets.map(\.id), ["d", "b"])
         XCTAssertEqual(Set(groups.map(\.symbol)).count, 4)
         XCTAssertEqual(FailureTickets.groups([]), [])
+    }
+
+    /// 2026-11-11: conch's own bugs lead; agents' calls follow by tool, the most frequent first; the quiet fold.
+    func testConchsBugsLeadAgentsCallsGoByToolAndTheQuietFold() {
+        let groups = FailureTickets.groups([
+            ticket("a", count: 2, blame: "agent", tool: "browser_type"),
+            ticket("b", blame: "conch"),
+            ticket("c", count: 9, blame: "agent", tool: "browser_click"),
+            ticket("d", count: 1, blame: "agent", tool: "browser_type"),
+            ticket("e", staleAt: nowMs - 1_000),
+            ticket("f", status: .ignored),
+            ticket("g"), // an older daemon says no blame: conch's
+        ])
+        XCTAssertEqual(groups.map(\.title), ["Open", "Agents' calls to browser_click", "Agents' calls to browser_type", "Gone quiet", "Ignored"])
+        XCTAssertEqual(Set(groups[0].tickets.map(\.id)), ["b", "g"])
+        XCTAssertEqual(groups[2].occurrences, 3)
+        XCTAssertEqual(groups.map(\.folds), [false, false, false, true, true])
+    }
+
+    func testAPRFoundByItsDescriptionAndTheBanner() {
+        let pr = FailureTicketPR(url: "https://github.com/o/r/pull/9", number: 9, state: "open")
+        XCTAssertEqual(FailureTickets.fixLine(.init(by: "pr", startedAt: nowMs, branch: "fix/many", pr: pr), now: now),
+                       "A PR on fix/many says it fixes this · PR #9 open")
+        XCTAssertEqual(FailureTickets.alertSentence(number: 4, title: "Couldn't find <file>", count: 3), "conch bug #4: Couldn't find a file, 3 times so far")
+        XCTAssertEqual(FailureTickets.alertSentence(number: 5, title: "Typed, but the session never took it.", count: 1), "conch bug #5: Typed, but the session never took it.")
     }
 
     func testEvidenceIsTheRecordsStateAKeyALine() {

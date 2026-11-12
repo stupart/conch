@@ -818,7 +818,12 @@ export interface SettingsDriverDeps {
   sleep(ms: number): Promise<void>;
 }
 
-export type SettingsDriveOutcome = { ok: true; message: string } | { ok: false; reason: string };
+/**
+ * `declined`: the session's state said no (busy, a picker or dialog already open, unsent words in its prompt), which the
+ * change's row tells the user and a retry later fixes. Not a failure of conch's, so not filed as one (2026-11-11: such
+ * refusals were a quarter of conch's own failure tickets).
+ */
+export type SettingsDriveOutcome = { ok: true; message: string } | { ok: false; reason: string; declined?: true };
 
 /**
  * Change a running session through its own picker, reading the screen before every key.
@@ -847,7 +852,7 @@ export async function driveSessionSettings(
   const before = await deps.read();
   if (before === null) return { ok: false, reason: "conch can't read the session's screen, so it won't drive its picker" };
   const refused = agent.precheck(before);
-  if (refused) return { ok: false, reason: refused };
+  if (refused) return { ok: false, reason: refused, declined: true };
 
   const opener = agent.pickerCommand;
   if (!(await deps.type(opener))) return { ok: false, reason: `couldn't type ${opener} into the session` };
@@ -856,12 +861,9 @@ export async function driveSessionSettings(
   if (typed === null || agent.promptText(typed) !== opener) {
     // Whatever was there before is left exactly as it was.
     await deps.press(Array.from({ length: opener.length }, (): AnswerKey => "Backspace"));
-    return {
-      ok: false,
-      reason: typed === null
-        ? "lost sight of the session's screen, so conch took back what it typed"
-        : "its prompt holds unsent words, so conch took back what it typed and left them alone",
-    };
+    return typed === null
+      ? { ok: false, reason: "lost sight of the session's screen, so conch took back what it typed" }
+      : { ok: false, reason: "its prompt holds unsent words, so conch took back what it typed and left them alone", declined: true };
   }
   if (!(await deps.press(["Enter"]))) return { ok: false, reason: `couldn't open the session's ${opener} picker` };
 

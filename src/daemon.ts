@@ -206,7 +206,7 @@ import {
   type SessionSettingsSample,
 } from "./session-settings.ts";
 import { appendConchError, APP_ERRORS_PATH } from "./app-errors.ts";
-import { conchCheckout, FailureDesk, FIX_CHECK_INTERVAL_MS, ghBranchPr, tmuxSessionAlive } from "./failure-tickets.ts";
+import { conchCheckout, FailureDesk, FIX_CHECK_INTERVAL_MS, ghBranchPr, ghTicketPrs, tmuxSessionAlive } from "./failure-tickets.ts";
 import { BugReportDesk } from "./bug-report.ts";
 import { mcpUsagePath } from "./mcp-usage.ts";
 import {
@@ -2186,9 +2186,23 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     },
     fixSessionAlive: (name) => tmuxSessionAlive(conchTmux(), name),
     findPr: (folder, branch) => ghBranchPr(folder, branch),
+    // A PR that says "Fixes ticket #n" closes the ticket when it merges, whoever wrote it (2026-11-11).
+    findTicketPrs: (folder) => ghTicketPrs(folder),
     recordFailure: (operation, message, state) => recordDaemonError(operation, message, undefined, state),
     changed: () => void renderSessionPanel(),
+    // A conch bug worth more than the gear's dot (failure-triage.ts `alertWorthy`): the Mac window's banner comes from the
+    // published digest's `alert`, and the line here is in the log. Tyler, 2026-11-11: "do u see the issues in the
+    // settings of the app?" He didn't: a dot on a gear was all they ever made.
+    // HOOK(#602 notifyUser): once PR #602's Notifier is on main, send it from here as conch's own alert, e.g.
+    //   notifier.notify({ title: `conch bug #${ticket.number}`, body: ticket.title, source: "conch" })
+    // so it reaches his phone and the Mac's notifications too. Until then the banner is the alert.
+    alert: (ticket) => log(`failure alert: #${ticket.number} ${ticket.operation} · ${ticket.title} (${ticket.count}×)`),
   });
+  /**
+   * The Terminal button's refusals filed this run, by session and reason: once each. 2026-11-11: one session filed the
+   * same "isn't running in a terminal conch can see" eight times in 35 s, one for each press, while its row said why.
+   */
+  const filedTerminalFocus = new Set<string>();
   let failurePoke: ReturnType<typeof setTimeout> | undefined;
   /** A record was just written: filed now rather than at the next poll, so Settings › Failures has it at once. */
   function fileRecordedFailures(): void {
@@ -3802,10 +3816,12 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       };
       const wanted = [change.model, change.effort].filter(Boolean).join(" · ");
       const startedAt = Date.now();
-      const refuse = (message: string): false => {
+      // `file: false` for a no the session's state gave (busy, waiting on you, a dialog or unsent words in the way): its
+      // row says so and a retry later works, so it is no failure of conch's to file (2026-11-11, docs/failure-tickets.md).
+      const refuse = (message: string, file = true): false => {
         settle({ state: "failed", ...change, at: Date.now(), startedAt, message });
         log(`"${target.label}" stays as it is (${wanted}): ${message}`);
-        recordDaemonError("session-settings", `Could not change "${target.label}" to ${wanted}: ${message}`, target.sessionId, { ...change, backend });
+        if (file) recordDaemonError("session-settings", `Could not change "${target.label}" to ${wanted}: ${message}`, target.sessionId, { ...change, backend });
         return false;
       };
       if (sessionSettingsChanges.get(target.sessionId)?.state === "applying") {
@@ -3815,9 +3831,9 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       if (!target.pid) return refuse("the session has no terminal conch can type into");
       const status = lastPanelModel?.rows.find((row) => row.sessionId === target.sessionId)?.status;
       if (status === "working" && !AGENT_SESSION_SETTINGS[backend].changesMidTurn) {
-        return refuse("the session is working; change it when its turn is over");
+        return refuse("the session is working; change it when its turn is over", false);
       }
-      if (status === "needs") return refuse("the session is waiting on you; answer it first");
+      if (status === "needs") return refuse("the session is waiting on you; answer it first", false);
       settle({ state: "applying", ...change, at: startedAt, startedAt });
       const receipt = createRecordOperation(observeRecords, { sessionId: target.sessionId }, "delivery");
       receipt.emit("accepted", "provider-command-accepted");
@@ -3833,7 +3849,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         reason: error instanceof Error ? error.message : String(error),
       }));
       receipt.emit(outcome.ok ? "delivered" : "failed", outcome.ok ? "transport-submitted" : "delivery-unconfirmed");
-      if (!outcome.ok) return refuse(outcome.reason);
+      if (!outcome.ok) return refuse(outcome.reason, !("declined" in outcome && outcome.declined));
       settle({ state: "applied", ...change, at: Date.now(), startedAt, message: outcome.message });
       log(`"${target.label}" now runs ${wanted} for this session only: ${outcome.message}`);
       return true;
@@ -4172,7 +4188,11 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         ? `brought ${labelForSessionId(message.sessionId)}'s terminal forward (Terminal button)`
         : `couldn't bring ${labelForSessionId(message.sessionId)}'s terminal forward: ${focused.reason ?? "no reason given"}`);
       // The Mac app shows the reason on the row and reports nothing; the phone files its own `terminal-focus` too.
-      if (!focused.focused) recordDaemonError("terminal-focus", `Couldn't bring the session's terminal forward: ${focused.reason ?? "no reason given"}`, message.sessionId, { label: labelForSessionId(message.sessionId) });
+      const focusFailure = focused.focused ? undefined : `${message.sessionId}\0${focused.reason ?? ""}`;
+      if (focusFailure && !filedTerminalFocus.has(focusFailure)) {
+        filedTerminalFocus.add(focusFailure);
+        recordDaemonError("terminal-focus", `Couldn't bring the session's terminal forward: ${focused.reason ?? "no reason given"}`, message.sessionId, { label: labelForSessionId(message.sessionId) });
+      }
       return focused;
     },
     openSessionApp: async (message) => {

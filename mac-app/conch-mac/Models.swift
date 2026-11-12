@@ -96,11 +96,22 @@ struct PublishedState: Decodable, Equatable, Sendable {
     /// count beside Settings › Failures. Nil from an older daemon.
     let failures: FailureDigest?
 
-    /// How many tickets are open, being fixed, and new since Settings › Failures was last shown.
+    /// How many tickets are open, being fixed, and new since Settings › Failures was last shown: conch's own, which an
+    /// agent's calls (`agents`) aren't. `alert` is the newest conch bug worth the window's banner (src/failure-triage.ts).
     struct FailureDigest: Decodable, Equatable, Sendable {
         let open: Int
         let fixing: Int
         let unseen: Int
+        let agents: Int?
+        let alert: FailureAlert?
+    }
+
+    struct FailureAlert: Decodable, Equatable, Sendable {
+        let id: String
+        let number: Int
+        let title: String
+        let operation: String
+        let count: Int
     }
 
     struct PreviewRequest: Decodable, Equatable, Sendable {

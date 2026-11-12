@@ -48,23 +48,36 @@ async function until(what: string, condition: () => boolean, ms = 5_000): Promis
   }
 }
 
+/**
+ * Whether any process `ps` lists that `matches` (by pid, by group) is still running. A killed process its parent has
+ * not reaped yet is a zombie, which `kill(pid, 0)` still finds: an installer's orphaned child waits for launchd to reap
+ * it, and on a loaded Mac that took longer than the 2 s a wait here allows. A zombie has stopped, so it doesn't count.
+ */
+function running(matches: (pid: number, pgid: number) => boolean): boolean {
+  const ps = Bun.spawnSync(["ps", "-A", "-o", "pid=,pgid=,stat="]);
+  return ps.stdout.toString().split("\n").some((line) => {
+    const [pid, pgid, stat] = line.trim().split(/\s+/);
+    return !!stat && !stat.startsWith("Z") && matches(Number(pid), Number(pgid));
+  });
+}
+
 function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);
-    return true;
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
+    if ((error as NodeJS.ErrnoException).code !== "EPERM") return false;
   }
+  return running((each) => each === pid);
 }
 
-/** Something is still in the process group. */
+/** Something is still running in the process group. */
 function groupAlive(group: number): boolean {
   try {
     process.kill(-group, 0);
-    return true;
   } catch {
     return false;
   }
+  return running((_, pgid) => pgid === group);
 }
 
 /**
@@ -77,8 +90,13 @@ function stalledInstaller(dir: string): string[] {
     "#!/bin/sh",
     'echo "==> Downloading"',
     `( trap '' TERM; exec /bin/sleep 600 ) &`,
-    `echo $! > "${dir}/stubborn.pid"`,
-    "/bin/sleep 600 | /bin/cat",
+    "stubborn=$!",
+    // The stall is forked before the pid file says the installer is ready, then waited on. Written first, a test could
+    // stop the group while the shell was still forking the pipeline, and a sleep forked as the group was killed missed
+    // the SIGKILL and outlived it (seen as a "/bin/sleep 600" left in the group, 2026-11-12).
+    "/bin/sleep 600 | /bin/cat &",
+    `echo $stubborn > "${dir}/stubborn.pid"`,
+    "wait",
   ].join("\n") + "\n");
   chmodSync(script, 0o755);
   return ["/bin/sh", script];

@@ -133,9 +133,9 @@ describe("6: conch steering the screen for a send holds the input where it is", 
     expect(settled).toContain("ComposerDock.shared.endSteering(steer)");
     const enqueue = member(store, "private func enqueueSessionCommand(");
     expect(enqueue).toContain("steered?.settled(by: .connectFailed)");
-    before(enqueue, "let outcome = await socketClient.request(request, whenDelivered: steered?.whenDelivered)", "steered?.settled(by: outcome)");
+    before(enqueue, "let outcome = await socketClient.request(request, timeout: Self.sessionCommandTimeout, whenDelivered: steered?.whenDelivered)", "steered?.settled(by: outcome)");
     const setModel = member(store, "func setModel(id: SessionRow.ID, model: String) async -> String {");
-    before(setModel, "let outcome = await socketClient.request(request, whenDelivered: steered?.whenDelivered)", "steered?.settled(by: outcome)");
+    before(setModel, "let outcome = await socketClient.request(request, timeout: Self.sessionCommandTimeout, whenDelivered: steered?.whenDelivered)", "steered?.settled(by: outcome)");
   });
 
   test("the placement rule sees the hold, and conch back in front or Tyler's own doing ends it", () => {
