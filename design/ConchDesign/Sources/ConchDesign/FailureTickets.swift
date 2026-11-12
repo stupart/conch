@@ -62,7 +62,7 @@ public struct FailureTicketPR: Decodable, Equatable, Sendable {
 }
 
 public struct FailureTicketFix: Decodable, Equatable, Sendable {
-    /// "you" or "auto".
+    /// "you", "auto", or "pr": a PR that said it fixes the ticket (2026-11-11).
     public let by: String
     public let startedAt: Double
     public let backgroundId: String?
@@ -96,11 +96,21 @@ public struct FailureTicketSummary: Decodable, Identifiable, Equatable, Sendable
     public let fix: FailureTicketFix?
     public let fixedAt: Double?
     public let reopened: Int?
+    /// "conch" or "agent": whose failure it is (src/failure-triage.ts). Absent from an older daemon: conch's.
+    public let blame: String?
+    /// An agent's call's tool, by which those tickets are grouped.
+    public let tool: String?
+    /// When an open ticket went quiet: two weeks with no occurrence. It opens again if it comes back.
+    public let staleAt: Double?
+
+    /// An agent's call to one of conch's tools that conch answered correctly: the tools' to fix, not conch's.
+    public var isAgentCall: Bool { blame == "agent" }
 
     public init(
         id: String, number: Int, origin: String, operation: String, title: String, status: FailureTicketStatus,
         statusAt: Double, note: String? = nil, firstSeen: Double, lastSeen: Double, count: Int, sessionCount: Int,
-        unseen: Bool, fix: FailureTicketFix? = nil, fixedAt: Double? = nil, reopened: Int? = nil
+        unseen: Bool, fix: FailureTicketFix? = nil, fixedAt: Double? = nil, reopened: Int? = nil,
+        blame: String? = nil, tool: String? = nil, staleAt: Double? = nil
     ) {
         self.id = id
         self.number = number
@@ -118,6 +128,9 @@ public struct FailureTicketSummary: Decodable, Identifiable, Equatable, Sendable
         self.fix = fix
         self.fixedAt = fixedAt
         self.reopened = reopened
+        self.blame = blame
+        self.tool = tool
+        self.staleAt = staleAt
     }
 }
 
@@ -261,49 +274,98 @@ public enum FailureTickets {
 
     /// One sentence about the fix, in the open ticket: who started it, when, on which branch, and its PR.
     public static func fixLine(_ fix: FailureTicketFix, now: Date) -> String {
-        let who = fix.by == "auto" ? "Auto-fix started a session" : "You started a fix session"
         let pr = fix.pr.map { pr in " · PR \(pr.number.map { "#\($0)" } ?? "") \(pr.state)".replacingOccurrences(of: "  ", with: " ") } ?? " · no PR yet"
+        // One the desk found by its description ("Fixes ticket #12"), not a session it started.
+        if fix.by == "pr" { return "A PR on \(fix.branch) says it fixes this\(pr)" }
+        let who = fix.by == "auto" ? "Auto-fix started a session" : "You started a fix session"
         return "\(who) \(ago(fix.startedAt, now: now)) ago on \(fix.branch)\(pr)"
+    }
+
+    /// The window's banner for a conch bug worth more than the gear's dot (src/failure-triage.ts `alertWorthy`).
+    public static func alertSentence(number: Int, title: String, count: Int) -> String {
+        let times = count == 1 ? "" : ", \(count) times so far"
+        return "conch bug #\(number): \(displayTitle(title))\(times)"
     }
 
     /// The auto-fix switch's line: what it does when on, and how much of today's allowance is gone.
     public static func autoFixCaption(_ autoFix: FailureTicketList.AutoFix) -> String {
-        let rule = "conch starts a fix session for a ticket as it opens: one at a time, at most \(autoFix.cap) a day. You still review and merge every PR."
+        let rule = "conch starts a fix session for one of its own tickets as it opens, never an agent's call: one at a time, at most \(autoFix.cap) a day. You still review and merge every PR."
         guard autoFix.on else { return "Off. When on, \(rule)" }
         return "On: \(rule) \(autoFix.today) of \(autoFix.cap) used today."
     }
 
+    /// Which block of the page a ticket is in (2026-11-11). Tyler: "what are we doing that the issues pile up? … do u
+    /// see the issues in the settings of the app?" Agents' calls conch answered correctly sat in one list with conch's own
+    /// bugs, and nothing ever left it. conch's open bugs lead now; agents' calls follow, a block for each tool, for the
+    /// tools' own work; the quiet and the ignored fold under their counts.
+    public enum GroupKind: Hashable, Sendable {
+        case bugs, fixing, fixed
+        case agents(tool: String)
+        case quiet, ignored
+    }
+
     public struct Group: Identifiable, Equatable, Sendable {
-        public let status: FailureTicketStatus
+        public let kind: GroupKind
         public let tickets: [FailureTicketSummary]
-        public var id: FailureTicketStatus { status }
+
+        public var id: String {
+            switch kind {
+            case .bugs: "bugs"
+            case .fixing: "fixing"
+            case .fixed: "fixed"
+            case let .agents(tool): "agents:\(tool)"
+            case .quiet: "quiet"
+            case .ignored: "ignored"
+            }
+        }
 
         public var title: String {
-            switch status {
-            case .open: "Open"
+            switch kind {
+            case .bugs: "Open"
             case .fixing: "Being fixed"
             case .fixed: "Fixed"
+            case let .agents(tool): "Agents' calls to \(tool)"
+            case .quiet: "Gone quiet"
             case .ignored: "Ignored"
             }
         }
 
         public var symbol: String {
-            switch status {
-            case .open: "exclamationmark.circle"
+            switch kind {
+            case .bugs: "exclamationmark.circle"
             case .fixing: "hammer"
             case .fixed: "checkmark.circle"
+            case .agents: "questionmark.bubble"
+            case .quiet: "moon.zzz"
             case .ignored: "eye.slash"
             }
         }
+
+        /// Folded under its count until shown.
+        public var folds: Bool { kind == .quiet || kind == .ignored }
+
+        /// How many times its tickets happened, all told.
+        public var occurrences: Int { tickets.reduce(0) { $0 + $1.count } }
     }
 
-    /// The tickets by status, in the order they are dealt with; within each, the most recent first. Empty groups go.
+    /// The tickets by block, in the order they are dealt with; within each, the most recent first. Agents' calls go by
+    /// tool, the tool called wrong most often first. Empty blocks go.
     public static func groups(_ tickets: [FailureTicketSummary]) -> [Group] {
-        let order: [FailureTicketStatus] = [.open, .fixing, .fixed, .ignored]
-        return order.compactMap { status in
-            let matching = tickets.filter { $0.status == status }.sorted { $0.lastSeen > $1.lastSeen }
-            return matching.isEmpty ? nil : Group(status: status, tickets: matching)
+        var groups: [Group] = []
+        func add(_ kind: GroupKind, _ matching: [FailureTicketSummary]) {
+            if !matching.isEmpty { groups.append(Group(kind: kind, tickets: matching.sorted { $0.lastSeen > $1.lastSeen })) }
         }
+        let open = tickets.filter { $0.status == .open && $0.staleAt == nil }
+        add(.bugs, open.filter { !$0.isAgentCall })
+        add(.fixing, tickets.filter { $0.status == .fixing })
+        add(.fixed, tickets.filter { $0.status == .fixed })
+        let calls = Dictionary(grouping: open.filter(\.isAgentCall)) { $0.tool ?? $0.operation }
+            .map { Group(kind: .agents(tool: $0.key), tickets: $0.value.sorted { $0.lastSeen > $1.lastSeen }) }
+            .sorted { $0.occurrences != $1.occurrences ? $0.occurrences > $1.occurrences : $0.id < $1.id }
+        groups.append(contentsOf: calls)
+        add(.quiet, tickets.filter { $0.status == .open && $0.staleAt != nil })
+        add(.ignored, tickets.filter { $0.status == .ignored })
+        return groups
     }
 
     /// The record's state as lines worth reading: its JSON's keys and values, one a line, the noisy ones cut.
@@ -442,7 +504,8 @@ public final class FailureTicketsStore: ObservableObject {
 public struct FailureTicketsView: View {
     @StateObject private var store: FailureTicketsStore
     private let openTerminal: ((String) -> Void)?
-    @State private var showIgnored = false
+    /// The folded blocks (quiet, ignored) shown.
+    @State private var unfolded: Set<String> = []
 
     public init(openTerminal: ((String) -> Void)? = nil, transport: @escaping @MainActor (FailureTicketsRequest) async throws -> Data) {
         _store = StateObject(wrappedValue: FailureTicketsStore(transport: transport))
@@ -483,7 +546,7 @@ public struct FailureTicketsView: View {
                 .foregroundStyle(ConchColor.textPrimary)
                 .accessibilityAddTraits(.isHeader)
                 .frame(height: 26)
-            Text("When an agent or conch lets you down, it lands here, one ticket for each kind of failure. Fix starts a Claude session that opens a PR; nothing leaves this Mac but that PR.")
+            Text("When conch lets you down, it lands here, one ticket for each kind of failure; an agent's call that conch answered correctly is listed after, by tool. Fix starts a Claude session that opens a PR; nothing leaves this Mac but that PR. A PR that says \"Fixes ticket #12\" closes #12 when it merges, and a ticket quiet for two weeks folds away.")
                 .font(ConchType.secondary)
                 .foregroundStyle(ConchColor.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -550,15 +613,17 @@ public struct FailureTicketsView: View {
                     .font(ConchType.uiBody)
                     .foregroundStyle(ConchColor.textTertiary)
                 Spacer(minLength: 0)
-                if group.status == .ignored {
-                    Button(showIgnored ? "Hide" : "Show") { showIgnored.toggle() }
+                if group.folds {
+                    Button(unfolded.contains(group.id) ? "Hide" : "Show") {
+                        if unfolded.remove(group.id) == nil { unfolded.insert(group.id) }
+                    }
                         .buttonStyle(.plain)
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(ConchColor.textSecondary)
                 }
             }
             .foregroundStyle(ConchColor.textPrimary)
-            if group.status != .ignored || showIgnored {
+            if !group.folds || unfolded.contains(group.id) {
                 OnboardingCard {
                     ForEach(Array(group.tickets.enumerated()), id: \.element.id) { index, ticket in
                         if index > 0 { FailureHairline() }

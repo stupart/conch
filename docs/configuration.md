@@ -84,7 +84,7 @@ The defaults below are read from `src/settings.ts`; `conch settings` prints the 
 |---|---|---|---|
 | `screen-log` | `CONCH_SCREEN_LOG` | `true` | Keep a local log of which session's work was on screen, and for how long, in `~/.config/conch/screen`. Never sent anywhere ([screen-context.md](screen-context.md)) |
 | `records` | `CONCH_RECORDS_ENABLED` | `false` | Index local agent history and record observed outcomes |
-| `failure-autofix` | `CONCH_FAILURE_AUTOFIX` | `false` | When a failure ticket opens, start a background Claude session in conch's checkout to fix it and open a PR, never merged: one at a time, at most 3 a day ([failure-tickets.md](failure-tickets.md)) |
+| `failure-autofix` | `CONCH_FAILURE_AUTOFIX` | `false` | When one of conch's own failure tickets opens (not an agent's tool call), start a background Claude session in conch's checkout to fix it and open a PR, never merged: one at a time, at most 3 a day ([failure-tickets.md](failure-tickets.md)) |
 | `agent-auto-update` | `CONCH_AGENT_AUTO_UPDATE` | `true` | Keep Claude Code and Codex up to date when they're installed as Homebrew casks: checks every few hours and runs `brew upgrade --cask` for that cask alone. Anything else (native installer, npm, an app bundle) is left alone. Off stops the next check and upgrade at once; never restarts a session. |
 
 ## Environment-only variables

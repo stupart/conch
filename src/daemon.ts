@@ -198,7 +198,7 @@ import {
   type SessionSettingsSample,
 } from "./session-settings.ts";
 import { appendConchError, APP_ERRORS_PATH } from "./app-errors.ts";
-import { conchCheckout, FailureDesk, FIX_CHECK_INTERVAL_MS, ghBranchPr, tmuxSessionAlive } from "./failure-tickets.ts";
+import { conchCheckout, FailureDesk, FIX_CHECK_INTERVAL_MS, ghBranchPr, ghTicketPrs, tmuxSessionAlive } from "./failure-tickets.ts";
 import { mcpUsagePath } from "./mcp-usage.ts";
 import {
   attachTerminalSession,
@@ -2091,9 +2091,23 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     },
     fixSessionAlive: (name) => tmuxSessionAlive(conchTmux(), name),
     findPr: (folder, branch) => ghBranchPr(folder, branch),
+    // A PR that says "Fixes ticket #n" closes the ticket when it merges, whoever wrote it (2026-11-11).
+    findTicketPrs: (folder) => ghTicketPrs(folder),
     recordFailure: (operation, message, state) => recordDaemonError(operation, message, undefined, state),
     changed: () => void renderSessionPanel(),
+    // A conch bug worth more than the gear's dot (failure-triage.ts `alertWorthy`): the Mac window's banner comes from the
+    // published digest's `alert`, and the line here is in the log. Tyler, 2026-11-11: "do u see the issues in the
+    // settings of the app?" He didn't: a dot on a gear was all they ever made.
+    // HOOK(#602 notifyUser): once PR #602's Notifier is on main, send it from here as conch's own alert, e.g.
+    //   notifier.notify({ title: `conch bug #${ticket.number}`, body: ticket.title, source: "conch" })
+    // so it reaches his phone and the Mac's notifications too. Until then the banner is the alert.
+    alert: (ticket) => log(`failure alert: #${ticket.number} ${ticket.operation} · ${ticket.title} (${ticket.count}×)`),
   });
+  /**
+   * The Terminal button's refusals filed this run, by session and reason: once each. 2026-11-11: one session filed the
+   * same "isn't running in a terminal conch can see" eight times in 35 s, one for each press, while its row said why.
+   */
+  const filedTerminalFocus = new Set<string>();
   let failurePoke: ReturnType<typeof setTimeout> | undefined;
   /** A record was just written: filed now rather than at the next poll, so Settings › Failures has it at once. */
   function fileRecordedFailures(): void {
@@ -3815,7 +3829,11 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         ? `brought ${labelForSessionId(message.sessionId)}'s terminal forward (Terminal button)`
         : `couldn't bring ${labelForSessionId(message.sessionId)}'s terminal forward: ${focused.reason ?? "no reason given"}`);
       // The Mac app shows the reason on the row and reports nothing; the phone files its own `terminal-focus` too.
-      if (!focused.focused) recordDaemonError("terminal-focus", `Couldn't bring the session's terminal forward: ${focused.reason ?? "no reason given"}`, message.sessionId, { label: labelForSessionId(message.sessionId) });
+      const focusFailure = focused.focused ? undefined : `${message.sessionId}\0${focused.reason ?? ""}`;
+      if (focusFailure && !filedTerminalFocus.has(focusFailure)) {
+        filedTerminalFocus.add(focusFailure);
+        recordDaemonError("terminal-focus", `Couldn't bring the session's terminal forward: ${focused.reason ?? "no reason given"}`, message.sessionId, { label: labelForSessionId(message.sessionId) });
+      }
       return focused;
     },
     openSessionApp: async (message) => {

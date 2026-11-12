@@ -1,6 +1,7 @@
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { failureIdentity, FAILURE_ORIGINS, type FailureOrigin } from "./failure-signature.ts";
+import { alertWorthy, failureBlame, failureTool, notAFailure, retiredByRule, sendFailureMessage, type FailureBlame } from "./failure-triage.ts";
 
 /**
  * Failure tickets (docs/failure-tickets.md): every time an agent or conch lets Tyler down, one ticket per kind of
@@ -61,9 +62,17 @@ export interface FailurePr {
   mergedAt?: number;
 }
 
+/** A PR in the checkout that says, in its description, which tickets it fixes (`ticketRefs`). */
+export interface TicketPr extends FailurePr {
+  branch: string;
+  createdAt?: number;
+  /** Ticket numbers (`#12`) and ids (12 hex characters). */
+  tickets: Array<number | string>;
+}
+
 export interface FailureFix {
-  /** Tyler pressing Fix, or the auto-fix setting. */
-  by: "you" | "auto";
+  /** Tyler pressing Fix, the auto-fix setting, or a PR that said it fixes the ticket (`ticketRefs`). */
+  by: "you" | "auto" | "pr";
   startedAt: number;
   /** The fix session's background terminal (`conch-<uuid>` on conch's tmux server). */
   backgroundId?: string;
@@ -105,6 +114,12 @@ export interface FailureTicket {
   fixedBy?: "pr" | "you";
   /** How many times it came back after it was fixed. */
   reopened?: number;
+  /** conch's own, or an agent's call conch answered correctly (failure-triage.ts): set whenever the store is read. */
+  blame?: FailureBlame;
+  /** When an open ticket went quiet (`STALE_AFTER_MS` with no occurrence); cleared when it comes back or Tyler acts. */
+  staleAt?: number;
+  /** When it was last alerted (`alertWorthy`): once for each time it opens. */
+  alertedAt?: number;
 }
 
 interface FileCursor {
@@ -120,6 +135,8 @@ export interface FailureTicketStore {
   tickets: FailureTicket[];
   /** Auto-fixes started on one local day, for its daily cap. */
   autoFix: { day: string; started: number };
+  /** Alerts sent past the gear's dot on one local day (`ALERTS_DAILY_CAP`). */
+  alerts?: { day: string; sent: number };
 }
 
 export const TICKET_SESSIONS_MAX = 20;
@@ -144,6 +161,16 @@ export const FIX_CHECK_INTERVAL_MS = 5 * 60 * 1_000;
 const FIX_SESSION_GRACE_MS = 2 * 60 * 1_000;
 /** A brief longer than this is cut: it is one argument on a tmux command line, whose message tmux caps at 16 KiB. */
 export const BRIEF_MAX = 7_000;
+/**
+ * An open ticket with no occurrence for this long goes quiet (`staleAt`): out of the open count and auto-fix's queue,
+ * folded in Settings › Failures, and open again, unseen, the moment it comes back. 2026-11-11: the biggest ticket had
+ * been silent for nineteen days and still led the list, and nothing ever took a ticket off it but Tyler.
+ */
+export const STALE_AFTER_MS = 14 * 24 * 60 * 60 * 1_000;
+/** How often the checkout's PRs are read for the tickets they say they fix (`ticketRefs`). */
+export const PR_SCAN_INTERVAL_MS = 30 * 60 * 1_000;
+/** Alerts past the gear's dot in a local day: enough for a bad morning, never a stream. */
+export const ALERTS_DAILY_CAP = 3;
 
 export function failureTicketsPath(env: NodeJS.ProcessEnv = process.env, configDir = env.CONCH_CONFIG_DIR): string {
   return join(configDir ?? join(env.CONCH_HOME ?? env.HOME ?? "", ".config", "conch"), "failure-tickets.json");
@@ -164,8 +191,12 @@ export function readFailureTicketStore(path: string): FailureTicketStore {
       v: 1,
       next: parsed.next,
       cursors: parsed.cursors && typeof parsed.cursors === "object" ? parsed.cursors : {},
-      tickets: parsed.tickets.filter((ticket) => ticket && typeof ticket.id === "string" && FAILURE_TICKET_STATUSES.includes(ticket.status)),
+      tickets: parsed.tickets
+        .filter((ticket) => ticket && typeof ticket.id === "string" && FAILURE_TICKET_STATUSES.includes(ticket.status))
+        // Triage by the rules as they are now, so a rule changed in failure-triage.ts re-sorts the tickets already here.
+        .map((ticket) => Object.assign(ticket, { blame: failureBlame(ticket) })),
       autoFix: parsed.autoFix && typeof parsed.autoFix.day === "string" ? parsed.autoFix : { day: "", started: 0 },
+      ...(parsed.alerts && typeof parsed.alerts.day === "string" ? { alerts: parsed.alerts } : {}),
     };
   } catch {
     try { renameSync(path, `${path}.unreadable-${Date.now()}`); } catch {}
@@ -201,6 +232,8 @@ export function occurrenceFromErrorRecord(line: string): FailureOccurrence | und
   const state = record.state && typeof record.state === "object" && !Array.isArray(record.state)
     ? record.state as Record<string, unknown>
     : undefined;
+  // A send that went in, or that conch declined on purpose and said why, is no failure (failure-triage.ts).
+  if (notAFailure({ operation: record.operation, message: record.message, ...(state ? { state } : {}) })) return undefined;
   const rows = (record.daemonState as { rows?: Array<{ id?: unknown; label?: unknown }> } | null)?.rows;
   const rowLabel = sessionId ? rows?.find((row) => row.id === sessionId)?.label : undefined;
   const label = typeof state?.label === "string" && state.label ? state.label : typeof rowLabel === "string" ? rowLabel : undefined;
@@ -208,7 +241,7 @@ export function occurrenceFromErrorRecord(line: string): FailureOccurrence | und
     at,
     origin: origin as FailureOrigin,
     operation: record.operation,
-    message: record.message,
+    message: record.operation === "inject" ? sendFailureMessage(record.message, state?.code) : record.message,
     ...(sessionId ? { sessionId } : {}),
     ...(label ? { label } : {}),
     ...(state ? { state } : {}),
@@ -324,6 +357,7 @@ export function fileOccurrence(
   options: { codeSince: number; autoFix: boolean },
 ): { ticket: FailureTicket; outcome: FilingOutcome } {
   const identity = failureIdentity(occurrence.origin, occurrence.operation, occurrence.message);
+  const blame = failureBlame(identity);
   let ticket = store.tickets.find((candidate) => candidate.id === identity.key);
   if (!ticket) {
     ticket = {
@@ -341,7 +375,9 @@ export function fileOccurrence(
       sessions: occurrence.sessionId ? [{ id: occurrence.sessionId, ...(occurrence.label ? { label: occurrence.label } : {}) }] : [],
       example: exampleOf(occurrence),
       unseen: true,
-      ...(options.autoFix && identity.operation !== LOOP_OPERATION ? { autoFixPending: true } : {}),
+      blame,
+      // An agent's call is the tools' to fix, on their own branch, not a session's of Tyler's to start (failure-triage.ts).
+      ...(options.autoFix && blame === "conch" && identity.operation !== LOOP_OPERATION ? { autoFixPending: true } : {}),
     };
     store.tickets.push(ticket);
     return { ticket, outcome: "opened" };
@@ -360,16 +396,28 @@ export function fileOccurrence(
     ticket.sessions.unshift({ id: occurrence.sessionId, ...(label ? { label } : {}) });
     ticket.sessions.length = Math.min(ticket.sessions.length, TICKET_SESSIONS_MAX);
   }
+  // A ticket that had gone quiet is open again, as new: the quiet is what made it look over.
+  if (ticket.status === "open" && ticket.staleAt && occurrence.at > ticket.staleAt) {
+    const quietDays = Math.max(1, Math.round((occurrence.at - ticket.staleAt) / (24 * 60 * 60 * 1_000)));
+    ticket.staleAt = undefined;
+    ticket.alertedAt = undefined;
+    ticket.unseen = true;
+    ticket.statusAt = occurrence.at;
+    ticket.note = `Back after going quiet ${quietDays} ${quietDays === 1 ? "day" : "days"} ago.`;
+    if (options.autoFix && ticket.blame === "conch" && ticket.operation !== LOOP_OPERATION) ticket.autoFixPending = true;
+    return { ticket, outcome: "reopened" };
+  }
   const fixLanded = ticket.fixedAt ?? ticket.statusAt;
   const fixRunning = ticket.fixedBy === "you" || options.codeSince > fixLanded;
   if (ticket.status === "fixed" && occurrence.at > fixLanded && fixRunning) {
     ticket.status = "open";
     ticket.statusAt = occurrence.at;
     ticket.unseen = true;
+    ticket.alertedAt = undefined;
     ticket.reopened = (ticket.reopened ?? 0) + 1;
     ticket.note = ticket.fix?.pr ? `Came back after #${ticket.fix.pr.number ?? "?"} was merged.` : "Came back after it was marked fixed.";
     // One an auto-fix "fixed" that came back waits for Tyler: two machines agreeing it's fixed proved nothing.
-    if (options.autoFix && ticket.fix?.by !== "auto" && ticket.operation !== LOOP_OPERATION) ticket.autoFixPending = true;
+    if (options.autoFix && ticket.blame === "conch" && ticket.fix?.by !== "auto" && ticket.operation !== LOOP_OPERATION) ticket.autoFixPending = true;
     return { ticket, outcome: "reopened" };
   }
   return { ticket, outcome: "counted" };
@@ -432,7 +480,7 @@ export function fixBrief(ticket: FailureTicket, paths: BriefPaths, now = Date.no
     `1. Work in a worktree: git fetch origin && git worktree add ${worktree} -b ${branch} origin/main. Never on main, and leave every other worktree alone.`,
     "2. Read CLAUDE.md first. Find the root cause. If it isn't a conch bug (an expected refusal, the Mac's environment, a file the user deleted), say so plainly and stop without a PR.",
     "3. Add a regression test that fails before the fix and passes after it. Run scripts/ci-local.sh and read its exit code (never pipe it through tail).",
-    `4. Commit, push and open a PR from ${branch} with gh. Don't merge it, and don't deploy: no scripts/build-app.sh, no restarting conch's daemon or app.`,
+    `4. Commit, push and open a PR from ${branch} with gh, saying "Fixes ticket #${ticket.number}" in its description. Don't merge it, and don't deploy: no scripts/build-app.sh, no restarting conch's daemon or app.`,
     "5. The repository is PUBLIC. Nothing from the evidence above goes into a commit, the PR, a test, a fixture or a comment: no session names, folder paths, client or project names, or the user's words. Describe the bug in general terms and make the fixtures up.",
     "6. You run inside conch's own tmux: never run bare tmux, and never tmux kill-server.",
     "7. Don't file anything anywhere else: no GitHub issue, no other service. The PR is the only thing that leaves this Mac.",
@@ -494,6 +542,13 @@ export interface FailureDeskOptions {
   fixSessionAlive?(backgroundId: string): Promise<boolean | undefined>;
   /** The PR on a branch, by reading GitHub (`gh pr list --head`), or null for none; undefined when it can't be told. */
   findPr?(folder: string, branch: string): Promise<FailurePr | null | undefined>;
+  /** The checkout's recent PRs that say which tickets they fix (`ghTicketPrs`); undefined when it can't be told. */
+  findTicketPrs?(folder: string): Promise<readonly TicketPr[] | undefined>;
+  /**
+   * Tell Tyler about a conch ticket worth more than the gear's dot (`alertWorthy`), at most `ALERTS_DAILY_CAP` a day.
+   * The daemon wires it; the banner in the Mac's window comes from `digest().alert` whether or not this is.
+   */
+  alert?(ticket: Readonly<FailureTicket>): void;
   /** Record a failure of the loop itself (`failure-fix`), which comes back here as a ticket like any other. */
   recordFailure?(operation: string, message: string, state: Record<string, unknown>): void;
   /** Something a client shows changed: the published counts. */
@@ -504,11 +559,18 @@ export interface FailureDeskOptions {
 export type FailureTicketAction = "fix" | "ignore" | "reopen" | "mark-fixed" | "seen" | "show";
 export const FAILURE_TICKET_ACTIONS: readonly FailureTicketAction[] = ["fix", "ignore", "reopen", "mark-fixed", "seen", "show"];
 
-/** What the published state carries: enough for the gear's dot and the section's count, nothing a phone needn't see. */
+/**
+ * What the published state carries: enough for the gear's dot, the section's count and the window's banner, nothing a
+ * phone needn't see. `open` and `unseen` are conch's own tickets that haven't gone quiet; agents' calls are `agents`.
+ */
 export interface FailureDigest {
   open: number;
   fixing: number;
   unseen: number;
+  /** Open tickets that are an agent's call conch answered correctly (failure-triage.ts): the tools' work, not Tyler's. */
+  agents: number;
+  /** The newest unseen conch ticket worth telling him about (`alertWorthy`): the Mac window's banner. */
+  alert?: { id: string; number: number; title: string; operation: string; count: number };
 }
 
 export class FailureDesk {
@@ -522,11 +584,29 @@ export class FailureDesk {
   private pollTimer: ReturnType<typeof setInterval> | undefined;
   private checkTimer: ReturnType<typeof setInterval> | undefined;
   private checking: Promise<void> | undefined;
+  /** When the checkout's PRs were last read for the tickets they fix; 0 reads them at the first check. */
+  private prScanAt = 0;
 
   constructor(private readonly options: FailureDeskOptions) {
     this.storePath = options.storePath ?? failureTicketsPath();
     this.now = options.now ?? Date.now;
     this.store = readFailureTicketStore(this.storePath);
+    this.retirePassedOver(this.now());
+  }
+
+  /**
+   * Open tickets filed before a rule said their kind is no failure (failure-triage.ts `notAFailure`): gone quiet now,
+   * saying why, saved with the next change. 2026-11-11: a Return re-sent, a send declined at an open dialog, a card
+   * answered late and a model change refused mid-turn were six of conch's open tickets.
+   */
+  private retirePassedOver(now: number): void {
+    for (const ticket of this.store.tickets) {
+      if (ticket.status !== "open" || ticket.staleAt || !retiredByRule(ticket)) continue;
+      ticket.staleAt = now;
+      ticket.unseen = false;
+      ticket.autoFixPending = undefined;
+      ticket.note = "No longer filed: conch was right, and said so where it happened.";
+    }
   }
 
   /** Read what the records gained since last time and file it. Returns whether anything changed. */
@@ -535,6 +615,7 @@ export class FailureDesk {
     const autoFix = this.options.autoFix();
     let changed = false;
     const opened: FailureTicket[] = [];
+    const touched = new Set<FailureTicket>();
     for (const [source, path, parse] of [
       ["errors", this.options.errorsPath, occurrenceFromErrorRecord],
       ["mcp-usage", this.options.mcpUsagePath, occurrenceFromMcpRecord],
@@ -550,18 +631,25 @@ export class FailureDesk {
         if (occurrence.at < now - LOOKBACK_MS) continue;
         const { ticket, outcome } = fileOccurrence(this.store, occurrence, { codeSince: this.options.codeSince, autoFix });
         if (outcome !== "counted" && !opened.includes(ticket)) opened.push(ticket);
+        touched.add(ticket);
         changed = true;
       }
     }
+    // After filing, so a daemon back after weeks away doesn't put a ticket to sleep and wake it in the same breath.
+    if (this.sweepStale(now)) changed = true;
     if (!changed) return false;
+    // Once for each time it opens: a ticket seen a third time, or one that came back, is told of then and not again.
+    const alerting = [...touched].filter((ticket) => !ticket.alertedAt && alertWorthy(ticket));
+    for (const ticket of alerting) ticket.alertedAt = now;
     pruneTickets(this.store);
     this.save();
     for (const ticket of opened) {
-      this.options.log(`failure ticket #${ticket.number} ${ticket.reopened && ticket.status === "open" ? "came back" : "opened"}: ${ticket.origin} · ${ticket.operation} · ${ticket.title}`);
+      this.options.log(`failure ticket #${ticket.number} ${ticket.status === "open" && ticket.note ? "came back" : "opened"}: ${ticket.origin} · ${ticket.operation} · ${ticket.title}`);
       for (const mirror of this.options.mirrors ?? FAILURE_MIRRORS) {
         void mirror.file(ticket).catch((error) => this.options.log(`failure mirror ${mirror.name}: ${error}`));
       }
     }
+    this.sendAlerts(alerting, now);
     this.options.changed?.();
     void this.autoFixNext();
     return true;
@@ -571,12 +659,24 @@ export class FailureDesk {
     let open = 0;
     let fixing = 0;
     let unseen = 0;
+    let agents = 0;
+    let alert: FailureTicket | undefined;
     for (const ticket of this.store.tickets) {
-      if (ticket.status === "open") open += 1;
       if (ticket.status === "fixing") fixing += 1;
-      if (ticket.unseen && ticket.status === "open") unseen += 1;
+      if (ticket.status !== "open" || ticket.staleAt) continue;
+      if (ticket.blame === "agent") {
+        agents += 1;
+        continue;
+      }
+      open += 1;
+      if (!ticket.unseen) continue;
+      unseen += 1;
+      if (ticket.alertedAt && (!alert || ticket.alertedAt > alert.alertedAt!)) alert = ticket;
     }
-    return { open, fixing, unseen };
+    return {
+      open, fixing, unseen, agents,
+      ...(alert ? { alert: { id: alert.id, number: alert.number, title: alert.title, operation: alert.operation, count: alert.count } } : {}),
+    };
   }
 
   tickets(): readonly FailureTicket[] {
@@ -637,6 +737,7 @@ export class FailureDesk {
     ticket.autoFixPending = undefined;
     ticket.note = undefined;
     ticket.unseen = false;
+    ticket.staleAt = undefined;
     this.save();
     this.options.changed?.();
     return { kind: "failure-ticket", ticket: shownTicket(ticket) };
@@ -668,6 +769,85 @@ export class FailureDesk {
   private setStatus(ticket: FailureTicket, status: FailureTicketStatus, at: number): void {
     ticket.status = status;
     ticket.statusAt = at;
+  }
+
+  /**
+   * Open tickets with no occurrence for `STALE_AFTER_MS` go quiet (`staleAt`): out of the counts, auto-fix's queue and
+   * the banner, and seen. One that comes back opens again (`fileOccurrence`). Returns whether any went.
+   */
+  private sweepStale(now: number): boolean {
+    let changed = false;
+    for (const ticket of this.store.tickets) {
+      if (ticket.status !== "open" || ticket.staleAt || now - ticket.lastSeen < STALE_AFTER_MS) continue;
+      ticket.staleAt = now;
+      ticket.unseen = false;
+      ticket.autoFixPending = undefined;
+      changed = true;
+    }
+    return changed;
+  }
+
+  /** Past the gear's dot, through the daemon's `alert`: newest first, at most `ALERTS_DAILY_CAP` a local day. */
+  private sendAlerts(tickets: readonly FailureTicket[], now: number): void {
+    if (!tickets.length) return;
+    const day = localDay(now);
+    const sent = this.store.alerts?.day === day ? this.store.alerts.sent : 0;
+    const allowed = [...tickets].sort((a, b) => b.lastSeen - a.lastSeen).slice(0, Math.max(0, ALERTS_DAILY_CAP - sent));
+    for (const ticket of tickets) {
+      this.options.log(`failure ticket #${ticket.number} needs you: ${ticket.origin} · ${ticket.operation} · ${ticket.title}${allowed.includes(ticket) ? "" : " (today's alerts are spent; it is on the banner)"}`);
+    }
+    if (!allowed.length || !this.options.alert) return;
+    this.store.alerts = { day, sent: sent + allowed.length };
+    this.save();
+    for (const ticket of allowed) {
+      try { this.options.alert(ticket); } catch (error) { this.options.log(`failure alert: ${error}`); }
+    }
+  }
+
+  /**
+   * The checkout's PRs that say they fix a ticket (`ticketRefs`), linked to it: an open one makes it fixing, a merged
+   * one fixed, from its merge, so it reopens only if it comes back on code from after that (`fileOccurrence`).
+   *
+   * 2026-11-11: until now only a fix session's own branch was looked for, so a ticket fixed by any other PR stayed open
+   * forever. Only open tickets are linked, each by a PR at most once (one that came back after a PR merged isn't fixed
+   * by it again), and never one a fix session is still at work on. A number names a ticket only in a PR opened after
+   * that ticket was first seen: a store started over numbers from 1 again, and an old PR's "#4" is another failure.
+   */
+  private linkTicketPrs(prs: readonly TicketPr[], now: number): boolean {
+    let changed = false;
+    for (const pr of prs) {
+      if (pr.state === "closed") continue;
+      for (const ref of pr.tickets) {
+        const ticket = typeof ref === "number"
+          ? this.store.tickets.find((candidate) => candidate.number === ref)
+          : this.store.tickets.find((candidate) => candidate.id === ref);
+        if (!ticket || ticket.status !== "open" || ticket.fix?.pr?.url === pr.url) continue;
+        if (typeof ref === "number" && pr.createdAt !== undefined && pr.createdAt < ticket.firstSeen) continue;
+        // Merged, but it happened again on code from after the merge: that fix didn't hold, and it stays open.
+        if (pr.state === "merged" && pr.mergedAt !== undefined && ticket.lastSeen > pr.mergedAt && this.options.codeSince > pr.mergedAt) continue;
+        const linked: FailurePr = {
+          url: pr.url, state: pr.state,
+          ...(pr.number !== undefined ? { number: pr.number } : {}),
+          ...(pr.mergedAt !== undefined ? { mergedAt: pr.mergedAt } : {}),
+        };
+        ticket.fix = { by: "pr", startedAt: pr.createdAt ?? now, branch: pr.branch, pr: linked, checkedAt: now };
+        ticket.staleAt = undefined;
+        ticket.autoFixPending = undefined;
+        ticket.note = undefined;
+        if (pr.state === "merged") {
+          const at = pr.mergedAt ?? now;
+          this.setStatus(ticket, "fixed", at);
+          ticket.fixedAt = at;
+          ticket.fixedBy = "pr";
+          this.options.log(`failure ticket #${ticket.number}: fixed by ${pr.url}, which says so`);
+        } else {
+          this.setStatus(ticket, "fixing", now);
+          this.options.log(`failure ticket #${ticket.number}: ${pr.url} says it fixes this`);
+        }
+        changed = true;
+      }
+    }
+    return changed;
   }
 
   private save(): void {
@@ -715,7 +895,7 @@ export class FailureDesk {
     if (this.store.autoFix.day !== today) this.store.autoFix = { day: today, started: 0 };
     if (this.store.autoFix.started >= AUTO_FIX_DAILY_CAP) return;
     const next = this.store.tickets
-      .filter((ticket) => ticket.autoFixPending && ticket.status === "open" && ticket.operation !== LOOP_OPERATION)
+      .filter((ticket) => ticket.autoFixPending && ticket.status === "open" && !ticket.staleAt && ticket.blame === "conch" && ticket.operation !== LOOP_OPERATION)
       .sort((a, b) => a.statusAt - b.statusAt)[0];
     if (!next) return;
     next.autoFixPending = undefined;
@@ -729,6 +909,11 @@ export class FailureDesk {
     const where = this.options.fixFolder();
     const now = this.now();
     let changed = false;
+    if ("folder" in where && this.options.findTicketPrs && now - this.prScanAt >= PR_SCAN_INTERVAL_MS) {
+      this.prScanAt = now;
+      const prs = await this.options.findTicketPrs(where.folder);
+      if (prs && this.linkTicketPrs(prs, now)) changed = true;
+    }
     for (const ticket of this.store.tickets) {
       const fix = ticket.fix;
       if (ticket.status !== "fixing" || !fix) continue;
@@ -778,6 +963,12 @@ export interface ListedTicket {
   origin: FailureOrigin;
   operation: string;
   title: string;
+  /** conch's own, or an agent's call (failure-triage.ts): Settings › Failures leads with conch's. */
+  blame: FailureBlame;
+  /** An MCP ticket's tool, by which agents' calls are grouped. */
+  tool?: string;
+  /** When an open ticket went quiet: folded, out of the counts. */
+  staleAt?: number;
   status: FailureTicketStatus;
   statusAt: number;
   note?: string;
@@ -814,13 +1005,20 @@ function shownTicket(ticket: FailureTicket): FailureTicket {
   return structuredClone({ ...ticket, autoFixPending: undefined });
 }
 
-const STATUS_ORDER: Record<FailureTicketStatus, number> = { open: 0, fixing: 1, fixed: 2, ignored: 3 };
+/**
+ * Where a ticket comes in the list: conch's open bugs, then those being fixed, the fixed, agents' calls, the quiet, the
+ * ignored. A list cut to fit (`LISTED_MAX`, `fitFailureTicketList`) loses the end of it, never conch's open bugs.
+ */
+function listRank(ticket: FailureTicket): number {
+  if (ticket.status === "open") return ticket.staleAt ? 4 : (ticket.blame ?? failureBlame(ticket)) === "agent" ? 3 : 0;
+  return { fixing: 1, fixed: 2, ignored: 5 }[ticket.status];
+}
 
-/** Open first (newest first), then fixing, fixed in the last two weeks, ignored; at most `LISTED_MAX`. */
+/** conch's open bugs first (newest first), then fixing, fixed in the last two weeks, agents' calls, quiet, ignored. */
 export function listedTickets(tickets: readonly FailureTicket[], now: number): ListedTicket[] {
   return tickets
     .filter((ticket) => ticket.status !== "fixed" || now - (ticket.fixedAt ?? ticket.statusAt) < LISTED_FIXED_MS)
-    .sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status] || b.lastSeen - a.lastSeen)
+    .sort((a, b) => listRank(a) - listRank(b) || b.lastSeen - a.lastSeen)
     .slice(0, LISTED_MAX)
     .map((ticket) => ({
       id: ticket.id,
@@ -828,6 +1026,9 @@ export function listedTickets(tickets: readonly FailureTicket[], now: number): L
       origin: ticket.origin,
       operation: ticket.operation,
       title: ticket.title,
+      blame: ticket.blame ?? failureBlame(ticket),
+      ...(failureTool(ticket.origin, ticket.operation) ? { tool: failureTool(ticket.origin, ticket.operation) } : {}),
+      ...(ticket.staleAt ? { staleAt: ticket.staleAt } : {}),
       status: ticket.status,
       statusAt: ticket.statusAt,
       ...(ticket.note ? { note: ticket.note } : {}),
@@ -922,6 +1123,67 @@ export async function ghBranchPr(folder: string, branch: string, gh = ghPath(), 
 }
 
 /**
+ * What a PR's description says it fixes: `Fixes ticket #12`, `Fixes tickets #1, #4 and #36`, `fixed failure ticket
+ * 1a2b3c4d5e6f`. Numbers are Tyler's store's (`#12`, as Settings says them); ids are the signature's hash, the same in
+ * any store. Nothing else in a description counts: a "#12" alone is a GitHub link to PR 12, not a ticket.
+ */
+export function ticketRefs(body: string): Array<number | string> {
+  const refs: Array<number | string> = [];
+  const phrase = /\bfix(?:es|ed)?\s+(?:conch\s+)?(?:failure\s+)?tickets?\s*:?\s*((?:#\d+|\b[0-9a-f]{12}\b)(?:(?:\s*[,&]\s*|\s+and\s+|\s+)(?:#\d+|\b[0-9a-f]{12}\b))*)/gi;
+  for (const match of body.matchAll(phrase)) {
+    for (const ref of match[1]!.matchAll(/#(\d+)|\b([0-9a-f]{12})\b/gi)) {
+      const value = ref[1] ? Number(ref[1]) : ref[2]!.toLowerCase();
+      if (!refs.includes(value)) refs.push(value);
+    }
+  }
+  return refs;
+}
+
+/** How many of the checkout's newest PRs that mention tickets are read: weeks of them, in one call. */
+const TICKET_PRS_LIMIT = 40;
+
+/**
+ * The checkout's recent PRs whose description says which tickets they fix (`ticketRefs`), read from GitHub with
+ * `gh pr list --search`, in the checkout so they are that repository's. Only ever reads. Undefined when it can't be
+ * told (no gh, signed out, offline, too slow), which links nothing.
+ */
+export async function ghTicketPrs(folder: string, gh = ghPath(), timeoutMs = 20_000): Promise<TicketPr[] | undefined> {
+  if (!gh) return undefined;
+  try {
+    const child = Bun.spawn([gh, "pr", "list", "--state", "all", "--search", "ticket in:body", "--json", "url,number,state,mergedAt,createdAt,headRefName,body", "--limit", String(TICKET_PRS_LIMIT)], {
+      cwd: folder, stdout: "pipe", stderr: "ignore", stdin: "ignore",
+    });
+    const timer = setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, timeoutMs);
+    const [text, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+    clearTimeout(timer);
+    if (code !== 0) return undefined;
+    const rows = JSON.parse(text) as Array<Record<string, unknown>>;
+    if (!Array.isArray(rows)) return undefined;
+    const prs: TicketPr[] = [];
+    for (const row of rows) {
+      if (typeof row.url !== "string" || typeof row.headRefName !== "string" || typeof row.body !== "string") continue;
+      const tickets = ticketRefs(row.body);
+      if (!tickets.length) continue;
+      const state = String(row.state).toUpperCase() === "MERGED" ? "merged" : String(row.state).toUpperCase() === "CLOSED" ? "closed" : "open";
+      const mergedAt = typeof row.mergedAt === "string" ? Date.parse(row.mergedAt) : NaN;
+      const createdAt = typeof row.createdAt === "string" ? Date.parse(row.createdAt) : NaN;
+      prs.push({
+        url: row.url,
+        ...(typeof row.number === "number" ? { number: row.number } : {}),
+        state,
+        ...(Number.isFinite(mergedAt) ? { mergedAt } : {}),
+        ...(Number.isFinite(createdAt) ? { createdAt } : {}),
+        branch: row.headRefName,
+        tickets,
+      });
+    }
+    return prs;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Whether a background session's terminal is still on conch's tmux server: `has-session`, which answers 0 for there and
  * 1 for gone. Undefined for anything else (no tmux, a hang), which never sends a ticket back to open.
  */
@@ -1002,9 +1264,31 @@ export function runFailuresCli(args: readonly string[], env: NodeJS.ProcessEnv =
     const minutes = Math.max(0, Math.round((now - ms) / 60_000));
     return minutes < 60 ? `${minutes}m` : minutes < 48 * 60 ? `${Math.round(minutes / 60)}h` : `${Math.round(minutes / 1440)}d`;
   };
-  for (const ticket of shown) {
+  const line = (ticket: FailureTicket) => {
     const pr = ticket.fix?.pr ? `  ${ticket.fix.pr.url} (${ticket.fix.pr.state})` : "";
-    console.log(`#${String(ticket.number).padEnd(4)} ${ticket.status.padEnd(7)} ${String(ticket.count).padStart(4)}×  ${String(ticket.sessions.length).padStart(2)} sess  ${ago(ticket.lastSeen).padStart(4)} ago  ${ticket.origin} · ${ticket.operation} · ${ticket.title}${pr}`);
+    const status = ticket.status === "open" && ticket.staleAt ? "quiet" : ticket.status;
+    return `#${String(ticket.number).padEnd(4)} ${status.padEnd(7)} ${String(ticket.count).padStart(4)}×  ${String(ticket.sessions.length).padStart(2)} sess  ${ago(ticket.lastSeen).padStart(4)} ago  ${ticket.origin} · ${ticket.operation} · ${ticket.title}${pr}`;
+  };
+  // conch's own first, then agents' calls by tool (the most frequent tool first), as Settings › Failures shows them.
+  const blameOf = (ticket: FailureTicket) => ticket.blame ?? failureBlame(ticket);
+  const conch = shown.filter((ticket) => blameOf(ticket) === "conch");
+  const agents = shown.filter((ticket) => blameOf(ticket) === "agent");
+  if (conch.length) {
+    console.log(`conch's own failures (${conch.length})`);
+    for (const ticket of conch) console.log(`  ${line(ticket)}`);
+  }
+  if (agents.length) {
+    const byTool = new Map<string, FailureTicket[]>();
+    for (const ticket of agents) {
+      const tool = failureTool(ticket.origin, ticket.operation) ?? ticket.operation;
+      byTool.set(tool, [...(byTool.get(tool) ?? []), ticket]);
+    }
+    const total = (list: FailureTicket[]) => list.reduce((sum, ticket) => sum + ticket.count, 0);
+    console.log(`${conch.length ? "\n" : ""}Agents' tool calls conch answered correctly (${agents.length}), by tool`);
+    for (const [tool, list] of [...byTool].sort((a, b) => total(b[1]) - total(a[1]))) {
+      console.log(`  ${tool}: ${total(list)} ${total(list) === 1 ? "call" : "calls"}`);
+      for (const ticket of list) console.log(`    ${line(ticket)}`);
+    }
   }
   return 0;
 }

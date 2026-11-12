@@ -674,7 +674,7 @@ export const SETTING_DESCRIPTORS = [
     parse: parseBoolean,
     bounds: null,
     apply: "live",
-    help: "when a failure ticket opens, start a background Claude session in conch's checkout to fix it and open a PR (never merged); one at a time, at most 3 a day",
+    help: "when one of conch's own failure tickets opens (not an agent's tool call), start a background Claude session in conch's checkout to fix it and open a PR (never merged); one at a time, at most 3 a day",
   },
   {
     // On: Tyler (2026-11-09), after finding his Claude Code 12 releases behind and missing a new model: "can we have a
