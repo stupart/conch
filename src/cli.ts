@@ -4,16 +4,8 @@ import { fileURLToPath } from "node:url";
 import { loadConfig } from "./config.ts";
 import { runHook, sendToDaemon } from "./hook.ts";
 import { runCodexHook } from "./codex-hook.ts";
-import { runDaemon } from "./daemon.ts";
-import {
-  runCodexInstall,
-  runInstall,
-  runDoctor,
-  runService,
-  runSetup,
-  parseSetupArgs,
-} from "./install.ts";
-import { listenOnce } from "./listen.ts";
+// The daemon, the installer and the recorder are imported where their command runs, not here: every `conch mcp`
+// (one per agent session, 16 on this Mac at once) evaluated all three for nothing, 2026-11-11.
 import { speak, probeTtsServer, voiceFor, setVoiceOverride } from "./speak.ts";
 import { setUpVoicesNow } from "./voice-env.ts";
 import { emitRecorderTraces } from "./diagnostics.ts";
@@ -322,7 +314,7 @@ switch (command) {
     await runCodexHook(cfg);
     break;
   case "daemon":
-    await runDaemon(cfg);
+    await (await import("./daemon.ts")).runDaemon(cfg);
     break;
   case "wake": {
     const { findSessionByName, findTranscript, listSessions, sessionLabel } = await import("./sessions.ts");
@@ -722,6 +714,7 @@ switch (command) {
     break;
   }
   case "setup": {
+    const { parseSetupArgs, runSetup } = await import("./install.ts");
     let selection;
     try {
       selection = parseSetupArgs(rest);
@@ -737,16 +730,20 @@ switch (command) {
     });
     break;
   }
-  case "install":
+  case "install": {
+    const { runCodexInstall, runInstall } = await import("./install.ts");
     if (rest.includes("--codex")) {
       await runCodexInstall();
     } else {
       await runInstall(cfg);
     }
     break;
-  case "service":
+  }
+  case "service": {
+    const { runService } = await import("./install.ts");
     await runService(cfg, rest[0] === "off" ? "off" : "install");
     break;
+  }
   case "mcp-usage": {
     // Every MCP tool call, one line each, as `conch mcp` logged it (mcp-usage.ts): which tools agents use, how they fail.
     const { runMcpUsageCli } = await import("./mcp-usage.ts");
@@ -1004,10 +1001,11 @@ switch (command) {
     break;
   }
   case "doctor":
-    await runDoctor(cfg);
+    await (await import("./install.ts")).runDoctor(cfg);
     break;
   case "listen": {
     const { probeServer } = await import("./transcribe.ts");
+    const { listenOnce } = await import("./listen.ts");
     await probeServer(cfg, 1500); // a running daemon's warm server enables live partials
     console.error("[conch] listening... (speak, then pause)");
     const { text, error, diagnosticId, diagnosticIds } = await listenOnce(cfg, {
